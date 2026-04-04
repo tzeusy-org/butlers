@@ -66,9 +66,6 @@ _QA_BUTLER_NAME = "qa"
 #: Tool name on the QA staffer that accepts relayed findings.
 _QA_REPORT_FINDING_TOOL = "report_finding"
 
-#: Prometheus counter name for QA relay fallback activations.
-_QA_FALLBACK_COUNTER_NAME = "qa_fallback_activations_total"
-
 
 # ---------------------------------------------------------------------------
 # Config schema

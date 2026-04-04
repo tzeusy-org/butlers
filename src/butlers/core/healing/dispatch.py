@@ -117,9 +117,9 @@ class HealingConfig:
         As of the QA Staffer integration, GitHub tokens should be provisioned
         via ``CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")`` (Tier 1 system
         secret, category="qa").  This field is retained for backward
-        compatibility with existing configurations but will be removed after
-        30 days of zero ``qa_fallback_activations_total`` counter increments.
-        Setting this field emits a DeprecationWarning.
+        compatibility with existing configurations but will be removed in a
+        future release.  Setting this field to a non-default value emits a
+        DeprecationWarning.
     pr_labels:
         Labels to apply to self-healing PRs.  Default ``["self-healing", "automated"]``.
 

@@ -507,11 +507,21 @@ class QaModule(Module):
         if self._pool is None:
             return {"status": "skipped", "reason": "no_db_pool"}
 
-        # Try to acquire the lock without blocking
-        if self._patrol_lock.locked():
+        # Use a non-blocking acquire attempt to avoid a TOCTOU race between
+        # checking locked() and entering _run_patrol_cycle.  acquire() is
+        # wrapped in wait_for(timeout=0) to return immediately: if the lock is
+        # already held the coroutine is cancelled and we return a skip response.
+        try:
+            await asyncio.wait_for(self._patrol_lock.acquire(), timeout=0)
+        except TimeoutError:
             return {"status": "skipped", "reason": "patrol_already_running"}
 
-        result = await self._run_patrol_cycle()
+        # We now hold the lock — run the patrol body directly (not via
+        # _run_patrol_cycle which would try to re-acquire), then release.
+        try:
+            result = await self._run_patrol_body()
+        finally:
+            self._patrol_lock.release()
         return {
             "status": result["status"],
             "patrol_id": result.get("patrol_id"),
@@ -581,8 +591,7 @@ class QaModule(Module):
     async def _run_patrol_cycle(self) -> dict:
         """Execute one complete patrol cycle under the asyncio.Lock.
 
-        Creates a patrol record, polls all sources, runs triage, dispatches
-        novel findings, and updates the patrol record on completion.
+        Acquires ``_patrol_lock`` and delegates to ``_run_patrol_body``.
 
         Returns
         -------
@@ -590,159 +599,180 @@ class QaModule(Module):
             Summary of the patrol cycle outcome.
         """
         async with self._patrol_lock:
-            pool = self._pool
-            if pool is None:
-                return {"status": "error", "reason": "no_db_pool"}
+            return await self._run_patrol_body()
 
-            patrol_id = await self._create_patrol_record(pool)
-            self._current_patrol_id = patrol_id
-            sources_polled: list[str] = []
-            all_findings = []
-            error_detail: str | None = None
+    async def _run_patrol_body(self) -> dict:
+        """Execute the patrol cycle body.
 
-            try:
-                # Phase 1: Discover
-                for source in self._sources:
-                    try:
-                        findings = await source.discover(self._config.log_lookback_minutes)
-                        sources_polled.append(source.name)
-                        all_findings.extend(findings)
-                        logger.debug(
-                            "QaModule patrol %s: source=%s returned %d finding(s)",
-                            patrol_id,
-                            source.name,
-                            len(findings),
-                        )
-                    except Exception as src_exc:
-                        logger.error(
-                            "QaModule patrol %s: source=%s failed: %s",
-                            patrol_id,
-                            source.name,
-                            src_exc,
-                            exc_info=True,
-                        )
-                        detail = f"source {source.name} failed: {src_exc!r}"
-                        error_detail = f"{error_detail}; {detail}" if error_detail else detail
+        Must be called with ``_patrol_lock`` already held.  Creates a patrol
+        record, polls all configured sources, runs triage, dispatches novel
+        findings, and updates the patrol record on completion.
 
-                # Phase 2: Triage
-                triage_result = await triage_findings(
-                    pool=pool,
-                    patrol_id=patrol_id,
-                    findings=all_findings,
-                    cooldown_minutes=60,  # default cooldown
-                )
+        Returns
+        -------
+        dict
+            Summary of the patrol cycle outcome.
+        """
+        pool = self._pool
+        if pool is None:
+            return {"status": "error", "reason": "no_db_pool"}
 
-                findings_count = len(triage_result.all_findings)
-                novel_count = len(triage_result.novel_findings)
+        patrol_id = await self._create_patrol_record(pool)
+        self._current_patrol_id = patrol_id
+        sources_polled: list[str] = []
+        all_findings = []
+        error_detail: str | None = None
 
-                # Phase 3: Dispatch
-                gh_token = await self._resolve_gh_token()
-                dispatch_config = QaDispatchConfig(
-                    severity_threshold=self._config.severity_threshold,
-                    max_concurrent=self._config.max_concurrent_investigations,
-                    dashboard_base_url=self._config.dashboard_base_url,
-                )
+        try:
+            # Phase 1: Discover
+            for source in self._sources:
+                try:
+                    findings = await source.discover(self._config.log_lookback_minutes)
+                    sources_polled.append(source.name)
+                    all_findings.extend(findings)
+                    logger.debug(
+                        "QaModule patrol %s: source=%s returned %d finding(s)",
+                        patrol_id,
+                        source.name,
+                        len(findings),
+                    )
+                except Exception as src_exc:
+                    logger.error(
+                        "QaModule patrol %s: source=%s failed: %s",
+                        patrol_id,
+                        source.name,
+                        src_exc,
+                        exc_info=True,
+                    )
+                    detail = f"source {source.name} failed: {src_exc!r}"
+                    error_detail = f"{error_detail}; {detail}" if error_detail else detail
 
-                # Prune completed watchdog tasks before dispatching
-                self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
+            # Phase 2: Triage
+            triage_result = await triage_findings(
+                pool=pool,
+                patrol_id=patrol_id,
+                findings=all_findings,
+                cooldown_minutes=60,  # default cooldown
+            )
 
-                dispatch_results = await dispatch_novel_findings(
-                    pool=pool,
-                    novel_findings=triage_result.novel_findings,
-                    patrol_id=patrol_id,
-                    config=dispatch_config,
-                    repo_root=self._repo_root,
-                    spawner=self._spawner,
-                    gh_token=gh_token,
-                    task_registry=self._watchdog_tasks,
-                )
+            findings_count = len(triage_result.all_findings)
+            novel_count = len(triage_result.novel_findings)
 
-                dispatched_count = sum(1 for r in dispatch_results if r.accepted)
+            # Phase 3: Dispatch
+            gh_token = await self._resolve_gh_token()
+            dispatch_config = QaDispatchConfig(
+                severity_threshold=self._config.severity_threshold,
+                max_concurrent=self._config.max_concurrent_investigations,
+                dashboard_base_url=self._config.dashboard_base_url,
+            )
 
-                # Phase 4: PR status check
-                await self._check_pr_statuses(pool, gh_token)
+            # Prune completed watchdog tasks before dispatching
+            self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
 
-                # Determine final patrol status
-                if findings_count == 0:
-                    patrol_status = "clean"
-                elif dispatched_count > 0:
-                    patrol_status = "findings_dispatched"
-                else:
-                    patrol_status = "clean"
+            dispatch_results = await dispatch_novel_findings(
+                pool=pool,
+                novel_findings=triage_result.novel_findings,
+                patrol_id=patrol_id,
+                config=dispatch_config,
+                repo_root=self._repo_root,
+                spawner=self._spawner,
+                gh_token=gh_token,
+                task_registry=self._watchdog_tasks,
+            )
 
-                if error_detail:
-                    patrol_status = "error"
+            dispatched_count = sum(1 for r in dispatch_results if r.accepted)
 
-                # Update patrol record
-                await self._complete_patrol_record(
-                    pool=pool,
-                    patrol_id=patrol_id,
-                    status=patrol_status,
-                    findings_count=findings_count,
-                    novel_count=novel_count,
-                    dispatched_count=dispatched_count,
-                    sources_polled=sources_polled,
-                    error_detail=error_detail,
-                )
+            # Phase 4: PR status check
+            await self._check_pr_statuses(pool, gh_token)
 
-                # Update module state
-                self._last_patrol_at = datetime.now(UTC)
-                self._last_patrol_status = patrol_status
-                self._last_patrol_findings = findings_count
-                self._last_patrol_novel = novel_count
-                self._last_patrol_dispatched = dispatched_count
-                self._current_patrol_id = None
+            # Determine final patrol status.
+            # "suppressed" means findings were found but all were filtered out
+            # by cooldown or severity threshold (novel_count > 0 but nothing
+            # dispatched and no dispatch error).
+            if error_detail:
+                patrol_status = "error"
+            elif findings_count == 0:
+                patrol_status = "clean"
+            elif dispatched_count > 0:
+                patrol_status = "findings_dispatched"
+            elif novel_count > 0:
+                # Novel findings exist but none were dispatched (suppressed by
+                # cooldown or severity threshold).
+                patrol_status = "suppressed"
+            else:
+                # Findings found but all were duplicates/dismissed — no novel work.
+                patrol_status = "clean"
 
-                logger.info(
-                    "QaModule patrol complete: status=%s findings=%d novel=%d "
-                    "dispatched=%d sources=%s patrol_id=%s",
-                    patrol_status,
-                    findings_count,
-                    novel_count,
-                    dispatched_count,
-                    sources_polled,
-                    patrol_id,
-                )
+            # Update patrol record
+            await self._complete_patrol_record(
+                pool=pool,
+                patrol_id=patrol_id,
+                status=patrol_status,
+                findings_count=findings_count,
+                novel_count=novel_count,
+                dispatched_count=dispatched_count,
+                sources_polled=sources_polled,
+                error_detail=error_detail,
+            )
 
-                return {
-                    "status": patrol_status,
-                    "patrol_id": str(patrol_id),
-                    "findings_count": findings_count,
-                    "novel_count": novel_count,
-                    "dispatched_count": dispatched_count,
-                    "sources_polled": sources_polled,
-                }
+            # Update module state
+            self._last_patrol_at = datetime.now(UTC)
+            self._last_patrol_status = patrol_status
+            self._last_patrol_findings = findings_count
+            self._last_patrol_novel = novel_count
+            self._last_patrol_dispatched = dispatched_count
+            self._current_patrol_id = None
 
-            except Exception as exc:
-                error_msg = repr(exc)
-                logger.error(
-                    "QaModule patrol error: patrol_id=%s error=%s",
-                    patrol_id,
-                    error_msg,
-                    exc_info=True,
-                )
-                await self._complete_patrol_record(
-                    pool=pool,
-                    patrol_id=patrol_id,
-                    status="error",
-                    findings_count=0,
-                    novel_count=0,
-                    dispatched_count=0,
-                    sources_polled=sources_polled,
-                    error_detail=error_msg[:500],
-                )
-                self._last_patrol_at = datetime.now(UTC)
-                self._last_patrol_status = "error"
-                self._current_patrol_id = None
-                return {"status": "error", "reason": error_msg}
+            logger.info(
+                "QaModule patrol complete: status=%s findings=%d novel=%d "
+                "dispatched=%d sources=%s patrol_id=%s",
+                patrol_status,
+                findings_count,
+                novel_count,
+                dispatched_count,
+                sources_polled,
+                patrol_id,
+            )
+
+            return {
+                "status": patrol_status,
+                "patrol_id": str(patrol_id),
+                "findings_count": findings_count,
+                "novel_count": novel_count,
+                "dispatched_count": dispatched_count,
+                "sources_polled": sources_polled,
+            }
+
+        except Exception as exc:
+            error_msg = repr(exc)
+            logger.error(
+                "QaModule patrol error: patrol_id=%s error=%s",
+                patrol_id,
+                error_msg,
+                exc_info=True,
+            )
+            await self._complete_patrol_record(
+                pool=pool,
+                patrol_id=patrol_id,
+                status="error",
+                findings_count=0,
+                novel_count=0,
+                dispatched_count=0,
+                sources_polled=sources_polled,
+                error_detail=error_msg[:500],
+            )
+            self._last_patrol_at = datetime.now(UTC)
+            self._last_patrol_status = "error"
+            self._current_patrol_id = None
+            return {"status": "error", "reason": error_msg}
 
     def _schedule_mini_patrol(self, fingerprint: str) -> None:
         """Schedule an immediate mini-patrol for a severity-0 finding.
 
-        Creates a background task to run a patrol cycle immediately,
-        limited to the butler_reports source only.  This is a best-effort
-        trigger; if a patrol is already running, the finding will be picked
-        up by the normal scheduled cycle.
+        Creates a background task to run a full patrol cycle immediately
+        (all configured sources).  This is a best-effort trigger; if a
+        patrol is already running, the finding will be picked up by the
+        normal scheduled cycle.
 
         Parameters
         ----------
@@ -771,7 +801,7 @@ class QaModule(Module):
                 logger.warning("QaModule mini-patrol failed", exc_info=True)
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._mini_patrol_task = loop.create_task(_run_mini_patrol())
         except RuntimeError:
             # No running event loop — mini-patrol not possible in this context
