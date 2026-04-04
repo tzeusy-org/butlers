@@ -94,12 +94,41 @@ Additional shared infrastructure tables:
 - **`public.token_usage_ledger`** -- Token consumption tracking for quota enforcement.
 - **`public.google_accounts`** -- Google OAuth account registry for multi-account support.
 
+### Staffer Schema Permissions and Cross-Butler Access
+
+Staffers reside in their own schemas (e.g., `switchboard`, `messenger`) under
+the same isolation rules as domain butlers: each connection's `search_path` is
+`<staffer_schema>, public`. A staffer does not inherit elevated database access
+simply by virtue of its type.
+
+Cross-butler access is a declarative permissions model governed by
+`[butler.permissions]` in `butler.toml`, not by PostgreSQL grants:
+
+```toml
+[butler.permissions]
+cross_butler_access = ["*"]   # or a list of specific agent names
+```
+
+- `["*"]` grants the staffer authorization to connect to and act on behalf of
+  any agent in the ecosystem. This is the expected configuration for the
+  Switchboard and Messenger staffers.
+- A named list (e.g., `["general", "health"]`) scopes access to those agents
+  only.
+- Domain butlers omit `[butler.permissions]`, defaulting to no cross-butler
+  access. They communicate with other agents exclusively through Switchboard
+  routing.
+
+In v1 this model is **advisory**: violations are flagged in logs but not
+enforced at the database or network level. Database-level enforcement (row
+security policies, per-role grants) is a future hardening step that the
+declarative model is designed to support without schema changes.
+
 ### Database Connection Scoping
 
 Each butler's database connection sets `search_path` to `<butler_schema>, public`. This ensures:
 
 - Unqualified queries default to the butler's own schema.
-- schema prefix is optional for identity table reads (but SHOULD be used explicitly for clarity).
+- Schema prefix is optional for identity table reads (but SHOULD be used explicitly for clarity).
 - A butler CANNOT access another butler's schema.
 - A butler CANNOT write to `public` tables unless explicitly authorized by the module that owns those tables.
 
