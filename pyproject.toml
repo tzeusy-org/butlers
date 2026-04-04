@@ -107,6 +107,7 @@ markers = [
     "discretion_bench: Discretion layer FORWARD/IGNORE classification benchmarks",
     "switchboard_bench: Switchboard routing accuracy benchmarks",
     "db: Database integration tests — require Docker (testcontainers with real PostgreSQL)",
+    "contract: Architectural contract tests — validate invariants from heart-and-soul doctrine and key RFCs",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here
