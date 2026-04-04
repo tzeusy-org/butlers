@@ -1756,6 +1756,8 @@ async def run_owntracks_connector() -> None:
         webhook_token = await resolve_webhook_token(cred_store)
     except ValueError as exc:
         logger.error("OwnTracksConnector: startup aborted: %s", exc)
+        if db_pool is not None:
+            await db_pool.close()
         raise SystemExit(1) from exc
 
     connector = OwnTracksConnector(

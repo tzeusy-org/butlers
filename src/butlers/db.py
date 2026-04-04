@@ -107,7 +107,7 @@ class Database:
         user: str = "postgres",
         password: str = "postgres",
         ssl: str | None = None,
-        min_pool_size: int = 2,
+        min_pool_size: int = 1,
         max_pool_size: int = 10,
     ) -> None:
         self.db_name = db_name
