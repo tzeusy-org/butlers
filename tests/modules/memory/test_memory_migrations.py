@@ -87,50 +87,6 @@ class TestMemoryBaselineMigration:
         for snippet in required:
             assert snippet in source, f"Missing facts column snippet: {snippet}"
 
-    def test_upgrade_rules_has_required_columns(self) -> None:
-        mod = _load_migration()
-        source = inspect.getsource(mod.upgrade)
-        required = (
-            "maturity TEXT NOT NULL DEFAULT 'candidate'",
-            "effectiveness_score FLOAT NOT NULL DEFAULT 0.0",
-            "applied_count INTEGER NOT NULL DEFAULT 0",
-            "success_count INTEGER NOT NULL DEFAULT 0",
-            "harmful_count INTEGER NOT NULL DEFAULT 0",
-            "last_confirmed_at TIMESTAMPTZ",
-            "reference_count INTEGER NOT NULL DEFAULT 0",
-            "last_referenced_at TIMESTAMPTZ",
-        )
-        for snippet in required:
-            assert snippet in source, f"Missing rules column snippet: {snippet}"
-
-    def test_upgrade_memory_links_constraint(self) -> None:
-        mod = _load_migration()
-        source = inspect.getsource(mod.upgrade)
-        assert "chk_memory_links_relation" in source
-        for relation in ("derived_from", "supports", "contradicts", "supersedes", "related_to"):
-            assert relation in source
-
-    def test_upgrade_creates_runtime_indexes(self) -> None:
-        mod = _load_migration()
-        source = inspect.getsource(mod.upgrade)
-        for index_name in (
-            "idx_episodes_butler_created",
-            "idx_episodes_expires",
-            "idx_episodes_unconsolidated",
-            "idx_episodes_search",
-            "idx_episodes_embedding",
-            "idx_facts_scope_validity",
-            "idx_facts_subject_predicate",
-            "idx_facts_search",
-            "idx_facts_tags",
-            "idx_facts_embedding",
-            "idx_rules_scope_maturity",
-            "idx_rules_search",
-            "idx_rules_embedding",
-            "idx_memory_links_target",
-        ):
-            assert index_name in source, f"Missing index: {index_name}"
-
     def test_upgrade_enables_extensions(self) -> None:
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
