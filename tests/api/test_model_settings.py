@@ -635,8 +635,10 @@ def _make_resolve_model_row(
     extra_args: str = "[]",
 ) -> dict[str, Any]:
     """Build a fake catalog row for resolve-model queries (includes catalog_entry_id)."""
+    entry_id = catalog_entry_id or uuid.uuid4()
     return {
-        "catalog_entry_id": catalog_entry_id or uuid.uuid4(),
+        "id": entry_id,
+        "catalog_entry_id": entry_id,
         "runtime_type": runtime_type,
         "model_id": model_id,
         "extra_args": extra_args,

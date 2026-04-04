@@ -89,8 +89,14 @@ def _build_app(
     execute_result: str = "DELETE 1",
 ) -> tuple[Any, MagicMock]:
     mock_pool = AsyncMock()
+    # resolve_model_preview calls fetchrow twice: catalog resolution then quota.
+    # Return the catalog row first, then a default quota row for subsequent calls.
+    _default_quota = {"limit_24h": None, "limit_30d": None, "usage_24h": 0, "usage_30d": 0}
+    catalog_record = _mock_record(fetchrow_result) if fetchrow_result else None
+    quota_record = _mock_record(_default_quota)
+    _fetchrow_calls = iter([catalog_record, quota_record])
     mock_pool.fetchrow = AsyncMock(
-        return_value=_mock_record(fetchrow_result) if fetchrow_result else None
+        side_effect=lambda *a, **kw: next(_fetchrow_calls, catalog_record)
     )
     mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in (fetch_rows or [])])
     mock_pool.execute = AsyncMock(return_value=execute_result)
@@ -253,6 +259,7 @@ class TestResolveModelDiscretionComplexity:
     async def test_resolve_model_accepts_discretion_complexity(self) -> None:
         """complexity=discretion query parameter must not be rejected (422)."""
         resolve_row = {
+            "id": uuid.uuid4(),
             "runtime_type": "opencode",
             "model_id": "ollama/qwen3.5:9b",
             "extra_args": json.dumps([]),

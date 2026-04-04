@@ -735,9 +735,7 @@ def test_digest_not_emitted_before_interval() -> None:
     tracker = ListeningSessionTracker(digest_interval_s=60.0)
     tracker.on_poll(_playing(track_id=TRACK_A, played_at_ms=_ms(0)), now=_now(0))
     # Track change at 30s — accumulated, not yet 60s
-    events = tracker.on_poll(
-        _playing(track_id=TRACK_B, played_at_ms=_ms(30)), now=_now(30)
-    )
+    events = tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(30)), now=_now(30))
     assert events == []
 
 
@@ -749,9 +747,7 @@ def test_digest_emitted_after_interval() -> None:
     # Accumulate a track at t=30
     tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(30)), now=_now(30))
     # Poll at t=61 — should trigger digest
-    events = tracker.on_poll(
-        _playing(track_id=TRACK_B, played_at_ms=_ms(61)), now=_now(61)
-    )
+    events = tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(61)), now=_now(61))
     assert len(events) == 1
     assert events[0].event_type == "spotify.listening_digest"
     assert events[0].track_count == 2  # TRACK_A + TRACK_B
@@ -767,9 +763,7 @@ def test_digest_includes_track_details() -> None:
     tracker.on_poll(
         _playing(track_id=TRACK_B, track_name="Song B", played_at_ms=_ms(5)), now=_now(5)
     )
-    events = tracker.on_poll(
-        _playing(track_id=TRACK_B, played_at_ms=_ms(11)), now=_now(11)
-    )
+    events = tracker.on_poll(_playing(track_id=TRACK_B, played_at_ms=_ms(11)), now=_now(11))
     [digest] = [e for e in events if e.event_type == "spotify.listening_digest"]
     assert len(digest.digest_tracks) == 2
     assert digest.digest_tracks[0].track_id == TRACK_A

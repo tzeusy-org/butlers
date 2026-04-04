@@ -448,8 +448,7 @@ def build_context_start_envelope(
     context_label = context_uri.split(":")[-1] if context_uri else None
     if context_label:
         normalized_text = (
-            f"Started listening to {context_label} — first track: "
-            f"{track_name} by {artist_str}"
+            f"Started listening to {context_label} — first track: {track_name} by {artist_str}"
         )
     else:
         normalized_text = f"Started listening to {track_name} by {artist_str}"
@@ -1369,9 +1368,7 @@ class SpotifyConnector:
             )
             await self._submit_envelope(envelope)
             if self._endpoint_identity:
-                spotify_context_starts_total.labels(
-                    endpoint_identity=self._endpoint_identity
-                ).inc()
+                spotify_context_starts_total.labels(endpoint_identity=self._endpoint_identity).inc()
 
         # Emit periodic listening digest if due
         if self._session_tracker.check_digest_due(now):
@@ -1386,9 +1383,7 @@ class SpotifyConnector:
                 await self._submit_envelope(digest_envelope)
                 self._session_tracker.mark_digest_emitted(now)
                 if self._endpoint_identity:
-                    spotify_digests_total.labels(
-                        endpoint_identity=self._endpoint_identity
-                    ).inc()
+                    spotify_digests_total.labels(endpoint_identity=self._endpoint_identity).inc()
 
         if self._endpoint_identity:
             spotify_polls_total.labels(
@@ -1478,9 +1473,7 @@ class SpotifyConnector:
 
             first_ms = gap_tracks[0]["played_at_ms"]
             last_ms = gap_tracks[-1]["played_at_ms"]
-            idempotency_key = (
-                f"spotify:{self._endpoint_identity}:gapfill:{first_ms}:{last_ms}"
-            )
+            idempotency_key = f"spotify:{self._endpoint_identity}:gapfill:{first_ms}:{last_ms}"
             external_event_id = f"spotify:gapfill:{first_ms}:{last_ms}"
 
             envelope = {

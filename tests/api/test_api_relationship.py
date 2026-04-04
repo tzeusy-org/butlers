@@ -174,9 +174,7 @@ def test_list_contacts_returns_contacts_with_labels(app):
     )
 
     # pool.fetch: data query, then labels + contact_info + interactions in parallel
-    mock_pool.fetch = AsyncMock(
-        side_effect=[[contact_row], label_rows, ci_rows, interaction_rows]
-    )
+    mock_pool.fetch = AsyncMock(side_effect=[[contact_row], label_rows, ci_rows, interaction_rows])
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/contacts")

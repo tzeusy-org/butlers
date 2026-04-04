@@ -196,9 +196,7 @@ class TestSpotifyContextStartsTotal:
         with patch.object(connector, "_submit_envelope", new_callable=AsyncMock):
             await connector._handle_active_playback(payload, item, now, now.isoformat())
 
-        assert (
-            _get_counter(spotify_context_starts_total, endpoint_identity="spotify:alice") == 1.0
-        )
+        assert _get_counter(spotify_context_starts_total, endpoint_identity="spotify:alice") == 1.0
 
     @pytest.mark.asyncio
     async def test_context_starts_total_does_not_increment_on_same_track(
@@ -233,9 +231,7 @@ class TestSpotifyContextStartsTotal:
             )
 
         # Only 1 context_start from the initial start
-        assert (
-            _get_counter(spotify_context_starts_total, endpoint_identity="spotify:alice") == 1.0
-        )
+        assert _get_counter(spotify_context_starts_total, endpoint_identity="spotify:alice") == 1.0
 
     @pytest.mark.asyncio
     async def test_gap_fill_submits_single_batched_envelope(

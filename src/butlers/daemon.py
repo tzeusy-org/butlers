@@ -3328,9 +3328,7 @@ class ButlerDaemon:
                         # send intent so the message still reaches the user.
                         _tg_reply_ok = False
                         if thread_identity:
-                            chat_id, separator, message_id_raw = thread_identity.partition(
-                                ":"
-                            )
+                            chat_id, separator, message_id_raw = thread_identity.partition(":")
                             if chat_id and separator and message_id_raw:
                                 try:
                                     reply_message_id = int(message_id_raw)
@@ -3379,9 +3377,7 @@ class ButlerDaemon:
                         # URI), skip silently — cannot react to a non-Telegram msg.
                         _tg_react_ok = False
                         if thread_identity:
-                            chat_id, separator, message_id_raw = thread_identity.partition(
-                                ":"
-                            )
+                            chat_id, separator, message_id_raw = thread_identity.partition(":")
                             if chat_id and separator and message_id_raw:
                                 try:
                                     target_message_id = int(message_id_raw)
