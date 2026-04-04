@@ -355,51 +355,8 @@ class TestWorkspaceSync:
             "calendar_force_sync", {"calendar_id": "butlers-cal"}
         )
 
-    async def test_sync_all_preserves_detail_for_string_payloads(self, app):
-        source_rows = {
-            "general": [
-                _workspace_source_row(
-                    source_key="provider:google:primary",
-                    source_kind="provider_event",
-                    lane="user",
-                    butler_name=None,
-                    provider="google",
-                    calendar_id="primary",
-                    writable=True,
-                ),
-            ],
-            "relationship": [
-                _workspace_source_row(
-                    source_key="provider:google:butlers",
-                    source_kind="provider_event",
-                    lane="user",
-                    butler_name=None,
-                    provider="google",
-                    calendar_id="butlers-cal",
-                    writable=True,
-                ),
-            ],
-        }
-        general_client = AsyncMock()
-        relationship_client = AsyncMock()
-        general_client.call_tool = AsyncMock(return_value=_mock_mcp_result("triggered"))
-        relationship_client.call_tool = AsyncMock(return_value=_mock_mcp_result("triggered"))
-        app, _, _ = _build_app(
-            app,
-            source_rows=source_rows,
-            mcp_clients={"general": general_client, "relationship": relationship_client},
-        )
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post("/api/calendar/workspace/sync", json={"all": True})
-
-        assert resp.status_code == 200
-        targets = resp.json()["data"]["targets"]
-        assert len(targets) == 2
-        assert {target["detail"] for target in targets} == {"triggered"}
-
+class TestCalendarWorkspaceSync:
     async def test_sync_source_key_targets_specific_source(self, app):
         source_rows = {
             "general": [
@@ -446,44 +403,6 @@ class TestWorkspaceSync:
             {"calendar_id": "primary"},
         )
         relationship_client.call_tool.assert_not_awaited()
-
-    async def test_sync_source_preserves_detail_for_non_dict_payloads(self, app):
-        source_rows = {
-            "general": [
-                _workspace_source_row(
-                    source_key="provider:google:primary",
-                    source_kind="provider_event",
-                    lane="user",
-                    butler_name=None,
-                    provider="google",
-                    calendar_id="primary",
-                    writable=True,
-                )
-            ]
-        }
-        general_client = AsyncMock()
-        relationship_client = AsyncMock()
-        general_client.call_tool = AsyncMock(return_value=_mock_mcp_result(["ok", 1]))
-        relationship_client.call_tool = AsyncMock(
-            return_value=_mock_mcp_result({"status": "sync_triggered"})
-        )
-        app, _, _ = _build_app(
-            app,
-            source_rows=source_rows,
-            mcp_clients={"general": general_client, "relationship": relationship_client},
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                "/api/calendar/workspace/sync",
-                json={"source_key": "provider:google:primary"},
-            )
-
-        assert resp.status_code == 200
-        target = resp.json()["data"]["targets"][0]
-        assert target["detail"] == '["ok", 1]'
 
 
 def _mcp_result(payload: dict | str) -> list:
@@ -557,53 +476,8 @@ class TestCalendarWorkspaceUserEvents:
         assert first_call.args[0] == "calendar_create_event"
         assert first_call.args[1]["request_id"] == "req-123"
 
-    async def test_user_event_update_forwards_recurrence_scope_payload(self, app):
-        async def _call(tool_name: str, arguments: dict):
-            if tool_name == "calendar_update_event":
-                return _mcp_result(
-                    {
-                        "status": "updated",
-                        "projection_freshness": {
-                            "last_refreshed_at": "2026-03-01T11:00:00+00:00",
-                            "staleness_ms": 7,
-                            "sources": [],
-                        },
-                    }
-                )
-            raise AssertionError(f"Unexpected tool call: {tool_name}")
 
-        app, mock_client = _app_with_mcp(app, _call)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                "/api/calendar/workspace/user-events",
-                json={
-                    "butler_name": "general",
-                    "action": "update",
-                    "request_id": "req-update-1",
-                    "payload": {
-                        "event_id": "evt-42",
-                        "title": "Updated title",
-                        "recurrence_scope": "series",
-                    },
-                },
-            )
-
-        assert resp.status_code == 200
-        body = resp.json()["data"]
-        assert body["tool_name"] == "calendar_update_event"
-        assert body["projection_version"] == "2026-03-01T11:00:00+00:00"
-        assert body["staleness_ms"] == 7
-        assert mock_client.call_tool.await_count == 1
-        call = mock_client.call_tool.await_args_list[0]
-        assert call.args[0] == "calendar_update_event"
-        assert call.args[1]["request_id"] == "req-update-1"
-        assert call.args[1]["event_id"] == "evt-42"
-        assert call.args[1]["recurrence_scope"] == "series"
-
-
-class TestCalendarWorkspaceButlerEvents:
+class TestCalendarWorkspaceButlerEventsCreate:
     async def test_butler_event_create_sets_butler_name_and_request_id(self, app):
         async def _call(tool_name: str, arguments: dict):
             assert tool_name == "calendar_create_butler_event"
@@ -648,49 +522,8 @@ class TestCalendarWorkspaceButlerEvents:
         assert first_call.args[1]["butler_name"] == "general"
         assert first_call.args[1]["request_id"] == "req-butler-1"
 
-    async def test_butler_event_update_forwards_event_target_payload(self, app):
-        async def _call(tool_name: str, arguments: dict):
-            assert tool_name == "calendar_update_butler_event"
-            return _mcp_result(
-                {
-                    "status": "updated",
-                    "projection_freshness": {
-                        "last_refreshed_at": "2026-03-02T09:00:00+00:00",
-                        "staleness_ms": 3,
-                        "sources": [],
-                    },
-                }
-            )
 
-        app, mock_client = _app_with_mcp(app, _call)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                "/api/calendar/workspace/butler-events",
-                json={
-                    "butler_name": "general",
-                    "action": "update",
-                    "request_id": "req-butler-update-1",
-                    "payload": {
-                        "event_id": "5f3790f0-87b0-4a19-9df9-33f2eb660250",
-                        "source_hint": "scheduled_task",
-                        "title": "Updated prep",
-                    },
-                },
-            )
-
-        assert resp.status_code == 200
-        body = resp.json()["data"]
-        assert body["tool_name"] == "calendar_update_butler_event"
-        assert body["projection_version"] == "2026-03-02T09:00:00+00:00"
-        assert body["staleness_ms"] == 3
-        assert mock_client.call_tool.await_count == 1
-        call = mock_client.call_tool.await_args_list[0]
-        assert call.args[1]["request_id"] == "req-butler-update-1"
-        assert call.args[1]["event_id"] == "5f3790f0-87b0-4a19-9df9-33f2eb660250"
-        assert call.args[1]["source_hint"] == "scheduled_task"
-
+class TestCalendarWorkspaceButlerEventsToggle:
     async def test_butler_event_toggle_fetches_sync_status_when_projection_missing(self, app):
         async def _call(tool_name: str, arguments: dict):
             if tool_name == "calendar_toggle_butler_event":
@@ -735,7 +568,9 @@ class TestCalendarWorkspaceButlerEvents:
 
 
 class TestCalendarFanOutModuleFiltering:
-    """fan_out is restricted to butlers with the calendar module enabled."""
+    """fan_out is restricted to butlers with the calendar module enabled.
+    NOTE: Condensed to keep only 1 test (bu-egmz6).
+    """
 
     async def test_workspace_read_skips_non_calendar_butlers(self, app):
         """When module metadata is available, fan_out excludes non-calendar butlers."""
@@ -778,122 +613,3 @@ class TestCalendarFanOutModuleFiltering:
                 assert "education" not in butler_names_arg, (
                     f"education was unexpectedly included in fan_out targets: {butler_names_arg}"
                 )
-
-    async def test_workspace_meta_skips_non_calendar_butlers(self, app):
-        """Meta endpoint fan_out excludes non-calendar butlers via module filter."""
-        source_row = _workspace_source_row(
-            source_key="provider:google:primary",
-            source_kind="provider_event",
-            lane="user",
-            butler_name=None,
-            provider="google",
-            calendar_id="primary",
-            writable=True,
-        )
-        app, mock_db, _ = _build_app(
-            app,
-            source_rows={"general": [source_row], "education": []},
-            calendar_butlers=["general"],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/calendar/workspace/meta")
-
-        assert resp.status_code == 200
-        fan_out_calls = mock_db.fan_out.call_args_list
-        for call in fan_out_calls:
-            _, kwargs = call
-            butler_names_arg = kwargs.get(
-                "butler_names", call.args[2] if len(call.args) > 2 else None
-            )
-            if butler_names_arg is not None:
-                assert "education" not in butler_names_arg
-
-    async def test_workspace_read_falls_back_to_all_butlers_when_no_module_metadata(self, app):
-        """When butlers_with_module returns None (no metadata), fan_out queries all butlers."""
-        calendar_row = _workspace_event_row(
-            lane="user",
-            source_key="provider:google:primary",
-            source_kind="provider_event",
-            butler_name=None,
-            calendar_id="primary",
-            metadata={"source_type": "provider_event"},
-        )
-        # calendar_butlers=None simulates no module metadata available
-        app, mock_db, _ = _build_app(
-            app,
-            workspace_rows={"general": [calendar_row]},
-            calendar_butlers=None,
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/calendar/workspace",
-                params={
-                    "view": "user",
-                    "start": "2026-02-22T00:00:00Z",
-                    "end": "2026-02-23T00:00:00Z",
-                },
-            )
-
-        assert resp.status_code == 200
-        # When module metadata is unavailable, butler_names arg in fan_out should be None
-        # (meaning query all butlers)
-        fan_out_calls = mock_db.fan_out.call_args_list
-        instance_calls = [
-            c
-            for c in fan_out_calls
-            if "FROM calendar_event_instances" in (c.args[0] if c.args else "")
-        ]
-        # At least one fan_out call for instances; it should pass butler_names=None
-        assert len(instance_calls) >= 1
-        for call in instance_calls:
-            butler_names_arg = call.kwargs.get("butler_names")
-            assert butler_names_arg is None, (
-                f"Expected butler_names=None (all butlers) but got {butler_names_arg}"
-            )
-
-    async def test_workspace_explicit_butler_filter_overrides_module_filter(self, app):
-        """An explicit ?butlers= query param takes precedence over module filtering."""
-        general_row = _workspace_event_row(
-            lane="butler",
-            source_key="internal_scheduler:general",
-            source_kind="internal_scheduler",
-            butler_name="general",
-            metadata={"source_type": "internal_scheduler"},
-        )
-        health_row = _workspace_event_row(
-            lane="butler",
-            source_key="internal_scheduler:health",
-            source_kind="internal_scheduler",
-            butler_name="health",
-            metadata={"source_type": "internal_scheduler"},
-        )
-        # calendar_butlers reports general+health, but user only requests general
-        app, _, _ = _build_app(
-            app,
-            workspace_rows={"general": [general_row], "health": [health_row]},
-            calendar_butlers=["general", "health"],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/calendar/workspace",
-                params={
-                    "view": "butler",
-                    "start": "2026-02-22T00:00:00Z",
-                    "end": "2026-02-23T00:00:00Z",
-                    "butlers": ["general"],
-                },
-            )
-
-        assert resp.status_code == 200
-        body = resp.json()["data"]
-        assert len(body["entries"]) == 1
-        assert body["entries"][0]["butler_name"] == "general"

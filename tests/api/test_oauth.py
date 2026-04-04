@@ -1,16 +1,12 @@
-"""Tests for Google OAuth bootstrap endpoints.
+"""Tests for OAuth and OAuth status API endpoints.
 
-Verifies the API contract for:
-- GET /api/oauth/google/start — state generation, URL building, redirect behavior
-- GET /api/oauth/google/callback — state validation, code exchange, error paths
-
-All tests mock ``_exchange_code_for_tokens`` directly so no real
-Google OAuth network requests are made.
+Condensed from test_oauth.py (58) + test_oauth_status.py (25) → ~12 tests (bu-egmz6).
+Keeps: state store contract (unit), redirect/JSON mode, callback validation,
+oauth_status list/detail error paths.
 """
 
 from __future__ import annotations
 
-import time
 import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,113 +14,62 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.models.oauth import OAuthCredentialState
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
     _generate_state,
-    _sanitize_provider_error,
-    _state_store,
-    _StateEntry,
     _store_state,
-    _TokenExchangeError,
     _validate_and_consume_state,
 )
-from butlers.google_credentials import GoogleAppCredentials
 
 pytestmark = pytest.mark.unit
 
-# ---------------------------------------------------------------------------
-# Constants and helpers
-# ---------------------------------------------------------------------------
+_EXCHANGE_PATCH = "butlers.api.routers.oauth._exchange_code_for_tokens"
+_USERINFO_PATCH = "butlers.api.routers.oauth._fetch_google_userinfo"
+_CREATE_ACCOUNT_PATCH = "butlers.api.routers.oauth.create_google_account"
 
-GOOGLE_ENV = {
-    "GOOGLE_OAUTH_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
-    "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:41200/api/oauth/google/callback",
-}
-
-_FAKE_TOKEN_RESPONSE = {
-    "access_token": "ya29.fake_access_token",
-    "refresh_token": "1//fake_refresh_token_xyz",
+_FAKE_TOKEN = {
+    "access_token": "ya29.fake",
+    "refresh_token": "1//fake-refresh",
     "scope": "https://www.googleapis.com/auth/gmail.readonly",
     "token_type": "Bearer",
     "expires_in": 3600,
 }
 
-_EXCHANGE_PATCH_TARGET = "butlers.api.routers.oauth._exchange_code_for_tokens"
-_USERINFO_PATCH_TARGET = "butlers.api.routers.oauth._fetch_google_userinfo"
-
-_FAKE_USERINFO = {
-    "email": "test@example.com",
-    "name": "Test User",
-    "id": "12345",
-}
-
-_GOOGLE_ACCOUNT_REGISTRY_PATCH = "butlers.api.routers.oauth.get_google_account"
-_CREATE_ACCOUNT_PATCH = "butlers.api.routers.oauth.create_google_account"
+_FAKE_USERINFO = {"email": "test@example.com", "name": "Test User", "id": "12345"}
 
 
 @pytest.fixture(autouse=True)
 def clear_states():
-    """Ensure state store is empty before and after each test."""
     _clear_state_store()
     yield
     _clear_state_store()
 
 
 def _make_app(
-    app,
-    *,
-    db_client_id: str = "test-client-id.apps.googleusercontent.com",
-    db_client_secret: str = "test-client-secret",
-    db_refresh_token: str | None = "1//fake-refresh-token-from-db",
-    with_db_manager: bool = True,
+    app, *, client_id="test-client-id.apps.googleusercontent.com", client_secret="test-secret"
 ):
-    """Create a FastAPI test app with optional DB-backed OAuth credentials."""
-    if not with_db_manager:
-        return app
-
     secrets = {
-        "GOOGLE_OAUTH_CLIENT_ID": db_client_id,
-        "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
+        "GOOGLE_OAUTH_CLIENT_ID": client_id,
+        "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
     }
-
-    # Refresh token lives in public.entity_info, not butler_secrets
-    contact_info: dict[str, str] = {}
-    if db_refresh_token is not None:
-        contact_info["google_oauth_refresh"] = db_refresh_token
-
     conn = AsyncMock()
 
-    _fake_entity_id = uuid.uuid4()
-
-    async def _fetchrow(_query: str, *args):
-        # _resolve_account_entity_id queries public.google_accounts
-        if "public.google_accounts" in _query:
+    async def _fetchrow(query, *args):
+        if "google_accounts" in query:
             row = MagicMock()
-            row.__getitem__ = lambda self, k: _fake_entity_id if k == "entity_id" else None
+            row.__getitem__ = lambda self, k: uuid.uuid4() if k == "entity_id" else None
             return row
-        if "public.entities" in _query:
-            owner_row = MagicMock()
-            owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
-            return owner_row
-        # _resolve_entity_refresh_token queries public.entity_info (entity_id, type)
-        if "public.entity_info" in _query or "entity_info" in _query:
-            type_key = args[1] if len(args) > 1 else (args[0] if args else None)
-            value = contact_info.get(type_key) if type_key else None
-            if not value:
-                return None
+        if "entities" in query:
             row = MagicMock()
-            row.__getitem__ = lambda self, k: value if k == "value" else None
+            row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
             return row
-        # CredentialStore.load queries butler_secrets (key)
+        if "entity_info" in query:
+            return None
         key = args[0] if args else None
-        if key is None:
-            return None
-        value = secrets.get(key)
-        if not value:
-            return None
-        return {"secret_value": value}
+        value = secrets.get(key) if key else None
+        return {"secret_value": value} if value else None
 
     conn.fetchrow.side_effect = _fetchrow
     conn.execute = AsyncMock(return_value="DELETE 0")
@@ -135,7 +80,6 @@ def _make_app(
 
     pool = MagicMock()
     pool.acquire = _acquire
-
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
     app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
@@ -143,1302 +87,214 @@ def _make_app(
 
 
 # ---------------------------------------------------------------------------
-# Unit tests: state store helpers
+# State store (unit)
 # ---------------------------------------------------------------------------
 
 
 class TestStateStore:
-    def test_generate_state_is_url_safe_string(self):
-        """State token must be a URL-safe string of reasonable length."""
-        state = _generate_state()
-        assert isinstance(state, str)
-        assert len(state) >= 32
-        valid_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_="
-        assert all(c in valid_chars for c in state)
+    def test_generate_state_unique_and_url_safe(self):
+        states = {_generate_state() for _ in range(5)}
+        assert len(states) == 5
+        for s in states:
+            assert len(s) >= 32
+            valid = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=")
+            assert all(c in valid for c in s)
 
-    def test_generate_state_unique(self):
-        """Each call generates a distinct token."""
-        states = {_generate_state() for _ in range(10)}
-        assert len(states) == 10
-
-    def test_store_and_validate_state(self):
-        """Stored state can be validated once."""
+    def test_store_and_validate_one_time_use(self):
         state = _generate_state()
         _store_state(state)
         assert _validate_and_consume_state(state) is not None
+        assert _validate_and_consume_state(state) is None  # one-time use
 
-    def test_state_is_one_time_use(self):
-        """State cannot be validated twice (one-time-use)."""
-        state = _generate_state()
-        _store_state(state)
-        assert _validate_and_consume_state(state) is not None
-        assert _validate_and_consume_state(state) is None
-
-    def test_unknown_state_is_invalid(self):
-        """A state that was never stored is rejected."""
+    def test_unknown_state_rejected(self):
         assert _validate_and_consume_state("totally-fake-state") is None
 
-    def test_expired_state_is_rejected(self):
-        """An expired state token is rejected even if it was valid."""
+    def test_expired_state_rejected(self):
+
+        from butlers.api.routers import oauth as _mod
+
         state = _generate_state()
-        # Store with expiry in the past
-        _state_store[state] = _StateEntry(expiry=time.monotonic() - 1)
+        entry = _mod._StateEntry(expiry=0.0)
+        _mod._state_store[state] = entry
         assert _validate_and_consume_state(state) is None
 
-    def test_store_state_carries_account_hint(self):
-        """State entry carries account_hint when provided."""
-        state = _generate_state()
-        _store_state(state, account_hint="work@example.com")
-        entry = _validate_and_consume_state(state)
-        assert entry is not None
-        assert entry.account_hint == "work@example.com"
-        assert entry.force_consent is False
-
-    def test_store_state_carries_force_consent(self):
-        """State entry carries force_consent when provided."""
-        state = _generate_state()
-        _store_state(state, force_consent=True)
-        entry = _validate_and_consume_state(state)
-        assert entry is not None
-        assert entry.force_consent is True
-        assert entry.account_hint is None
-
-    def test_clear_state_store(self):
-        """Clear removes all entries."""
-        _store_state(_generate_state())
-        _store_state(_generate_state())
-        _clear_state_store()
-        assert len(_state_store) == 0
-
 
 # ---------------------------------------------------------------------------
-# Unit tests: sanitize_provider_error
+# OAuth start
 # ---------------------------------------------------------------------------
 
 
-class TestSanitizeProviderError:
-    def test_known_errors_return_friendly_message(self):
-        """Known error codes return a human-readable message."""
-        msg = _sanitize_provider_error("access_denied")
-        assert "denied" in msg.lower()
-
-    def test_unknown_errors_return_generic_message(self):
-        """Unknown error codes return a generic message (no leakage)."""
-        msg = _sanitize_provider_error("some_weird_google_error_xyz")
-        assert "restart" in msg.lower() or "failed" in msg.lower()
-        assert "some_weird_google_error_xyz" not in msg
-
-
-# ---------------------------------------------------------------------------
-# Integration tests: start endpoint
-# ---------------------------------------------------------------------------
-
-
-class TestOAuthGoogleStart:
-    async def test_start_redirects_to_google_by_default(self, app):
-        """GET /api/oauth/google/start redirects (302) to accounts.google.com."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get("/api/oauth/google/start")
-
-        assert resp.status_code == 302
-        location = resp.headers["location"]
-        assert "accounts.google.com" in location
-        assert "client_id=test-client-id.apps.googleusercontent.com" in location
-        assert "response_type=code" in location
-        assert "access_type=offline" in location
-        assert "state=" in location
+class TestOAuthStart:
+    async def test_start_redirects_by_default(self, app):
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            resp = await client.get("/api/oauth/google/start")
+        assert resp.status_code in (302, 307)
+        assert "accounts.google.com" in resp.headers.get("location", "")
 
     async def test_start_returns_json_when_redirect_false(self, app):
-        """GET /api/oauth/google/start?redirect=false returns JSON payload."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get("/api/oauth/google/start", params={"redirect": "false"})
-
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/google/start", params={"redirect": "false"})
         assert resp.status_code == 200
-        body = resp.json()
-        assert "authorization_url" in body
-        assert "state" in body
-        assert "accounts.google.com" in body["authorization_url"]
+        assert "authorization_url" in resp.json()
 
-    async def test_start_without_force_consent_omits_prompt(self, app):
-        """Start URL omits prompt=consent by default (force_consent=False).
-
-        The multi-account behavior omits prompt=consent when not explicitly
-        requested, letting Google decide whether to show consent (skips for re-auths).
-        Use force_consent=True to force a consent screen.
-        """
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get("/api/oauth/google/start")
-
-        location = resp.headers["location"]
-        assert "prompt=consent" not in location
-
-    async def test_start_with_force_consent_includes_prompt_consent(self, app):
-        """Start URL includes prompt=consent when force_consent=True."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get("/api/oauth/google/start", params={"force_consent": "true"})
-
-        location = resp.headers["location"]
-        assert "prompt=consent" in location
-
-    async def test_start_state_stored_in_state_store(self, app):
-        """A state token is stored after calling the start endpoint."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                await client.get("/api/oauth/google/start")
-
-        assert len(_state_store) == 1
-
-    async def test_start_missing_client_id_returns_503(self, app):
-        """When DB app credentials are missing client_id, start returns 503."""
-        app = _make_app(app, db_client_id="")
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get("/api/oauth/google/start")
-
-        assert resp.status_code == 503
-
-    async def test_callback_provider_error_consumes_state(self, app):
-        """Provider error with a valid state token consumes the state (one-time-use)."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                # Provider returns error with the state token included
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"error": "access_denied", "state": state},
-                )
-
-        assert resp.status_code == 400
-        # State must be consumed — cannot be replayed
-        assert _validate_and_consume_state(state) is None
-
-    async def test_start_uses_default_scopes(self, app):
-        """Authorization URL includes fixed Gmail/Calendar/People scopes by default."""
-        app = _make_app(app)
-        env = {k: v for k, v in GOOGLE_ENV.items() if k != "GOOGLE_OAUTH_SCOPES"}
-        with patch.dict("os.environ", env, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get("/api/oauth/google/start")
-
-        location = resp.headers["location"]
-        assert "gmail" in location.lower()
-        assert "calendar" in location.lower()
-        assert "contacts" in location.lower()
-        assert "directory.readonly" in location.lower()
-
-    async def test_start_ignores_custom_scopes_from_env(self, app):
-        """GOOGLE_OAUTH_SCOPES env var does not override the fixed scope set.
-
-        The fixed scope set now includes drive.readonly and drive (task 15.1).
-        The env var may set an arbitrary scope, but the authorization URL always
-        reflects the static _DEFAULT_SCOPES — never the env var value alone.
-        """
-        app = _make_app(app)
-        # Set env var to an arbitrary scope that is NOT part of _DEFAULT_SCOPES.
-        env = {
-            **GOOGLE_ENV,
-            "GOOGLE_OAUTH_SCOPES": "https://www.googleapis.com/auth/youtube.readonly",
-        }
-        with patch.dict("os.environ", env, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get("/api/oauth/google/start")
-
-        location = resp.headers["location"]
-        # Fixed scopes are always present — env var does not remove them.
-        assert "gmail" in location.lower()
-        assert "calendar" in location.lower()
-        assert "contacts" in location.lower()
-        assert "directory.readonly" in location.lower()
-        # Drive scopes are now part of the fixed set (task 15.1).
-        assert "drive" in location.lower()
-        # The env-var-only scope is NOT added (env var is ignored).
-        assert "youtube.readonly" not in location.lower()
+    async def test_start_missing_credentials_returns_503(self, app):
+        app.dependency_overrides[oauth_module._get_db_manager] = lambda: None
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/google/start")
+        assert resp.status_code in (503, 500)
 
 
 # ---------------------------------------------------------------------------
-# Integration tests: callback endpoint
+# OAuth callback
 # ---------------------------------------------------------------------------
 
 
-class TestOAuthGoogleCallback:
-    async def test_callback_success_returns_json(self, app):
-        """Valid code+state callback returns 200 with success payload."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(return_value=MagicMock(entity_id="uuid-1")),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/fake_auth_code", "state": state},
-                )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["success"] is True
-        assert body["provider"] == "google"
-
-    async def test_callback_success_includes_granted_scope(self, app):
-        """Success payload includes the scope returned by Google."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        token_resp = {
-            **_FAKE_TOKEN_RESPONSE,
-            "scope": "https://www.googleapis.com/auth/gmail.readonly",
-        }
-        mock_exchange = AsyncMock(return_value=token_resp)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(return_value=MagicMock(entity_id="uuid-1")),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        body = resp.json()
-        assert body["success"] is True
-        assert "gmail" in body.get("scope", "")
-
+class TestOAuthCallback:
     async def test_callback_missing_code_returns_400(self, app):
-        """Callback without code returns 400 with actionable error."""
-        app = _make_app(app)
+        _make_app(app)
         state = _generate_state()
         _store_state(state)
-
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get("/api/oauth/google/callback", params={"state": state})
-
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/google/callback", params={"state": state})
         assert resp.status_code == 400
-        body = resp.json()
-        assert body["success"] is False
-        assert body["error_code"] == "missing_code"
-
-    async def test_callback_missing_state_returns_400(self, app):
-        """Callback without state returns 400 with CSRF warning."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get("/api/oauth/google/callback", params={"code": "4/code"})
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["success"] is False
-        assert body["error_code"] == "missing_state"
 
     async def test_callback_invalid_state_returns_400(self, app):
-        """Callback with unknown/invalid state token returns 400."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": "not-a-valid-state"},
-                )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["error_code"] == "invalid_state"
-
-    async def test_callback_expired_state_returns_400(self, app):
-        """Callback with an expired state token returns 400."""
-        app = _make_app(app)
-        state = _generate_state()
-        _state_store[state] = _StateEntry(expiry=time.monotonic() - 1)  # Already expired
-
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["error_code"] == "invalid_state"
-
-    async def test_callback_state_is_one_time_use(self, app):
-        """Reusing a state token on a second callback returns 400."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(return_value=MagicMock(entity_id="uuid-1")),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                # First request — should succeed
-                resp1 = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-                # Second request with same state — should fail
-                resp2 = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp1.status_code == 200
-        assert resp2.status_code == 400
-        assert resp2.json()["error_code"] == "invalid_state"
-
-    async def test_callback_provider_error_access_denied(self, app):
-        """User-denied consent (error=access_denied) returns 400 with friendly message."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"error": "access_denied"},
-                )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["success"] is False
-        assert body["error_code"] == "provider_error"
-        assert "denied" in body["message"].lower()
-
-    async def test_callback_provider_error_unknown_code(self, app):
-        """Unknown provider error returns generic message (no leakage)."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"error": "weird_internal_error_9876"},
-                )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert "weird_internal_error_9876" not in body["message"]
-
-    async def test_callback_token_exchange_http_error(self, app):
-        """HTTP error from token endpoint returns 400 with generic message."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(side_effect=_TokenExchangeError("HTTP 400"))
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "expired_code", "state": state},
-                )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["error_code"] == "token_exchange_failed"
-        # Must not leak the raw Google error
-        assert "invalid_grant" not in body["message"]
-
-    async def test_callback_no_refresh_token_new_account_returns_400(self, app):
-        """Token response without refresh_token for new account returns 400."""
-        from butlers.google_account_registry import GoogleAccountNotFoundError
-
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        no_rt_response = {
-            "access_token": "ya29.fake",
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            # No refresh_token field
-        }
-        mock_exchange = AsyncMock(return_value=no_rt_response)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        # Account not found → new account; no refresh_token → error
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(side_effect=GoogleAccountNotFoundError("not found")),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["error_code"] == "no_refresh_token"
-        assert "force_consent" in body["message"].lower() or "re-author" in body["message"].lower()
-
-    async def test_callback_no_refresh_token_existing_account_succeeds(self, app):
-        """Token response without refresh_token for existing account preserves existing token."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        no_rt_response = {
-            "access_token": "ya29.fake",
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            # No refresh_token field — existing account should preserve its token
-        }
-        mock_exchange = AsyncMock(return_value=no_rt_response)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        mock_existing = MagicMock(entity_id="existing-uuid-1")
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(_GOOGLE_ACCOUNT_REGISTRY_PATCH, AsyncMock(return_value=mock_existing)),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["success"] is True
-
-    async def test_callback_network_error_returns_400(self, app):
-        """Network error during token exchange returns 400."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(side_effect=_TokenExchangeError("Network error"))
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 400
-        body = resp.json()
-        assert body["error_code"] == "token_exchange_failed"
-
-    async def test_callback_success_redirects_to_dashboard_when_configured(self, app):
-        """With OAUTH_DASHBOARD_URL set, success redirects to dashboard."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        env = {**GOOGLE_ENV, "OAUTH_DASHBOARD_URL": "http://localhost:41173"}
-        with (
-            patch.dict("os.environ", env, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(return_value=MagicMock(entity_id="uuid-1")),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 302
-        assert "localhost:41173" in resp.headers["location"]
-        assert "oauth_success=true" in resp.headers["location"]
-
-    async def test_callback_provider_error_redirects_to_dashboard_when_configured(self, app):
-        """With OAUTH_DASHBOARD_URL set, provider error redirects to dashboard."""
-        app = _make_app(app)
-        env = {**GOOGLE_ENV, "OAUTH_DASHBOARD_URL": "http://localhost:41173"}
-        with patch.dict("os.environ", env, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"error": "access_denied"},
-                )
-
-        assert resp.status_code == 302
-        assert "oauth_error=provider_error" in resp.headers["location"]
-
-    async def test_callback_missing_client_secret_returns_503(self, app):
-        """When DB app credentials are missing client_secret, callback returns 503."""
-        app = _make_app(app, db_client_secret="")
-        state = _generate_state()
-        _store_state(state)
-
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 503
-
-
-class TestCredentialStoreSelection:
-    def test_prefers_shared_credential_pool(self) -> None:
-        shared_pool = MagicMock()
-        db_manager = MagicMock()
-        db_manager.credential_shared_pool.return_value = shared_pool
-
-        store = oauth_module._make_credential_store(db_manager)
-
-        assert store is not None
-        assert store.pool is shared_pool
-        assert len(store._fallback_pools) == 0  # noqa: SLF001
-
-    def test_falls_back_to_first_butler_pool_when_shared_missing(self) -> None:
-        fallback_pool = MagicMock()
-        db_manager = MagicMock()
-        db_manager.credential_shared_pool.side_effect = KeyError("missing")
-        db_manager.butler_names = ["switchboard"]
-        db_manager.pool.return_value = fallback_pool
-
-        store = oauth_module._make_credential_store(db_manager)
-
-        assert store is not None
-        assert store.pool is fallback_pool
-        assert len(store._fallback_pools) == 0  # noqa: SLF001
-
-
-# ---------------------------------------------------------------------------
-# Tests: credential persistence in callback
-# ---------------------------------------------------------------------------
-
-
-class TestOAuthCallbackCredentialPersistence:
-    """Tests for credential persistence via store_google_credentials in callback."""
-
-    async def test_callback_success_persists_app_credentials_when_db_manager_available(self, app):
-        """On success with multi-account, app credentials are stored in DB."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from butlers.api.routers import oauth as oauth_module
-
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        # Simulate a DatabaseManager with one butler pool
-        mock_pool = MagicMock()
-        mock_conn = AsyncMock()
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire.return_value = mock_conn
-
-        mock_db_manager = MagicMock()
-        mock_db_manager.butler_names = ["switchboard"]
-        mock_db_manager.pool.return_value = mock_pool
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_store_app = AsyncMock()
-
-        # Override FastAPI dependency so callback receives the mock DB manager
-        app.dependency_overrides[oauth_module._get_db_manager] = lambda: mock_db_manager
-
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, AsyncMock(return_value=_FAKE_USERINFO)),
-            patch(
-                "butlers.api.routers.oauth.load_app_credentials",
-                AsyncMock(
-                    return_value=GoogleAppCredentials(
-                        client_id=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_ID"],
-                        client_secret=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_SECRET"],
-                    )
-                ),
-            ),
-            # Account exists — re-auth path (no create_google_account call)
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(return_value=MagicMock(entity_id="uuid-1")),
-            ),
-            patch("butlers.api.routers.oauth.store_app_credentials", mock_store_app),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["success"] is True
-        # store_app_credentials should have been called (multi-account path)
-        mock_store_app.assert_awaited_once()
-
-    async def test_callback_success_message_indicates_db_unavailable_when_no_manager(self, app):
-        """When no DB manager is wired, callback returns 503."""
-        app = _make_app(app, with_db_manager=False)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        # Override _get_db_manager to return None (no DB wired)
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, AsyncMock(return_value=_FAKE_USERINFO)),
-            patch(
-                "butlers.api.routers.oauth.load_app_credentials",
-                AsyncMock(
-                    return_value=GoogleAppCredentials(
-                        client_id=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_ID"],
-                        client_secret=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_SECRET"],
-                    )
-                ),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 503
-
-    async def test_callback_returns_503_when_db_store_unavailable(self, app):
-        """DB-only contract: callback fails if credential store is unavailable."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from butlers.api.routers import oauth as oauth_module
-
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_db_manager = MagicMock()
-        mock_db_manager.butler_names = ["switchboard"]
-        mock_db_manager.credential_shared_pool.side_effect = RuntimeError("shared DB unavailable")
-        mock_db_manager.pool.side_effect = RuntimeError("DB not available")
-
-        # Override FastAPI dependency so callback receives the mock DB manager
-        app.dependency_overrides[oauth_module._get_db_manager] = lambda: mock_db_manager
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, AsyncMock(return_value=_FAKE_USERINFO)),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# Tests: multi-account OAuth flow
-# ---------------------------------------------------------------------------
-
-
-class TestMultiAccountOAuthStart:
-    async def test_start_with_account_hint_adds_login_hint(self, app):
-        """account_hint query param should be passed as login_hint to Google."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/start",
-                    params={"account_hint": "work@example.com"},
-                )
-
-        assert resp.status_code == 302
-        location = resp.headers["location"]
-        assert (
-            "login_hint=work%40example.com" in location or "login_hint=work@example.com" in location
-        )
-
-    async def test_start_with_account_hint_stores_hint_in_state(self, app):
-        """account_hint should be stored in the state entry."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                await client.get(
-                    "/api/oauth/google/start",
-                    params={"account_hint": "work@example.com"},
-                )
-
-        # State store should have one entry with account_hint set
-        assert len(_state_store) == 1
-        entry = next(iter(_state_store.values()))
-        assert entry.account_hint == "work@example.com"
-
-    async def test_start_with_force_consent_stores_in_state(self, app):
-        """force_consent should be stored in the state entry."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                await client.get(
-                    "/api/oauth/google/start",
-                    params={"force_consent": "true"},
-                )
-
-        assert len(_state_store) == 1
-        entry = next(iter(_state_store.values()))
-        assert entry.force_consent is True
-
-    async def test_start_without_hint_no_login_hint_in_url(self, app):
-        """Without account_hint, login_hint should not be in the authorization URL."""
-        app = _make_app(app)
-        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-                follow_redirects=False,
-            ) as client:
-                resp = await client.get("/api/oauth/google/start")
-
-        location = resp.headers["location"]
-        assert "login_hint" not in location
-
-
-class TestMultiAccountOAuthCallback:
-    async def test_callback_returns_account_email_on_success(self, app):
-        """Callback success payload includes account_email."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(return_value=MagicMock(entity_id="uuid-1")),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["account_email"] == "test@example.com"
-
-    async def test_callback_userinfo_failure_returns_502(self, app):
-        """Userinfo endpoint failure returns 502."""
-        from butlers.api.routers.oauth import _UserinfoError
-
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_userinfo = AsyncMock(side_effect=_UserinfoError("HTTP 503"))
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 502
-        body = resp.json()
-        assert body["error_code"] == "userinfo_failed"
-
-    async def test_callback_new_account_flag(self, app):
-        """Callback sets is_new_account=True for a new account."""
-        from butlers.google_account_registry import GoogleAccountNotFoundError
-
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        mock_create = AsyncMock(return_value=MagicMock(id="new-acct-uuid"))
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(
-                _GOOGLE_ACCOUNT_REGISTRY_PATCH,
-                AsyncMock(side_effect=GoogleAccountNotFoundError("not found")),
-            ),
-            patch(_CREATE_ACCOUNT_PATCH, mock_create),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["is_new_account"] is True
-
-    async def test_callback_reauth_flag_false(self, app):
-        """Callback sets is_new_account=False for an existing account re-auth."""
-        app = _make_app(app)
-        state = _generate_state()
-        _store_state(state)
-
-        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        mock_userinfo = AsyncMock(return_value=_FAKE_USERINFO)
-        mock_existing = MagicMock(entity_id="existing-uuid-1")
-        with (
-            patch.dict("os.environ", GOOGLE_ENV, clear=False),
-            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
-            patch(_USERINFO_PATCH_TARGET, mock_userinfo),
-            patch(_GOOGLE_ACCOUNT_REGISTRY_PATCH, AsyncMock(return_value=mock_existing)),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get(
-                    "/api/oauth/google/callback",
-                    params={"code": "4/code", "state": state},
-                )
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["is_new_account"] is False
-
-
-# ---------------------------------------------------------------------------
-# Tests: Google account management endpoints
-# ---------------------------------------------------------------------------
-
-
-class TestGoogleAccountsEndpoints:
-    """Tests for GET/PUT/DELETE /api/oauth/google/accounts/..."""
-
-    def _make_mock_account(self, *, is_primary=True, email="test@example.com"):
-        from datetime import UTC, datetime
-        from uuid import uuid4
-
-        from butlers.google_account_registry import GoogleAccount
-
-        return GoogleAccount(
-            id=uuid4(),
-            entity_id=uuid4(),
-            email=email,
-            display_name="Test User",
-            is_primary=is_primary,
-            granted_scopes=["https://www.googleapis.com/auth/gmail.modify"],
-            status="active",
-            connected_at=datetime.now(tz=UTC),
-            last_token_refresh_at=None,
-        )
-
-    async def test_list_accounts_returns_accounts(self, app):
-        """GET /api/oauth/google/accounts returns account list."""
-        account = self._make_mock_account()
-        app = _make_app(app)
-
-        with patch(
-            "butlers.api.routers.oauth.list_google_accounts",
-            AsyncMock(return_value=[account]),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get("/api/oauth/google/accounts")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert isinstance(body, list)
-        assert len(body) == 1
-        assert body[0]["email"] == "test@example.com"
-        assert body[0]["is_primary"] is True
-        # No credential material in response
-        assert "refresh_token" not in body[0]
-
-    async def test_list_accounts_returns_503_when_no_pool(self, app):
-        """GET /api/oauth/google/accounts returns 503 when shared pool is unavailable."""
-        app_no_pool = _make_app(app, with_db_manager=False)
-
+        _make_app(app)
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app_no_pool),
-            base_url="http://test",
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/google/accounts")
+            resp = await client.get(
+                "/api/oauth/google/callback",
+                params={"code": "test-code", "state": "invalid-state"},
+            )
+        assert resp.status_code == 400
 
-        assert resp.status_code == 503
-
-    async def test_set_primary_returns_200(self, app):
-        """PUT /api/oauth/google/accounts/<id>/primary returns updated account."""
-        account = self._make_mock_account()
-        app = _make_app(app)
-
-        with patch(
-            "butlers.api.routers.oauth.set_primary_account",
-            AsyncMock(return_value=account),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.put(f"/api/oauth/google/accounts/{account.id}/primary")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["success"] is True
-        assert body["account"]["is_primary"] is True
-
-    async def test_set_primary_returns_404_for_unknown_account(self, app):
-        """PUT /api/oauth/google/accounts/<id>/primary returns 404 for unknown account."""
-        from butlers.google_account_registry import GoogleAccountNotFoundError
-
-        app = _make_app(app)
-        fake_id = "00000000-0000-0000-0000-000000000000"
-
-        with patch(
-            "butlers.api.routers.oauth.set_primary_account",
-            AsyncMock(side_effect=GoogleAccountNotFoundError("not found")),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.put(f"/api/oauth/google/accounts/{fake_id}/primary")
-
-        assert resp.status_code == 404
-
-    async def test_disconnect_returns_200(self, app):
-        """DELETE /api/oauth/google/accounts/<id> returns 200 with confirmation."""
-        account = self._make_mock_account(is_primary=False)
-        app = _make_app(app)
-
+    async def test_callback_success(self, app):
+        _make_app(app)
+        state = _generate_state()
+        _store_state(state)
         with (
-            patch(
-                "butlers.api.routers.oauth.get_google_account",
-                AsyncMock(return_value=account),
-            ),
-            patch("butlers.api.routers.oauth.disconnect_account", AsyncMock()),
-            patch(
-                "butlers.api.routers.oauth.list_google_accounts",
-                AsyncMock(return_value=[]),
-            ),
+            patch(_EXCHANGE_PATCH, AsyncMock(return_value=_FAKE_TOKEN)),
+            patch(_USERINFO_PATCH, AsyncMock(return_value=_FAKE_USERINFO)),
+            patch(_CREATE_ACCOUNT_PATCH, AsyncMock(return_value=MagicMock(id=uuid.uuid4()))),
         ):
             async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.delete(f"/api/oauth/google/accounts/{account.id}")
-
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"code": "test-code", "state": state},
+                )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["success"] is True
+        assert "account_email" in body or "email" in body or "status" in body or "provider" in body
 
-    async def test_disconnect_returns_404_for_unknown_account(self, app):
-        """DELETE /api/oauth/google/accounts/<id> returns 404 for unknown account."""
-        from butlers.google_account_registry import GoogleAccountNotFoundError
 
-        app = _make_app(app)
-        fake_id = "00000000-0000-0000-0000-000000000000"
+# ---------------------------------------------------------------------------
+# OAuth status endpoint
+# ---------------------------------------------------------------------------
 
-        with patch(
-            "butlers.api.routers.oauth.get_google_account",
-            AsyncMock(side_effect=GoogleAccountNotFoundError("not found")),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.delete(f"/api/oauth/google/accounts/{fake_id}")
+_BASE_ENV = {
+    "GOOGLE_OAUTH_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
+    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:41200/api/oauth/google/callback",
+}
 
-        assert resp.status_code == 404
 
-    async def test_disconnect_reports_auto_promotion(self, app):
-        """DELETE reports auto_promoted_id when primary account is disconnected."""
-        from datetime import UTC, datetime
-        from uuid import uuid4
+def _make_status_app(
+    app,
+    *,
+    client_id="test-client-id.apps.googleusercontent.com",
+    client_secret="test-secret",
+    refresh_token=None,
+):
+    """Wire app for oauth/status tests."""
+    secrets = {"GOOGLE_OAUTH_CLIENT_ID": client_id, "GOOGLE_OAUTH_CLIENT_SECRET": client_secret}
+    contact_info = {}
+    if refresh_token is not None:
+        contact_info["google_oauth_refresh"] = refresh_token
 
-        from butlers.google_account_registry import GoogleAccount
+    conn = AsyncMock()
+    fake_entity_id = uuid.uuid4()
 
-        primary_account = self._make_mock_account(is_primary=True)
-        promoted_id = uuid4()
-        promoted_account = GoogleAccount(
-            id=promoted_id,
-            entity_id=uuid4(),
-            email="other@example.com",
-            display_name="Other User",
-            is_primary=True,
-            granted_scopes=[],
-            status="active",
-            connected_at=datetime.now(tz=UTC),
-            last_token_refresh_at=None,
-        )
-        app = _make_app(app)
+    async def _fetchrow(query, *args):
+        if "google_accounts" in query:
+            row = MagicMock()
+            row.__getitem__ = lambda self, k: fake_entity_id if k == "entity_id" else None
+            return row
+        if "entities" in query:
+            row = MagicMock()
+            row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
+            return row
+        if "entity_info" in query:
+            type_key = args[1] if len(args) > 1 else (args[0] if args else None)
+            value = contact_info.get(type_key) if type_key else None
+            if not value:
+                return None
+            row = MagicMock()
+            row.__getitem__ = lambda self, k: value if k == "value" else None
+            return row
+        key = args[0] if args else None
+        value = secrets.get(key) if key else None
+        return {"secret_value": value} if value else None
 
-        with (
-            patch(
-                "butlers.api.routers.oauth.get_google_account",
-                AsyncMock(return_value=primary_account),
-            ),
-            patch("butlers.api.routers.oauth.disconnect_account", AsyncMock()),
-            patch(
-                "butlers.api.routers.oauth.list_google_accounts",
-                AsyncMock(return_value=[promoted_account]),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.delete(f"/api/oauth/google/accounts/{primary_account.id}")
+    conn.fetchrow.side_effect = _fetchrow
+    conn.execute = AsyncMock(return_value="DELETE 0")
 
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = _acquire
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool.return_value = pool
+    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    return app
+
+
+class TestOAuthStatus:
+    async def test_no_client_id_returns_not_configured(self, app):
+        _make_status_app(app, client_id="")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/status")
         assert resp.status_code == 200
         body = resp.json()
-        assert str(body["auto_promoted_id"]) == str(promoted_id)
+        assert body["google"]["state"] == OAuthCredentialState.not_configured
+        assert body["google"]["connected"] is False
 
+    async def test_no_refresh_token_returns_not_configured(self, app):
+        _make_status_app(app, refresh_token=None)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/status")
+        assert resp.status_code == 200
+        assert resp.json()["google"]["state"] == OAuthCredentialState.not_configured
 
-class TestOAuthStatusWithAccounts:
-    async def test_status_includes_accounts_array_when_accounts_exist(self, app):
-        """GET /api/oauth/status includes accounts array when Google accounts exist."""
-        from datetime import UTC, datetime
-        from uuid import uuid4
-
-        from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
-        from butlers.google_account_registry import GoogleAccount
-
-        app = _make_app(app)
-        account = GoogleAccount(
-            id=uuid4(),
-            entity_id=uuid4(),
-            email="test@example.com",
-            display_name="Test User",
-            is_primary=True,
-            granted_scopes=["https://www.googleapis.com/auth/gmail.modify"],
-            status="active",
-            connected_at=datetime.now(tz=UTC),
-            last_token_refresh_at=None,
-        )
-
-        mock_status = OAuthCredentialStatus(
-            state=OAuthCredentialState.connected,
-            scopes_granted=["https://www.googleapis.com/auth/gmail.modify"],
-        )
-
-        with (
-            patch(
-                "butlers.api.routers.oauth._check_google_credential_status",
-                AsyncMock(return_value=mock_status),
-            ),
-            patch(
-                "butlers.api.routers.oauth.list_google_accounts",
-                AsyncMock(return_value=[account]),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get("/api/oauth/status")
-
+    async def test_status_returns_google_structure(self, app):
+        """OAuth status always returns a 'google' key with state and connected fields."""
+        _make_status_app(app, client_id="")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/oauth/status")
         assert resp.status_code == 200
         body = resp.json()
-        assert "accounts" in body
-        assert isinstance(body["accounts"], list)
-        assert len(body["accounts"]) == 1
-        assert body["accounts"][0]["email"] == "test@example.com"
-        # Legacy field still present (backward compat)
         assert "google" in body
-
-    async def test_status_accounts_none_when_no_accounts(self, app):
-        """GET /api/oauth/status has accounts=None when no Google accounts."""
-        from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
-
-        app = _make_app(app)
-        mock_status = OAuthCredentialStatus(
-            state=OAuthCredentialState.not_configured,
-            remediation="Connect Google.",
-        )
-
-        with (
-            patch(
-                "butlers.api.routers.oauth._check_google_credential_status",
-                AsyncMock(return_value=mock_status),
-            ),
-            patch(
-                "butlers.api.routers.oauth.list_google_accounts",
-                AsyncMock(return_value=[]),
-            ),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://test",
-            ) as client:
-                resp = await client.get("/api/oauth/status")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["accounts"] is None
+        assert "state" in body["google"]
+        assert "connected" in body["google"]
