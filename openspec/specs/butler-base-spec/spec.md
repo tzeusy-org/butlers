@@ -174,8 +174,8 @@ All butlers share a single PostgreSQL database (`butlers`) with per-butler schem
 - **THEN** it communicates via MCP calls through the Switchboard routing plane — never by direct schema access
 - **AND** the `public` schema is reserved for truly shared reference data, not for passing messages between butlers
 
-### Requirement: Core vs Domain Butlers
-The roster contains three categories of agents: staffers that provide essential infrastructure services and must always be present, domain butlers that provide specialist capabilities and can be added or removed, and a catch-all butler for freeform tasks.
+### Requirement: Staffers vs Domain Butlers
+The roster contains two categories of butlers: staffers that provide essential infrastructure services and must always be present (configured with `type = "staffer"`), and domain butlers that provide specialist capabilities and can be added or removed.
 
 #### Scenario: Staffer — Switchboard
 - **WHEN** the system is running

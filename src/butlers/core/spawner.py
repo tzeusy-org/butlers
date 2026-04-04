@@ -1214,6 +1214,8 @@ class Spawner:
             )
 
             # Fetch owner routing instructions (switchboard only)
+            # Intentional name check: routing instructions are the switchboard's classifier
+            # context. No other staffer or domain butler uses this context injection.
             routing_ctx: str | None = None
             if self._config.name == "switchboard":
                 routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)

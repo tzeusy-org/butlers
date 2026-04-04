@@ -1828,11 +1828,13 @@ class ButlerDaemon:
         if self._buffer is not None:
             await self._buffer.start()
 
-        # 14c. Recover unprocessed route_inbox rows (non-switchboard, non-messenger butlers)
+        # 14c. Recover unprocessed route_inbox rows (non-staffer butlers only)
         # Rows that were accepted but never processed due to a crash are re-dispatched
         # as a background task so that long-running LLM sessions don't block startup
         # (and therefore don't prevent other butlers from starting in `butlers up`).
-        if self.config.name not in ("switchboard", "messenger") and self.spawner is not None:
+        # Staffers (switchboard, messenger) have their own durable routing mechanisms
+        # and do not use route_inbox for crash recovery.
+        if self.config.type != ButlerType.STAFFER and self.spawner is not None:
             self._route_inbox_recovery_task = asyncio.create_task(self._recover_route_inbox(pool))
 
         # 15. Launch switchboard heartbeat (non-switchboard butlers only)
@@ -1871,6 +1873,9 @@ class ButlerDaemon:
         Also creates and starts the DurableBuffer that replaces the unbounded
         asyncio.create_task() dispatch with a bounded in-memory queue.
         """
+        # Intentional name check: pipeline wiring and DurableBuffer are switchboard-specific
+        # behaviors, not a generic staffer concern. Other staffers (e.g. messenger) do not
+        # classify or buffer inbound channel messages.
         if self.config.name != "switchboard":
             return
         if self.spawner is None:
@@ -2246,6 +2251,8 @@ class ButlerDaemon:
 
         Returns ``None`` (with a warning) if the pool cannot be created.
         """
+        # Intentional name check: the switchboard IS the audit schema owner. Reusing its own
+        # pool avoids a redundant connection. This is switchboard-specific, not staffer-generic.
         if self.config.name == "switchboard":
             return own_pool
 
@@ -3033,6 +3040,9 @@ class ButlerDaemon:
                     message=message,
                 )
 
+            # Intentional name check: messenger has a unique synchronous delivery path
+            # (it processes notify_request inline without route_inbox). Other staffer or
+            # domain butlers all use the async accept-then-process pattern below.
             if daemon.config.name != "messenger":
                 # --- Accept phase (<50ms): persist to route_inbox, return immediately ---
                 #
