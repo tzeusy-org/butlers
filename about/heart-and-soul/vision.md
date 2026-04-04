@@ -12,6 +12,22 @@ butlers adapt to the user's current context. You own the instance, the data,
 the credentials, and the agents. There is no cloud service, no account, no
 subscription. Just infrastructure that works for one person.
 
+The system distinguishes two types of agents:
+
+- **Butlers** are domain specialists. Each butler owns a life domain, has a
+  manifesto defining its scope and personality, and serves the user directly
+  through scheduled tasks and message handling. Domain butlers are the primary
+  interface between the user and the system.
+
+- **Staffers** are infrastructure specialists. They serve the ecosystem rather
+  than the user directly. Staffers handle cross-cutting concerns --- message
+  routing, outbound delivery --- that must exist for domain butlers to function.
+  A staffer's identity is defined by an infrastructure contract (its
+  `MANIFESTO.md`) specifying responsibilities, SLAs, failure modes, and
+  escalation procedures. Staffers are excluded from user-message routing and
+  from briefing contribution, because their domain is the system, not the user's
+  life.
+
 ## What Butlers Is Not
 
 **Not a SaaS or hosted product.** There is no multi-tenant architecture, no
@@ -72,12 +88,15 @@ does not ship.
    files under `roster/`. Runtime state is in the database. Identity is in git.
    If it is not in git, it is not part of who the butler is.
 
-6. **Each butler has a manifesto that governs its scope, personality, and domain
-   model.** The manifesto is not decoration. It defines what the butler cares
-   about, what it promises, what it refuses, and the conceptual frameworks it
-   uses to structure and prioritize knowledge within its domain. Features,
-   tools, and UX decisions for a butler must be deeply aligned with its
-   manifesto. A tool that contradicts the manifesto must not be added.
+6. **Every agent has a governing document that controls its scope.** For
+   butlers, this is a manifesto: it defines what the butler cares about, what
+   it promises, what it refuses, and the conceptual frameworks it uses to
+   structure and prioritize knowledge within its domain. For staffers, this is
+   an infrastructure contract: it defines the service's responsibilities, SLAs,
+   failure modes, dependency graph, and escalation procedures. In both cases the
+   document is not decoration --- it is binding. Features, tools, and UX
+   decisions must be deeply aligned with the governing document. A capability
+   that contradicts it must not be added without a formal amendment.
 
 7. **Transport is connector responsibility; butlers never know about transport
    details.** Connectors normalize external events into a canonical ingestion
