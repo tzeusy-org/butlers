@@ -36,7 +36,8 @@ async def pool(provisioned_postgres_pool):
                 route_contract_max INTEGER NOT NULL DEFAULT 1,
                 capabilities JSONB NOT NULL DEFAULT '[]',
                 eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                agent_type TEXT NOT NULL DEFAULT 'butler'
             )
         """)
         await p.execute("""

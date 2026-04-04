@@ -42,12 +42,14 @@ class RegistryEntry(BaseModel):
     route_contract_max: int = 1
     eligibility_updated_at: str | None = None
     registered_at: str
+    agent_type: str = "butler"  # 'butler' or 'staffer'
 
 
 class HeartbeatRequest(BaseModel):
     """Request body for the POST /api/heartbeat endpoint."""
 
     butler_name: str
+    type: str = "butler"  # agent type: 'butler' or 'staffer'
 
 
 class HeartbeatResponse(BaseModel):

@@ -33,6 +33,10 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.tools.switchboard.registry.registry import (
+    AGENT_TYPE_BUTLER,
+    AGENT_TYPE_STAFFER,
+)
 from butlers.tools.switchboard.routing.route import route as _route_tool
 
 logger = logging.getLogger(__name__)
@@ -252,7 +256,34 @@ async def correct_route(
         },
     }
 
-    # 5. Route to the correct butler
+    # 5. Validate that correct_butler is a butler-typed agent (not a staffer).
+    # User messages must only be re-dispatched to domain butlers; staffers are
+    # infrastructure agents that process butler-to-staffer traffic, not user messages.
+    target_row = await pool.fetchrow(
+        "SELECT agent_type FROM butler_registry WHERE name = $1",
+        correct_butler,
+    )
+    if target_row is not None:
+        target_agent_type = str(target_row.get("agent_type") or AGENT_TYPE_BUTLER).lower()
+        if target_agent_type == AGENT_TYPE_STAFFER:
+            logger.warning(
+                "correct_route: rejected re-dispatch to staffer-typed agent: "
+                "request_id=%s, correct_butler=%s",
+                request_id,
+                correct_butler,
+            )
+            return {
+                "success": False,
+                "error": "target_is_staffer",
+                "message": (
+                    f"Cannot re-dispatch user message to '{correct_butler}': "
+                    f"it is a staffer-typed agent. User messages can only be "
+                    f"re-dispatched to butler-typed agents. "
+                    f"Use list_butlers() to find valid routing targets."
+                ),
+            }
+
+    # 6. Route to the correct butler
     logger.info(
         "correct_route: re-dispatching request_id=%s to butler=%s, correction_id=%s",
         request_id,
@@ -323,7 +354,7 @@ async def correct_route(
             ),
         }
 
-    # 6. Update the original message_inbox record to reflect the correction
+    # 7. Update the original message_inbox record to reflect the correction
     correction_metadata: dict[str, Any] = {
         "correction_id": str(correction_id),
         "correction_type": "misroute",
@@ -351,7 +382,7 @@ async def correct_route(
         request_id,
     )
 
-    # 7. Record in operator_audit_log for traceability
+    # 8. Record in operator_audit_log for traceability
     await pool.execute(
         """
         INSERT INTO operator_audit_log (

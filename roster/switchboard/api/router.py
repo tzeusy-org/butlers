@@ -274,6 +274,7 @@ async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> b
             config.description,
             modules,
             capabilities=capabilities,
+            agent_type=config.type.value,
         )
     except Exception:
         logger.warning(
@@ -377,7 +378,8 @@ async def list_registry(
     rows = await pool.fetch(
         "SELECT name, endpoint_url, description, modules, capabilities, last_seen_at,"
         " eligibility_state, liveness_ttl_seconds, quarantined_at, quarantine_reason,"
-        " route_contract_min, route_contract_max, eligibility_updated_at, registered_at"
+        " route_contract_min, route_contract_max, eligibility_updated_at, registered_at,"
+        " agent_type"
         " FROM butler_registry"
         " ORDER BY name",
     )
@@ -405,6 +407,7 @@ async def list_registry(
                 if r.get("eligibility_updated_at")
                 else None,
                 registered_at=str(r["registered_at"]),
+                agent_type=str(r.get("agent_type") or "butler"),
             )
         )
 
@@ -452,6 +455,12 @@ async def receive_heartbeat(
     current_state: str = row["eligibility_state"]
     previous_last_seen_at = row["last_seen_at"]
 
+    # Normalize agent_type from the heartbeat payload (defaults to 'butler' for
+    # backward compatibility when callers omit the field).
+    agent_type = body.type.strip().lower()
+    if agent_type not in ("butler", "staffer"):
+        agent_type = "butler"
+
     if current_state == "stale":
         # Transition stale → active and log the transition.
         # Guard with AND eligibility_state = 'stale' to avoid a TOCTOU race
@@ -460,10 +469,11 @@ async def receive_heartbeat(
         result = await pool.execute(
             "UPDATE butler_registry"
             " SET last_seen_at = $1, eligibility_state = 'active',"
-            "     eligibility_updated_at = $1"
+            "     eligibility_updated_at = $1, agent_type = $3"
             " WHERE name = $2 AND eligibility_state = 'stale'",
             now,
             body.butler_name,
+            agent_type,
         )
         rows_affected = int(result.split(" ")[-1]) if result else 0
         if rows_affected > 0:
@@ -490,9 +500,10 @@ async def receive_heartbeat(
             )
             current_state = re_read["eligibility_state"] if re_read else current_state
             await pool.execute(
-                "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
+                "UPDATE butler_registry SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
                 now,
                 body.butler_name,
+                agent_type,
             )
             new_state = current_state
     elif current_state == "quarantined":
@@ -502,10 +513,12 @@ async def receive_heartbeat(
             "UPDATE butler_registry"
             " SET last_seen_at = $1, eligibility_state = 'active',"
             "     eligibility_updated_at = $1,"
-            "     quarantined_at = NULL, quarantine_reason = NULL"
+            "     quarantined_at = NULL, quarantine_reason = NULL,"
+            "     agent_type = $3"
             " WHERE name = $2 AND eligibility_state = 'quarantined'",
             now,
             body.butler_name,
+            agent_type,
         )
         rows_affected = int(result.split(" ")[-1]) if result else 0
         if rows_affected > 0:
@@ -531,17 +544,19 @@ async def receive_heartbeat(
             )
             current_state = re_read["eligibility_state"] if re_read else current_state
             await pool.execute(
-                "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
+                "UPDATE butler_registry SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
                 now,
                 body.butler_name,
+                agent_type,
             )
             new_state = current_state
     else:
-        # Active: only update last_seen_at, do not change state
+        # Active: update last_seen_at and agent_type, do not change state
         await pool.execute(
-            "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
+            "UPDATE butler_registry SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
             now,
             body.butler_name,
+            agent_type,
         )
         new_state = current_state
 

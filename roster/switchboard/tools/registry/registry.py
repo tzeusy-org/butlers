@@ -23,6 +23,10 @@ _ELIGIBILITY_STATES = frozenset(
     }
 )
 
+AGENT_TYPE_BUTLER = "butler"
+AGENT_TYPE_STAFFER = "staffer"
+_AGENT_TYPES = frozenset({AGENT_TYPE_BUTLER, AGENT_TYPE_STAFFER})
+
 DEFAULT_LIVENESS_TTL_SECONDS = 300
 DEFAULT_ROUTE_CONTRACT_VERSION = 1
 
@@ -234,6 +238,13 @@ async def _reconcile_eligibility_state(
     return row
 
 
+def _normalize_agent_type(value: Any) -> str:
+    normalized = str(value or AGENT_TYPE_BUTLER).strip().lower()
+    if normalized not in _AGENT_TYPES:
+        return AGENT_TYPE_BUTLER
+    return normalized
+
+
 def _normalized_registry_row(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     normalized["modules"] = _normalize_string_list(normalized.get("modules"))
@@ -251,6 +262,7 @@ def _normalized_registry_row(row: dict[str, Any]) -> dict[str, Any]:
     normalized["eligibility_state"] = _normalize_eligibility_state(
         normalized.get("eligibility_state")
     )
+    normalized["agent_type"] = _normalize_agent_type(normalized.get("agent_type"))
     return normalized
 
 
@@ -276,8 +288,17 @@ async def register_butler(
     route_contract_min: int = DEFAULT_ROUTE_CONTRACT_VERSION,
     route_contract_max: int = DEFAULT_ROUTE_CONTRACT_VERSION,
     liveness_ttl_seconds: int = DEFAULT_LIVENESS_TTL_SECONDS,
+    agent_type: str = AGENT_TYPE_BUTLER,
 ) -> None:
-    """Register or update a butler in the registry."""
+    """Register or update a butler in the registry.
+
+    Parameters
+    ----------
+    agent_type:
+        ``'butler'`` (default) or ``'staffer'``.  Staffers are excluded from
+        user-message routing classification but remain reachable for
+        butler-to-staffer routing via notify() and direct dispatch.
+    """
     now = datetime.now(UTC)
     module_list = _normalize_string_list(modules or [])
     capability_values = capabilities if capabilities is not None else module_list
@@ -292,6 +313,7 @@ async def register_butler(
         liveness_ttl_seconds,
         default=DEFAULT_LIVENESS_TTL_SECONDS,
     )
+    normalized_type = _normalize_agent_type(agent_type)
 
     existing = await pool.fetchrow(
         "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
@@ -319,7 +341,8 @@ async def register_butler(
             route_contract_min,
             route_contract_max,
             capabilities,
-            eligibility_updated_at
+            eligibility_updated_at,
+            agent_type
         )
         VALUES (
             $1,
@@ -334,7 +357,8 @@ async def register_butler(
             $8,
             $9,
             $10::jsonb,
-            $11
+            $11,
+            $12
         )
         ON CONFLICT (name) DO UPDATE SET
             endpoint_url = EXCLUDED.endpoint_url,
@@ -348,7 +372,8 @@ async def register_butler(
             route_contract_min = EXCLUDED.route_contract_min,
             route_contract_max = EXCLUDED.route_contract_max,
             capabilities = EXCLUDED.capabilities,
-            eligibility_updated_at = EXCLUDED.eligibility_updated_at
+            eligibility_updated_at = EXCLUDED.eligibility_updated_at,
+            agent_type = EXCLUDED.agent_type
         """,
         name,
         endpoint_url,
@@ -361,6 +386,7 @@ async def register_butler(
         max_version,
         json.dumps(capability_list),
         now,
+        normalized_type,
     )
 
     if previous_state is not None and previous_state != ELIGIBILITY_ACTIVE:
@@ -401,7 +427,8 @@ async def resolve_routing_target(
             route_contract_min,
             route_contract_max,
             capabilities,
-            eligibility_updated_at
+            eligibility_updated_at,
+            agent_type
         FROM butler_registry
         WHERE name = $1
         """,
@@ -471,8 +498,19 @@ async def list_butlers(
     pool: asyncpg.Pool,
     *,
     routable_only: bool = False,
+    butler_only: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return registered butlers, with optional routing-eligibility filtering."""
+    """Return registered agents, with optional filtering.
+
+    Parameters
+    ----------
+    routable_only:
+        When True, only return agents with eligibility_state == 'active'.
+    butler_only:
+        When True, exclude staffer-typed agents from the result.  Use this
+        when building the user-message routing candidate set — staffers must
+        never appear as routing targets for user messages.
+    """
     rows = await pool.fetch(
         """
         SELECT
@@ -489,7 +527,8 @@ async def list_butlers(
             route_contract_min,
             route_contract_max,
             capabilities,
-            eligibility_updated_at
+            eligibility_updated_at,
+            agent_type
         FROM butler_registry
         ORDER BY name
         """
@@ -497,6 +536,8 @@ async def list_butlers(
     butlers: list[dict[str, Any]] = []
     for row in rows:
         normalized = _normalized_registry_row(dict(row))
+        if butler_only and normalized["agent_type"] != AGENT_TYPE_BUTLER:
+            continue
         normalized = await _reconcile_eligibility_state(pool, normalized)
         if routable_only and normalized["eligibility_state"] != ELIGIBILITY_ACTIVE:
             continue
@@ -534,6 +575,7 @@ async def discover_butlers(
                     config.description,
                     modules,
                     capabilities=capabilities,
+                    agent_type=config.type.value,
                 )
                 discovered.append({"name": config.name, "endpoint_url": endpoint_url})
             except Exception:
