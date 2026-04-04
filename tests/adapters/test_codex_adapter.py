@@ -420,7 +420,7 @@ async def test_invoke_success():
     assert cmd[0] == "/usr/bin/codex"
     assert cmd[1] == "exec"
     assert "--json" in cmd
-    assert "--full-auto" in cmd
+    assert "--dangerously-bypass-approvals-and-sandbox" in cmd
     assert "--quiet" not in cmd
     assert "--instructions" not in cmd
     assert "-c" in cmd

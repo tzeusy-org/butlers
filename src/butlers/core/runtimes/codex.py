@@ -6,7 +6,8 @@ Encapsulates all Codex CLI-specific logic:
 - AGENTS.md system prompt reading (Codex convention)
 - Result parsing: extracts text output and tool call records
 
-The Codex CLI is invoked via ``codex exec --json --full-auto``. Since
+The Codex CLI is invoked via ``codex exec --json
+--dangerously-bypass-approvals-and-sandbox``. Since
 current Codex CLI releases do not support a dedicated system prompt
 flag, the butler ``system_prompt`` is prefixed into the initial
 instructions payload sent to ``exec``.
@@ -360,6 +361,19 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
             },
         }
 
+    # Codex emits MCP tool calls as:
+    #   {"type":"mcp_tool_call","server":"<name>","tool":"<tool>","arguments":{}}
+    # Construct the canonical mcp__<server>__<tool> name from those fields.
+    if obj_type in ("mcp_tool_call", "mcp_tool_use"):
+        server = obj.get("server", "")
+        tool = obj.get("tool", "")
+        if isinstance(server, str) and isinstance(tool, str) and server and tool:
+            return {
+                "id": obj.get("id", ""),
+                "name": f"mcp__{server}__{tool}",
+                "input": obj.get("arguments") or obj.get("input") or {},
+            }
+
     nested_containers = [
         container
         for container in (
@@ -547,11 +561,18 @@ class CodexAdapter(RuntimeAdapter):
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
 
         # Build command
+        # NOTE: --full-auto only auto-approves shell commands (it is an alias
+        # for ``-a on-request --sandbox workspace-write``).  MCP tool calls
+        # still require interactive approval under that mode, which silently
+        # cancels them when the CLI runs as a non-interactive subprocess.
+        # --dangerously-bypass-approvals-and-sandbox skips ALL approval
+        # prompts (shell *and* MCP) which is the correct posture for butler
+        # daemon subprocesses that are already sandboxed by the container.
         cmd = [
             binary,
             "exec",
             "--json",
-            "--full-auto",
+            "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
         ]
 
