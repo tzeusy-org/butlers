@@ -131,6 +131,7 @@ async def create_or_join_attempt(
     call_site: str,
     session_id: uuid.UUID,
     sanitized_msg: str | None = None,
+    qa_patrol_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, bool]:
     """Atomically create a new healing attempt or join an existing active one.
 
@@ -163,6 +164,11 @@ async def create_or_join_attempt(
         UUID of the failed session being linked to this attempt.
     sanitized_msg:
         Optional sanitized error message with dynamic values replaced.
+    qa_patrol_id:
+        Optional UUID of the QA patrol that originated this investigation.
+        When set, the ``qa_patrol_id`` column on the new row is populated,
+        marking this as a QA-originated attempt.  Only applies to newly
+        inserted rows — joins to existing attempts do not update this field.
 
     Returns
     -------
@@ -186,9 +192,10 @@ async def create_or_join_attempt(
         WITH inserted AS (
             INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
-                exception_type, call_site, sanitized_msg, session_ids
+                exception_type, call_site, sanitized_msg, session_ids,
+                qa_patrol_id
             )
-            VALUES ($1, $2, 'investigating', $3, $4, $5, $6, ARRAY[$7::uuid])
+            VALUES ($1, $2, 'investigating', $3, $4, $5, $6, ARRAY[$7::uuid], $8::uuid)
             ON CONFLICT (fingerprint)
             WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
             DO UPDATE
@@ -216,6 +223,7 @@ async def create_or_join_attempt(
         call_site,
         sanitized_msg,
         str(session_id),
+        str(qa_patrol_id) if qa_patrol_id is not None else None,
     )
 
     if row is None:

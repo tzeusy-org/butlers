@@ -2,7 +2,9 @@
 
 Covers:
 - Branch name format (12-char fingerprint-short + epoch)
+- Branch name format with custom prefix (QA investigations)
 - create_healing_worktree: branch + worktree creation, return value
+- create_healing_worktree: custom prefix parameter (QA path)
 - create_healing_worktree: branch collision raises WorktreeCreationError
 - create_healing_worktree: worktree add failure cleans up orphaned branch
 - remove_healing_worktree: worktree removal, branch deletion, remote deletion
@@ -533,3 +535,94 @@ class TestGitignore:
         assert gitignore.exists(), f".gitignore not found at {gitignore}"
         content = gitignore.read_text()
         assert ".healing-worktrees/" in content, ".healing-worktrees/ not found in .gitignore"
+
+
+# ---------------------------------------------------------------------------
+# Branch name format with custom prefix (QA investigations)
+# ---------------------------------------------------------------------------
+
+
+class TestBranchNameFormatWithPrefix:
+    def test_branch_name_default_prefix_is_self_healing(self) -> None:
+        fp = _make_fingerprint("abc123def456")
+        name = _branch_name("email", fp)
+        assert name.startswith("self-healing/")
+
+    def test_branch_name_custom_prefix_qa(self) -> None:
+        fp = _make_fingerprint("abc123def456")
+        name = _branch_name("email", fp, prefix="qa")
+        assert name.startswith("qa/email/abc123def456-")
+
+    def test_branch_name_qa_prefix_structure(self) -> None:
+        fp = _make_fingerprint("deadbeef0000")
+        name = _branch_name("travel", fp, prefix="qa")
+        parts = name.split("/")
+        assert len(parts) == 3
+        assert parts[0] == "qa"
+        assert parts[1] == "travel"
+        short, epoch_str = parts[2].rsplit("-", 1)
+        assert short == "deadbeef0000"
+        assert epoch_str.isdigit()
+
+    def test_branch_name_arbitrary_prefix(self) -> None:
+        fp = _make_fingerprint("aabbccddeeff")
+        name = _branch_name("general", fp, prefix="custom-prefix")
+        assert name.startswith("custom-prefix/general/")
+
+
+# ---------------------------------------------------------------------------
+# create_healing_worktree with QA prefix
+# ---------------------------------------------------------------------------
+
+
+class TestCreateHealingWorktreeWithQaPrefix:
+    async def test_qa_prefix_branch_and_path(self, tmp_path: Path) -> None:
+        """create_healing_worktree with prefix='qa' produces qa/* branch."""
+        fp = _make_fingerprint("abc123def456")
+
+        async def mock_run_git(*args, cwd, capture_stderr=True):
+            return 0, "", ""
+
+        with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
+            wt_path, branch = await create_healing_worktree(tmp_path, "email", fp, prefix="qa")
+
+        assert branch.startswith("qa/email/abc123def456-")
+        assert wt_path == _worktree_path(tmp_path, branch)
+        # Worktree path must be under .healing-worktrees/qa/...
+        assert ".healing-worktrees/qa/" in str(wt_path)
+
+    async def test_default_prefix_unchanged(self, tmp_path: Path) -> None:
+        """create_healing_worktree without prefix uses 'self-healing' (backward compat)."""
+        fp = _make_fingerprint("abc123def456")
+
+        async def mock_run_git(*args, cwd, capture_stderr=True):
+            return 0, "", ""
+
+        with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
+            wt_path, branch = await create_healing_worktree(tmp_path, "email", fp)
+
+        assert branch.startswith("self-healing/email/")
+        assert ".healing-worktrees/self-healing/" in str(wt_path)
+
+    async def test_qa_prefix_parent_directory_created(self, tmp_path: Path) -> None:
+        """Parent directory for QA worktree is created if it doesn't exist."""
+        fp = _make_fingerprint()
+
+        async def mock_run_git(*args, cwd, capture_stderr=True):
+            return 0, "", ""
+
+        with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
+            wt_path, _ = await create_healing_worktree(tmp_path, "finance", fp, prefix="qa")
+
+        assert wt_path.parent.exists()
+
+    async def test_qa_branch_creation_failure_raises(self, tmp_path: Path) -> None:
+        """Branch collision with QA prefix raises WorktreeCreationError."""
+        fp = _make_fingerprint()
+
+        async def mock_run_git(*args, cwd, capture_stderr=True):
+            return 1, "", "fatal: A branch named 'qa/email/...' already exists."
+
+        with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
+            with pytest.raises(WorktreeCreationError):
+                await create_healing_worktree(tmp_path, "email", fp, prefix="qa")

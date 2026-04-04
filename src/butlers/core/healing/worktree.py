@@ -43,8 +43,11 @@ logger = logging.getLogger(__name__)
 #: Directory name under repo root that holds all healing worktrees.
 _WORKTREE_BASE = ".healing-worktrees"
 
-#: Branch prefix for all healing branches.
+#: Default branch prefix for self-healing branches.
 _BRANCH_PREFIX = "self-healing"
+
+#: Branch prefix used by QA staffer investigations.
+_QA_BRANCH_PREFIX = "qa"
 
 #: Number of hex characters from fingerprint to include in the branch name.
 _FINGERPRINT_SHORT_LEN = 12
@@ -82,11 +85,22 @@ class WorktreeCreationError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _branch_name(butler_name: str, fingerprint: str) -> str:
-    """Compute the branch name for a healing attempt."""
+def _branch_name(butler_name: str, fingerprint: str, prefix: str = _BRANCH_PREFIX) -> str:
+    """Compute the branch name for a healing/QA investigation attempt.
+
+    Parameters
+    ----------
+    butler_name:
+        Name of the butler (used as path component).
+    fingerprint:
+        64-character SHA-256 hex fingerprint.
+    prefix:
+        Branch path prefix.  Defaults to ``"self-healing"`` for per-butler
+        healing.  Pass ``"qa"`` for QA staffer investigations.
+    """
     short = fingerprint[:_FINGERPRINT_SHORT_LEN]
     epoch = int(time.time())
-    return f"{_BRANCH_PREFIX}/{butler_name}/{short}-{epoch}"
+    return f"{prefix}/{butler_name}/{short}-{epoch}"
 
 
 def _worktree_path(repo_root: Path, branch_name: str) -> Path:
@@ -182,11 +196,12 @@ async def create_healing_worktree(
     repo_root: Path,
     butler_name: str,
     fingerprint: str,
+    prefix: str = _BRANCH_PREFIX,
 ) -> tuple[Path, str]:
-    """Create a git branch and worktree for a healing attempt.
+    """Create a git branch and worktree for a healing or QA investigation.
 
     Branches from the current ``main`` HEAD.  The branch and worktree path
-    are both derived from *butler_name* and *fingerprint*.
+    are both derived from *butler_name*, *fingerprint*, and *prefix*.
 
     Parameters
     ----------
@@ -197,13 +212,19 @@ async def create_healing_worktree(
         Name of the butler whose session failed (e.g. ``"email"``).
     fingerprint:
         64-character SHA-256 hex fingerprint for the error being investigated.
+    prefix:
+        Branch path prefix.  Defaults to ``"self-healing"`` for per-butler
+        self-healing.  Pass ``"qa"`` for QA staffer investigations.
+        The worktree path follows the pattern:
+        ``{repo_root}/.healing-worktrees/{prefix}/{butler_name}/{fp_short}-{epoch}/``
 
     Returns
     -------
     tuple[Path, str]
         ``(worktree_path, branch_name)`` where *worktree_path* is the absolute
         path to the new worktree directory and *branch_name* is the full branch
-        reference (e.g. ``"self-healing/email/abc123def456-1710700000"``).
+        reference (e.g. ``"self-healing/email/abc123def456-1710700000"`` or
+        ``"qa/email/abc123def456-1710700000"`` when *prefix* is ``"qa"``).
 
     Raises
     ------
@@ -212,7 +233,7 @@ async def create_healing_worktree(
         (e.g. disk full, permissions, git lock).  Partial state is cleaned up
         before the exception propagates.
     """
-    branch = _branch_name(butler_name, fingerprint)
+    branch = _branch_name(butler_name, fingerprint, prefix=prefix)
     wt_path = _worktree_path(repo_root, branch)
 
     # Ensure parent directory exists
@@ -259,9 +280,10 @@ async def create_healing_worktree(
         )
 
     logger.info(
-        "Created healing worktree: path=%s branch=%s",
+        "Created investigation worktree: path=%s branch=%s prefix=%s",
         wt_path,
         branch,
+        prefix,
     )
     return wt_path, branch
 

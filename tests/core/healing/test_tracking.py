@@ -10,6 +10,7 @@ Covers:
   get_recent_terminal_statuses, list_attempts
 - recover_stale_attempts: stale investigating rows → timeout / failed
 - session_set_healing_fingerprint in sessions.py (best-effort, no error on missing)
+- create_or_join_attempt: optional qa_patrol_id parameter for QA-originated attempts
 """
 
 from __future__ import annotations
@@ -1307,3 +1308,171 @@ class TestSessionSetHealingFingerprintUnit:
 
         # Must not raise
         await session_set_healing_fingerprint(pool, uuid.uuid4(), "b" * 64)
+
+
+# ===========================================================================
+# Unit tests — create_or_join_attempt with qa_patrol_id
+# ===========================================================================
+
+
+class TestCreateOrJoinAttemptQaPatrolId:
+    """Unit tests for the qa_patrol_id parameter added to create_or_join_attempt."""
+
+    def _make_fetchrow_result(
+        self,
+        attempt_id: uuid.UUID,
+        was_inserted: bool = True,
+        exc_type: str = "builtins.KeyError",
+        call_site: str = "src/butlers/core/spawner.py:_run",
+    ):
+        """Build a mock asyncpg Record-like dict."""
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: {
+            "id": attempt_id,
+            "existing_exc_type": exc_type,
+            "existing_call_site": call_site,
+            "was_inserted": was_inserted,
+        }[key]
+        return record
+
+    @pytest.mark.unit
+    async def test_qa_patrol_id_passed_in_sql(self) -> None:
+        """create_or_join_attempt passes qa_patrol_id as the 9th SQL parameter."""
+        from butlers.core.healing.tracking import create_or_join_attempt
+
+        attempt_id = uuid.uuid4()
+        qa_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        fingerprint = "a" * 64
+
+        captured_args: list = []
+        mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
+
+        pool = MagicMock()
+
+        async def mock_fetchrow(sql, *args):
+            captured_args.extend(args)
+            return mock_result
+
+        pool.fetchrow = mock_fetchrow
+
+        await create_or_join_attempt(
+            pool,
+            fingerprint=fingerprint,
+            butler_name="test",
+            severity=2,
+            exception_type="builtins.KeyError",
+            call_site="src/butlers/core/spawner.py:_run",
+            session_id=session_id,
+            qa_patrol_id=qa_id,
+        )
+
+        # qa_patrol_id is the 9th positional arg (index 8 = $9 in the SQL)
+        assert str(qa_id) in captured_args
+
+    @pytest.mark.unit
+    async def test_qa_patrol_id_none_passes_none_to_sql(self) -> None:
+        """When qa_patrol_id is None, None is passed for $9."""
+        from butlers.core.healing.tracking import create_or_join_attempt
+
+        attempt_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        fingerprint = "b" * 64
+
+        captured_args: list = []
+        mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
+
+        pool = MagicMock()
+
+        async def mock_fetchrow(sql, *args):
+            captured_args.extend(args)
+            return mock_result
+
+        pool.fetchrow = mock_fetchrow
+
+        await create_or_join_attempt(
+            pool,
+            fingerprint=fingerprint,
+            butler_name="test",
+            severity=2,
+            exception_type="builtins.KeyError",
+            call_site="src/butlers/core/spawner.py:_run",
+            session_id=session_id,
+            qa_patrol_id=None,
+        )
+
+        # Last arg should be None (qa_patrol_id)
+        assert captured_args[-1] is None
+
+    @pytest.mark.unit
+    async def test_qa_patrol_id_not_required(self) -> None:
+        """qa_patrol_id defaults to None — backward-compatible call without it."""
+        from butlers.core.healing.tracking import create_or_join_attempt
+
+        attempt_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        fingerprint = "c" * 64
+
+        captured_args: list = []
+        mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
+
+        pool = MagicMock()
+
+        async def mock_fetchrow(sql, *args):
+            captured_args.extend(args)
+            return mock_result
+
+        pool.fetchrow = mock_fetchrow
+
+        # Call WITHOUT qa_patrol_id — must not raise
+        result_id, is_new = await create_or_join_attempt(
+            pool,
+            fingerprint=fingerprint,
+            butler_name="test",
+            severity=2,
+            exception_type="builtins.KeyError",
+            call_site="src/butlers/core/spawner.py:_run",
+            session_id=session_id,
+        )
+
+        assert result_id == attempt_id
+        assert is_new is True
+        # Last positional arg to SQL must be None (default qa_patrol_id)
+        assert captured_args[-1] is None
+
+    @pytest.mark.unit
+    async def test_sql_includes_qa_patrol_id_column(self) -> None:
+        """The INSERT SQL must include the qa_patrol_id column."""
+        import inspect
+
+        from butlers.core.healing.tracking import create_or_join_attempt
+
+        src = inspect.getsource(create_or_join_attempt)
+        assert "qa_patrol_id" in src
+
+    @pytest.mark.unit
+    async def test_returns_correct_attempt_id_and_is_new(self) -> None:
+        """create_or_join_attempt returns (attempt_id, True) for a new insertion."""
+        from butlers.core.healing.tracking import create_or_join_attempt
+
+        attempt_id = uuid.uuid4()
+        qa_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+
+        mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=mock_result)
+
+        result_id, is_new = await create_or_join_attempt(
+            pool,
+            fingerprint="d" * 64,
+            butler_name="test",
+            severity=1,
+            exception_type="builtins.ValueError",
+            call_site="src/butlers/modules/test.py:handler",
+            session_id=session_id,
+            qa_patrol_id=qa_id,
+        )
+
+        assert result_id == attempt_id
+        assert is_new is True
