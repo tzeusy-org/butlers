@@ -15,6 +15,7 @@ interface ButlerNode {
   name: string;
   status: string;
   port: number;
+  type?: "butler" | "staffer";
 }
 
 interface ConnectorNode {
@@ -38,7 +39,19 @@ const STATUS_COLORS: Record<string, string> = {
   stale: "#eab308", // yellow-500
 };
 
-function getStatusColor(status: string): string {
+const STAFFER_STATUS_COLORS: Record<string, string> = {
+  ok: "#3b82f6", // blue-500
+  online: "#3b82f6",
+  down: "#ef4444", // red-500
+  offline: "#ef4444",
+  degraded: "#eab308", // yellow-500
+  stale: "#eab308", // yellow-500
+};
+
+function getStatusColor(status: string, agentType?: string): string {
+  if (agentType === "staffer") {
+    return STAFFER_STATUS_COLORS[status] ?? "#6b7280";
+  }
   return STATUS_COLORS[status] ?? "#6b7280"; // gray-500
 }
 
@@ -72,7 +85,7 @@ function buildNodes(
       position: { x: centerX - 70, y: centerY - 20 },
       data: { label: switchboard.name },
       style: {
-        background: getStatusColor(switchboard.status),
+        background: getStatusColor(switchboard.status, switchboard.type),
         color: "white",
         border: "2px solid #1e293b",
         borderRadius: "12px",
@@ -127,7 +140,7 @@ function buildNodes(
       style: {
         background: "#1e293b",
         color: "white",
-        border: `2px solid ${getStatusColor(butler.status)}`,
+        border: `2px solid ${getStatusColor(butler.status, butler.type)}`,
         borderRadius: "8px",
         padding: "10px 16px",
         fontWeight: 500,
