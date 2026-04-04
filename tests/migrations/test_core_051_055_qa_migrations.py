@@ -432,3 +432,52 @@ class TestCore055VQaRecentFailures:
         # View FQN is in a module-level constant _VIEW_FQN
         src = inspect.getsource(self._mod)
         assert "public.v_qa_recent_failures" in src
+
+    # ---- bu-hcoz3: GRANT USAGE ON SCHEMA public fix ---
+
+    def test_upgrade_grants_usage_on_public_schema_to_qa_role(self) -> None:
+        """butler_qa_rw is not in _ROLE_SCHEMAS and must be explicitly granted
+        GRANT USAGE ON SCHEMA public so it can resolve public.v_qa_recent_failures."""
+        src = inspect.getsource(self._mod.upgrade)
+        assert (
+            '_grant_schema_usage_best_effort("public", _QA_ROLE)' in src
+            or "_grant_schema_usage_best_effort('public', _QA_ROLE)" in src
+        ), (
+            "upgrade() must call _grant_schema_usage_best_effort for the public "
+            "schema and _QA_ROLE; without it the role cannot access "
+            "public.v_qa_recent_failures"
+        )
+
+    def test_upgrade_schema_usage_helper_targets_qa_role(self) -> None:
+        """The schema-usage grant helper must be called with _QA_ROLE in upgrade()."""
+        src = inspect.getsource(self._mod.upgrade)
+        assert "_grant_schema_usage_best_effort" in src, (
+            "upgrade() must call _grant_schema_usage_best_effort"
+        )
+        # Verify the QA role constant is defined and referenced
+        assert hasattr(self._mod, "_QA_ROLE"), "_QA_ROLE constant missing from module"
+        assert self._mod._QA_ROLE == "butler_qa_rw", (
+            f"_QA_ROLE must be 'butler_qa_rw', got {self._mod._QA_ROLE!r}"
+        )
+
+    def test_downgrade_revokes_public_schema_usage_from_qa_role(self) -> None:
+        """Downgrade must revoke the public schema USAGE to fully undo upgrade."""
+        src = inspect.getsource(self._mod.downgrade)
+        assert (
+            '_revoke_schema_usage_best_effort("public", _QA_ROLE)' in src
+            or "_revoke_schema_usage_best_effort('public', _QA_ROLE)" in src
+        ), "downgrade() must call _revoke_schema_usage_best_effort for the public schema"
+
+    def test_schema_usage_helpers_tolerate_missing_role(self) -> None:
+        """Both schema USAGE grant and revoke helpers must use best-effort DO blocks."""
+        for helper in (
+            self._mod._grant_schema_usage_best_effort,
+            self._mod._revoke_schema_usage_best_effort,
+        ):
+            src = inspect.getsource(helper)
+            assert "DO $$" in src, f"{helper.__name__} must use DO $$ block"
+            assert "EXCEPTION" in src, f"{helper.__name__} must handle exceptions"
+
+    def test_revoke_schema_usage_helper_defined(self) -> None:
+        """_revoke_schema_usage_best_effort must be defined in the migration."""
+        assert callable(self._mod._revoke_schema_usage_best_effort)

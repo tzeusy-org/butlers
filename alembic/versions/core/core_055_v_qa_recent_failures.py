@@ -180,7 +180,53 @@ def _revoke_cross_schema_select(schema: str, role: str) -> None:
     )
 
 
+def _grant_schema_usage_best_effort(schema: str, role: str) -> None:
+    """GRANT USAGE ON SCHEMA <schema> TO role; tolerates missing role."""
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
+                EXECUTE 'GRANT USAGE ON SCHEMA "{schema}" TO "{role}"';
+            END IF;
+        EXCEPTION
+            WHEN insufficient_privilege THEN NULL;
+            WHEN undefined_object THEN NULL;
+            WHEN invalid_schema_name THEN NULL;
+        END
+        $$;
+        """
+    )
+
+
+def _revoke_schema_usage_best_effort(schema: str, role: str) -> None:
+    """REVOKE USAGE ON SCHEMA <schema> FROM role; tolerates missing role."""
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
+                EXECUTE 'REVOKE USAGE ON SCHEMA "{schema}" FROM "{role}"';
+            END IF;
+        EXCEPTION
+            WHEN insufficient_privilege THEN NULL;
+            WHEN undefined_object THEN NULL;
+            WHEN invalid_schema_name THEN NULL;
+        END
+        $$;
+        """
+    )
+
+
 def upgrade() -> None:
+    # ----------------------------------------------------------------------- #
+    # 0. GRANT USAGE ON SCHEMA public to butler_qa_rw.
+    #    butler_qa_rw is not in _ROLE_SCHEMAS in core_001 and does not receive
+    #    this grant automatically.  Without it the role cannot resolve
+    #    public.v_qa_recent_failures even after SELECT is granted on the view.
+    # ----------------------------------------------------------------------- #
+    _grant_schema_usage_best_effort("public", _QA_ROLE)
+
     # ----------------------------------------------------------------------- #
     # 1. Cross-schema SELECT grants to butler_qa_rw on each butler's sessions.
     #    RFC 0010 guardrail 5: grants are migration-tracked and reversible.
@@ -216,3 +262,6 @@ def downgrade() -> None:
     # Revoke cross-schema SELECT grants granted during upgrade.
     for schema in _SESSION_SCHEMAS:
         _revoke_cross_schema_select(schema, _QA_ROLE)
+
+    # Revoke public schema USAGE granted during upgrade.
+    _revoke_schema_usage_best_effort("public", _QA_ROLE)
