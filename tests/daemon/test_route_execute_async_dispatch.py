@@ -47,6 +47,7 @@ def _make_butler_toml(
     *,
     butler_name: str = "health",
     port: int = 9200,
+    butler_type: str | None = None,
     modules: dict[str, dict] | None = None,
 ) -> Path:
     modules = modules or {}
@@ -55,6 +56,10 @@ def _make_butler_toml(
         f'name = "{butler_name}"',
         f"port = {port}",
         'description = "A test butler"',
+    ]
+    if butler_type is not None:
+        toml_lines.append(f'type = "{butler_type}"')
+    toml_lines += [
         "",
         "[butler.db]",
         'name = "butlers"',
@@ -643,7 +648,7 @@ class TestCrashRecovery:
     """Verify that _recover_route_inbox is wired into the startup sequence."""
 
     async def test_recover_route_inbox_called_on_startup(self, tmp_path: Path) -> None:
-        """_recover_route_inbox is called during daemon startup for non-switchboard butlers."""
+        """_recover_route_inbox is called during daemon startup for non-staffer butlers."""
         # We need to not mock _recover_route_inbox for this test
         patches = _patch_infra("health")
         del patches["recover_route_inbox"]  # Don't mock it; use a spy
@@ -680,20 +685,25 @@ class TestCrashRecovery:
 
         assert recovery_called, "_recover_route_inbox was not called on startup"
 
-    async def test_switchboard_skips_route_inbox_recovery(self, tmp_path: Path) -> None:
-        """Switchboard butler does not call _recover_route_inbox (it uses DurableBuffer)."""
-        patches = _patch_infra("switchboard")
+    async def _start_staffer_daemon(
+        self,
+        tmp_path: Path,
+        *,
+        butler_name: str,
+        port: int,
+    ) -> ButlerDaemon:
+        """Boot a staffer daemon with standard mocking; return the daemon instance.
 
-        butler_dir = _make_butler_toml(tmp_path, butler_name="switchboard", port=9301)
+        Shared helper for staffer skip tests — extracted to avoid duplicating the
+        extensive mocking setup across each scenario.
+        """
+        patches = _patch_infra(butler_name)
+        butler_dir = _make_butler_toml(
+            tmp_path, butler_name=butler_name, port=port, butler_type="staffer"
+        )
 
         mock_mcp = MagicMock()
         mock_mcp.tool = lambda *a, **kw: lambda fn: fn
-
-        recovery_called = False
-
-        async def mock_recover(self_daemon, pool):
-            nonlocal recovery_called
-            recovery_called = True
 
         with (
             patches["db_from_env"],
@@ -708,14 +718,31 @@ class TestCrashRecovery:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
-            patch.object(ButlerDaemon, "_recover_route_inbox", mock_recover),
-            # Suppress DurableBuffer start
+            patches["recover_route_inbox"],
+            # Suppress DurableBuffer start (switchboard-specific startup path)
             patch.object(ButlerDaemon, "_wire_pipelines"),
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
 
-        assert not recovery_called, "_recover_route_inbox should NOT be called for switchboard"
+        return daemon
+
+    async def test_switchboard_skips_route_inbox_recovery(self, tmp_path: Path) -> None:
+        """Staffer (switchboard) does not schedule _recover_route_inbox on startup."""
+        # Switchboard is a staffer — exclusion is type-based, not name-based.
+        daemon = await self._start_staffer_daemon(tmp_path, butler_name="switchboard", port=9301)
+        # Assert the task was never scheduled, not just that it hasn't run yet.
+        assert daemon._route_inbox_recovery_task is None, (
+            "_recover_route_inbox should NOT be scheduled for staffer"
+        )
+
+    async def test_staffer_skips_route_inbox_recovery(self, tmp_path: Path) -> None:
+        """Any staffer skips _recover_route_inbox — the exclusion is type-based."""
+        daemon = await self._start_staffer_daemon(tmp_path, butler_name="infratool", port=9302)
+        # Assert the task was never scheduled, not just that it hasn't run yet.
+        assert daemon._route_inbox_recovery_task is None, (
+            "_recover_route_inbox should NOT be scheduled for any staffer"
+        )
 
 
 # ---------------------------------------------------------------------------
