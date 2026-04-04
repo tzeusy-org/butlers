@@ -4039,55 +4039,60 @@ class TestSwitchboardRegistrationTypeInclusion:
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
 
-        # Cancel the auto-started liveness reporter so we can inspect the payload directly.
-        daemon._liveness_reporter_task.cancel()
         try:
-            await daemon._liveness_reporter_task
-        except asyncio.CancelledError:
-            pass
-
-        # The payload is constructed inside _liveness_reporter_loop. We verify the
-        # payload by capturing what the mock HTTP client would receive.
-        posted_payloads: list[dict] = []
-
-        class _FakeResp:
-            status_code = 200
-
-            def raise_for_status(self) -> None:
-                pass
-
-        async def mock_post(url: str, *, json: dict) -> object:  # noqa: ANN001
-            posted_payloads.append(json)
-            return _FakeResp()
-
-        mock_http_client = MagicMock()
-        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
-        mock_http_client.__aexit__ = AsyncMock(return_value=False)
-        mock_http_client.post = mock_post
-
-        # Patch sleep so it raises CancelledError on the first call, stopping the loop
-        # after exactly one heartbeat has been sent.
-        sleep_call_count = 0
-
-        async def _one_then_cancel(*args: object, **kwargs: object) -> None:
-            nonlocal sleep_call_count
-            sleep_call_count += 1
-            if sleep_call_count >= 2:  # cancel after initial sleep + first post
-                raise asyncio.CancelledError
-
-        with (
-            patch("butlers.daemon.httpx.AsyncClient", return_value=mock_http_client),
-            patch("butlers.daemon.asyncio.sleep", side_effect=_one_then_cancel),
-        ):
+            # Cancel the auto-started liveness reporter so we can inspect the payload directly.
+            daemon._liveness_reporter_task.cancel()
             try:
-                await daemon._liveness_reporter_loop()
+                await daemon._liveness_reporter_task
             except asyncio.CancelledError:
                 pass
 
-        assert len(posted_payloads) >= 1, "Expected at least one heartbeat to be posted"
-        for payload in posted_payloads:
-            assert "type" in payload, f"Payload missing 'type' field: {payload}"
-            assert payload["type"] == "butler", f"Expected type='butler', got {payload['type']!r}"
+            # The payload is constructed inside _liveness_reporter_loop. We verify the
+            # payload by capturing what the mock HTTP client would receive.
+            posted_payloads: list[dict] = []
+
+            class _FakeResp:
+                status_code = 200
+
+                def raise_for_status(self) -> None:
+                    pass
+
+            async def mock_post(url: str, *, json: dict) -> object:  # noqa: ANN001
+                posted_payloads.append(json)
+                return _FakeResp()
+
+            mock_http_client = MagicMock()
+            mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+            mock_http_client.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client.post = mock_post
+
+            # Patch sleep so it raises CancelledError on the first call, stopping the loop
+            # after exactly one heartbeat has been sent.
+            sleep_call_count = 0
+
+            async def _one_then_cancel(*args: object, **kwargs: object) -> None:
+                nonlocal sleep_call_count
+                sleep_call_count += 1
+                if sleep_call_count >= 2:  # cancel after initial sleep + first post
+                    raise asyncio.CancelledError
+
+            with (
+                patch("butlers.daemon.httpx.AsyncClient", return_value=mock_http_client),
+                patch("butlers.daemon.asyncio.sleep", side_effect=_one_then_cancel),
+            ):
+                try:
+                    await daemon._liveness_reporter_loop()
+                except asyncio.CancelledError:
+                    pass
+
+            assert len(posted_payloads) >= 1, "Expected at least one heartbeat to be posted"
+            for payload in posted_payloads:
+                assert "type" in payload, f"Payload missing 'type' field: {payload}"
+                assert payload["type"] == "butler", (
+                    f"Expected type='butler', got {payload['type']!r}"
+                )
+        finally:
+            await daemon.shutdown()
 
     async def test_staffer_heartbeat_payload_includes_type_staffer(self, tmp_path: Path) -> None:
         """Staffer-typed agent liveness reporter payload includes type='staffer'."""
@@ -4113,47 +4118,52 @@ class TestSwitchboardRegistrationTypeInclusion:
             daemon = ButlerDaemon(staffer_dir)
             await daemon.start()
 
-        daemon._liveness_reporter_task.cancel()
         try:
-            await daemon._liveness_reporter_task
-        except asyncio.CancelledError:
-            pass
-
-        posted_payloads: list[dict] = []
-
-        class _FakeResp:
-            status_code = 200
-
-            def raise_for_status(self) -> None:
-                pass
-
-        async def mock_post(url: str, *, json: dict) -> object:  # noqa: ANN001
-            posted_payloads.append(json)
-            return _FakeResp()
-
-        mock_http_client = MagicMock()
-        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
-        mock_http_client.__aexit__ = AsyncMock(return_value=False)
-        mock_http_client.post = mock_post
-
-        sleep_call_count = 0
-
-        async def _one_then_cancel(*args: object, **kwargs: object) -> None:
-            nonlocal sleep_call_count
-            sleep_call_count += 1
-            if sleep_call_count >= 2:
-                raise asyncio.CancelledError
-
-        with (
-            patch("butlers.daemon.httpx.AsyncClient", return_value=mock_http_client),
-            patch("butlers.daemon.asyncio.sleep", side_effect=_one_then_cancel),
-        ):
+            daemon._liveness_reporter_task.cancel()
             try:
-                await daemon._liveness_reporter_loop()
+                await daemon._liveness_reporter_task
             except asyncio.CancelledError:
                 pass
 
-        assert len(posted_payloads) >= 1, "Expected at least one heartbeat to be posted"
-        for payload in posted_payloads:
-            assert "type" in payload, f"Payload missing 'type' field: {payload}"
-            assert payload["type"] == "staffer", f"Expected type='staffer', got {payload['type']!r}"
+            posted_payloads: list[dict] = []
+
+            class _FakeResp:
+                status_code = 200
+
+                def raise_for_status(self) -> None:
+                    pass
+
+            async def mock_post(url: str, *, json: dict) -> object:  # noqa: ANN001
+                posted_payloads.append(json)
+                return _FakeResp()
+
+            mock_http_client = MagicMock()
+            mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+            mock_http_client.__aexit__ = AsyncMock(return_value=False)
+            mock_http_client.post = mock_post
+
+            sleep_call_count = 0
+
+            async def _one_then_cancel(*args: object, **kwargs: object) -> None:
+                nonlocal sleep_call_count
+                sleep_call_count += 1
+                if sleep_call_count >= 2:
+                    raise asyncio.CancelledError
+
+            with (
+                patch("butlers.daemon.httpx.AsyncClient", return_value=mock_http_client),
+                patch("butlers.daemon.asyncio.sleep", side_effect=_one_then_cancel),
+            ):
+                try:
+                    await daemon._liveness_reporter_loop()
+                except asyncio.CancelledError:
+                    pass
+
+            assert len(posted_payloads) >= 1, "Expected at least one heartbeat to be posted"
+            for payload in posted_payloads:
+                assert "type" in payload, f"Payload missing 'type' field: {payload}"
+                assert payload["type"] == "staffer", (
+                    f"Expected type='staffer', got {payload['type']!r}"
+                )
+        finally:
+            await daemon.shutdown()

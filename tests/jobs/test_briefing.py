@@ -488,6 +488,13 @@ class TestBriefingAggregationFiltering:
 
         assert result == frozenset(SPECIALIST_BUTLERS)
 
+    def test_get_butler_typed_specialist_butlers_fallback_on_empty_roster(self) -> None:
+        """Falls back to SPECIALIST_BUTLERS when list_butlers returns empty list (no roster dir)."""
+        with patch("butlers.jobs.briefing.list_butlers", return_value=[]):
+            result = _get_butler_typed_specialist_butlers()
+
+        assert result == frozenset(SPECIALIST_BUTLERS)
+
     def test_get_butler_typed_specialist_butlers_all_butler_typed(self) -> None:
         """When all roster agents are butler-typed, returns full SPECIALIST_BUTLERS intersection."""
         mock_configs = [_make_mock_config(name, ButlerType.BUTLER) for name in SPECIALIST_BUTLERS]
@@ -531,7 +538,7 @@ class TestBriefingAggregationFiltering:
         assert "health" in butler_names
         assert "travel" not in butler_names
 
-        # travel must appear in missing_butlers since it's excluded from expected set
+        # travel must NOT appear in missing_butlers: staffers are excluded from the expected set
         assert "travel" not in result["missing_butlers"]
 
     async def test_collect_contributions_uses_butler_typed_set_for_missing(self) -> None:

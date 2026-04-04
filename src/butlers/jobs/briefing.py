@@ -1104,7 +1104,8 @@ def _get_butler_typed_specialist_butlers() -> frozenset[str]:
     Uses ``list_butlers()`` to discover agents from the roster and filters to those
     with ``type == ButlerType.BUTLER`` that are also in the known ``SPECIALIST_BUTLERS``
     list.  Falls back to the full ``SPECIALIST_BUTLERS`` tuple if roster discovery
-    fails (e.g., running outside the repo tree).
+    fails or returns an empty result (e.g., running outside the repo tree or in a
+    Docker image that was built without the roster).
 
     Staffer-typed agents are excluded from briefing aggregation per the
     staffer-archetype spec (briefing exclusion requirement).
@@ -1113,9 +1114,19 @@ def _get_butler_typed_specialist_butlers() -> frozenset[str]:
         all_configs = list_butlers()
     except Exception:
         logger.warning(
-            "collect_briefing_contributions: roster discovery failed; "
+            "collect_briefing_contributions: roster discovery raised; "
             "falling back to hardcoded SPECIALIST_BUTLERS",
             exc_info=True,
+        )
+        return frozenset(SPECIALIST_BUTLERS)
+
+    if not all_configs:
+        # list_butlers() returns [] when the roster directory doesn't exist (e.g.,
+        # the package is installed without the repo tree). Treat as a fallback so we
+        # don't silently skip all contributions.
+        logger.warning(
+            "collect_briefing_contributions: roster discovery returned no agents; "
+            "falling back to hardcoded SPECIALIST_BUTLERS",
         )
         return frozenset(SPECIALIST_BUTLERS)
 
