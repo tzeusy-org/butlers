@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import uuid
 
 import pytest
 
@@ -19,6 +18,8 @@ _PARSER_PATH = MEMORY_MODULE_PATH / "consolidation_parser.py"
 
 def _load_parser():
     spec = importlib.util.spec_from_file_location("consolidation_parser", _PARSER_PATH)
+    assert spec is not None, f"Could not create import spec for {_PARSER_PATH}"
+    assert spec.loader is not None, f"Import spec for {_PARSER_PATH} has no loader"
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -29,8 +30,8 @@ parse = _mod.parse_consolidation_output
 
 pytestmark = pytest.mark.unit
 
-UUID1 = str(uuid.uuid4())
-UUID2 = str(uuid.uuid4())
+UUID1 = "aaaaaaaa-bbbb-cccc-dddd-000000000001"
+UUID2 = "aaaaaaaa-bbbb-cccc-dddd-000000000002"
 
 
 def _json(payload: dict, fenced: bool = True) -> str:
@@ -44,6 +45,12 @@ def _json(payload: dict, fenced: bool = True) -> str:
 
 
 class TestValidParsing:
+    def test_bare_json_parsed(self) -> None:
+        payload = {"new_facts": [{"subject": "s", "predicate": "p", "content": "c"}]}
+        result = parse(_json(payload, fenced=False))
+        assert len(result.new_facts) == 1
+        assert result.parse_errors == []
+
     def test_full_payload(self) -> None:
         payload = {
             "new_facts": [{"subject": "s", "predicate": "p", "content": "c", "importance": 7.0}],
