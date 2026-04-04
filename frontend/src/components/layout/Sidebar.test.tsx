@@ -73,7 +73,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102 }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
           meta: {},
         },
       });
@@ -130,7 +130,7 @@ describe("Sidebar", () => {
 
   it("includes navigation link to calendar workspace", () => {
     setButlersState({
-      data: { data: [{ name: "relationship", status: "ok", port: 40102 }], meta: {} },
+      data: { data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }], meta: {} },
     });
     render();
 
@@ -141,7 +141,7 @@ describe("Sidebar", () => {
 
   it("includes navigation link to Ingestion", () => {
     setButlersState({
-      data: { data: [{ name: "relationship", status: "ok", port: 40102 }], meta: {} },
+      data: { data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }], meta: {} },
     });
     render();
 
@@ -158,7 +158,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102 }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
           meta: {},
         },
       });
@@ -253,7 +253,7 @@ describe("Sidebar", () => {
     it("hides Relationships group when relationship butler is absent", () => {
       setButlersState({
         data: {
-          data: [{ name: "general", status: "ok", port: 40101 }],
+          data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const }],
           meta: {},
         },
       });
@@ -268,7 +268,7 @@ describe("Sidebar", () => {
     it("shows Relationships group when relationship butler is present", () => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102 }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
           meta: {},
         },
       });
@@ -314,7 +314,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102 }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
           meta: {},
         },
       });

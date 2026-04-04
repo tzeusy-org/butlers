@@ -36,6 +36,17 @@ function statusBadge(status: string) {
   }
 }
 
+function typeBadge(type: "butler" | "staffer") {
+  if (type === "staffer") {
+    return (
+      <Badge variant="outline" className="border-violet-500 text-violet-600 text-xs">
+        staffer
+      </Badge>
+    );
+  }
+  return null;
+}
+
 function ButlerCard({ butler }: { butler: ButlerSummary }) {
   const detailPath = `/butlers/${encodeURIComponent(butler.name)}`;
 
@@ -46,9 +57,14 @@ function ButlerCard({ butler }: { butler: ButlerSummary }) {
           <Link to={detailPath} className="hover:underline">
             {butler.name}
           </Link>
-          {statusBadge(butler.status)}
+          <span className="flex items-center gap-1.5">
+            {typeBadge(butler.type)}
+            {statusBadge(butler.status)}
+          </span>
         </CardTitle>
-        <CardDescription>Butler endpoint on port {butler.port}</CardDescription>
+        <CardDescription>
+          {butler.type === "staffer" ? "Staffer" : "Butler"} endpoint on port {butler.port}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
@@ -94,10 +110,12 @@ function LoadingState() {
 
 export default function ButlersPage() {
   const { data: response, isLoading, isError, error } = useButlers();
-  const { butlers, onlineCount } = useMemo(() => {
-    const sortedButlers = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
-    const count = sortedButlers.filter((b) => b.status === "ok" || b.status === "online").length;
-    return { butlers: sortedButlers, onlineCount: count };
+  const { butlers, staffers, onlineCount } = useMemo(() => {
+    const allSorted = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+    const butlerList = allSorted.filter((b) => b.type !== "staffer");
+    const stafferList = allSorted.filter((b) => b.type === "staffer");
+    const count = allSorted.filter((b) => b.status === "ok" || b.status === "online").length;
+    return { butlers: butlerList, staffers: stafferList, onlineCount: count };
   }, [response?.data]);
 
   return (
@@ -111,7 +129,7 @@ export default function ButlersPage() {
 
       {isLoading ? (
         <LoadingState />
-      ) : isError && butlers.length === 0 ? (
+      ) : isError && butlers.length === 0 && staffers.length === 0 ? (
         <Card>
           <CardContent className="py-10">
             <p className="text-sm text-destructive">
@@ -119,7 +137,7 @@ export default function ButlersPage() {
             </p>
           </CardContent>
         </Card>
-      ) : butlers.length === 0 ? (
+      ) : butlers.length === 0 && staffers.length === 0 ? (
         <Card>
           <CardContent className="py-6">
             <EmptyState
@@ -145,11 +163,17 @@ export default function ButlersPage() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-muted-foreground text-sm font-medium">
-                  Total Butlers
+                  Total Agents
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{butlers.length}</div>
+                <div className="text-2xl font-bold">{butlers.length + staffers.length}</div>
+                {staffers.length > 0 && (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    {butlers.length} butler{butlers.length !== 1 ? "s" : ""},{" "}
+                    {staffers.length} staffer{staffers.length !== 1 ? "s" : ""}
+                  </p>
+                )}
               </CardContent>
             </Card>
             <Card>
@@ -161,17 +185,38 @@ export default function ButlersPage() {
               <CardContent>
                 <div className="text-2xl font-bold">{onlineCount}</div>
                 <p className="text-muted-foreground mt-1 text-xs">
-                  {Math.round((onlineCount / butlers.length) * 100)}% currently up
+                  {Math.round(
+                    (onlineCount / (butlers.length + staffers.length)) * 100,
+                  )}% currently up
                 </p>
               </CardContent>
             </Card>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {butlers.map((butler) => (
-              <ButlerCard key={butler.name} butler={butler} />
-            ))}
-          </div>
+          {butlers.length > 0 && (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold tracking-tight">Butlers</h2>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {butlers.map((butler) => (
+                  <ButlerCard key={butler.name} butler={butler} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {staffers.length > 0 && (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold tracking-tight">Staffers</h2>
+              <p className="text-muted-foreground text-sm -mt-1">
+                Infrastructure services that support butler operations.
+              </p>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {staffers.map((staffer) => (
+                  <ButlerCard key={staffer.name} butler={staffer} />
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

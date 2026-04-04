@@ -123,6 +123,7 @@ async def _probe_butler(
         name=info.name,
         status=status,
         port=info.port,
+        type=info.type,
         description=info.description,
     )
 
@@ -183,6 +184,7 @@ async def get_butler_detail(
     detail = ButlerDetail(
         name=config.name,
         port=config.port,
+        type=config.type.value,
         status=status,
         description=config.description,
         db_name=config.db_name,

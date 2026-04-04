@@ -46,6 +46,7 @@ class ButlerConnectionInfo:
     db_name: str | None = None
     db_schema: str | None = None
     modules: frozenset[str] = field(default_factory=frozenset)
+    type: str = "butler"  # "butler" or "staffer"
 
     @property
     def sse_url(self) -> str:
@@ -246,6 +247,7 @@ def discover_butlers(
                     db_name=config.db_name or None,
                     db_schema=config.db_schema or None,
                     modules=frozenset(config.modules.keys()),
+                    type=config.type.value,
                 )
             )
         except ConfigError as exc:

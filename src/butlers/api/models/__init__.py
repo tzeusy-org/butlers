@@ -109,6 +109,7 @@ class ButlerSummary(BaseModel):
     name: str
     status: str
     port: int
+    type: str = "butler"  # "butler" or "staffer"
     db: str = ""
     description: str | None = None
     modules: list[str] = Field(default_factory=list)
