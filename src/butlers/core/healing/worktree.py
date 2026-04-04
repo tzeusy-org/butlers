@@ -49,6 +49,12 @@ _BRANCH_PREFIX = "self-healing"
 #: Branch prefix used by QA staffer investigations.
 _QA_BRANCH_PREFIX = "qa"
 
+#: Default branch prefixes managed by this module. ``reap_stale_worktrees``
+#: scans worktree directories and branches for every prefix in this tuple by
+#: default; callers can override or extend the set of prefixes via
+#: ``prefixes=`` where supported.
+_ALL_BRANCH_PREFIXES: tuple[str, ...] = (_BRANCH_PREFIX, _QA_BRANCH_PREFIX)
+
 #: Number of hex characters from fingerprint to include in the branch name.
 _FINGERPRINT_SHORT_LEN = 12
 
@@ -147,12 +153,24 @@ async def _list_worktree_branches(repo_root: Path) -> list[str]:
     return branches
 
 
-async def _list_healing_branches(repo_root: Path) -> list[str]:
-    """Return list of all local branches matching self-healing/*/*."""
+async def _list_healing_branches(
+    repo_root: Path,
+    prefix: str = _BRANCH_PREFIX,
+) -> list[str]:
+    """Return list of all local branches matching ``<prefix>/*/*``.
+
+    Parameters
+    ----------
+    repo_root:
+        Absolute path to the repository root.
+    prefix:
+        Branch prefix to enumerate.  Defaults to ``"self-healing"`` for
+        backward compatibility.  Pass ``"qa"`` to enumerate QA branches.
+    """
     rc, stdout, _ = await _run_git(
         "branch",
         "--list",
-        f"{_BRANCH_PREFIX}/*/*",
+        f"{prefix}/*/*",
         cwd=repo_root,
     )
     if rc != 0:
@@ -389,6 +407,7 @@ async def remove_healing_worktree(
 async def reap_stale_worktrees(
     repo_root: Path,
     pool: asyncpg.Pool,
+    prefixes: tuple[str, ...] = _ALL_BRANCH_PREFIXES,
 ) -> int:
     """Reap stale and orphaned healing worktrees on dispatcher startup.
 
@@ -398,8 +417,11 @@ async def reap_stale_worktrees(
        (``failed``, ``timeout``, etc.) and ``closed_at`` older than 24 hours.
     2. **Orphaned worktrees**: directories in ``.healing-worktrees/`` with
        no matching ``healing_attempts`` row.
-    3. **Orphaned branches**: local ``self-healing/*/`` branches with no worktree
+    3. **Orphaned branches**: local ``<prefix>/*/*`` branches with no worktree
        and no active (``investigating`` / ``pr_open``) attempt.
+
+    By default all known prefixes (``self-healing`` and ``qa``) are processed.
+    Pass a custom *prefixes* tuple to restrict or extend scanning.
 
     Parameters
     ----------
@@ -407,6 +429,9 @@ async def reap_stale_worktrees(
         Absolute path to the repository root.
     pool:
         asyncpg connection pool for ``public.healing_attempts`` queries.
+    prefixes:
+        Branch/directory prefixes to scan.  Defaults to
+        ``_ALL_BRANCH_PREFIXES`` (``self-healing`` + ``qa``).
 
     Returns
     -------
@@ -420,34 +445,36 @@ async def reap_stale_worktrees(
     worktree_base = repo_root / _WORKTREE_BASE
 
     # -----------------------------------------------------------------------
-    # Phase 1: scan worktree directories
+    # Phase 1: scan worktree directories for each known prefix
     # -----------------------------------------------------------------------
     if worktree_base.exists():
         # Worktrees are stored at:
-        #   .healing-worktrees/self-healing/<butler_name>/<short>-<epoch>/
+        #   .healing-worktrees/<prefix>/<butler_name>/<short>-<epoch>/
         # which is 3 levels under worktree_base.
-        # Scan:  worktree_base / "self-healing" / <butler_name> / <slug>
-        candidate_paths: list[Path] = []
-        prefix_dir = worktree_base / _BRANCH_PREFIX
-        if prefix_dir.is_dir():
+        # Collect candidate paths across all configured prefixes.
+        candidate_paths: list[tuple[str, Path]] = []  # (prefix, wt_dir)
+        for prefix in prefixes:
+            prefix_dir = worktree_base / prefix
+            if not prefix_dir.is_dir():
+                continue
             for butler_dir in prefix_dir.iterdir():
                 if not butler_dir.is_dir():
                     continue
                 for wt_dir in butler_dir.iterdir():
                     if wt_dir.is_dir():
-                        candidate_paths.append(wt_dir)
+                        candidate_paths.append((prefix, wt_dir))
 
         # Reconstruct branch names from paths:
-        #   branch = "self-healing/<butler_name>/<slug>"
-        def _branch_from_wt(wt_dir: Path) -> str:
-            return f"{_BRANCH_PREFIX}/{wt_dir.parent.name}/{wt_dir.name}"
+        #   branch = "<prefix>/<butler_name>/<slug>"
+        def _branch_from_wt(prefix: str, wt_dir: Path) -> str:
+            return f"{prefix}/{wt_dir.parent.name}/{wt_dir.name}"
 
         # Fetch all matching attempt rows in one query
-        candidate_branches = [_branch_from_wt(p) for p in candidate_paths]
+        candidate_branches = [_branch_from_wt(prefix, wt_dir) for prefix, wt_dir in candidate_paths]
         attempt_map = await _healing_attempts_for_branches(pool, candidate_branches)
 
-        for wt_dir in candidate_paths:
-            branch = _branch_from_wt(wt_dir)
+        for prefix, wt_dir in candidate_paths:
+            branch = _branch_from_wt(prefix, wt_dir)
             attempt = attempt_map.get(branch)
 
             if attempt is None:
@@ -505,13 +532,15 @@ async def reap_stale_worktrees(
             reaped += 1
 
     # -----------------------------------------------------------------------
-    # Phase 2: orphaned self-healing branches with no worktree and no active attempt
+    # Phase 2: orphaned branches (no worktree, no active attempt) for each prefix
     # -----------------------------------------------------------------------
-    all_healing_branches = await _list_healing_branches(repo_root)
     worktree_branches = set(await _list_worktree_branches(repo_root))
 
-    orphan_branches = [b for b in all_healing_branches if b not in worktree_branches]
-    if orphan_branches:
+    for prefix in prefixes:
+        all_prefix_branches = await _list_healing_branches(repo_root, prefix=prefix)
+        orphan_branches = [b for b in all_prefix_branches if b not in worktree_branches]
+        if not orphan_branches:
+            continue
         branch_attempts = await _healing_attempts_for_branches(pool, orphan_branches)
         for branch in orphan_branches:
             attempt = branch_attempts.get(branch)
@@ -521,7 +550,7 @@ async def reap_stale_worktrees(
                 if status in ("investigating", "pr_open"):
                     continue
             # No attempt or terminal attempt — delete the orphaned branch
-            logger.info("Deleting orphaned self-healing branch with no worktree: %s", branch)
+            logger.info("Deleting orphaned %s branch with no worktree: %s", prefix, branch)
             rc, _, stderr = await _run_git(
                 "branch",
                 "-D",
