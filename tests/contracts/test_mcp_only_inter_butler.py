@@ -169,23 +169,59 @@ class TestMcpOnlyInterButler:
         A butler's module code must not directly import from another butler's
         module code. Cross-butler communication is MCP-only.
         """
+        import pkgutil
         import sys
 
+        # Discover roster modules via pkgutil so we don't silently skip when
+        # sys.modules happens to be empty (e.g. in a fresh test process).
+        try:
+            import butlers.modules as _bm
+
+            roster_module_names = [
+                name
+                for finder, name, ispkg in pkgutil.walk_packages(
+                    path=_bm.__path__,
+                    prefix=_bm.__name__ + ".",
+                )
+                if "_roster_" in name
+            ]
+        except (ImportError, AttributeError):
+            roster_module_names = []
+
+        # Supplement with anything already loaded in sys.modules
         loaded_roster = {
             k: v for k, v in sys.modules.items() if k.startswith("butlers.modules._roster_")
         }
-        for mod_name, mod in loaded_roster.items():
+
+        # Combine both discovery sources for robustness
+        all_roster_names = set(roster_module_names) | set(loaded_roster.keys())
+
+        if not all_roster_names:
+            pytest.skip("No roster modules discovered — isolation check not applicable")
+
+        for mod_name in all_roster_names:
             butler_name = mod_name.replace("butlers.modules._roster_", "")
-            mod_file = getattr(mod, "__file__", "") or ""
+            mod = sys.modules.get(mod_name)
+            mod_file = getattr(mod, "__file__", "") or "" if mod else ""
+
+            if not mod_file:
+                # Try to locate via importlib without importing (avoids side-effects)
+                import importlib.util
+
+                spec = importlib.util.find_spec(mod_name)
+                mod_file = (spec.origin or "") if spec else ""
+
             if not mod_file:
                 continue
+
             try:
                 with open(mod_file) as f:
                     src = f.read()
             except OSError:
                 continue
+
             # Check that this roster module does not import another roster module
-            for other_name, _ in loaded_roster.items():
+            for other_name in all_roster_names:
                 other_butler = other_name.replace("butlers.modules._roster_", "")
                 if other_butler == butler_name:
                     continue

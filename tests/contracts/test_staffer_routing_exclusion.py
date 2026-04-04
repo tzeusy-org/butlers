@@ -90,11 +90,23 @@ class TestStafferVsButlerDistinction:
         'The Switchboard dispatches to the named target regardless of type;
         it is the classifier that filters by type, not the dispatcher.'
         """
-        # The classifier and dispatcher have separate responsibilities
-        classifier_filters_by_type = True
-        dispatcher_filters_by_type = False
-        assert classifier_filters_by_type is True
-        assert dispatcher_filters_by_type is False, "Dispatcher must not filter by type (RFC 0003)"
+        from butlers.config import ButlerType
+
+        # The ButlerType enum is the source of truth for the 'staffer' type value.
+        # Verify it exists and equals the expected string.
+        assert ButlerType.STAFFER.value == "staffer", (
+            "ButlerType.STAFFER must equal 'staffer' for routing exclusion to work (RFC 0003)"
+        )
+        # Verify the routing classify module references ButlerType to filter staffers.
+        import inspect as _inspect
+
+        from butlers.tools.switchboard.routing import classify
+
+        src = _inspect.getsource(classify)
+        assert "staffer" in src.lower(), (
+            "routing classify must reference 'staffer' type to exclude staffers from "
+            "LLM classification (RFC 0003)"
+        )
 
     def test_staffers_excluded_from_briefing_contribution(self):
         """vision.md: Staffers are excluded from briefing contribution.
@@ -166,10 +178,19 @@ class TestStafferTypeInRegistry:
         Agents with type = 'staffer' are skipped during LLM classification.
         Agents with type = 'butler' (or no type) are classification candidates.
         """
-        registry_type_field = "type"
-        staffer_value = "staffer"
-        assert registry_type_field == "type"
-        assert staffer_value == "staffer"
+        from butlers.config import ButlerType
+
+        # The ButlerType enum is the canonical source of truth for type values.
+        # The registry stores agents with ButlerType.STAFFER to mark them excluded.
+        assert hasattr(ButlerType, "STAFFER"), (
+            "ButlerType enum must define STAFFER for routing exclusion (RFC 0003)"
+        )
+        assert ButlerType.STAFFER.value == "staffer", (
+            "ButlerType.STAFFER.value must be 'staffer' (RFC 0003)"
+        )
+        assert hasattr(ButlerType, "BUTLER"), (
+            "ButlerType enum must define BUTLER to distinguish classification candidates (RFC 0003)"
+        )
 
     def test_user_message_routing_only_includes_domain_butlers(self):
         """RFC 0003: User-message routing candidates are domain butlers only.
@@ -219,8 +240,10 @@ class TestStafferTypeInRegistry:
         'The Switchboard dispatches to the named target regardless of type.'
         Calling notify() with target='messenger' routes to the Messenger staffer.
         """
-        # The dispatcher uses the target butler name, not type-based filtering
-        dispatcher_uses_name = True
-        assert dispatcher_uses_name is True, (
-            "Dispatcher routes to named target regardless of type (RFC 0003)"
+        from butlers.daemon import CORE_TOOL_NAMES
+
+        # The notify core tool must be present in the daemon's tool registration,
+        # confirming it can dispatch to named targets including staffers.
+        assert "notify" in CORE_TOOL_NAMES, (
+            "notify must be a core tool so any butler can dispatch to the Messenger (RFC 0003)"
         )

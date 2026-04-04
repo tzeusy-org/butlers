@@ -21,16 +21,29 @@ class TestRequestIdContract:
     """RFC 0001: request_id is UUIDv7 and propagates to all session records."""
 
     def test_request_id_is_uuid_format(self):
-        """RFC 0001: request_id must be a valid UUID (36-character format)."""
-        sample = str(uuid.uuid4())
+        """RFC 0001: request_id must be a valid UUID (36-character format) and UUIDv7."""
+        from butlers.core.utils import generate_uuid7_string
+
+        sample = generate_uuid7_string()
         assert len(sample) == 36
         assert sample.count("-") == 4
+        # Verify the generated value is version 7
+        parsed = uuid.UUID(sample)
+        assert parsed.version == 7, (
+            f"request_id must be UUIDv7 (got version {parsed.version}) (RFC 0001)"
+        )
 
     def test_request_id_format_regex(self):
-        """RFC 0001: request_id must match UUID format pattern."""
-        uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-        sample_uuid = str(uuid.uuid4())
-        assert uuid_pattern.match(sample_uuid), "request_id must match UUID format (RFC 0001)"
+        """RFC 0001: request_id must match UUID format pattern and be UUIDv7."""
+        from butlers.core.utils import generate_uuid7_string
+
+        uuid_pattern = re.compile(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        )
+        sample_uuid = generate_uuid7_string()
+        assert uuid_pattern.match(sample_uuid), (
+            "request_id must match UUIDv7 format (version=7 nibble) (RFC 0001)"
+        )
 
     def test_request_id_propagates_to_session_records(self):
         """RFC 0001: request_id propagates to session records, tool calls, OTel spans.

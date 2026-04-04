@@ -119,20 +119,76 @@ class TestSchemaTopology:
         Butlers must not share memory or call each other's functions.
         Cross-butler communication is MCP-only through the Switchboard.
         """
+        import pkgutil
         import sys
 
-        # If any butler schema module is imported, it should not expose
-        # another butler's schema objects
-        loaded_butler_modules = [m for m in sys.modules if m.startswith("butlers.modules._roster_")]
-        # Each loaded roster module is isolated — verify none exports cross-butler DB helpers
-        for mod_name in loaded_butler_modules:
+        # Discover roster modules via pkgutil to avoid silently skipping when
+        # sys.modules is empty (fresh test process).
+        try:
+            import butlers.modules as _bm
+
+            discovered = [
+                name
+                for _finder, name, _ispkg in pkgutil.walk_packages(
+                    path=_bm.__path__,
+                    prefix=_bm.__name__ + ".",
+                )
+                if "_roster_" in name
+            ]
+        except (ImportError, AttributeError):
+            discovered = []
+
+        loaded = [m for m in sys.modules if m.startswith("butlers.modules._roster_")]
+        all_modules = set(discovered) | set(loaded)
+
+        if not all_modules:
+            pytest.skip(
+                "No roster modules discovered — cross-import isolation check not applicable"
+            )
+
+        for mod_name in all_modules:
             butler_name = mod_name.replace("butlers.modules._roster_", "")
-            # The module must not directly reference another butler's schema.
-            # This is a negative structural assertion — if we find direct
-            # cross-schema SQL in application code, the contract is violated.
-            # We use a lightweight check: the module should not have a
-            # "from <other_butler>" style import.
             assert butler_name not in ("", "unknown"), f"Module name must be non-empty: {mod_name}"
+
+            # The module must not directly reference another butler's schema in SQL.
+            mod = sys.modules.get(mod_name)
+            mod_file = getattr(mod, "__file__", "") or "" if mod else ""
+            if not mod_file:
+                import importlib.util
+
+                spec = importlib.util.find_spec(mod_name)
+                mod_file = (spec.origin or "") if spec else ""
+            if not mod_file:
+                continue
+            try:
+                with open(mod_file) as f:
+                    src = f.read()
+            except OSError:
+                continue
+
+            for other_name in all_modules:
+                other_butler = other_name.replace("butlers.modules._roster_", "")
+                if other_butler == butler_name:
+                    continue
+                # Check for direct SQL schema references like "health.table_name"
+                # (a schema-qualified SQL identifier). Python import paths like
+                # "butlers.tools.switchboard.insight" are NOT violations.
+                import re as _re
+
+                sql_schema_ref = _re.compile(
+                    r"(?<![.\w])" + _re.escape(other_butler) + r"\.\w+",
+                )
+                # Strip Python import lines before checking to avoid false positives
+                non_import_lines = [
+                    line
+                    for line in src.splitlines()
+                    if not line.lstrip().startswith(("import ", "from "))
+                ]
+                non_import_src = "\n".join(non_import_lines)
+                assert not sql_schema_ref.search(non_import_src), (
+                    f"Roster module '{butler_name}' must not reference SQL schema "
+                    f"'{other_butler}.<table>' directly (RFC 0006 + Vision Rule 3)"
+                )
 
     def test_migration_chains_are_schema_scoped(self):
         """RFC 0006: Migrations set target schema for schema-qualified objects.

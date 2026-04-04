@@ -97,20 +97,33 @@ class TestIngestEnvelopeFormat:
     def test_canonical_channel_provider_pairings(self):
         """RFC 0003: channel and provider must use canonical pairings.
 
-        Canonical pairings: telegram/telegram, email/gmail, email/imap,
-        api/internal, mcp/internal, gaming/steam.
+        Validates channel names against _ALLOWED_PROVIDERS_BY_CHANNEL from the
+        routing contracts module (the source of truth).
         """
-        canonical_pairings = {
-            ("telegram", "telegram"),
+        from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
+
+        # The allowed-providers map is the source of truth for canonical pairings.
+        # Flatten it to (channel, provider) pairs for assertion.
+        actual_pairings = {
+            (channel, provider)
+            for channel, providers in _ALLOWED_PROVIDERS_BY_CHANNEL.items()
+            for provider in providers
+        }
+
+        # Core pairings that must always be present per RFC 0003
+        required_pairings = {
+            ("telegram_bot", "telegram"),
             ("email", "gmail"),
             ("email", "imap"),
             ("api", "internal"),
             ("mcp", "internal"),
             ("gaming", "steam"),
         }
-        assert len(canonical_pairings) == 6, (
-            "RFC 0003 defines 6 canonical channel/provider pairings"
-        )
+        for pairing in required_pairings:
+            assert pairing in actual_pairings, (
+                f"Canonical pairing {pairing} must be present in _ALLOWED_PROVIDERS_BY_CHANNEL "
+                f"(RFC 0003)"
+            )
 
 
 class TestDeduplicationContract:

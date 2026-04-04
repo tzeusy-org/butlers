@@ -364,11 +364,14 @@ class TestConcurrencyControl:
         """
         import uuid
 
-        # UUIDv7 uses version=7; Python uuid module doesn't have uuid7 built in
-        # but we can validate that request_id generation uses a UUID format
-        # The contract is: request_id must be a valid UUID string
-        sample_uuid = uuid.uuid4()
-        assert len(str(sample_uuid)) == 36, "request_id must be a 36-character UUID string"
+        from butlers.core.utils import generate_uuid7_string
+
+        sample = generate_uuid7_string()
+        assert len(sample) == 36, "request_id must be a 36-character UUID string"
+        parsed = uuid.UUID(sample)
+        assert parsed.version == 7, (
+            f"request_id must be UUIDv7 (got version {parsed.version}) (RFC 0001)"
+        )
 
     def test_session_records_trigger_source(self):
         """RFC 0001: Session records include trigger source for audit.

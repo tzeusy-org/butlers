@@ -50,16 +50,36 @@ class TestApprovalGateContracts:
         'Approval gates must never be bypassable by the LLM session.
         The gate is enforced at the MCP server level, not in the prompt.'
         """
+        import ast
+        import inspect as _inspect
+
         # This is an architectural guarantee. The approval gate wraps the
         # tool handler at registration time (phase 13b), not in the LLM prompt.
         # An LLM cannot bypass a wrapped handler by constructing a clever prompt.
         from butlers.daemon import ButlerDaemon
 
-        src = inspect.getsource(ButlerDaemon)
-        # Daemon must reference approval gate application during startup
-        has_approval_ref = "approval" in src.lower() or "gate" in src.lower()
-        assert has_approval_ref, (
-            "Daemon must apply approval gates during startup (RFC 0002 Phase 13b)"
+        src = _inspect.getsource(ButlerDaemon)
+        # Use AST-based analysis to find identifiers/attributes referencing approval
+        # rather than substring matching (which is prone to false positives on comments).
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            pytest.skip("Could not parse ButlerDaemon source via AST")
+
+        approval_names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and "approval" in node.id.lower():
+                approval_names.add(node.id)
+            elif isinstance(node, ast.Attribute) and "approval" in node.attr.lower():
+                approval_names.add(node.attr)
+            elif isinstance(node, ast.Name) and "gate" in node.id.lower():
+                approval_names.add(node.id)
+            elif isinstance(node, ast.Attribute) and "gate" in node.attr.lower():
+                approval_names.add(node.attr)
+
+        assert approval_names, (
+            "Daemon must reference approval gate identifiers during startup (RFC 0002 Phase 13b); "
+            "found zero approval/gate identifiers in ButlerDaemon AST"
         )
 
     def test_timeout_results_in_denial(self):
@@ -123,11 +143,41 @@ class TestApprovalGateContracts:
         'Approval timeouts must result in denial, not silent approval.'
         The default must lean toward safety (deny).
         """
-        # Structural contract: approval system must default to deny on timeout
-        # This prevents silent approvals when the owner doesn't respond
-        denial_on_timeout = True  # This is the required behavior per security.md
-        assert denial_on_timeout is True, (
-            "Approval gate must deny on timeout by default (security.md)"
+        import pkgutil
+
+        # Structural contract: approval system must implement denial-on-timeout semantics.
+        # Walk every submodule in the approvals package to find timeout/expired identifiers.
+        try:
+            import butlers.modules.approvals as approvals_pkg
+        except ImportError:
+            pytest.skip("approvals module not available — skipping denial-on-timeout check")
+
+        pkg_path = getattr(approvals_pkg, "__path__", None)
+        if pkg_path is None:
+            pytest.skip("approvals is not a package — cannot walk submodules")
+
+        denial_keywords = {"timeout", "expired", "denied", "deny", "rejection"}
+        found_in: list[str] = []
+
+        for _finder, name, _ispkg in pkgutil.walk_packages(
+            path=pkg_path, prefix=approvals_pkg.__name__ + "."
+        ):
+            try:
+                import importlib
+
+                submod = importlib.import_module(name)
+                import inspect as _inspect
+
+                src = _inspect.getsource(submod)
+                if any(kw in src.lower() for kw in denial_keywords):
+                    found_in.append(name)
+            except (ImportError, TypeError, OSError):
+                continue
+
+        assert found_in, (
+            "Approval module must implement denial-on-timeout semantics (security.md); "
+            "expected at least one submodule containing timeout/expired/denied/deny identifiers, "
+            f"but none found in approvals package at {pkg_path}"
         )
 
     def test_approval_works_across_notification_channels(self):
@@ -192,12 +242,35 @@ class TestApprovalGateContracts:
         The gate is wrapped at the handler level, so any tool call must pass
         through the gate regardless of what the LLM requests.
         """
-        # The structural impossibility comes from wrapping at registration time:
-        # when the LLM calls a gated tool, the gate runs BEFORE the handler
-        # This cannot be bypassed via prompt injection
-        bypass_is_impossible = True
-        assert bypass_is_impossible, (
-            "Approval gates are structurally enforced; LLM bypass is impossible (security.md)"
+        import ast
+        import inspect as _inspect
+
+        from butlers.daemon import ButlerDaemon
+
+        src = _inspect.getsource(ButlerDaemon)
+        # Verify the Spawner generates per-session configs so the LLM session is
+        # structurally sandboxed: find AST evidence that the daemon wires approval
+        # gates into the tool call path (not just a comment reference).
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            pytest.skip("Could not parse ButlerDaemon source via AST")
+
+        # Look for apply_approval_gates call or ApprovalGate instantiation in the AST
+        gate_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Call, ast.Name, ast.Attribute))
+            and any(
+                "approval" in getattr(node, attr, "").lower()
+                or "gate" in getattr(node, attr, "").lower()
+                for attr in ("id", "attr")
+            )
+        ]
+        assert gate_calls, (
+            "Daemon must wire approval gates at tool-handler level (security.md); "
+            "no approval/gate AST nodes found in ButlerDaemon — "
+            "LLM bypass prevention depends on this structural wiring"
         )
 
     def test_owner_approval_uses_owner_role_for_identification(self):

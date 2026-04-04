@@ -22,43 +22,19 @@ class TestEphemeralMcpConfig:
     def test_core_tools_catalog_completeness(self):
         """RFC 0002: Every butler exposes the complete core tool catalog.
 
-        The 21 core tools defined in RFC 0002 must be registered on every
+        The core tools defined in RFC 0002 must be registered on every
         butler regardless of module configuration.
         """
-        core_tool_names = {
-            "status",
-            "trigger",
-            "route.execute",
-            "tick",
-            "state_get",
-            "state_set",
-            "state_delete",
-            "state_list",
-            "schedule_list",
-            "schedule_create",
-            "schedule_update",
-            "schedule_delete",
-            "schedule_trigger",
-            "sessions_list",
-            "sessions_get",
-            "sessions_summary",
-            "sessions_daily",
-            "top_sessions",
-            "schedule_costs",
-            "notify",
-            "remind",
-            "get_attachment",
-            "module.states",
-            "module.set_enabled",
-        }
-        assert len(core_tool_names) >= 21, "RFC 0002 defines at least 21 core tools"
+        from butlers.daemon import CORE_TOOL_NAMES
+
+        assert len(CORE_TOOL_NAMES) >= 21, "RFC 0002 defines at least 21 core tools"
         # Core tools include route.execute for switchboard dispatch
-        assert "route.execute" in core_tool_names
+        assert "route.execute" in CORE_TOOL_NAMES
         # Core tools include notify for outbound delivery
-        assert "notify" in core_tool_names
+        assert "notify" in CORE_TOOL_NAMES
         # Core tools include all state store operations
         for op in ["state_get", "state_set", "state_delete", "state_list"]:
-            assert op in core_tool_names
+            assert op in CORE_TOOL_NAMES, f"Core tool '{op}' must be in CORE_TOOL_NAMES (RFC 0002)"
 
     def test_spawner_generates_single_butler_mcp_config(self):
         """RFC 0002: Spawner generates MCP config with only the butler's own endpoint.
@@ -82,12 +58,13 @@ class TestEphemeralMcpConfig:
         logging proxy can attribute tool invocations to the correct session
         even when max_concurrent_sessions > 1.
         """
-        # From RFC 0002: "The runtime_session_id query parameter allows the
-        # tool call logging proxy to attribute tool invocations to the correct
-        # session record, even when multiple sessions run concurrently"
-        param_name = "runtime_session_id"
-        assert param_name == "runtime_session_id", (
-            "Tool attribution query parameter must be named runtime_session_id (RFC 0002)"
+        # Verify the actual Spawner source references the runtime_session_id parameter,
+        # confirming it is used (not just named) in the real codebase.
+        from butlers.core.spawner import Spawner
+
+        src = inspect.getsource(Spawner)
+        assert "runtime_session_id" in src, (
+            "Spawner must embed runtime_session_id in the MCP URL for tool attribution (RFC 0002)"
         )
 
     def test_tool_call_logging_proxy_wraps_all_module_tools(self):

@@ -206,7 +206,7 @@ class TestTtlClamping:
         from butlers.context_bus import _clamp_ttl
 
         now = datetime.now(tz=UTC)
-        naive_expires = datetime.now() + timedelta(hours=100)  # Naive, no tzinfo
+        naive_expires = datetime.utcnow() + timedelta(hours=100)  # Naive but UTC-aligned, no tzinfo
         # Must not raise; naive is treated as UTC
         result = _clamp_ttl("sleeping", now, naive_expires)
         # Result must be a clamped, UTC-aware datetime
