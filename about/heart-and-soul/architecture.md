@@ -85,6 +85,48 @@ Neither pays for the other's context.
 convention. A butler cannot access another butler's database schema or tools. The
 Switchboard is the only bridge.
 
+## The Staffer Archetype: Infrastructure Specialization
+
+Not every long-running agent serves a user life domain. Some serve the ecosystem
+itself --- routing messages, delivering notifications, or enforcing cross-cutting
+policies. These are **staffers**.
+
+A staffer shares the same runtime engine as a domain butler: the same
+`ButlerDaemon` class, module system, scheduler, LLM spawner, and session
+logging. The distinction is not in the engine but in the role and the permissions
+model. A staffer's `butler.toml` declares `type = "staffer"`, which gates a small
+set of type-aware behaviors:
+
+- **Routing exclusion:** Staffers are never candidates for user-message
+  classification by the Switchboard. When an incoming message is classified, only
+  domain butlers are in the candidate set. Butler-to-staffer routing (e.g.,
+  `notify()` routing through Switchboard to Messenger) is unaffected.
+- **Briefing exclusion:** Staffers do not contribute to daily briefings. They
+  serve the system, not the user's domains, so they have nothing to contribute to
+  the user's situational summary.
+- **Cross-butler access:** Staffers may declare explicit cross-butler access
+  permissions in `butler.toml` under `[butler.permissions]`. This formalizes the
+  connectivity that the Switchboard and Messenger already exercise. Domain butlers
+  default to no cross-butler access.
+
+Staffers use a `MANIFESTO.md` with infrastructure-contract framing rather than
+user-relationship framing. The contract specifies the service's responsibilities,
+SLAs, failure modes, dependency graph, and escalation procedures. The same scope
+governance applies: a new capability proposed for a staffer must be evaluated
+against the contract and may require a formal amendment.
+
+The current staffers are the Switchboard (message routing and ingestion) and
+Messenger (outbound channel delivery). Future infrastructure agents --- log
+inspection, QA, billing --- follow the same pattern without requiring engine
+changes.
+
+**Why a shared engine matters:** A separate `StafferDaemon` class would duplicate
+the entire lifecycle management, module system, and tool composition logic. By
+expressing the butler/staffer distinction through a single `type` field, the
+system remains coherent as the roster grows. Adding a new staffer is identical to
+adding a new domain butler: a `roster/{staffer-name}/` directory with `butler.toml`
+(`type = "staffer"`), `MANIFESTO.md`, `CLAUDE.md`, and `AGENTS.md`.
+
 ## Why Modules as the Extension Mechanism
 
 Modules are the only way to add capabilities to a butler. A module implements
