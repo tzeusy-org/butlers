@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import uuid
 
 import pytest
 
@@ -30,8 +31,8 @@ parse = _mod.parse_consolidation_output
 
 pytestmark = pytest.mark.unit
 
-UUID1 = "aaaaaaaa-bbbb-cccc-dddd-000000000001"
-UUID2 = "aaaaaaaa-bbbb-cccc-dddd-000000000002"
+UUID1 = str(uuid.uuid4())
+UUID2 = str(uuid.uuid4())
 
 
 def _json(payload: dict, fenced: bool = True) -> str:
@@ -54,9 +55,7 @@ class TestValidParsing:
     def test_full_payload(self) -> None:
         payload = {
             "new_facts": [{"subject": "s", "predicate": "p", "content": "c", "importance": 7.0}],
-            "updated_facts": [
-                {"target_id": UUID1, "subject": "s", "predicate": "p", "content": "c"}
-            ],
+            "updated_facts": [{"target_id": UUID1, "subject": "s", "predicate": "p", "content": "c"}],
             "new_rules": [{"content": "Always greet", "tags": ["ux"]}],
             "confirmations": [UUID1, UUID2],
         }
@@ -107,6 +106,13 @@ class TestErrorHandling:
         assert result.confirmations == [UUID1, UUID2]
         assert len(result.parse_errors) == 1
 
+    def test_invalid_updated_fact_uuid_skipped(self) -> None:
+        payload = {
+            "updated_facts": [{"target_id": "not-a-uuid", "subject": "s", "predicate": "p", "content": "c"}]
+        }
+        result = parse(_json(payload))
+        assert result.updated_facts == [] and len(result.parse_errors) == 1
+
 
 # ---------------------------------------------------------------------------
 # Validation
@@ -116,18 +122,14 @@ class TestErrorHandling:
 class TestValidation:
     def test_invalid_permanence_defaults_to_standard(self) -> None:
         payload = {
-            "new_facts": [
-                {"subject": "s", "predicate": "p", "content": "c", "permanence": "forever"}
-            ]
+            "new_facts": [{"subject": "s", "predicate": "p", "content": "c", "permanence": "forever"}]
         }
         result = parse(_json(payload))
         assert result.new_facts[0].permanence == "standard"
 
     @pytest.mark.parametrize("perm", ["permanent", "ephemeral"])
     def test_valid_permanence_values_accepted(self, perm: str) -> None:
-        payload = {
-            "new_facts": [{"subject": "s", "predicate": "p", "content": "c", "permanence": perm}]
-        }
+        payload = {"new_facts": [{"subject": "s", "predicate": "p", "content": "c", "permanence": perm}]}
         result = parse(_json(payload))
         assert result.new_facts[0].permanence == perm
 
@@ -141,3 +143,11 @@ class TestValidation:
         result = parse(_json(payload))
         assert result.new_facts[0].importance == 1.0
         assert result.new_facts[1].importance == 10.0
+
+    def test_default_values_applied(self) -> None:
+        payload = {"new_facts": [{"subject": "s", "predicate": "p", "content": "c"}]}
+        result = parse(_json(payload))
+        fact = result.new_facts[0]
+        assert fact.permanence == "standard"
+        assert fact.importance == 5.0
+        assert fact.tags == []
