@@ -2,6 +2,10 @@
 name = "messenger"
 port = 41104
 description = "Outbound delivery execution plane for Telegram and Email"
+type = "staffer"
+
+[butler.permissions]
+cross_butler_access = ["*"]
 
 [butler.runtime]
 max_concurrent_sessions = 3
