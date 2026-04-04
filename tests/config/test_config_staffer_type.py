@@ -236,6 +236,64 @@ cross_butler_access = "*"
         load_config(_write_toml(tmp_path, toml))
 
 
+def test_permissions_non_table_raises(tmp_path: Path):
+    """Non-table [butler.permissions] raises ConfigError instead of AttributeError."""
+    # TOML forbids `permissions = "string"` in the same table as a `[butler.permissions]`
+    # table header, so we inject a non-dict value via mock to exercise the guard path.
+    import tomllib as _tomllib
+    from unittest.mock import MagicMock, patch
+
+    toml = """\
+[butler]
+name = "rogue"
+port = 9014
+"""
+    cfg_dir = _write_toml(tmp_path, toml)
+    original_data = _tomllib.loads((cfg_dir / "butler.toml").read_text())
+    original_data["butler"]["permissions"] = "not-a-table"
+
+    mock_tomllib = MagicMock()
+    mock_tomllib.loads.return_value = original_data
+    mock_tomllib.TOMLDecodeError = _tomllib.TOMLDecodeError
+
+    with patch("butlers.config.tomllib", mock_tomllib):
+        with pytest.raises(ConfigError, match="butler.permissions must be a table"):
+            load_config(cfg_dir)
+
+
+def test_permissions_entry_with_whitespace_stripped(tmp_path: Path):
+    """cross_butler_access entries are stripped of surrounding whitespace."""
+    toml = """\
+[butler]
+name = "notifier"
+port = 9015
+type = "staffer"
+
+[butler.permissions]
+cross_butler_access = ["  general  ", " health "]
+"""
+    cfg = load_config(_write_toml(tmp_path, toml))
+
+    assert cfg.permissions.cross_butler_access == ["general", "health"]
+
+
+def test_permissions_empty_string_entry_raises(tmp_path: Path):
+    """An empty or whitespace-only cross_butler_access entry raises ConfigError."""
+    toml = """\
+[butler]
+name = "rogue"
+port = 9016
+type = "staffer"
+
+[butler.permissions]
+cross_butler_access = ["general", ""]
+"""
+    with pytest.raises(
+        ConfigError, match="butler.permissions.cross_butler_access\\[1\\] must be a non-empty"
+    ):
+        load_config(_write_toml(tmp_path, toml))
+
+
 # ---------------------------------------------------------------------------
 # Combined type + permissions in a realistic staffer config
 # ---------------------------------------------------------------------------

@@ -675,6 +675,10 @@ def load_config(config_dir: Path) -> ButlerConfig:
 
     # --- [butler.permissions] sub-section ---
     permissions_section = butler_section.get("permissions", {})
+    if permissions_section is None:
+        permissions_section = {}
+    if not isinstance(permissions_section, dict):
+        raise ConfigError("butler.permissions must be a table")
     raw_cross_butler = permissions_section.get("cross_butler_access", [])
     if not isinstance(raw_cross_butler, list):
         raise ConfigError("butler.permissions.cross_butler_access must be a list of strings")
@@ -682,7 +686,12 @@ def load_config(config_dir: Path) -> ButlerConfig:
     for i, entry in enumerate(raw_cross_butler):
         if not isinstance(entry, str):
             raise ConfigError(f"butler.permissions.cross_butler_access[{i}] must be a string")
-        cross_butler_access.append(entry)
+        normalized_entry = entry.strip()
+        if not normalized_entry:
+            raise ConfigError(
+                f"butler.permissions.cross_butler_access[{i}] must be a non-empty string"
+            )
+        cross_butler_access.append(normalized_entry)
     permissions_config = PermissionsConfig(cross_butler_access=cross_butler_access)
 
     # --- [butler.db] sub-section ---
