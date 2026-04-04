@@ -1,0 +1,925 @@
+"""QA Staffer module — patrol loop, discovery, triage, and investigation dispatch.
+
+This module is the runtime heart of the QA Staffer. It:
+  - Registers three MCP tools: report_finding, force_patrol, get_qa_status
+  - Manages the patrol loop (scheduler-driven, asyncio.Lock for overlap prevention)
+  - Registers discovery sources (log_scanner, session_records, butler_reports)
+  - Delegates triage and dispatch to core.qa.*
+  - Handles severity-0 reactive mini-patrols
+  - Recovers stale patrol rows and dispatch_pending attempts on startup
+
+The QA module's tables (qa_patrols, qa_findings, qa_dismissals) are in the
+public schema and are managed by core migrations (core_051–core_055).
+The module returns None from migration_revisions().
+
+Spec reference
+--------------
+openspec/changes/qa-staffer/specs/staffer-qa/spec.md
+openspec/changes/qa-staffer/tasks.md (6.5–6.8)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from butlers.core.healing import reap_stale_worktrees, recover_stale_attempts
+from butlers.core.qa.dispatch import (
+    QA_GH_TOKEN_KEY,
+    QaDispatchConfig,
+    check_open_pr_statuses,
+    dispatch_novel_findings,
+)
+from butlers.core.qa.sources.butler_reports import ButlerReportsSource
+from butlers.core.qa.sources.log_scanner import LogScannerSource
+from butlers.core.qa.sources.session_records import SessionRecordsSource
+from butlers.core.qa.triage import triage_findings
+from butlers.modules.base import Module, ToolMeta
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+#: Default patrol interval in minutes.
+_DEFAULT_PATROL_INTERVAL = 10
+
+#: Default log lookback window in minutes.
+_DEFAULT_LOG_LOOKBACK = 15
+
+#: Default max concurrent investigations.
+_DEFAULT_MAX_CONCURRENT = 2
+
+#: Default severity threshold (medium = 2, so 0–2 trigger investigation).
+_DEFAULT_SEVERITY_THRESHOLD = 2
+
+#: Default reactive buffer size.
+_DEFAULT_MAX_REACTIVE_BUFFER = 50
+
+#: Known source names (for config validation).
+_KNOWN_SOURCES = frozenset({"log_scanner", "session_records", "butler_reports"})
+
+#: Valid patrol status values that should be recovered on startup.
+_STALE_PATROL_STATUSES = frozenset({"running"})
+
+
+# ---------------------------------------------------------------------------
+# Config schema
+# ---------------------------------------------------------------------------
+
+
+class QaConfig(BaseModel):
+    """Configuration for the QA staffer module.
+
+    All fields have safe defaults so that ``[modules.qa]`` with no sub-keys
+    is a valid (enabled) configuration.
+
+    Parameters
+    ----------
+    enabled:
+        Master on/off switch.  When ``False``, patrol ticks are skipped.
+    patrol_interval_minutes:
+        Patrol interval in minutes.  Default 10.
+    log_lookback_minutes:
+        How far back (in minutes) the log scanner and session records source
+        should look for errors.  Default 15.
+    max_concurrent_investigations:
+        Max simultaneous ``investigating`` rows.  Default 2.
+    severity_threshold:
+        Maximum severity score that triggers investigation.  Lower is more
+        severe.  Default 2 (medium).
+    enabled_sources:
+        List of source names to enable.  Default all three v1 sources.
+    max_reactive_buffer:
+        Max buffered reactive findings in the butler_reports source.
+        Default 50.
+    dashboard_base_url:
+        Optional URL for inclusion in investigation prompts.
+    """
+
+    enabled: bool = True
+    patrol_interval_minutes: int = _DEFAULT_PATROL_INTERVAL
+    log_lookback_minutes: int = _DEFAULT_LOG_LOOKBACK
+    max_concurrent_investigations: int = _DEFAULT_MAX_CONCURRENT
+    severity_threshold: int = _DEFAULT_SEVERITY_THRESHOLD
+    enabled_sources: list[str] = [
+        "log_scanner",
+        "session_records",
+        "butler_reports",
+    ]
+    max_reactive_buffer: int = _DEFAULT_MAX_REACTIVE_BUFFER
+    dashboard_base_url: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("patrol_interval_minutes", "log_lookback_minutes")
+    @classmethod
+    def _must_be_positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("Must be a positive integer")
+        return v
+
+    @field_validator("max_concurrent_investigations")
+    @classmethod
+    def _min_one(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Must be at least 1")
+        return v
+
+    @field_validator("enabled_sources")
+    @classmethod
+    def _known_sources(cls, v: list[str]) -> list[str]:
+        unknown = set(v) - _KNOWN_SOURCES
+        if unknown:
+            raise ValueError(f"Unknown source(s): {sorted(unknown)}")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Module implementation
+# ---------------------------------------------------------------------------
+
+
+class QaModule(Module):
+    """QA Staffer module — patrol loop, triage, and investigation dispatch.
+
+    MCP tools registered:
+    - ``report_finding``: Accept a finding relayed from a butler via Switchboard.
+    - ``force_patrol``: Trigger an immediate patrol cycle.
+    - ``get_qa_status``: Return QA operational summary.
+
+    The patrol loop is scheduler-driven: the QA staffer daemon fires a tick
+    every ``patrol_interval_minutes`` minutes.  The module uses an asyncio.Lock
+    to prevent overlapping patrol cycles.
+    """
+
+    def __init__(self) -> None:
+        self._config = QaConfig()
+        self._butler_name: str = "qa"
+        self._pool: Any = None
+        self._spawner: Any = None
+        self._repo_root: Path = Path(".")
+        self._credential_store: Any = None
+
+        # Discovery sources — registered at startup
+        self._butler_reports_source: ButlerReportsSource | None = None
+        self._sources: list[Any] = []
+
+        # Patrol state
+        self._patrol_lock = asyncio.Lock()
+        self._current_patrol_id: uuid.UUID | None = None
+        self._last_patrol_at: datetime | None = None
+        self._last_patrol_status: str | None = None
+        self._last_patrol_findings: int = 0
+        self._last_patrol_novel: int = 0
+        self._last_patrol_dispatched: int = 0
+
+        # Background watchdog tasks
+        self._watchdog_tasks: list[asyncio.Task[Any]] = []
+
+        # Mini-patrol task (triggered by severity-0 reactive findings)
+        self._mini_patrol_task: asyncio.Task[Any] | None = None
+
+    # ------------------------------------------------------------------
+    # Module ABC
+    # ------------------------------------------------------------------
+
+    @property
+    def name(self) -> str:
+        return "qa"
+
+    @property
+    def config_schema(self) -> type[BaseModel]:
+        return QaConfig
+
+    @property
+    def dependencies(self) -> list[str]:
+        return []
+
+    def migration_revisions(self) -> str | None:
+        # QA tables (qa_patrols, qa_findings, qa_dismissals) are in the public
+        # schema and managed by the core migration chain (core_051–core_055).
+        return None
+
+    # ------------------------------------------------------------------
+    # Sensitivity metadata
+    # ------------------------------------------------------------------
+
+    def tool_metadata(self) -> dict[str, ToolMeta]:
+        """Mark context as sensitive on report_finding.
+
+        The context field may contain agent reasoning about user-related errors.
+        """
+        return {
+            "report_finding": ToolMeta(
+                arg_sensitivities={
+                    "context": True,
+                    "event_summary": True,
+                }
+            ),
+        }
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
+        """Register sources, recover stale state, reap worktrees.
+
+        Called after dependency resolution and migrations.  Stale ``running``
+        patrol rows are recovered (marked as ``error`` with daemon restart
+        reason).  ``dispatch_pending`` healing attempts linked to QA patrols
+        are re-dispatched or failed depending on age.
+
+        Parameters
+        ----------
+        config:
+            QaConfig instance or dict (dict will be coerced to QaConfig).
+        db:
+            Butler database instance (``db.pool`` for asyncpg).
+        credential_store:
+            Optional CredentialStore for DB-first credential resolution.
+        blob_store:
+            Unused by this module.
+        """
+        self._config = config if isinstance(config, QaConfig) else QaConfig(**(config or {}))
+
+        pool = getattr(db, "pool", None) if db is not None else None
+        self._pool = pool
+        self._credential_store = credential_store
+
+        # Register discovery sources
+        self._sources = []
+        self._butler_reports_source = None
+
+        enabled = set(self._config.enabled_sources)
+
+        if "butler_reports" in enabled:
+            self._butler_reports_source = ButlerReportsSource(
+                max_buffer=self._config.max_reactive_buffer
+            )
+            self._sources.append(self._butler_reports_source)
+            logger.info("QaModule: registered butler_reports source")
+
+        if "log_scanner" in enabled:
+            self._sources.append(LogScannerSource())
+            logger.info("QaModule: registered log_scanner source")
+
+        if "session_records" in enabled:
+            if pool is not None:
+                self._sources.append(SessionRecordsSource(pool))
+                logger.info("QaModule: registered session_records source")
+            else:
+                logger.info("QaModule: session_records source skipped (no DB pool at startup)")
+
+        disabled = _KNOWN_SOURCES - enabled
+        for src_name in sorted(disabled):
+            logger.info("QaModule: source %s disabled (not in enabled_sources)", src_name)
+
+        if pool is None:
+            logger.debug("QaModule.on_startup: no DB pool — skipping recovery")
+            return
+
+        # Recover stale patrol rows
+        await self._recover_stale_patrols(pool)
+
+        # Recover stale healing attempts (dispatch_pending + stale investigating)
+        try:
+            recovered, pending_rows = await recover_stale_attempts(
+                pool, timeout_minutes=self._config.log_lookback_minutes * 4
+            )
+            if recovered:
+                logger.info("QaModule startup: recovered %d stale attempt(s)", recovered)
+        except Exception:
+            logger.warning("QaModule startup: recover_stale_attempts failed", exc_info=True)
+
+        # Reap orphaned worktrees
+        try:
+            await reap_stale_worktrees(self._repo_root, pool)
+        except Exception:
+            logger.warning("QaModule startup: reap_stale_worktrees failed", exc_info=True)
+
+    async def _recover_stale_patrols(self, pool: Any) -> None:
+        """Mark any stale 'running' patrol rows as 'error' after daemon restart.
+
+        This prevents stale rows from blocking patrol overlap detection on the
+        next patrol cycle.
+        """
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT id FROM public.qa_patrols
+                WHERE status = 'running' AND completed_at IS NULL
+                """
+            )
+            if not rows:
+                return
+            for row in rows:
+                await pool.execute(
+                    """
+                    UPDATE public.qa_patrols
+                    SET status = 'error',
+                        completed_at = now(),
+                        error_detail = 'daemon restart during patrol'
+                    WHERE id = $1
+                    """,
+                    row["id"],
+                )
+            logger.info("QaModule startup: recovered %d stale patrol row(s)", len(rows))
+        except Exception:
+            logger.warning("QaModule startup: _recover_stale_patrols failed", exc_info=True)
+
+    async def on_shutdown(self) -> None:
+        """Cancel watchdog tasks (best-effort).
+
+        Active investigation sessions are NOT terminated — they may complete
+        independently after the daemon shuts down (daemon phase 3 drain).
+        """
+        # Cancel mini-patrol task
+        if self._mini_patrol_task and not self._mini_patrol_task.done():
+            self._mini_patrol_task.cancel()
+            try:
+                await self._mini_patrol_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._mini_patrol_task = None
+
+        # Cancel watchdog tasks
+        for task in list(self._watchdog_tasks):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        self._watchdog_tasks.clear()
+        logger.debug("QaModule shut down; watchdog tasks cancelled")
+
+    # ------------------------------------------------------------------
+    # Tool registration
+    # ------------------------------------------------------------------
+
+    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+        """Register report_finding, force_patrol, and get_qa_status tools."""
+        self._config = config if isinstance(config, QaConfig) else QaConfig(**(config or {}))
+        self._pool = getattr(db, "pool", None) if db is not None else None
+
+        module = self
+
+        @mcp.tool()
+        async def report_finding(
+            fingerprint: str,
+            exception_type: str,
+            call_site: str,
+            severity: int,
+            event_summary: str,
+            source_butler: str,
+            context: str | None = None,
+        ) -> dict:
+            """Accept an error finding relayed from a butler via Switchboard.
+
+            Called by butler self-healing modules via Switchboard's route()
+            tool: ``call_tool("route", {"target_butler": "qa",
+            "tool_name": "report_finding", "args": {...}})``.
+
+            This is a synchronous buffer enqueue — no investigation is
+            dispatched immediately.  The finding is picked up on the next
+            patrol cycle.  For severity 0 (critical), an immediate mini-patrol
+            is triggered.
+
+            Parameters
+            ----------
+            fingerprint:
+                Pre-computed SHA-256 hex fingerprint from the reporting butler.
+            exception_type:
+                Fully qualified exception class name.
+            call_site:
+                ``<file>:<function>`` call site string.
+            severity:
+                Integer severity score (0=critical, 1=high, 2=medium, 3=low).
+            event_summary:
+                Sanitized error event summary.
+            source_butler:
+                Name of the reporting butler.
+            context:
+                Optional context string (declared sensitive; may contain agent
+                reasoning about user-related errors).
+            """
+            return await module._handle_report_finding(
+                fingerprint=fingerprint,
+                exception_type=exception_type,
+                call_site=call_site,
+                severity=severity,
+                event_summary=event_summary,
+                source_butler=source_butler,
+                context=context,
+            )
+
+        @mcp.tool()
+        async def force_patrol() -> dict:
+            """Trigger an immediate QA patrol cycle.
+
+            Useful for operators who want to run a patrol outside the normal
+            schedule (e.g., after deploying a fix to verify no regressions).
+
+            Returns the patrol result summary.
+            """
+            return await module._handle_force_patrol()
+
+        @mcp.tool()
+        async def get_qa_status() -> dict:
+            """Return a QA staffer operational summary.
+
+            Includes: last patrol timestamp, last patrol status, finding and
+            investigation counts, enabled sources, current config, and
+            watchdog task count.
+            """
+            return module._handle_get_qa_status()
+
+    # ------------------------------------------------------------------
+    # Tool handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_report_finding(
+        self,
+        fingerprint: str,
+        exception_type: str,
+        call_site: str,
+        severity: int,
+        event_summary: str,
+        source_butler: str,
+        context: str | None,
+    ) -> dict:
+        """Handle the report_finding MCP tool call.
+
+        Enqueues the finding in the butler_reports source buffer and returns
+        immediately.  For severity == 0 (critical), schedules an immediate
+        mini-patrol.
+        """
+        if self._butler_reports_source is None:
+            logger.warning(
+                "QaModule.report_finding: butler_reports source not registered "
+                "(fingerprint=%s butler=%s)",
+                fingerprint[:12],
+                source_butler,
+            )
+            return {"accepted": False, "reason": "butler_reports_disabled"}
+
+        await self._butler_reports_source.accept(
+            fingerprint=fingerprint,
+            exception_type=exception_type,
+            call_site=call_site,
+            severity=severity,
+            event_summary=event_summary,
+            source_butler=source_butler,
+            context=context,
+        )
+        logger.debug(
+            "QaModule.report_finding: accepted fingerprint=%s butler=%s severity=%d",
+            fingerprint[:12],
+            source_butler,
+            severity,
+        )
+
+        # Schedule immediate mini-patrol for critical findings (severity == 0)
+        if severity == 0:
+            self._schedule_mini_patrol(fingerprint)
+
+        return {"accepted": True}
+
+    async def _handle_force_patrol(self) -> dict:
+        """Handle the force_patrol MCP tool call.
+
+        Runs a full patrol cycle synchronously and returns the result.
+        If a patrol is already running, returns a skip response.
+        """
+        if not self._config.enabled:
+            return {"status": "skipped", "reason": "qa_module_disabled"}
+
+        if self._pool is None:
+            return {"status": "skipped", "reason": "no_db_pool"}
+
+        # Use a non-blocking acquire attempt to avoid a TOCTOU race between
+        # checking locked() and entering _run_patrol_cycle.  acquire() is
+        # wrapped in wait_for(timeout=0) to return immediately: if the lock is
+        # already held the coroutine is cancelled and we return a skip response.
+        try:
+            await asyncio.wait_for(self._patrol_lock.acquire(), timeout=0)
+        except TimeoutError:
+            return {"status": "skipped", "reason": "patrol_already_running"}
+
+        # We now hold the lock — run the patrol body directly (not via
+        # _run_patrol_cycle which would try to re-acquire), then release.
+        try:
+            result = await self._run_patrol_body()
+        finally:
+            self._patrol_lock.release()
+        return {
+            "status": result["status"],
+            "patrol_id": result.get("patrol_id"),
+            "findings_count": result.get("findings_count", 0),
+            "novel_count": result.get("novel_count", 0),
+            "dispatched_count": result.get("dispatched_count", 0),
+            "sources_polled": result.get("sources_polled", []),
+        }
+
+    def _handle_get_qa_status(self) -> dict:
+        """Handle the get_qa_status MCP tool call."""
+        # Prune completed watchdog tasks
+        self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
+        enabled_sources = [s.name for s in self._sources]
+        return {
+            "enabled": self._config.enabled,
+            "last_patrol_at": (self._last_patrol_at.isoformat() if self._last_patrol_at else None),
+            "last_patrol_status": self._last_patrol_status,
+            "last_patrol_findings": self._last_patrol_findings,
+            "last_patrol_novel": self._last_patrol_novel,
+            "last_patrol_dispatched": self._last_patrol_dispatched,
+            "active_watchdog_tasks": len(self._watchdog_tasks),
+            "enabled_sources": enabled_sources,
+            "patrol_interval_minutes": self._config.patrol_interval_minutes,
+            "log_lookback_minutes": self._config.log_lookback_minutes,
+            "max_concurrent_investigations": self._config.max_concurrent_investigations,
+            "severity_threshold": self._config.severity_threshold,
+            "butler_reports_buffer_size": (
+                self._butler_reports_source.buffer_size
+                if self._butler_reports_source is not None
+                else 0
+            ),
+        }
+
+    # ------------------------------------------------------------------
+    # Patrol loop
+    # ------------------------------------------------------------------
+
+    async def run_patrol_tick(self) -> None:
+        """Execute a scheduled patrol tick.
+
+        Called by the scheduler at the configured interval.  Uses an asyncio.Lock
+        to prevent overlapping patrol cycles: if the previous patrol is still
+        running, this tick is recorded as ``skipped_overlap``.
+
+        This method does not raise — all errors are caught and logged.
+        """
+        if not self._config.enabled:
+            logger.debug("QaModule.run_patrol_tick: module disabled — skipping")
+            return
+
+        if self._pool is None:
+            logger.debug("QaModule.run_patrol_tick: no DB pool — skipping")
+            return
+
+        if self._patrol_lock.locked():
+            # Record a skipped_overlap patrol row
+            logger.warning("QaModule.run_patrol_tick: patrol already running — skipping (overlap)")
+            await self._record_patrol_skip(self._pool)
+            return
+
+        try:
+            await self._run_patrol_cycle()
+        except Exception:
+            logger.error("QaModule.run_patrol_tick: unexpected error", exc_info=True)
+
+    async def _run_patrol_cycle(self) -> dict:
+        """Execute one complete patrol cycle under the asyncio.Lock.
+
+        Acquires ``_patrol_lock`` and delegates to ``_run_patrol_body``.
+
+        Returns
+        -------
+        dict
+            Summary of the patrol cycle outcome.
+        """
+        async with self._patrol_lock:
+            return await self._run_patrol_body()
+
+    async def _run_patrol_body(self) -> dict:
+        """Execute the patrol cycle body.
+
+        Must be called with ``_patrol_lock`` already held.  Creates a patrol
+        record, polls all configured sources, runs triage, dispatches novel
+        findings, and updates the patrol record on completion.
+
+        Returns
+        -------
+        dict
+            Summary of the patrol cycle outcome.
+        """
+        pool = self._pool
+        if pool is None:
+            return {"status": "error", "reason": "no_db_pool"}
+
+        patrol_id = await self._create_patrol_record(pool)
+        self._current_patrol_id = patrol_id
+        sources_polled: list[str] = []
+        all_findings = []
+        error_detail: str | None = None
+
+        try:
+            # Phase 1: Discover
+            for source in self._sources:
+                try:
+                    findings = await source.discover(self._config.log_lookback_minutes)
+                    sources_polled.append(source.name)
+                    all_findings.extend(findings)
+                    logger.debug(
+                        "QaModule patrol %s: source=%s returned %d finding(s)",
+                        patrol_id,
+                        source.name,
+                        len(findings),
+                    )
+                except Exception as src_exc:
+                    logger.error(
+                        "QaModule patrol %s: source=%s failed: %s",
+                        patrol_id,
+                        source.name,
+                        src_exc,
+                        exc_info=True,
+                    )
+                    detail = f"source {source.name} failed: {src_exc!r}"
+                    error_detail = f"{error_detail}; {detail}" if error_detail else detail
+
+            # Phase 2: Triage
+            triage_result = await triage_findings(
+                pool=pool,
+                patrol_id=patrol_id,
+                findings=all_findings,
+                cooldown_minutes=60,  # default cooldown
+            )
+
+            findings_count = len(triage_result.all_findings)
+            novel_count = len(triage_result.novel_findings)
+
+            # Phase 3: Dispatch
+            gh_token = await self._resolve_gh_token()
+            dispatch_config = QaDispatchConfig(
+                severity_threshold=self._config.severity_threshold,
+                max_concurrent=self._config.max_concurrent_investigations,
+                dashboard_base_url=self._config.dashboard_base_url,
+            )
+
+            # Prune completed watchdog tasks before dispatching
+            self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
+
+            dispatch_results = await dispatch_novel_findings(
+                pool=pool,
+                novel_findings=triage_result.novel_findings,
+                patrol_id=patrol_id,
+                config=dispatch_config,
+                repo_root=self._repo_root,
+                spawner=self._spawner,
+                gh_token=gh_token,
+                task_registry=self._watchdog_tasks,
+            )
+
+            dispatched_count = sum(1 for r in dispatch_results if r.accepted)
+
+            # Phase 4: PR status check
+            await self._check_pr_statuses(pool, gh_token)
+
+            # Determine final patrol status.
+            # "suppressed" means findings were found but all were filtered out
+            # by cooldown or severity threshold (novel_count > 0 but nothing
+            # dispatched and no dispatch error).
+            if error_detail:
+                patrol_status = "error"
+            elif findings_count == 0:
+                patrol_status = "clean"
+            elif dispatched_count > 0:
+                patrol_status = "findings_dispatched"
+            elif novel_count > 0:
+                # Novel findings exist but none were dispatched (suppressed by
+                # cooldown or severity threshold).
+                patrol_status = "suppressed"
+            else:
+                # Findings found but all were duplicates/dismissed — no novel work.
+                patrol_status = "clean"
+
+            # Update patrol record
+            await self._complete_patrol_record(
+                pool=pool,
+                patrol_id=patrol_id,
+                status=patrol_status,
+                findings_count=findings_count,
+                novel_count=novel_count,
+                dispatched_count=dispatched_count,
+                sources_polled=sources_polled,
+                error_detail=error_detail,
+            )
+
+            # Update module state
+            self._last_patrol_at = datetime.now(UTC)
+            self._last_patrol_status = patrol_status
+            self._last_patrol_findings = findings_count
+            self._last_patrol_novel = novel_count
+            self._last_patrol_dispatched = dispatched_count
+            self._current_patrol_id = None
+
+            logger.info(
+                "QaModule patrol complete: status=%s findings=%d novel=%d "
+                "dispatched=%d sources=%s patrol_id=%s",
+                patrol_status,
+                findings_count,
+                novel_count,
+                dispatched_count,
+                sources_polled,
+                patrol_id,
+            )
+
+            return {
+                "status": patrol_status,
+                "patrol_id": str(patrol_id),
+                "findings_count": findings_count,
+                "novel_count": novel_count,
+                "dispatched_count": dispatched_count,
+                "sources_polled": sources_polled,
+            }
+
+        except Exception as exc:
+            error_msg = repr(exc)
+            logger.error(
+                "QaModule patrol error: patrol_id=%s error=%s",
+                patrol_id,
+                error_msg,
+                exc_info=True,
+            )
+            await self._complete_patrol_record(
+                pool=pool,
+                patrol_id=patrol_id,
+                status="error",
+                findings_count=0,
+                novel_count=0,
+                dispatched_count=0,
+                sources_polled=sources_polled,
+                error_detail=error_msg[:500],
+            )
+            self._last_patrol_at = datetime.now(UTC)
+            self._last_patrol_status = "error"
+            self._current_patrol_id = None
+            return {"status": "error", "reason": error_msg}
+
+    def _schedule_mini_patrol(self, fingerprint: str) -> None:
+        """Schedule an immediate mini-patrol for a severity-0 finding.
+
+        Creates a background task to run a full patrol cycle immediately
+        (all configured sources).  This is a best-effort trigger; if a
+        patrol is already running, the finding will be picked up by the
+        normal scheduled cycle.
+
+        Parameters
+        ----------
+        fingerprint:
+            64-character hex fingerprint of the critical finding.  Used
+            only for log context.
+        """
+        if self._mini_patrol_task and not self._mini_patrol_task.done():
+            logger.debug(
+                "QaModule: mini-patrol already pending for severity-0 "
+                "finding (fingerprint=%s), skipping duplicate",
+                fingerprint[:12],
+            )
+            return
+
+        logger.info(
+            "QaModule: triggering immediate mini-patrol for severity-0 finding fingerprint=%s",
+            fingerprint[:12],
+        )
+
+        async def _run_mini_patrol() -> None:
+            try:
+                await asyncio.sleep(0)  # yield to allow the tool handler to return first
+                await self.run_patrol_tick()
+            except Exception:
+                logger.warning("QaModule mini-patrol failed", exc_info=True)
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._mini_patrol_task = loop.create_task(_run_mini_patrol())
+        except RuntimeError:
+            # No running event loop — mini-patrol not possible in this context
+            logger.debug("QaModule: could not schedule mini-patrol (no running event loop)")
+
+    # ------------------------------------------------------------------
+    # Patrol DB helpers
+    # ------------------------------------------------------------------
+
+    async def _create_patrol_record(self, pool: Any) -> uuid.UUID:
+        """Insert a new 'running' patrol record and return its UUID."""
+        patrol_id = await pool.fetchval(
+            """
+            INSERT INTO public.qa_patrols (
+                status, log_lookback_minutes, sources_polled
+            )
+            VALUES ('running', $1, $2)
+            RETURNING id
+            """,
+            self._config.log_lookback_minutes,
+            [],
+        )
+        return patrol_id
+
+    async def _complete_patrol_record(
+        self,
+        pool: Any,
+        patrol_id: uuid.UUID,
+        status: str,
+        findings_count: int,
+        novel_count: int,
+        dispatched_count: int,
+        sources_polled: list[str],
+        error_detail: str | None,
+    ) -> None:
+        """Update the patrol record with final outcome."""
+        await pool.execute(
+            """
+            UPDATE public.qa_patrols
+            SET completed_at = now(),
+                status = $2,
+                findings_count = $3,
+                novel_count = $4,
+                dispatched_count = $5,
+                sources_polled = $6,
+                error_detail = $7
+            WHERE id = $1
+            """,
+            patrol_id,
+            status,
+            findings_count,
+            novel_count,
+            dispatched_count,
+            sources_polled,
+            error_detail,
+        )
+
+    async def _record_patrol_skip(self, pool: Any) -> None:
+        """Insert a skipped_overlap patrol record (no findings, immediate close)."""
+        try:
+            await pool.execute(
+                """
+                INSERT INTO public.qa_patrols (
+                    status, completed_at, log_lookback_minutes, sources_polled
+                )
+                VALUES ('skipped_overlap', now(), $1, '{}')
+                """,
+                self._config.log_lookback_minutes,
+            )
+        except Exception:
+            logger.debug("QaModule: failed to record skipped_overlap patrol", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Credential resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_gh_token(self) -> str | None:
+        """Resolve BUTLERS_QA_GH_TOKEN from the credential store."""
+        if self._credential_store is None:
+            return None
+        try:
+            token = await self._credential_store.resolve(QA_GH_TOKEN_KEY)
+            return token
+        except Exception:
+            logger.debug("QaModule: failed to resolve GH token", exc_info=True)
+            return None
+
+    # ------------------------------------------------------------------
+    # PR status check
+    # ------------------------------------------------------------------
+
+    async def _check_pr_statuses(self, pool: Any, gh_token: str | None) -> None:
+        """Check GitHub status of open PR investigations.
+
+        Wraps check_open_pr_statuses from core.qa.dispatch with error
+        isolation so PR check failures don't abort the patrol cycle.
+        """
+        try:
+            await check_open_pr_statuses(pool, gh_token)
+        except Exception:
+            logger.warning("QaModule: check_open_pr_statuses failed (non-fatal)", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Runtime wiring (called by daemon after register_tools)
+    # ------------------------------------------------------------------
+
+    def wire_runtime(
+        self,
+        butler_name: str,
+        spawner: Any,
+        repo_root: Path | str,
+    ) -> None:
+        """Wire the module to the spawner and butler identity.
+
+        Called by the QA staffer daemon after ``register_tools()`` to give the
+        module access to the spawner (for investigation dispatch) and the
+        repo root (for worktree creation).
+        """
+        self._butler_name = butler_name
+        self._spawner = spawner
+        self._repo_root = Path(repo_root)

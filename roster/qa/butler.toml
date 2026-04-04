@@ -1,0 +1,52 @@
+[butler]
+name = "qa"
+port = 41106
+description = "System-wide SRE: patrol loop, error discovery, triage, and automated investigation dispatch"
+type = "staffer"
+
+[butler.permissions]
+cross_butler_access = ["*"]
+
+[butler.runtime]
+max_concurrent_sessions = 3
+
+[butler.switchboard]
+url = "http://localhost:41100/mcp"
+
+[butler.seed_configs]
+runtime_type = "codex"
+model = "claude-opus-4-5"
+
+[butler.db]
+name = "butlers"
+schema = "qa"
+
+# ---------------------------------------------------------------------------
+# Patrol schedule: every 10 minutes
+# ---------------------------------------------------------------------------
+[[butler.schedule]]
+name = "qa_patrol"
+cron = "*/10 * * * *"
+dispatch_mode = "job"
+job_name = "qa_patrol"
+
+# ---------------------------------------------------------------------------
+# PR status check: every 5 minutes
+# ---------------------------------------------------------------------------
+[[butler.schedule]]
+name = "qa_pr_status_check"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "qa_pr_status_check"
+
+# ---------------------------------------------------------------------------
+# QA module configuration
+# ---------------------------------------------------------------------------
+[modules.qa]
+enabled = true
+patrol_interval_minutes = 10
+log_lookback_minutes = 15
+max_concurrent_investigations = 2
+severity_threshold = 2
+enabled_sources = ["log_scanner", "session_records", "butler_reports"]
+max_reactive_buffer = 50
