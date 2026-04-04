@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid as _uuid_mod
+import weakref
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -79,9 +80,12 @@ async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None
     return str(row["id"])
 
 
-# Module-level cache for _has_column results: (table, column) -> bool
-# Avoids repeated information_schema queries within a process lifetime.
-_column_existence_cache: dict[tuple[str, str], bool] = {}
+# Module-level cache for _has_column results.
+# Keyed by pool instance via WeakKeyDictionary so entries are automatically
+# discarded when a pool is garbage-collected, avoiding ID-reuse collisions.
+_column_existence_cache: weakref.WeakKeyDictionary[
+    asyncpg.Pool, dict[tuple[str, str], bool]
+] = weakref.WeakKeyDictionary()
 
 
 async def _mirror_to_spo(
@@ -284,9 +288,10 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
     Results are cached for the lifetime of the process to avoid repeated
     ``information_schema`` queries on every deduplication call.
     """
+    per_pool = _column_existence_cache.setdefault(pool, {})
     cache_key = (table, column)
-    if cache_key in _column_existence_cache:
-        return _column_existence_cache[cache_key]
+    if cache_key in per_pool:
+        return per_pool[cache_key]
     count = await pool.fetchval(
         """
         SELECT COUNT(*) FROM information_schema.columns
@@ -297,7 +302,7 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
         column,
     )
     result = bool(count)
-    _column_existence_cache[cache_key] = result
+    per_pool[cache_key] = result
     return result
 
 

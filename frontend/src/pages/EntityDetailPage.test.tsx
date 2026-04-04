@@ -53,6 +53,7 @@ const BASE_ENTITY: EntityDetail = {
   updated_at: "2025-01-01T00:00:00Z",
   dunbar_tier: null,
   dunbar_score: null,
+  archived: false,
   metadata: {},
   recent_facts: [],
   entity_info: [],

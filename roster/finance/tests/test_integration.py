@@ -164,7 +164,7 @@ def _utcnow() -> datetime:
 
 
 def _today() -> date:
-    return datetime.now(UTC).date()
+    return date.today()
 
 
 # ===========================================================================

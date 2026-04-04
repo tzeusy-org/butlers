@@ -144,16 +144,20 @@ async def run_subscription_renewal_alerts(db_pool: asyncpg.Pool) -> dict:
     logger.info("Running subscription renewal alerts job")
 
     async with db_pool.acquire() as conn:
+        today = datetime.now(UTC).date()
+        horizon = today + timedelta(days=7)
         rows = await conn.fetch(
             """
             SELECT id, service, amount, currency, next_renewal, frequency
             FROM finance.subscriptions
             WHERE
                 status = 'active'
-                AND next_renewal <= CURRENT_DATE + INTERVAL '7 days'
-                AND next_renewal >= CURRENT_DATE
+                AND next_renewal <= $2
+                AND next_renewal >= $1
             ORDER BY next_renewal ASC
-            """
+            """,
+            today,
+            horizon,
         )
 
     if not rows:

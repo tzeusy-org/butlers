@@ -555,7 +555,7 @@ async def get_upcoming_travel(
     """List upcoming trips with urgency-ranked pre-trip action items."""
     pool = _pool(db)
 
-    today = datetime.now(UTC).date()
+    today = date.today()
     window_end = today + timedelta(days=within_days)
 
     rows = await pool.fetch(

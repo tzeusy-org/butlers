@@ -341,7 +341,7 @@ async def upcoming_travel(
                 "window_end": "2026-03-09",
             }
     """
-    today = datetime.now(UTC).date()
+    today = date.today()
     window_end = today + timedelta(days=within_days)
 
     # Find planned/active trips with start_date within window

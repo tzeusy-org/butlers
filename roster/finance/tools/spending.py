@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -18,7 +18,7 @@ VALID_GROUP_BY_MODES = {"category", "merchant", "week", "month"}
 
 def _current_month_bounds() -> tuple[date, date]:
     """Return (start_date, end_date) for the current calendar month."""
-    today = datetime.now(UTC).date()
+    today = date.today()
     start = today.replace(day=1)
     # End of month: first day of next month minus one day
     if today.month == 12:

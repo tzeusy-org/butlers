@@ -84,7 +84,7 @@ _INVESTMENT_RE = re.compile(
 
 
 def _today() -> date:
-    return datetime.now(UTC).date()
+    return date.today()
 
 
 def _infer_account_type(name: str, default: str = "checking") -> str:

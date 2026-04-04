@@ -152,8 +152,8 @@ async def _insert_trip(
     status: str = "planned",
 ) -> str:
     """Insert a minimal trip and return its trip_id (str)."""
-    start = (_utcnow() + timedelta(days=days_ahead)).date()
-    end = (_utcnow() + timedelta(days=days_ahead + 5)).date()
+    start = date.today() + timedelta(days=days_ahead)
+    end = date.today() + timedelta(days=days_ahead + 5)
     row = await pool.fetchrow(
         """
         INSERT INTO travel.trips (name, destination, start_date, end_date, status)

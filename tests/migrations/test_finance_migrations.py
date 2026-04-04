@@ -1,67 +1,20 @@
-"""Tests for the finance module migrations."""
+"""Integration tests for the finance module migrations.
+
+Tests verify schema outcomes (index behavior, constraint enforcement) against
+a real PostgreSQL instance provisioned by the test fixtures.
+
+Chain-integrity (file existence, revision metadata, upgrade/downgrade callables)
+is covered canonically by tests/config/test_migration_contract.py.
+"""
 
 from __future__ import annotations
 
-import importlib.util
 from datetime import UTC, datetime
-from pathlib import Path
 
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.unit
-
-# Find the finance module migrations relative to this test file
-# tests/migrations/test_finance_migrations.py -> roster/finance/migrations/
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-MIGRATION_DIR = REPO_ROOT / "roster" / "finance" / "migrations"
-
-
-def _load_migration(filename: str, module_name: str):
-    """Load a migration module dynamically."""
-    filepath = MIGRATION_DIR / filename
-    spec = importlib.util.spec_from_file_location(module_name, filepath)
-    assert spec is not None
-    assert spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-class TestFinanceMigrationFileLayout:
-    """Test that migration files exist and are properly structured."""
-
-    def test_finance_001_migration_file_exists(self) -> None:
-        """The initial finance migration file exists on disk."""
-        migration_file = MIGRATION_DIR / "001_finance_tables.py"
-        assert migration_file.exists(), f"Migration file not found at {migration_file}"
-
-    def test_finance_002_migration_file_exists(self) -> None:
-        """The merchant mappings trigram migration file exists on disk."""
-        migration_file = MIGRATION_DIR / "002_merchant_mappings_trigram_index.py"
-        assert migration_file.exists(), f"Migration file not found at {migration_file}"
-
-    def test_finance_005_migration_file_exists(self) -> None:
-        """The CSV dedup migration file exists on disk."""
-        migration_file = MIGRATION_DIR / "005_add_csv_dedup_index.py"
-        assert migration_file.exists(), f"Migration file not found at {migration_file}"
-
-    def test_init_file_exists(self) -> None:
-        """The __init__.py file exists in the migrations directory."""
-        init_file = MIGRATION_DIR / "__init__.py"
-        assert init_file.exists(), f"__init__.py not found at {init_file}"
-
-
-class TestFinance005RevisionMetadata:
-    """Test revision metadata for finance_005 migration."""
-
-    def test_revision_identifiers(self) -> None:
-        """The migration has correct revision metadata."""
-        mod = _load_migration("005_add_csv_dedup_index.py", "finance_005_migration")
-        assert mod.revision == "finance_005"
-        assert mod.down_revision == "finance_004"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture

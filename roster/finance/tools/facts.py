@@ -125,7 +125,7 @@ def _infer_direction(amount: Decimal | float | int) -> str:
 
 def _current_month_bounds() -> tuple[date, date]:
     """Return (start, end) for the current calendar month."""
-    today = datetime.now(UTC).date()
+    today = date.today()
     start = today.replace(day=1)
     if today.month == 12:
         end = date(today.year + 1, 1, 1)

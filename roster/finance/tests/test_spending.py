@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -90,8 +90,8 @@ async def _insert_tx(
 
 def _this_month_mid() -> datetime:
     """Return a datetime that is definitely within the current calendar month."""
-    today = datetime.now(UTC)
-    return today.replace(day=max(1, today.day - 1), hour=12, minute=0, second=0, microsecond=0)
+    d = date.today().replace(day=max(1, date.today().day - 1))
+    return datetime(d.year, d.month, d.day, 12, 0, 0, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +334,7 @@ async def test_spending_summary_accepts_string_dates(pool):
     posted = _this_month_mid()
     await _insert_tx(pool, amount="42.00", posted_at=posted)
 
-    today = datetime.now(UTC).date()
+    today = date.today()
     result = await spending_summary(
         pool,
         start_date=today.replace(day=1).isoformat(),

@@ -1113,8 +1113,9 @@ async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
         await _insert_budget(pool, category="groceries", amount="500.00")
 
         # Spend $460 (92%) this month
-        month_start = _today().replace(day=1)
-        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="Whole Foods",
@@ -1141,8 +1142,9 @@ async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_
 
         await _insert_budget(pool, category="dining", amount="300.00")
 
-        month_start = _today().replace(day=1)
-        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
         # Spend $255 (85%) this month
         await _insert_transaction(
             pool,
@@ -1170,8 +1172,9 @@ async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres
 
         await _insert_budget(pool, category="transport", amount="200.00")
 
-        month_start = _today().replace(day=1)
-        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
         # Spend $100 (50%) — below threshold
         await _insert_transaction(
             pool,
@@ -1198,8 +1201,9 @@ async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
 
         await _insert_budget(pool, category="subscriptions", amount="100.00")
 
-        month_start = _today().replace(day=1)
-        tx_date = datetime(month_start.year, month_start.month, 15, 12, 0, 0, tzinfo=UTC)
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="Netflix",
@@ -1351,7 +1355,8 @@ async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
             )
 
         # Current month: $220 (120% above average of $100 — more than 100%)
-        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        current_day = min(today.day, 28)
+        current_tx_date = datetime(today.year, today.month, current_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="Whole Foods",
@@ -1398,7 +1403,8 @@ async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_po
             )
 
         # 40% above average: $140
-        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        current_day = min(today.day, 28)
+        current_tx_date = datetime(today.year, today.month, current_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="Fancy Restaurant",
@@ -1444,7 +1450,8 @@ async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_p
             )
 
         # 75% above average: $175
-        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        current_day = min(today.day, 28)
+        current_tx_date = datetime(today.year, today.month, current_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="Cinema",
@@ -1490,7 +1497,8 @@ async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(provisione
             )
 
         # 20% above average — below threshold
-        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        current_day = min(today.day, 28)
+        current_tx_date = datetime(today.year, today.month, current_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="Grocery",
@@ -1538,7 +1546,8 @@ async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
             )
 
         # Current month: $500 — would be anomalous if history were sufficient
-        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        current_day = min(today.day, 28)
+        current_tx_date = datetime(today.year, today.month, current_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="NewMerchant",
@@ -1582,7 +1591,8 @@ async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgr
                 posted_at=tx_date,
             )
 
-        current_tx_date = datetime(month_start.year, month_start.month, 10, 12, 0, 0, tzinfo=UTC)
+        current_day = min(today.day, 28)
+        current_tx_date = datetime(today.year, today.month, current_day, 12, 0, 0, tzinfo=UTC)
         await _insert_transaction(
             pool,
             merchant="Shop",

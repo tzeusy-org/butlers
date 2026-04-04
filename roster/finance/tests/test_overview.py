@@ -253,7 +253,7 @@ class TestNetWorthSnapshot:
             balance=10000.00,
         )
 
-        today = datetime.now(UTC).date()
+        today = date.today()
         row = await pool.fetchrow(
             "SELECT as_of_date FROM balance_snapshots WHERE id = $1::uuid",
             result["id"],

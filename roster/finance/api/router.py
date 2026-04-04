@@ -10,7 +10,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -403,7 +403,7 @@ async def get_spending_summary(
             detail=f"Invalid group_by '{group_by}'. Must be one of: {sorted(valid_group_by)}",
         )
 
-    today = datetime.now(UTC).date()
+    today = date.today()
     start = date.fromisoformat(start_date) if start_date else today.replace(day=1)
     end = date.fromisoformat(end_date) if end_date else today
 
@@ -480,7 +480,7 @@ async def get_upcoming_bills(
     """List bills due within the look-ahead window, with urgency classification."""
     pool = _pool(db)
 
-    today = datetime.now(UTC).date()
+    today = date.today()
     horizon = today + timedelta(days=days_ahead)
 
     if include_overdue:

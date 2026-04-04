@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -132,8 +132,8 @@ def _utcnow() -> datetime:
 
 async def _insert_trip(pool, destination: str = "Tokyo", days_ahead: int = 7) -> str:
     """Insert a minimal trip and return its trip_id."""
-    start = (_utcnow() + timedelta(days=days_ahead)).date()
-    end = (_utcnow() + timedelta(days=days_ahead + 5)).date()
+    start = date.today() + timedelta(days=days_ahead)
+    end = date.today() + timedelta(days=days_ahead + 5)
     row = await pool.fetchrow(
         """
         INSERT INTO travel.trips (name, destination, start_date, end_date, status)
