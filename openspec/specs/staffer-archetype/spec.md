@@ -112,3 +112,10 @@ The staffer archetype SHALL accommodate future infrastructure agents beyond swit
 - **WHEN** a future staffer has different access requirements (e.g., QA staffer needs read-only cross-butler log access plus codebase R/W)
 - **THEN** the `[butler.permissions]` section accommodates this via scoped `cross_butler_access` lists
 - **AND** additional permission dimensions MAY be added to the permissions section in future changes without modifying the core type system
+
+#### Scenario: QA Staffer as concrete example
+- **WHEN** the QA staffer is added to the roster at `roster/qa/`
+- **THEN** it validates the extensibility contract: `type = "staffer"`, `cross_butler_access = ["*"]`, infrastructure contract MANIFESTO.md, scheduler-driven patrol loop, all running on the standard daemon engine
+- **AND** no changes to the core staffer archetype code were required to accommodate a third staffer type
+- **AND** the QA staffer demonstrates that staffer-specific modules (here: `modules.qa` with patrol loop, discovery sources, triage, and investigation dispatch) are implemented as standard Module subclasses
+- **AND** the three concrete staffers in the ecosystem are: switchboard (routing), messenger (outbound delivery), and QA (automated quality assurance)

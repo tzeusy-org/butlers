@@ -603,3 +603,118 @@ class TestAlreadyInvestigatingFastPath:
         assert result["accepted"] is False
         assert result["reason"] == "already_investigating"
         assert len(route_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: qa_fallback_activations_total Prometheus counter (task 13.9)
+# ---------------------------------------------------------------------------
+
+
+class TestQaFallbackCounter:
+    async def test_fallback_counter_exported(self):
+        """qa_fallback_activations_total is accessible as a module-level symbol."""
+        from butlers.modules.self_healing import _qa_fallback_activations_total
+
+        # Counter should be a non-None object (prometheus Counter or None on failure)
+        # In a normal test environment prometheus_client is available
+        assert _qa_fallback_activations_total is not None
+
+    async def test_fallback_incremented_when_qa_unavailable(self):
+        """When QA relay fails and direct dispatch fires, fallback counter is incremented."""
+        import butlers.modules.self_healing as sh_module
+
+        original_counter = sh_module._qa_fallback_activations_total
+        inc_calls: list[dict] = []
+
+        class _FakeCounterChild:
+            def __init__(self, labels_kwargs: dict) -> None:
+                self._labels = labels_kwargs
+
+            def inc(self) -> None:
+                inc_calls.append({"labels": self._labels})
+
+        class _FakeCounter:
+            def labels(self, **kwargs):
+                return _FakeCounterChild(kwargs)
+
+        sh_module._qa_fallback_activations_total = _FakeCounter()
+
+        try:
+            # QA not available → fallback fires
+            async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
+                if tool_name == "list_butlers":
+                    return [{"name": "general"}]  # No QA staffer
+                return {}
+
+            client = MagicMock()
+            client.call_tool = mock_call_tool
+
+            mod = _make_module(switchboard_client=client)
+            mod._butler_name = "finance"
+            mod._pool = None
+            mod._spawner = None
+
+            result = await mod._handle_report_error(
+                error_type="IOError",
+                error_message="disk full",
+                traceback_str=None,
+                call_site="storage.py:write",
+                context=None,
+                tool_name=None,
+                severity_hint="high",
+            )
+
+            # Fallback runs (not_configured because no pool/spawner, and counter was hit)
+            assert result["reason"] in (
+                "not_configured",
+                "disabled",
+                "no_recursion",
+                "already_investigating",
+            )
+            # Counter must have been incremented exactly once
+            assert len(inc_calls) == 1
+            assert inc_calls[0]["labels"] == {"butler": "finance"}
+        finally:
+            sh_module._qa_fallback_activations_total = original_counter
+
+    async def test_fallback_counter_does_not_block_on_metric_error(self):
+        """Counter errors do not propagate to callers — fallback still runs."""
+        import butlers.modules.self_healing as sh_module
+
+        original_counter = sh_module._qa_fallback_activations_total
+
+        # Simulate a broken counter
+        class _BrokenCounter:
+            def labels(self, **kwargs):
+                raise RuntimeError("prometheus unavailable")
+
+        sh_module._qa_fallback_activations_total = _BrokenCounter()
+
+        try:
+
+            async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
+                if tool_name == "list_butlers":
+                    return []  # QA unavailable
+                return {}
+
+            client = MagicMock()
+            client.call_tool = mock_call_tool
+
+            mod = _make_module(switchboard_client=client)
+            mod._pool = None
+            mod._spawner = None
+
+            # Should not raise despite broken counter
+            result = await mod._handle_report_error(
+                error_type="ValueError",
+                error_message="test",
+                traceback_str=None,
+                call_site=None,
+                context=None,
+                tool_name=None,
+                severity_hint=None,
+            )
+            # Fallback still completed
+            assert "reason" in result
+        finally:
+            sh_module._qa_fallback_activations_total = original_counter
