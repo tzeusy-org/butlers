@@ -2828,3 +2828,149 @@ export interface SteamPlaytimeAnalytics {
   games: SteamGamePlaytime[];
   queried_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Healing attempts (self-healing + QA-originated investigations)
+// ---------------------------------------------------------------------------
+
+/** A single healing attempt record — GET /api/healing/attempts/:id */
+export interface HealingAttempt {
+  id: string;
+  fingerprint: string;
+  butler_name: string;
+  status: string;
+  severity: number;
+  exception_type: string;
+  call_site: string;
+  sanitized_msg: string | null;
+  branch_name: string | null;
+  worktree_path: string | null;
+  pr_url: string | null;
+  pr_number: number | null;
+  session_ids: string[];
+  healing_session_id: string | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  error_detail: string | null;
+}
+
+/** Params for listing healing attempts */
+export interface HealingAttemptsParams {
+  offset?: number;
+  limit?: number;
+  status?: string;
+}
+
+// ---------------------------------------------------------------------------
+// QA Staffer
+// ---------------------------------------------------------------------------
+
+/** Lightweight patrol record for list views — GET /api/qa/patrols */
+export interface QaPatrolSummary {
+  id: string;
+  started_at: string;
+  completed_at: string | null;
+  status: string;
+  findings_count: number;
+  novel_count: number;
+  dispatched_count: number;
+  log_lookback_minutes: number;
+  sources_polled: string[];
+  error_detail: string | null;
+}
+
+/** A single finding record from a patrol — GET /api/qa/patrols/:id/findings */
+export interface QaFindingRecord {
+  id: string;
+  patrol_id: string;
+  fingerprint: string;
+  source_type: string;
+  source_butler: string;
+  severity: number;
+  exception_type: string;
+  event_summary: string;
+  call_site: string;
+  occurrence_count: number;
+  first_seen: string;
+  last_seen: string;
+  dedup_reason: string | null;
+  healing_attempt_id: string | null;
+  created_at: string;
+}
+
+/** Full patrol with nested findings — GET /api/qa/patrols/:id */
+export interface QaPatrolDetail extends QaPatrolSummary {
+  findings: QaFindingRecord[];
+}
+
+/** A dismissal record — GET /api/qa/dismissals */
+export interface QaDismissal {
+  fingerprint: string;
+  dismissed_until: string;
+  dismissed_by: string;
+  created_at: string;
+}
+
+/** A known issue grouped by fingerprint — GET /api/qa/known-issues */
+export interface QaKnownIssue {
+  fingerprint: string;
+  source_butler: string;
+  source_type: string;
+  severity: number;
+  exception_type: string;
+  event_summary: string;
+  call_site: string;
+  occurrence_count: number;
+  first_seen: string;
+  last_seen: string;
+  patrol_count: number;
+  healing_attempt_id: string | null;
+  dismissal: QaDismissal | null;
+}
+
+/** 24h aggregate statistics */
+export interface QaStats24h {
+  patrols_completed: number;
+  total_findings: number;
+  novel_findings: number;
+  dispatched_investigations: number;
+}
+
+/** All-time aggregate statistics */
+export interface QaAllTimeStats {
+  total_patrols: number;
+  total_findings: number;
+  novel_findings: number;
+  dispatched_investigations: number;
+}
+
+/** QA staffer summary — GET /api/qa/summary */
+export interface QaSummary {
+  last_patrol: QaPatrolSummary | null;
+  stats_24h: QaStats24h;
+  stats_all_time: QaAllTimeStats;
+  active_sources: string[];
+}
+
+/** Request body for dismissing a known issue */
+export interface QaDismissRequest {
+  dismissed_until?: string;
+  dismissed_by?: string;
+}
+
+/** Params for listing patrols */
+export interface QaPatrolsParams {
+  offset?: number;
+  limit?: number;
+  status?: string;
+}
+
+/** Params for listing known issues */
+export interface QaKnownIssuesParams {
+  source_butler?: string;
+  severity?: number;
+  dismissed?: boolean;
+  offset?: number;
+  limit?: number;
+}

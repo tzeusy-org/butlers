@@ -20,6 +20,7 @@ import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { useIssues } from "@/hooks/use-issues";
 import { useNotifications } from "@/hooks/use-notifications";
 import { useSessions } from "@/hooks/use-sessions";
+import { useQaSummary } from "@/hooks/use-qa";
 
 function StatsCard({
   title,
@@ -38,6 +39,79 @@ function StatsCard({
       <CardContent>
         <div className="text-2xl font-bold">{value}</div>
         {description && <p className="text-muted-foreground mt-1 text-xs">{description}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// QA widget
+// ---------------------------------------------------------------------------
+
+function QaWidget() {
+  const { data: summaryResponse, isLoading, isError } = useQaSummary();
+  const summary = summaryResponse?.data;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          QA Staffer
+          {!isLoading && summary && summary.stats_24h.dispatched_investigations > 0 && (
+            <Badge variant="secondary">{summary.stats_24h.dispatched_investigations} active</Badge>
+          )}
+        </CardTitle>
+        <CardDescription>System-wide quality patrol status</CardDescription>
+        <CardAction>
+          <Button variant="link" size="sm" asChild>
+            <Link to="/qa">View QA dashboard</Link>
+          </Button>
+        </CardAction>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            <div className="h-4 w-full animate-pulse rounded bg-muted" />
+            <div className="h-4 w-2/3 animate-pulse rounded bg-muted" />
+          </div>
+        ) : isError ? (
+          <p className="text-destructive text-sm">Failed to load QA status.</p>
+        ) : !summary?.last_patrol ? (
+          <p className="text-muted-foreground text-sm">QA Staffer not active.</p>
+        ) : (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+            <dt className="text-muted-foreground">Last patrol</dt>
+            <dd>{new Date(summary.last_patrol.started_at).toLocaleString()}</dd>
+
+            <dt className="text-muted-foreground">Status</dt>
+            <dd>
+              <span
+                className={
+                  summary.last_patrol.status === "clean"
+                    ? "text-emerald-600 font-medium"
+                    : summary.last_patrol.status === "error"
+                      ? "text-destructive font-medium"
+                      : "text-foreground"
+                }
+              >
+                {summary.last_patrol.status}
+              </span>
+            </dd>
+
+            <dt className="text-muted-foreground">Patrols (24h)</dt>
+            <dd>{summary.stats_24h.patrols_completed}</dd>
+
+            <dt className="text-muted-foreground">Findings (24h)</dt>
+            <dd>
+              {summary.stats_24h.total_findings}
+              {summary.stats_24h.novel_findings > 0 && (
+                <span className="text-muted-foreground ml-1 text-xs">
+                  ({summary.stats_24h.novel_findings} novel)
+                </span>
+              )}
+            </dd>
+          </dl>
+        )}
       </CardContent>
     </Card>
   );
@@ -160,6 +234,9 @@ export default function DashboardPage() {
 
         <IssuesPanel issues={issues} isLoading={issuesLoading} />
       </div>
+
+      {/* QA Widget */}
+      <QaWidget />
     </div>
   );
 }

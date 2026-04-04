@@ -623,3 +623,31 @@ export type {
   SteamGamePlaytime,
   SteamPlaytimeAnalytics,
 } from "./types.ts";
+
+export {
+  dismissQaKnownIssue,
+  getQaKnownIssues,
+  getQaPatrol,
+  getQaPatrolFindings,
+  getQaPatrols,
+  getQaSummary,
+  undismissQaKnownIssue,
+  getHealingAttempt,
+  listHealingAttempts,
+} from "./client.ts";
+
+export type {
+  QaAllTimeStats,
+  QaDismissal,
+  QaDismissRequest,
+  QaFindingRecord,
+  QaKnownIssue,
+  QaKnownIssuesParams,
+  QaPatrolDetail,
+  QaPatrolsParams,
+  QaPatrolSummary,
+  QaStats24h,
+  QaSummary,
+  HealingAttempt,
+  HealingAttemptsParams,
+} from "./types.ts";

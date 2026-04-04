@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useCostSummary } from '@/hooks/use-costs'
+import { useBadgeCounts } from '@/hooks/use-qa-badge'
 import { navSections, type NavItem, type NavFlatItem, type NavGroupItem, type NavSection } from './nav-config'
 
 // ---------------------------------------------------------------------------
@@ -74,12 +75,16 @@ function FlatNavLink({
   collapsed,
   indented = false,
   onNavClick,
+  badgeCounts,
 }: {
   item: NavFlatItem
   collapsed: boolean
   indented?: boolean
   onNavClick?: () => void
+  badgeCounts?: Record<string, number>
 }) {
+  const count = item.badgeKey && badgeCounts ? (badgeCounts[item.badgeKey] ?? 0) : 0
+
   return (
     <NavLink
       to={item.path}
@@ -96,7 +101,12 @@ function FlatNavLink({
       >
         {item.label[0]}
       </span>
-      {!collapsed && <span>{item.label}</span>}
+      {!collapsed && <span className="flex-1">{item.label}</span>}
+      {!collapsed && count > 0 && (
+        <span className="ml-auto flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
     </NavLink>
   )
 }
@@ -105,10 +115,12 @@ function NavGroup({
   item,
   collapsed,
   onNavClick,
+  badgeCounts,
 }: {
   item: NavGroupItem
   collapsed: boolean
   onNavClick?: () => void
+  badgeCounts?: Record<string, number>
 }) {
   const location = useLocation()
 
@@ -187,6 +199,7 @@ function NavGroup({
             collapsed={false}
             indented
             onNavClick={onNavClick}
+            badgeCounts={badgeCounts}
           />
         ))}
       </div>
@@ -218,11 +231,13 @@ function NavSectionGroup({
   collapsed,
   isFirst,
   onNavClick,
+  badgeCounts,
 }: {
   section: NavSection
   collapsed: boolean
   isFirst: boolean
   onNavClick?: () => void
+  badgeCounts?: Record<string, number>
 }) {
   const location = useLocation()
 
@@ -282,6 +297,7 @@ function NavSectionGroup({
               item={item}
               collapsed={collapsed}
               onNavClick={onNavClick}
+              badgeCounts={badgeCounts}
             />
           ) : (
             <FlatNavLink
@@ -289,6 +305,7 @@ function NavSectionGroup({
               item={item}
               collapsed={collapsed}
               onNavClick={onNavClick}
+              badgeCounts={badgeCounts}
             />
           ),
         )}
@@ -331,6 +348,7 @@ interface SidebarProps {
 
 export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClick }: SidebarProps) {
   const filteredSections = useFilteredNavSections(navSections)
+  const badgeCounts = useBadgeCounts()
 
   return (
     <div className="flex h-full flex-col">
@@ -357,6 +375,7 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClic
             collapsed={collapsed}
             isFirst={idx === 0}
             onNavClick={onNavClick}
+            badgeCounts={badgeCounts}
           />
         ))}
       </nav>

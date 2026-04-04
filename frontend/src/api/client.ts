@@ -189,6 +189,17 @@ import type {
   SteamConnectResponse,
   SteamDisconnectResponse,
   SteamPlaytimeAnalytics,
+  QaPatrolSummary,
+  QaPatrolDetail,
+  QaFindingRecord,
+  QaKnownIssue,
+  QaSummary,
+  QaDismissal,
+  QaDismissRequest,
+  QaPatrolsParams,
+  QaKnownIssuesParams,
+  HealingAttempt,
+  HealingAttemptsParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3060,4 +3071,103 @@ export function getSteamPlaytime(params?: {
   if (params?.top_n !== undefined) query.set("top_n", String(params.top_n));
   const qs = query.toString();
   return apiFetch<SteamPlaytimeAnalytics>(`/steam/playtime${qs ? `?${qs}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+// Healing attempts API (used by QA investigation detail page)
+// ---------------------------------------------------------------------------
+
+/** GET /api/healing/attempts — paginated list */
+export function listHealingAttempts(
+  params?: HealingAttemptsParams,
+): Promise<PaginatedResponse<HealingAttempt>> {
+  const query = new URLSearchParams();
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.status) query.set("status", params.status);
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<HealingAttempt>>(`/healing/attempts${qs ? `?${qs}` : ""}`);
+}
+
+/** GET /api/healing/attempts/:id — single attempt detail */
+export function getHealingAttempt(attemptId: string): Promise<HealingAttempt> {
+  return apiFetch<HealingAttempt>(`/healing/attempts/${encodeURIComponent(attemptId)}`);
+}
+
+// ---------------------------------------------------------------------------
+// QA Staffer API
+// ---------------------------------------------------------------------------
+
+/** GET /api/qa/summary — QA staffer status, last patrol, 24h/all-time stats */
+export function getQaSummary(): Promise<ApiResponse<QaSummary>> {
+  return apiFetch<ApiResponse<QaSummary>>("/qa/summary");
+}
+
+/** GET /api/qa/patrols — paginated patrol list */
+export function getQaPatrols(params?: QaPatrolsParams): Promise<PaginatedResponse<QaPatrolSummary>> {
+  const query = new URLSearchParams();
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  if (params?.status) query.set("status", params.status);
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<QaPatrolSummary>>(`/qa/patrols${qs ? `?${qs}` : ""}`);
+}
+
+/** GET /api/qa/patrols/:patrolId — full patrol with nested findings */
+export function getQaPatrol(patrolId: string): Promise<ApiResponse<QaPatrolDetail>> {
+  return apiFetch<ApiResponse<QaPatrolDetail>>(`/qa/patrols/${encodeURIComponent(patrolId)}`);
+}
+
+/** GET /api/qa/patrols/:patrolId/findings — paginated findings for a patrol */
+export function getQaPatrolFindings(
+  patrolId: string,
+  params?: { source_type?: string; novel_only?: boolean; offset?: number; limit?: number },
+): Promise<PaginatedResponse<QaFindingRecord>> {
+  const query = new URLSearchParams();
+  if (params?.source_type) query.set("source_type", params.source_type);
+  if (params?.novel_only !== undefined) query.set("novel_only", String(params.novel_only));
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<QaFindingRecord>>(
+    `/qa/patrols/${encodeURIComponent(patrolId)}/findings${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** GET /api/qa/known-issues — known issues grouped by fingerprint */
+export function getQaKnownIssues(
+  params?: QaKnownIssuesParams,
+): Promise<PaginatedResponse<QaKnownIssue>> {
+  const query = new URLSearchParams();
+  if (params?.source_butler) query.set("source_butler", params.source_butler);
+  if (params?.severity !== undefined) query.set("severity", String(params.severity));
+  if (params?.dismissed !== undefined) query.set("dismissed", String(params.dismissed));
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<QaKnownIssue>>(`/qa/known-issues${qs ? `?${qs}` : ""}`);
+}
+
+/** POST /api/qa/known-issues/:fingerprint/dismiss — dismiss a known issue */
+export function dismissQaKnownIssue(
+  fingerprint: string,
+  body?: QaDismissRequest,
+): Promise<ApiResponse<QaDismissal>> {
+  return apiFetch<ApiResponse<QaDismissal>>(
+    `/qa/known-issues/${encodeURIComponent(fingerprint)}/dismiss`,
+    {
+      method: "POST",
+      body: body ? JSON.stringify(body) : "{}",
+    },
+  );
+}
+
+/** DELETE /api/qa/known-issues/:fingerprint/dismiss — un-dismiss a known issue */
+export function undismissQaKnownIssue(
+  fingerprint: string,
+): Promise<ApiResponse<Record<string, unknown>>> {
+  return apiFetch<ApiResponse<Record<string, unknown>>>(
+    `/qa/known-issues/${encodeURIComponent(fingerprint)}/dismiss`,
+    { method: "DELETE" },
+  );
 }

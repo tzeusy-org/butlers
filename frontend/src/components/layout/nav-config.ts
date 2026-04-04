@@ -10,6 +10,8 @@ export interface NavFlatItem {
   end?: boolean
   /** If set, only show when this butler is present in the roster. */
   butler?: string
+  /** If set, a React key used to look up a live badge count from the badge registry. */
+  badgeKey?: string
 }
 
 /** A collapsible group of navigation links. */
@@ -74,6 +76,7 @@ export const navSections: NavSection[] = [
       { path: '/timeline', label: 'Timeline' },
       { path: '/notifications', label: 'Notifications' },
       { path: '/issues', label: 'Issues' },
+      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-known-issues' },
       { path: '/audit-log', label: 'Audit Log' },
     ],
   },

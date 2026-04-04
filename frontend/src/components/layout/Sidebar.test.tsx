@@ -17,6 +17,10 @@ vi.mock("@/hooks/use-costs", () => ({
   useCostSummary: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-qa-badge", () => ({
+  useBadgeCounts: vi.fn(() => ({})),
+}));
+
 type UseButlersResult = ReturnType<typeof useButlers>;
 
 function setButlersState(state: Partial<UseButlersResult>) {

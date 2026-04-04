@@ -33,6 +33,9 @@ import EntitiesPage from './pages/EntitiesPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
 import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
+import QaOverviewPage from './pages/QaOverviewPage.tsx'
+import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
+import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
@@ -84,6 +87,10 @@ export const router = createBrowserRouter(
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
         { path: '/education', element: <EducationPage /> },
+        // QA Staffer routes
+        { path: '/qa', element: <QaOverviewPage /> },
+        { path: '/qa/patrols/:patrolId', element: <QaPatrolDetailPage /> },
+        { path: '/qa/investigations/:attemptId', element: <QaInvestigationDetailPage /> },
         // Ingestion routes (spec section 3.1, 3.2)
         { path: '/ingestion', element: <IngestionPage /> },
         {
