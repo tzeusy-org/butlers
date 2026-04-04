@@ -790,6 +790,7 @@ class Spawner:
         complexity: Complexity = Complexity.MEDIUM,
         cwd: str | None = None,
         bypass_butler_semaphore: bool = False,
+        max_token_budget: int | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -827,6 +828,11 @@ class Spawner:
             session directly after acquiring the global semaphore. Intended for
             the self-healing dispatcher, which manages its own concurrency cap and
             must not block behind ordinary butler sessions.
+        max_token_budget:
+            Optional per-session token budget (input tokens). When set and the
+            completed session's ``input_tokens`` exceeds this value, the session
+            is marked as a budget overrun (success remains True but a warning is
+            logged and the ``error`` field records the overrun).
 
         Returns
         -------
@@ -925,6 +931,7 @@ class Spawner:
                         request_id,
                         complexity,
                         cwd=cwd,
+                        max_token_budget=max_token_budget,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -948,6 +955,7 @@ class Spawner:
                             request_id,
                             complexity,
                             cwd=cwd,
+                            max_token_budget=max_token_budget,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1032,6 +1040,7 @@ class Spawner:
         request_id: str | None = None,
         complexity: Complexity = Complexity.MEDIUM,
         cwd: str | None = None,
+        max_token_budget: int | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1360,6 +1369,42 @@ class Spawner:
                             exc_info=True,
                         )
 
+            # Token budget overrun check (post-hoc — session already ran).
+            # Records the overrun as a warning so dashboards can surface it.
+            budget_overrun = False
+            if (
+                max_token_budget is not None
+                and input_tokens is not None
+                and input_tokens > max_token_budget
+            ):
+                budget_overrun = True
+                overrun_msg = (
+                    f"Token budget overrun: {input_tokens:,} input tokens "
+                    f"exceeded budget of {max_token_budget:,} "
+                    f"(+{input_tokens - max_token_budget:,} over)"
+                )
+                logger.warning(
+                    "Session %s budget overrun for butler=%s trigger=%s: %s",
+                    session_id,
+                    self._config.name,
+                    trigger_source,
+                    overrun_msg,
+                )
+                # Persist the overrun as a warning on the session record.
+                if self._pool is not None and session_id is not None:
+                    try:
+                        await self._pool.execute(
+                            "UPDATE sessions SET error = $2 WHERE id = $1",
+                            session_id,
+                            overrun_msg,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to record budget overrun for session %s",
+                            session_id,
+                            exc_info=True,
+                        )
+
             # Write daemon-side audit log entry
             await write_audit_entry(
                 self._audit_pool,
@@ -1377,6 +1422,8 @@ class Spawner:
                     "resolution_source": resolution_source,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
+                    "max_token_budget": max_token_budget,
+                    "budget_overrun": budget_overrun,
                 },
             )
 

@@ -77,6 +77,7 @@ class ScheduleConfig:
     dispatch_mode: ScheduleDispatchMode = ScheduleDispatchMode.PROMPT
     job_name: str | None = None
     job_args: dict[str, Any] | None = None
+    max_token_budget: int | None = None
 
 
 @dataclass
@@ -426,6 +427,13 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
     if job_args is not None and not isinstance(job_args, dict):
         raise ConfigError(f"{entry_path}.job_args must be a table/object when set")
 
+    raw_budget = entry.get("max_token_budget")
+    max_token_budget: int | None = None
+    if raw_budget is not None:
+        if not isinstance(raw_budget, int) or raw_budget <= 0:
+            raise ConfigError(f"{entry_path}.max_token_budget must be a positive integer")
+        max_token_budget = raw_budget
+
     if dispatch_mode == ScheduleDispatchMode.PROMPT:
         if prompt is None or not prompt.strip():
             raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
@@ -438,6 +446,7 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             cron=cron,
             prompt=prompt,
             dispatch_mode=dispatch_mode,
+            max_token_budget=max_token_budget,
         )
 
     if prompt is not None:
@@ -451,6 +460,7 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
         dispatch_mode=dispatch_mode,
         job_name=job_name.strip(),
         job_args=dict(job_args) if job_args is not None else None,
+        max_token_budget=max_token_budget,
     )
 
 

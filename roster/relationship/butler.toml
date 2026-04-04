@@ -23,16 +23,25 @@ route_contract_max = 1
 [[butler.schedule]]
 name = "upcoming-dates-check"
 cron = "0 8 * * *"
+max_token_budget = 200_000
 prompt = """
-Check for important dates in the next 7 days (birthdays, anniversaries).
-For each, draft a reminder message. If any dates are upcoming, deliver the
-compiled reminder via notify(channel="telegram", intent="send", message=<reminders>).
+You have MCP tools wired into this session. Use them directly — do NOT explore
+the codebase, read source files, probe HTTP endpoints, or run shell commands.
+
+1. Call `upcoming_dates(days_ahead=7)` to get birthdays and anniversaries.
+2. If the result is empty, exit silently (no notification needed).
+3. If dates are found, draft a concise reminder and deliver via
+   notify(channel="telegram", intent="send", message=<reminders>).
 """
 
 [[butler.schedule]]
 name = "relationship-maintenance"
 cron = "0 9 * * 1"
+max_token_budget = 300_000
 prompt = """
+You have MCP tools wired into this session. Use them directly — do NOT explore
+the codebase, read source files, probe HTTP endpoints, or run shell commands.
+
 Use the reconnect-planner skill to rank overdue contacts by Dunbar tier-weighted urgency
 and suggest the top 3 reconnections for this week.
 

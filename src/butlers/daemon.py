@@ -1786,6 +1786,7 @@ class ButlerDaemon:
                 "prompt": s.prompt,
                 "job_name": s.job_name,
                 "job_args": s.job_args,
+                "max_token_budget": s.max_token_budget,
             }
             for s in self.config.schedules
             if not (_is_staffer and s.job_name == "daily_briefing_contribution")
@@ -2442,6 +2443,7 @@ class ButlerDaemon:
         job_name: str | None = None,
         job_args: dict[str, Any] | None = None,
         complexity: Complexity = Complexity.MEDIUM,
+        max_token_budget: int | None = None,
     ) -> Any:
         """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -2487,7 +2489,10 @@ class ButlerDaemon:
         if prompt is None or not prompt.strip():
             raise RuntimeError("Prompt-mode scheduler dispatch requires a non-empty prompt payload")
         return await self.spawner.trigger(
-            prompt=prompt, trigger_source=trigger_source, complexity=complexity
+            prompt=prompt,
+            trigger_source=trigger_source,
+            complexity=complexity,
+            max_token_budget=max_token_budget,
         )
 
     async def _scheduler_loop(self) -> None:

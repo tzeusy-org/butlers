@@ -484,6 +484,11 @@ async def sync_schedules(
                 "alert_thresholds": alert_thresholds,
             }
 
+        raw_budget = schedule.get("max_token_budget")
+        max_token_budget: int | None = None
+        if raw_budget is not None:
+            max_token_budget = int(raw_budget) if isinstance(raw_budget, (int, float)) else None
+
         normalized_schedules.append(
             {
                 "name": name,
@@ -494,6 +499,7 @@ async def sync_schedules(
                 "job_name": job_name,
                 "job_args": job_args,
                 "complexity": complexity,
+                "max_token_budget": max_token_budget,
                 # Deadline-specific fields — validated above for deadline tasks,
                 # None for cron tasks; always present so the needs_update check
                 # can compare them without KeyError.
@@ -511,13 +517,17 @@ async def sync_schedules(
         ", task_type, target_date, lead_time_days, alert_thresholds" if _has_task_type else ""
     )
 
+    # Detect whether the max_token_budget column exists (added in core_050).
+    _has_budget = await _has_column(pool, "scheduled_tasks", "max_token_budget")
+    _budget_select = ", max_token_budget" if _has_budget else ""
+
     # Fetch existing tasks whose names match any TOML schedule (regardless of source).
     # A runtime-created task (source='db') may share a name with a TOML schedule;
     # TOML takes ownership on next startup to avoid unique-constraint violations.
     rows = await pool.fetch(
         f"""
         SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}
+               complexity, enabled{_temporal_select}{_budget_select}
         FROM scheduled_tasks
         WHERE name = ANY($1::text[])
         """,
@@ -527,7 +537,7 @@ async def sync_schedules(
     toml_only_rows = await pool.fetch(
         f"""
         SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}
+               complexity, enabled{_temporal_select}{_budget_select}
         FROM scheduled_tasks
         WHERE source = 'toml' AND name != ALL($1::text[])
         """,
@@ -547,6 +557,7 @@ async def sync_schedules(
         job_name = entry["job_name"]
         job_args = entry["job_args"]
         complexity = entry["complexity"]
+        max_token_budget = entry["max_token_budget"]
         target_date = entry["target_date"]
         lead_time_days = entry["lead_time_days"]
         alert_thresholds = entry["alert_thresholds"]
@@ -574,6 +585,9 @@ async def sync_schedules(
                 or existing_complexity != complexity
                 or not existing["enabled"]
             )
+            # Also detect changes to max_token_budget when schema supports it.
+            if not needs_update and _has_budget:
+                needs_update = existing.get("max_token_budget") != max_token_budget
             # Also detect changes to deadline-specific fields when schema supports them.
             # Restrict to deadline tasks to avoid spurious updates on cron tasks that
             # may carry stale deadline-column values from a prior task_type migration.
@@ -587,9 +601,26 @@ async def sync_schedules(
                     or existing_alert_thresholds != alert_thresholds
                 )
             if needs_update:
+                _budget_set = ", max_token_budget = $13" if _has_budget else ""
                 if _has_task_type and task_type == "deadline":
+                    base_args = [
+                        existing["id"],
+                        cron,
+                        dispatch_mode,
+                        prompt,
+                        job_name,
+                        _dict_to_jsonb(job_args),
+                        complexity,
+                        next_run_at,
+                        task_type,
+                        target_date,
+                        lead_time_days,
+                        json.dumps(alert_thresholds) if alert_thresholds is not None else None,
+                    ]
+                    if _has_budget:
+                        base_args.append(max_token_budget)
                     await pool.execute(
-                        """
+                        f"""
                         UPDATE scheduled_tasks
                         SET cron = $2,
                             dispatch_mode = $3,
@@ -603,10 +634,15 @@ async def sync_schedules(
                             task_type = $9,
                             target_date = $10,
                             lead_time_days = $11,
-                            alert_thresholds = $12::jsonb,
+                            alert_thresholds = $12::jsonb{_budget_set},
                             updated_at = now()
                         WHERE id = $1
                         """,
+                        *base_args,
+                    )
+                else:
+                    _budget_set_cron = ", max_token_budget = $9" if _has_budget else ""
+                    base_args = [
                         existing["id"],
                         cron,
                         dispatch_mode,
@@ -615,14 +651,11 @@ async def sync_schedules(
                         _dict_to_jsonb(job_args),
                         complexity,
                         next_run_at,
-                        task_type,
-                        target_date,
-                        lead_time_days,
-                        json.dumps(alert_thresholds) if alert_thresholds is not None else None,
-                    )
-                else:
+                    ]
+                    if _has_budget:
+                        base_args.append(max_token_budget)
                     await pool.execute(
-                        """
+                        f"""
                         UPDATE scheduled_tasks
                         SET cron = $2,
                             dispatch_mode = $3,
@@ -632,44 +665,19 @@ async def sync_schedules(
                             complexity = $7,
                             next_run_at = $8,
                             source = 'toml',
-                            enabled = true,
+                            enabled = true{_budget_set_cron},
                             updated_at = now()
                         WHERE id = $1
                         """,
-                        existing["id"],
-                        cron,
-                        dispatch_mode,
-                        prompt,
-                        job_name,
-                        _dict_to_jsonb(job_args),
-                        complexity,
-                        next_run_at,
+                        *base_args,
                     )
                 logger.info("Updated TOML schedule: %s", name)
         else:
             # Insert new TOML task
+            _budget_col = ", max_token_budget" if _has_budget else ""
             if _has_task_type and task_type == "deadline":
-                await pool.execute(
-                    """
-                    INSERT INTO scheduled_tasks (
-                        name,
-                        cron,
-                        dispatch_mode,
-                        prompt,
-                        job_name,
-                        job_args,
-                        complexity,
-                        source,
-                        enabled,
-                        next_run_at,
-                        task_type,
-                        target_date,
-                        lead_time_days,
-                        alert_thresholds
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8,
-                            $9, $10, $11, $12::jsonb)
-                    """,
+                _budget_val = ", $13" if _has_budget else ""
+                base_args = [
                     name,
                     cron,
                     dispatch_mode,
@@ -682,10 +690,11 @@ async def sync_schedules(
                     target_date,
                     lead_time_days,
                     json.dumps(alert_thresholds) if alert_thresholds is not None else None,
-                )
-            else:
+                ]
+                if _has_budget:
+                    base_args.append(max_token_budget)
                 await pool.execute(
-                    """
+                    f"""
                     INSERT INTO scheduled_tasks (
                         name,
                         cron,
@@ -696,10 +705,20 @@ async def sync_schedules(
                         complexity,
                         source,
                         enabled,
-                        next_run_at
+                        next_run_at,
+                        task_type,
+                        target_date,
+                        lead_time_days,
+                        alert_thresholds{_budget_col}
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8,
+                            $9, $10, $11, $12::jsonb{_budget_val})
                     """,
+                    *base_args,
+                )
+            else:
+                _budget_val_cron = ", $9" if _has_budget else ""
+                base_args = [
                     name,
                     cron,
                     dispatch_mode,
@@ -708,6 +727,26 @@ async def sync_schedules(
                     _dict_to_jsonb(job_args),
                     complexity,
                     next_run_at,
+                ]
+                if _has_budget:
+                    base_args.append(max_token_budget)
+                await pool.execute(
+                    f"""
+                    INSERT INTO scheduled_tasks (
+                        name,
+                        cron,
+                        dispatch_mode,
+                        prompt,
+                        job_name,
+                        job_args,
+                        complexity,
+                        source,
+                        enabled,
+                        next_run_at{_budget_col}
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8{_budget_val_cron})
+                    """,
+                    *base_args,
                 )
             logger.info("Inserted TOML schedule: %s", name)
 
@@ -1367,6 +1406,7 @@ async def tick(
         # Hoist schema probe: both the deadline pass and cron filter need this result.
         # A single check here avoids redundant information_schema round-trips per tick.
         _has_task_type_col = await _has_column(pool, "scheduled_tasks", "task_type")
+        _has_budget_col = await _has_column(pool, "scheduled_tasks", "max_token_budget")
 
         # ------------------------------------------------------------------
         # Seasonal context — queried once per tick, injected into ALL dispatches
@@ -1405,10 +1445,11 @@ async def tick(
             cron_filter = "AND COALESCE(task_type, 'cron') = 'cron'"
         else:
             cron_filter = ""
+        _budget_col_select = ", max_token_budget" if _has_budget_col else ""
         rows = await pool.fetch(
             f"""
             SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
-                   complexity, until_at
+                   complexity, until_at{_budget_col_select}
             FROM scheduled_tasks
             WHERE enabled = true
               {cron_filter}
@@ -1431,6 +1472,7 @@ async def tick(
             job_name = row["job_name"]
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
             task_complexity = _parse_complexity_from_db_row(row, name)
+            max_token_budget: int | None = row["max_token_budget"] if _has_budget_col else None
 
             until_at = row["until_at"]
 
@@ -1442,11 +1484,14 @@ async def tick(
                     # so that dispatch_fn (Spawner.trigger / _dispatch_scheduled_task)
                     # does not need to be aware of seasonal periods.
                     dispatched_prompt = _prepend_seasonal_context(prompt, active_seasons)
-                    result = await dispatch_fn(
-                        prompt=dispatched_prompt,
-                        trigger_source=f"schedule:{name}",
-                        complexity=task_complexity,
-                    )
+                    dispatch_kwargs: dict[str, Any] = {
+                        "prompt": dispatched_prompt,
+                        "trigger_source": f"schedule:{name}",
+                        "complexity": task_complexity,
+                    }
+                    if max_token_budget is not None:
+                        dispatch_kwargs["max_token_budget"] = max_token_budget
+                    result = await dispatch_fn(**dispatch_kwargs)
                 elif dispatch_mode == _DISPATCH_MODE_JOB:
                     result = await dispatch_fn(
                         job_name=job_name,

@@ -107,6 +107,7 @@ class TestNativeScheduleDispatch:
             prompt="run memory cleanup",
             trigger_source="schedule:non-native-prompt-task",
             complexity=Complexity.MEDIUM,
+            max_token_budget=None,
         )
 
     async def test_prompt_dispatch_passes_complexity_to_spawner(self, tmp_path):
@@ -135,6 +136,7 @@ class TestNativeScheduleDispatch:
             prompt="do a complex analysis",
             trigger_source="schedule:complex-task",
             complexity=Complexity.HIGH,
+            max_token_budget=None,
         )
 
     async def test_prompt_dispatch_defaults_complexity_to_medium(self, tmp_path):
