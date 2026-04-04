@@ -67,6 +67,7 @@ from starlette.routing import Mount, Route
 
 from butlers.config import (
     ButlerConfig,
+    ButlerType,
     load_config,
     parse_approval_config,
 )
@@ -1774,6 +1775,9 @@ class ButlerDaemon:
         self._wire_pipelines(pool)
 
         # 11. Sync TOML schedules to DB
+        # Staffer-typed agents skip daily_briefing_contribution schedule entries
+        # per the staffer-archetype spec (briefing exclusion decision point).
+        _is_staffer = self.config.type == ButlerType.STAFFER
         schedules = [
             {
                 "name": s.name,
@@ -1784,6 +1788,7 @@ class ButlerDaemon:
                 "job_args": s.job_args,
             }
             for s in self.config.schedules
+            if not (_is_staffer and s.job_name == "daily_briefing_contribution")
         ]
         await sync_schedules(
             pool,
@@ -2624,7 +2629,7 @@ class ButlerDaemon:
             butler_name,
         )
 
-        payload = {"butler_name": butler_name}
+        payload = {"butler_name": butler_name, "type": self.config.type.value}
         consecutive_404s = 0
         max_consecutive_404s = 3
 
