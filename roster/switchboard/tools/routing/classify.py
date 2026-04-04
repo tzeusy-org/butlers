@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from butlers.tools.switchboard.registry import discover_butlers, list_butlers
-from butlers.tools.switchboard.registry.registry import AGENT_TYPE_BUTLER
 
 logger = logging.getLogger(__name__)
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3]
@@ -175,4 +174,4 @@ async def _load_available_butlers(pool: Any) -> list[dict[str, Any]]:
             _DEFAULT_ROSTER_DIR,
         )
 
-    return [b for b in butlers if b.get("agent_type", AGENT_TYPE_BUTLER) == AGENT_TYPE_BUTLER]
+    return butlers

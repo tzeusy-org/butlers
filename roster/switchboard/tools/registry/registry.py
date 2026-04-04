@@ -536,10 +536,10 @@ async def list_butlers(
     butlers: list[dict[str, Any]] = []
     for row in rows:
         normalized = _normalized_registry_row(dict(row))
+        if butler_only and normalized["agent_type"] != AGENT_TYPE_BUTLER:
+            continue
         normalized = await _reconcile_eligibility_state(pool, normalized)
         if routable_only and normalized["eligibility_state"] != ELIGIBILITY_ACTIVE:
-            continue
-        if butler_only and normalized["agent_type"] != AGENT_TYPE_BUTLER:
             continue
         butlers.append(normalized)
     return butlers

@@ -457,7 +457,7 @@ async def receive_heartbeat(
 
     # Normalize agent_type from the heartbeat payload (defaults to 'butler' for
     # backward compatibility when callers omit the field).
-    agent_type = str(getattr(body, "type", None) or "butler").strip().lower()
+    agent_type = body.type.strip().lower()
     if agent_type not in ("butler", "staffer"):
         agent_type = "butler"
 

@@ -33,9 +33,19 @@ def upgrade() -> None:
 
     op.execute(
         """
-        ALTER TABLE butler_registry
-        ADD CONSTRAINT IF NOT EXISTS ck_butler_registry_agent_type
-        CHECK (agent_type IN ('butler', 'staffer'))
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'ck_butler_registry_agent_type'
+            ) THEN
+                ALTER TABLE butler_registry
+                ADD CONSTRAINT ck_butler_registry_agent_type
+                CHECK (agent_type IN ('butler', 'staffer'));
+            END IF;
+        END
+        $$
         """
     )
 
