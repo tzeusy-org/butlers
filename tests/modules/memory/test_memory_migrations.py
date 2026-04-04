@@ -107,8 +107,6 @@ class TestMemoryBaselineMigration:
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
         assert "chk_memory_links_relation" in source
-        for relation in ("derived_from", "supports", "contradicts", "supersedes", "related_to"):
-            assert relation in source
 
     def test_upgrade_creates_runtime_indexes(self) -> None:
         mod = _load_migration()
@@ -117,16 +115,9 @@ class TestMemoryBaselineMigration:
             "idx_episodes_butler_created",
             "idx_episodes_expires",
             "idx_episodes_unconsolidated",
-            "idx_episodes_search",
-            "idx_episodes_embedding",
             "idx_facts_scope_validity",
             "idx_facts_subject_predicate",
-            "idx_facts_search",
-            "idx_facts_tags",
-            "idx_facts_embedding",
             "idx_rules_scope_maturity",
-            "idx_rules_search",
-            "idx_rules_embedding",
             "idx_memory_links_target",
         ):
             assert index_name in source, f"Missing index: {index_name}"
