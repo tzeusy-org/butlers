@@ -2,6 +2,10 @@
 name = "switchboard"
 port = 41100
 description = "Routes incoming messages to specialist butlers"
+type = "staffer"
+
+[butler.permissions]
+cross_butler_access = ["*"]
 
 [butler.runtime]
 max_concurrent_sessions = 3
