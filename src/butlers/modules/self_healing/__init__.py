@@ -3,9 +3,18 @@
 This is the **primary** entry point for the butler self-healing system.
 When a butler agent encounters an unexpected exception during a session, it
 calls ``report_error`` with structured error context and its own diagnostic
-reasoning.  The module fingerprints the error, runs gate checks, and
-dispatches a healing agent — all as a thin MCP wrapper over the shared
-``core.healing`` package.
+reasoning.  The module fingerprints the error and either:
+
+  1. **QA relay path (primary):** When the QA staffer is registered with the
+     Switchboard, relays the finding via Switchboard's ``route()`` MCP tool
+     calling the QA staffer's ``report_finding`` tool directly.  The QA
+     staffer handles all dispatch and investigation.  This preserves the
+     non-negotiable MCP-only inter-butler communication rule (rule #3).
+
+  2. **Direct dispatch path (fallback):** When the QA staffer is unavailable
+     (not registered with Switchboard, Switchboard unreachable, or route()
+     call fails), falls back to direct dispatch via ``core.healing.dispatch``.
+     Behavior is identical to the pre-QA-staffer self-healing flow.
 
 A secondary fallback in the spawner's except block catches hard crashes where
 the agent never got a chance to self-report.  Both paths converge on the same
@@ -13,6 +22,7 @@ dispatch engine in ``src/butlers/core/healing/``.
 
 Spec reference
 --------------
+openspec/changes/qa-staffer/specs/self-healing-module/spec.md
 openspec/changes/butler-self-healing/specs/self-healing-module/spec.md
 openspec/changes/butler-self-healing/design.md §3 (Module)
 """
@@ -21,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -41,6 +52,22 @@ from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+#: TTL in seconds for caching the result of list_butlers() (QA availability).
+_QA_AVAILABILITY_CACHE_TTL = 60.0
+
+#: Name of the QA staffer as registered with the Switchboard.
+_QA_BUTLER_NAME = "qa"
+
+#: Tool name on the QA staffer that accepts relayed findings.
+_QA_REPORT_FINDING_TOOL = "report_finding"
+
+#: Prometheus counter name for QA relay fallback activations.
+_QA_FALLBACK_COUNTER_NAME = "qa_fallback_activations_total"
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +125,11 @@ class SelfHealingModule(Module):
       immediately; dispatch is async.
     - ``get_healing_status``: Query tool for checking healing attempt status
       by fingerprint or listing recent attempts for this butler.
+
+    When the QA staffer is available (registered with Switchboard), findings
+    are relayed via Switchboard's ``route()`` tool to the QA staffer's
+    ``report_finding`` tool.  When unavailable, the module falls back to
+    direct dispatch via ``core.healing.dispatch``.
     """
 
     def __init__(self) -> None:
@@ -109,6 +141,12 @@ class SelfHealingModule(Module):
         self._repo_root: Path = Path(".")
         # Background watchdog tasks that on_shutdown must cancel
         self._watchdog_tasks: list[asyncio.Task] = []
+
+        # Switchboard client for QA relay (injected via wire_runtime)
+        self._switchboard_client: Any = None
+
+        # QA availability cache: (is_available: bool, cached_at: float)
+        self._qa_available_cache: tuple[bool, float] | None = None
 
     # ------------------------------------------------------------------
     # Module ABC
@@ -354,8 +392,9 @@ class SelfHealingModule(Module):
     ) -> dict:
         """Core handler for the report_error MCP tool.
 
-        Delegates fingerprinting and dispatch to the shared core.healing package.
-        Returns immediately with accept/reject status; healing agent spawns async.
+        Attempts to relay findings to the QA staffer via Switchboard (primary
+        path).  Falls back to direct dispatch via core.healing when the QA
+        staffer is unavailable.  Returns immediately; dispatch is async.
         """
         # Compute fingerprint from structured report
         fp = compute_fingerprint_from_report(
@@ -382,6 +421,208 @@ class SelfHealingModule(Module):
             except Exception:
                 logger.debug("report_error: fast-path active check failed", exc_info=True)
 
+        # Try the QA relay path (primary)
+        qa_result = await self._try_qa_relay(
+            fingerprint=fp.fingerprint,
+            exception_type=error_type,
+            call_site=call_site or "",
+            severity=fp.severity,
+            event_summary=error_message[:200],
+            context=context,
+        )
+
+        if qa_result is not None:
+            return qa_result
+
+        # QA relay unavailable — fall back to direct dispatch
+        return await self._direct_dispatch(fp, error_type, error_message, context)
+
+    async def _try_qa_relay(
+        self,
+        fingerprint: str,
+        exception_type: str,
+        call_site: str,
+        severity: int,
+        event_summary: str,
+        context: str | None,
+    ) -> dict | None:
+        """Attempt to relay a finding to the QA staffer via Switchboard.
+
+        Returns a response dict on success, or ``None`` if the QA staffer is
+        unavailable or the relay fails (caller should fall back to direct dispatch).
+
+        The relay is a direct tool-to-tool call: Switchboard's ``route()`` MCP
+        tool forwards to the QA staffer's ``report_finding`` tool.  This
+        preserves the non-negotiable MCP-only inter-butler communication rule.
+
+        Parameters
+        ----------
+        fingerprint:
+            Pre-computed fingerprint hex string.
+        exception_type:
+            Fully qualified exception class name.
+        call_site:
+            ``<file>:<function>`` call site.
+        severity:
+            Integer severity score (0=critical … 3=low).
+        event_summary:
+            First 200 chars of the error message (not anonymized here — the
+            QA staffer's ``report_finding`` tool handles sensitivity).
+        context:
+            Optional diagnostic context (sensitive — not stored by QA staffer).
+
+        Returns
+        -------
+        dict | None
+            Response dict with ``accepted=True`` if relay succeeded.
+            ``None`` if unavailable or relay failed.
+        """
+        client = self._switchboard_client
+        if client is None:
+            logger.debug(
+                "report_error: Switchboard client not connected — falling back to direct dispatch"
+            )
+            return None
+
+        # Check QA availability (cached with TTL to avoid per-error roundtrip)
+        qa_available = await self._is_qa_available(client)
+        if not qa_available:
+            logger.debug("report_error: QA staffer not available — falling back to direct dispatch")
+            return None
+
+        # Relay finding via Switchboard route() → QA staffer's report_finding
+        try:
+            result = await asyncio.wait_for(
+                client.call_tool(
+                    "route",
+                    {
+                        "target_butler": _QA_BUTLER_NAME,
+                        "tool_name": _QA_REPORT_FINDING_TOOL,
+                        "allow_stale": True,
+                        "args": {
+                            "fingerprint": fingerprint,
+                            "exception_type": exception_type,
+                            "call_site": call_site,
+                            "severity": severity,
+                            "event_summary": event_summary,
+                            "source_butler": self._butler_name,
+                            **({"context": context} if context is not None else {}),
+                        },
+                    },
+                ),
+                timeout=10.0,
+            )
+
+            # Check if the route() call itself returned an error
+            if isinstance(result, dict) and result.get("error"):
+                logger.warning(
+                    "report_error: Switchboard route() returned error: %s — "
+                    "falling back to direct dispatch",
+                    result.get("error"),
+                )
+                # Note: we do NOT invalidate the QA availability cache on a single failure
+                return None
+
+            logger.debug(
+                "report_error: relayed finding to QA staffer via Switchboard (fingerprint=%s)",
+                fingerprint[:12],
+            )
+            return {
+                "accepted": True,
+                "fingerprint": fingerprint,
+                "message": "Finding relayed to QA staffer via Switchboard",
+            }
+
+        except Exception as relay_exc:
+            logger.warning(
+                "report_error: Switchboard route() call failed: %s — "
+                "falling back to direct dispatch",
+                relay_exc,
+            )
+            return None
+
+    async def _is_qa_available(self, client: Any) -> bool:
+        """Check if the QA staffer is registered with the Switchboard.
+
+        Result is cached with TTL to avoid a list_butlers() call on every
+        report_error invocation.
+
+        Parameters
+        ----------
+        client:
+            The Switchboard MCP client.
+
+        Returns
+        -------
+        bool
+            ``True`` if the QA staffer is registered and reachable.
+        """
+        now = time.monotonic()
+
+        # Return cached result if still fresh
+        if self._qa_available_cache is not None:
+            is_available, cached_at = self._qa_available_cache
+            if now - cached_at < _QA_AVAILABILITY_CACHE_TTL:
+                return is_available
+
+        # Query Switchboard
+        try:
+            butlers_result = await asyncio.wait_for(
+                client.call_tool("list_butlers", {}),
+                timeout=5.0,
+            )
+
+            # list_butlers returns a list of agent records or a dict with a list
+            agents: list = []
+            if isinstance(butlers_result, list):
+                agents = butlers_result
+            elif isinstance(butlers_result, dict):
+                agents = butlers_result.get("butlers", butlers_result.get("agents", []))
+
+            is_available = any(
+                (
+                    a.get("name") == _QA_BUTLER_NAME
+                    if isinstance(a, dict)
+                    else str(a) == _QA_BUTLER_NAME
+                )
+                for a in agents
+            )
+
+        except Exception as exc:
+            logger.debug("report_error: list_butlers() failed: %s — QA staffer unavailable", exc)
+            is_available = False
+
+        self._qa_available_cache = (is_available, now)
+        return is_available
+
+    async def _direct_dispatch(
+        self,
+        fp: Any,
+        error_type: str,
+        error_message: str,
+        context: str | None,
+    ) -> dict:
+        """Fall back to direct dispatch via core.healing when QA is unavailable.
+
+        This preserves the pre-QA-staffer self-healing behavior: 10-gate
+        sequence, worktree creation, healing agent spawn.
+
+        Parameters
+        ----------
+        fp:
+            FingerprintResult from compute_fingerprint_from_report().
+        error_type:
+            Fully qualified exception class name.
+        error_message:
+            The exception message.
+        context:
+            Optional diagnostic context.
+
+        Returns
+        -------
+        dict
+            Standard report_error response.
+        """
         healing_cfg = HealingConfig.from_module_config(self._config.model_dump())
 
         # We don't have the current session_id in the MCP tool handler context.
@@ -504,16 +745,31 @@ class SelfHealingModule(Module):
         butler_name: str,
         spawner: Any,
         repo_root: Path | str,
+        switchboard_client: Any = None,
     ) -> None:
         """Wire the module to the spawner and butler identity.
 
         Called by the butler daemon after ``register_tools()`` to give the
         module access to the spawner (for healing agent dispatch) and the
         repo root (for worktree creation).
+
+        Parameters
+        ----------
+        butler_name:
+            Name of the butler that owns this module instance.
+        spawner:
+            Spawner instance for dispatching healing agents (fallback path).
+        repo_root:
+            Absolute path to the repository root.
+        switchboard_client:
+            Optional Switchboard MCP client for QA relay.  When provided and
+            the QA staffer is registered, findings are relayed via Switchboard.
+            When ``None``, the module uses direct dispatch only.
         """
         self._butler_name = butler_name
         self._spawner = spawner
         self._repo_root = Path(repo_root)
+        self._switchboard_client = switchboard_client
 
 
 # ---------------------------------------------------------------------------
