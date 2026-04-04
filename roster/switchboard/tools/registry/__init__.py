@@ -1,6 +1,8 @@
 """Registry tools — butler registration and discovery."""
 
 from butlers.tools.switchboard.registry.registry import (
+    AGENT_TYPE_BUTLER,
+    AGENT_TYPE_STAFFER,
     DEFAULT_ROUTE_CONTRACT_VERSION,
     ELIGIBILITY_ACTIVE,
     ELIGIBILITY_QUARANTINED,
@@ -14,6 +16,8 @@ from butlers.tools.switchboard.registry.registry import (
 from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
 
 __all__ = [
+    "AGENT_TYPE_BUTLER",
+    "AGENT_TYPE_STAFFER",
     "DEFAULT_ROUTE_CONTRACT_VERSION",
     "ELIGIBILITY_ACTIVE",
     "ELIGIBILITY_QUARANTINED",
