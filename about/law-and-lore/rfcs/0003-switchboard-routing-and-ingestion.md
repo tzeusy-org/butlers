@@ -146,6 +146,25 @@ Rules are evaluated in `priority ASC, created_at ASC, id ASC` order. First match
 
 Messages that pass through triage without a routing decision are submitted to an LLM-based classifier. The classifier receives the normalized text, sender identity preamble, and butler registry (names, descriptions, domains) and returns a target butler name.
 
+### Staffer Routing Exclusion
+
+The Switchboard distinguishes two agent types: **butlers** (domain specialists)
+and **staffers** (infrastructure agents). This distinction gates LLM
+classification:
+
+- When classifying an incoming user message for routing, the Switchboard's
+  butler registry excludes agents with `type = "staffer"`. Only domain butlers
+  are candidates for user-message routing.
+- Staffers register with the Switchboard (via `[butler.switchboard]` with
+  `advertise = true`) so they are reachable, but are marked `type = "staffer"`
+  in the registry so the classifier skips them.
+
+This exclusion applies only to **user-message classification**. Butler-to-staffer
+routing is unaffected: a domain butler calling `notify()` routes a delivery
+request through the Switchboard to the Messenger staffer using existing dispatch
+mechanisms. The Switchboard dispatches to the named target regardless of type;
+it is the classifier that filters by type, not the dispatcher.
+
 ### route.execute Envelope
 
 The Switchboard dispatches classified messages to target butlers via the `route.execute` MCP tool. The envelope includes:
