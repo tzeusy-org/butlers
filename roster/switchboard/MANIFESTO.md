@@ -2,7 +2,7 @@
 
 **Service type:** Staffer (infrastructure)
 **Port:** 41100
-**Schema:** `switchboard`
+**DB:** `butlers` / **Schema:** `switchboard`
 
 ---
 

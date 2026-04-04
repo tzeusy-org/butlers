@@ -2,20 +2,20 @@
 
 **Service type:** Staffer (infrastructure)
 **Port:** 41104
-**Schema:** `messenger`
+**DB:** `butlers` / **Schema:** `messenger`
 
 ---
 
 ## Purpose
 
-The Messenger is the sole owner of outbound user-channel delivery. It executes delivery intents routed from the Switchboard, turning `notify.v1` payloads into concrete sends and replies on Telegram and Email.
+The Messenger is the sole owner of outbound user-channel delivery. It executes delivery intents routed from the Switchboard, turning `notify.v1` payloads into concrete sends and replies on Telegram, Email, and WhatsApp.
 
 ---
 
 ## Responsibilities
 
 - **Outbound delivery ownership:** Execute all user-channel sends and replies. No other agent may call channel egress tools directly.
-- **Channel tool surface:** Own and expose `telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`. Non-messenger agents attempting to register these tools have them silently stripped at startup.
+- **Channel tool surface:** Own and expose `telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`, `whatsapp_send_message`, `whatsapp_reply_to_message`. This is enforced as a configuration/policy requirement: non-messenger agents must not enable, register, or ship these outbound channel egress tools.
 - **Delivery validation:** Validate `notify.v1` payloads before any side effect. Reject invalid or missing targeting fields with no delivery attempt.
 - **Outcome reporting:** Return deterministic status and error payloads with delivery identifiers when available.
 - **Lineage preservation:** Retain `origin_butler` and `request_context` in all responses for audit trail.
@@ -60,6 +60,7 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 - **Switchboard:** Routes `notify.v1` delivery intents from domain butlers to Messenger
 - **Telegram Bot API:** External dependency for Telegram delivery
 - **Email SMTP provider:** External dependency for email delivery
+- **WhatsApp bridge:** External dependency for WhatsApp delivery
 - **PostgreSQL (`butlers.messenger` schema):** Session logging, state store
 
 ### Depends On Messenger
