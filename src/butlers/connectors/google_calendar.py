@@ -963,11 +963,14 @@ class CalendarConnectorRuntime:
 
     async def _run_poll_loop(self) -> None:
         """Main incremental sync poll loop."""
-        # Ensure we have a sync token (full sync on first run)
-        await self._ensure_sync_token()
-
         while self._running:
             try:
+                # Ensure we have a sync token (full sync on first run).
+                # Inside the retry loop so transient failures (e.g. expired
+                # OAuth token that gets refreshed externally) are retried
+                # instead of killing the account loop permanently.
+                if self._sync_token is None:
+                    await self._ensure_sync_token()
                 await self._run_one_poll_cycle()
             except asyncio.CancelledError:
                 raise
@@ -1916,7 +1919,24 @@ class CalendarConnectorManager:
             account_metadata[email] = metadata_calendar
 
         current_emails = set(self._loops.keys())
-        to_add = desired_emails - current_emails
+
+        # Detect dead loops: account still in self._loops but task has finished
+        # (e.g. crashed due to token error).  Remove them so they get re-added.
+        dead_emails: set[str] = set()
+        for email in current_emails & desired_emails:
+            loop = self._loops[email]
+            if not loop.is_running:
+                logger.warning(
+                    "Calendar manager: account loop for %r is dead (error=%s) — will restart",
+                    email,
+                    loop._error,
+                )
+                await loop.stop()
+                del self._loops[email]
+                dead_emails.add(email)
+
+        current_emails -= dead_emails
+        to_add = (desired_emails - current_emails) | dead_emails
         to_remove = current_emails - desired_emails
         unchanged = current_emails & desired_emails
 

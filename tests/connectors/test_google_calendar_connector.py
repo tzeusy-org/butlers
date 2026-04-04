@@ -782,6 +782,45 @@ class TestCalendarConnectorManager:
         assert "stale@example.com" not in manager._loops
         mock_loop.stop.assert_called_once()
 
+    async def test_sync_accounts_restarts_dead_loop(
+        self, process_config: CalendarProcessConfig
+    ) -> None:
+        """_sync_accounts() detects and restarts a crashed account loop."""
+        manager = self._make_manager(process_config)
+
+        # Pre-populate with a dead loop (task finished, is_running=False)
+        dead_loop = AsyncMock(spec=CalendarAccountLoop)
+        dead_loop.is_running = False
+        dead_loop._error = "Token refresh failed: HTTP 400"
+        manager._loops["user@example.com"] = dead_loop
+
+        with patch.object(
+            manager,
+            "_discover_qualifying_accounts",
+            new=AsyncMock(return_value=[("user@example.com", None)]),
+        ):
+            with patch.object(
+                manager,
+                "_resolve_credentials_for_account",
+                new=AsyncMock(
+                    return_value={
+                        "client_id": "cid",
+                        "client_secret": "cs",
+                        "refresh_token": "rt",
+                    }
+                ),
+            ):
+                with patch.object(CalendarAccountLoop, "start", return_value=None):
+                    added, removed, unchanged = await manager._sync_accounts()
+
+        # Dead loop should have been stopped and re-added
+        dead_loop.stop.assert_called_once()
+        assert "user@example.com" in added
+        assert "user@example.com" not in unchanged
+        assert "user@example.com" in manager._loops
+        # The new loop should be a different object
+        assert manager._loops["user@example.com"] is not dead_loop
+
     def test_get_multi_account_health_no_accounts_is_degraded(
         self, process_config: CalendarProcessConfig
     ) -> None:
