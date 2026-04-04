@@ -161,7 +161,7 @@ def _create_ingestion_events() -> None:
             status                   TEXT NOT NULL DEFAULT 'ingested',
             error_detail             TEXT,
             CONSTRAINT ck_ingestion_events_status
-                CHECK (status IN ('ingested', 'failed'))
+                CHECK (status IN ('ingested', 'failed', 'replay_pending'))
         )
         """
     )
