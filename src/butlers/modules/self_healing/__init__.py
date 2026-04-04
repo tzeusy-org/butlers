@@ -77,7 +77,7 @@ _QA_REPORT_FINDING_TOOL = "report_finding"
 
 
 def _get_qa_fallback_counter():
-    """Return the qa_fallback_activations_total Prometheus Counter (lazy init)."""
+    """Return the qa_fallback_activations_total Prometheus Counter."""
     try:
         from prometheus_client import Counter
 
@@ -86,7 +86,12 @@ def _get_qa_fallback_counter():
             "Total direct-dispatch fallback activations when QA staffer is unreachable",
             labelnames=["butler"],
         )
-    except Exception:
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus counter 'qa_fallback_activations_total';"
+            " metric will not be exported",
+            exc_info=True,
+        )
         return None
 
 
@@ -464,7 +469,10 @@ class SelfHealingModule(Module):
             try:
                 _qa_fallback_activations_total.labels(butler=self._butler_name).inc()
             except Exception:
-                pass  # Metric errors must not disrupt the fallback path
+                logger.debug(
+                    "report_error: failed to increment QA fallback activation metric",
+                    exc_info=True,
+                )  # Metric errors must not disrupt the fallback path
 
         return await self._direct_dispatch(fp, error_type, error_message, context)
 

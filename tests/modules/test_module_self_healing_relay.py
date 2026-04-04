@@ -621,41 +621,61 @@ class TestQaFallbackCounter:
 
     async def test_fallback_incremented_when_qa_unavailable(self):
         """When QA relay fails and direct dispatch fires, fallback counter is incremented."""
+        import butlers.modules.self_healing as sh_module
 
-        # QA not available → fallback fires
-        async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
-            if tool_name == "list_butlers":
-                return [{"name": "general"}]  # No QA staffer
-            return {}
+        original_counter = sh_module._qa_fallback_activations_total
+        inc_calls: list[dict] = []
 
-        client = MagicMock()
-        client.call_tool = mock_call_tool
+        class _FakeCounterChild:
+            def __init__(self, labels_kwargs: dict) -> None:
+                self._labels = labels_kwargs
 
-        mod = _make_module(switchboard_client=client)
-        mod._butler_name = "finance"
-        mod._pool = None
-        mod._spawner = None
+            def inc(self) -> None:
+                inc_calls.append({"labels": self._labels})
 
-        # We can't easily read a prometheus counter in tests, but we can ensure
-        # the code path executes without raising by calling _handle_report_error
-        # when QA is unavailable (triggers the fallback path).
-        result = await mod._handle_report_error(
-            error_type="IOError",
-            error_message="disk full",
-            traceback_str=None,
-            call_site="storage.py:write",
-            context=None,
-            tool_name=None,
-            severity_hint="high",
-        )
+        class _FakeCounter:
+            def labels(self, **kwargs):
+                return _FakeCounterChild(kwargs)
 
-        # Fallback runs (not_configured because no pool/spawner, but counter was hit)
-        assert result["reason"] in (
-            "not_configured",
-            "disabled",
-            "no_recursion",
-            "already_investigating",
-        )
+        sh_module._qa_fallback_activations_total = _FakeCounter()
+
+        try:
+            # QA not available → fallback fires
+            async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
+                if tool_name == "list_butlers":
+                    return [{"name": "general"}]  # No QA staffer
+                return {}
+
+            client = MagicMock()
+            client.call_tool = mock_call_tool
+
+            mod = _make_module(switchboard_client=client)
+            mod._butler_name = "finance"
+            mod._pool = None
+            mod._spawner = None
+
+            result = await mod._handle_report_error(
+                error_type="IOError",
+                error_message="disk full",
+                traceback_str=None,
+                call_site="storage.py:write",
+                context=None,
+                tool_name=None,
+                severity_hint="high",
+            )
+
+            # Fallback runs (not_configured because no pool/spawner, and counter was hit)
+            assert result["reason"] in (
+                "not_configured",
+                "disabled",
+                "no_recursion",
+                "already_investigating",
+            )
+            # Counter must have been incremented exactly once
+            assert len(inc_calls) == 1
+            assert inc_calls[0]["labels"] == {"butler": "finance"}
+        finally:
+            sh_module._qa_fallback_activations_total = original_counter
 
     async def test_fallback_counter_does_not_block_on_metric_error(self):
         """Counter errors do not propagate to callers — fallback still runs."""
