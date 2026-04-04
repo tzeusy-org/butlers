@@ -32,11 +32,30 @@ class ConfigError(Exception):
     """Raised when butler configuration is missing, malformed, or invalid."""
 
 
+class ButlerType(enum.StrEnum):
+    """Agent type — butler (user-facing domain agent) or staffer (infrastructure service)."""
+
+    BUTLER = "butler"
+    STAFFER = "staffer"
+
+
 class ScheduleDispatchMode(enum.StrEnum):
     """Execution mode for scheduled tasks."""
 
     PROMPT = "prompt"
     JOB = "job"
+
+
+@dataclass
+class PermissionsConfig:
+    """Cross-butler permissions from [butler.permissions] section.
+
+    Declares which other agents this agent may connect to or act on behalf of.
+    Staffers may declare wildcard (``["*"]``) or scoped access lists.
+    Butlers default to an empty list (no cross-butler access).
+    """
+
+    cross_butler_access: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -223,6 +242,8 @@ class ButlerConfig:
     name: str
     port: int
     description: str | None = None
+    type: ButlerType = ButlerType.BUTLER
+    permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
     db_name: str = ""
     db_schema: str | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -642,6 +663,37 @@ def load_config(config_dir: Path) -> ButlerConfig:
 
     description = butler_section.get("description")
 
+    # --- [butler].type field ---
+    raw_type = butler_section.get("type", ButlerType.BUTLER.value)
+    if not isinstance(raw_type, str):
+        raise ConfigError("butler.type must be a string when set")
+    try:
+        butler_type = ButlerType(raw_type.strip().lower())
+    except ValueError as exc:
+        valid = ", ".join(t.value for t in ButlerType)
+        raise ConfigError(f"Invalid butler.type: {raw_type!r}. Expected one of: {valid}") from exc
+
+    # --- [butler.permissions] sub-section ---
+    permissions_section = butler_section.get("permissions", {})
+    if permissions_section is None:
+        permissions_section = {}
+    if not isinstance(permissions_section, dict):
+        raise ConfigError("butler.permissions must be a table")
+    raw_cross_butler = permissions_section.get("cross_butler_access", [])
+    if not isinstance(raw_cross_butler, list):
+        raise ConfigError("butler.permissions.cross_butler_access must be a list of strings")
+    cross_butler_access: list[str] = []
+    for i, entry in enumerate(raw_cross_butler):
+        if not isinstance(entry, str):
+            raise ConfigError(f"butler.permissions.cross_butler_access[{i}] must be a string")
+        normalized_entry = entry.strip()
+        if not normalized_entry:
+            raise ConfigError(
+                f"butler.permissions.cross_butler_access[{i}] must be a non-empty string"
+            )
+        cross_butler_access.append(normalized_entry)
+    permissions_config = PermissionsConfig(cross_butler_access=cross_butler_access)
+
     # --- [butler.db] sub-section ---
     db_section = butler_section.get("db", {})
     db_name = str(db_section.get("name", "butlers")).strip()
@@ -792,6 +844,8 @@ def load_config(config_dir: Path) -> ButlerConfig:
         name=name,
         port=port,
         description=description,
+        type=butler_type,
+        permissions=permissions_config,
         db_name=db_name,
         db_schema=db_schema,
         logging=logging_config,
