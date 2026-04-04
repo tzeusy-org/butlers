@@ -70,8 +70,8 @@ def test_backoff_increases_with_attempt() -> None:
 
 
 def test_backoff_capped_at_max() -> None:
-    """Backoff must not exceed max (300s) * (1 + jitter_factor=0.25)."""
-    for attempt in range(20):
+    """Backoff must not exceed max (300s) * (1 + jitter_factor=0.25) at any attempt."""
+    for attempt in (0, 5, 19, 50, 100, 1000):
         assert _jittered_backoff(attempt) <= 300.0 * 1.25 + 0.01
 
 

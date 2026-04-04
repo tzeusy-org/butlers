@@ -57,10 +57,9 @@ def test_voice_envelope_schema_version(voice_envelope: dict[str, Any]) -> None:
 
 
 def test_voice_envelope_endpoint_identity_format(voice_envelope: dict[str, Any]) -> None:
-    """Endpoint identity must follow 'live-listener:mic:<device_name>' format."""
+    """Endpoint identity must follow exact 'live-listener:mic:<device_name>' format."""
     eid = voice_envelope["source"]["endpoint_identity"]
-    assert "live-listener" in eid
-    assert _DEVICE in eid
+    assert eid == f"live-listener:mic:{_DEVICE}"
 
 
 def test_voice_envelope_event_id_includes_device(voice_envelope: dict[str, Any]) -> None:
@@ -101,9 +100,9 @@ def test_idempotency_key_differs_for_different_transcripts() -> None:
 
 
 def test_endpoint_identity_format() -> None:
+    """endpoint_identity() must produce exact 'live-listener:mic:<device_name>' format."""
     eid = endpoint_identity("kitchen-mic")
-    assert "live-listener" in eid
-    assert "kitchen-mic" in eid
+    assert eid == "live-listener:mic:kitchen-mic"
 
 
 def test_mint_event_id_includes_device_and_timestamp() -> None:
