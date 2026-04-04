@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS public.healing_attempts (
     pr_number       INTEGER,
     session_ids     UUID[] NOT NULL DEFAULT '{}',
     healing_session_id UUID,
+    qa_patrol_id    UUID,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at       TIMESTAMPTZ,
