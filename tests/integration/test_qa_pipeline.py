@@ -79,7 +79,9 @@ def _make_qa_finding(
     )
 
 
-def _make_triaged(finding: QaFinding | None = None, dedup_reason: str | None = None) -> TriagedFinding:
+def _make_triaged(
+    finding: QaFinding | None = None, dedup_reason: str | None = None
+) -> TriagedFinding:
     if finding is None:
         finding = _make_qa_finding()
     return TriagedFinding(
@@ -130,12 +132,30 @@ class TestFullPatrolCycle:
                 return_value=(attempt_id, True),
             ),
             patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-            patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "butlers.core.qa.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
             patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch(
+                "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
             patch(
                 "butlers.core.qa.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
@@ -190,14 +210,36 @@ class TestFullPatrolCycle:
         triaged = _make_triaged(finding)
 
         with (
-            patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock, return_value=(attempt_id, True)),
+            patch(
+                "butlers.core.qa.dispatch.create_or_join_attempt",
+                new_callable=AsyncMock,
+                return_value=(attempt_id, True),
+            ),
             patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-            patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "butlers.core.qa.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
             patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
+            patch(
+                "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
             patch("butlers.core.qa.dispatch.create_healing_worktree", side_effect=capture_worktree),
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
@@ -230,15 +272,41 @@ class TestFullPatrolCycle:
         triaged = _make_triaged(finding)
 
         with (
-            patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock, return_value=(attempt_id, True)),
+            patch(
+                "butlers.core.qa.dispatch.create_or_join_attempt",
+                new_callable=AsyncMock,
+                return_value=(attempt_id, True),
+            ),
             patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-            patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "butlers.core.qa.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
             patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("butlers.core.qa.dispatch.create_healing_worktree", new_callable=AsyncMock, return_value=(Path("/tmp/wt"), "qa/b/c")),
+            patch(
+                "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
+            patch(
+                "butlers.core.qa.dispatch.create_healing_worktree",
+                new_callable=AsyncMock,
+                return_value=(Path("/tmp/wt"), "qa/b/c"),
+            ),
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
@@ -344,15 +412,41 @@ class TestReactiveRelay:
         triaged = _make_triaged(findings[0])
 
         with (
-            patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock, return_value=(attempt_id, True)),
+            patch(
+                "butlers.core.qa.dispatch.create_or_join_attempt",
+                new_callable=AsyncMock,
+                return_value=(attempt_id, True),
+            ),
             patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-            patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "butlers.core.qa.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
             patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("butlers.core.qa.dispatch.create_healing_worktree", new_callable=AsyncMock, return_value=(Path("/tmp/wt"), "qa/finance/cccc")),
+            patch(
+                "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
+            patch(
+                "butlers.core.qa.dispatch.create_healing_worktree",
+                new_callable=AsyncMock,
+                return_value=(Path("/tmp/wt"), "qa/finance/cccc"),
+            ),
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
@@ -387,7 +481,7 @@ class TestCrossSourceDeduplication:
     """Integration: same fingerprint from multiple sources → single investigation."""
 
     async def test_same_fingerprint_two_sources_dispatched_once(self):
-        """Two findings with identical fingerprints from different sources yield one investigation."""
+        """Two findings with identical fingerprints from different sources yield one dispatch."""
         pool = _make_pool()
         shared_fp = "d" * 64
         patrol_id = uuid.uuid4()
@@ -405,19 +499,45 @@ class TestCrossSourceDeduplication:
             return (attempt_id, val)
 
         finding_log = _make_qa_finding(fingerprint=shared_fp, source_type="log_scanner", severity=1)
-        finding_sr = _make_qa_finding(fingerprint=shared_fp, source_type="session_records", severity=1)
+        finding_sr = _make_qa_finding(
+            fingerprint=shared_fp, source_type="session_records", severity=1
+        )
         triaged_list = [_make_triaged(finding_log), _make_triaged(finding_sr)]
 
         with (
-            patch("butlers.core.qa.dispatch.create_or_join_attempt", side_effect=mock_create_or_join),
+            patch(
+                "butlers.core.qa.dispatch.create_or_join_attempt", side_effect=mock_create_or_join
+            ),
             patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-            patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "butlers.core.qa.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
             patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("butlers.core.qa.dispatch.create_healing_worktree", new_callable=AsyncMock, return_value=(Path("/tmp/wt"), "qa/b/c")),
+            patch(
+                "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
+            patch(
+                "butlers.core.qa.dispatch.create_healing_worktree",
+                new_callable=AsyncMock,
+                return_value=(Path("/tmp/wt"), "qa/b/c"),
+            ),
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
@@ -436,10 +556,14 @@ class TestCrossSourceDeduplication:
             )
 
         accepted_count = sum(1 for r in results if r.accepted)
-        rejected_count = sum(1 for r in results if not r.accepted and r.reason == "already_investigating")
+        rejected_count = sum(
+            1 for r in results if not r.accepted and r.reason == "already_investigating"
+        )
 
         assert accepted_count == 1, f"Expected exactly 1 accepted, got {accepted_count}: {results}"
-        assert rejected_count == 1, f"Expected exactly 1 already_investigating, got {rejected_count}: {results}"
+        assert rejected_count == 1, (
+            f"Expected exactly 1 already_investigating, got {rejected_count}: {results}"
+        )
 
     async def test_triage_deduplicates_cross_source_findings(self):
         """Triage layer flags the second cross-source finding as intra-patrol dedup."""
@@ -448,13 +572,29 @@ class TestCrossSourceDeduplication:
         patrol_id = uuid.uuid4()
 
         finding_a = _make_qa_finding(fingerprint=shared_fp, source_type="log_scanner", severity=1)
-        finding_b = _make_qa_finding(fingerprint=shared_fp, source_type="session_records", severity=1)
+        finding_b = _make_qa_finding(
+            fingerprint=shared_fp, source_type="session_records", severity=1
+        )
 
         with (
-            patch("butlers.core.qa.triage.get_active_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.triage.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.triage.insert_finding", new_callable=AsyncMock, return_value=uuid.uuid4()),
+            patch(
+                "butlers.core.qa.triage.get_active_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False
+            ),
+            patch(
+                "butlers.core.qa.triage.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.triage.insert_finding",
+                new_callable=AsyncMock,
+                return_value=uuid.uuid4(),
+            ),
         ):
             result = await triage_findings(pool, patrol_id, [finding_a, finding_b])
 
@@ -486,7 +626,12 @@ class TestSandboxEnforcement:
 
         env = build_sandbox_env(None)
 
-        for key in ("BUTLERS_DB_URL", "BUTLERS_SECRET_KEY", "BUTLERS_EMAIL_PASSWORD", "BUTLERS_API_KEY"):
+        for key in (
+            "BUTLERS_DB_URL",
+            "BUTLERS_SECRET_KEY",
+            "BUTLERS_EMAIL_PASSWORD",
+            "BUTLERS_API_KEY",
+        ):
             assert key not in env, f"{key} should be stripped from sandbox env"
 
     def test_sandbox_env_strips_database_credentials(self, monkeypatch):
@@ -568,7 +713,9 @@ class TestAnonymizationGate:
         worktree_path = Path("/tmp/qa-wt-anon-test")
 
         with (
-            patch("butlers.core.qa.dispatch.update_attempt_status", side_effect=capture_update_status),
+            patch(
+                "butlers.core.qa.dispatch.update_attempt_status", side_effect=capture_update_status
+            ),
             patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
             patch(
                 "butlers.core.qa.dispatch._create_qa_pr",
@@ -590,10 +737,9 @@ class TestAnonymizationGate:
             )
 
         # Find the final status transition — should be anonymization_failed
-        assert any(
-            status == "anonymization_failed"
-            for _, status in update_calls
-        ), f"Expected anonymization_failed in status transitions: {update_calls}"
+        assert any(status == "anonymization_failed" for _, status in update_calls), (
+            f"Expected anonymization_failed in status transitions: {update_calls}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +766,11 @@ class TestPatrolCrashRecovery:
         mod = QaModule()
 
         with (
-            patch("butlers.modules.qa.recover_stale_attempts", new_callable=AsyncMock, return_value=(0, [])),
+            patch(
+                "butlers.modules.qa.recover_stale_attempts",
+                new_callable=AsyncMock,
+                return_value=(0, []),
+            ),
             patch("butlers.modules.qa.reap_stale_worktrees", new_callable=AsyncMock),
         ):
             await mod.on_startup(QaConfig(), MagicMock(pool=pool))
@@ -687,15 +837,40 @@ class TestHealingApiBackwardCompatibility:
         patrol_id = uuid.uuid4()
 
         with (
-            patch("butlers.core.qa.dispatch.create_or_join_attempt", side_effect=capture_create_or_join),
+            patch(
+                "butlers.core.qa.dispatch.create_or_join_attempt",
+                side_effect=capture_create_or_join,
+            ),
             patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-            patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "butlers.core.qa.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
             patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("butlers.core.qa.dispatch.create_healing_worktree", new_callable=AsyncMock, return_value=(Path("/tmp/wt"), "qa/b/c")),
+            patch(
+                "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
+            patch(
+                "butlers.core.qa.dispatch.create_healing_worktree",
+                new_callable=AsyncMock,
+                return_value=(Path("/tmp/wt"), "qa/b/c"),
+            ),
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
@@ -725,15 +900,41 @@ class TestHealingApiBackwardCompatibility:
         triaged = _make_triaged(finding)
 
         with (
-            patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock, return_value=(attempt_id, True)),
+            patch(
+                "butlers.core.qa.dispatch.create_or_join_attempt",
+                new_callable=AsyncMock,
+                return_value=(attempt_id, True),
+            ),
             patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-            patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-            patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "butlers.core.qa.dispatch.get_recent_attempt",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.resolve_model",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
             patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-            patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
-            patch("butlers.core.qa.dispatch.create_healing_worktree", new_callable=AsyncMock, return_value=(Path("/tmp/wt"), "qa/b/c")),
+            patch(
+                "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock
+            ) as mock_exec,
+            patch(
+                "butlers.core.qa.dispatch.create_healing_worktree",
+                new_callable=AsyncMock,
+                return_value=(Path("/tmp/wt"), "qa/b/c"),
+            ),
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
@@ -785,7 +986,9 @@ class TestConcurrencyModel:
                 )
             return QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched")
 
-        with patch("butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=dispatch_side_effect):
+        with patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=dispatch_side_effect
+        ):
             results = await dispatch_novel_findings(
                 pool=pool,
                 novel_findings=findings,
