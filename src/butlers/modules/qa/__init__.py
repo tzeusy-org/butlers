@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,6 +59,114 @@ try:
     _HAS_OTEL = True
 except ImportError:
     _HAS_OTEL = False
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+# ---------------------------------------------------------------------------
+#
+# All metrics follow RFC 0005 low-cardinality discipline: no UUIDs, fingerprints,
+# or butler names appear as label values.  source_type is bounded to the three
+# known discovery sources; dedup_reason is bounded to the four triage outcomes.
+
+
+def _get_qa_patrol_total():
+    """Return the qa_patrol_total Prometheus Counter."""
+    try:
+        from prometheus_client import Counter
+
+        return Counter(
+            "qa_patrol_total",
+            "Total QA patrol cycle completions by outcome status",
+            labelnames=["status"],
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus counter 'qa_patrol_total';"
+            " metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
+def _get_qa_findings_total():
+    """Return the qa_findings_total Prometheus Counter."""
+    try:
+        from prometheus_client import Counter
+
+        return Counter(
+            "qa_findings_total",
+            "Total QA findings processed during triage, by source type and dedup reason",
+            labelnames=["source_type", "dedup_reason"],
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus counter 'qa_findings_total';"
+            " metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
+def _get_qa_investigations_active():
+    """Return the qa_investigations_active Prometheus Gauge."""
+    try:
+        from prometheus_client import Gauge
+
+        return Gauge(
+            "qa_investigations_active",
+            "Current number of QA healing_attempts rows with status=investigating",
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus gauge 'qa_investigations_active';"
+            " metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
+def _get_qa_patrol_duration_seconds():
+    """Return the qa_patrol_duration_seconds Prometheus Histogram."""
+    try:
+        from prometheus_client import Histogram
+
+        return Histogram(
+            "qa_patrol_duration_seconds",
+            "QA patrol cycle wall-clock duration in seconds",
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus histogram 'qa_patrol_duration_seconds';"
+            " metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
+def _get_qa_investigation_duration_seconds():
+    """Return the qa_investigation_duration_seconds Prometheus Histogram."""
+    try:
+        from prometheus_client import Histogram
+
+        return Histogram(
+            "qa_investigation_duration_seconds",
+            "QA investigation duration in seconds from creation to terminal status",
+            labelnames=["status"],
+        )
+    except (ImportError, ValueError):
+        logger.debug(
+            "Failed to initialize Prometheus histogram 'qa_investigation_duration_seconds';"
+            " metric will not be exported",
+            exc_info=True,
+        )
+        return None
+
+
+_qa_patrol_total = _get_qa_patrol_total()
+_qa_findings_total = _get_qa_findings_total()
+_qa_investigations_active = _get_qa_investigations_active()
+_qa_patrol_duration_seconds = _get_qa_patrol_duration_seconds()
+_qa_investigation_duration_seconds = _get_qa_investigation_duration_seconds()
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -637,6 +746,7 @@ class QaModule(Module):
         sources_polled: list[str] = []
         all_findings = []
         error_detail: str | None = None
+        patrol_start = time.monotonic()
 
         # Start the qa.patrol parent span (root — not child of any calling context)
         _patrol_span = None
@@ -722,6 +832,20 @@ class QaModule(Module):
             findings_count = len(triage_result.all_findings)
             novel_count = len(triage_result.novel_findings)
 
+            # Increment qa_findings_total per triaged finding (RFC 0005 low-cardinality labels)
+            if _qa_findings_total is not None:
+                try:
+                    for tf in triage_result.all_findings:
+                        dedup_label = tf.dedup_reason if tf.dedup_reason is not None else "novel"
+                        _qa_findings_total.labels(
+                            source_type=tf.finding.source_type,
+                            dedup_reason=dedup_label,
+                        ).inc()
+                except Exception:
+                    logger.debug(
+                        "QaModule: failed to record qa_findings_total metric", exc_info=True
+                    )
+
             # Phase 3: Dispatch
             gh_token = await self._resolve_gh_token()
             dispatch_config = QaDispatchConfig(
@@ -770,6 +894,9 @@ class QaModule(Module):
             # Phase 4: PR status check
             await self._check_pr_statuses(pool, gh_token)
 
+            # Phase 5: Metric snapshots (non-fatal)
+            await self._record_investigation_metrics(pool)
+
             # Determine final patrol status.
             # "suppressed" means findings were found but all were filtered out
             # by cooldown or severity threshold (novel_count > 0 but nothing
@@ -807,6 +934,22 @@ class QaModule(Module):
             self._last_patrol_novel = novel_count
             self._last_patrol_dispatched = dispatched_count
             self._current_patrol_id = None
+
+            # Record patrol completion metrics
+            patrol_duration = time.monotonic() - patrol_start
+            if _qa_patrol_total is not None:
+                try:
+                    _qa_patrol_total.labels(status=patrol_status).inc()
+                except Exception:
+                    logger.debug("QaModule: failed to record qa_patrol_total metric", exc_info=True)
+            if _qa_patrol_duration_seconds is not None:
+                try:
+                    _qa_patrol_duration_seconds.observe(patrol_duration)
+                except Exception:
+                    logger.debug(
+                        "QaModule: failed to record qa_patrol_duration_seconds metric",
+                        exc_info=True,
+                    )
 
             logger.info(
                 "QaModule patrol complete: status=%s findings=%d novel=%d "
@@ -852,6 +995,26 @@ class QaModule(Module):
             self._last_patrol_at = datetime.now(UTC)
             self._last_patrol_status = "error"
             self._current_patrol_id = None
+
+            # Record error patrol metrics
+            patrol_duration = time.monotonic() - patrol_start
+            if _qa_patrol_total is not None:
+                try:
+                    _qa_patrol_total.labels(status="error").inc()
+                except Exception:
+                    logger.debug(
+                        "QaModule: failed to record qa_patrol_total metric (error path)",
+                        exc_info=True,
+                    )
+            if _qa_patrol_duration_seconds is not None:
+                try:
+                    _qa_patrol_duration_seconds.observe(patrol_duration)
+                except Exception:
+                    logger.debug(
+                        "QaModule: failed to record qa_patrol_duration_seconds metric (error path)",
+                        exc_info=True,
+                    )
+
             return {"status": "error", "reason": error_msg}
         finally:
             if _HAS_OTEL and _patrol_span is not None:
@@ -966,6 +1129,79 @@ class QaModule(Module):
             )
         except Exception:
             logger.debug("QaModule: failed to record skipped_overlap patrol", exc_info=True)
+
+        if _qa_patrol_total is not None:
+            try:
+                _qa_patrol_total.labels(status="skipped_overlap").inc()
+            except Exception:
+                logger.debug(
+                    "QaModule: failed to record qa_patrol_total metric (skipped_overlap)",
+                    exc_info=True,
+                )
+
+    # ------------------------------------------------------------------
+    # Investigation metric snapshots
+    # ------------------------------------------------------------------
+
+    async def _record_investigation_metrics(self, pool: Any) -> None:
+        """Query DB to update qa_investigations_active gauge and record durations.
+
+        Queries the public.healing_attempts table for QA-originated investigations
+        (qa_patrol_id IS NOT NULL).  Updates the qa_investigations_active gauge with
+        the current count of rows with status='investigating'.  Records
+        qa_investigation_duration_seconds for any QA investigations that closed since
+        the last patrol (closed_at within the last patrol_interval_minutes * 2 window).
+
+        This method is called once per patrol cycle and does not raise — any DB or
+        metric errors are caught and logged at DEBUG level so they cannot abort a patrol.
+        """
+        try:
+            # Update active investigation gauge
+            active_count = await pool.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM public.healing_attempts
+                WHERE status = 'investigating'
+                  AND qa_patrol_id IS NOT NULL
+                """
+            )
+            if _qa_investigations_active is not None:
+                try:
+                    _qa_investigations_active.set(active_count or 0)
+                except Exception:
+                    logger.debug(
+                        "QaModule: failed to set qa_investigations_active metric", exc_info=True
+                    )
+        except Exception:
+            logger.debug("QaModule: failed to query active investigation count", exc_info=True)
+
+        # Record durations for investigations that closed within the patrol window
+        try:
+            lookback_interval = self._config.patrol_interval_minutes * 2
+            recently_closed = await pool.fetch(
+                """
+                SELECT status,
+                       EXTRACT(EPOCH FROM (closed_at - created_at)) AS duration_seconds
+                FROM public.healing_attempts
+                WHERE qa_patrol_id IS NOT NULL
+                  AND closed_at IS NOT NULL
+                  AND closed_at >= now() - ($1 * INTERVAL '1 minute')
+                """,
+                lookback_interval,
+            )
+            if _qa_investigation_duration_seconds is not None:
+                for row in recently_closed:
+                    try:
+                        duration = float(row["duration_seconds"] or 0)
+                        status = str(row["status"])
+                        _qa_investigation_duration_seconds.labels(status=status).observe(duration)
+                    except Exception:
+                        logger.debug(
+                            "QaModule: failed to record qa_investigation_duration_seconds metric",
+                            exc_info=True,
+                        )
+        except Exception:
+            logger.debug("QaModule: failed to query recently closed investigations", exc_info=True)
 
     # ------------------------------------------------------------------
     # Credential resolution
