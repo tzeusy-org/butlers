@@ -1,6 +1,6 @@
 [butler]
 name = "qa"
-port = 41106
+port = 41110
 description = "System-wide SRE: patrol loop, error discovery, triage, and automated investigation dispatch"
 type = "staffer"
 
