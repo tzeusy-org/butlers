@@ -127,10 +127,10 @@ async def test_session_complete_success_and_failure(pool):
     await session_complete(
         pool,
         session_id,
-        result="All done",
+        output="All done",
         tool_calls=[{"name": "tool1"}],
         duration_ms=1234,
-        model="claude-3",
+        success=True,
         input_tokens=100,
         output_tokens=50,
     )
@@ -145,7 +145,7 @@ async def test_session_complete_success_and_failure(pool):
     s2 = await session_create(
         pool, prompt="Will fail", trigger_source="tick", request_id=str(uuid.uuid4())
     )
-    await session_complete(pool, s2, error="something went wrong", success=False)
+    await session_complete(pool, s2, output=None, tool_calls=[], duration_ms=0, success=False, error="something went wrong")
     failed = await sessions_get(pool, s2)
     assert failed["success"] is False
     assert failed["error"] == "something went wrong"
@@ -153,7 +153,7 @@ async def test_session_complete_success_and_failure(pool):
 
     # Nonexistent raises
     with pytest.raises((ValueError, Exception)):
-        await session_complete(pool, uuid.uuid4())
+        await session_complete(pool, uuid.uuid4(), output=None, tool_calls=[], duration_ms=0, success=False)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ async def test_sessions_list_and_summary(pool):
             request_id=str(uuid.uuid4()),
             model="claude-3",
         )
-        await session_complete(pool, sid, input_tokens=100, output_tokens=50)
+        await session_complete(pool, sid, output=f"result {i}", tool_calls=[], duration_ms=100, success=True, input_tokens=100, output_tokens=50)
 
     listed = await sessions_list(pool)
     assert len(listed) >= 3
@@ -186,7 +186,7 @@ async def test_sessions_list_and_summary(pool):
     page1 = await sessions_list(pool, limit=2, offset=0)
     assert len(page1) == 2
 
-    summary = await sessions_summary(pool, period="week")
+    summary = await sessions_summary(pool, period="7d")
     assert summary["total_sessions"] >= 3
     assert "by_model" in summary
 

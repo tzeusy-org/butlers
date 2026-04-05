@@ -97,18 +97,18 @@ def test_deadline_countdown_and_threshold_firing():
 
     thresholds = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
     # Fires exactly at threshold
-    match = find_unfired_threshold(42, thresholds, [])
+    match = find_unfired_threshold(days_remaining=42, alert_thresholds=thresholds, fired_thresholds=[])
     assert match is not None and match["days_before"] == 42
 
     # Fires past threshold (missed downtime window)
-    match2 = find_unfired_threshold(12, [_make_threshold(14, "warning")], [])
+    match2 = find_unfired_threshold(days_remaining=12, alert_thresholds=[_make_threshold(14, "warning")], fired_thresholds=[])
     assert match2 is not None and match2["days_before"] == 14
 
     # Already-fired excluded
-    assert find_unfired_threshold(42, thresholds, [_make_threshold(42, "info")]) is None
+    assert find_unfired_threshold(days_remaining=42, alert_thresholds=thresholds, fired_thresholds=[_make_threshold(42, "info")]) is None
 
-    # No threshold above current days_remaining
-    assert find_unfired_threshold(30, thresholds, []) is None
+    # 50 days remaining: both thresholds are in the future (50 > 42 > 14) — none eligible
+    assert find_unfired_threshold(days_remaining=50, alert_thresholds=thresholds, fired_thresholds=[]) is None
 
     # Most urgent selected (smallest days_before not yet fired)
     all_t = [
@@ -117,7 +117,7 @@ def test_deadline_countdown_and_threshold_firing():
         _make_threshold(3, "critical"),
     ]  # noqa: E501
     fired = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
-    match3 = find_unfired_threshold(3, all_t, fired)
+    match3 = find_unfired_threshold(days_remaining=3, alert_thresholds=all_t, fired_thresholds=fired)
     assert match3 is not None and match3["days_before"] == 3
 
 
@@ -139,7 +139,7 @@ def test_deadline_countdown_and_threshold_firing():
 def test_deadline_status_transitions(current, severity, expected):
     from butlers.core.temporal.deadlines import compute_next_deadline_status
 
-    assert compute_next_deadline_status(current, _make_threshold(7, severity)) == expected
+    assert compute_next_deadline_status(current_status=current, fired_threshold=_make_threshold(7, severity)) == expected
 
 
 @pytest.mark.parametrize(
@@ -154,7 +154,7 @@ def test_deadline_status_transitions(current, severity, expected):
 def test_deadline_expiry_transition(current, target_fn, exp_status, exp_disable):
     from butlers.core.temporal.deadlines import compute_expiry_transition
 
-    status, disable = compute_expiry_transition(current, target_fn())
+    status, disable = compute_expiry_transition(current_status=current, target_date=target_fn())
     assert status == exp_status
     assert disable is exp_disable
 
@@ -358,9 +358,9 @@ def _make_prefs(qs="22:00", qe="07:00", tz="UTC", overrides=None):
 def test_quiet_hours_priority_defer(priority, t, expected_defer):
     from butlers.core.temporal.delivery import should_defer_notification
 
-    assert should_defer_notification(priority, t, _make_prefs()) is expected_defer
+    assert should_defer_notification(priority=priority, current_time=t, prefs=_make_prefs()) is expected_defer
     # None prefs never defers regardless of time
-    assert should_defer_notification("medium", time(2, 0), None) is False
+    assert should_defer_notification(priority="medium", current_time=time(2, 0), prefs=None) is False
 
 
 @pytest.mark.parametrize(
@@ -378,7 +378,7 @@ def test_quiet_hours_priority_defer(priority, t, expected_defer):
 def test_is_in_quiet_hours(t, qs, qe, expected):
     from butlers.core.temporal.delivery import is_in_quiet_hours
 
-    assert is_in_quiet_hours(t, qs, qe) is expected
+    assert is_in_quiet_hours(current_time=t, quiet_start=qs, quiet_end=qe) is expected
 
 
 @pytest.mark.parametrize(
@@ -391,14 +391,14 @@ def test_is_in_quiet_hours(t, qs, qe, expected):
 def test_compute_deliver_at_utc(now_dt, exp_date, exp_hour):
     from butlers.core.temporal.delivery import compute_deliver_at
 
-    result = compute_deliver_at(_make_prefs("UTC"), now_dt)
+    result = compute_deliver_at(prefs=_make_prefs("UTC"), now=now_dt)
     assert result.date() == exp_date and result.hour == exp_hour
     assert result.utcoffset().total_seconds() == 0  # UTC-aware
     # Invalid tz and naive datetime raise ValueError
     with pytest.raises(ValueError, match="Unknown timezone"):
-        compute_deliver_at(_make_prefs(tz="Invalid/Zone"), datetime(2026, 1, 15, 12, 0, tzinfo=UTC))
+        compute_deliver_at(prefs=_make_prefs(tz="Invalid/Zone"), now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC))
     with pytest.raises(ValueError, match="timezone-aware"):
-        compute_deliver_at(_make_prefs(), datetime(2026, 1, 15, 12, 0))
+        compute_deliver_at(prefs=_make_prefs(), now=datetime(2026, 1, 15, 12, 0))
 
 
 # ---------------------------------------------------------------------------
@@ -453,8 +453,8 @@ def test_notification_expiry_and_delivery_result():
         _make_deferred(deliver_at=now - timedelta(hours=23)), now=now
     )
 
-    assert compute_delivery_result(False)["status"] == "pending"
-    result = compute_delivery_result(True, delivered_at=now)
+    assert compute_delivery_result(delivery_succeeded=False)["status"] == "pending"
+    result = compute_delivery_result(delivery_succeeded=True, delivered_at=now)
     assert result["status"] == "delivered" and result["delivered_at"] == now
 
     notifications = [
@@ -498,20 +498,20 @@ def test_per_channel_quiet_hours_overrides():
         "override_channels": {"email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}},
     }
     # Email uses override
-    eff = resolve_effective_quiet_hours("email", prefs)
+    eff = resolve_effective_quiet_hours(channel="email", prefs=prefs)
     assert eff["quiet_hours_start"] == "20:00" and eff["quiet_hours_end"] == "09:00"
 
     # Telegram uses defaults
-    eff2 = resolve_effective_quiet_hours("telegram", prefs)
+    eff2 = resolve_effective_quiet_hours(channel="telegram", prefs=prefs)
     assert eff2["quiet_hours_start"] == "22:00" and eff2["quiet_hours_end"] == "07:00"
 
     # 21:00 inside email override, outside default → email deferred, telegram not
-    assert should_defer_notification("medium", time(21, 0), prefs, channel="email")
-    assert not should_defer_notification("medium", time(21, 0), prefs, channel="telegram")
+    assert should_defer_notification(priority="medium", current_time=time(21, 0), prefs=prefs, channel="email")
+    assert not should_defer_notification(priority="medium", current_time=time(21, 0), prefs=prefs, channel="telegram")
 
     # Empty overrides → defaults
     prefs2 = {**prefs, "override_channels": {}}
-    eff3 = resolve_effective_quiet_hours("email", prefs2)
+    eff3 = resolve_effective_quiet_hours(channel="email", prefs=prefs2)
     assert eff3["quiet_hours_start"] == "22:00"
 
 

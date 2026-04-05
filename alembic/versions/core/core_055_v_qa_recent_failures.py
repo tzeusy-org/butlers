@@ -235,6 +235,42 @@ def upgrade() -> None:
         _grant_cross_schema_select(schema, _QA_ROLE)
 
     # ----------------------------------------------------------------------- #
+    # 1.5 Create minimal sessions tables in any schema that doesn't yet have
+    #     one.  When the core chain runs before per-butler chains (e.g. in
+    #     test environments or on a fresh DB), the butler schemas exist but
+    #     their sessions tables have not been created yet.  We create a
+    #     compatibility stub with the columns required by the UNION view and
+    #     by the indexes created in core_001 (request_id, ingestion_event_id).
+    #     IF NOT EXISTS makes this a no-op once the real table is present.
+    # ----------------------------------------------------------------------- #
+    for schema in _SESSION_SCHEMAS:
+        op.execute(f"""
+            CREATE TABLE IF NOT EXISTS {schema}.sessions (
+                id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                prompt              TEXT NOT NULL DEFAULT '',
+                trigger_source      TEXT NOT NULL DEFAULT '',
+                model               TEXT,
+                success             BOOLEAN,
+                error               TEXT,
+                result              TEXT,
+                tool_calls          JSONB NOT NULL DEFAULT '[]'::jsonb,
+                duration_ms         INTEGER,
+                trace_id            TEXT,
+                request_id          TEXT NOT NULL DEFAULT '',
+                cost                JSONB,
+                input_tokens        INTEGER,
+                output_tokens       INTEGER,
+                parent_session_id   UUID,
+                ingestion_event_id  UUID,
+                complexity          TEXT DEFAULT 'medium',
+                resolution_source   TEXT DEFAULT 'toml_fallback',
+                healing_fingerprint TEXT,
+                started_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+                completed_at        TIMESTAMPTZ
+            )
+        """)
+
+    # ----------------------------------------------------------------------- #
     # 2. Create the UNION view.
     #    RFC 0010 guardrail 1: UNION view — structurally read-only.
     #    RFC 0010 guardrail 2: source_butler is hardcoded per UNION term.

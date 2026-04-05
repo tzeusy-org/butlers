@@ -177,12 +177,18 @@ async def test_get_active_seasons_filtering(pool):
         enabled=False,
     )
 
-    # Jan 20: tax-season active, winter active (cross-year), disabled excluded
-    active = await get_active_seasons(pool, butler, today=date(2025, 1, 20))
+    # Jan 5: tax-season active, winter active (cross-year Jan 5 is within Nov 15 - Jan 10), disabled excluded
+    active = await get_active_seasons(pool, butler, today=date(2025, 1, 5))
     names = {p["name"] for p in active}
     assert "tax-season" in names
     assert "winter" in names
     assert "disabled" not in names
+
+    # Jan 20: tax-season still active (Jan 20 < Apr 15), winter ended (Jan 20 > Jan 10)
+    active_jan20 = await get_active_seasons(pool, butler, today=date(2025, 1, 20))
+    names_jan20 = {p["name"] for p in active_jan20}
+    assert "tax-season" in names_jan20
+    assert "winter" not in names_jan20
 
     # June: neither active
     active_june = await get_active_seasons(pool, butler, today=date(2025, 6, 1))
@@ -280,11 +286,11 @@ async def test_seasonal_period_update(pool):
     assert len(await get_active_seasons(pool, butler, today=date(2025, 6, 15))) == 1
 
     # Disable it
-    await seasonal_period_update(pool, period_id, butler_name=butler, enabled=False)
+    await seasonal_period_update(pool, butler, period_id, enabled=False)
     assert len(await get_active_seasons(pool, butler, today=date(2025, 6, 15))) == 0
 
     # Not-found returns False
-    result = await seasonal_period_update(pool, uuid.uuid4(), butler_name=butler, enabled=True)
+    result = await seasonal_period_update(pool, butler, uuid.uuid4(), enabled=True)
     assert result is False
 
 
@@ -313,12 +319,12 @@ async def test_seasonal_period_list_and_delete(pool):
     assert "is_active" in periods[0]
 
     # Delete it
-    result = await seasonal_period_delete(pool, period_id, butler_name=butler)
+    result = await seasonal_period_delete(pool, butler, period_id)
     assert result is True
     assert len(await seasonal_period_list(pool, butler)) == 0
 
     # Not-found returns False
-    assert await seasonal_period_delete(pool, uuid.uuid4(), butler_name=butler) is False
+    assert await seasonal_period_delete(pool, butler, uuid.uuid4()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +345,7 @@ async def test_seasonal_period_presets(pool):
     assert len(periods) == 1
     assert periods[0]["name"] == "us-tax-season"
 
-    with pytest.raises(ValueError, match="unknown preset"):
+    with pytest.raises(ValueError, match="[Uu]nknown preset"):
         await seasonal_period_create_preset(pool, butler, "space-christmas")
 
 
