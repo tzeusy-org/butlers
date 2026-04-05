@@ -1544,6 +1544,11 @@ class GDriveAccountLoop:
             event_type=change_type,
         ).inc()
 
+        # Skip pure content-modification events — too noisy for ingestion.
+        # We still update the metadata cache above so state stays current.
+        if change_type == _CHANGE_TYPE_MODIFIED:
+            return None
+
         # Determine parent context for normalized_text
         old_parent = old_parents[0] if old_parents else None
         new_parent = list(parents)[0] if parents else None
