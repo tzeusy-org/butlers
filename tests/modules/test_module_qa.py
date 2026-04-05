@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -900,3 +901,478 @@ class TestQaPatrolOtelSpans:
             result = await mod._run_patrol_cycle()
 
         assert result["status"] == "clean"
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics — patrol cycle
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsPatrolTotal:
+    """qa_patrol_total counter incremented with status label on each patrol completion."""
+
+    async def test_patrol_total_incremented_on_clean_patrol(self):
+        """qa_patrol_total is incremented with status=clean after a clean patrol."""
+        import butlers.modules.qa as qa_module
+
+        counter_calls: list[str] = []
+
+        class FakeCounter:
+            def labels(self, *, status):
+                counter_calls.append(status)
+                return self
+
+            def inc(self):
+                pass
+
+        original = qa_module._qa_patrol_total
+        try:
+            qa_module._qa_patrol_total = FakeCounter()
+            mod = _make_module()
+            mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+            pool = _make_pool()
+            pool.fetchval = AsyncMock(side_effect=[uuid.uuid4(), 0])
+            pool.fetch = AsyncMock(return_value=[])
+            mod._pool = pool
+            mod._sources = []
+
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mock_triage,
+                patch(
+                    "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
+                ) as mock_dispatch,
+                patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+            ):
+                mock_triage.return_value = MagicMock(
+                    all_findings=[], novel_findings=[], dedup_counts={}
+                )
+                mock_dispatch.return_value = []
+                await mod._run_patrol_cycle()
+
+            assert "clean" in counter_calls
+        finally:
+            qa_module._qa_patrol_total = original
+
+    async def test_patrol_total_incremented_on_skipped_overlap(self):
+        """qa_patrol_total is incremented with status=skipped_overlap on overlap skip."""
+        import butlers.modules.qa as qa_module
+
+        counter_calls: list[str] = []
+
+        class FakeCounter:
+            def labels(self, *, status):
+                counter_calls.append(status)
+                return self
+
+            def inc(self):
+                pass
+
+        original = qa_module._qa_patrol_total
+        try:
+            qa_module._qa_patrol_total = FakeCounter()
+            mod = _make_module()
+            mod._config = QaConfig(enabled=True)
+            pool = _make_pool()
+            mod._pool = pool
+
+            await mod._record_patrol_skip(pool)
+
+            assert "skipped_overlap" in counter_calls
+        finally:
+            qa_module._qa_patrol_total = original
+
+    async def test_patrol_total_none_does_not_raise(self):
+        """When qa_patrol_total is None, patrol completes without error."""
+        import butlers.modules.qa as qa_module
+
+        original = qa_module._qa_patrol_total
+        try:
+            qa_module._qa_patrol_total = None
+            mod = _make_module()
+            mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+            pool = _make_pool()
+            pool.fetchval = AsyncMock(side_effect=[uuid.uuid4(), 0])
+            pool.fetch = AsyncMock(return_value=[])
+            mod._pool = pool
+            mod._sources = []
+
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mock_triage,
+                patch(
+                    "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
+                ) as mock_dispatch,
+                patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+            ):
+                mock_triage.return_value = MagicMock(
+                    all_findings=[], novel_findings=[], dedup_counts={}
+                )
+                mock_dispatch.return_value = []
+                result = await mod._run_patrol_cycle()
+
+            assert result["status"] == "clean"
+        finally:
+            qa_module._qa_patrol_total = original
+
+
+class TestMetricsFindingsTotal:
+    """qa_findings_total counter incremented per finding with source_type and dedup_reason."""
+
+    async def test_findings_total_incremented_per_finding(self):
+        """qa_findings_total is incremented once per triaged finding."""
+        import butlers.modules.qa as qa_module
+        from butlers.core.qa.models import QaFinding
+        from butlers.core.qa.triage import TriagedFinding
+
+        findings_calls: list[dict] = []
+
+        class FakeCounter:
+            def labels(self, *, source_type, dedup_reason):
+                findings_calls.append({"source_type": source_type, "dedup_reason": dedup_reason})
+                return self
+
+            def inc(self):
+                pass
+
+        ts = datetime.now(UTC)
+        finding = QaFinding(
+            fingerprint="a" * 64,
+            source_type="log_scanner",
+            source_butler="general",
+            severity=2,
+            exception_type="ValueError",
+            event_summary="something",
+            call_site="a.py:f",
+            occurrence_count=1,
+            first_seen=ts,
+            last_seen=ts,
+            timestamp=ts,
+        )
+        triaged_novel = TriagedFinding(
+            finding=finding,
+            dedup_reason=None,
+            finding_id=uuid.uuid4(),
+        )
+        triaged_dedup = TriagedFinding(
+            finding=finding,
+            dedup_reason="cooldown",
+            finding_id=uuid.uuid4(),
+        )
+
+        original = qa_module._qa_findings_total
+        try:
+            qa_module._qa_findings_total = FakeCounter()
+            mod = _make_module()
+            mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+            pool = _make_pool()
+            pool.fetchval = AsyncMock(side_effect=[uuid.uuid4(), 0])
+            pool.fetch = AsyncMock(return_value=[])
+            mod._pool = pool
+            mod._sources = []
+
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mock_triage,
+                patch(
+                    "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
+                ) as mock_dispatch,
+                patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+            ):
+                mock_triage.return_value = MagicMock(
+                    all_findings=[triaged_novel, triaged_dedup],
+                    novel_findings=[triaged_novel],
+                    dedup_counts={},
+                )
+                mock_dispatch.return_value = []
+                await mod._run_patrol_cycle()
+
+            assert len(findings_calls) == 2
+            # Novel finding maps to dedup_reason="novel"
+            assert {"source_type": "log_scanner", "dedup_reason": "novel"} in findings_calls
+            # Deduplicated finding maps to its dedup_reason
+            assert {"source_type": "log_scanner", "dedup_reason": "cooldown"} in findings_calls
+        finally:
+            qa_module._qa_findings_total = original
+
+
+class TestMetricsInvestigationsActive:
+    """qa_investigations_active gauge reflects current investigating count."""
+
+    async def test_investigations_active_gauge_set_from_db(self):
+        """_record_investigation_metrics sets the gauge to the DB count."""
+        import butlers.modules.qa as qa_module
+
+        gauge_values: list[float] = []
+
+        class FakeGauge:
+            def set(self, value):
+                gauge_values.append(value)
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=3)
+        pool.fetch = AsyncMock(return_value=[])
+
+        original = qa_module._qa_investigations_active
+        try:
+            qa_module._qa_investigations_active = FakeGauge()
+            mod = _make_module()
+            mod._config = QaConfig()
+            await mod._record_investigation_metrics(pool)
+
+            assert gauge_values == [3]
+        finally:
+            qa_module._qa_investigations_active = original
+
+    async def test_investigations_active_none_does_not_raise(self):
+        """When qa_investigations_active is None, _record_investigation_metrics does not raise."""
+        import butlers.modules.qa as qa_module
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=5)
+        pool.fetch = AsyncMock(return_value=[])
+
+        original = qa_module._qa_investigations_active
+        try:
+            qa_module._qa_investigations_active = None
+            mod = _make_module()
+            mod._config = QaConfig()
+            await mod._record_investigation_metrics(pool)  # must not raise
+        finally:
+            qa_module._qa_investigations_active = original
+
+    async def test_db_error_does_not_propagate(self):
+        """DB failures in _record_investigation_metrics are swallowed."""
+        import butlers.modules.qa as qa_module
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(side_effect=RuntimeError("db down"))
+        pool.fetch = AsyncMock(side_effect=RuntimeError("db down"))
+
+        original = qa_module._qa_investigations_active
+        try:
+            qa_module._qa_investigations_active = None
+            mod = _make_module()
+            mod._config = QaConfig()
+            await mod._record_investigation_metrics(pool)  # must not raise
+        finally:
+            qa_module._qa_investigations_active = original
+
+
+class TestMetricsPatrolDuration:
+    """qa_patrol_duration_seconds histogram records patrol durations."""
+
+    async def test_patrol_duration_observed_after_clean_patrol(self):
+        """qa_patrol_duration_seconds.observe() is called after a clean patrol."""
+        import butlers.modules.qa as qa_module
+
+        observed_values: list[float] = []
+
+        class FakeHistogram:
+            def observe(self, value):
+                observed_values.append(value)
+
+        original = qa_module._qa_patrol_duration_seconds
+        try:
+            qa_module._qa_patrol_duration_seconds = FakeHistogram()
+            mod = _make_module()
+            mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+            pool = _make_pool()
+            pool.fetchval = AsyncMock(side_effect=[uuid.uuid4(), 0])
+            pool.fetch = AsyncMock(return_value=[])
+            mod._pool = pool
+            mod._sources = []
+
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mock_triage,
+                patch(
+                    "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
+                ) as mock_dispatch,
+                patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+            ):
+                mock_triage.return_value = MagicMock(
+                    all_findings=[], novel_findings=[], dedup_counts={}
+                )
+                mock_dispatch.return_value = []
+                await mod._run_patrol_cycle()
+
+            assert len(observed_values) == 1
+            assert observed_values[0] >= 0
+        finally:
+            qa_module._qa_patrol_duration_seconds = original
+
+    async def test_patrol_duration_none_does_not_raise(self):
+        """When qa_patrol_duration_seconds is None, patrol completes without error."""
+        import butlers.modules.qa as qa_module
+
+        original = qa_module._qa_patrol_duration_seconds
+        try:
+            qa_module._qa_patrol_duration_seconds = None
+            mod = _make_module()
+            mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+            pool = _make_pool()
+            pool.fetchval = AsyncMock(side_effect=[uuid.uuid4(), 0])
+            pool.fetch = AsyncMock(return_value=[])
+            mod._pool = pool
+            mod._sources = []
+
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mock_triage,
+                patch(
+                    "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
+                ) as mock_dispatch,
+                patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+            ):
+                mock_triage.return_value = MagicMock(
+                    all_findings=[], novel_findings=[], dedup_counts={}
+                )
+                mock_dispatch.return_value = []
+                result = await mod._run_patrol_cycle()
+
+            assert result["status"] == "clean"
+        finally:
+            qa_module._qa_patrol_duration_seconds = original
+
+
+class TestMetricsInvestigationDuration:
+    """qa_investigation_duration_seconds histogram records investigation durations by status."""
+
+    async def test_investigation_duration_observed_for_closed_rows(self):
+        """_record_investigation_metrics records duration for each closed investigation."""
+        import butlers.modules.qa as qa_module
+
+        observed: list[tuple[str, float]] = []
+
+        class FakeHistogram:
+            def labels(self, *, status):
+                self._status = status
+                return self
+
+            def observe(self, value):
+                observed.append((self._status, value))
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = AsyncMock(
+            return_value=[
+                {"status": "pr_merged", "duration_seconds": 120.5},
+                {"status": "failed", "duration_seconds": 45.0},
+            ]
+        )
+
+        original = qa_module._qa_investigation_duration_seconds
+        try:
+            qa_module._qa_investigation_duration_seconds = FakeHistogram()
+            mod = _make_module()
+            mod._config = QaConfig()
+            await mod._record_investigation_metrics(pool)
+
+            assert len(observed) == 2
+            statuses = [s for s, _ in observed]
+            assert "pr_merged" in statuses
+            assert "failed" in statuses
+            durations = {s: d for s, d in observed}
+            assert durations["pr_merged"] == 120.5
+            assert durations["failed"] == 45.0
+        finally:
+            qa_module._qa_investigation_duration_seconds = original
+
+    async def test_investigation_duration_none_does_not_raise(self):
+        """When qa_investigation_duration_seconds is None, method does not raise."""
+        import butlers.modules.qa as qa_module
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = AsyncMock(return_value=[{"status": "pr_merged", "duration_seconds": 60.0}])
+
+        original = qa_module._qa_investigation_duration_seconds
+        try:
+            qa_module._qa_investigation_duration_seconds = None
+            mod = _make_module()
+            mod._config = QaConfig()
+            await mod._record_investigation_metrics(pool)  # must not raise
+        finally:
+            qa_module._qa_investigation_duration_seconds = original
+
+    async def test_investigation_duration_uses_last_patrol_at_as_high_water_mark(self):
+        """When _last_patrol_at is set, query anchors to that timestamp (no double-counting)."""
+        fetch_calls: list = []
+
+        async def capturing_fetch(sql, *args):
+            fetch_calls.append({"sql": sql, "args": args})
+            return []
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = capturing_fetch
+
+        mod = _make_module()
+        mod._config = QaConfig()
+        last_at = datetime.now(UTC)
+        mod._last_patrol_at = last_at
+
+        await mod._record_investigation_metrics(pool)
+
+        assert fetch_calls, "fetch should have been called"
+        # The query should use a $1 parameter = last_patrol_at (no rolling multiplier)
+        assert last_at in fetch_calls[0]["args"], (
+            "Expected _last_patrol_at to be passed as query parameter for high-water mark"
+        )
+
+    async def test_investigation_duration_uses_single_interval_on_first_run(self):
+        """On first patrol (no _last_patrol_at), query uses a single patrol_interval lookback."""
+        fetch_calls: list = []
+
+        async def capturing_fetch(sql, *args):
+            fetch_calls.append({"sql": sql, "args": args})
+            return []
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = capturing_fetch
+
+        mod = _make_module()
+        interval = 10
+        mod._config = QaConfig(patrol_interval_minutes=interval)
+        mod._last_patrol_at = None  # First run
+
+        await mod._record_investigation_metrics(pool)
+
+        assert fetch_calls, "fetch should have been called"
+        # The lookback should be exactly one interval (not 2x)
+        assert interval in fetch_calls[0]["args"], (
+            "Expected patrol_interval_minutes (not 2x) to be passed as query parameter on first run"
+        )
+
+
+class TestMetricsCancelledError:
+    """asyncio.CancelledError propagates through _record_investigation_metrics."""
+
+    async def test_cancelled_error_propagates_on_fetchval(self):
+        """CancelledError from fetchval is not swallowed."""
+        import asyncio
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(side_effect=asyncio.CancelledError())
+        pool.fetch = AsyncMock(return_value=[])
+
+        mod = _make_module()
+        mod._config = QaConfig()
+
+        import pytest
+
+        with pytest.raises(asyncio.CancelledError):
+            await mod._record_investigation_metrics(pool)
+
+    async def test_cancelled_error_propagates_on_fetch(self):
+        """CancelledError from fetch is not swallowed."""
+        import asyncio
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = AsyncMock(side_effect=asyncio.CancelledError())
+
+        mod = _make_module()
+        mod._config = QaConfig()
+
+        import pytest
+
+        with pytest.raises(asyncio.CancelledError):
+            await mod._record_investigation_metrics(pool)
