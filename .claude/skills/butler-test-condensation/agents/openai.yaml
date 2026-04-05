@@ -1,0 +1,4 @@
+interface:
+  display_name: "Butler Test Condensation"
+  short_description: "Discover, analyze, and prune bloated test suites"
+  default_prompt: "Use $butler-test-condensation to assess the test suite and plan condensation for a specific domain"

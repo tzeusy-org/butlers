@@ -1,0 +1,97 @@
+# Beads Epic: Test Suite Condensation
+
+**Epic**: `bu-rhztl` — Condense test suite from ~13,675 to ~2,000 contract-driven tests
+
+## Dependency Graph
+
+```
+bu-zkrix (P1) Extract architectural contracts [PHASE 1 — MUST COMPLETE FIRST]
+  │
+  ├── bu-v7dn3 (P2) Memory module: 1,544 → ~100
+  ├── bu-35fm7 (P2) Connectors: 2,284 → ~150
+  ├── bu-eu6jh (P2) Migrations: 890 → ~50
+  ├── bu-egmz6 (P2) API tests: 1,779 → ~200
+  ├── bu-7sd7a (P2) Modules non-memory: 2,170 → ~400
+  └── bu-l1obx (P2) Core tests: 1,453 → ~300
+        │
+        └── bu-s8hn8 (P3) Root cleanup & final sweep [depends on ALL above]
+              │
+              └── bu-ud62t (P1) Reconciliation gen-1 [depends on ALL above]
+```
+
+Phase 1 (`bu-zkrix`) blocks everything. After Phase 1, the six P2 beads can run
+in parallel. The sweep (`bu-s8hn8`) runs after all P2 beads. Reconciliation
+(`bu-ud62t`) runs last.
+
+## Quick Reference
+
+| Bead | Domain | Baseline | Target | Directory |
+|------|--------|--------:|-------:|-----------|
+| bu-zkrix | Contract extraction | 0 | ~200 | tests/contracts/ (new) |
+| bu-v7dn3 | Memory module | 1,544 | ~100 | tests/modules/memory/ |
+| bu-35fm7 | Connectors + root conn files | 2,615 | ~150 | tests/connectors/ + root connector files |
+| bu-eu6jh | Migrations | 749 | ~50 | tests/config/*migration* + tests/migrations/ |
+| bu-egmz6 | API tests | 1,779 | ~200 | tests/api/ |
+| bu-7sd7a | Modules (non-mem) | 2,170 | ~400 | tests/modules/ (excl memory) |
+| bu-l1obx | Core + Daemon | 1,869 | ~400 | tests/core/ + tests/daemon/ |
+| bu-s8hn8 | Unassigned dirs + root + sweep | 3,149 | ~600 | tests/{adapters,jobs,integration,tools,e2e,cli,...} + root |
+| bu-ud62t | Reconciliation | — | — | — |
+
+**Baseline counts are from 2026-04-05.** Always rediscover current counts
+before starting work — see [discovery.md](discovery.md) staleness check.
+
+## Commands
+
+```bash
+bd show bu-rhztl          # Epic details
+bd list --parent bu-rhztl # All children with status
+bd ready                  # What's unblocked now
+bd dep tree bu-rhztl      # Full dependency tree
+```
+
+## Bead Lifecycle
+
+### Claiming and starting work
+
+```bash
+bd update <bead-id> --claim    # Claim the bead
+# Run scoped discovery on your domain first
+# Then follow the workflow in SKILL.md
+```
+
+### Completing a bead
+
+1. Pass all quality gates (SKILL.md)
+2. Commit with delta: `"Condense X: N → M tests (rationale)"`
+3. Close: `bd close <bead-id> --reason "Reduced from N to M tests. Details..."`
+
+### If you need to pause mid-work
+
+Do NOT close the bead. Commit your work-in-progress and add a comment:
+```bash
+bd update <bead-id> --comment "Pausing at N tests (target M). Next agent: resume from commit abc123."
+```
+
+### Creating new beads (for new modules or round 2)
+
+If you discover a new test domain not covered by existing beads:
+
+```bash
+# Assess the new domain
+NEW_DIR=tests/modules/NEW_MODULE
+find "$NEW_DIR" -name '*.py' -exec grep -c 'def test_' {} + 2>/dev/null | awk -F: '{sum+=$2} END {print sum}'
+
+# If >50 tests, create a new child bead
+bd create \
+  --title "Condense NEW_MODULE tests: XXX → ~YY" \
+  --type task --priority 2 --parent bu-rhztl \
+  --description "Apply three-tier architecture to new module. See butler-test-condensation skill."
+
+# Wire dependency on Phase 1
+bd dep add <new-bead-id> bu-zkrix
+```
+
+### Skill maintenance after completing a bead
+
+Update this file's Quick Reference table with the actual final count and mark
+the bead as done. This keeps the skill accurate for subsequent agents.

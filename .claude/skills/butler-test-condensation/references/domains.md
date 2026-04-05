@@ -1,0 +1,218 @@
+# Domain-Specific Condensation Guides
+
+Each section corresponds to a bead in epic `bu-rhztl`. Read the bead
+(`bd show <id>`) for full acceptance criteria.
+
+**Before starting any domain**: run the staleness check and scoped discovery
+commands from [discovery.md](discovery.md).
+
+## Phase 1: Architectural Contract Extraction (bu-zkrix)
+
+**Must complete before all other beads.**
+
+Create `tests/contracts/` with ~200 tests covering the 15 invariants.
+Each test gets a docstring citing its RFC and `@pytest.mark.contract` marker.
+
+Register the marker in `conftest.py` or `pyproject.toml`:
+```python
+# conftest.py
+def pytest_configure(config):
+    config.addinivalue_line("markers", "contract: architectural invariant test")
+```
+
+Per-invariant file structure:
+```
+tests/contracts/
+  test_schema_isolation.py        # RFC 0006
+  test_mcp_only_interbutler.py    # heart-and-soul
+  test_daemon_determinism.py      # RFC 0001
+  test_tool_surface_isolation.py  # RFC 0002
+  test_module_composition.py      # RFC 0002
+  test_module_boundaries.py       # RFC 0002 (modules must not touch core)
+  test_credential_tiers.py        # RFC 0006
+  test_approval_gates.py          # heart-and-soul
+  test_graceful_shutdown.py       # RFC 0001
+  test_session_lifecycle.py       # RFC 0001
+  test_identity_resolution.py     # RFC 0004
+  test_context_bus.py             # RFC 0009
+  test_routing_pipeline.py        # RFC 0003
+  test_connector_transport.py     # heart-and-soul (connectors = pure transport)
+  test_staffer_exclusion.py       # RFC 0003 (staffers excluded from routing)
+```
+
+### How to find existing tests to extract
+
+For each invariant, grep for tests that already validate it:
+
+```bash
+# Schema isolation — look for search_path, cross-schema, schema tests
+grep -rln 'search_path\|cross.*schema\|schema.*isolat' tests/ --include='*.py'
+
+# MCP-only inter-butler — look for tests asserting no direct imports
+grep -rln 'import.*butlers\.\(modules\|connectors\)' tests/ --include='*.py'
+
+# Daemon startup — look for startup phase tests
+grep -rln 'startup\|phase.*order\|daemon.*init' tests/daemon/ tests/core/ --include='*.py'
+
+# Module composition — look for topo sort, dependency tests
+grep -rln 'topological\|dependency.*sort\|cycle.*detect' tests/ --include='*.py'
+```
+
+Write new tests where existing coverage has gaps. See
+[classification.md](classification.md) for Tier 1 test examples.
+
+---
+
+## Memory Module (bu-v7dn3) — 1,544 -> ~100
+
+**Directory**: `tests/modules/memory/` (70 files)
+
+File groups to consolidate:
+- `test_storage_*.py` (~20 files) — internal CRUD helpers. **Delete after covering via tool tests.**
+- `test_search_*.py` (~8 files) — 8 separate search mode files. **Merge into 1 file.**
+- `test_tools_*.py` (~8 files) — closest to behavioral. **Keep as core, consolidate.**
+- `test_consolidation_*.py` (~5 files) — internal pipeline. **Keep 1 integration test.**
+- `test_*_migration*.py` (3 files) — handled by migration bead.
+
+Target structure:
+```
+tests/modules/memory/
+  test_memory_tools.py         # All MCP tool tests: store, recall, forget, search
+  test_memory_search.py        # Search modes: keyword, semantic, hybrid, vector
+  test_memory_consolidation.py # End-to-end consolidation pipeline
+  test_memory_entities.py      # Entity resolution and merge through tools
+  conftest.py                  # Shared fixtures
+```
+
+**Key rule**: No test should import from `butlers.modules.memory.storage` directly.
+Test through MCP tool interface only.
+
+---
+
+## Connectors (bu-35fm7) — 2,284 -> ~150
+
+**Directory**: `tests/connectors/` (51 files)
+
+Top offenders (all heavily mocked):
+- `test_google_drive_connector.py`: 221 tests — mock Google API responses
+- `test_gmail_connector.py` (root): 207 tests — mock Gmail API
+- `test_telegram_user_client.py`: 163 tests — mock Telethon
+- `test_spotify_client.py`: 150 tests — mock Spotify API
+
+Per connector, keep exactly:
+1. Happy-path test: input event -> correct ingest.v1 envelope output
+2. Error-path test: API failure -> graceful degradation, no crash
+3. Config/discovery test: multi-account setup, scope validation
+4. Edge cases only for connector-specific logic (e.g., Drive change type detection)
+
+Target: 1 test file per connector, 10-15 tests each.
+
+**What to delete**: All `assert mock.called_with(...)`, `assert mock.call_count == N`,
+and error message string assertions.
+
+---
+
+## Migrations (bu-eu6jh) — 890 -> ~50
+
+**Directories**: `tests/config/test_*_migration*.py`, `tests/migrations/`
+
+Current anti-pattern: tests parse SQL strings from migration files and assert substrings.
+```python
+# BAD: tests SQL string content
+assert "CREATE TABLE" in migration.upgrade_sql
+assert "ALTER TABLE" in migration.upgrade_sql
+```
+
+Replace with schema-outcome tests:
+```python
+# GOOD: tests actual schema state
+async def test_core_migration_chain(db):
+    await run_migrations(db, "core", "head")
+    tables = await get_tables(db)
+    assert "scheduled_tasks" in tables
+    cols = await get_columns(db, "scheduled_tasks")
+    assert "cron_expr" in cols
+```
+
+Target: 1 test per migration chain (core, switchboard, per-module that has migrations).
+
+---
+
+## API Tests (bu-egmz6) — 1,779 -> ~200
+
+**Directory**: `tests/api/` (78 files)
+
+Current anti-pattern: field-by-field response assertions.
+```python
+# BAD: breaks when you add a field
+assert resp["name"] == "foo"
+assert resp["status"] == "active"
+assert resp["created_at"] == "2024-01-01"
+```
+
+Replace with schema validation:
+```python
+# GOOD: validates structure, not exact values
+from butlers.api.models import ButlerStatusResponse
+resp = client.get("/api/v1/butlers/general/status")
+assert resp.status_code == 200
+ButlerStatusResponse.model_validate(resp.json())  # Pydantic validates shape
+```
+
+Per router keep: status codes (2xx/4xx/5xx), schema validation, auth/permission
+tests, and business logic tests for non-trivial endpoints only.
+
+---
+
+## Modules Non-Memory (bu-7sd7a) — 2,170 -> ~400
+
+**Directory**: `tests/modules/` (minus memory = ~48 files)
+
+Major consolidation targets:
+- **Calendar** (8+ files, 127+92+... tests): -> 1 file testing calendar MCP tools
+- **Approvals** (9 files): -> 1-2 files testing gate interception + rule evaluation
+- **Home Assistant** (190 tests in 1 file): -> ~30 behavioral tests
+- **Contacts** (4+ files): -> 1 file testing contact MCP tools
+- **Spotify/Steam** (78+81 tests): -> 1 file each, ~15 tests
+
+Per module, the test file should cover:
+1. Tool registration (Module ABC: `register_tools()` returns expected tools)
+2. Each MCP tool's happy path + error path
+3. Module lifecycle (`on_startup`, `on_shutdown`)
+4. Module-specific business logic only if non-trivial
+
+---
+
+## Core Tests (bu-l1obx) — 1,453 -> ~300
+
+**Directory**: `tests/core/` (57 files)
+
+After Phase 1 extracts contract tests, prune:
+- `test_temporal_intelligence.py` (113 tests) — internal calculation helper
+- `test_core_spawner.py` (95 tests, 270 asserts) — keep MCP config gen + session lifecycle
+- `test_core_scheduler.py` (81 tests, 196 asserts) — keep cron eval + task dispatch
+- `test_ingestion_events.py` (91 tests) — keep state machine transitions
+
+Resolve duplicate pairs:
+- `test_context_bus.py` + `test_context_bus_unit.py` -> merge
+- `test_seasonal.py` + `test_seasonal_unit.py` -> merge
+
+---
+
+## Root Cleanup & Final Sweep (bu-s8hn8)
+
+**Directory**: `tests/` root (48 loose files)
+
+Key files to relocate or delete:
+- `test_gmail_connector.py` (207 tests) -> `tests/connectors/` (or delete if redundant)
+- `test_ingestion_policy.py` (120 tests) -> `tests/core/`
+- `test_insight_engine.py` (79 tests) -> `tests/core/`
+- `test_context_bus.py` (76 tests) -> delete (duplicate of `tests/core/test_context_bus.py`)
+- `test_whatsapp_user_client.py` (75 tests) -> `tests/connectors/`
+
+Error message assertion sweep:
+```bash
+# Find all error string assertions
+grep -rn 'assert.*".*[Ee]rror\|assert.*".*[Ii]nvalid' tests/ --include='*.py'
+```
+For each: if it tests behavior (exception type), keep. If it tests message text, delete.
