@@ -4,8 +4,9 @@ Verifies for every chain:
 1. All migration files exist on disk.
 2. Each migration has callable upgrade() and downgrade().
 3. Chain is internally consistent (each revision's down_revision points to an
-   existing revision in the same chain, or None for the root).
-4. Chain root has the expected branch_label.
+   existing revision in the same chain, or None for the root). Tuple/list
+   down_revisions (merge migrations) are supported.
+4. Chain has exactly one root migration.
 
 Pure-unit tests — no Docker / PostgreSQL required.
 """
@@ -83,9 +84,12 @@ def test_all_migration_chains_integrity() -> None:
             rev = getattr(m, "revision")
             down_rev = getattr(m, "down_revision", None)
             if down_rev is not None:
-                assert down_rev in revisions, (
-                    f"{chain}/{rev}: down_revision={down_rev!r} not in chain"
-                )
+                # down_revision may be a string (linear chain) or tuple/list (merge migration)
+                parents = (down_rev,) if isinstance(down_rev, str) else tuple(down_rev)
+                for parent in parents:
+                    assert parent in revisions, (
+                        f"{chain}/{rev}: down_revision parent {parent!r} not in chain"
+                    )
 
         roots = [m for m in modules if getattr(m, "down_revision", None) is None]
         assert len(roots) == 1, f"Chain {chain!r}: expected 1 root, found {len(roots)}"

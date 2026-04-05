@@ -56,8 +56,10 @@ async def test_backfill_poll_validates_empty_inputs():
     from butlers.tools.switchboard.backfill.connector import backfill_poll
 
     pool = AsyncMock()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="connector_type"):
         await backfill_poll(pool, connector_type="", endpoint_identity="alice@ex.com")
+    with pytest.raises(ValueError, match="endpoint_identity"):
+        await backfill_poll(pool, connector_type="plaid", endpoint_identity="")
 
 
 async def test_backfill_progress_active_status():

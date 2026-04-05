@@ -121,7 +121,7 @@ async def test_resolve_raises_when_db_empty() -> None:
     """resolve_google_credentials ignores env vars; DB is required."""
     for env_vars in [_LEGACY_GMAIL_ENV, _OAUTH_BOOTSTRAP_ENV]:
         store = CredentialStore(_make_pool_with_values({}))
-        with patch("os.environ", {**env_vars}):
+        with patch.dict("os.environ", env_vars, clear=True):
             with pytest.raises(MissingGoogleCredentialsError):
                 await resolve_google_credentials(store, caller="test")
 
@@ -134,7 +134,7 @@ def test_gmail_connector_accepts_injected_credentials() -> None:
         "GMAIL_USER_EMAIL": "test@gmail.com",
         **_OAUTH_BOOTSTRAP_ENV,
     }
-    with patch("os.environ", env):
+    with patch.dict("os.environ", env, clear=True):
         config = GmailConnectorConfig.from_env(
             gmail_client_id=_SHARED_CREDS["client_id"],
             gmail_client_secret=_SHARED_CREDS["client_secret"],

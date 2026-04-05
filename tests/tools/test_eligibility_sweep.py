@@ -110,7 +110,8 @@ async def test_eligibility_sweep_skips_null_last_seen_at():
                new_callable=AsyncMock):
         result = await run_eligibility_sweep(pool, now=_NOW)
 
-    assert result["skipped"] >= 1
+    assert result["skipped"] == 1
+    assert result["transitioned"] == 0
     pool.execute.assert_not_called()
 
 

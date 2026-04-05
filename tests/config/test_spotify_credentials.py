@@ -60,7 +60,8 @@ async def test_spotify_credentials_store_resolve_delete() -> None:
         SPOTIFY_TOKEN_EXPIRES_AT: "2026-03-25",
     }.items():
         await store.store(key, value, category=SPOTIFY_CATEGORY)
-    assert pool._conn.execute.call_args[0][3] == "spotify"
+    assert len(pool._conn.execute.call_args_list) == len(keys)
+    assert all(call.args[3] == "spotify" for call in pool._conn.execute.call_args_list)
 
     # resolve from DB
     row = _make_row(secret_value="BQD_access")
