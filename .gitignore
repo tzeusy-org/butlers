@@ -52,6 +52,7 @@ pgdata/
 # bv (beads viewer) local config and caches
 .beads/.doctor-test-write
 .beads/interaction.jsonl
+.beads/interactions.jsonl
 .beads/.bv.lock
 .beads/issues.jsonl
 .bv/
