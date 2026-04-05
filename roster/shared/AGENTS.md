@@ -13,6 +13,21 @@
 
 Your MCP tools handle all database access, validation, and serialization. You are a caller of tools, not an implementer.
 
+## MCP Tool Naming
+
+Your tools are exposed via an MCP server. Depending on your runtime, tool names
+may appear with a namespace prefix:
+
+- Bare name: `notify`
+- Namespaced: `mcp__<butler_name>__notify` (e.g. `mcp__finance__notify`)
+
+Both refer to the same tool. **Use whichever form appears in your tool list.**
+
+When a system prompt or skill references a tool by bare name (e.g. "call
+`fact_set()`"), look for it in your tool list under either form. Do NOT attempt
+to invoke tools via shell commands, source code inspection, or `grep` — they
+are MCP tools, not CLI commands.
+
 ## Calendar Usage
 
 - Write butler-managed events to the shared butler calendar configured in `butler.toml`, not the user's primary calendar.
