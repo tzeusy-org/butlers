@@ -834,3 +834,237 @@ async def test_check_open_pr_statuses_no_open_prs():
     counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
 
     assert counts == {"merged": 0, "closed": 0, "errors": 0}
+
+
+# ---------------------------------------------------------------------------
+# OTel qa.investigation root span
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_investigation_otel_span_created(tmp_path):
+    """_run_investigation_session creates a qa.investigation root span with expected attributes."""
+    import opentelemetry.trace as real_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import butlers.core.qa.dispatch as dispatch_mod
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    real_trace.set_tracer_provider(provider)
+
+    dispatch_mod._tracer = provider.get_tracer("butlers.qa")
+    dispatch_mod._HAS_OTEL = True
+
+    from butlers.core.qa.dispatch import _run_investigation_session
+
+    pool = _make_pool()
+    finding = _make_finding(severity=1, source_butler="email")
+    attempt_id = uuid.uuid4()
+    finding_id = uuid.uuid4()
+    worktree_path = tmp_path / "wt"
+    worktree_path.mkdir()
+    branch_name = "qa/email/abc123"
+    config = QaDispatchConfig()
+
+    spawner = MagicMock()
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class _SpawnerResult:
+        success: bool
+        session_id: uuid.UUID | None
+        error: str | None = None
+        output: str | None = None
+
+    spawner.trigger = AsyncMock(return_value=_SpawnerResult(success=True, session_id=uuid.uuid4()))
+
+    with (
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._create_qa_pr",
+            new_callable=AsyncMock,
+            return_value=("https://github.com/org/repo/pull/1", 1, None),
+        ),
+    ):
+        await _run_investigation_session(
+            pool=pool,
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=finding_id,
+            branch_name=branch_name,
+            worktree_path=worktree_path,
+            finding=finding,
+            config=config,
+            spawner=spawner,
+            gh_token=None,
+        )
+
+    finished = exporter.get_finished_spans()
+    inv_spans = [s for s in finished if s.name == "qa.investigation"]
+    assert inv_spans, "Expected qa.investigation span to be created"
+
+    span = inv_spans[0]
+    assert span.attributes.get("butler.name") == "qa"
+    assert span.attributes.get("qa.attempt_id") == str(attempt_id)
+    assert span.attributes.get("qa.fingerprint") == finding.fingerprint
+    assert span.attributes.get("qa.source_butler") == "email"
+    assert span.attributes.get("qa.severity") == 1
+
+
+@pytest.mark.asyncio
+async def test_investigation_otel_span_is_root(tmp_path):
+    """qa.investigation span is an independent root span (not a child of patrol)."""
+    import opentelemetry.trace as real_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import butlers.core.qa.dispatch as dispatch_mod
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    real_trace.set_tracer_provider(provider)
+
+    dispatch_mod._tracer = provider.get_tracer("butlers.qa")
+    dispatch_mod._HAS_OTEL = True
+
+    from butlers.core.qa.dispatch import _run_investigation_session
+
+    pool = _make_pool()
+    finding = _make_finding(severity=1)
+    attempt_id = uuid.uuid4()
+    finding_id = uuid.uuid4()
+    worktree_path = tmp_path / "wt"
+    worktree_path.mkdir()
+    config = QaDispatchConfig()
+
+    spawner = MagicMock()
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class _SpawnerResult:
+        success: bool
+        session_id: uuid.UUID | None
+        error: str | None = None
+        output: str | None = None
+
+    spawner.trigger = AsyncMock(return_value=_SpawnerResult(success=True, session_id=uuid.uuid4()))
+
+    with (
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._create_qa_pr",
+            new_callable=AsyncMock,
+            return_value=("https://github.com/org/repo/pull/2", 2, None),
+        ),
+    ):
+        await _run_investigation_session(
+            pool=pool,
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=finding_id,
+            branch_name="qa/finance/xyz",
+            worktree_path=worktree_path,
+            finding=finding,
+            config=config,
+            spawner=spawner,
+            gh_token=None,
+        )
+
+    finished = exporter.get_finished_spans()
+    inv_spans = [s for s in finished if s.name == "qa.investigation"]
+    assert inv_spans
+
+    # A root span has an invalid (zero) parent span id
+    span = inv_spans[0]
+    parent = span.parent
+    # Root span: parent is None or has an invalid span context
+    assert parent is None or not parent.is_valid
+
+
+@pytest.mark.asyncio
+async def test_investigation_traceparent_injected_into_sandbox_env(tmp_path):
+    """TRACEPARENT is injected into the investigation sandbox env when OTel is active."""
+    import opentelemetry.trace as real_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import butlers.core.qa.dispatch as dispatch_mod
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    real_trace.set_tracer_provider(provider)
+
+    dispatch_mod._tracer = provider.get_tracer("butlers.qa")
+    dispatch_mod._HAS_OTEL = True
+
+    from butlers.core.qa.dispatch import _run_investigation_session
+
+    pool = _make_pool()
+    finding = _make_finding(severity=1)
+    attempt_id = uuid.uuid4()
+    finding_id = uuid.uuid4()
+    worktree_path = tmp_path / "wt"
+    worktree_path.mkdir()
+    config = QaDispatchConfig()
+
+    captured_env: dict | None = None
+
+    spawner = MagicMock()
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class _SpawnerResult:
+        success: bool
+        session_id: uuid.UUID | None
+        error: str | None = None
+        output: str | None = None
+
+    async def mock_trigger(*args, **kwargs):
+        nonlocal captured_env
+        captured_env = kwargs.get("env_override") or {}
+        return _SpawnerResult(success=True, session_id=uuid.uuid4())
+
+    spawner.trigger = mock_trigger
+
+    with (
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._create_qa_pr",
+            new_callable=AsyncMock,
+            return_value=("https://github.com/org/repo/pull/3", 3, None),
+        ),
+    ):
+        await _run_investigation_session(
+            pool=pool,
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=finding_id,
+            branch_name="qa/finance/xyz",
+            worktree_path=worktree_path,
+            finding=finding,
+            config=config,
+            spawner=spawner,
+            gh_token=None,
+        )
+
+    assert captured_env is not None
+    assert "TRACEPARENT" in captured_env, (
+        "TRACEPARENT should be injected into investigation sandbox env"
+    )
+    assert captured_env["TRACEPARENT"].startswith("00-"), (
+        f"Expected W3C traceparent format, got: {captured_env.get('TRACEPARENT')}"
+    )

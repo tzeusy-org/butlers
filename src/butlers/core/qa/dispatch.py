@@ -961,8 +961,7 @@ async def dispatch_qa_investigation(
             tripped = await _is_circuit_breaker_tripped(pool, config.circuit_breaker_threshold)
             if tripped:
                 logger.warning(
-                    "QA dispatch skipped: circuit breaker tripped "
-                    "(threshold=%d, fingerprint=%s)",
+                    "QA dispatch skipped: circuit breaker tripped (threshold=%d, fingerprint=%s)",
                     config.circuit_breaker_threshold,
                     fp[:12],
                 )
@@ -983,9 +982,7 @@ async def dispatch_qa_investigation(
         # ---------------------------------------------------------------
         model_result = None
         try:
-            model_result = await resolve_model(
-                pool, finding.source_butler, Complexity.SELF_HEALING
-            )
+            model_result = await resolve_model(pool, finding.source_butler, Complexity.SELF_HEALING)
         except Exception as model_exc:
             logger.warning(
                 "Model resolution failed for self_healing tier (butler=%s): %s",

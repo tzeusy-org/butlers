@@ -883,9 +883,7 @@ class TestQaPatrolOtelSpans:
 
             with (
                 patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mt,
-                patch(
-                    "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
-                ) as md,
+                patch("butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock) as md,
                 patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
             ):
                 mt.return_value = MagicMock(all_findings=[], novel_findings=[], dedup_counts={})
