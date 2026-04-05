@@ -595,6 +595,26 @@ class CodexAdapter(RuntimeAdapter):
         if config_toml:
             logger.debug("Wrote Codex MCP config to %s", config_toml)
 
+        # Copy auth.json from the real ~/.codex/ into the temp directory so the
+        # CLI can still authenticate after we override HOME.  The persistent
+        # auth token is restored to the real home by cli_auth.persistence on
+        # application startup.
+        import os as _os  # noqa: PLC0415
+
+        real_home = _os.environ.get("HOME", "")
+        if real_home:
+            real_auth = Path(real_home) / ".codex" / "auth.json"
+            tmp_auth = codex_config_dir / "auth.json"
+            if real_auth.is_file():
+                shutil.copy2(real_auth, tmp_auth)
+                tmp_auth.chmod(0o600)
+                logger.debug("Copied Codex auth.json from %s to %s", real_auth, tmp_auth)
+            else:
+                logger.warning(
+                    "No Codex auth.json found at %s — CLI may fail to authenticate",
+                    real_auth,
+                )
+
         # Point HOME at the temp directory so the CLI finds ~/.codex/config.toml.
         env["HOME"] = str(tmp_dir)
 
