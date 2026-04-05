@@ -91,7 +91,7 @@ def test_adapter_importable_from_runtimes(adapter_class: type, import_name: str)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter, ClaudeCodeAdapter])
+@pytest.mark.parametrize("adapter_class", [GeminiAdapter, ClaudeCodeAdapter])
 def test_build_config_file_empty_servers(adapter_class: type, tmp_path: Path) -> None:
     """build_config_file() writes a config with an empty mcpServers dict (JSON adapters)."""
     adapter = adapter_class()
@@ -100,7 +100,7 @@ def test_build_config_file_empty_servers(adapter_class: type, tmp_path: Path) ->
     assert data["mcpServers"] == {}
 
 
-@pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter, ClaudeCodeAdapter])
+@pytest.mark.parametrize("adapter_class", [GeminiAdapter, ClaudeCodeAdapter])
 def test_build_config_file_multiple_servers(adapter_class: type, tmp_path: Path) -> None:
     """build_config_file() writes all provided MCP servers (JSON adapters)."""
     adapter = adapter_class()
@@ -113,6 +113,20 @@ def test_build_config_file_multiple_servers(adapter_class: type, tmp_path: Path)
     assert len(data["mcpServers"]) == 2
     assert "butler-a" in data["mcpServers"]
     assert "butler-b" in data["mcpServers"]
+
+
+def test_codex_build_config_file_writes_toml(tmp_path: Path) -> None:
+    """CodexAdapter.build_config_file() writes TOML with MCP server entries."""
+    adapter = CodexAdapter()
+    mcp_servers = {
+        "butler-a": {"url": "http://localhost:9100/mcp"},
+        "butler-b": {"url": "http://localhost:9200/mcp"},
+    }
+    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
+    assert config_path.name == "config.toml"
+    content = config_path.read_text()
+    assert "[mcp_servers.butler-a]" in content
+    assert "[mcp_servers.butler-b]" in content
 
 
 def test_opencode_build_config_file_writes_mcp_servers(tmp_path: Path) -> None:

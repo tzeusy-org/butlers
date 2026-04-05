@@ -557,17 +557,12 @@ class CodexAdapter(RuntimeAdapter):
         TimeoutError
             If the Codex process exceeds the timeout.
         """
+        import tempfile as _tempfile  # noqa: PLC0415
+
         binary = self._get_binary()
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
 
         # Build command
-        # NOTE: --full-auto only auto-approves shell commands (it is an alias
-        # for ``-a on-request --sandbox workspace-write``).  MCP tool calls
-        # still require interactive approval under that mode, which silently
-        # cancels them when the CLI runs as a non-interactive subprocess.
-        # --dangerously-bypass-approvals-and-sandbox skips ALL approval
-        # prompts (shell *and* MCP) which is the correct posture for butler
-        # daemon subprocesses that are already sandboxed by the container.
         cmd = [
             binary,
             "exec",
@@ -582,30 +577,26 @@ class CodexAdapter(RuntimeAdapter):
         if runtime_args:
             cmd.extend(runtime_args)
 
-        for server_name, server_cfg in mcp_servers.items():
-            if not isinstance(server_name, str) or not _is_safe_mcp_server_name(server_name):
-                logger.warning(
-                    "Skipping Codex MCP server with unsupported name %r; "
-                    "allowed pattern is [A-Za-z0-9_-]+",
-                    server_name,
-                )
-                continue
-            if not isinstance(server_cfg, dict):
-                continue
-            url = server_cfg.get("url")
-            if not isinstance(url, str) or not url.strip():
-                continue
-            # -c value must be TOML-parseable; quote and escape URL.
-            escaped_url = url.strip().replace("\\", "\\\\").replace('"', '\\"')
-            cmd.extend(["-c", f'mcp_servers.{server_name}.url="{escaped_url}"'])
+        # Write MCP config to a per-invocation config file under an isolated
+        # HOME directory.  The Codex CLI reads MCP servers from
+        # ``~/.codex/config.toml`` at startup — *before* ``-c`` overrides are
+        # applied.  Passing MCP servers only via ``-c`` flags is unreliable
+        # because (a) the spawner's ``_build_env`` does not include HOME, so
+        # ``~/.codex/`` is unresolvable, and (b) ``-c`` overrides may be
+        # applied after the MCP client has already initialised with an empty
+        # server list.  Writing a config file and pointing HOME at its parent
+        # ensures the CLI discovers MCP servers during its earliest init phase.
+        tmp_dir_obj = _tempfile.TemporaryDirectory()
+        tmp_dir = Path(tmp_dir_obj.name)
 
-            # When streamable HTTP is configured/inferred, pass an explicit
-            # transport to avoid runtime defaults drifting across Codex versions.
-            normalized_transport, inferred_transport = _resolve_transport_details(server_cfg, url)
-            if normalized_transport == "streamable_http" or (
-                normalized_transport is None and inferred_transport == "streamable_http"
-            ):
-                cmd.extend(["-c", f'mcp_servers.{server_name}.transport="streamable_http"'])
+        codex_config_dir = tmp_dir / ".codex"
+        codex_config_dir.mkdir()
+        config_toml = self._write_mcp_config_toml(mcp_servers, codex_config_dir)
+        if config_toml:
+            logger.debug("Wrote Codex MCP config to %s", config_toml)
+
+        # Point HOME at the temp directory so the CLI finds ~/.codex/config.toml.
+        env["HOME"] = str(tmp_dir)
 
         # Delimit options from positional prompt so prompts that start with
         # '-'/'--' are never parsed as CLI flags by codex exec.
@@ -657,17 +648,22 @@ class CodexAdapter(RuntimeAdapter):
 
             result_text, tool_calls, usage = _parse_codex_output(stdout, stderr, returncode)
 
-            # Warn when MCP servers were configured but no tools were called —
-            # this usually indicates the Codex CLI failed to connect to the MCP
-            # server (e.g. transport mismatch, server unreachable, missing env).
-            if mcp_servers and not tool_calls:
-                diag = stderr.strip()[:500] if stderr.strip() else "(no stderr)"
-                logger.warning(
-                    "Codex CLI returned 0 tool calls despite %d MCP server(s) configured. "
-                    "MCP connection may have failed silently. stderr: %s",
-                    len(mcp_servers),
-                    diag,
-                )
+            # Warn when MCP servers were configured but no MCP tool calls were
+            # made.  command_execution entries (shell commands) do NOT count —
+            # the model falling back to shell is the exact failure mode we want
+            # to detect.
+            if mcp_servers:
+                mcp_tool_calls = [tc for tc in tool_calls if tc.get("name") != "command_execution"]
+                if not mcp_tool_calls:
+                    diag = stderr.strip()[:500] if stderr.strip() else "(no stderr)"
+                    logger.warning(
+                        "Codex CLI returned 0 MCP tool calls (%d command_execution "
+                        "events) despite %d MCP server(s) configured. "
+                        "MCP connection may have failed silently. stderr: %s",
+                        len(tool_calls),
+                        len(mcp_servers),
+                        diag,
+                    )
 
             return result_text, tool_calls, usage
 
@@ -685,34 +681,74 @@ class CodexAdapter(RuntimeAdapter):
                 proc.kill()
                 await proc.wait()
             raise TimeoutError(f"Codex CLI timed out after {effective_timeout} seconds") from None
+        finally:
+            tmp_dir_obj.cleanup()
+
+    @staticmethod
+    def _write_mcp_config_toml(
+        mcp_servers: dict[str, Any],
+        codex_config_dir: Path,
+    ) -> Path | None:
+        """Write MCP servers to ``config.toml`` inside *codex_config_dir*.
+
+        The Codex CLI reads ``~/.codex/config.toml`` at startup.  Writing
+        MCP server entries here ensures they are available before the MCP
+        client initialises — unlike ``-c`` overrides which may arrive too
+        late.
+
+        Returns the path to the written file, or ``None`` if there were no
+        valid MCP servers to write.
+        """
+        toml_lines: list[str] = []
+        for server_name, server_cfg in mcp_servers.items():
+            if not isinstance(server_name, str) or not _is_safe_mcp_server_name(server_name):
+                logger.warning(
+                    "Skipping Codex MCP server with unsupported name %r; "
+                    "allowed pattern is [A-Za-z0-9_-]+",
+                    server_name,
+                )
+                continue
+            if not isinstance(server_cfg, dict):
+                continue
+            url = server_cfg.get("url")
+            if not isinstance(url, str) or not url.strip():
+                continue
+
+            escaped_url = url.strip().replace("\\", "\\\\").replace('"', '\\"')
+            toml_lines.append(f"[mcp_servers.{server_name}]")
+            toml_lines.append(f'url = "{escaped_url}"')
+
+            normalized_transport, inferred_transport = _resolve_transport_details(server_cfg, url)
+            if normalized_transport == "streamable_http" or (
+                normalized_transport is None and inferred_transport == "streamable_http"
+            ):
+                toml_lines.append('transport = "streamable_http"')
+            toml_lines.append("")
+
+        if not toml_lines:
+            return None
+
+        config_path = codex_config_dir / "config.toml"
+        config_path.write_text("\n".join(toml_lines))
+        return config_path
 
     def build_config_file(
         self,
         mcp_servers: dict[str, Any],
         tmp_dir: Path,
     ) -> Path:
-        """Write MCP config in Codex-compatible JSON format.
+        """Write MCP config as TOML inside a ``.codex`` subdirectory.
 
-        Codex uses a similar JSON config format with an ``mcpServers``
-        key. The config file is written as ``codex.json`` in the
-        temporary directory.
+        Creates ``<tmp_dir>/.codex/config.toml`` so that pointing ``HOME``
+        at *tmp_dir* makes the Codex CLI discover MCP servers during its
+        earliest initialisation phase.
 
-        Parameters
-        ----------
-        mcp_servers:
-            Dict mapping server name to config (must include 'url' key).
-        tmp_dir:
-            Temporary directory to write the config file into.
-
-        Returns
-        -------
-        Path
-            Path to the generated codex.json file.
+        Returns the path to the generated ``config.toml``.
         """
-        config = {"mcpServers": mcp_servers}
-        config_path = tmp_dir / "codex.json"
-        config_path.write_text(json.dumps(config, indent=2))
-        return config_path
+        codex_dir = tmp_dir / ".codex"
+        codex_dir.mkdir(exist_ok=True)
+        result = self._write_mcp_config_toml(mcp_servers, codex_dir)
+        return result or (codex_dir / "config.toml")
 
     def parse_system_prompt_file(self, config_dir: Path) -> str:
         """Read AGENTS.md from the butler's config directory.

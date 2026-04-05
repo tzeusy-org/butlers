@@ -108,15 +108,17 @@ def test_parse_system_prompt_empty_agents_md(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_build_config_file_writes_codex_json(tmp_path: Path):
-    """build_config_file() writes codex.json with mcpServers key."""
+def test_build_config_file_writes_toml(tmp_path: Path):
+    """build_config_file() writes TOML config to .codex/config.toml."""
     adapter = CodexAdapter()
     mcp_servers = {"my-butler": {"url": "http://localhost:9100/mcp"}}
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
-    assert config_path == tmp_path / "codex.json"
+    assert config_path == tmp_path / ".codex" / "config.toml"
     assert config_path.exists()
-    data = json.loads(config_path.read_text())
-    assert data["mcpServers"]["my-butler"]["url"] == "http://localhost:9100/mcp"
+    content = config_path.read_text()
+    assert "[mcp_servers.my-butler]" in content
+    assert 'url = "http://localhost:9100/mcp"' in content
+    assert 'transport = "streamable_http"' in content
 
 
 def test_infer_mcp_transport_from_url():
@@ -423,8 +425,8 @@ async def test_invoke_success():
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd
     assert "--quiet" not in cmd
     assert "--instructions" not in cmd
-    assert "-c" in cmd
-    assert 'mcp_servers.test.url="http://localhost:9100/mcp"' in cmd
+    # MCP config is via config file now, not -c flags
+    assert "-c" not in cmd
     assert "--" in cmd
     assert cmd[-2] == "--"
     assert "<system_instructions>" in cmd[-1]
@@ -432,52 +434,50 @@ async def test_invoke_success():
     assert "<user_prompt>" in cmd[-1]
     assert "do something" in cmd[-1]
 
-
-async def test_invoke_adds_streamable_http_transport_for_mcp_url():
-    """Streamable HTTP URLs emit explicit transport override for Codex."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
-
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="do something",
-            system_prompt="you are helpful",
-            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-            env={"OPENAI_API_KEY": "sk-test"},
-        )
-
-    cmd = mock_sub.call_args[0]
-    assert 'mcp_servers.test.url="http://localhost:9100/mcp"' in cmd
-    assert 'mcp_servers.test.transport="streamable_http"' in cmd
+    # Verify HOME was set to a temp dir for Codex config discovery
+    env_kwarg = call_args[1].get("env") or call_args.kwargs.get("env")
+    assert env_kwarg is not None
+    assert "HOME" in env_kwarg
 
 
-async def test_invoke_skips_unsafe_mcp_server_name():
-    """Unsafe MCP server names are ignored to avoid TOML key injection."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
-
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="do something",
-            system_prompt="you are helpful",
-            mcp_servers={
-                "safe_name": {"url": "http://localhost:9100/mcp"},
-                'unsafe".transport="sse': {"url": "http://localhost:9200/mcp"},
-            },
-            env={"OPENAI_API_KEY": "sk-test"},
-        )
-
-    cmd = mock_sub.call_args[0]
-    assert 'mcp_servers.safe_name.url="http://localhost:9100/mcp"' in cmd
-    assert not any(
-        token.startswith("mcp_servers.unsafe") or 'transport="sse' in token for token in cmd
+def test_write_mcp_config_toml_streamable_http(tmp_path: Path):
+    """_write_mcp_config_toml writes transport for /mcp URLs."""
+    result = CodexAdapter._write_mcp_config_toml(
+        {"test": {"url": "http://localhost:9100/mcp"}}, tmp_path
     )
+    assert result is not None
+    content = result.read_text()
+    assert "[mcp_servers.test]" in content
+    assert 'url = "http://localhost:9100/mcp"' in content
+    assert 'transport = "streamable_http"' in content
+
+
+def test_write_mcp_config_toml_no_transport_for_sse(tmp_path: Path):
+    """_write_mcp_config_toml omits streamable_http for non-/mcp URLs."""
+    result = CodexAdapter._write_mcp_config_toml(
+        {"test": {"url": "http://localhost:9100/sse"}}, tmp_path
+    )
+    assert result is not None
+    content = result.read_text()
+    assert 'url = "http://localhost:9100/sse"' in content
+    assert "streamable_http" not in content
+
+
+def test_write_mcp_config_toml_skips_unsafe_names(tmp_path: Path):
+    """Unsafe MCP server names are ignored to avoid TOML key injection."""
+    result = CodexAdapter._write_mcp_config_toml(
+        {
+            "safe_name": {"url": "http://localhost:9100/mcp"},
+            'unsafe".transport="sse': {"url": "http://localhost:9200/mcp"},
+        },
+        tmp_path,
+    )
+    assert result is not None
+    content = result.read_text()
+    assert "[mcp_servers.safe_name]" in content
+    assert 'url = "http://localhost:9100/mcp"' in content
+    assert "unsafe" not in content
+    assert "9200" not in content
 
 
 async def test_invoke_uses_exec_subcommand():

@@ -267,14 +267,13 @@ def test_all_adapters_instantiate():
     ("adapter_factory", "expected_filename"),
     [
         (ClaudeCodeAdapter, "mcp.json"),
-        (CodexAdapter, "codex.json"),
         (GeminiAdapter, "gemini_mcp.json"),
     ],
 )
 def test_build_config_file_preserves_streamable_http_urls(
     tmp_path: Path, adapter_factory: Any, expected_filename: str
 ):
-    """All runtime adapters preserve streamable HTTP MCP endpoint URLs."""
+    """JSON-based runtime adapters preserve streamable HTTP MCP endpoint URLs."""
     adapter = adapter_factory()
     mcp_servers = {"switchboard": {"url": "http://localhost:41100/mcp"}}
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
@@ -282,6 +281,18 @@ def test_build_config_file_preserves_streamable_http_urls(
     assert config_path == tmp_path / expected_filename
     data = json.loads(config_path.read_text())
     assert data["mcpServers"]["switchboard"]["url"] == "http://localhost:41100/mcp"
+
+
+def test_codex_build_config_file_preserves_streamable_http_urls(tmp_path: Path):
+    """CodexAdapter.build_config_file() writes TOML with streamable HTTP URLs."""
+    adapter = CodexAdapter()
+    mcp_servers = {"switchboard": {"url": "http://localhost:41100/mcp"}}
+    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
+
+    assert config_path == tmp_path / ".codex" / "config.toml"
+    content = config_path.read_text()
+    assert 'url = "http://localhost:41100/mcp"' in content
+    assert 'transport = "streamable_http"' in content
 
 
 def test_opencode_adapter_binary_name():
