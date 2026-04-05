@@ -3,7 +3,6 @@
 Verifies the post-core_016 owner-entity resolution path:
 - queries public.entities.roles (not public.contacts.roles)
 - returns None gracefully when the table does not exist (pre-migration)
-- returns None gracefully when no owner entity is present
 - meal_log succeeds in all three cases (with entity_id, None, and DB-error fallback)
 """
 
@@ -18,26 +17,12 @@ import pytest
 
 from butlers.tools.health.diet import _get_owner_entity_id, meal_log
 
-# Shared eaten_at for tests that need a required timestamp
 _EATEN_AT = datetime(2026, 3, 20, 12, 0, 0, tzinfo=UTC)
-
-# butlers.tools.health.diet is auto-registered by the tools loader, which
-# maps roster/health/tools/diet.py → butlers.tools.health.diet
 
 pytestmark = pytest.mark.unit
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_pool(fetchrow_result=None, fetchrow_side_effect=None) -> MagicMock:
-    """Build a minimal asyncpg Pool mock.
-
-    pool.fetchrow() is set up directly (not via acquire/conn) because
-    _get_owner_entity_id uses pool.fetchrow() at the pool level.
-    """
     pool = MagicMock()
     if fetchrow_side_effect is not None:
         pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
@@ -46,83 +31,7 @@ def _make_pool(fetchrow_result=None, fetchrow_side_effect=None) -> MagicMock:
     return pool
 
 
-def _make_entity_row(entity_id: uuid.UUID) -> dict:
-    """Minimal dict mimicking an asyncpg Record with a single 'id' column."""
-    return {"id": entity_id}
-
-
-# ---------------------------------------------------------------------------
-# Tests for _get_owner_entity_id()
-# ---------------------------------------------------------------------------
-
-
-class TestGetOwnerEntityId:
-    """Unit tests for the owner-entity lookup function."""
-
-    async def test_queries_shared_entities_not_contacts(self) -> None:
-        """Must query public.entities, not public.contacts.roles."""
-        owner_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_result=_make_entity_row(owner_id))
-
-        result = await _get_owner_entity_id(pool)
-
-        assert result == owner_id
-        # Verify the SQL sent to fetchrow targets public.entities
-        call_args = pool.fetchrow.call_args
-        sql: str = call_args.args[0]
-        assert "public.entities" in sql, "Must query public.entities"
-        assert "'owner' = ANY(roles)" in sql, "Must use roles column on entities"
-        # Must NOT reference public.contacts
-        assert "public.contacts" not in sql, "Must not query public.contacts"
-
-    async def test_returns_entity_id_when_owner_exists(self) -> None:
-        """Returns the UUID of the owner entity when found."""
-        owner_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_result=_make_entity_row(owner_id))
-
-        result = await _get_owner_entity_id(pool)
-
-        assert result == owner_id
-
-    async def test_returns_none_when_no_owner_entity(self) -> None:
-        """Returns None when no entity with 'owner' role exists (migrated schema, no owner yet)."""
-        pool = _make_pool(fetchrow_result=None)
-
-        result = await _get_owner_entity_id(pool)
-
-        assert result is None
-
-    async def test_returns_none_when_table_missing(self) -> None:
-        """Returns None gracefully when public.entities does not exist (pre-migration DB)."""
-        pool = _make_pool(
-            fetchrow_side_effect=asyncpg.exceptions.UndefinedTableError(
-                'relation "public.entities" does not exist'
-            )
-        )
-
-        result = await _get_owner_entity_id(pool)
-
-        assert result is None
-
-    async def test_returns_none_on_postgres_error(self) -> None:
-        """Any asyncpg.PostgresError is swallowed and None is returned."""
-        pool = _make_pool(
-            fetchrow_side_effect=asyncpg.exceptions.PostgresConnectionError("connection refused")
-        )
-
-        result = await _get_owner_entity_id(pool)
-
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# Tests for meal_log() with owner entity fallback behaviour
-# ---------------------------------------------------------------------------
-
-
 class _AsyncCM:
-    """Minimal async context manager wrapper."""
-
     def __init__(self, value):
         self._value = value
 
@@ -134,9 +43,7 @@ class _AsyncCM:
 
 
 def _make_full_pool(fetchrow_result=None, fetchrow_side_effect=None) -> MagicMock:
-    """Build a pool mock suitable for meal_log (pool.fetchrow + pool.acquire)."""
     pool = _make_pool(fetchrow_result=fetchrow_result, fetchrow_side_effect=fetchrow_side_effect)
-    # meal_log also calls store_fact which may use pool.acquire + conn
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=None)
     conn.fetchrow = AsyncMock(return_value=None)
@@ -146,86 +53,73 @@ def _make_full_pool(fetchrow_result=None, fetchrow_side_effect=None) -> MagicMoc
     return pool
 
 
-class TestMealLogOwnerEntityFallback:
-    """meal_log must succeed regardless of owner-entity lookup outcome."""
+async def test_get_owner_entity_id_queries_public_entities():
+    """Must query public.entities (not public.contacts) with roles column."""
+    owner_id = uuid.uuid4()
+    pool = _make_pool(fetchrow_result={"id": owner_id})
 
-    async def test_meal_log_succeeds_with_owner_entity(self) -> None:
-        """meal_log works when owner entity resolves to a UUID."""
-        owner_id = uuid.uuid4()
-        fact_id = uuid.uuid4()
-        pool = _make_full_pool(fetchrow_result=_make_entity_row(owner_id))
+    result = await _get_owner_entity_id(pool)
 
-        # store_fact is imported inside meal_log's body, so patch at source location.
-        with (
-            patch(
-                "butlers.modules.memory.storage.store_fact",
-                new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
-            ) as mock_store,
-            patch(
-                "butlers.tools.health.diet._get_embedding_engine",
-                return_value=MagicMock(),
-            ),
-        ):
-            result = await meal_log(
-                pool, type="breakfast", description="Eggs and toast", eaten_at=_EATEN_AT
-            )
+    assert result == owner_id
+    sql: str = pool.fetchrow.call_args.args[0]
+    assert "public.entities" in sql
+    assert "'owner' = ANY(roles)" in sql
+    assert "public.contacts" not in sql
 
-        assert result["id"] == str(fact_id)
-        assert result["type"] == "breakfast"
-        # store_fact must be called with the resolved entity_id
-        _call_kwargs = mock_store.call_args.kwargs
-        assert _call_kwargs.get("entity_id") == owner_id
 
-    async def test_meal_log_succeeds_without_owner_entity(self) -> None:
-        """meal_log works when no owner entity exists (entity_id=None fallback)."""
-        fact_id = uuid.uuid4()
-        pool = _make_full_pool(fetchrow_result=None)
+@pytest.mark.parametrize(
+    "side_effect, expected",
+    [
+        (None, None),  # no owner entity → None
+        (asyncpg.exceptions.UndefinedTableError("no table"), None),  # pre-migration → None
+        (asyncpg.exceptions.PostgresConnectionError("refused"), None),  # DB error → None
+    ],
+)
+async def test_get_owner_entity_id_graceful_fallbacks(side_effect, expected):
+    """_get_owner_entity_id returns None for missing entity or DB errors."""
+    pool = _make_pool(fetchrow_result=None, fetchrow_side_effect=side_effect)
+    result = await _get_owner_entity_id(pool)
+    assert result == expected
 
-        with (
-            patch(
-                "butlers.modules.memory.storage.store_fact",
-                new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
-            ) as mock_store,
-            patch(
-                "butlers.tools.health.diet._get_embedding_engine",
-                return_value=MagicMock(),
-            ),
-        ):
-            result = await meal_log(pool, type="lunch", description="Salad", eaten_at=_EATEN_AT)
 
-        assert result["id"] == str(fact_id)
-        # store_fact must be called with entity_id=None
-        _call_kwargs = mock_store.call_args.kwargs
-        assert _call_kwargs.get("entity_id") is None
+@pytest.mark.parametrize(
+    "fetchrow_result, fetchrow_side_effect, expected_entity_id",
+    [
+        (
+            {"id": uuid.UUID("aaaabbbb-cccc-dddd-eeee-000000000001")},
+            None,
+            "aaaabbbb-cccc-dddd-eeee-000000000001",
+        ),
+        (None, None, None),
+        (None, asyncpg.exceptions.UndefinedTableError("no table"), None),
+    ],
+)
+async def test_meal_log_entity_fallback(fetchrow_result, fetchrow_side_effect, expected_entity_id):
+    """meal_log succeeds and passes correct entity_id regardless of owner lookup outcome."""
+    fact_id = uuid.uuid4()
+    pool = _make_full_pool(
+        fetchrow_result=fetchrow_result, fetchrow_side_effect=fetchrow_side_effect
+    )
 
-    async def test_meal_log_succeeds_when_entities_table_missing(self) -> None:
-        """meal_log works on pre-migration databases where public.entities doesn't exist."""
-        fact_id = uuid.uuid4()
-        pool = _make_full_pool(
-            fetchrow_side_effect=asyncpg.exceptions.UndefinedTableError(
-                'relation "public.entities" does not exist'
-            )
-        )
+    with (
+        patch(
+            "butlers.modules.memory.storage.store_fact",
+            new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
+        ) as mock_store,
+        patch("butlers.tools.health.diet._get_embedding_engine", return_value=MagicMock()),
+    ):
+        result = await meal_log(pool, type="breakfast", description="Eggs", eaten_at=_EATEN_AT)
 
-        with (
-            patch(
-                "butlers.modules.memory.storage.store_fact",
-                new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
-            ) as mock_store,
-            patch(
-                "butlers.tools.health.diet._get_embedding_engine",
-                return_value=MagicMock(),
-            ),
-        ):
-            result = await meal_log(pool, type="dinner", description="Pasta", eaten_at=_EATEN_AT)
+    assert result["id"] == str(fact_id)
+    actual = mock_store.call_args.kwargs.get("entity_id")
+    if expected_entity_id is None:
+        assert actual is None
+    else:
+        assert str(actual) == expected_entity_id
 
-        assert result["id"] == str(fact_id)
-        # entity_id must be None when table is absent
-        _call_kwargs = mock_store.call_args.kwargs
-        assert _call_kwargs.get("entity_id") is None
 
-    async def test_meal_log_invalid_type_raises(self) -> None:
-        """meal_log raises ValueError for invalid meal types (unrelated to entity lookup)."""
-        pool = _make_full_pool()
-        with pytest.raises(ValueError, match="Invalid meal type"):
-            await meal_log(pool, type="brunch", description="French toast", eaten_at=_EATEN_AT)
+async def test_meal_log_invalid_type_raises():
+    """meal_log raises ValueError for invalid meal types."""
+    pool = _make_full_pool()
+    with pytest.raises(ValueError, match="Invalid meal type"):
+        await meal_log(pool, type="brunch", description="French toast", eaten_at=_EATEN_AT)

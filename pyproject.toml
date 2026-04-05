@@ -77,6 +77,8 @@ select = ["E", "F", "I", "UP"]
 # SQL migrations and tests have long SQL strings that shouldn't be split
 "roster/*/migrations/*.py" = ["E501"]
 "roster/*/tests/test_*_migrations.py" = ["E501"]
+"tests/config/test_migrations.py" = ["E501"]
+"tests/config/test_switchboard_*_migration.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 # Butler-specific tools are dynamically loaded from roster/<name>/tools.py

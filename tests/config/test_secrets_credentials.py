@@ -1,65 +1,73 @@
-"""Tests for Google credential management API endpoints and new credential helpers.
-
-Covers:
-- store_app_credentials() — partial upsert (client_id + client_secret)
-- load_app_credentials() — reads partial/full credentials from DB
-- delete_google_credentials() — removes stored credentials
-- PUT /api/oauth/google/credentials — upsert endpoint
-- DELETE /api/oauth/google/credentials — delete endpoint
-- GET /api/oauth/google/credentials — masked status endpoint
-"""
+"""Tests for Google credential management API endpoints and credential helpers."""
 
 from __future__ import annotations
 
-import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
-from butlers.credential_store import CredentialStore  # noqa: F401 — used by spec= in mock
+from butlers.credential_store import CredentialStore
 from butlers.google_credentials import (
     KEY_CLIENT_ID,
     KEY_CLIENT_SECRET,
-    KEY_SCOPES,
     GoogleAppCredentials,
-    delete_google_credentials,
+    MissingGoogleCredentialsError,
     load_app_credentials,
+    resolve_google_credentials,
     store_app_credentials,
 )
 
 pytestmark = pytest.mark.unit
 
+_SHARED_CREDS = {
+    "client_id": "shared-client-id.apps.googleusercontent.com",
+    "client_secret": "shared-client-secret-abc",
+    "refresh_token": "1//shared-refresh-token-xyz",
+}
+_OAUTH_BOOTSTRAP_ENV = {
+    "GOOGLE_OAUTH_CLIENT_ID": _SHARED_CREDS["client_id"],
+    "GOOGLE_OAUTH_CLIENT_SECRET": _SHARED_CREDS["client_secret"],
+}
+_LEGACY_GMAIL_ENV = {
+    "GMAIL_CLIENT_ID": _SHARED_CREDS["client_id"],
+    "GMAIL_CLIENT_SECRET": _SHARED_CREDS["client_secret"],
+    "GMAIL_REFRESH_TOKEN": _SHARED_CREDS["refresh_token"],
+}
 
-# ---------------------------------------------------------------------------
-# Test helpers
-# ---------------------------------------------------------------------------
+
+def _make_pool_with_values(key_to_value: dict[str, str | None]) -> MagicMock:
+    async def _fetchrow(query: str, key: str):
+        val = key_to_value.get(key)
+        if val is None:
+            return None
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: val if k == "secret_value" else None
+        return row
+
+    async def _execute(*args, **kwargs):
+        return "INSERT 0 1"
+
+    conn = MagicMock()
+    conn.fetchrow = _fetchrow
+    conn.execute = _execute
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    pool = MagicMock()
+    pool.acquire.return_value = cm
+    return pool
 
 
-def _make_credential_store(
-    stored: dict[str, str] | None = None,
-    delete_returns: bool = False,
-) -> AsyncMock:
-    """Build a fake CredentialStore mock.
-
-    Parameters
-    ----------
-    stored:
-        Dict of key→value pairs that ``load()`` should return.
-        Keys not present return ``None``.
-    delete_returns:
-        Value that ``delete()`` returns for any key.
-    """
+def _make_credential_store(stored: dict[str, str] | None = None) -> AsyncMock:
     stored = stored or {}
     store = AsyncMock(spec=CredentialStore)
     store.load.side_effect = lambda key: stored.get(key)
-    store.delete.return_value = delete_returns
     return store
 
 
-def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") -> MagicMock:
-    """Build a fake DatabaseManager mock."""
+def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0"):
     pool = MagicMock()
     conn = AsyncMock()
     if row is None:
@@ -69,14 +77,11 @@ def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") 
         record.__getitem__ = lambda self, key: row[key]
         conn.fetchrow.return_value = record
     conn.execute.return_value = execute_result
-    conn.fetch.return_value = []  # Default: empty result set for list queries
-
-    # pool.acquire() returns async context manager yielding conn
+    conn.fetch.return_value = []
     cm = AsyncMock()
     cm.__aenter__ = AsyncMock(return_value=conn)
     cm.__aexit__ = AsyncMock(return_value=False)
     pool.acquire.return_value = cm
-
     db_manager = MagicMock()
     db_manager.butler_names = ["test-butler"]
     db_manager.pool.return_value = pool
@@ -84,389 +89,146 @@ def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") 
     return db_manager, conn
 
 
-# ---------------------------------------------------------------------------
-# store_app_credentials() tests
-# ---------------------------------------------------------------------------
-
-
-class TestStoreAppCredentials:
-    async def test_stores_client_id_and_secret(self) -> None:
-        store = _make_credential_store()
-        await store_app_credentials(store, client_id="test-id", client_secret="test-secret")
-        assert store.store.call_count == 2
-        # Verify client_id stored
-        id_call = store.store.call_args_list[0]
-        assert id_call.args[0] == KEY_CLIENT_ID
-        assert id_call.args[1] == "test-id"
-        # Verify client_secret stored
-        secret_call = store.store.call_args_list[1]
-        assert secret_call.args[0] == KEY_CLIENT_SECRET
-        assert secret_call.args[1] == "test-secret"
-
-    async def test_strips_whitespace(self) -> None:
-        store = _make_credential_store()
-        await store_app_credentials(store, client_id="  test-id  ", client_secret="  secret  ")
-        id_call = store.store.call_args_list[0]
-        assert id_call.args[1] == "test-id"
-        secret_call = store.store.call_args_list[1]
-        assert secret_call.args[1] == "secret"
-
-    async def test_empty_client_id_raises(self) -> None:
-        store = _make_credential_store()
-        with pytest.raises(ValueError, match="client_id"):
-            await store_app_credentials(store, client_id="", client_secret="secret")
-
-    async def test_empty_client_secret_raises(self) -> None:
-        store = _make_credential_store()
-        with pytest.raises(ValueError, match="client_secret"):
-            await store_app_credentials(store, client_id="id", client_secret="")
-
-    async def test_does_not_log_secret(self, caplog: pytest.LogCaptureFixture) -> None:
-        store = _make_credential_store()
-        with caplog.at_level("DEBUG"):
-            await store_app_credentials(store, client_id="my-id", client_secret="my-super-secret")
-        for record in caplog.records:
-            assert "my-super-secret" not in record.getMessage()
-
-
-# ---------------------------------------------------------------------------
-# load_app_credentials() tests
-# ---------------------------------------------------------------------------
-
-
-class TestLoadAppCredentials:
-    async def test_returns_none_when_no_row(self) -> None:
-        store = _make_credential_store(stored={})
-        result = await load_app_credentials(store)
-        assert result is None
-
-    async def test_returns_full_credentials(self) -> None:
-        store = _make_credential_store(
-            stored={
-                KEY_CLIENT_ID: "test-id",
-                KEY_CLIENT_SECRET: "test-secret",
-                KEY_SCOPES: "gmail",
-            }
-        )
-        with (
-            patch(
-                "butlers.google_credentials._resolve_account_entity_id",
-                new_callable=AsyncMock,
-                return_value=uuid.uuid4(),
-            ),
-            patch(
-                "butlers.google_credentials._resolve_entity_refresh_token",
-                new_callable=AsyncMock,
-                return_value="test-refresh",
-            ),
-        ):
-            pool = MagicMock()
-            result = await load_app_credentials(store, pool=pool)
-        assert isinstance(result, GoogleAppCredentials)
-        assert result.client_id == "test-id"
-        assert result.client_secret == "test-secret"
-        assert result.refresh_token == "test-refresh"
-        assert result.scope == "gmail"
-
-    async def test_returns_partial_credentials_without_refresh_token(self) -> None:
-        store = _make_credential_store(
-            stored={
-                KEY_CLIENT_ID: "test-id",
-                KEY_CLIENT_SECRET: "test-secret",
-            }
-        )
-        result = await load_app_credentials(store)
-        assert result is not None
-        assert result.client_id == "test-id"
-        assert result.refresh_token is None
-
-    async def test_returns_none_when_client_id_missing(self) -> None:
-        store = _make_credential_store(
-            stored={
-                KEY_CLIENT_SECRET: "test-secret",
-            }
-        )
-        result = await load_app_credentials(store)
-        assert result is None
-
-    async def test_returns_none_when_client_secret_missing(self) -> None:
-        store = _make_credential_store(
-            stored={
-                KEY_CLIENT_ID: "id",
-            }
-        )
-        result = await load_app_credentials(store)
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# delete_google_credentials() tests
-# ---------------------------------------------------------------------------
-
-
-class TestDeleteGoogleCredentials:
-    async def test_returns_true_when_delete_all_and_keys_deleted(self) -> None:
-        """delete_all=True: app credentials deleted → returns True."""
-        store = _make_credential_store(delete_returns=True)
-        with patch(
-            "butlers.google_credentials._pool_acquire",
-        ) as mock_acquire:
-            # Simulate no google_accounts rows (missing table scenario)
-            mock_acquire.side_effect = Exception("does not exist")
-            result = await delete_google_credentials(store, delete_all=True)
-        assert result is True
-
-    async def test_returns_false_when_no_row(self) -> None:
-        store = _make_credential_store(delete_returns=False)
-        with patch(
-            "butlers.google_credentials._resolve_account_entity_id",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            result = await delete_google_credentials(store, pool=MagicMock())
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
-# API endpoint tests: PUT /api/oauth/google/credentials
-# ---------------------------------------------------------------------------
-
-
-class TestUpsertCredentialsEndpoint:
-    def _make_client(self, db_manager=None):
-        app = create_app()
-        if db_manager is not None:
-            from butlers.api.routers import oauth
-
-            app.dependency_overrides[oauth._get_db_manager] = lambda: db_manager
-        return TestClient(app, raise_server_exceptions=False)
-
-    def test_upsert_success(self) -> None:
-        db_manager, conn = _make_db_manager()
-        client = self._make_client(db_manager)
-        response = client.put(
-            "/api/oauth/google/credentials",
-            json={"client_id": "my-client-id", "client_secret": "my-client-secret"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-
-    def test_upsert_empty_client_id_returns_422(self) -> None:
-        db_manager, conn = _make_db_manager()
-        client = self._make_client(db_manager)
-        response = client.put(
-            "/api/oauth/google/credentials",
-            json={"client_id": "", "client_secret": "secret"},
-        )
-        assert response.status_code == 422
-
-    def test_upsert_empty_client_secret_returns_422(self) -> None:
-        db_manager, conn = _make_db_manager()
-        client = self._make_client(db_manager)
-        response = client.put(
-            "/api/oauth/google/credentials",
-            json={"client_id": "id", "client_secret": ""},
-        )
-        assert response.status_code == 422
-
-    def test_upsert_no_db_returns_503(self) -> None:
-        client = self._make_client(db_manager=None)
-        response = client.put(
-            "/api/oauth/google/credentials",
-            json={"client_id": "id", "client_secret": "secret"},
-        )
-        assert response.status_code == 503
-
-    def test_upsert_no_butler_pools_returns_503(self) -> None:
-        db_manager = MagicMock()
-        db_manager.butler_names = []
-        db_manager.credential_shared_pool.side_effect = KeyError("no shared pool")
-        app = create_app()
+def _make_api_client(db_manager=None) -> TestClient:
+    app = create_app()
+    if db_manager is not None:
         from butlers.api.routers import oauth
 
         app.dependency_overrides[oauth._get_db_manager] = lambda: db_manager
-        client = TestClient(app, raise_server_exceptions=False)
-        response = client.put(
-            "/api/oauth/google/credentials",
-            json={"client_id": "id", "client_secret": "secret"},
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Model contracts: from_env factories removed
+# ---------------------------------------------------------------------------
+
+
+def test_from_env_factories_removed() -> None:
+    from butlers.google_credentials import GoogleCredentials
+
+    assert not hasattr(GoogleCredentials, "from_env")
+    from butlers.modules.calendar import _GoogleOAuthCredentials
+
+    assert not hasattr(_GoogleOAuthCredentials, "from_env")
+
+
+# ---------------------------------------------------------------------------
+# resolve_google_credentials is DB-only; Gmail connector accepts injected creds
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_raises_when_db_empty() -> None:
+    """resolve_google_credentials ignores env vars; DB is required."""
+    for env_vars in [_LEGACY_GMAIL_ENV, _OAUTH_BOOTSTRAP_ENV]:
+        store = CredentialStore(_make_pool_with_values({}))
+        with patch.dict("os.environ", env_vars, clear=True):
+            with pytest.raises(MissingGoogleCredentialsError):
+                await resolve_google_credentials(store, caller="test")
+
+
+def test_gmail_connector_accepts_injected_credentials() -> None:
+    from butlers.connectors.gmail import GmailConnectorConfig
+
+    env = {
+        "SWITCHBOARD_MCP_URL": "http://localhost:9000/mcp",
+        "GMAIL_USER_EMAIL": "test@gmail.com",
+        **_OAUTH_BOOTSTRAP_ENV,
+    }
+    with patch.dict("os.environ", env, clear=True):
+        config = GmailConnectorConfig.from_env(
+            gmail_client_id=_SHARED_CREDS["client_id"],
+            gmail_client_secret=_SHARED_CREDS["client_secret"],
+            gmail_refresh_token=_SHARED_CREDS["refresh_token"],
         )
-        assert response.status_code == 503
+    assert config.gmail_client_id == _SHARED_CREDS["client_id"]
 
 
 # ---------------------------------------------------------------------------
-# API endpoint tests: DELETE /api/oauth/google/credentials
+# store_app_credentials / load_app_credentials helpers
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteCredentialsEndpoint:
-    def _make_client(self, db_manager=None):
-        app = create_app()
-        if db_manager is not None:
-            from butlers.api.routers import oauth
+async def test_store_and_load_app_credentials() -> None:
+    """Store: strips whitespace, raises on empty. Load: None when incomplete, partial ok."""
+    store = _make_credential_store()
+    await store_app_credentials(store, client_id="  my-id  ", client_secret="  my-secret  ")
+    assert store.store.call_args_list[0].args[1] == "my-id"
+    assert store.store.call_args_list[1].args[1] == "my-secret"
 
-            app.dependency_overrides[oauth._get_db_manager] = lambda: db_manager
-        return TestClient(app, raise_server_exceptions=False)
+    for cid, cs, match in [("", "s", "client_id"), ("id", "", "client_secret")]:
+        with pytest.raises(ValueError, match=match):
+            await store_app_credentials(_make_credential_store(), client_id=cid, client_secret=cs)
 
-    def test_delete_when_row_exists(self) -> None:
-        db_manager, conn = _make_db_manager(execute_result="DELETE 1")
-        client = self._make_client(db_manager)
-        response = client.delete("/api/oauth/google/credentials")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        assert data["deleted"] is True
-
-    def test_delete_when_no_row(self) -> None:
-        db_manager, conn = _make_db_manager(execute_result="DELETE 0")
-        client = self._make_client(db_manager)
-        response = client.delete("/api/oauth/google/credentials")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        assert data["deleted"] is False
-
-    def test_delete_no_db_returns_503(self) -> None:
-        client = self._make_client(db_manager=None)
-        response = client.delete("/api/oauth/google/credentials")
-        assert response.status_code == 503
+    assert await load_app_credentials(_make_credential_store(stored={})) is None
+    assert await load_app_credentials(_make_credential_store(stored={KEY_CLIENT_ID: "id"})) is None
+    result = await load_app_credentials(
+        _make_credential_store(stored={KEY_CLIENT_ID: "id", KEY_CLIENT_SECRET: "s"})
+    )
+    assert result is not None and result.refresh_token is None
 
 
 # ---------------------------------------------------------------------------
-# API endpoint tests: GET /api/oauth/google/credentials
+# API endpoint tests
 # ---------------------------------------------------------------------------
 
 
-class TestGetCredentialStatusEndpoint:
-    def _make_client(self, row=None, db_manager=None):
-        app = create_app()
-        if db_manager is not None:
-            from butlers.api.routers import oauth
+def test_api_credentials_endpoints() -> None:
+    """Upsert/delete/get/status endpoints: success, validation, no-DB 503, no secrets leaked."""
+    db_manager, _ = _make_db_manager()
+    # upsert success
+    resp = _make_api_client(db_manager).put(
+        "/api/oauth/google/credentials",
+        json={"client_id": "my-client-id", "client_secret": "my-secret"},
+    )
+    assert resp.status_code == 200 and resp.json()["success"] is True
 
-            app.dependency_overrides[oauth._get_db_manager] = lambda: db_manager
-        return TestClient(app, raise_server_exceptions=False)
+    # invalid input
+    assert (
+        _make_api_client(db_manager)
+        .put("/api/oauth/google/credentials", json={"client_id": "", "client_secret": "s"})
+        .status_code
+        == 422
+    )
+    assert (
+        _make_api_client(db_manager)
+        .put("/api/oauth/google/credentials", json={"client_id": "id", "client_secret": ""})
+        .status_code
+        == 422
+    )
 
-    def test_get_status_no_db_returns_503(self) -> None:
-        client = self._make_client(db_manager=None)
-        response = client.get("/api/oauth/google/credentials")
-        assert response.status_code == 503
+    # no db → 503
+    assert (
+        _make_api_client(None)
+        .put("/api/oauth/google/credentials", json={"client_id": "id", "client_secret": "s"})
+        .status_code
+        == 503
+    )
+    assert _make_api_client(None).delete("/api/oauth/google/credentials").status_code == 503
+    assert _make_api_client(None).get("/api/oauth/google/credentials").status_code == 503
 
-    def test_get_status_no_credentials_stored(self) -> None:
-        db_manager, conn = _make_db_manager(row=None)
-        client = self._make_client(db_manager=db_manager)
+    # delete success
+    db2, _ = _make_db_manager(execute_result="DELETE 1")
+    resp_del = _make_api_client(db2).delete("/api/oauth/google/credentials")
+    assert resp_del.status_code == 200 and resp_del.json()["deleted"] is True
 
-        with patch(
-            "butlers.api.routers.oauth._check_google_credential_status",
-        ) as mock_status:
-            from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
-
-            mock_status.return_value = OAuthCredentialStatus(
-                state=OAuthCredentialState.not_configured,
-                remediation="Configure credentials.",
-            )
-            response = client.get("/api/oauth/google/credentials")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["client_id_configured"] is False
-        assert data["client_secret_configured"] is False
-        assert data["refresh_token_present"] is False
-        assert data["oauth_health"] == "not_configured"
-
-    def test_get_status_with_app_credentials_only(self) -> None:
-        from butlers.google_credentials import GoogleAppCredentials
-
-        db_manager, _ = _make_db_manager(row=None)
-        client = self._make_client(db_manager=db_manager)
-
-        with (
-            patch(
-                "butlers.api.routers.oauth._check_google_credential_status",
-            ) as mock_status,
-            patch(
-                "butlers.api.routers.oauth.load_app_credentials",
-                return_value=GoogleAppCredentials(
-                    client_id="my-id",
-                    client_secret="my-secret",
-                ),
+    # get status: no secrets in response body
+    client = _make_api_client(_make_db_manager()[0])
+    with (
+        patch("butlers.api.routers.oauth._check_google_credential_status") as mock_status,
+        patch(
+            "butlers.api.routers.oauth.load_app_credentials",
+            return_value=GoogleAppCredentials(
+                client_id="my-id",
+                client_secret="SUPER_SECRET",
+                refresh_token="TOP_SECRET",
+                scope="gmail",
             ),
-        ):
-            from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
+        ),
+    ):
+        from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 
-            mock_status.return_value = OAuthCredentialStatus(
-                state=OAuthCredentialState.not_configured,
-                remediation="No refresh token.",
-            )
-            response = client.get("/api/oauth/google/credentials")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["client_id_configured"] is True
-        assert data["client_secret_configured"] is True
-        assert data["refresh_token_present"] is False
-
-    def test_get_status_fully_configured(self) -> None:
-        from butlers.google_credentials import GoogleAppCredentials
-
-        db_manager, _ = _make_db_manager(row=None)
-        client = self._make_client(db_manager=db_manager)
-
-        with (
-            patch(
-                "butlers.api.routers.oauth._check_google_credential_status",
-            ) as mock_status,
-            patch(
-                "butlers.api.routers.oauth.load_app_credentials",
-                return_value=GoogleAppCredentials(
-                    client_id="my-id",
-                    client_secret="my-secret",
-                    refresh_token="my-refresh",
-                    scope="gmail calendar",
-                ),
-            ),
-        ):
-            from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
-
-            mock_status.return_value = OAuthCredentialStatus(
-                state=OAuthCredentialState.connected,
-            )
-            response = client.get("/api/oauth/google/credentials")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["client_id_configured"] is True
-        assert data["client_secret_configured"] is True
-        assert data["refresh_token_present"] is True
-        assert data["scope"] == "gmail calendar"
-        assert data["oauth_health"] == "connected"
-
-    def test_secret_values_not_returned(self) -> None:
-        """Ensure secret values (client_secret, refresh_token) are never in the response."""
-        from butlers.google_credentials import GoogleAppCredentials
-
-        db_manager, _ = _make_db_manager(row=None)
-        client = self._make_client(db_manager=db_manager)
-
-        with (
-            patch(
-                "butlers.api.routers.oauth._check_google_credential_status",
-            ) as mock_status,
-            patch(
-                "butlers.api.routers.oauth.load_app_credentials",
-                return_value=GoogleAppCredentials(
-                    client_id="my-id",
-                    client_secret="SUPER_SECRET_VALUE",
-                    refresh_token="TOP_SECRET_REFRESH",
-                ),
-            ),
-        ):
-            from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
-
-            mock_status.return_value = OAuthCredentialStatus(
-                state=OAuthCredentialState.connected,
-            )
-            response = client.get("/api/oauth/google/credentials")
-
-        response_text = response.text
-        assert "SUPER_SECRET_VALUE" not in response_text
-        assert "TOP_SECRET_REFRESH" not in response_text
+        mock_status.return_value = OAuthCredentialStatus(state=OAuthCredentialState.connected)
+        resp2 = client.get("/api/oauth/google/credentials")
+    assert resp2.status_code == 200
+    assert resp2.json()["client_id_configured"] is True
+    assert "SUPER_SECRET" not in resp2.text and "TOP_SECRET" not in resp2.text

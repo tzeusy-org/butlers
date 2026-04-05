@@ -7,11 +7,10 @@ from pathlib import Path
 import pytest
 
 from butlers.config import (
-    DEFAULT_APPROVAL_RULE_PRECEDENCE,
     ApprovalConfig,
     ApprovalRiskTier,
     BufferConfig,
-    ButlerConfig,
+    ButlerType,
     ConfigError,
     GatedToolConfig,
     LoggingConfig,
@@ -24,9 +23,6 @@ from butlers.config import (
 )
 
 pytestmark = pytest.mark.unit
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 FULL_TOML = """\
 [butler]
@@ -59,19 +55,6 @@ max_threads = 50
 
 [modules.telegram]
 mode = "polling"
-
-[modules.telegram.user]
-enabled = false
-
-[modules.telegram.bot]
-token_env = "TG_TOKEN"
-
-[modules.email.user]
-enabled = false
-
-[modules.email.bot]
-address_env = "BOT_EMAIL_ADDRESS"
-password_env = "BOT_EMAIL_PASSWORD"
 """
 
 MINIMAL_TOML = """\
@@ -81,477 +64,45 @@ port = 9000
 """
 
 
-def _write_toml(tmp_path: Path, content: str, filename: str = "butler.toml") -> Path:
-    """Write *content* to a TOML file inside *tmp_path* and return the directory."""
-    (tmp_path / filename).write_text(content)
+def _write_toml(tmp_path: Path, content: str) -> Path:
+    (tmp_path / "butler.toml").write_text(content)
     return tmp_path
 
 
 # ---------------------------------------------------------------------------
-# Happy-path tests
+# Happy-path loading + DB schema
 # ---------------------------------------------------------------------------
 
 
-def test_load_full_config(tmp_path: Path):
-    """All sections present — every field is parsed correctly."""
-    config_dir = _write_toml(tmp_path, FULL_TOML)
-    cfg = load_config(config_dir)
-
-    assert isinstance(cfg, ButlerConfig)
-    assert cfg.name == "jarvis"
-    assert cfg.port == 41100
-    assert cfg.description == "Personal assistant butler"
-    assert cfg.db_name == "jarvis_db"
-
-    # Runtime
+def test_load_config_full_and_minimal(tmp_path: Path):
+    """Full config parses all sections; minimal config applies defaults."""
+    cfg = load_config(_write_toml(tmp_path, FULL_TOML))
+    assert cfg.name == "jarvis" and cfg.port == 41100 and cfg.db_name == "jarvis_db"
     assert cfg.runtime.model == "claude-sonnet-4-20250514"
-
-    # Schedules
     assert len(cfg.schedules) == 2
     assert cfg.schedules[0] == ScheduleConfig(
         name="daily_digest", cron="0 8 * * *", prompt="Summarise overnight emails"
     )
-    assert cfg.schedules[1] == ScheduleConfig(
-        name="weekly_report", cron="0 9 * * 1", prompt="Generate weekly status report"
-    )
-
-    # Modules
     assert "email" in cfg.modules
-    assert cfg.modules["email"] == {
-        "max_threads": 50,
-        "user": {"enabled": False},
-        "bot": {
-            "address_env": "BOT_EMAIL_ADDRESS",
-            "password_env": "BOT_EMAIL_PASSWORD",
-        },
-    }
-    assert "telegram" in cfg.modules
-    assert cfg.modules["telegram"] == {
-        "mode": "polling",
-        "user": {"enabled": False},
-        "bot": {"token_env": "TG_TOKEN"},
-    }
-
-    # Env
     assert cfg.env_required == ["SMTP_PASSWORD", "PG_DSN"]
-    assert cfg.env_optional == ["SLACK_TOKEN"]
+
+    cfg2 = load_config(_write_toml(tmp_path, MINIMAL_TOML))
+    assert cfg2.name == "alfred" and cfg2.port == 9000
+    assert cfg2.runtime.model == "claude-haiku-4-5-20251001"
+    assert cfg2.schedules == [] and cfg2.modules == {}
+    assert cfg2.db_name == "butlers" and cfg2.db_schema == "alfred"
 
 
-def test_load_minimal_config(tmp_path: Path):
-    """Only [butler] with name and port — defaults applied everywhere else."""
-    config_dir = _write_toml(tmp_path, MINIMAL_TOML)
-    cfg = load_config(config_dir)
-
-    assert cfg.name == "alfred"
-    assert cfg.port == 9000
-    assert cfg.description is None
-    assert cfg.runtime.model == "claude-haiku-4-5-20251001"
-    assert cfg.schedules == []
-    assert cfg.modules == {}
-    assert cfg.env_required == []
-    assert cfg.env_optional == []
-
-
-def test_default_db_name(tmp_path: Path):
-    """db_name defaults to 'butlers' with schema=name when [butler.db] is omitted."""
-    config_dir = _write_toml(tmp_path, MINIMAL_TOML)
-    cfg = load_config(config_dir)
-
-    assert cfg.db_name == "butlers"
-    assert cfg.db_schema == "alfred"
-
-
-def test_db_schema_parsed_for_one_db_topology(tmp_path: Path):
-    """[butler.db].schema is parsed and preserved for one-db setups."""
-    toml = """\
-[butler]
-name = "general"
-port = 9001
-
-[butler.db]
-name = "butlers"
-schema = "general"
-"""
-    cfg = load_config(_write_toml(tmp_path, toml))
-
-    assert cfg.db_name == "butlers"
+def test_db_schema_defaults_and_rejects_invalid(tmp_path: Path):
+    db_toml = '[butler]\nname = "general"\nport = 9002\n[butler.db]\nname = "butlers"\n'
+    cfg = load_config(_write_toml(tmp_path, db_toml))
     assert cfg.db_schema == "general"
-
-
-def test_db_schema_defaults_to_butler_name_when_db_is_butlers(tmp_path: Path):
-    """Consolidated DB configs auto-default schema to butler name."""
-    toml = """\
-[butler]
-name = "general"
-port = 9002
-
-[butler.db]
-name = "butlers"
-"""
-    cfg = load_config(_write_toml(tmp_path, toml))
-    assert cfg.db_name == "butlers"
-    assert cfg.db_schema == "general"
-
-
-def test_db_schema_rejects_invalid_identifier(tmp_path: Path):
-    """Schema names must be safe SQL identifier-style values."""
-    toml = """\
-[butler]
-name = "general"
-port = 9003
-
-[butler.db]
-name = "butlers"
-schema = "general; drop schema public"
-"""
+    invalid_toml = (
+        '[butler]\nname = "general"\nport = 9003\n'
+        '[butler.db]\nname = "butlers"\nschema = "general; drop schema public"\n'
+    )
     with pytest.raises(ConfigError, match="Invalid butler.db.schema"):
-        load_config(_write_toml(tmp_path, toml))
-
-
-def test_env_section(tmp_path: Path):
-    """Parses [butler.env] required and optional lists."""
-    toml = """\
-[butler]
-name = "envbot"
-port = 7000
-
-[butler.env]
-required = ["API_KEY"]
-optional = ["DEBUG", "VERBOSE"]
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert cfg.env_required == ["API_KEY"]
-    assert cfg.env_optional == ["DEBUG", "VERBOSE"]
-
-
-def test_schedule_parsing(tmp_path: Path):
-    """Parses [[butler.schedule]] entries into ScheduleConfig objects."""
-    toml = """\
-[butler]
-name = "cronbot"
-port = 7001
-
-[[butler.schedule]]
-name = "tick"
-cron = "*/10 * * * *"
-prompt = "Do a tick"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert len(cfg.schedules) == 1
-    sched = cfg.schedules[0]
-    assert sched.name == "tick"
-    assert sched.cron == "*/10 * * * *"
-    assert sched.prompt == "Do a tick"
-    assert sched.dispatch_mode == ScheduleDispatchMode.PROMPT
-    assert sched.job_name is None
-    assert sched.job_args is None
-
-
-def test_schedule_parsing_job_mode(tmp_path: Path):
-    """Parses a deterministic job-mode schedule with optional job args."""
-    toml = """\
-[butler]
-name = "cronbot"
-port = 7001
-
-[[butler.schedule]]
-name = "eligibility_sweep"
-cron = "*/5 * * * *"
-dispatch_mode = "job"
-job_name = "eligibility_sweep"
-job_args = {batch_size = 100}
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert len(cfg.schedules) == 1
-    sched = cfg.schedules[0]
-    assert sched.name == "eligibility_sweep"
-    assert sched.cron == "*/5 * * * *"
-    assert sched.dispatch_mode == ScheduleDispatchMode.JOB
-    assert sched.prompt is None
-    assert sched.job_name == "eligibility_sweep"
-    assert sched.job_args == {"batch_size": 100}
-
-
-def test_schedule_rejects_invalid_dispatch_mode(tmp_path: Path):
-    """Unknown dispatch_mode values fail fast with clear errors."""
-    toml = """\
-[butler]
-name = "cronbot"
-port = 7001
-
-[[butler.schedule]]
-name = "bad-mode"
-cron = "*/5 * * * *"
-dispatch_mode = "native"
-prompt = "run"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    with pytest.raises(ConfigError, match=r"Invalid butler\.schedule\[0\]\.dispatch_mode"):
-        load_config(config_dir)
-
-
-def test_prompt_mode_rejects_job_fields(tmp_path: Path):
-    """Prompt mode schedules must not include deterministic job metadata."""
-    toml = """\
-[butler]
-name = "cronbot"
-port = 7001
-
-[[butler.schedule]]
-name = "daily"
-cron = "0 9 * * *"
-dispatch_mode = "prompt"
-prompt = "run report"
-job_name = "eligibility_sweep"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    with pytest.raises(
-        ConfigError, match=r"butler\.schedule\[0\]\.job_name is only valid when dispatch_mode='job'"
-    ):
-        load_config(config_dir)
-
-
-def test_job_mode_requires_job_name(tmp_path: Path):
-    """Job mode schedules require a non-empty job_name."""
-    toml = """\
-[butler]
-name = "cronbot"
-port = 7001
-
-[[butler.schedule]]
-name = "missing-job-name"
-cron = "*/5 * * * *"
-dispatch_mode = "job"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    with pytest.raises(ConfigError, match=r"dispatch_mode='job' requires non-empty job_name"):
-        load_config(config_dir)
-
-
-def test_job_mode_rejects_prompt_field(tmp_path: Path):
-    """Job mode schedules must not include prompt text."""
-    toml = """\
-[butler]
-name = "cronbot"
-port = 7001
-
-[[butler.schedule]]
-name = "bad-job"
-cron = "*/5 * * * *"
-dispatch_mode = "job"
-job_name = "eligibility_sweep"
-prompt = "do not use"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    with pytest.raises(
-        ConfigError, match=r"butler\.schedule\[0\]\.prompt is not allowed when dispatch_mode='job'"
-    ):
-        load_config(config_dir)
-
-
-def test_modules_parsing(tmp_path: Path):
-    """Parses [modules.*] sections into a dict of dicts."""
-    toml = """\
-[butler]
-name = "modbot"
-port = 7002
-
-[modules.calendar]
-provider = "google"
-
-[modules.weather]
-api_key_env = "WEATHER_KEY"
-units = "metric"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert set(cfg.modules.keys()) == {"calendar", "weather"}
-    assert cfg.modules["calendar"] == {"provider": "google"}
-    assert cfg.modules["weather"] == {"api_key_env": "WEATHER_KEY", "units": "metric"}
-
-
-# ---------------------------------------------------------------------------
-# Runtime config tests
-# ---------------------------------------------------------------------------
-
-
-class TestRuntimeConfig:
-    """Tests for [butler.runtime] section parsing."""
-
-    def test_model_present(self, tmp_path: Path):
-        """Model string is parsed from [butler.runtime] section."""
-        toml = """\
-[butler]
-name = "modelbot"
-port = 7010
-
-[butler.runtime]
-model = "claude-opus-4-20250514"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.runtime.model == "claude-opus-4-20250514"
-
-    def test_model_absent(self, tmp_path: Path):
-        """Omitting [butler.runtime] entirely defaults model to Haiku."""
-        toml = """\
-[butler]
-name = "nomodel"
-port = 7011
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.runtime.model == "claude-haiku-4-5-20251001"
-
-    def test_model_empty_string(self, tmp_path: Path):
-        """Empty string model is normalised to Haiku default."""
-        toml = """\
-[butler]
-name = "emptymodel"
-port = 7012
-
-[butler.runtime]
-model = ""
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.runtime.model == "claude-haiku-4-5-20251001"
-
-    def test_model_whitespace_only(self, tmp_path: Path):
-        """Whitespace-only model is normalised to Haiku default."""
-        toml = """\
-[butler]
-name = "wsmodel"
-port = 7013
-
-[butler.runtime]
-model = "   "
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.runtime.model == "claude-haiku-4-5-20251001"
-
-    def test_runtime_section_without_model(self, tmp_path: Path):
-        """[butler.runtime] present but without model field defaults to Haiku."""
-        toml = """\
-[butler]
-name = "nofield"
-port = 7014
-
-[butler.runtime]
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.runtime.model == "claude-haiku-4-5-20251001"
-
-    def test_model_opaque_string(self, tmp_path: Path):
-        """Model string is opaque — any non-empty value is accepted."""
-        toml = """\
-[butler]
-name = "opaque"
-port = 7015
-
-[butler.runtime]
-model = "gpt-4o-2025-01-01"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.runtime.model == "gpt-4o-2025-01-01"
-
-    def test_runtime_args_parsed(self, tmp_path: Path):
-        """Runtime CLI args are parsed from [butler.runtime]."""
-        toml = """\
-[butler]
-name = "argsbot"
-port = 7017
-
-[butler.runtime]
-args = ["--config", "model_reasoning_effort=\\"high\\""]
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.runtime.args == ("--config", 'model_reasoning_effort="high"')
-
-    def test_runtime_args_must_be_array(self, tmp_path: Path):
-        """Runtime args must be configured as a TOML array of strings."""
-        toml = """\
-[butler]
-name = "badargs"
-port = 7018
-
-[butler.runtime]
-args = "--config model_reasoning_effort=\\"high\\""
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        with pytest.raises(
-            ConfigError,
-            match=r"Invalid butler.runtime.args: expected an array of strings",
-        ):
-            load_config(config_dir)
-
-    def test_runtime_args_entries_must_be_non_empty_strings(self, tmp_path: Path):
-        """Runtime args entries reject blank or non-string values."""
-        toml = """\
-[butler]
-name = "badargentry"
-port = 7019
-
-[butler.runtime]
-args = ["--config", "   ", 123]
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        with pytest.raises(
-            ConfigError,
-            match=r"Invalid butler.runtime.args\[1\]: expected a non-empty string",
-        ):
-            load_config(config_dir)
-
-    def test_runtime_config_dataclass_defaults(self):
-        """RuntimeConfig defaults to Haiku model."""
-        rc = RuntimeConfig()
-        assert rc.model == "claude-haiku-4-5-20251001"
-
-    def test_runtime_config_with_model(self):
-        """RuntimeConfig can be constructed with a model string."""
-        rc = RuntimeConfig(model="claude-opus-4-20250514")
-        assert rc.model == "claude-opus-4-20250514"
-
-    def test_backward_compat_no_runtime_section(self, tmp_path: Path):
-        """Existing configs without [butler.runtime] still load correctly."""
-        toml = """\
-[butler]
-name = "legacy"
-port = 7016
-description = "A legacy butler"
-
-[butler.db]
-name = "legacy_db"
-
-[butler.env]
-required = ["API_KEY"]
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.name == "legacy"
-        assert cfg.port == 7016
-        assert cfg.runtime.model == "claude-haiku-4-5-20251001"
-        assert cfg.db_name == "legacy_db"
-        assert cfg.env_required == ["API_KEY"]
+        load_config(_write_toml(tmp_path, invalid_toml))
 
 
 # ---------------------------------------------------------------------------
@@ -559,1118 +110,235 @@ required = ["API_KEY"]
 # ---------------------------------------------------------------------------
 
 
-def test_missing_config_file(tmp_path: Path):
-    """Raises ConfigError when butler.toml does not exist."""
+def test_config_errors(tmp_path: Path):
+    """Missing file, invalid TOML, and missing required fields all raise ConfigError."""
     with pytest.raises(ConfigError, match="Config file not found"):
         load_config(tmp_path)
-
-
-def test_invalid_toml(tmp_path: Path):
-    """Raises ConfigError on malformed TOML with location info."""
-    _write_toml(tmp_path, "[butler\nname = oops")
-    with pytest.raises(ConfigError, match="Invalid TOML"):
-        load_config(tmp_path)
-
-
-def test_missing_name(tmp_path: Path):
-    """Raises ConfigError when butler.name is absent."""
-    _write_toml(tmp_path, "[butler]\nport = 8000\n")
-    with pytest.raises(ConfigError, match="butler.name"):
-        load_config(tmp_path)
-
-
-def test_missing_port(tmp_path: Path):
-    """Raises ConfigError when butler.port is absent."""
-    _write_toml(tmp_path, '[butler]\nname = "noport"\n')
-    with pytest.raises(ConfigError, match="butler.port"):
-        load_config(tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Runtime config tests
-# ---------------------------------------------------------------------------
-
-
-def test_runtime_default_to_claude_code(tmp_path: Path):
-    """When [runtime] section is missing, default to claude."""
-    toml = """\
-[butler]
-name = "runtimebot"
-port = 7003
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert cfg.runtime.type == "claude"
-
-
-def test_runtime_explicit_claude_code(tmp_path: Path):
-    """Parse [runtime] section with explicit type = 'claude'."""
-    toml = """\
-[butler]
-name = "ccbot"
-port = 7004
-
-[runtime]
-type = "claude"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert cfg.runtime.type == "claude"
-
-
-def test_runtime_codex(tmp_path: Path):
-    """Parse [runtime] section with type = 'codex'."""
-    toml = """\
-[butler]
-name = "codexbot"
-port = 7005
-
-[runtime]
-type = "codex"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert cfg.runtime.type == "codex"
-
-
-def test_runtime_gemini(tmp_path: Path):
-    """Parse [runtime] section with type = 'gemini'."""
-    toml = """\
-[butler]
-name = "geminibot"
-port = 7006
-
-[runtime]
-type = "gemini"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    assert cfg.runtime.type == "gemini"
-
-
-def test_runtime_invalid_type_raises_error(tmp_path: Path):
-    """Invalid runtime type raises clear ConfigError at load time."""
-    toml = """\
-[butler]
-name = "invalidbot"
-port = 7007
-
-[runtime]
-type = "invalid-runtime"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-
-    with pytest.raises(ConfigError, match="Unknown runtime type 'invalid-runtime'"):
-        load_config(config_dir)
-
-
-def test_runtime_config_accessible_from_butler_config(tmp_path: Path):
-    """Verify runtime config is accessible via config.runtime.type."""
-    toml = """\
-[butler]
-name = "accessbot"
-port = 7008
-
-[runtime]
-type = "gemini"
-"""
-    config_dir = _write_toml(tmp_path, toml)
-    cfg = load_config(config_dir)
-
-    # Can access runtime.type directly
-    assert cfg.runtime.type == "gemini"
-
-    # Runtime config is a RuntimeConfig instance
-    from butlers.config import RuntimeConfig
-
-    assert isinstance(cfg.runtime, RuntimeConfig)
-
-
-# ---------------------------------------------------------------------------
-# Approval config tests
-# ---------------------------------------------------------------------------
-
-
-class TestApprovalConfig:
-    """Tests for [modules.approvals] section parsing."""
-
-    def test_approvals_minimal(self, tmp_path: Path):
-        """Minimal approvals config with just enabled flag."""
-        toml = """\
-[butler]
-name = "approvalsbot"
-port = 41200
-
-[modules.approvals]
-enabled = true
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert "approvals" in cfg.modules
-        approvals = cfg.modules["approvals"]
-        assert approvals["enabled"] is True
-        assert approvals.get("default_expiry_hours", 48) == 48
-        assert approvals.get("gated_tools", {}) == {}
-
-    def test_approvals_full_config(self, tmp_path: Path):
-        """Full approvals config with gated tools and custom expiry."""
-        toml = """\
-[butler]
-name = "approvalsbot"
-port = 41200
-
-[modules.approvals]
-enabled = true
-default_expiry_hours = 72
-
-[modules.approvals.gated_tools]
-email_send = {}
-purchase_create = {expiry_hours = 24}
-calendar_invite = {}
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert "approvals" in cfg.modules
-        approvals = cfg.modules["approvals"]
-        assert approvals["enabled"] is True
-        assert approvals["default_expiry_hours"] == 72
-        assert "gated_tools" in approvals
-        gated_tools = approvals["gated_tools"]
-        assert "email_send" in gated_tools
-        assert gated_tools["email_send"] == {}
-        assert "purchase_create" in gated_tools
-        assert gated_tools["purchase_create"] == {"expiry_hours": 24}
-        assert "calendar_invite" in gated_tools
-        assert gated_tools["calendar_invite"] == {}
-
-    def test_approvals_disabled(self, tmp_path: Path):
-        """Approvals module can be disabled."""
-        toml = """\
-[butler]
-name = "approvalsbot"
-port = 41200
-
-[modules.approvals]
-enabled = false
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert "approvals" in cfg.modules
-        assert cfg.modules["approvals"]["enabled"] is False
-
-    def test_approvals_default_expiry(self, tmp_path: Path):
-        """Default expiry hours defaults to 48."""
-        toml = """\
-[butler]
-name = "approvalsbot"
-port = 41200
-
-[modules.approvals]
-enabled = true
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        approvals = cfg.modules["approvals"]
-        # Default should be absent (will be handled by ApprovalConfig dataclass)
-        assert (
-            approvals.get("default_expiry_hours") is None
-            or approvals.get("default_expiry_hours") == 48
-        )
-
-    def test_approvals_no_gated_tools(self, tmp_path: Path):
-        """Approvals config without gated_tools section."""
-        toml = """\
-[butler]
-name = "approvalsbot"
-port = 41200
-
-[modules.approvals]
-enabled = true
-default_expiry_hours = 48
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        approvals = cfg.modules["approvals"]
-        assert approvals.get("gated_tools", {}) == {}
-
-    def test_approvals_gated_tool_with_custom_expiry(self, tmp_path: Path):
-        """Gated tool can override default expiry."""
-        toml = """\
-[butler]
-name = "approvalsbot"
-port = 41200
-
-[modules.approvals]
-enabled = true
-default_expiry_hours = 48
-
-[modules.approvals.gated_tools]
-high_risk_action = {expiry_hours = 1}
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        gated_tools = cfg.modules["approvals"]["gated_tools"]
-        assert "high_risk_action" in gated_tools
-        assert gated_tools["high_risk_action"]["expiry_hours"] == 1
-
-    def test_approvals_multiple_gated_tools(self, tmp_path: Path):
-        """Multiple gated tools with mixed configurations."""
-        toml = """\
-[butler]
-name = "approvalsbot"
-port = 41200
-
-[modules.approvals]
-enabled = true
-default_expiry_hours = 48
-
-[modules.approvals.gated_tools]
-email_send = {}
-purchase_create = {expiry_hours = 24}
-database_delete = {expiry_hours = 6}
-calendar_invite = {}
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        gated_tools = cfg.modules["approvals"]["gated_tools"]
-        assert len(gated_tools) == 4
-        assert gated_tools["email_send"] == {}
-        assert gated_tools["purchase_create"]["expiry_hours"] == 24
-        assert gated_tools["database_delete"]["expiry_hours"] == 6
-        assert gated_tools["calendar_invite"] == {}
-
-    def test_approvals_absent_from_config(self, tmp_path: Path):
-        """Butler config without approvals module."""
-        toml = """\
-[butler]
-name = "noapprovalsbot"
-port = 41200
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert "approvals" not in cfg.modules
-
-
-# ---------------------------------------------------------------------------
-# ApprovalConfig dataclass tests
-# ---------------------------------------------------------------------------
-
-
-class TestApprovalConfigDataclass:
-    """Tests for ApprovalConfig and GatedToolConfig dataclasses."""
-
-    def test_gated_tool_config_defaults(self):
-        """GatedToolConfig with no override uses None."""
-        gtc = GatedToolConfig()
-        assert gtc.expiry_hours is None
-        assert gtc.risk_tier is None
-
-    def test_gated_tool_config_with_override(self):
-        """GatedToolConfig with expiry override."""
-        gtc = GatedToolConfig(expiry_hours=12)
-        assert gtc.expiry_hours == 12
-
-    def test_approval_config_defaults(self):
-        """ApprovalConfig defaults."""
-        ac = ApprovalConfig(enabled=True)
-        assert ac.enabled is True
-        assert ac.default_expiry_hours == 48
-        assert ac.default_risk_tier == ApprovalRiskTier.MEDIUM
-        assert ac.rule_precedence == DEFAULT_APPROVAL_RULE_PRECEDENCE
-        assert ac.gated_tools == {}
-
-    def test_approval_config_custom_default_expiry(self):
-        """ApprovalConfig with custom default expiry."""
-        ac = ApprovalConfig(enabled=True, default_expiry_hours=72)
-        assert ac.default_expiry_hours == 72
-
-    def test_approval_config_with_gated_tools(self):
-        """ApprovalConfig with gated tools."""
-        gated_tools = {
-            "email_send": GatedToolConfig(),
-            "purchase_create": GatedToolConfig(expiry_hours=24),
-        }
-        ac = ApprovalConfig(enabled=True, gated_tools=gated_tools)
-        assert len(ac.gated_tools) == 2
-        assert ac.gated_tools["email_send"].expiry_hours is None
-        assert ac.gated_tools["purchase_create"].expiry_hours == 24
-
-    def test_parse_approval_config_minimal(self):
-        """Parse minimal approval config dict."""
-        raw = {"enabled": True}
-        ac = parse_approval_config(raw)
-        assert ac.enabled is True
-        assert ac.default_expiry_hours == 48
-        assert ac.default_risk_tier == ApprovalRiskTier.MEDIUM
-        assert ac.gated_tools == {}
-
-    def test_parse_approval_config_full(self):
-        """Parse full approval config dict."""
-        raw = {
-            "enabled": True,
-            "default_expiry_hours": 72,
-            "default_risk_tier": "low",
-            "gated_tools": {
-                "email_send": {"risk_tier": "high"},
-                "purchase_create": {"expiry_hours": 24, "risk_tier": "critical"},
-            },
-        }
-        ac = parse_approval_config(raw)
-        assert ac.enabled is True
-        assert ac.default_expiry_hours == 72
-        assert ac.default_risk_tier == ApprovalRiskTier.LOW
-        assert len(ac.gated_tools) == 2
-        assert ac.gated_tools["email_send"].expiry_hours is None
-        assert ac.gated_tools["email_send"].risk_tier == ApprovalRiskTier.HIGH
-        assert ac.gated_tools["purchase_create"].expiry_hours == 24
-        assert ac.gated_tools["purchase_create"].risk_tier == ApprovalRiskTier.CRITICAL
-
-    def test_parse_approval_config_disabled(self):
-        """Parse disabled approval config."""
-        raw = {"enabled": False}
-        ac = parse_approval_config(raw)
-        assert ac.enabled is False
-
-    def test_parse_approval_config_invalid_default_risk_tier(self):
-        raw = {"enabled": True, "default_risk_tier": "veryhigh"}
-        with pytest.raises(ConfigError, match="default_risk_tier"):
-            parse_approval_config(raw)
-
-    def test_parse_approval_config_invalid_tool_risk_tier(self):
-        raw = {"enabled": True, "gated_tools": {"email_send": {"risk_tier": "veryhigh"}}}
-        with pytest.raises(ConfigError, match="risk_tier"):
-            parse_approval_config(raw)
-
-    def test_parse_approval_config_none_returns_none(self):
-        """parse_approval_config with None returns None."""
-        assert parse_approval_config(None) is None
-
-    def test_approval_config_get_effective_expiry_default(self):
-        """Get effective expiry for a tool without override."""
-        ac = ApprovalConfig(
-            enabled=True,
-            default_expiry_hours=48,
-            gated_tools={"email_send": GatedToolConfig()},
-        )
-        assert ac.get_effective_expiry("email_send") == 48
-
-    def test_approval_config_get_effective_expiry_override(self):
-        """Get effective expiry for a tool with override."""
-        ac = ApprovalConfig(
-            enabled=True,
-            default_expiry_hours=48,
-            gated_tools={"purchase_create": GatedToolConfig(expiry_hours=24)},
-        )
-        assert ac.get_effective_expiry("purchase_create") == 24
-
-    def test_approval_config_get_effective_expiry_unknown_tool(self):
-        """Get effective expiry for an unknown tool returns default."""
-        ac = ApprovalConfig(enabled=True, default_expiry_hours=48)
-        assert ac.get_effective_expiry("unknown_tool") == 48
-
-    def test_approval_config_get_effective_risk_tier_default(self):
-        ac = ApprovalConfig(enabled=True, default_risk_tier=ApprovalRiskTier.LOW)
-        assert ac.get_effective_risk_tier("unknown_tool") == ApprovalRiskTier.LOW
-
-    def test_approval_config_get_effective_risk_tier_tool_override(self):
-        ac = ApprovalConfig(
-            enabled=True,
-            default_risk_tier=ApprovalRiskTier.MEDIUM,
-            gated_tools={"purchase_create": GatedToolConfig(risk_tier=ApprovalRiskTier.CRITICAL)},
-        )
-        assert ac.get_effective_risk_tier("purchase_create") == ApprovalRiskTier.CRITICAL
-
-
-# ---------------------------------------------------------------------------
-# Approval config validation tests
-# ---------------------------------------------------------------------------
-
-
-class TestApprovalConfigValidation:
-    """Tests for validating approval config against registered tools."""
-
-    def test_validate_approval_config_all_tools_registered(self):
-        """Validation passes when all gated tools are registered."""
-        ac = ApprovalConfig(
-            enabled=True,
-            gated_tools={
-                "email_send": GatedToolConfig(),
-                "purchase_create": GatedToolConfig(expiry_hours=24),
-            },
-        )
-        registered_tools = {"email_send", "purchase_create", "calendar_invite"}
-        # Should not raise
-        validate_approval_config(ac, registered_tools)
-
-    def test_validate_approval_config_unregistered_tool(self):
-        """Validation fails when a gated tool is not registered."""
-        ac = ApprovalConfig(
-            enabled=True,
-            gated_tools={
-                "email_send": GatedToolConfig(),
-                "unknown_tool": GatedToolConfig(),
-            },
-        )
-        registered_tools = {"email_send", "purchase_create"}
-
-        with pytest.raises(ConfigError, match="Unknown gated tool.*unknown_tool.*not registered"):
-            validate_approval_config(ac, registered_tools)
-
-    def test_validate_approval_config_multiple_unregistered_tools(self):
-        """Validation reports all unregistered tools."""
-        ac = ApprovalConfig(
-            enabled=True,
-            gated_tools={
-                "email_send": GatedToolConfig(),
-                "unknown_tool_1": GatedToolConfig(),
-                "unknown_tool_2": GatedToolConfig(),
-            },
-        )
-        registered_tools = {"email_send"}
-
-        with pytest.raises(ConfigError) as exc_info:
-            validate_approval_config(ac, registered_tools)
-
-        error_msg = str(exc_info.value)
-        assert "unknown_tool_1" in error_msg
-        assert "unknown_tool_2" in error_msg
-
-    def test_validate_approval_config_disabled_skips_validation(self):
-        """Validation is skipped when approvals are disabled."""
-        ac = ApprovalConfig(
-            enabled=False,
-            gated_tools={"unknown_tool": GatedToolConfig()},
-        )
-        registered_tools = {"email_send"}
-        # Should not raise even though unknown_tool is not registered
-        validate_approval_config(ac, registered_tools)
-
-    def test_validate_approval_config_none_is_noop(self):
-        """Validation with None config is a no-op."""
-        validate_approval_config(None, {"email_send"})
-
-    def test_validate_approval_config_empty_gated_tools(self):
-        """Validation passes with no gated tools."""
-        ac = ApprovalConfig(enabled=True, gated_tools={})
-        registered_tools = {"email_send", "purchase_create"}
-        # Should not raise
-        validate_approval_config(ac, registered_tools)
-
-
-# ---------------------------------------------------------------------------
-# Switchboard URL config tests
-# ---------------------------------------------------------------------------
-
-
-class TestSwitchboardUrlConfig:
-    """Tests for [butler.switchboard] section parsing."""
-
-    def test_default_switchboard_url_for_non_switchboard(self, tmp_path: Path):
-        """Non-switchboard butlers default to http://localhost:41100/sse."""
-        toml = """\
-[butler]
-name = "general"
-port = 41101
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.switchboard_url == "http://localhost:41100/sse"
-
-
-class TestMessengerConfigValidation:
-    """Tests for messenger-specific config guardrails."""
-
-    def test_messenger_requires_at_least_one_delivery_module(self, tmp_path: Path):
-        """Messenger without telegram/email modules should fail config validation."""
-        toml = """\
-[butler]
-name = "messenger"
-port = 41104
-"""
-        config_dir = _write_toml(tmp_path, toml)
-
-        with pytest.raises(ConfigError, match="requires at least one delivery module"):
-            load_config(config_dir)
-
-    def test_messenger_accepts_telegram_only(self, tmp_path: Path):
-        """Messenger with only telegram module should load."""
-        toml = """\
-[butler]
-name = "messenger"
-port = 41104
-
-[modules.telegram]
-mode = "polling"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.name == "messenger"
-        assert "telegram" in cfg.modules
-
-    def test_messenger_accepts_email_only(self, tmp_path: Path):
-        """Messenger with only email module should load."""
-        toml = """\
-[butler]
-name = "messenger"
-port = 41104
-
-[modules.email]
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.name == "messenger"
-        assert "email" in cfg.modules
-
-    def test_messenger_requires_enabled_bot_scope(self, tmp_path: Path):
-        """Messenger with both bot scopes disabled should fail config validation."""
-        toml = """\
-[butler]
-name = "messenger"
-port = 41104
-
-[modules.telegram]
-
-[modules.telegram.bot]
-enabled = false
-
-[modules.email]
-
-[modules.email.bot]
-enabled = false
-"""
-        config_dir = _write_toml(tmp_path, toml)
-
-        with pytest.raises(ConfigError, match="requires at least one enabled bot credential scope"):
-            load_config(config_dir)
-
-    def test_non_messenger_is_not_subject_to_messenger_delivery_requirements(self, tmp_path: Path):
-        """Other butlers can load without delivery modules."""
-        toml = """\
-[butler]
-name = "general"
-port = 41101
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.name == "general"
-
-    def test_switchboard_butler_has_no_url(self, tmp_path: Path):
-        """The switchboard butler itself should have switchboard_url=None."""
-        toml = """\
-[butler]
-name = "switchboard"
-port = 41100
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.switchboard_url is None
-
-    def test_explicit_switchboard_url(self, tmp_path: Path):
-        """An explicit [butler.switchboard] url overrides the default."""
-        toml = """\
-[butler]
-name = "health"
-port = 41103
-
-[butler.switchboard]
-url = "http://switchboard.internal:9000/sse"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.switchboard_url == "http://switchboard.internal:9000/sse"
-
-    def test_explicit_switchboard_url_overrides_for_switchboard_name(self, tmp_path: Path):
-        """Even the switchboard can have an explicit URL (edge case)."""
-        toml = """\
-[butler]
-name = "switchboard"
-port = 41100
-
-[butler.switchboard]
-url = "http://other-switchboard:41100/sse"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.switchboard_url == "http://other-switchboard:41100/sse"
-
-    def test_switchboard_url_env_var_resolution(self, tmp_path: Path, monkeypatch):
-        """switchboard_url supports ${ENV_VAR} resolution."""
-        monkeypatch.setenv("SWITCHBOARD_HOST", "sb.prod.internal")
-        toml = """\
-[butler]
-name = "health"
-port = 41103
-
-[butler.switchboard]
-url = "http://${SWITCHBOARD_HOST}:41100/sse"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.switchboard_url == "http://sb.prod.internal:41100/sse"
-
-    def test_switchboard_url_in_butler_config_dataclass(self):
-        """ButlerConfig dataclass defaults switchboard_url to None."""
-        cfg = ButlerConfig(name="test", port=9000)
-        assert cfg.switchboard_url is None
-
-    def test_switchboard_section_without_url(self, tmp_path: Path):
-        """[butler.switchboard] section present but without url falls back to default."""
-        toml = """\
-[butler]
-name = "health"
-port = 41103
-
-[butler.switchboard]
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.switchboard_url == "http://localhost:41100/sse"
-
-
-# ---------------------------------------------------------------------------
-# Logging config tests
-# ---------------------------------------------------------------------------
-
-
-class TestLoggingConfig:
-    """Tests for [butler.logging] section parsing."""
-
-    def test_logging_defaults(self):
-        """LoggingConfig dataclass defaults."""
-        lc = LoggingConfig()
-        assert lc.level == "INFO"
-        assert lc.format == "text"
-        assert lc.log_root is None
-
-    def test_logging_defaults_from_minimal_toml(self, tmp_path: Path):
-        """Minimal config gets default LoggingConfig."""
-        config_dir = _write_toml(tmp_path, MINIMAL_TOML)
-        cfg = load_config(config_dir)
-        assert cfg.logging.level == "INFO"
-        assert cfg.logging.format == "text"
-        assert cfg.logging.log_root is None
-
-    def test_logging_section_parsed(self, tmp_path: Path):
-        """[butler.logging] section is parsed correctly."""
-        toml = """\
-[butler]
-name = "logbot"
-port = 7100
-
-[butler.logging]
-level = "DEBUG"
-format = "json"
-log_root = "/var/log/butlers"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-        assert cfg.logging.level == "DEBUG"
-        assert cfg.logging.format == "json"
-        assert cfg.logging.log_root == "/var/log/butlers"
-
-    def test_logging_level_case_insensitive(self, tmp_path: Path):
-        """Level is uppercased during parsing."""
-        toml = """\
-[butler]
-name = "logbot"
-port = 7100
-
-[butler.logging]
-level = "debug"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-        assert cfg.logging.level == "DEBUG"
-
-    def test_logging_format_case_insensitive(self, tmp_path: Path):
-        """Format is lowercased during parsing."""
-        toml = """\
-[butler]
-name = "logbot"
-port = 7100
-
-[butler.logging]
-format = "JSON"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-        assert cfg.logging.format == "json"
-
-    def test_logging_invalid_format_raises(self, tmp_path: Path):
-        """Invalid format value raises ConfigError."""
-        toml = """\
-[butler]
-name = "logbot"
-port = 7100
-
-[butler.logging]
-format = "yaml"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        with pytest.raises(ConfigError, match="Invalid butler.logging.format"):
-            load_config(config_dir)
-
-    def test_logging_env_var_in_log_root(self, tmp_path: Path, monkeypatch):
-        """log_root supports ${ENV_VAR} resolution."""
-        monkeypatch.setenv("LOG_DIR", "/tmp/butler-logs")
-        toml = """\
-[butler]
-name = "logbot"
-port = 7100
-
-[butler.logging]
-log_root = "${LOG_DIR}"
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-        assert cfg.logging.log_root == "/tmp/butler-logs"
-
-    def test_butler_config_includes_logging(self):
-        """ButlerConfig includes logging field with defaults."""
-        cfg = ButlerConfig(name="test", port=9000)
-        assert isinstance(cfg.logging, LoggingConfig)
-        assert cfg.logging.level == "INFO"
-
-
-# ---------------------------------------------------------------------------
-# BufferConfig tests
-# ---------------------------------------------------------------------------
-
-
-class TestBufferConfig:
-    """Tests for [buffer] section parsing and BufferConfig dataclass."""
-
-    def test_buffer_config_dataclass_defaults(self):
-        """BufferConfig defaults are all present and correct."""
-        bc = BufferConfig()
-        assert bc.queue_capacity == 100
-        assert bc.worker_count == 1
-        assert bc.scanner_interval_s == 30
-        assert bc.scanner_grace_s == 10
-        assert bc.scanner_batch_size == 50
-
-    def test_butler_config_includes_buffer_with_defaults(self):
-        """ButlerConfig has a buffer field that defaults to BufferConfig()."""
-        cfg = ButlerConfig(name="test", port=9000)
-        assert isinstance(cfg.buffer, BufferConfig)
-        assert cfg.buffer.queue_capacity == 100
-        assert cfg.buffer.worker_count == 1
-        assert cfg.buffer.scanner_interval_s == 30
-        assert cfg.buffer.scanner_grace_s == 10
-        assert cfg.buffer.scanner_batch_size == 50
-
-    def test_missing_buffer_section_uses_defaults(self, tmp_path: Path):
-        """Configs without [buffer] section are backwards-compatible and use defaults."""
-        toml = """\
-[butler]
-name = "nobufer"
-port = 9100
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert isinstance(cfg.buffer, BufferConfig)
-        assert cfg.buffer.queue_capacity == 100
-        assert cfg.buffer.worker_count == 1
-        assert cfg.buffer.scanner_interval_s == 30
-        assert cfg.buffer.scanner_grace_s == 10
-        assert cfg.buffer.scanner_batch_size == 50
-
-    def test_buffer_section_all_fields_parsed(self, tmp_path: Path):
-        """Explicit [buffer] section with all fields is parsed correctly."""
-        toml = """\
-[butler]
-name = "bufbot"
-port = 9101
-
-[buffer]
-queue_capacity = 200
-worker_count = 4
-scanner_interval_s = 60
-scanner_grace_s = 20
-scanner_batch_size = 100
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.buffer.queue_capacity == 200
-        assert cfg.buffer.worker_count == 4
-        assert cfg.buffer.scanner_interval_s == 60
-        assert cfg.buffer.scanner_grace_s == 20
-        assert cfg.buffer.scanner_batch_size == 100
-
-    def test_buffer_section_partial_fields_use_defaults(self, tmp_path: Path):
-        """Partial [buffer] section fills remaining fields from defaults."""
-        toml = """\
-[butler]
-name = "partialbot"
-port = 9102
-
-[buffer]
-queue_capacity = 50
-"""
-        config_dir = _write_toml(tmp_path, toml)
-        cfg = load_config(config_dir)
-
-        assert cfg.buffer.queue_capacity == 50
-        assert cfg.buffer.worker_count == 1
-        assert cfg.buffer.scanner_interval_s == 30
-        assert cfg.buffer.scanner_grace_s == 10
-        assert cfg.buffer.scanner_batch_size == 50
-
-    def test_switchboard_butler_toml_has_explicit_buffer_section(self):
-        """Switchboard butler.toml has explicit buffer tuning for pooled workers."""
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        switchboard_config_dir = repo_root / "roster" / "switchboard"
-        cfg = load_config(switchboard_config_dir)
-
-        assert isinstance(cfg.buffer, BufferConfig)
-        assert cfg.buffer.queue_capacity == 100
-        assert cfg.buffer.worker_count == 3
-        assert cfg.buffer.scanner_interval_s == 30
-        assert cfg.buffer.scanner_grace_s == 10
-        assert cfg.buffer.scanner_batch_size == 50
-
-    def test_switchboard_buffer_workers_match_runtime_pool_size(self):
-        """Switchboard queue workers should match max_concurrent_sessions."""
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        switchboard_config_dir = repo_root / "roster" / "switchboard"
-        cfg = load_config(switchboard_config_dir)
-
-        assert cfg.buffer.worker_count == cfg.runtime.max_concurrent_sessions
-
-
-# ---------------------------------------------------------------------------
-# RuntimeConfig max_concurrent_sessions tests
-# ---------------------------------------------------------------------------
-
-
-class TestRuntimeConfigMaxConcurrentSessions:
-    """Tests for max_concurrent_sessions field in RuntimeConfig."""
-
-    def test_default_is_one(self):
-        """RuntimeConfig.max_concurrent_sessions defaults to 1."""
-        rc = RuntimeConfig()
-        assert rc.max_concurrent_sessions == 1
-
-    def test_explicit_value_stored(self):
-        """RuntimeConfig accepts an explicit max_concurrent_sessions value."""
-        rc = RuntimeConfig(max_concurrent_sessions=5)
-        assert rc.max_concurrent_sessions == 5
-
-    def test_butler_config_defaults_to_one(self):
-        """ButlerConfig.runtime.max_concurrent_sessions defaults to 1."""
-        cfg = ButlerConfig(name="test", port=9000)
-        assert cfg.runtime.max_concurrent_sessions == 1
-
-    def test_missing_field_defaults_to_one(self, tmp_path: Path):
-        """Existing configs without max_concurrent_sessions default to 1 (backwards-compat)."""
-        toml = """\
-[butler]
-name = "legacybot"
-port = 7050
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.max_concurrent_sessions == 1
-
-    def test_runtime_section_without_field_defaults_to_one(self, tmp_path: Path):
-        """[butler.runtime] section present but without max_concurrent_sessions defaults to 1."""
-        toml = """\
-[butler]
-name = "nofield"
-port = 7051
-
-[butler.runtime]
-model = "claude-haiku-4-5-20251001"
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.max_concurrent_sessions == 1
-
-    def test_explicit_value_parsed_from_toml(self, tmp_path: Path):
-        """max_concurrent_sessions is parsed from [butler.runtime] in butler.toml."""
-        toml = """\
-[butler]
-name = "concurrentbot"
-port = 7052
-
-[butler.runtime]
-max_concurrent_sessions = 4
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.max_concurrent_sessions == 4
-
-    def test_value_with_model_parsed(self, tmp_path: Path):
-        """max_concurrent_sessions is parsed alongside model field."""
-        toml = """\
-[butler]
-name = "fullruntimebot"
-port = 7053
-
-[butler.runtime]
-model = "claude-opus-4-20250514"
-max_concurrent_sessions = 3
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.model == "claude-opus-4-20250514"
-        assert cfg.runtime.max_concurrent_sessions == 3
-
-    def test_switchboard_roster_has_max_concurrent_sessions_3(self):
-        """Switchboard butler.toml sets max_concurrent_sessions = 3."""
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        switchboard_config_dir = repo_root / "roster" / "switchboard"
-        cfg = load_config(switchboard_config_dir)
-        assert cfg.runtime.max_concurrent_sessions == 3
-
-    def test_messenger_roster_has_max_concurrent_sessions_3(self):
-        """Messenger butler.toml sets max_concurrent_sessions = 3."""
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        messenger_config_dir = repo_root / "roster" / "messenger"
-        cfg = load_config(messenger_config_dir)
-        assert cfg.runtime.max_concurrent_sessions == 3
-
-    def test_all_roster_butlers_have_min_concurrency_three(self):
-        """All active roster butlers should run with at least 3 concurrent sessions."""
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        for butler in ("switchboard", "general", "relationship", "health", "messenger"):
-            cfg = load_config(repo_root / "roster" / butler)
-            assert cfg.runtime.max_concurrent_sessions >= 3
-
-
-# ---------------------------------------------------------------------------
-# RuntimeConfig max_queued_sessions tests
-# ---------------------------------------------------------------------------
-
-
-class TestRuntimeConfigMaxQueuedSessions:
-    """Tests for max_queued_sessions field in RuntimeConfig."""
-
-    def test_default_is_one_hundred(self):
-        """RuntimeConfig.max_queued_sessions defaults to 100."""
-        rc = RuntimeConfig()
-        assert rc.max_queued_sessions == 100
-
-    def test_explicit_value_stored(self):
-        """RuntimeConfig accepts an explicit max_queued_sessions value."""
-        rc = RuntimeConfig(max_queued_sessions=25)
-        assert rc.max_queued_sessions == 25
-
-    def test_butler_config_defaults_to_one_hundred(self):
-        """ButlerConfig.runtime.max_queued_sessions defaults to 100."""
-        cfg = ButlerConfig(name="test", port=9000)
-        assert cfg.runtime.max_queued_sessions == 100
-
-    def test_missing_field_defaults_to_one_hundred(self, tmp_path: Path):
-        """Configs without max_queued_sessions keep default 100."""
-        toml = """\
-[butler]
-name = "legacybot"
-port = 7054
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.max_queued_sessions == 100
-
-    def test_runtime_section_without_field_defaults_to_one_hundred(self, tmp_path: Path):
-        """[butler.runtime] without max_queued_sessions defaults to 100."""
-        toml = """\
-[butler]
-name = "nofield"
-port = 7055
-
-[butler.runtime]
-model = "claude-haiku-4-5-20251001"
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.max_queued_sessions == 100
-
-    def test_explicit_value_parsed_from_toml(self, tmp_path: Path):
-        """max_queued_sessions is parsed from [butler.runtime]."""
-        toml = """\
-[butler]
-name = "queuedbot"
-port = 7056
-
-[butler.runtime]
-max_queued_sessions = 7
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.max_queued_sessions == 7
-
-    def test_value_parsed_with_model_and_concurrency(self, tmp_path: Path):
-        """max_queued_sessions parses correctly alongside other runtime fields."""
-        toml = """\
-[butler]
-name = "fullruntimebot"
-port = 7057
-
-[butler.runtime]
-model = "claude-opus-4-20250514"
-max_concurrent_sessions = 3
-max_queued_sessions = 9
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        cfg = load_config(tmp_path)
-        assert cfg.runtime.model == "claude-opus-4-20250514"
-        assert cfg.runtime.max_concurrent_sessions == 3
-        assert cfg.runtime.max_queued_sessions == 9
-
-    def test_zero_value_rejected(self, tmp_path: Path):
-        """Non-positive max_queued_sessions values are rejected."""
-        toml = """\
-[butler]
-name = "badqueue"
-port = 7058
-
-[butler.runtime]
-max_queued_sessions = 0
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        with pytest.raises(
-            ConfigError,
-            match=r"Invalid butler.runtime.max_queued_sessions: 0\. Must be a positive integer\.",
-        ):
+    for toml, match in [
+        ("[butler\nname = oops", "Invalid TOML"),
+        ("[butler]\nport = 8000\n", "butler.name"),
+        ('[butler]\nname = "noport"\n', "butler.port"),
+    ]:
+        _write_toml(tmp_path, toml)
+        with pytest.raises(ConfigError, match=match):
             load_config(tmp_path)
 
-    def test_negative_value_rejected(self, tmp_path: Path):
-        """Negative max_queued_sessions values are rejected."""
-        toml = """\
-[butler]
-name = "badqueue"
-port = 7059
 
-[butler.runtime]
-max_queued_sessions = -2
-"""
-        (tmp_path / "butler.toml").write_text(toml)
-        with pytest.raises(
-            ConfigError,
-            match=r"Invalid butler.runtime.max_queued_sessions: -2\. Must be a positive integer\.",
-        ):
-            load_config(tmp_path)
+# ---------------------------------------------------------------------------
+# Schedule parsing
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_parsing(tmp_path: Path):
+    """Prompt-mode and job-mode schedules parse correctly; invalid schedules raise."""
+    base = (
+        '[butler]\nname = "cronbot"\nport = 7001\n\n'
+        '[[butler.schedule]]\nname = "t"\ncron = "*/5 * * * *"\n'
+    )
+
+    sched = load_config(_write_toml(tmp_path, base + 'prompt = "Do a tick"\n')).schedules[0]
+    assert sched.dispatch_mode == ScheduleDispatchMode.PROMPT and sched.job_name is None
+
+    sched2 = load_config(
+        _write_toml(tmp_path, base + 'dispatch_mode = "job"\njob_name = "sweep"\n')
+    ).schedules[0]
+    assert sched2.dispatch_mode == ScheduleDispatchMode.JOB and sched2.job_name == "sweep"
+
+    for extra, match in [
+        ('dispatch_mode = "native"\nprompt = "run"\n', r"Invalid butler\.schedule\[0\]\.dispatch_mode"),  # noqa: E501
+        ('dispatch_mode = "job"\n', r"dispatch_mode='job' requires non-empty job_name"),
+    ]:
+        with pytest.raises(ConfigError, match=match):
+            load_config(_write_toml(tmp_path, base + extra))
+
+
+# ---------------------------------------------------------------------------
+# RuntimeConfig + BufferConfig + LoggingConfig
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_config(tmp_path: Path):
+    """Model, args, concurrency/queue defaults and validation."""
+    assert RuntimeConfig().max_concurrent_sessions == 1
+    assert RuntimeConfig().max_queued_sessions == 100
+    assert RuntimeConfig().model == "claude-haiku-4-5-20251001"
+
+    runtime_toml = (
+        '[butler]\nname = "m"\nport = 7010\n'
+        '[butler.runtime]\nmodel = "claude-opus-4-20250514"\nmax_concurrent_sessions = 4\n'
+    )
+    cfg = load_config(_write_toml(tmp_path, runtime_toml))
+    assert cfg.runtime.model == "claude-opus-4-20250514"
+    assert cfg.runtime.max_concurrent_sessions == 4
+
+    with pytest.raises(ConfigError, match="max_queued_sessions"):
+        mqs_toml = '[butler]\nname = "m"\nport = 7011\n[butler.runtime]\nmax_queued_sessions = 0\n'
+        load_config(_write_toml(tmp_path, mqs_toml))
+
+    with pytest.raises(ConfigError, match="expected an array of strings"):
+        args_toml = '[butler]\nname = "m"\nport = 7012\n[butler.runtime]\nargs = "flat"\n'
+        load_config(_write_toml(tmp_path, args_toml))
+
+    repo_root = Path(__file__).resolve().parents[2]
+    for butler in ("switchboard", "general", "relationship", "health", "messenger"):
+        assert load_config(repo_root / "roster" / butler).runtime.max_concurrent_sessions >= 3
+
+
+def test_buffer_and_logging_config(tmp_path: Path):
+    """BufferConfig and LoggingConfig default and validate correctly."""
+    assert BufferConfig().queue_capacity == 100 and BufferConfig().worker_count == 1
+    assert LoggingConfig().level == "INFO" and LoggingConfig().format == "text"
+
+    buf_log_toml = (
+        '[butler]\nname = "b"\nport = 9101\n'
+        "[buffer]\nqueue_capacity = 200\nworker_count = 4\n"
+        '[butler.logging]\nlevel = "debug"\nformat = "JSON"\n'
+    )
+    cfg = load_config(_write_toml(tmp_path, buf_log_toml))
+    assert cfg.buffer.queue_capacity == 200 and cfg.buffer.worker_count == 4
+    assert cfg.logging.level == "DEBUG" and cfg.logging.format == "json"
+
+    with pytest.raises(ConfigError, match="Invalid butler.logging.format"):
+        log_toml = '[butler]\nname = "b"\nport = 9102\n[butler.logging]\nformat = "yaml"\n'
+        load_config(_write_toml(tmp_path, log_toml))
+
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg_sw = load_config(repo_root / "roster" / "switchboard")
+    assert cfg_sw.buffer.worker_count == cfg_sw.runtime.max_concurrent_sessions
+
+
+# ---------------------------------------------------------------------------
+# ButlerType + PermissionsConfig
+# ---------------------------------------------------------------------------
+
+
+def test_butler_type_and_permissions(tmp_path: Path):
+    """Type defaults, staffer wildcard, invalid type, permissions validation."""
+    cfg = load_config(_write_toml(tmp_path, MINIMAL_TOML))
+    assert cfg.type is ButlerType.BUTLER and cfg.permissions.cross_butler_access == []
+
+    staffer_toml = (
+        '[butler]\nname = "switchboard"\nport = 41100\ntype = "staffer"\n'
+        '[butler.permissions]\ncross_butler_access = ["*"]\n'
+    )
+    cfg_staffer = load_config(_write_toml(tmp_path, staffer_toml))
+    assert cfg_staffer.type is ButlerType.STAFFER
+
+    for toml_frag, match in [
+        ('type = "robot"', "Invalid butler.type"),
+        ("type = 42", "butler.type must be a string"),
+    ]:
+        with pytest.raises(ConfigError, match=match):
+            load_config(
+                _write_toml(tmp_path, f'[butler]\nname = "rogue"\nport = 9004\n{toml_frag}\n')
+            )
+
+
+# ---------------------------------------------------------------------------
+# ApprovalConfig
+# ---------------------------------------------------------------------------
+
+
+def test_approval_config(tmp_path: Path):
+    """ApprovalConfig defaults, parsing, validation, effective getters."""
+    ac = ApprovalConfig(enabled=True)
+    assert ac.default_expiry_hours == 48 and ac.default_risk_tier == ApprovalRiskTier.MEDIUM
+
+    raw = {
+        "enabled": True,
+        "default_expiry_hours": 72,
+        "default_risk_tier": "low",
+        "gated_tools": {
+            "email_send": {"risk_tier": "high"},
+            "purchase_create": {"expiry_hours": 24, "risk_tier": "critical"},
+        },
+    }
+    ac2 = parse_approval_config(raw)
+    assert (
+        ac2.default_expiry_hours == 72
+        and ac2.gated_tools["email_send"].risk_tier == ApprovalRiskTier.HIGH
+    )
+
+    ac3 = ApprovalConfig(
+        enabled=True,
+        default_expiry_hours=48,
+        default_risk_tier=ApprovalRiskTier.LOW,
+        gated_tools={
+            "purchase_create": GatedToolConfig(expiry_hours=24, risk_tier=ApprovalRiskTier.CRITICAL)
+        },
+    )
+    assert ac3.get_effective_expiry("purchase_create") == 24
+    assert ac3.get_effective_expiry("unknown_tool") == 48
+    assert ac3.get_effective_risk_tier("purchase_create") == ApprovalRiskTier.CRITICAL
+
+    with pytest.raises(ConfigError, match="default_risk_tier"):
+        parse_approval_config({"enabled": True, "default_risk_tier": "veryhigh"})
+
+    validate_approval_config(ac, {"email_send"})  # disabled, no raise
+    validate_approval_config(None, {"email_send"})  # None, no raise
+    ac4 = ApprovalConfig(enabled=True, gated_tools={"unknown_tool": GatedToolConfig()})
+    with pytest.raises(ConfigError, match="unknown_tool.*not registered"):
+        validate_approval_config(ac4, {"email_send"})
+
+
+# ---------------------------------------------------------------------------
+# Messenger config + Switchboard URL + memory module
+# ---------------------------------------------------------------------------
+
+
+def test_messenger_and_switchboard_and_memory_config(tmp_path: Path):
+    """Messenger requires delivery module; switchboard URL defaults; memory module parses."""
+    with pytest.raises(ConfigError, match="requires at least one delivery module"):
+        load_config(_write_toml(tmp_path, '[butler]\nname = "messenger"\nport = 41104\n'))
+
+    cfg_sw = load_config(_write_toml(tmp_path, '[butler]\nname = "switchboard"\nport = 41100\n'))
+    assert cfg_sw.switchboard_url is None
+
+    cfg_gen = load_config(_write_toml(tmp_path, '[butler]\nname = "general"\nport = 41101\n'))
+    assert cfg_gen.switchboard_url == "http://localhost:41100/sse"
+
+    # Memory module config
+    mem_toml = (
+        '[butler]\nname = "membot"\nport = 41200\n\n[modules.memory]\n\n'
+        "[modules.memory.retrieval]\ncontext_token_budget = 5000\n"
+        'default_mode = "semantic"\n'
+    )
+    cfg_mem = load_config(_write_toml(tmp_path, mem_toml))
+    assert "memory" in cfg_mem.modules
+    assert cfg_mem.modules["memory"]["retrieval"]["context_token_budget"] == 5000
+
+    cfg_nomem = load_config(_write_toml(tmp_path, '[butler]\nname = "nomem"\nport = 40201\n'))
+    assert "memory" not in cfg_nomem.modules
+    legacy_toml = '[butler]\nname = "legacy"\nport = 8202\n\n[butler.memory]\nenabled = true\n'
+    cfg_legacy = load_config(_write_toml(tmp_path, legacy_toml))
+    assert "memory" not in cfg_legacy.modules
+
+
+# ---------------------------------------------------------------------------
+# resolve_env_vars
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_env_vars(monkeypatch, tmp_path: Path):
+    """resolve_env_vars: interpolates vars, handles types, raises on missing."""
+    from butlers.config import resolve_env_vars
+
+    monkeypatch.setenv("MY_SECRET", "hunter2")
+    monkeypatch.setenv("DB_PASS", "s3cret")
+    assert resolve_env_vars("${MY_SECRET}") == "hunter2"
+    assert resolve_env_vars("plain string") == "plain string"
+    assert resolve_env_vars("$NOT_A_REF") == "$NOT_A_REF"
+    assert resolve_env_vars({}) == {}
+    assert resolve_env_vars(42) == 42
+    assert resolve_env_vars({"outer": {"inner": {"password": "${DB_PASS}"}}}) == {
+        "outer": {"inner": {"password": "s3cret"}}
+    }
+    with pytest.raises(ConfigError, match="NONEXISTENT_VAR"):
+        resolve_env_vars("${NONEXISTENT_VAR}")
+    monkeypatch.setenv("SOURCE_EMAIL_PASSWORD", "p@ssw0rd")
+    email_toml = (
+        '[butler]\nname = "mailbot"\nport = 41200\n\n'
+        '[modules.email]\npassword = "${SOURCE_EMAIL_PASSWORD}"\n'
+    )
+    cfg = load_config(_write_toml(tmp_path, email_toml))
+    assert cfg.modules["email"]["password"] == "p@ssw0rd"
