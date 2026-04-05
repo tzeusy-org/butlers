@@ -60,14 +60,69 @@ def upgrade() -> None:
     ]
 
     for source_id, target_id in _merge_pairs:
-        # Re-point subject-side facts
         for schema in _SCHEMAS:
+            # Delete source property facts that would collide with existing
+            # target facts on the partial unique index
+            # (entity_id, scope, predicate) WHERE object_entity_id IS NULL
+            #   AND validity='active' AND valid_at IS NULL.
+            op.execute(
+                f'DELETE FROM "{schema}".facts AS src '
+                f"WHERE src.entity_id = '{source_id}'::uuid "
+                f"  AND src.object_entity_id IS NULL "
+                f"  AND src.validity = 'active' "
+                f"  AND src.valid_at IS NULL "
+                f"  AND EXISTS ( "
+                f'    SELECT 1 FROM "{schema}".facts tgt '
+                f"    WHERE tgt.entity_id = '{target_id}'::uuid "
+                f"      AND tgt.scope = src.scope "
+                f"      AND tgt.predicate = src.predicate "
+                f"      AND tgt.object_entity_id IS NULL "
+                f"      AND tgt.validity = 'active' "
+                f"      AND tgt.valid_at IS NULL "
+                f"  )"
+            )
+            # Delete source edge facts (entity_id side) that would collide
+            # on idx_facts_edge_scope_predicate_active
+            # (entity_id, object_entity_id, scope, predicate)
+            op.execute(
+                f'DELETE FROM "{schema}".facts AS src '
+                f"WHERE src.entity_id = '{source_id}'::uuid "
+                f"  AND src.object_entity_id IS NOT NULL "
+                f"  AND src.validity = 'active' "
+                f"  AND src.valid_at IS NULL "
+                f"  AND EXISTS ( "
+                f'    SELECT 1 FROM "{schema}".facts tgt '
+                f"    WHERE tgt.entity_id = '{target_id}'::uuid "
+                f"      AND tgt.object_entity_id = src.object_entity_id "
+                f"      AND tgt.scope = src.scope "
+                f"      AND tgt.predicate = src.predicate "
+                f"      AND tgt.validity = 'active' "
+                f"      AND tgt.valid_at IS NULL "
+                f"  )"
+            )
+            # Re-point remaining subject-side facts
             op.execute(
                 f'UPDATE "{schema}".facts '
                 f"SET entity_id = '{target_id}'::uuid "
                 f"WHERE entity_id = '{source_id}'::uuid"
             )
-            # Re-point object-side edge facts
+            # Delete object-side edge facts that would collide
+            op.execute(
+                f'DELETE FROM "{schema}".facts AS src '
+                f"WHERE src.object_entity_id = '{source_id}'::uuid "
+                f"  AND src.validity = 'active' "
+                f"  AND src.valid_at IS NULL "
+                f"  AND EXISTS ( "
+                f'    SELECT 1 FROM "{schema}".facts tgt '
+                f"    WHERE tgt.entity_id = src.entity_id "
+                f"      AND tgt.object_entity_id = '{target_id}'::uuid "
+                f"      AND tgt.scope = src.scope "
+                f"      AND tgt.predicate = src.predicate "
+                f"      AND tgt.validity = 'active' "
+                f"      AND tgt.valid_at IS NULL "
+                f"  )"
+            )
+            # Re-point remaining object-side edge facts
             op.execute(
                 f'UPDATE "{schema}".facts '
                 f"SET object_entity_id = '{target_id}'::uuid "
