@@ -97,18 +97,32 @@ def test_deadline_countdown_and_threshold_firing():
 
     thresholds = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
     # Fires exactly at threshold
-    match = find_unfired_threshold(days_remaining=42, alert_thresholds=thresholds, fired_thresholds=[])
+    match = find_unfired_threshold(
+        days_remaining=42, alert_thresholds=thresholds, fired_thresholds=[]
+    )
     assert match is not None and match["days_before"] == 42
 
     # Fires past threshold (missed downtime window)
-    match2 = find_unfired_threshold(days_remaining=12, alert_thresholds=[_make_threshold(14, "warning")], fired_thresholds=[])
+    match2 = find_unfired_threshold(
+        days_remaining=12, alert_thresholds=[_make_threshold(14, "warning")], fired_thresholds=[]
+    )
     assert match2 is not None and match2["days_before"] == 14
 
     # Already-fired excluded
-    assert find_unfired_threshold(days_remaining=42, alert_thresholds=thresholds, fired_thresholds=[_make_threshold(42, "info")]) is None
+    assert (
+        find_unfired_threshold(
+            days_remaining=42,
+            alert_thresholds=thresholds,
+            fired_thresholds=[_make_threshold(42, "info")],
+        )
+        is None
+    )
 
     # 50 days remaining: both thresholds are in the future (50 > 42 > 14) — none eligible
-    assert find_unfired_threshold(days_remaining=50, alert_thresholds=thresholds, fired_thresholds=[]) is None
+    assert (
+        find_unfired_threshold(days_remaining=50, alert_thresholds=thresholds, fired_thresholds=[])
+        is None
+    )
 
     # Most urgent selected (smallest days_before not yet fired)
     all_t = [
@@ -117,7 +131,9 @@ def test_deadline_countdown_and_threshold_firing():
         _make_threshold(3, "critical"),
     ]  # noqa: E501
     fired = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
-    match3 = find_unfired_threshold(days_remaining=3, alert_thresholds=all_t, fired_thresholds=fired)
+    match3 = find_unfired_threshold(
+        days_remaining=3, alert_thresholds=all_t, fired_thresholds=fired
+    )
     assert match3 is not None and match3["days_before"] == 3
 
 
@@ -139,7 +155,12 @@ def test_deadline_countdown_and_threshold_firing():
 def test_deadline_status_transitions(current, severity, expected):
     from butlers.core.temporal.deadlines import compute_next_deadline_status
 
-    assert compute_next_deadline_status(current_status=current, fired_threshold=_make_threshold(7, severity)) == expected
+    assert (
+        compute_next_deadline_status(
+            current_status=current, fired_threshold=_make_threshold(7, severity)
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
@@ -358,9 +379,14 @@ def _make_prefs(qs="22:00", qe="07:00", tz="UTC", overrides=None):
 def test_quiet_hours_priority_defer(priority, t, expected_defer):
     from butlers.core.temporal.delivery import should_defer_notification
 
-    assert should_defer_notification(priority=priority, current_time=t, prefs=_make_prefs()) is expected_defer
+    assert (
+        should_defer_notification(priority=priority, current_time=t, prefs=_make_prefs())
+        is expected_defer
+    )
     # None prefs never defers regardless of time
-    assert should_defer_notification(priority="medium", current_time=time(2, 0), prefs=None) is False
+    assert (
+        should_defer_notification(priority="medium", current_time=time(2, 0), prefs=None) is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -396,7 +422,9 @@ def test_compute_deliver_at_utc(now_dt, exp_date, exp_hour):
     assert result.utcoffset().total_seconds() == 0  # UTC-aware
     # Invalid tz and naive datetime raise ValueError
     with pytest.raises(ValueError, match="Unknown timezone"):
-        compute_deliver_at(prefs=_make_prefs(tz="Invalid/Zone"), now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC))
+        compute_deliver_at(
+            prefs=_make_prefs(tz="Invalid/Zone"), now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+        )
     with pytest.raises(ValueError, match="timezone-aware"):
         compute_deliver_at(prefs=_make_prefs(), now=datetime(2026, 1, 15, 12, 0))
 
@@ -506,8 +534,12 @@ def test_per_channel_quiet_hours_overrides():
     assert eff2["quiet_hours_start"] == "22:00" and eff2["quiet_hours_end"] == "07:00"
 
     # 21:00 inside email override, outside default → email deferred, telegram not
-    assert should_defer_notification(priority="medium", current_time=time(21, 0), prefs=prefs, channel="email")
-    assert not should_defer_notification(priority="medium", current_time=time(21, 0), prefs=prefs, channel="telegram")
+    assert should_defer_notification(
+        priority="medium", current_time=time(21, 0), prefs=prefs, channel="email"
+    )
+    assert not should_defer_notification(
+        priority="medium", current_time=time(21, 0), prefs=prefs, channel="telegram"
+    )
 
     # Empty overrides → defaults
     prefs2 = {**prefs, "override_channels": {}}

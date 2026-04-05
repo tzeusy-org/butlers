@@ -208,11 +208,51 @@ async def test_corrections_audit_queries_return_lists():
 @pytest.mark.parametrize(
     "kwargs,expected_type",
     [
-        ({"stored_data_wrong": True, "memory_wrong": False, "wrong_butler": False, "action_mistake": False}, CorrectionType.DATA_CORRECTION),
-        ({"stored_data_wrong": False, "memory_wrong": True, "wrong_butler": False, "action_mistake": False}, CorrectionType.MEMORY_DELETION),
-        ({"stored_data_wrong": False, "memory_wrong": False, "wrong_butler": True, "action_mistake": False}, CorrectionType.MISROUTE),
-        ({"stored_data_wrong": False, "memory_wrong": False, "wrong_butler": False, "action_mistake": True}, CorrectionType.ACTION_REVERSAL),
-        ({"stored_data_wrong": False, "memory_wrong": False, "wrong_butler": False, "action_mistake": False}, None),
+        (
+            {
+                "stored_data_wrong": True,
+                "memory_wrong": False,
+                "wrong_butler": False,
+                "action_mistake": False,
+            },
+            CorrectionType.DATA_CORRECTION,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": True,
+                "wrong_butler": False,
+                "action_mistake": False,
+            },
+            CorrectionType.MEMORY_DELETION,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": False,
+                "wrong_butler": True,
+                "action_mistake": False,
+            },
+            CorrectionType.MISROUTE,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": False,
+                "wrong_butler": False,
+                "action_mistake": True,
+            },
+            CorrectionType.ACTION_REVERSAL,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": False,
+                "wrong_butler": False,
+                "action_mistake": False,
+            },
+            None,
+        ),
     ],
 )
 def test_decision_tree_maps_situations_to_types(kwargs, expected_type):
