@@ -2974,3 +2974,55 @@ export interface QaKnownIssuesParams {
   offset?: number;
   limit?: number;
 }
+
+/** A single investigation record — GET /api/qa/investigations */
+export interface QaInvestigation {
+  id: string;
+  fingerprint: string;
+  butler_name: string;
+  status: string;
+  severity: number;
+  exception_type: string;
+  call_site: string;
+  sanitized_msg: string | null;
+  pr_url: string | null;
+  pr_number: number | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+}
+
+/** Params for listing investigations */
+export interface QaInvestigationsParams {
+  status?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/** A single day's patrol aggregates — GET /api/qa/trends */
+export interface QaTrendsDay {
+  date: string;
+  patrols_completed: number;
+  total_findings: number;
+  novel_findings: number;
+  dispatched_count: number;
+  success_rate: number;
+}
+
+/** Per-source finding count — GET /api/qa/trends */
+export interface QaSourceBreakdown {
+  source_type: string;
+  count: number;
+}
+
+/** 7-day trend data — GET /api/qa/trends */
+export interface QaTrends {
+  days: QaTrendsDay[];
+  source_breakdown: QaSourceBreakdown[];
+}
+
+/** Response from POST /api/qa/force-patrol */
+export interface ForcePatrolResponse {
+  accepted: boolean;
+  message: string;
+}

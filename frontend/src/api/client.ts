@@ -198,6 +198,10 @@ import type {
   QaDismissRequest,
   QaPatrolsParams,
   QaKnownIssuesParams,
+  QaInvestigation,
+  QaInvestigationsParams,
+  QaTrends,
+  ForcePatrolResponse,
   HealingAttempt,
   HealingAttemptsParams,
 } from "./types.ts";
@@ -3170,4 +3174,26 @@ export function undismissQaKnownIssue(
     `/qa/known-issues/${encodeURIComponent(fingerprint)}/dismiss`,
     { method: "DELETE" },
   );
+}
+
+/** GET /api/qa/investigations — paginated investigation pipeline */
+export function getQaInvestigations(
+  params?: QaInvestigationsParams,
+): Promise<PaginatedResponse<QaInvestigation>> {
+  const query = new URLSearchParams();
+  if (params?.status) query.set("status", params.status);
+  if (params?.offset !== undefined) query.set("offset", String(params.offset));
+  if (params?.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<QaInvestigation>>(`/qa/investigations${qs ? `?${qs}` : ""}`);
+}
+
+/** GET /api/qa/trends — 7-day daily patrol success rate + source breakdown */
+export function getQaTrends(days = 7): Promise<ApiResponse<QaTrends>> {
+  return apiFetch<ApiResponse<QaTrends>>(`/qa/trends?days=${days}`);
+}
+
+/** POST /api/qa/force-patrol — request an immediate patrol cycle */
+export function forceQaPatrol(): Promise<ApiResponse<ForcePatrolResponse>> {
+  return apiFetch<ApiResponse<ForcePatrolResponse>>("/qa/force-patrol", { method: "POST" });
 }

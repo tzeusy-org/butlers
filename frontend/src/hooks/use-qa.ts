@@ -9,18 +9,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   dismissQaKnownIssue,
+  forceQaPatrol,
   getHealingAttempt,
+  getQaInvestigations,
   getQaKnownIssues,
   getQaPatrol,
   getQaPatrolFindings,
   getQaPatrols,
   getQaSummary,
+  getQaTrends,
   listHealingAttempts,
   undismissQaKnownIssue,
 } from "@/api/index.ts";
 import type {
   HealingAttemptsParams,
   QaDismissRequest,
+  QaInvestigationsParams,
   QaKnownIssuesParams,
   QaPatrolsParams,
 } from "@/api/index.ts";
@@ -151,5 +155,51 @@ export function useHealingAttempts(params?: HealingAttemptsParams) {
     queryFn: () => listHealingAttempts(params),
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Investigation pipeline
+// ---------------------------------------------------------------------------
+
+/** Fetch paginated QA investigations (healing attempts by pipeline status). */
+export function useQaInvestigations(params?: QaInvestigationsParams) {
+  return useQuery({
+    queryKey: ["qa-investigations", params],
+    queryFn: () => getQaInvestigations(params),
+    staleTime: STALE_TIME,
+    refetchInterval: STALE_TIME,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Trends
+// ---------------------------------------------------------------------------
+
+/** Fetch 7-day QA trend data (success rate + source breakdown). */
+export function useQaTrends(days = 7) {
+  return useQuery({
+    queryKey: ["qa-trends", days],
+    queryFn: () => getQaTrends(days),
+    staleTime: STALE_TIME,
+    refetchInterval: STALE_TIME,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Force patrol mutation
+// ---------------------------------------------------------------------------
+
+/** Trigger an immediate patrol cycle. Invalidates relevant QA caches on success. */
+export function useForceQaPatrol() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => forceQaPatrol(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-patrols"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-investigations"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-trends"] });
+    },
   });
 }

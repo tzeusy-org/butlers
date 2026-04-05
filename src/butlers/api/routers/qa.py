@@ -18,8 +18,9 @@ Endpoints:
 - GET  /api/qa/dismissals                           — list active dismissals
 - DELETE /api/qa/dismissals/{fingerprint}           — remove a dismissal
 
-All reads/writes query ``public.qa_patrols``, ``public.qa_findings``, and
-``public.qa_dismissals`` via the shared credential pool.
+All reads/writes query ``public.qa_patrols``, ``public.qa_findings``,
+``public.qa_dismissals``, and ``public.healing_attempts`` via the shared
+credential pool.
 """
 
 from __future__ import annotations
@@ -48,6 +49,16 @@ router = APIRouter(prefix="/api/qa", tags=["qa"])
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
     raise RuntimeError("DatabaseManager not initialized")
+
+
+def _get_force_patrol_fn():
+    """Dependency stub for the force-patrol callable.
+
+    Override via ``app.dependency_overrides[_get_force_patrol_fn]`` to inject
+    the QA module's ``_handle_force_patrol`` coroutine when the daemon is
+    available in-process.  Returns None by default (standalone API mode).
+    """
+    return None
 
 
 def _shared_pool(db: DatabaseManager):
@@ -206,25 +217,36 @@ class QaInvestigation(BaseModel):
     error_detail: str | None = None
 
 
-class QaTrendDay(BaseModel):
-    """Daily aggregated QA stats for the trends endpoint."""
+class QaTrendsDay(BaseModel):
+    """A single day's patrol aggregate for trend charts."""
 
-    date: str
-    patrols: int
-    findings: int
-    novel: int
-    dispatched: int
-    prs_opened: int
-    prs_merged: int
-    success_rate: float
-    by_source: dict[str, int] = Field(default_factory=dict)
+    date: str  # ISO date string yyyy-mm-dd
+    patrols_completed: int
+    total_findings: int
+    novel_findings: int
+    dispatched_count: int
+    success_rate: float  # fraction of patrols that were clean, 0.0–1.0
+
+
+class QaSourceBreakdown(BaseModel):
+    """Per-source finding count for breakdown charts."""
+
+    source_type: str
+    count: int
+
+
+class QaTrends(BaseModel):
+    """7-day trend data for the QA overview charts."""
+
+    days: list[QaTrendsDay]
+    source_breakdown: list[QaSourceBreakdown]
 
 
 class ForcePatrolResponse(BaseModel):
-    """Response from triggering an immediate patrol."""
+    """Response from a force-patrol request."""
 
-    patrol_id: str | None = None
-    status: str
+    accepted: bool
+    message: str
 
 
 # ---------------------------------------------------------------------------
@@ -1007,166 +1029,128 @@ async def undismiss_known_issue(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/qa/force-patrol — trigger immediate patrol
+# GET /api/qa/trends — 7-day daily patrol stats + source breakdown
 # ---------------------------------------------------------------------------
 
 
-@router.post("/force-patrol", response_model=ApiResponse[ForcePatrolResponse], status_code=200)
-async def force_patrol(
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[ForcePatrolResponse]:
-    """Request an immediate QA patrol cycle.
-
-    **Important limitation:** This endpoint creates a sentinel ``running``
-    patrol row in the database, but the QA daemon does not claim pre-existing
-    ``running`` rows — it always creates its own record when it runs.
-    The sentinel row will remain stuck as ``running`` until the daemon restarts
-    (at which point ``_recover_stale_patrols`` marks it ``error``).
-
-    This endpoint fulfils the spec contract (returns ``patrol_id`` and
-    ``status: "triggered"``) but does **not** synchronously trigger a patrol.
-    For immediate synchronous execution, use the ``force_patrol`` MCP tool on
-    the QA staffer daemon directly.  This HTTP route exists as a dashboard
-    affordance and will be wired to a real trigger mechanism once the daemon
-    exposes a patrol-queue API.
-    """
-    pool = _shared_pool(db)
-
-    patrol_id = await pool.fetchval(
-        """
-        INSERT INTO public.qa_patrols (status, log_lookback_minutes, sources_polled)
-        VALUES ('running', 15, '{}')
-        RETURNING id
-        """
-    )
-
-    if patrol_id is None:
-        raise HTTPException(status_code=500, detail="Failed to create patrol record")
-
-    return ApiResponse(data=ForcePatrolResponse(patrol_id=str(patrol_id), status="triggered"))
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/trends — daily aggregated stats
-# ---------------------------------------------------------------------------
-
-
-@router.get("/trends", response_model=ApiResponse[list[QaTrendDay]])
+@router.get("/trends", response_model=ApiResponse[QaTrends])
 async def get_qa_trends(
-    days: int = Query(7, ge=1, le=90, description="Number of days to aggregate"),
+    days: int = Query(7, ge=1, le=30, description="Number of days to include"),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[QaTrendDay]]:
-    """Return daily aggregated QA stats for the last N days.
+) -> ApiResponse[QaTrends]:
+    """Return daily patrol aggregates and per-source finding counts for trend charts.
 
-    Each entry covers one calendar day (UTC) and includes patrol counts,
-    finding counts, investigation dispatches, PRs opened/merged, and a
-    per-source finding count breakdown.
+    ``days`` — entries for calendar days that had at least one patrol record
+    within the window (no zero-filled days), ordered ascending by date.
+    ``source_breakdown`` — total findings per source_type over the window.
     """
     pool = _shared_pool(db)
 
-    # Daily patrol aggregates
-    patrol_rows = await pool.fetch(
+    # Daily patrol aggregates — use an explicit UTC timestamptz boundary so the
+    # window calculation is not affected by the DB server's session TimeZone.
+    daily_rows = await pool.fetch(
         """
         SELECT
-            date_trunc('day', started_at AT TIME ZONE 'UTC')::date AS day,
-            COUNT(*) FILTER (WHERE status NOT IN (
-                'running', 'error', 'skipped_overlap')) AS patrols,
-            COALESCE(SUM(findings_count), 0) AS findings,
-            COALESCE(SUM(novel_count), 0) AS novel,
-            COALESCE(SUM(dispatched_count), 0) AS dispatched
+            (started_at AT TIME ZONE 'UTC')::date::text AS date,
+            COUNT(*) FILTER (WHERE status NOT IN ('running', 'error')) AS patrols_completed,
+            COALESCE(SUM(findings_count), 0) AS total_findings,
+            COALESCE(SUM(novel_count), 0) AS novel_findings,
+            COALESCE(SUM(dispatched_count), 0) AS dispatched_count,
+            COUNT(*) FILTER (WHERE status = 'clean') AS clean_count
         FROM public.qa_patrols
-        WHERE started_at >= NOW() AT TIME ZONE 'UTC' - ($1 || ' days')::interval
-        GROUP BY day
-        ORDER BY day DESC
+        WHERE started_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+              - ($1 - 1) * INTERVAL '1 day'
+        GROUP BY (started_at AT TIME ZONE 'UTC')::date
+        ORDER BY date ASC
         """,
-        str(days),
+        days,
     )
 
-    # Daily PR aggregates from healing attempts
-    pr_rows = await pool.fetch(
-        """
-        SELECT
-            date_trunc('day', created_at AT TIME ZONE 'UTC')::date AS day,
-            COUNT(*) FILTER (WHERE pr_url IS NOT NULL) AS prs_opened,
-            COUNT(*) FILTER (WHERE status = 'pr_merged') AS prs_merged
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND created_at >= NOW() AT TIME ZONE 'UTC' - ($1 || ' days')::interval
-        GROUP BY day
-        ORDER BY day DESC
-        """,
-        str(days),
-    )
-
-    # Per-source finding counts per day
-    source_rows = await pool.fetch(
-        """
-        SELECT
-            date_trunc('day', f.created_at AT TIME ZONE 'UTC')::date AS day,
-            f.source_type,
-            COUNT(*) AS cnt
-        FROM public.qa_findings f
-        JOIN public.qa_patrols p ON p.id = f.patrol_id
-        WHERE p.started_at >= NOW() AT TIME ZONE 'UTC' - ($1 || ' days')::interval
-        GROUP BY day, f.source_type
-        ORDER BY day DESC
-        """,
-        str(days),
-    )
-
-    # Build lookup dicts keyed by date string
-    patrol_map: dict[str, dict[str, Any]] = {}
-    for r in patrol_rows:
-        day_str = str(r["day"])
-        patrol_map[day_str] = {
-            "patrols": int(r["patrols"] or 0),
-            "findings": int(r["findings"] or 0),
-            "novel": int(r["novel"] or 0),
-            "dispatched": int(r["dispatched"] or 0),
-        }
-
-    pr_map: dict[str, dict[str, int]] = {}
-    for r in pr_rows:
-        day_str = str(r["day"])
-        pr_map[day_str] = {
-            "prs_opened": int(r["prs_opened"] or 0),
-            "prs_merged": int(r["prs_merged"] or 0),
-        }
-
-    source_map: dict[str, dict[str, int]] = {}
-    for r in source_rows:
-        day_str = str(r["day"])
-        if day_str not in source_map:
-            source_map[day_str] = {}
-        source_map[day_str][r["source_type"]] = int(r["cnt"] or 0)
-
-    # Collect all unique days across all result sets
-    all_days: set[str] = set(patrol_map) | set(pr_map) | set(source_map)
-
-    # Build output sorted descending by date
-    result: list[QaTrendDay] = []
-    for day_str in sorted(all_days, reverse=True):
-        p = patrol_map.get(day_str, {})
-        pr = pr_map.get(day_str, {})
-        prs_opened = pr.get("prs_opened", 0)
-        prs_merged = pr.get("prs_merged", 0)
-        dispatched = p.get("dispatched", 0)
-        sr = round(prs_merged / dispatched, 4) if dispatched > 0 else 0.0
-        result.append(
-            QaTrendDay(
-                date=day_str,
-                patrols=p.get("patrols", 0),
-                findings=p.get("findings", 0),
-                novel=p.get("novel", 0),
-                dispatched=dispatched,
-                prs_opened=prs_opened,
-                prs_merged=prs_merged,
-                success_rate=sr,
-                by_source=source_map.get(day_str, {}),
+    trend_days: list[QaTrendsDay] = []
+    for row in daily_rows:
+        completed = int(row["patrols_completed"] or 0)
+        clean = int(row["clean_count"] or 0)
+        success_rate = (clean / completed) if completed > 0 else 0.0
+        trend_days.append(
+            QaTrendsDay(
+                date=row["date"],
+                patrols_completed=completed,
+                total_findings=int(row["total_findings"] or 0),
+                novel_findings=int(row["novel_findings"] or 0),
+                dispatched_count=int(row["dispatched_count"] or 0),
+                success_rate=round(success_rate, 4),
             )
         )
 
-    return ApiResponse(data=result)
+    # Source breakdown — aggregate findings over the same UTC-anchored window.
+    source_rows = await pool.fetch(
+        """
+        SELECT source_type, SUM(occurrence_count) AS count
+        FROM public.qa_findings f
+        JOIN public.qa_patrols p ON p.id = f.patrol_id
+        WHERE p.started_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+              - ($1 - 1) * INTERVAL '1 day'
+        GROUP BY source_type
+        ORDER BY count DESC
+        """,
+        days,
+    )
+
+    source_breakdown = [
+        QaSourceBreakdown(source_type=row["source_type"], count=int(row["count"] or 0))
+        for row in source_rows
+    ]
+
+    return ApiResponse(data=QaTrends(days=trend_days, source_breakdown=source_breakdown))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/qa/force-patrol — request an immediate patrol cycle
+# ---------------------------------------------------------------------------
+
+
+@router.post("/force-patrol", response_model=ApiResponse[ForcePatrolResponse], status_code=202)
+async def force_patrol(
+    force_patrol_fn=Depends(_get_force_patrol_fn),
+) -> ApiResponse[ForcePatrolResponse]:
+    """Request an immediate patrol cycle.
+
+    When the QA module is available in-process (daemon mode), the patrol runs
+    synchronously and the result is returned.  In standalone API mode (no
+    callable wired) the response is ``accepted=False`` with an informational
+    message — no action is taken.
+
+    Override ``_get_force_patrol_fn`` via ``app.dependency_overrides`` to wire
+    the live QA module callable in daemon deployments.
+    """
+    if force_patrol_fn is not None:
+        try:
+            result = await force_patrol_fn()
+            accepted = result.get("status") not in ("skipped",)
+            message = (
+                f"Patrol triggered: {result.get('status', 'unknown')} "
+                f"({result.get('findings_count', 0)} findings)"
+                if accepted
+                else f"Patrol skipped: {result.get('reason', 'unknown')}"
+            )
+            return ApiResponse(data=ForcePatrolResponse(accepted=accepted, message=message))
+        except Exception as exc:  # noqa: BLE001
+            error_code = uuid.uuid4().hex
+            logger.exception("force-patrol callable raised [error_code=%s]", error_code)
+            raise HTTPException(
+                status_code=503,
+                detail=f"Force patrol failed [error_code={error_code}]",
+            ) from exc
+
+    # Standalone mode — no in-process callable wired; patrol cannot be triggered.
+    # The dashboard affordance is still available but has no effect until the
+    # QA module callable is injected via ``app.dependency_overrides``.
+    return ApiResponse(
+        data=ForcePatrolResponse(
+            accepted=False,
+            message="Force patrol is only supported when the QA daemon is running in-process.",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

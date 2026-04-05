@@ -626,28 +626,37 @@ export type {
 
 export {
   dismissQaKnownIssue,
+  forceQaPatrol,
+  getQaInvestigations,
   getQaKnownIssues,
   getQaPatrol,
   getQaPatrolFindings,
   getQaPatrols,
   getQaSummary,
+  getQaTrends,
   undismissQaKnownIssue,
   getHealingAttempt,
   listHealingAttempts,
 } from "./client.ts";
 
 export type {
+  ForcePatrolResponse,
   QaAllTimeStats,
   QaDismissal,
   QaDismissRequest,
   QaFindingRecord,
+  QaInvestigation,
+  QaInvestigationsParams,
   QaKnownIssue,
   QaKnownIssuesParams,
   QaPatrolDetail,
   QaPatrolsParams,
   QaPatrolSummary,
+  QaSourceBreakdown,
   QaStats24h,
   QaSummary,
+  QaTrends,
+  QaTrendsDay,
   HealingAttempt,
   HealingAttemptsParams,
 } from "./types.ts";

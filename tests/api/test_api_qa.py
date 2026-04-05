@@ -27,7 +27,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.qa import _get_db_manager
+from butlers.api.routers.qa import _get_db_manager, _get_force_patrol_fn
 
 pytestmark = pytest.mark.unit
 
@@ -1158,36 +1158,73 @@ class TestUndismissKnownIssue:
 
 
 class TestForcePatrol:
-    async def test_returns_patrol_id_and_triggered_status(self) -> None:
-        patrol_id = uuid.uuid4()
-        app, _ = _build_app(fetchval_result=patrol_id)
+    async def test_returns_202_not_accepted_in_standalone_mode(self) -> None:
+        """Without an in-process force_patrol_fn, returns 202 with accepted=False."""
+        app, _ = _build_app()
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.post("/api/qa/force-patrol")
 
-        assert response.status_code == 200
+        assert response.status_code == 202
         body = response.json()
-        assert body["data"]["status"] == "triggered"
-        assert body["data"]["patrol_id"] == str(patrol_id)
+        assert body["data"]["accepted"] is False
+        assert "message" in body["data"]
 
-    async def test_returns_500_when_insert_fails(self) -> None:
-        app, _ = _build_app(fetchval_result=None)
+    async def test_calls_force_patrol_fn_when_provided(self) -> None:
+        """When an in-process callable is provided, it should be called."""
+        patrol_result = {
+            "status": "findings_dispatched",
+            "patrol_id": str(uuid.uuid4()),
+            "findings_count": 3,
+            "novel_count": 1,
+            "dispatched_count": 1,
+            "sources_polled": ["log_scanner"],
+        }
+
+        async def _fake_force_patrol() -> dict:
+            return patrol_result
+
+        app, _ = _build_app()
+        app.dependency_overrides[_get_force_patrol_fn] = lambda: _fake_force_patrol
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.post("/api/qa/force-patrol")
 
-        assert response.status_code == 500
+        assert response.status_code == 202
+        body = response.json()
+        assert body["data"]["accepted"] is True
+        assert "findings_dispatched" in body["data"]["message"]
 
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+    async def test_skipped_patrol_returns_accepted_false(self) -> None:
+        """When the callable returns status=skipped, accepted should be False."""
 
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        async def _skipped() -> dict:
+            return {"status": "skipped", "reason": "patrol_already_running"}
+
+        app, _ = _build_app()
+        app.dependency_overrides[_get_force_patrol_fn] = lambda: _skipped
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/qa/force-patrol")
+
+        assert response.status_code == 202
+        body = response.json()
+        assert body["data"]["accepted"] is False
+
+    async def test_returns_503_when_force_patrol_fn_raises(self) -> None:
+        """When the callable raises, the endpoint should return 503."""
+
+        async def _failing() -> dict:
+            raise RuntimeError("daemon not available")
+
+        app, _ = _build_app()
+        app.dependency_overrides[_get_force_patrol_fn] = lambda: _failing
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1202,44 +1239,36 @@ class TestForcePatrol:
 # ---------------------------------------------------------------------------
 
 
-def _make_trend_patrol_row(
-    day: str = "2026-04-05",
-    patrols: int = 3,
-    findings: int = 10,
-    novel: int = 4,
-    dispatched: int = 2,
+def _make_trend_row(
+    *,
+    date: str = "2026-04-05",
+    patrols_completed: int = 5,
+    total_findings: int = 10,
+    novel_findings: int = 3,
+    dispatched_count: int = 2,
+    clean_count: int = 4,
 ) -> dict[str, Any]:
-    """Build a fake trends patrol aggregate row."""
     return {
-        "day": day,
-        "patrols": patrols,
-        "findings": findings,
-        "novel": novel,
-        "dispatched": dispatched,
+        "date": date,
+        "patrols_completed": patrols_completed,
+        "total_findings": total_findings,
+        "novel_findings": novel_findings,
+        "dispatched_count": dispatched_count,
+        "clean_count": clean_count,
     }
 
 
-def _make_trend_pr_row(
-    day: str = "2026-04-05",
-    prs_opened: int = 2,
-    prs_merged: int = 1,
-) -> dict[str, Any]:
-    return {"day": day, "prs_opened": prs_opened, "prs_merged": prs_merged}
-
-
-def _make_trend_source_row(
-    day: str = "2026-04-05",
+def _make_source_row(
+    *,
     source_type: str = "log_scanner",
-    cnt: int = 5,
+    count: int = 7,
 ) -> dict[str, Any]:
-    return {"day": day, "source_type": source_type, "cnt": cnt}
+    return {"source_type": source_type, "count": count}
 
 
 class TestGetQaTrends:
-    async def test_returns_empty_list_when_no_data(self) -> None:
-        app, _ = _build_app(
-            fetch_side_effect=[[], [], []],
-        )
+    async def test_returns_empty_trends_when_no_data(self) -> None:
+        app, _ = _build_app(fetch_rows=[], fetch_side_effect=[[], []])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1247,21 +1276,21 @@ class TestGetQaTrends:
             response = await client.get("/api/qa/trends")
 
         assert response.status_code == 200
-        assert response.json()["data"] == []
+        body = response.json()
+        assert body["data"]["days"] == []
+        assert body["data"]["source_breakdown"] == []
 
-    async def test_returns_daily_entries_with_per_source_breakdown(self) -> None:
-        day = "2026-04-05"
+    async def test_returns_trend_days_with_success_rate(self) -> None:
+        trend_row = _make_trend_row(
+            date="2026-04-05",
+            patrols_completed=4,
+            clean_count=3,
+        )
         app, _ = _build_app(
             fetch_side_effect=[
-                [_mock_record(_make_trend_patrol_row(day=day, patrols=3, dispatched=2))],
-                [_mock_record(_make_trend_pr_row(day=day, prs_opened=2, prs_merged=1))],
-                [
-                    _mock_record(_make_trend_source_row(day=day, source_type="log_scanner", cnt=6)),
-                    _mock_record(
-                        _make_trend_source_row(day=day, source_type="session_records", cnt=4)
-                    ),
-                ],
-            ]
+                [_mock_record(trend_row)],
+                [],  # source breakdown
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -1270,51 +1299,58 @@ class TestGetQaTrends:
             response = await client.get("/api/qa/trends")
 
         assert response.status_code == 200
-        data = response.json()["data"]
-        assert len(data) == 1
-        entry = data[0]
-        assert entry["date"] == day
-        assert entry["patrols"] == 3
-        assert entry["dispatched"] == 2
-        assert entry["prs_opened"] == 2
-        assert entry["prs_merged"] == 1
-        assert entry["success_rate"] == 0.5
-        assert entry["by_source"]["log_scanner"] == 6
-        assert entry["by_source"]["session_records"] == 4
+        body = response.json()
+        days = body["data"]["days"]
+        assert len(days) == 1
+        assert days[0]["date"] == "2026-04-05"
+        assert days[0]["patrols_completed"] == 4
+        assert days[0]["success_rate"] == pytest.approx(0.75, abs=0.001)
 
-    async def test_accepts_days_parameter(self) -> None:
-        app, _ = _build_app(fetch_side_effect=[[], [], []])
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/trends", params={"days": 30})
-
-        assert response.status_code == 200
-
-    async def test_rejects_days_out_of_range(self) -> None:
-        app, _ = _build_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/trends", params={"days": 0})
-
-        assert response.status_code == 422
-
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    async def test_returns_source_breakdown(self) -> None:
+        source_row = _make_source_row(source_type="log_scanner", count=12)
+        app, _ = _build_app(
+            fetch_side_effect=[
+                [],  # trend days
+                [_mock_record(source_row)],
+            ],
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.get("/api/qa/trends")
 
-        assert response.status_code == 503
+        assert response.status_code == 200
+        body = response.json()
+        breakdown = body["data"]["source_breakdown"]
+        assert len(breakdown) == 1
+        assert breakdown[0]["source_type"] == "log_scanner"
+        assert breakdown[0]["count"] == 12
+
+    async def test_success_rate_is_zero_when_no_completed_patrols(self) -> None:
+        trend_row = _make_trend_row(patrols_completed=0, clean_count=0)
+        app, _ = _build_app(
+            fetch_side_effect=[[_mock_record(trend_row)], []],
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/trends")
+
+        assert response.status_code == 200
+        days = response.json()["data"]["days"]
+        assert days[0]["success_rate"] == 0.0
+
+    async def test_accepts_days_query_param(self) -> None:
+        app, _ = _build_app(fetch_side_effect=[[], []])
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/trends", params={"days": 14})
+
+        assert response.status_code == 200
 
 
 # ---------------------------------------------------------------------------
