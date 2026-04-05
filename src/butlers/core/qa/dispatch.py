@@ -66,6 +66,20 @@ from butlers.core.qa.triage import TriagedFinding
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# OpenTelemetry — optional, graceful no-op when not configured
+# ---------------------------------------------------------------------------
+
+try:
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace
+    from opentelemetry.propagate import inject as _otel_inject
+
+    _tracer = trace.get_tracer("butlers.qa")
+    _HAS_OTEL = True
+except ImportError:
+    _HAS_OTEL = False
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -467,6 +481,24 @@ async def _run_investigation_session(
     """
     investigation_session_id: uuid.UUID | None = None
 
+    # Create an independent ROOT span for this investigation (NOT a child of the patrol span).
+    # Investigations are long-running, potentially outliving the patrol cycle that spawned them.
+    _inv_span = None
+    _inv_span_token = None
+    if _HAS_OTEL:
+        _inv_span = _tracer.start_span(
+            "qa.investigation",
+            context=otel_context.Context(),  # fresh context — root span
+            attributes={
+                "butler.name": "qa",
+                "qa.attempt_id": str(attempt_id),
+                "qa.fingerprint": finding.fingerprint,
+                "qa.source_butler": finding.source_butler,
+                "qa.severity": finding.severity,
+            },
+        )
+        _inv_span_token = otel_context.attach(trace.set_span_in_context(_inv_span))
+
     try:
         prompt = build_investigation_prompt(
             finding=finding,
@@ -476,6 +508,15 @@ async def _run_investigation_session(
 
         # Build sandboxed environment for the agent
         sandbox_env = build_sandbox_env(gh_token)
+
+        # Inject the investigation root span's trace context as TRACEPARENT so the
+        # spawned agent can continue this trace as a child process.
+        if _HAS_OTEL and _inv_span is not None:
+            _carrier: dict[str, str] = {}
+            _otel_inject(_carrier)
+            _traceparent = _carrier.get("traceparent")
+            if _traceparent:
+                sandbox_env["TRACEPARENT"] = _traceparent
 
         # Spawn the investigation agent with sandbox env override
         result = await spawner.trigger(
@@ -596,12 +637,17 @@ async def _run_investigation_session(
 
     except asyncio.CancelledError:
         # Cancelled by watchdog — watchdog sets status to "timeout"
+        if _HAS_OTEL and _inv_span is not None:
+            _inv_span.set_status(trace.StatusCode.ERROR, "investigation cancelled (timeout)")
         raise
 
     except Exception as exc:
         logger.exception(
             "Unexpected error in QA investigation session (attempt=%s): %s", attempt_id, exc
         )
+        if _HAS_OTEL and _inv_span is not None:
+            _inv_span.record_exception(exc)
+            _inv_span.set_status(trace.StatusCode.ERROR, str(exc))
         await update_attempt_status(
             pool,
             attempt_id,
@@ -612,6 +658,11 @@ async def _run_investigation_session(
         await remove_healing_worktree(
             repo_root, branch_name, delete_branch=True, delete_remote=False
         )
+    finally:
+        if _HAS_OTEL and _inv_span is not None:
+            _inv_span.end()
+            if _inv_span_token is not None:
+                otel_context.detach(_inv_span_token)
 
 
 # ---------------------------------------------------------------------------

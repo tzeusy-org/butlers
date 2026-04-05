@@ -45,6 +45,19 @@ from butlers.modules.base import Module, ToolMeta
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# OpenTelemetry — optional, graceful no-op when not configured
+# ---------------------------------------------------------------------------
+
+try:
+    from opentelemetry import context as otel_context
+    from opentelemetry import trace
+
+    _tracer = trace.get_tracer("butlers.qa")
+    _HAS_OTEL = True
+except ImportError:
+    _HAS_OTEL = False
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -623,9 +636,29 @@ class QaModule(Module):
         all_findings = []
         error_detail: str | None = None
 
+        # Start the qa.patrol parent span (root — not child of any patrol)
+        _patrol_span = None
+        _patrol_span_token = None
+        if _HAS_OTEL:
+            _patrol_span = _tracer.start_span(
+                "qa.patrol",
+                attributes={
+                    "butler.name": "qa",
+                    "qa.patrol_id": str(patrol_id),
+                },
+            )
+            _patrol_span_token = otel_context.attach(trace.set_span_in_context(_patrol_span))
+
         try:
             # Phase 1: Discover
             for source in self._sources:
+                _discover_span = None
+                _discover_span_token = None
+                if _HAS_OTEL:
+                    _discover_span = _tracer.start_span(f"qa.discover.{source.name}")
+                    _discover_span_token = otel_context.attach(
+                        trace.set_span_in_context(_discover_span)
+                    )
                 try:
                     findings = await source.discover(self._config.log_lookback_minutes)
                     sources_polled.append(source.name)
@@ -646,14 +679,37 @@ class QaModule(Module):
                     )
                     detail = f"source {source.name} failed: {src_exc!r}"
                     error_detail = f"{error_detail}; {detail}" if error_detail else detail
+                    if _HAS_OTEL and _discover_span is not None:
+                        _discover_span.record_exception(src_exc)
+                        _discover_span.set_status(trace.StatusCode.ERROR, str(src_exc))
+                finally:
+                    if _HAS_OTEL and _discover_span is not None:
+                        _discover_span.end()
+                        if _discover_span_token is not None:
+                            otel_context.detach(_discover_span_token)
+
+            # Update patrol span with sources_polled count now that discovery is done
+            if _HAS_OTEL and _patrol_span is not None:
+                _patrol_span.set_attribute("qa.sources_polled", len(sources_polled))
 
             # Phase 2: Triage
-            triage_result = await triage_findings(
-                pool=pool,
-                patrol_id=patrol_id,
-                findings=all_findings,
-                cooldown_minutes=60,  # default cooldown
-            )
+            _triage_span = None
+            _triage_span_token = None
+            if _HAS_OTEL:
+                _triage_span = _tracer.start_span("qa.triage")
+                _triage_span_token = otel_context.attach(trace.set_span_in_context(_triage_span))
+            try:
+                triage_result = await triage_findings(
+                    pool=pool,
+                    patrol_id=patrol_id,
+                    findings=all_findings,
+                    cooldown_minutes=60,  # default cooldown
+                )
+            finally:
+                if _HAS_OTEL and _triage_span is not None:
+                    _triage_span.end()
+                    if _triage_span_token is not None:
+                        otel_context.detach(_triage_span_token)
 
             findings_count = len(triage_result.all_findings)
             novel_count = len(triage_result.novel_findings)
@@ -669,16 +725,32 @@ class QaModule(Module):
             # Prune completed watchdog tasks before dispatching
             self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
 
-            dispatch_results = await dispatch_novel_findings(
-                pool=pool,
-                novel_findings=triage_result.novel_findings,
-                patrol_id=patrol_id,
-                config=dispatch_config,
-                repo_root=self._repo_root,
-                spawner=self._spawner,
-                gh_token=gh_token,
-                task_registry=self._watchdog_tasks,
-            )
+            _dispatch_span = None
+            _dispatch_span_token = None
+            if _HAS_OTEL:
+                _dispatch_span = _tracer.start_span(
+                    "qa.dispatch",
+                    attributes={"qa.novel_findings": novel_count},
+                )
+                _dispatch_span_token = otel_context.attach(
+                    trace.set_span_in_context(_dispatch_span)
+                )
+            try:
+                dispatch_results = await dispatch_novel_findings(
+                    pool=pool,
+                    novel_findings=triage_result.novel_findings,
+                    patrol_id=patrol_id,
+                    config=dispatch_config,
+                    repo_root=self._repo_root,
+                    spawner=self._spawner,
+                    gh_token=gh_token,
+                    task_registry=self._watchdog_tasks,
+                )
+            finally:
+                if _HAS_OTEL and _dispatch_span is not None:
+                    _dispatch_span.end()
+                    if _dispatch_span_token is not None:
+                        otel_context.detach(_dispatch_span_token)
 
             dispatched_count = sum(1 for r in dispatch_results if r.accepted)
 
@@ -751,6 +823,9 @@ class QaModule(Module):
                 error_msg,
                 exc_info=True,
             )
+            if _HAS_OTEL and _patrol_span is not None:
+                _patrol_span.record_exception(exc)
+                _patrol_span.set_status(trace.StatusCode.ERROR, error_msg)
             await self._complete_patrol_record(
                 pool=pool,
                 patrol_id=patrol_id,
@@ -765,6 +840,11 @@ class QaModule(Module):
             self._last_patrol_status = "error"
             self._current_patrol_id = None
             return {"status": "error", "reason": error_msg}
+        finally:
+            if _HAS_OTEL and _patrol_span is not None:
+                _patrol_span.end()
+                if _patrol_span_token is not None:
+                    otel_context.detach(_patrol_span_token)
 
     def _schedule_mini_patrol(self, fingerprint: str) -> None:
         """Schedule an immediate mini-patrol for a severity-0 finding.
