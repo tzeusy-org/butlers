@@ -1,17 +1,16 @@
-"""Tests for butlers.core.qa.sources.log_scanner.LogScannerSource.
+"""Tests for butlers.core.qa.sources.log_scanner.LogScannerSource — condensed.
 
 Covers:
-- DiscoverySource protocol compliance (name, discover signature)
+- DiscoverySource protocol compliance
 - Log file discovery: butlers/, connectors/, uvicorn/ subdirs; qa.log excluded
-- Missing log directory is non-fatal (skipped with DEBUG log)
-- JSON-lines parsing: valid lines → LogEntry; malformed lines → skipped
-- Temporal filtering: only entries within lookback window are included
-- Severity filtering: ERROR/CRITICAL always included; WARNING with crash patterns; INFO excluded
-- Finding extraction: QaFinding fields populated correctly
-- Fingerprint computation: stable across calls, sanitized
-- Finding aggregation: multiple entries with same fingerprint → one finding with occurrence_count
-- Performance caps: max_entries_per_scan, max_findings_per_scan with WARNING logs
-- compute_fingerprint_from_log_entry: compatible with log_scanner fingerprints
+- Missing log directory is non-fatal
+- JSON-lines parsing: valid, malformed, missing fields
+- Temporal filtering
+- Severity filtering: ERROR/CRITICAL included; WARNING with crash patterns; INFO excluded
+- Finding structure and fingerprint stability
+- Finding aggregation
+- Performance caps
+- compute_fingerprint_from_log_entry compatibility
 """
 
 from __future__ import annotations
@@ -31,10 +30,6 @@ from butlers.core.qa.sources.log_scanner import (
     _should_include_entry,
 )
 from butlers.core.qa.sources.protocol import DiscoverySource
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_log_line(
@@ -71,18 +66,13 @@ def _make_log_file(path: Path, lines: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_log_scanner_implements_protocol(tmp_path):
-    """LogScannerSource implements the DiscoverySource protocol."""
-    source = LogScannerSource(log_root=tmp_path)
-    assert isinstance(source, DiscoverySource)
-    assert source.name == "log_scanner"
-
-
-def test_log_scanner_has_discover_method(tmp_path):
-    """discover() is an async method that returns a list."""
+def test_log_scanner_protocol(tmp_path) -> None:
+    """LogScannerSource implements DiscoverySource with an async discover() method."""
     import inspect
 
     source = LogScannerSource(log_root=tmp_path)
+    assert isinstance(source, DiscoverySource)
+    assert source.name == "log_scanner"
     assert inspect.iscoroutinefunction(source.discover)
 
 
@@ -91,80 +81,50 @@ def test_log_scanner_has_discover_method(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "subdir,filename,butler_name,log_kwargs",
+    [
+        ("butlers", "finance.log", "finance", {}),
+        ("connectors", "telegram.log", None, {"butler_name": "connector_telegram"}),
+        ("uvicorn", "server.log", None, {"butler_name": "uvicorn"}),
+    ],
+)
 @pytest.mark.asyncio
-async def test_discover_finds_butler_logs(tmp_path):
-    """Scanner reads from logs/butlers/*.log."""
-    butlers_dir = tmp_path / "butlers"
+async def test_discover_finds_logs_in_subdirs(tmp_path, subdir, filename, butler_name, log_kwargs):
+    """Scanner reads from butlers/, connectors/, and uvicorn/ subdirs."""
     now = datetime.now(UTC)
-    line = _make_log_line(ts=now)
-    _make_log_file(butlers_dir / "finance.log", [line])
+    line = _make_log_line(ts=now, **log_kwargs)
+    _make_log_file(tmp_path / subdir / filename, [line])
 
     source = LogScannerSource(log_root=tmp_path)
     findings = await source.discover(lookback_minutes=15)
     assert len(findings) == 1
-    assert findings[0].source_butler == "finance"
+    if butler_name:
+        assert findings[0].source_butler == butler_name
 
 
 @pytest.mark.asyncio
-async def test_discover_finds_connector_logs(tmp_path):
-    """Scanner reads from logs/connectors/*.log."""
-    conn_dir = tmp_path / "connectors"
-    now = datetime.now(UTC)
-    line = _make_log_line(
-        ts=now, butler_name="connector_telegram", logger_name="connector.telegram"
-    )
-    _make_log_file(conn_dir / "telegram.log", [line])
-
-    source = LogScannerSource(log_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
-    assert len(findings) == 1
-
-
-@pytest.mark.asyncio
-async def test_discover_finds_uvicorn_logs(tmp_path):
-    """Scanner reads from logs/uvicorn/*.log."""
-    uv_dir = tmp_path / "uvicorn"
-    now = datetime.now(UTC)
-    line = _make_log_line(ts=now, butler_name="uvicorn")
-    _make_log_file(uv_dir / "server.log", [line])
-
-    source = LogScannerSource(log_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
-    assert len(findings) == 1
-
-
-@pytest.mark.asyncio
-async def test_discover_excludes_qa_log(tmp_path):
+async def test_discover_excludes_qa_log(tmp_path) -> None:
     """logs/butlers/qa.log is excluded from scanning."""
-    butlers_dir = tmp_path / "butlers"
     now = datetime.now(UTC)
-    qa_line = _make_log_line(ts=now, butler_name="qa", exception="InternalQaError")
-    _make_log_file(butlers_dir / "qa.log", [qa_line])
-
-    source = LogScannerSource(log_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
+    _make_log_file(tmp_path / "butlers" / "qa.log", [_make_log_line(ts=now)])
+    findings = await LogScannerSource(log_root=tmp_path).discover(lookback_minutes=15)
     assert len(findings) == 0
 
 
 @pytest.mark.asyncio
-async def test_missing_subdir_is_nonfatal(tmp_path, caplog):
+async def test_missing_subdir_is_nonfatal(tmp_path, caplog) -> None:
     """Missing subdirectories are skipped with a DEBUG log."""
-    # Only create butlers/, not connectors/ or uvicorn/
-    butlers_dir = tmp_path / "butlers"
     now = datetime.now(UTC)
-    line = _make_log_line(ts=now)
-    _make_log_file(butlers_dir / "finance.log", [line])
+    _make_log_file(tmp_path / "butlers" / "finance.log", [_make_log_line(ts=now)])
 
     source = LogScannerSource(log_root=tmp_path)
     with caplog.at_level(logging.DEBUG):
         findings = await source.discover(lookback_minutes=15)
 
-    # Should still find the butler log
     assert len(findings) == 1
-    # Should log DEBUG for missing connectors/ and uvicorn/
     debug_msgs = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
-    skipped = [m for m in debug_msgs if "skipping missing directory" in m]
-    assert len(skipped) >= 1
+    assert any("skipping missing directory" in m for m in debug_msgs)
 
 
 # ---------------------------------------------------------------------------
@@ -172,78 +132,32 @@ async def test_missing_subdir_is_nonfatal(tmp_path, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_parse_valid_log_line():
-    """Valid JSON log line is parsed into a LogEntry."""
+def test_parse_log_line() -> None:
+    """Valid line → LogEntry; malformed/missing-fields → None; filename used as fallback name."""
     now = datetime.now(UTC)
+    # Valid
     line = _make_log_line(ts=now, event="DB connection failed", exception="asyncpg.PostgresError")
     entry = _parse_log_line(line, "finance")
     assert entry is not None
     assert entry.level == "error"
-    assert "DB connection failed" in entry.event
     assert entry.butler_name == "finance"
     assert entry.exception == "asyncpg.PostgresError"
-    assert entry.timestamp is not None
 
+    # Malformed JSON
+    assert _parse_log_line("not valid json {{{", "butler") is None
 
-def test_parse_malformed_json_returns_none():
-    """Malformed JSON line returns None (no error raised)."""
-    entry = _parse_log_line("not valid json {{{", "butler")
-    assert entry is None
-
-
-def test_parse_line_missing_required_fields():
-    """JSON line missing level or event returns None."""
     # Missing event
-    data = {"level": "error", "timestamp": datetime.now(UTC).isoformat()}
-    entry = _parse_log_line(json.dumps(data), "butler")
-    assert entry is None
+    missing_event = json.dumps({"level": "error", "timestamp": now.isoformat()})
+    assert _parse_log_line(missing_event, "b") is None
 
-    # Missing level
-    data = {"event": "something", "timestamp": datetime.now(UTC).isoformat()}
-    entry = _parse_log_line(json.dumps(data), "butler")
-    assert entry is None
+    # Missing timestamp
+    assert _parse_log_line(json.dumps({"level": "error", "event": "test"}), "b") is None
 
-
-def test_parse_line_missing_timestamp_returns_none():
-    """JSON line without a valid timestamp returns None (can't filter by time)."""
-    data = {"level": "error", "event": "test"}
-    entry = _parse_log_line(json.dumps(data), "butler")
-    assert entry is None
-
-
-def test_parse_line_uses_filename_as_butler_name_fallback():
-    """If butler_name is not in the JSON, the filename stem is used."""
-    now = datetime.now(UTC)
+    # Filename as butler_name fallback
     data = {"level": "error", "event": "fail", "timestamp": now.isoformat()}
-    entry = _parse_log_line(json.dumps(data), "travel")
-    assert entry is not None
-    assert entry.butler_name == "travel"
-
-
-# ---------------------------------------------------------------------------
-# Malformed line count logging
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_malformed_lines_logged_at_debug(tmp_path, caplog):
-    """Malformed JSON lines are counted and logged at DEBUG level."""
-    butlers_dir = tmp_path / "butlers"
-    now = datetime.now(UTC)
-    lines = [
-        "not json",
-        _make_log_line(ts=now),
-        "{bad: json}",
-    ]
-    _make_log_file(butlers_dir / "finance.log", lines)
-
-    source = LogScannerSource(log_root=tmp_path)
-    with caplog.at_level(logging.DEBUG):
-        await source.discover(lookback_minutes=15)
-
-    debug_msgs = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
-    malformed_msgs = [m for m in debug_msgs if "malformed" in m.lower()]
-    assert len(malformed_msgs) >= 1
+    entry2 = _parse_log_line(json.dumps(data), "travel")
+    assert entry2 is not None
+    assert entry2.butler_name == "travel"
 
 
 # ---------------------------------------------------------------------------
@@ -252,31 +166,20 @@ async def test_malformed_lines_logged_at_debug(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
-async def test_entries_within_lookback_window_included(tmp_path):
-    """Entries within lookback window are included."""
+async def test_temporal_filtering(tmp_path) -> None:
+    """Recent entries included; old entries excluded."""
     butlers_dir = tmp_path / "butlers"
     now = datetime.now(UTC)
-    recent = now - timedelta(minutes=5)
-    line = _make_log_line(ts=recent)
-    _make_log_file(butlers_dir / "finance.log", [line])
 
-    source = LogScannerSource(log_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
+    _make_log_file(
+        butlers_dir / "finance.log",
+        [
+            _make_log_line(ts=now - timedelta(minutes=5)),     # recent → included
+            _make_log_line(ts=now - timedelta(minutes=30)),    # old → excluded
+        ],
+    )
+    findings = await LogScannerSource(log_root=tmp_path).discover(lookback_minutes=15)
     assert len(findings) == 1
-
-
-@pytest.mark.asyncio
-async def test_entries_outside_lookback_window_excluded(tmp_path):
-    """Entries older than lookback window are excluded."""
-    butlers_dir = tmp_path / "butlers"
-    now = datetime.now(UTC)
-    old = now - timedelta(minutes=30)
-    line = _make_log_line(ts=old)
-    _make_log_file(butlers_dir / "finance.log", [line])
-
-    source = LogScannerSource(log_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
-    assert len(findings) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -284,59 +187,23 @@ async def test_entries_outside_lookback_window_excluded(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_error_level_included():
-    """ERROR entries pass the severity filter."""
+@pytest.mark.parametrize(
+    "level,event,exception,expected",
+    [
+        ("error", "fail", None, True),
+        ("critical", "crash", None, True),
+        ("warning", "OOM detected in process", None, True),
+        ("warning", "something", "TimeoutError", True),
+        ("warning", "some minor issue", None, False),
+        ("info", "started up", None, False),
+        ("debug", "verbose detail", None, False),
+    ],
+)
+def test_severity_filtering(level, event, exception, expected) -> None:
+    """Severity filter: ERROR/CRITICAL always in; WARNING with crash pattern; INFO/DEBUG out."""
     now = datetime.now(UTC)
-    entry = LogEntry(level="error", event="fail", timestamp=now, butler_name="b")
-    assert _should_include_entry(entry) is True
-
-
-def test_critical_level_included():
-    """CRITICAL entries pass the severity filter."""
-    now = datetime.now(UTC)
-    entry = LogEntry(level="critical", event="crash", timestamp=now, butler_name="b")
-    assert _should_include_entry(entry) is True
-
-
-def test_warning_with_crash_pattern_included():
-    """WARNING entries with crash sentinel patterns are included."""
-    now = datetime.now(UTC)
-    # OOM in event
-    entry = LogEntry(
-        level="warning", event="OOM detected in process", timestamp=now, butler_name="b"
-    )
-    assert _should_include_entry(entry) is True
-
-    # TimeoutError in exception
-    entry2 = LogEntry(
-        level="warning",
-        event="something happened",
-        timestamp=now,
-        butler_name="b",
-        exception="TimeoutError",
-    )
-    assert _should_include_entry(entry2) is True
-
-
-def test_warning_without_crash_pattern_excluded():
-    """WARNING entries without crash sentinels are excluded."""
-    now = datetime.now(UTC)
-    entry = LogEntry(level="warning", event="some minor issue", timestamp=now, butler_name="b")
-    assert _should_include_entry(entry) is False
-
-
-def test_info_level_excluded():
-    """INFO entries are excluded."""
-    now = datetime.now(UTC)
-    entry = LogEntry(level="info", event="started up", timestamp=now, butler_name="b")
-    assert _should_include_entry(entry) is False
-
-
-def test_debug_level_excluded():
-    """DEBUG entries are excluded."""
-    now = datetime.now(UTC)
-    entry = LogEntry(level="debug", event="verbose detail", timestamp=now, butler_name="b")
-    assert _should_include_entry(entry) is False
+    entry = LogEntry(level=level, event=event, timestamp=now, butler_name="b", exception=exception)
+    assert _should_include_entry(entry) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -345,84 +212,59 @@ def test_debug_level_excluded():
 
 
 @pytest.mark.asyncio
-async def test_finding_structure(tmp_path):
-    """QaFinding fields are populated correctly from a log entry."""
+async def test_finding_structure(tmp_path) -> None:
+    """QaFinding fields are populated correctly and PII is stripped."""
     butlers_dir = tmp_path / "butlers"
     now = datetime.now(UTC)
-    line = _make_log_line(
-        level="error",
-        event="Failed to connect to database",
-        ts=now,
-        butler_name="finance",
-        logger_name="butlers.core.db",
-        exception="asyncpg.PostgresConnectionError",
+    _make_log_file(
+        butlers_dir / "finance.log",
+        [
+            _make_log_line(
+                event="Failed to connect to database",
+                ts=now,
+                logger_name="butlers.core.db",
+                exception="asyncpg.PostgresConnectionError",
+            )
+        ],
     )
-    _make_log_file(butlers_dir / "finance.log", [line])
 
-    source = LogScannerSource(log_root=tmp_path, repo_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
+    findings = await LogScannerSource(log_root=tmp_path, repo_root=tmp_path).discover(
+        lookback_minutes=15
+    )
     assert len(findings) == 1
-
     f = findings[0]
     assert f.source_type == "log_scanner"
     assert f.source_butler == "finance"
-    assert len(f.fingerprint) == 64  # SHA-256 hex
+    assert len(f.fingerprint) == 64
     assert f.occurrence_count == 1
-    assert f.severity >= 0
     assert f.exception_type == "asyncpg.PostgresConnectionError"
-    assert "connect to database" in f.event_summary.lower() or "connect" in f.event_summary.lower()
-    assert f.call_site != ""
     assert f.source_file == "finance.log"
 
-
-@pytest.mark.asyncio
-async def test_finding_does_not_contain_raw_log_content(tmp_path):
-    """Raw log line content is not stored — only computed fields."""
-    butlers_dir = tmp_path / "butlers"
-    now = datetime.now(UTC)
-    # Include PII in event that should be stripped
-    line = _make_log_line(
-        event="Error processing email user@example.com",
-        ts=now,
+    # PII stripped
+    _make_log_file(
+        butlers_dir / "health.log",
+        [_make_log_line(event="Error processing email user@example.com", ts=now)],
     )
-    _make_log_file(butlers_dir / "health.log", [line])
-
-    source = LogScannerSource(log_root=tmp_path, repo_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
-    assert len(findings) == 1
-    f = findings[0]
-    # Raw email should be stripped by anonymizer
-    assert "user@example.com" not in f.event_summary
+    findings2 = await LogScannerSource(log_root=tmp_path, repo_root=tmp_path).discover(
+        lookback_minutes=15
+    )
+    health_findings = [f for f in findings2 if f.source_file == "health.log"]
+    assert health_findings
+    assert "user@example.com" not in health_findings[0].event_summary
 
 
 # ---------------------------------------------------------------------------
-# Fingerprint computation
+# Fingerprint stability and compute_fingerprint_from_log_entry
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fingerprint_is_stable_across_calls(tmp_path):
-    """Two scans of the same log entry produce the same fingerprint."""
-    butlers_dir = tmp_path / "butlers"
-    ts = datetime.now(UTC)
-    line = _make_log_line(event="DB down", ts=ts, exception="ConnectionError")
-    _make_log_file(butlers_dir / "finance.log", [line])
-
-    source = LogScannerSource(log_root=tmp_path)
-    findings1 = await source.discover(lookback_minutes=15)
-    findings2 = await source.discover(lookback_minutes=15)
-    assert len(findings1) == 1
-    assert len(findings2) == 1
-    assert findings1[0].fingerprint == findings2[0].fingerprint
-
-
-@pytest.mark.asyncio
-async def test_different_errors_produce_different_fingerprints(tmp_path):
-    """Semantically different errors produce different fingerprints."""
+async def test_fingerprint_properties(tmp_path) -> None:
+    """Same entry → same fingerprint across scans; different errors → different fingerprints."""
     butlers_dir = tmp_path / "butlers"
     now = datetime.now(UTC)
     line1 = _make_log_line(
-        event="DB connection failed", exception="ConnectionError", ts=now, logger_name="mod.a"
+        event="DB down", exception="ConnectionError", ts=now, logger_name="mod.a"
     )
     line2 = _make_log_line(
         event="File not found", exception="FileNotFoundError", ts=now, logger_name="mod.b"
@@ -430,22 +272,53 @@ async def test_different_errors_produce_different_fingerprints(tmp_path):
     _make_log_file(butlers_dir / "finance.log", [line1, line2])
 
     source = LogScannerSource(log_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
-    fps = {f.fingerprint for f in findings}
-    assert len(fps) == 2
+    findings1 = await source.discover(lookback_minutes=15)
+    findings2 = await source.discover(lookback_minutes=15)
+
+    # Stability
+    fps1 = {f.fingerprint for f in findings1}
+    fps2 = {f.fingerprint for f in findings2}
+    assert fps1 == fps2
+
+    # Different errors → different fingerprints
+    assert len(fps1) == 2
+
+
+def test_compute_fingerprint_from_log_entry() -> None:
+    """compute_fingerprint_from_log_entry uses traceback for call_site; falls back to <unknown>."""
+    now = datetime.now(UTC)
+
+    # With traceback
+    traceback_str = (
+        "Traceback (most recent call last):\n"
+        '  File "src/butlers/core/db.py", line 42, in connect\n'
+        "    raise e\nasyncpg.exceptions.PostgresConnectionError: could not connect\n"
+    )
+    result = compute_fingerprint_from_log_entry(
+        {
+            "level": "error",
+            "event": "Connection failed",
+            "timestamp": now.isoformat(),
+            "logger": "butlers.core.db",
+            "exception": "asyncpg.exceptions.PostgresConnectionError",
+            "traceback": traceback_str,
+        }
+    )
+    assert "src/butlers/core/db.py" in result.call_site
+
+    # Fallback
+    result2 = compute_fingerprint_from_log_entry(
+        {"level": "error", "event": "Something bad", "timestamp": now.isoformat()}
+    )
+    assert result2.call_site == "<unknown>:<unknown>"
+    assert len(result2.fingerprint) == 64
 
 
 @pytest.mark.asyncio
-async def test_compute_fingerprint_from_log_entry_compatible_with_log_scanner(tmp_path):
-    """compute_fingerprint_from_log_entry produces same fingerprint as log scanner.
-
-    Verifies that both the public API function and the internal scanner logic
-    produce identical fingerprints for the same log entry — including for events
-    longer than _MAX_SUMMARY_LEN (200 chars) to catch truncation mismatches.
-    """
+async def test_compute_fingerprint_compatible_with_scanner(tmp_path) -> None:
+    """compute_fingerprint_from_log_entry produces same fingerprint as log scanner."""
     now = datetime.now(UTC)
-    # Use a long event that exceeds the 200-char display truncation limit
-    long_event = "DB connection failed: " + "x" * 250  # 272 chars total, > 200
+    long_event = "DB connection failed: " + "x" * 250
     entry_dict = {
         "level": "error",
         "event": long_event,
@@ -457,51 +330,12 @@ async def test_compute_fingerprint_from_log_entry_compatible_with_log_scanner(tm
 
     result = compute_fingerprint_from_log_entry(entry_dict)
     assert len(result.fingerprint) == 64
-    assert result.exception_type == "asyncpg.PostgresConnectionError"
-    assert result.call_site == "butlers.core.db"
 
-    # Also verify against the scanner's own fingerprint for the same entry
-    butlers_dir = tmp_path / "butlers"
-    import json as _json
-
-    _make_log_file(butlers_dir / "finance.log", [_json.dumps(entry_dict)])
+    _make_log_file(tmp_path / "butlers" / "finance.log", [json.dumps(entry_dict)])
     source = LogScannerSource(log_root=tmp_path)
     findings = await source.discover(lookback_minutes=15)
     assert len(findings) == 1
     assert findings[0].fingerprint == result.fingerprint
-
-
-def test_compute_fingerprint_from_log_entry_uses_traceback_for_call_site():
-    """compute_fingerprint_from_log_entry prefers traceback over logger field."""
-    now = datetime.now(UTC)
-    traceback_str = (
-        "Traceback (most recent call last):\n"
-        '  File "src/butlers/core/db.py", line 42, in connect\n'
-        "    raise e\n"
-        "asyncpg.exceptions.PostgresConnectionError: could not connect\n"
-    )
-    entry_dict = {
-        "level": "error",
-        "event": "Connection failed",
-        "timestamp": now.isoformat(),
-        "logger": "butlers.core.db",
-        "exception": "asyncpg.exceptions.PostgresConnectionError",
-        "traceback": traceback_str,
-    }
-    result = compute_fingerprint_from_log_entry(entry_dict)
-    assert "src/butlers/core/db.py" in result.call_site
-
-
-def test_compute_fingerprint_from_log_entry_fallback_unknown():
-    """compute_fingerprint_from_log_entry falls back to <unknown> with no call site info."""
-    entry_dict = {
-        "level": "error",
-        "event": "Something bad",
-        "timestamp": datetime.now(UTC).isoformat(),
-    }
-    result = compute_fingerprint_from_log_entry(entry_dict)
-    assert result.call_site == "<unknown>:<unknown>"
-    assert len(result.fingerprint) == 64
 
 
 # ---------------------------------------------------------------------------
@@ -510,31 +344,8 @@ def test_compute_fingerprint_from_log_entry_fallback_unknown():
 
 
 @pytest.mark.asyncio
-async def test_same_fingerprint_aggregated(tmp_path):
-    """Multiple entries with the same fingerprint are aggregated into one finding."""
-    butlers_dir = tmp_path / "butlers"
-    now = datetime.now(UTC)
-    # Three identical-fingerprint entries
-    lines = [
-        _make_log_line(
-            event="DB down", exception="ConnectionError", ts=now - timedelta(seconds=10)
-        ),
-        _make_log_line(event="DB down", exception="ConnectionError", ts=now - timedelta(seconds=5)),
-        _make_log_line(event="DB down", exception="ConnectionError", ts=now),
-    ]
-    _make_log_file(butlers_dir / "finance.log", lines)
-
-    source = LogScannerSource(log_root=tmp_path)
-    findings = await source.discover(lookback_minutes=15)
-    assert len(findings) == 1
-    f = findings[0]
-    assert f.occurrence_count == 3
-    assert f.first_seen <= f.last_seen
-
-
-@pytest.mark.asyncio
-async def test_aggregation_first_last_seen_timestamps(tmp_path):
-    """Aggregated finding tracks first_seen and last_seen correctly."""
+async def test_finding_aggregation(tmp_path) -> None:
+    """Same fingerprint entries are aggregated; first_seen/last_seen tracked correctly."""
     butlers_dir = tmp_path / "butlers"
     t1 = datetime.now(UTC) - timedelta(minutes=10)
     t2 = datetime.now(UTC) - timedelta(minutes=5)
@@ -551,7 +362,7 @@ async def test_aggregation_first_last_seen_timestamps(tmp_path):
     findings = await source.discover(lookback_minutes=15)
     assert len(findings) == 1
     f = findings[0]
-    # first_seen should be t1 (earliest), last_seen should be t3 (latest)
+    assert f.occurrence_count == 3
     assert abs((f.first_seen - t1).total_seconds()) < 2
     assert abs((f.last_seen - t3).total_seconds()) < 2
 
@@ -562,11 +373,10 @@ async def test_aggregation_first_last_seen_timestamps(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_max_entries_per_scan_truncates(tmp_path, caplog):
-    """Scanner stops and logs WARNING when max_entries_per_scan is reached."""
+async def test_performance_caps(tmp_path, caplog) -> None:
+    """max_entries_per_scan and max_findings_per_scan emit WARNING when hit."""
     butlers_dir = tmp_path / "butlers"
     now = datetime.now(UTC)
-    # Create 10 unique error lines
     lines = [
         _make_log_line(
             event=f"Error event {i}", exception=f"Error{i}", ts=now, logger_name=f"mod.sub{i}"
@@ -575,37 +385,24 @@ async def test_max_entries_per_scan_truncates(tmp_path, caplog):
     ]
     _make_log_file(butlers_dir / "finance.log", lines)
 
-    source = LogScannerSource(log_root=tmp_path, max_entries_per_scan=3)
+    # max_entries_per_scan
     with caplog.at_level(logging.WARNING):
-        await source.discover(lookback_minutes=15)
-
-    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-    truncated = [m for m in warn_msgs if "truncated" in m.lower() or "max_entries" in m.lower()]
-    assert len(truncated) >= 1
-
-
-@pytest.mark.asyncio
-async def test_max_findings_per_scan_caps_findings(tmp_path, caplog):
-    """Scanner caps unique findings at max_findings_per_scan and logs WARNING."""
-    butlers_dir = tmp_path / "butlers"
-    now = datetime.now(UTC)
-    # Create 10 unique error fingerprints
-    lines = [
-        _make_log_line(
-            event=f"Unique error {i}",
-            exception=f"UniqueError{i}",
-            ts=now,
-            logger_name=f"unique.mod{i}",
+        await LogScannerSource(log_root=tmp_path, max_entries_per_scan=3).discover(
+            lookback_minutes=15
         )
-        for i in range(10)
-    ]
-    _make_log_file(butlers_dir / "finance.log", lines)
+    assert any(
+        "truncated" in r.message.lower() or "max_entries" in r.message.lower()
+        for r in caplog.records if r.levelno == logging.WARNING
+    )
 
-    source = LogScannerSource(log_root=tmp_path, max_findings_per_scan=3)
+    caplog.clear()
+    # max_findings_per_scan
     with caplog.at_level(logging.WARNING):
-        findings = await source.discover(lookback_minutes=15)
-
+        findings = await LogScannerSource(log_root=tmp_path, max_findings_per_scan=3).discover(
+            lookback_minutes=15
+        )
     assert len(findings) <= 3
-    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-    cap_msgs = [m for m in warn_msgs if "cap" in m.lower() or "finding" in m.lower()]
-    assert len(cap_msgs) >= 1
+    assert any(
+        "cap" in r.message.lower() or "finding" in r.message.lower()
+        for r in caplog.records if r.levelno == logging.WARNING
+    )

@@ -31,130 +31,43 @@ docker_available = shutil.which("docker") is not None
 # ---------------------------------------------------------------------------
 
 
-class TestNotifyPriorityValidation:
-    """Tests for the priority parameter validation in notify()."""
+class TestDeliveryUnit:
+    """Unit tests for priority validation, timezone, and deferral logic."""
 
-    def test_valid_priorities_accepted(self):
-        """All three valid priority values are accepted."""
-        # The daemon validates priority before any DB access.
-        # We test the logic that the set includes exactly these values.
+    def test_priority_timezone_and_deferral(self):
+        """Priority set contract; timezone validation; quiet hours deferral by priority."""
+        from datetime import time
+
+        from butlers.core.temporal.delivery import should_defer_notification
+        from butlers.core.temporal.delivery_db import validate_timezone
+
+        # Priority set contract
         _VALID_PRIORITIES = {"high", "medium", "low"}
         for p in ("high", "medium", "low"):
             assert p in _VALID_PRIORITIES
+        for bad in ("urgent", "critical", ""):
+            assert bad not in _VALID_PRIORITIES
 
-    def test_invalid_priority_rejected(self):
-        """An invalid priority string like 'urgent' is not in the valid set."""
-        _VALID_PRIORITIES = {"high", "medium", "low"}
-        assert "urgent" not in _VALID_PRIORITIES
-        assert "critical" not in _VALID_PRIORITIES
-        assert "" not in _VALID_PRIORITIES
-
-
-# ---------------------------------------------------------------------------
-# §8.2 / §10.1 — delivery_db validate_timezone (pure unit tests)
-# ---------------------------------------------------------------------------
-
-
-class TestValidateTimezone:
-    """Tests for delivery_db.validate_timezone()."""
-
-    def test_valid_timezone_accepted(self):
-        """Common timezones are accepted without raising."""
-        from butlers.core.temporal.delivery_db import validate_timezone
-
+        # Timezone validation
         for tz in ("UTC", "America/New_York", "Europe/Berlin", "Asia/Tokyo"):
             assert validate_timezone(tz) == tz
+        for bad_tz in ("Invalid/Zone", ""):
+            with pytest.raises(ValueError, match="Unknown timezone"):
+                validate_timezone(bad_tz)
 
-    def test_invalid_timezone_raises(self):
-        """Unrecognised timezone name raises ValueError."""
-        from butlers.core.temporal.delivery_db import validate_timezone
-
-        with pytest.raises(ValueError, match="Unknown timezone"):
-            validate_timezone("Invalid/Zone")
-
-    def test_empty_string_raises(self):
-        """Empty string timezone raises ValueError."""
-        from butlers.core.temporal.delivery_db import validate_timezone
-
-        with pytest.raises(ValueError, match="Unknown timezone"):
-            validate_timezone("")
-
-
-# ---------------------------------------------------------------------------
-# §8.2 / §8.3 — should_defer_notification (covered by existing tests,
-#               but confirm priority default is medium)
-# ---------------------------------------------------------------------------
-
-
-class TestNotifyPriorityDefaultsMedium:
-    """Confirm that medium priority is the default and behaves like medium."""
-
-    def test_medium_priority_deferred_during_quiet_hours(self):
-        """Medium priority notification is deferred when inside quiet hours."""
-        from datetime import time
-
-        from butlers.core.temporal.delivery import should_defer_notification
-
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "batch_low_priority": True,
-            "batch_delivery_time": "07:00",
-            "override_channels": None,
+        # Quiet hours deferral
+        prefs_batch = {
+            "quiet_hours_start": "22:00", "quiet_hours_end": "07:00", "timezone": "UTC",
+            "batch_low_priority": True, "batch_delivery_time": "07:00", "override_channels": None,
         }
-        # 23:30 is inside overnight quiet hours
-        assert should_defer_notification(
-            priority="medium",
-            current_time=time(23, 30),
-            prefs=prefs,
-        )
+        t_night = time(23, 30)
+        defer = should_defer_notification
+        assert defer(priority="medium", current_time=t_night, prefs=prefs_batch)
+        assert not defer(priority="high", current_time=t_night, prefs=prefs_batch)
 
-    def test_high_priority_bypasses_quiet_hours(self):
-        """High priority notification bypasses quiet hours and delivers immediately."""
-        from datetime import time
-
-        from butlers.core.temporal.delivery import should_defer_notification
-
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "batch_low_priority": True,
-            "batch_delivery_time": "07:00",
-            "override_channels": None,
-        }
-        assert not should_defer_notification(
-            priority="high",
-            current_time=time(23, 30),
-            prefs=prefs,
-        )
-
-    def test_batch_low_priority_false_delivers_immediately(self):
-        """When batch_low_priority=False, medium/low notifications deliver immediately."""
-        from datetime import time
-
-        from butlers.core.temporal.delivery import should_defer_notification
-
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "batch_low_priority": False,
-            "batch_delivery_time": "07:00",
-            "override_channels": None,
-        }
-        # Inside quiet hours but batch_low_priority=False → no deferral
-        assert not should_defer_notification(
-            priority="medium",
-            current_time=time(23, 30),
-            prefs=prefs,
-        )
-        assert not should_defer_notification(
-            priority="low",
-            current_time=time(2, 0),
-            prefs=prefs,
-        )
+        prefs_no_batch = {**prefs_batch, "batch_low_priority": False}
+        assert not defer(priority="medium", current_time=t_night, prefs=prefs_no_batch)
+        assert not defer(priority="low", current_time=time(2, 0), prefs=prefs_no_batch)
 
 
 # ---------------------------------------------------------------------------

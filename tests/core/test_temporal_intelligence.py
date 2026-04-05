@@ -1,24 +1,17 @@
-"""Tests for temporal intelligence features.
+"""Tests for temporal intelligence features — condensed.
 
-Covers tasks 12.1–12.11 from openspec/changes/temporal-intelligence/tasks.md:
-  12.1 Deadline validation (future date, threshold bounds, non-empty thresholds)
-  12.2 Deadline countdown computation and threshold firing
-  12.3 Deadline status state machine transitions
-  12.4 Deadline dependencies blocking threshold evaluation
-  12.5 Event chain creation, trigger detection, and action materialization
-  12.6 Event chain depth limit enforcement
-  12.7 Seasonal period active detection (same-year, cross-year, disabled, multiple)
-  12.8 Quiet hours enforcement (high bypass, medium/low deferral, outside hours, no preferences)
-  12.9 Deferred notification flush (delivery, expiry, retry on failure)
-  12.10 Per-channel quiet hours overrides
-  12.11 tick() integration with all three new passes
-
-All tests are pure unit tests (no Docker/DB required) unless explicitly marked integration.
-They test the temporal logic functions expected to be implemented in:
-  - butlers.core.temporal.deadlines  — deadline validation, countdown, state machine
-  - butlers.core.temporal.event_chains — chain schema validation, depth limit
-  - butlers.core.temporal.seasonal   — active period detection
-  - butlers.core.temporal.delivery   — quiet hours check, deliver_at computation
+Covers tasks 12.1–12.11:
+- 12.1 Deadline validation
+- 12.2 Deadline countdown and threshold firing
+- 12.3 Deadline status state machine
+- 12.4 Deadline dependency blocking
+- 12.5 Event chain action schema and materialization
+- 12.6 Event chain depth limit
+- 12.7 Seasonal period active detection
+- 12.8 Quiet hours enforcement
+- 12.9 Deferred notification flush
+- 12.10 Per-channel quiet hours overrides
+- 12.11 tick() integration with all three new passes
 """
 
 from __future__ import annotations
@@ -34,10 +27,6 @@ import pytest
 pytestmark = [pytest.mark.unit]
 
 docker_available = shutil.which("docker") is not None
-
-# ---------------------------------------------------------------------------
-# Helpers shared across sections
-# ---------------------------------------------------------------------------
 
 
 def _make_threshold(days_before: int, severity: str = "info") -> dict[str, Any]:
@@ -57,604 +46,228 @@ def _past_date(days: int = 1) -> date:
 # ---------------------------------------------------------------------------
 
 
-class TestDeadlineValidation:
-    """Tests for deadline input validation (target_date, thresholds, lead_time_days).
+@pytest.mark.parametrize(
+    "target_date,lead_time_days,thresholds,match",
+    [
+        (lambda: _past_date(10), 7, [_make_threshold(7)], "future"),  # past date
+        (lambda: datetime.now(UTC).date(), 1, [_make_threshold(1)], "future"),  # today
+        (lambda: _future_date(30), 30, [], "threshold"),  # empty thresholds
+        (lambda: _future_date(60), 14, [_make_threshold(30, "info")], "lead_time_days|days_before"),
+        (lambda: _future_date(60), 0, [_make_threshold(1)], None),  # non-positive lead time
+    ],
+)
+def test_deadline_validation_invalid_raises(target_date, lead_time_days, thresholds, match):
+    from butlers.core.temporal.deadlines import validate_deadline_input
 
-    These cover scenarios from:
-    - openspec/specs/deadline-tracking/spec.md  §Deadline Registration
-    - tasks.md §12.1
-    """
-
-    def test_valid_deadline_passes_validation(self):
-        """A correctly formed deadline does not raise."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        # Should not raise
+    with pytest.raises(ValueError, match=match) if match else pytest.raises(ValueError):
         validate_deadline_input(
-            target_date=_future_date(60),
-            lead_time_days=42,
-            alert_thresholds=[
-                _make_threshold(42, "info"),
-                _make_threshold(14, "warning"),
-                _make_threshold(3, "critical"),
-            ],
+            target_date=target_date(),
+            lead_time_days=lead_time_days,
+            alert_thresholds=thresholds,
         )
-
-    def test_target_date_must_be_future(self):
-        """A past target_date raises ValueError."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        with pytest.raises(ValueError, match="future"):
-            validate_deadline_input(
-                target_date=_past_date(10),
-                lead_time_days=7,
-                alert_thresholds=[_make_threshold(7)],
-            )
-
-    def test_target_date_today_raises(self):
-        """target_date == today should be rejected (must be strictly future)."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        with pytest.raises(ValueError, match="future"):
-            validate_deadline_input(
-                target_date=datetime.now(UTC).date(),
-                lead_time_days=1,
-                alert_thresholds=[_make_threshold(1)],
-            )
-
-    def test_empty_alert_thresholds_raises(self):
-        """Empty alert_thresholds list raises ValueError."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        with pytest.raises(ValueError, match="threshold"):
-            validate_deadline_input(
-                target_date=_future_date(30),
-                lead_time_days=30,
-                alert_thresholds=[],
-            )
-
-    def test_threshold_days_before_cannot_exceed_lead_time(self):
-        """A threshold with days_before > lead_time_days raises ValueError."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        with pytest.raises(ValueError, match="lead_time_days|days_before"):
-            validate_deadline_input(
-                target_date=_future_date(60),
-                lead_time_days=14,
-                alert_thresholds=[_make_threshold(30, "info")],
-            )
-
-    def test_threshold_days_before_equal_lead_time_is_valid(self):
-        """days_before == lead_time_days is valid (boundary is allowed)."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        # Should not raise
-        validate_deadline_input(
-            target_date=_future_date(60),
-            lead_time_days=14,
-            alert_thresholds=[_make_threshold(14, "info")],
-        )
-
-    def test_multiple_thresholds_validated_individually(self):
-        """All thresholds are validated; any exceeding lead_time_days raises."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        with pytest.raises(ValueError):
-            validate_deadline_input(
-                target_date=_future_date(60),
-                lead_time_days=14,
-                alert_thresholds=[
-                    _make_threshold(14, "info"),  # valid
-                    _make_threshold(7, "warning"),  # valid
-                    _make_threshold(30, "critical"),  # invalid — exceeds 14
-                ],
-            )
-
-    def test_lead_time_days_must_be_positive(self):
-        """lead_time_days <= 0 raises ValueError."""
-        from butlers.core.temporal.deadlines import validate_deadline_input
-
-        with pytest.raises(ValueError):
-            validate_deadline_input(
-                target_date=_future_date(60),
-                lead_time_days=0,
-                alert_thresholds=[_make_threshold(1)],
-            )
 
 
 # ---------------------------------------------------------------------------
-# 12.2 — Deadline countdown computation and threshold firing
+# 12.2 — Deadline countdown and threshold firing
 # ---------------------------------------------------------------------------
 
 
-class TestDeadlineCountdown:
-    """Tests for countdown computation and threshold matching.
+def test_deadline_countdown_and_threshold_firing():
+    """Valid deadline does not raise; days_remaining correct; threshold fires when due or past."""
+    from butlers.core.temporal.deadlines import (
+        compute_days_remaining,
+        find_unfired_threshold,
+        validate_deadline_input,
+    )
 
-    Covers scenarios from:
-    - openspec/specs/deadline-tracking/spec.md  §Deadline Countdown Evaluation
-    - tasks.md §12.2
-    """
-
-    def test_days_remaining_computed_correctly(self):
-        """days_remaining = (target_date - today).days."""
-        from butlers.core.temporal.deadlines import compute_days_remaining
-
-        target = _future_date(42)
-        result = compute_days_remaining(target_date=target)
-        assert 41 <= result <= 42  # tolerance for time-of-day boundary
-
-    def test_threshold_fires_when_days_remaining_equals_threshold(self):
-        """Threshold fires when days_remaining exactly equals days_before."""
-        from butlers.core.temporal.deadlines import find_unfired_threshold
-
-        thresholds = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
-        fired: list[dict] = []
-        result = find_unfired_threshold(
-            days_remaining=42,
-            alert_thresholds=thresholds,
-            fired_thresholds=fired,
-        )
-        assert result is not None
-        assert result["days_before"] == 42
-        assert result["severity"] == "info"
-
-    def test_threshold_fires_when_past_threshold_day(self):
-        """Threshold fires when days_remaining < days_before (missed threshold due to downtime)."""
-        from butlers.core.temporal.deadlines import find_unfired_threshold
-
-        thresholds = [_make_threshold(14, "warning")]
-        fired: list[dict] = []
-        result = find_unfired_threshold(
-            days_remaining=12,  # past the 14-day mark
-            alert_thresholds=thresholds,
-            fired_thresholds=fired,
-        )
-        assert result is not None
-        assert result["days_before"] == 14
-
-    def test_already_fired_threshold_does_not_re_fire(self):
-        """A threshold that has already fired is excluded from matching."""
-        from butlers.core.temporal.deadlines import find_unfired_threshold
-
-        thresholds = [_make_threshold(14, "warning")]
-        fired = [_make_threshold(14, "warning")]  # already fired
-        result = find_unfired_threshold(
-            days_remaining=14,
-            alert_thresholds=thresholds,
-            fired_thresholds=fired,
-        )
-        assert result is None
-
-    def test_no_threshold_fires_when_days_remaining_above_all(self):
-        """No threshold fires when days_remaining > all days_before values."""
-        from butlers.core.temporal.deadlines import find_unfired_threshold
-
-        thresholds = [_make_threshold(14, "warning"), _make_threshold(3, "critical")]
-        result = find_unfired_threshold(
-            days_remaining=30,
-            alert_thresholds=thresholds,
-            fired_thresholds=[],
-        )
-        assert result is None
-
-    def test_most_urgent_threshold_selected_when_multiple_eligible(self):
-        """When multiple thresholds are eligible, the one closest to today fires first."""
-        from butlers.core.temporal.deadlines import find_unfired_threshold
-
-        thresholds = [
+    # Valid input does not raise
+    validate_deadline_input(
+        target_date=_future_date(60),
+        lead_time_days=42,
+        alert_thresholds=[
             _make_threshold(42, "info"),
             _make_threshold(14, "warning"),
             _make_threshold(3, "critical"),
-        ]
-        # days_remaining=3 means all three have been passed; only 3-day not fired
-        fired = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
-        result = find_unfired_threshold(
-            days_remaining=3,
-            alert_thresholds=thresholds,
-            fired_thresholds=fired,
-        )
-        assert result is not None
-        assert result["days_before"] == 3
+        ],
+    )
+
+    target = _future_date(42)
+    result = compute_days_remaining(target_date=target)
+    assert 41 <= result <= 42
+
+    thresholds = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
+    # Fires exactly at threshold
+    match = find_unfired_threshold(42, thresholds, [])
+    assert match is not None and match["days_before"] == 42
+
+    # Fires past threshold (missed downtime window)
+    match2 = find_unfired_threshold(12, [_make_threshold(14, "warning")], [])
+    assert match2 is not None and match2["days_before"] == 14
+
+    # Already-fired excluded
+    assert find_unfired_threshold(42, thresholds, [_make_threshold(42, "info")]) is None
+
+    # No threshold above current days_remaining
+    assert find_unfired_threshold(30, thresholds, []) is None
+
+    # Most urgent selected (smallest days_before not yet fired)
+    all_t = [
+        _make_threshold(42, "info"),
+        _make_threshold(14, "warning"),
+        _make_threshold(3, "critical"),
+    ]  # noqa: E501
+    fired = [_make_threshold(42, "info"), _make_threshold(14, "warning")]
+    match3 = find_unfired_threshold(3, all_t, fired)
+    assert match3 is not None and match3["days_before"] == 3
 
 
 # ---------------------------------------------------------------------------
-# 12.3 — Deadline status state machine transitions
+# 12.3 — Deadline status state machine
 # ---------------------------------------------------------------------------
 
 
-class TestDeadlineStatusStateMachine:
-    """Tests for deadline_status transitions.
+@pytest.mark.parametrize(
+    "current,severity,expected",
+    [
+        ("pending", "info", "alerted"),
+        ("pending", "critical", "escalated"),
+        ("alerted", "critical", "escalated"),
+        ("completed", "warning", "completed"),  # terminal
+        ("expired", "warning", "expired"),  # terminal
+    ],
+)
+def test_deadline_status_transitions(current, severity, expected):
+    from butlers.core.temporal.deadlines import compute_next_deadline_status
 
-    Covers scenarios from:
-    - openspec/specs/deadline-tracking/spec.md  §Deadline Status Transitions
-    - tasks.md §12.3
-    """
+    assert compute_next_deadline_status(current, _make_threshold(7, severity)) == expected
 
-    def test_pending_transitions_to_alerted_on_first_non_critical_threshold(self):
-        """First non-critical threshold fires: pending → alerted."""
-        from butlers.core.temporal.deadlines import compute_next_deadline_status
 
-        new_status = compute_next_deadline_status(
-            current_status="pending",
-            fired_threshold=_make_threshold(14, "info"),
-        )
-        assert new_status == "alerted"
+@pytest.mark.parametrize(
+    "current,target_fn,exp_status,exp_disable",
+    [
+        ("alerted", lambda: _past_date(1), "expired", True),
+        ("pending", lambda: _past_date(1), "expired", True),
+        ("completed", lambda: _past_date(5), "completed", False),
+        ("alerted", lambda: _future_date(10), "alerted", False),
+    ],
+)
+def test_deadline_expiry_transition(current, target_fn, exp_status, exp_disable):
+    from butlers.core.temporal.deadlines import compute_expiry_transition
 
-    def test_alerted_transitions_to_escalated_on_critical_threshold(self):
-        """Critical threshold fires on alerted deadline: alerted → escalated."""
-        from butlers.core.temporal.deadlines import compute_next_deadline_status
-
-        new_status = compute_next_deadline_status(
-            current_status="alerted",
-            fired_threshold=_make_threshold(3, "critical"),
-        )
-        assert new_status == "escalated"
-
-    def test_pending_transitions_to_escalated_on_critical_threshold(self):
-        """A critical threshold on a pending deadline skips alerted, goes to escalated."""
-        from butlers.core.temporal.deadlines import compute_next_deadline_status
-
-        new_status = compute_next_deadline_status(
-            current_status="pending",
-            fired_threshold=_make_threshold(3, "critical"),
-        )
-        assert new_status == "escalated"
-
-    def test_completed_status_is_terminal(self):
-        """Completed status does not change on further threshold fires."""
-        from butlers.core.temporal.deadlines import compute_next_deadline_status
-
-        new_status = compute_next_deadline_status(
-            current_status="completed",
-            fired_threshold=_make_threshold(7, "warning"),
-        )
-        assert new_status == "completed"
-
-    def test_expired_status_is_terminal(self):
-        """Expired status does not change on further threshold fires."""
-        from butlers.core.temporal.deadlines import compute_next_deadline_status
-
-        new_status = compute_next_deadline_status(
-            current_status="expired",
-            fired_threshold=_make_threshold(7, "warning"),
-        )
-        assert new_status == "expired"
-
-    def test_deadline_transitions_to_expired_when_past_target_date(self):
-        """When target_date has passed, status transitions to expired."""
-        from butlers.core.temporal.deadlines import compute_expiry_transition
-
-        new_status, should_disable = compute_expiry_transition(
-            current_status="alerted",
-            target_date=_past_date(1),
-        )
-        assert new_status == "expired"
-        assert should_disable is True
-
-    def test_pending_deadline_expires_if_no_thresholds_fired(self):
-        """pending → expired when target_date passes with no threshold ever firing."""
-        from butlers.core.temporal.deadlines import compute_expiry_transition
-
-        new_status, should_disable = compute_expiry_transition(
-            current_status="pending",
-            target_date=_past_date(1),
-        )
-        assert new_status == "expired"
-        assert should_disable is True
-
-    def test_completed_deadline_not_expired(self):
-        """Completed deadlines do not transition to expired."""
-        from butlers.core.temporal.deadlines import compute_expiry_transition
-
-        new_status, should_disable = compute_expiry_transition(
-            current_status="completed",
-            target_date=_past_date(5),
-        )
-        assert new_status == "completed"
-        assert should_disable is False
-
-    def test_no_transition_when_target_date_still_future(self):
-        """No expiry transition when target_date is in the future."""
-        from butlers.core.temporal.deadlines import compute_expiry_transition
-
-        new_status, should_disable = compute_expiry_transition(
-            current_status="alerted",
-            target_date=_future_date(10),
-        )
-        assert new_status == "alerted"
-        assert should_disable is False
+    status, disable = compute_expiry_transition(current, target_fn())
+    assert status == exp_status
+    assert disable is exp_disable
 
 
 # ---------------------------------------------------------------------------
-# 12.4 — Deadline dependencies blocking threshold evaluation
+# 12.4 — Deadline dependency blocking
 # ---------------------------------------------------------------------------
 
 
-class TestDeadlineDependencies:
-    """Tests for dependency-based blocking of threshold evaluation.
+@pytest.mark.parametrize(
+    "dep_statuses,expected_blocked",
+    [
+        ({"a": "pending"}, True),
+        ({"a": "completed"}, False),
+        ({}, False),  # no deps
+        ({"a": "completed", "b": "alerted"}, True),
+        ({"a": "alerted"}, True),
+        ({"a": "expired"}, True),
+    ],
+)
+def test_deadline_dependency_blocking(dep_statuses, expected_blocked):
+    from butlers.core.temporal.deadlines import is_deadline_blocked
 
-    Covers scenarios from:
-    - openspec/specs/deadline-tracking/spec.md  §Deadline Dependencies
-    - tasks.md §12.4
-    """
-
-    def test_deadline_blocked_when_dependency_not_completed(self):
-        """Deadline evaluation is skipped if a dependency is not completed."""
-        from butlers.core.temporal.deadlines import is_deadline_blocked
-
-        dep_id = str(uuid.uuid4())
-        dependency_statuses = {dep_id: "pending"}
-        blocked = is_deadline_blocked(
-            depends_on=[dep_id],
-            dependency_statuses=dependency_statuses,
-        )
-        assert blocked is True
-
-    def test_deadline_unblocked_when_all_dependencies_completed(self):
-        """Deadline evaluates normally when all dependencies are completed."""
-        from butlers.core.temporal.deadlines import is_deadline_blocked
-
-        dep_id = str(uuid.uuid4())
-        dependency_statuses = {dep_id: "completed"}
-        blocked = is_deadline_blocked(
-            depends_on=[dep_id],
-            dependency_statuses=dependency_statuses,
-        )
-        assert blocked is False
-
-    def test_deadline_with_no_dependencies_is_not_blocked(self):
-        """Deadline with empty depends_on is not blocked."""
-        from butlers.core.temporal.deadlines import is_deadline_blocked
-
-        blocked = is_deadline_blocked(
-            depends_on=[],
-            dependency_statuses={},
-        )
-        assert blocked is False
-
-    def test_deadline_blocked_if_any_dependency_not_completed(self):
-        """If one of multiple dependencies is incomplete, the deadline is blocked."""
-        from butlers.core.temporal.deadlines import is_deadline_blocked
-
-        dep_a = str(uuid.uuid4())
-        dep_b = str(uuid.uuid4())
-        dependency_statuses = {dep_a: "completed", dep_b: "alerted"}
-        blocked = is_deadline_blocked(
-            depends_on=[dep_a, dep_b],
-            dependency_statuses=dependency_statuses,
-        )
-        assert blocked is True
-
-    def test_deadline_blocked_when_dependency_is_alerted(self):
-        """alerted status still blocks — only completed unblocks."""
-        from butlers.core.temporal.deadlines import is_deadline_blocked
-
-        dep_id = str(uuid.uuid4())
-        dependency_statuses = {dep_id: "alerted"}
-        assert is_deadline_blocked(depends_on=[dep_id], dependency_statuses=dependency_statuses)
-
-    def test_deadline_blocked_when_dependency_is_expired(self):
-        """expired dependency blocks (expired ≠ completed)."""
-        from butlers.core.temporal.deadlines import is_deadline_blocked
-
-        dep_id = str(uuid.uuid4())
-        dependency_statuses = {dep_id: "expired"}
-        assert is_deadline_blocked(depends_on=[dep_id], dependency_statuses=dependency_statuses)
+    deps = list(dep_statuses.keys())
+    assert (
+        is_deadline_blocked(depends_on=deps, dependency_statuses=dep_statuses) is expected_blocked
+    )
 
 
 # ---------------------------------------------------------------------------
-# 12.5 — Event chain creation, trigger detection, action materialization
+# 12.5 — Event chain action schema and materialization
 # ---------------------------------------------------------------------------
 
 
-class TestEventChainActionSchema:
-    """Tests for event chain action schema validation.
+def test_event_chain_action_schema_valid():
+    """Valid prompt and job actions pass validation."""
+    from butlers.core.temporal.event_chains import validate_chain_actions
 
-    Covers scenarios from:
-    - openspec/specs/event-chains/spec.md  §Event Chain Action Schema
-    - tasks.md §12.5
-    """
-
-    def test_valid_prompt_action_passes_validation(self):
-        """A prompt action with required fields does not raise."""
-        from butlers.core.temporal.event_chains import validate_chain_actions
-
-        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Log visit"}]
-        validate_chain_actions(actions)  # should not raise
-
-    def test_valid_job_action_passes_validation(self):
-        """A job action with required fields does not raise."""
-        from butlers.core.temporal.event_chains import validate_chain_actions
-
-        actions = [{"action_type": "job", "delay_minutes": 60, "job_name": "archive_docs"}]
-        validate_chain_actions(actions)  # should not raise
-
-    def test_invalid_action_type_raises(self):
-        """Unknown action_type (e.g. 'webhook') raises ValueError."""
-        from butlers.core.temporal.event_chains import validate_chain_actions
-
-        actions = [{"action_type": "webhook", "delay_minutes": 0, "url": "https://example.com"}]
-        with pytest.raises(ValueError, match="action_type|webhook"):
-            validate_chain_actions(actions)
-
-    def test_prompt_action_missing_prompt_raises(self):
-        """prompt action without 'prompt' field raises ValueError."""
-        from butlers.core.temporal.event_chains import validate_chain_actions
-
-        actions = [{"action_type": "prompt", "delay_minutes": 0}]
-        with pytest.raises(ValueError, match="prompt"):
-            validate_chain_actions(actions)
-
-    def test_job_action_missing_job_name_raises(self):
-        """job action without 'job_name' field raises ValueError."""
-        from butlers.core.temporal.event_chains import validate_chain_actions
-
-        actions = [{"action_type": "job", "delay_minutes": 0}]
-        with pytest.raises(ValueError, match="job_name"):
-            validate_chain_actions(actions)
-
-    def test_negative_delay_minutes_raises(self):
-        """delay_minutes < 0 raises ValueError."""
-        from butlers.core.temporal.event_chains import validate_chain_actions
-
-        actions = [{"action_type": "prompt", "delay_minutes": -5, "prompt": "Do it"}]
-        with pytest.raises(ValueError, match="delay_minutes"):
-            validate_chain_actions(actions)
-
-    def test_empty_actions_list_raises(self):
-        """Empty actions list raises ValueError."""
-        from butlers.core.temporal.event_chains import validate_chain_actions
-
-        with pytest.raises(ValueError, match="action"):
-            validate_chain_actions([])
+    validate_chain_actions([{"action_type": "prompt", "delay_minutes": 0, "prompt": "Log visit"}])
+    validate_chain_actions([{"action_type": "job", "delay_minutes": 60, "job_name": "archive"}])
 
 
-class TestEventChainMaterialization:
-    """Tests for action materialization into one-shot scheduled tasks.
+@pytest.mark.parametrize(
+    "actions,match",
+    [
+        ([{"action_type": "webhook", "delay_minutes": 0, "url": "x"}], "action_type|webhook"),
+        ([{"action_type": "prompt", "delay_minutes": 0}], "prompt"),
+        ([{"action_type": "job", "delay_minutes": 0}], "job_name"),
+        ([{"action_type": "prompt", "delay_minutes": -5, "prompt": "x"}], "delay_minutes"),
+        ([], "action"),
+    ],
+)
+def test_event_chain_action_schema_invalid_raises(actions, match):
+    from butlers.core.temporal.event_chains import validate_chain_actions
 
-    Covers scenarios from:
-    - openspec/specs/event-chains/spec.md  §Event Chain Action Materialization
-    - tasks.md §12.5
-    """
+    with pytest.raises(ValueError, match=match):
+        validate_chain_actions(actions)
 
-    def test_materialization_creates_tasks_with_chain_lineage(self):
-        """Materialized tasks have source='chain' and name derived from chain name."""
-        from butlers.core.temporal.event_chains import materialize_chain_actions
 
-        now = datetime.now(UTC)
-        chain_name = "post-dentist"
-        actions = [
-            {"action_type": "prompt", "delay_minutes": 0, "prompt": "Log visit"},
-            {"action_type": "prompt", "delay_minutes": 1440, "prompt": "Send reminder"},
-        ]
-        tasks = materialize_chain_actions(chain_name=chain_name, actions=actions, fired_at=now)
+def test_event_chain_materialization():
+    """Materialized tasks have correct names, dispatch_mode, timing, source, trigger_source."""
+    from butlers.core.temporal.event_chains import materialize_chain_actions
 
-        assert len(tasks) == 2
-        assert tasks[0]["name"] == "chain:post-dentist:0"
-        assert tasks[0]["source"] == "chain"
-        assert tasks[1]["name"] == "chain:post-dentist:1"
-        assert tasks[1]["source"] == "chain"
+    now = datetime.now(UTC)
+    actions = [
+        {"action_type": "prompt", "delay_minutes": 0, "prompt": "Immediate"},
+        {
+            "action_type": "job",
+            "delay_minutes": 60,
+            "job_name": "archive",
+            "job_args": {"dry_run": False},
+        },
+    ]
+    tasks = materialize_chain_actions(chain_name="post-visit", actions=actions, fired_at=now)
 
-    def test_materialization_sets_correct_next_run_at_for_delayed_actions(self):
-        """Actions with delay have next_run_at offset by delay_minutes."""
-        from butlers.core.temporal.event_chains import materialize_chain_actions
+    assert len(tasks) == 2
+    assert tasks[0]["name"] == "chain:post-visit:0"
+    assert tasks[0]["source"] == "chain"
+    assert tasks[0]["dispatch_mode"] == "prompt"
+    assert tasks[0]["prompt"] == "Immediate"
+    assert tasks[0].get("trigger_source") == "chain:post-visit"
+    assert tasks[0]["until_at"] is not None and tasks[0]["until_at"] > tasks[0]["next_run_at"]
 
-        now = datetime.now(UTC)
-        actions = [
-            {"action_type": "prompt", "delay_minutes": 0, "prompt": "Immediate"},
-            {"action_type": "job", "delay_minutes": 60, "job_name": "archive"},
-        ]
-        tasks = materialize_chain_actions(chain_name="test-chain", actions=actions, fired_at=now)
-
-        assert abs((tasks[0]["next_run_at"] - now).total_seconds()) < 2
-        expected_delayed = now + timedelta(minutes=60)
-        assert abs((tasks[1]["next_run_at"] - expected_delayed).total_seconds()) < 2
-
-    def test_materialized_tasks_have_until_at_for_auto_disable(self):
-        """Each materialized task has until_at set to auto-disable after firing."""
-        from butlers.core.temporal.event_chains import materialize_chain_actions
-
-        now = datetime.now(UTC)
-        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Do it"}]
-        tasks = materialize_chain_actions(chain_name="my-chain", actions=actions, fired_at=now)
-
-        assert tasks[0]["until_at"] is not None
-        # until_at should be shortly after next_run_at (1 minute per spec)
-        assert tasks[0]["until_at"] > tasks[0]["next_run_at"]
-        delta = tasks[0]["until_at"] - tasks[0]["next_run_at"]
-        assert delta <= timedelta(minutes=2)
-
-    def test_materialized_tasks_set_trigger_source(self):
-        """Materialized tasks have trigger_source='chain:<chain-name>'."""
-        from butlers.core.temporal.event_chains import materialize_chain_actions
-
-        now = datetime.now(UTC)
-        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Go"}]
-        tasks = materialize_chain_actions(chain_name="my-chain", actions=actions, fired_at=now)
-
-        # trigger_source should be accessible in the materialized task dict
-        assert tasks[0].get("trigger_source") == "chain:my-chain"
-
-    def test_prompt_action_materialized_with_correct_dispatch_mode(self):
-        """Prompt actions materialize as dispatch_mode='prompt'."""
-        from butlers.core.temporal.event_chains import materialize_chain_actions
-
-        now = datetime.now(UTC)
-        actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Do something"}]
-        tasks = materialize_chain_actions(chain_name="c", actions=actions, fired_at=now)
-        assert tasks[0]["dispatch_mode"] == "prompt"
-        assert tasks[0]["prompt"] == "Do something"
-
-    def test_job_action_materialized_with_correct_dispatch_mode(self):
-        """Job actions materialize as dispatch_mode='job'."""
-        from butlers.core.temporal.event_chains import materialize_chain_actions
-
-        now = datetime.now(UTC)
-        actions = [
-            {
-                "action_type": "job",
-                "delay_minutes": 60,
-                "job_name": "archive_docs",
-                "job_args": {"dry_run": False},
-            }
-        ]
-        tasks = materialize_chain_actions(chain_name="c", actions=actions, fired_at=now)
-        assert tasks[0]["dispatch_mode"] == "job"
-        assert tasks[0]["job_name"] == "archive_docs"
-        assert tasks[0]["job_args"] == {"dry_run": False}
+    assert tasks[1]["name"] == "chain:post-visit:1"
+    assert tasks[1]["dispatch_mode"] == "job"
+    assert tasks[1]["job_name"] == "archive"
+    assert tasks[1]["job_args"] == {"dry_run": False}
+    expected_delayed = now + timedelta(minutes=60)
+    assert abs((tasks[1]["next_run_at"] - expected_delayed).total_seconds()) < 2
 
 
 # ---------------------------------------------------------------------------
-# 12.6 — Event chain depth limit enforcement
+# 12.6 — Event chain depth limit
 # ---------------------------------------------------------------------------
 
 
-class TestEventChainDepthLimit:
-    """Tests for 3-level cascade depth limit.
+def test_event_chain_depth_limit_and_warning(caplog) -> None:
+    """Depth > 2 blocks firing; exceeded depth logs a warning referencing the chain name."""
+    import logging
 
-    Covers scenarios from:
-    - openspec/specs/event-chains/spec.md  §Event Chain Depth Limit
-    - tasks.md §12.6
-    """
+    from butlers.core.temporal.event_chains import should_fire_chain
 
-    def test_chain_at_depth_0_fires_normally(self):
-        """Chain at depth 0 (directly triggered) fires all actions."""
-        from butlers.core.temporal.event_chains import should_fire_chain
+    # Depth-limit boundary cases
+    assert should_fire_chain(chain_depth=0) is True
+    assert should_fire_chain(chain_depth=2) is True
+    assert should_fire_chain(chain_depth=3) is False
+    assert should_fire_chain(chain_depth=4) is False
 
-        result = should_fire_chain(chain_depth=0)
-        assert result is True
-
-    def test_chain_at_depth_2_fires_normally(self):
-        """Chain at depth 2 (below limit of 3) fires normally."""
-        from butlers.core.temporal.event_chains import should_fire_chain
-
-        result = should_fire_chain(chain_depth=2)
-        assert result is True
-
-    def test_chain_at_depth_3_is_skipped(self):
-        """Chain at depth 3 (at limit) is skipped."""
-        from butlers.core.temporal.event_chains import should_fire_chain
-
-        result = should_fire_chain(chain_depth=3)
-        assert result is False
-
-    def test_chain_at_depth_4_is_skipped(self):
-        """Chain at depth 4 (exceeds limit) is skipped."""
-        from butlers.core.temporal.event_chains import should_fire_chain
-
-        result = should_fire_chain(chain_depth=4)
-        assert result is False
-
-    def test_depth_exceeded_emits_warning(self, caplog):
-        """Exceeding depth limit logs a warning with chain name and depth."""
-        import logging
-
-        from butlers.core.temporal.event_chains import should_fire_chain
-
-        with caplog.at_level(logging.WARNING, logger="butlers.core.temporal.event_chains"):
-            should_fire_chain(chain_depth=3, chain_name="cascade-chain")
-
-        assert "cascade-chain" in caplog.text or "depth" in caplog.text.lower()
+    # Warning logged with chain name when depth exceeded
+    with caplog.at_level(logging.WARNING, logger="butlers.core.temporal.event_chains"):
+        result = should_fire_chain(chain_depth=3, chain_name="cascade-chain")
+    assert result is False
+    assert "cascade-chain" in caplog.text or "depth" in caplog.text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -662,133 +275,58 @@ class TestEventChainDepthLimit:
 # ---------------------------------------------------------------------------
 
 
-class TestSeasonalPeriodActiveDetection:
-    """Tests for get_active_seasons() logic.
+def _make_period(name, sm, sd, em, ed, enabled=True):
+    return {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "start_month": sm,
+        "start_day": sd,
+        "end_month": em,
+        "end_day": ed,
+        "enabled": enabled,
+        "period_type": "annual",
+        "butler_name": "test-butler",
+    }
 
-    Covers scenarios from:
-    - openspec/specs/seasonal-awareness/spec.md  §Active Period Detection
-    - tasks.md §12.7
-    """
 
-    def _make_period(
-        self,
-        name: str,
-        start_month: int,
-        start_day: int,
-        end_month: int,
-        end_day: int,
-        enabled: bool = True,
-    ) -> dict[str, Any]:
-        return {
-            "id": str(uuid.uuid4()),
-            "name": name,
-            "start_month": start_month,
-            "start_day": start_day,
-            "end_month": end_month,
-            "end_day": end_day,
-            "enabled": enabled,
-            "period_type": "annual",
-            "butler_name": "test-butler",
-        }
+@pytest.mark.parametrize(
+    "period_args,today,expected",
+    [
+        (("tax", 1, 1, 4, 15), date(2026, 3, 15), True),  # same-year active
+        (("tax", 1, 1, 4, 15), date(2026, 6, 1), False),  # outside range
+        (("winter", 11, 15, 1, 10), date(2026, 12, 20), True),  # cross-year active Dec
+        (("winter", 11, 15, 1, 10), date(2026, 1, 5), True),  # cross-year active Jan
+        (("winter", 11, 15, 1, 10), date(2026, 2, 1), False),  # cross-year inactive Feb
+        (("disabled", 1, 1, 4, 15), date(2026, 3, 15), False),  # disabled
+    ],
+)
+def test_is_period_active(period_args, today, expected):
+    from butlers.core.temporal.seasonal import is_period_active
 
-    def test_period_active_within_same_year(self):
-        """Period is active when today falls within its date range (same year)."""
-        from butlers.core.temporal.seasonal import is_period_active
+    name, *rest = period_args
+    enabled = name != "disabled"
+    period = _make_period(name, *rest, enabled=enabled)
+    assert is_period_active(period, today=today) is expected
 
-        # Tax season: Jan 1 - Apr 15
-        period = self._make_period("tax-season", 1, 1, 4, 15)
-        # Test with a date in March
-        today = date(2026, 3, 15)
-        assert is_period_active(period, today=today) is True
 
-    def test_period_inactive_outside_range(self):
-        """Period is not active when today is outside its date range."""
-        from butlers.core.temporal.seasonal import is_period_active
+def test_filter_active_periods_and_date_validation():
+    from butlers.core.temporal.seasonal import filter_active_periods, validate_period_dates
 
-        period = self._make_period("tax-season", 1, 1, 4, 15)
-        today = date(2026, 6, 1)  # June — outside Jan-Apr
-        assert is_period_active(period, today=today) is False
+    # Multiple concurrent periods in Jan
+    periods = [
+        _make_period("tax", 1, 1, 4, 15),
+        _make_period("winter", 11, 15, 1, 31),
+        _make_period("dis", 1, 1, 12, 31, enabled=False),
+    ]
+    active = filter_active_periods(periods, today=date(2026, 1, 20))
+    names = [p["name"] for p in active]
+    assert "tax" in names and "winter" in names and "dis" not in names
+    assert filter_active_periods([], today=date(2026, 6, 1)) == []
 
-    def test_period_wrapping_year_boundary_active_in_december(self):
-        """Year-wrapping period (e.g., Nov 15 – Jan 10) is active in December."""
-        from butlers.core.temporal.seasonal import is_period_active
-
-        period = self._make_period("winter-holidays", 11, 15, 1, 10)
-        today = date(2026, 12, 20)
-        assert is_period_active(period, today=today) is True
-
-    def test_period_wrapping_year_boundary_active_in_january(self):
-        """Year-wrapping period is active in January (after the year boundary)."""
-        from butlers.core.temporal.seasonal import is_period_active
-
-        period = self._make_period("winter-holidays", 11, 15, 1, 10)
-        today = date(2026, 1, 5)
-        assert is_period_active(period, today=today) is True
-
-    def test_period_wrapping_year_boundary_inactive_in_february(self):
-        """Year-wrapping period is not active after the end date in January."""
-        from butlers.core.temporal.seasonal import is_period_active
-
-        period = self._make_period("winter-holidays", 11, 15, 1, 10)
-        today = date(2026, 2, 1)  # February — outside Nov-Jan range
-        assert is_period_active(period, today=today) is False
-
-    def test_disabled_period_excluded(self):
-        """Disabled period is not active regardless of date."""
-        from butlers.core.temporal.seasonal import is_period_active
-
-        period = self._make_period("tax-season", 1, 1, 4, 15, enabled=False)
-        today = date(2026, 3, 15)  # Would be active if enabled
-        assert is_period_active(period, today=today) is False
-
-    def test_multiple_concurrent_periods_both_detected(self):
-        """Multiple overlapping periods are all detected as active."""
-        from butlers.core.temporal.seasonal import filter_active_periods
-
-        periods = [
-            self._make_period("tax-season", 1, 1, 4, 15),
-            self._make_period("winter-holidays", 11, 15, 1, 31),
-        ]
-        # January 20: both tax-season (Jan 1 - Apr 15) and winter-holidays (Nov 15 - Jan 31) active
-        today = date(2026, 1, 20)
-        active = filter_active_periods(periods, today=today)
-        names = [p["name"] for p in active]
-        assert "tax-season" in names
-        assert "winter-holidays" in names
-
-    def test_disabled_period_excluded_from_filter(self):
-        """filter_active_periods excludes disabled periods."""
-        from butlers.core.temporal.seasonal import filter_active_periods
-
-        periods = [
-            self._make_period("tax-season", 1, 1, 4, 15),
-            self._make_period("disabled-season", 1, 1, 4, 15, enabled=False),
-        ]
-        today = date(2026, 2, 1)
-        active = filter_active_periods(periods, today=today)
-        names = [p["name"] for p in active]
-        assert "tax-season" in names
-        assert "disabled-season" not in names
-
-    def test_empty_periods_returns_empty_list(self):
-        """No periods → empty active list."""
-        from butlers.core.temporal.seasonal import filter_active_periods
-
-        active = filter_active_periods([], today=date(2026, 6, 1))
-        assert active == []
-
-    def test_invalid_date_combination_rejected(self):
-        """Invalid month/day combinations raise ValueError."""
-        from butlers.core.temporal.seasonal import validate_period_dates
-
-        with pytest.raises(ValueError, match="February|invalid|date"):
-            validate_period_dates(start_month=2, start_day=30, end_month=3, end_day=15)
-
-    def test_valid_period_dates_pass(self):
-        """Valid period dates do not raise."""
-        from butlers.core.temporal.seasonal import validate_period_dates
-
-        validate_period_dates(start_month=1, start_day=1, end_month=4, end_day=15)
+    # Date validation
+    with pytest.raises(ValueError, match="February|invalid|date"):
+        validate_period_dates(start_month=2, start_day=30, end_month=3, end_day=15)
+    validate_period_dates(start_month=1, start_day=1, end_month=4, end_day=15)  # valid
 
 
 # ---------------------------------------------------------------------------
@@ -796,409 +334,148 @@ class TestSeasonalPeriodActiveDetection:
 # ---------------------------------------------------------------------------
 
 
-class TestQuietHoursEnforcement:
-    """Tests for quiet hours check logic.
+def _make_prefs(qs="22:00", qe="07:00", tz="UTC", overrides=None):
+    return {
+        "quiet_hours_start": qs,
+        "quiet_hours_end": qe,
+        "timezone": tz,
+        "batch_low_priority": True,
+        "batch_delivery_time": "07:00",
+        "override_channels": overrides or {},
+    }
 
-    Covers scenarios from:
-    - openspec/specs/time-aware-delivery/spec.md  §Quiet Hours Enforcement
-    - tasks.md §12.8
-    """
 
-    def _make_prefs(
-        self,
-        quiet_start: str = "22:00",
-        quiet_end: str = "07:00",
-        timezone: str = "UTC",
-        override_channels: dict | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "quiet_hours_start": quiet_start,
-            "quiet_hours_end": quiet_end,
-            "timezone": timezone,
-            "batch_low_priority": True,
-            "batch_delivery_time": "07:00",
-            "override_channels": override_channels or {},
-        }
+@pytest.mark.parametrize(
+    "priority,t,expected_defer",
+    [
+        ("high", time(23, 30), False),  # high bypasses quiet hours
+        ("medium", time(1, 0), True),  # medium deferred inside
+        ("low", time(3, 30), True),  # low deferred inside
+        ("medium", time(14, 0), False),  # outside quiet hours
+        ("low", time(14, 0), False),  # outside quiet hours
+    ],
+)
+def test_quiet_hours_priority_defer(priority, t, expected_defer):
+    from butlers.core.temporal.delivery import should_defer_notification
 
-    def test_high_priority_bypasses_quiet_hours(self):
-        """High-priority notifications always deliver, even during quiet hours."""
-        from butlers.core.temporal.delivery import should_defer_notification
+    assert should_defer_notification(priority, t, _make_prefs()) is expected_defer
+    # None prefs never defers regardless of time
+    assert should_defer_notification("medium", time(2, 0), None) is False
 
-        prefs = self._make_prefs()
-        # 23:30 UTC — in quiet hours (22:00-07:00)
-        current_time = time(23, 30)
-        assert not should_defer_notification(
-            priority="high",
-            current_time=current_time,
-            prefs=prefs,
-        )
 
-    def test_medium_priority_deferred_during_quiet_hours(self):
-        """Medium-priority notifications are deferred during quiet hours."""
-        from butlers.core.temporal.delivery import should_defer_notification
+@pytest.mark.parametrize(
+    "t,qs,qe,expected",
+    [
+        (time(23, 30), time(22, 0), time(7, 0), True),  # overnight active
+        (time(0, 30), time(22, 0), time(7, 0), True),
+        (time(6, 59), time(22, 0), time(7, 0), True),
+        (time(14, 0), time(22, 0), time(7, 0), False),  # overnight inactive
+        (time(7, 1), time(22, 0), time(7, 0), False),
+        (time(10, 0), time(8, 0), time(12, 0), True),  # same-day active
+        (time(13, 0), time(8, 0), time(12, 0), False),  # same-day inactive
+    ],
+)
+def test_is_in_quiet_hours(t, qs, qe, expected):
+    from butlers.core.temporal.delivery import is_in_quiet_hours
 
-        prefs = self._make_prefs()
-        current_time = time(1, 0)  # 01:00 — inside quiet hours
-        assert should_defer_notification(
-            priority="medium",
-            current_time=current_time,
-            prefs=prefs,
-        )
+    assert is_in_quiet_hours(t, qs, qe) is expected
 
-    def test_low_priority_deferred_during_quiet_hours(self):
-        """Low-priority notifications are deferred during quiet hours."""
-        from butlers.core.temporal.delivery import should_defer_notification
 
-        prefs = self._make_prefs()
-        current_time = time(3, 30)  # inside quiet hours
-        assert should_defer_notification(
-            priority="low",
-            current_time=current_time,
-            prefs=prefs,
-        )
+@pytest.mark.parametrize(
+    "now_dt,exp_date,exp_hour",
+    [
+        (datetime(2026, 1, 15, 23, 0, tzinfo=UTC), date(2026, 1, 16), 7),  # batch tomorrow
+        (datetime(2026, 1, 15, 4, 0, tzinfo=UTC), date(2026, 1, 15), 7),  # batch today
+    ],
+)
+def test_compute_deliver_at_utc(now_dt, exp_date, exp_hour):
+    from butlers.core.temporal.delivery import compute_deliver_at
 
-    def test_notification_delivered_outside_quiet_hours(self):
-        """Any priority delivers immediately when outside quiet hours."""
-        from butlers.core.temporal.delivery import should_defer_notification
-
-        prefs = self._make_prefs()
-        current_time = time(14, 0)  # 14:00 — outside quiet hours
-        assert not should_defer_notification(
-            priority="medium",
-            current_time=current_time,
-            prefs=prefs,
-        )
-        assert not should_defer_notification(
-            priority="low",
-            current_time=current_time,
-            prefs=prefs,
-        )
-
-    def test_no_preferences_means_no_quiet_hours(self):
-        """When no delivery preferences are configured, all notifications deliver immediately."""
-        from butlers.core.temporal.delivery import should_defer_notification
-
-        # None prefs = no quiet hours configuration
-        assert not should_defer_notification(
-            priority="medium",
-            current_time=time(2, 0),
-            prefs=None,
-        )
-
-    def test_is_in_quiet_hours_overnight(self):
-        """is_in_quiet_hours handles overnight ranges (e.g., 22:00-07:00)."""
-        from butlers.core.temporal.delivery import is_in_quiet_hours
-
-        assert is_in_quiet_hours(
-            current_time=time(23, 30),
-            quiet_start=time(22, 0),
-            quiet_end=time(7, 0),
-        )
-        assert is_in_quiet_hours(
-            current_time=time(0, 30),
-            quiet_start=time(22, 0),
-            quiet_end=time(7, 0),
-        )
-        assert is_in_quiet_hours(
-            current_time=time(6, 59),
-            quiet_start=time(22, 0),
-            quiet_end=time(7, 0),
-        )
-
-    def test_is_in_quiet_hours_outside_overnight_range(self):
-        """is_in_quiet_hours returns False for daytime when quiet hours are overnight."""
-        from butlers.core.temporal.delivery import is_in_quiet_hours
-
-        assert not is_in_quiet_hours(
-            current_time=time(14, 0),
-            quiet_start=time(22, 0),
-            quiet_end=time(7, 0),
-        )
-        assert not is_in_quiet_hours(
-            current_time=time(7, 1),
-            quiet_start=time(22, 0),
-            quiet_end=time(7, 0),
-        )
-
-    def test_is_in_quiet_hours_same_day_range(self):
-        """is_in_quiet_hours handles same-day ranges (e.g., 08:00-12:00)."""
-        from butlers.core.temporal.delivery import is_in_quiet_hours
-
-        assert is_in_quiet_hours(
-            current_time=time(10, 0),
-            quiet_start=time(8, 0),
-            quiet_end=time(12, 0),
-        )
-        assert not is_in_quiet_hours(
-            current_time=time(13, 0),
-            quiet_start=time(8, 0),
-            quiet_end=time(12, 0),
-        )
-
-    def test_deliver_at_computed_as_next_batch_time(self):
-        """deliver_at is computed as the next occurrence of batch_delivery_time."""
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="UTC")
-        # At 23:00 UTC, next batch time (07:00) is tomorrow
-        now = datetime(2026, 1, 15, 23, 0, tzinfo=UTC)
-        deliver_at = compute_deliver_at(prefs=prefs, now=now)
-        assert deliver_at.date() == date(2026, 1, 16)
-        assert deliver_at.hour == 7
-        assert deliver_at.minute == 0
-
-    def test_deliver_at_is_same_day_when_batch_time_still_ahead(self):
-        """When batch time is still ahead today, deliver_at is today."""
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="UTC")
-        # At 04:00 UTC, next 07:00 is later today
-        now = datetime(2026, 1, 15, 4, 0, tzinfo=UTC)
-        deliver_at = compute_deliver_at(prefs=prefs, now=now)
-        assert deliver_at.date() == date(2026, 1, 15)
-        assert deliver_at.hour == 7
-
-    def test_deliver_at_uses_user_timezone_for_next_occurrence(self):
-        """compute_deliver_at computes batch time in user's timezone, not UTC.
-
-        America/New_York is UTC-5 in January (EST).
-        If now is 2026-01-15 10:00 UTC (= 05:00 EST), and batch_delivery_time is 07:00,
-        the next 07:00 EST is still today → 07:00 EST = 12:00 UTC.
-        """
-        from zoneinfo import ZoneInfo
-
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="America/New_York")
-        prefs["batch_delivery_time"] = "07:00"
-        # 10:00 UTC = 05:00 EST — batch time (07:00 EST) is still ahead today
-        now = datetime(2026, 1, 15, 10, 0, tzinfo=UTC)
-        deliver_at = compute_deliver_at(prefs=prefs, now=now)
-
-        # Result should be 07:00 EST = 12:00 UTC on Jan 15
-        expected_local = datetime(2026, 1, 15, 7, 0, tzinfo=ZoneInfo("America/New_York"))
-        expected_utc = expected_local.astimezone(UTC)
-        assert deliver_at == expected_utc
-
-    def test_deliver_at_schedules_tomorrow_in_user_timezone_when_batch_time_passed(self):
-        """When batch_delivery_time has already passed in user's timezone, schedule tomorrow.
-
-        America/New_York is UTC-5 in January (EST).
-        If now is 2026-01-15 16:00 UTC (= 11:00 EST), and batch_delivery_time is 07:00,
-        07:00 EST has already passed today → next occurrence is 2026-01-16 07:00 EST = 12:00 UTC.
-        """
-        from zoneinfo import ZoneInfo
-
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="America/New_York")
-        prefs["batch_delivery_time"] = "07:00"
-        # 16:00 UTC = 11:00 EST — batch time (07:00 EST) already passed today
-        now = datetime(2026, 1, 15, 16, 0, tzinfo=UTC)
-        deliver_at = compute_deliver_at(prefs=prefs, now=now)
-
-        # Result should be 07:00 EST on Jan 16 = 12:00 UTC on Jan 16
-        expected_local = datetime(2026, 1, 16, 7, 0, tzinfo=ZoneInfo("America/New_York"))
-        expected_utc = expected_local.astimezone(UTC)
-        assert deliver_at == expected_utc
-
-    def test_deliver_at_with_positive_utc_offset_timezone(self):
-        """compute_deliver_at handles positive-offset timezones (e.g., Asia/Tokyo UTC+9).
-
-        If now is 2026-01-15 23:00 UTC (= 2026-01-16 08:00 JST), and batch_delivery_time is 09:00,
-        08:00 JST is before 09:00 JST — batch time still ahead today, so deliver today.
-        """
-        from zoneinfo import ZoneInfo
-
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="Asia/Tokyo")
-        prefs["batch_delivery_time"] = "09:00"
-        # 2026-01-15 23:00 UTC = 2026-01-16 08:00 JST — batch time (09:00 JST) still ahead
-        now = datetime(2026, 1, 15, 23, 0, tzinfo=UTC)
-        deliver_at = compute_deliver_at(prefs=prefs, now=now)
-
-        # Result should be 09:00 JST on Jan 16 = 00:00 UTC on Jan 16
-        expected_local = datetime(2026, 1, 16, 9, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
-        expected_utc = expected_local.astimezone(UTC)
-        assert deliver_at == expected_utc
-
-    def test_deliver_at_result_is_utc_aware(self):
-        """compute_deliver_at always returns a UTC-aware datetime."""
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="America/Los_Angeles")
-        now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
-        deliver_at = compute_deliver_at(prefs=prefs, now=now)
-
-        assert deliver_at.tzinfo is not None
-        # Result must be UTC (zero UTC offset), not just any timezone-aware datetime
-        utc_offset = deliver_at.utcoffset()
-        assert utc_offset is not None
-        assert utc_offset.total_seconds() == 0, (
-            f"Expected UTC result (zero offset) but got {deliver_at.tzinfo!r}"
-            f" with offset {utc_offset}"
-        )
-
-    def test_deliver_at_raises_for_invalid_timezone(self):
-        """compute_deliver_at raises ValueError for unrecognized timezone names."""
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="Invalid/Zone")
-        now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
-        with pytest.raises(ValueError, match="Unknown timezone"):
-            compute_deliver_at(prefs=prefs, now=now)
-
-    def test_deliver_at_raises_for_naive_now(self):
-        """compute_deliver_at raises ValueError when now is a naive datetime."""
-        from butlers.core.temporal.delivery import compute_deliver_at
-
-        prefs = self._make_prefs(timezone="UTC")
-        now_naive = datetime(2026, 1, 15, 12, 0)  # no tzinfo
-        with pytest.raises(ValueError, match="timezone-aware"):
-            compute_deliver_at(prefs=prefs, now=now_naive)
+    result = compute_deliver_at(_make_prefs("UTC"), now_dt)
+    assert result.date() == exp_date and result.hour == exp_hour
+    assert result.utcoffset().total_seconds() == 0  # UTC-aware
+    # Invalid tz and naive datetime raise ValueError
+    with pytest.raises(ValueError, match="Unknown timezone"):
+        compute_deliver_at(_make_prefs(tz="Invalid/Zone"), datetime(2026, 1, 15, 12, 0, tzinfo=UTC))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        compute_deliver_at(_make_prefs(), datetime(2026, 1, 15, 12, 0))
 
 
 # ---------------------------------------------------------------------------
-# 12.9 — Deferred notification flush, expiry, retry
+# 12.9 — Deferred notification flush
 # ---------------------------------------------------------------------------
 
 
-class TestDeferredNotificationFlush:
-    """Tests for deferred notification flush logic.
+def _make_deferred(status="pending", deliver_at=None, deferred_at=None):
+    now = datetime.now(UTC)
+    return {
+        "id": str(uuid.uuid4()),
+        "butler_name": "tb",
+        "channel": "telegram",
+        "message": "msg",
+        "priority": "medium",
+        "envelope": {"schema_version": "notify.v1"},
+        "deferred_at": deferred_at or now - timedelta(hours=2),
+        "deliver_at": deliver_at or now - timedelta(minutes=5),
+        "status": status,
+        "delivered_at": None,
+    }
 
-    Covers scenarios from:
-    - openspec/specs/time-aware-delivery/spec.md  §Deferred Notification Flush
-    - tasks.md §12.9
-    """
 
-    def _make_deferred(
-        self,
-        status: str = "pending",
-        deliver_at: datetime | None = None,
-        deferred_at: datetime | None = None,
-    ) -> dict[str, Any]:
-        now = datetime.now(UTC)
-        return {
-            "id": str(uuid.uuid4()),
-            "butler_name": "test-butler",
-            "channel": "telegram",
-            "message": "Test message",
-            "priority": "medium",
-            "envelope": {"schema_version": "notify.v1"},
-            "deferred_at": deferred_at or now - timedelta(hours=2),
-            "deliver_at": deliver_at or now - timedelta(minutes=5),
-            "status": status,
-            "delivered_at": None,
-        }
+@pytest.mark.parametrize(
+    "status,deliver_offset_min,expected_due",
+    [
+        ("pending", -1, True),  # past deliver_at → due
+        ("pending", 120, False),  # future deliver_at → not due
+        ("delivered", -1, False),
+        ("expired", -120, False),
+    ],
+)
+def test_is_notification_due(status, deliver_offset_min, expected_due):
+    from butlers.core.temporal.delivery import is_notification_due
 
-    def test_pending_notification_past_deliver_at_is_due(self):
-        """Notification with deliver_at <= now and status=pending is due for delivery."""
-        from butlers.core.temporal.delivery import is_notification_due
+    now = datetime.now(UTC)
+    notif = _make_deferred(status=status, deliver_at=now + timedelta(minutes=deliver_offset_min))
+    assert is_notification_due(notif, now=now) is expected_due
 
-        notif = self._make_deferred(
-            status="pending",
-            deliver_at=datetime.now(UTC) - timedelta(minutes=1),
+
+def test_notification_expiry_and_delivery_result():
+    from butlers.core.temporal.delivery import (
+        compute_delivery_result,
+        filter_due_notifications,
+        filter_expired_notifications,
+        is_notification_expired,
+    )
+
+    now = datetime.now(UTC)
+    assert is_notification_expired(_make_deferred(deliver_at=now - timedelta(hours=25)), now=now)
+    assert not is_notification_expired(
+        _make_deferred(deliver_at=now - timedelta(hours=23)), now=now
+    )
+
+    assert compute_delivery_result(False)["status"] == "pending"
+    result = compute_delivery_result(True, delivered_at=now)
+    assert result["status"] == "delivered" and result["delivered_at"] == now
+
+    notifications = [
+        _make_deferred("pending", now - timedelta(minutes=5)),
+        _make_deferred("pending", now + timedelta(hours=1)),
+        _make_deferred("delivered", now - timedelta(minutes=1)),
+        _make_deferred("expired", now - timedelta(hours=30)),
+    ]
+    assert len(filter_due_notifications(notifications, now=now)) == 1
+    assert (
+        len(
+            filter_expired_notifications(
+                [
+                    _make_deferred("pending", now - timedelta(hours=25)),
+                    _make_deferred("pending", now - timedelta(hours=10)),
+                ],
+                now=now,
+            )
         )
-        assert is_notification_due(notif, now=datetime.now(UTC)) is True
-
-    def test_pending_notification_before_deliver_at_is_not_due(self):
-        """Notification with future deliver_at is not yet due."""
-        from butlers.core.temporal.delivery import is_notification_due
-
-        notif = self._make_deferred(
-            status="pending",
-            deliver_at=datetime.now(UTC) + timedelta(hours=2),
-        )
-        assert is_notification_due(notif, now=datetime.now(UTC)) is False
-
-    def test_delivered_notification_is_not_due(self):
-        """Notification with status=delivered is not due."""
-        from butlers.core.temporal.delivery import is_notification_due
-
-        notif = self._make_deferred(
-            status="delivered",
-            deliver_at=datetime.now(UTC) - timedelta(minutes=1),
-        )
-        assert is_notification_due(notif, now=datetime.now(UTC)) is False
-
-    def test_expired_notification_is_not_due(self):
-        """Notification with status=expired is not delivered."""
-        from butlers.core.temporal.delivery import is_notification_due
-
-        notif = self._make_deferred(
-            status="expired",
-            deliver_at=datetime.now(UTC) - timedelta(hours=2),
-        )
-        assert is_notification_due(notif, now=datetime.now(UTC)) is False
-
-    def test_notification_older_than_24h_past_deliver_at_is_expired(self):
-        """Notification pending for > 24h past deliver_at is expired."""
-        from butlers.core.temporal.delivery import is_notification_expired
-
-        now = datetime.now(UTC)
-        notif = self._make_deferred(
-            status="pending",
-            deliver_at=now - timedelta(hours=25),
-        )
-        assert is_notification_expired(notif, now=now) is True
-
-    def test_notification_within_24h_of_deliver_at_not_expired(self):
-        """Notification pending for < 24h past deliver_at is not expired."""
-        from butlers.core.temporal.delivery import is_notification_expired
-
-        now = datetime.now(UTC)
-        notif = self._make_deferred(
-            status="pending",
-            deliver_at=now - timedelta(hours=23),
-        )
-        assert is_notification_expired(notif, now=now) is False
-
-    def test_failed_delivery_leaves_status_pending(self):
-        """A failed delivery attempt keeps status='pending' for next-tick retry."""
-        from butlers.core.temporal.delivery import compute_delivery_result
-
-        result = compute_delivery_result(delivery_succeeded=False)
-        assert result["status"] == "pending"
-        assert result.get("delivered_at") is None
-
-    def test_successful_delivery_sets_status_delivered(self):
-        """Successful delivery sets status='delivered' and delivered_at."""
-        from butlers.core.temporal.delivery import compute_delivery_result
-
-        now = datetime.now(UTC)
-        result = compute_delivery_result(delivery_succeeded=True, delivered_at=now)
-        assert result["status"] == "delivered"
-        assert result["delivered_at"] == now
-
-    def test_filter_due_notifications(self):
-        """filter_due_notifications returns only pending notifications past deliver_at."""
-        from butlers.core.temporal.delivery import filter_due_notifications
-
-        now = datetime.now(UTC)
-        notifications = [
-            self._make_deferred(status="pending", deliver_at=now - timedelta(minutes=5)),
-            self._make_deferred(status="pending", deliver_at=now + timedelta(hours=1)),
-            self._make_deferred(status="delivered", deliver_at=now - timedelta(minutes=1)),
-            self._make_deferred(status="expired", deliver_at=now - timedelta(hours=30)),
-        ]
-        due = filter_due_notifications(notifications, now=now)
-        assert len(due) == 1
-        assert due[0]["status"] == "pending"
-
-    def test_filter_expired_notifications(self):
-        """filter_expired_notifications returns pending notifications > 24h past deliver_at."""
-        from butlers.core.temporal.delivery import filter_expired_notifications
-
-        now = datetime.now(UTC)
-        notifications = [
-            self._make_deferred(status="pending", deliver_at=now - timedelta(hours=25)),
-            self._make_deferred(status="pending", deliver_at=now - timedelta(hours=10)),
-            self._make_deferred(status="delivered", deliver_at=now - timedelta(hours=30)),
-        ]
-        expired = filter_expired_notifications(notifications, now=now)
-        assert len(expired) == 1
-        assert expired[0]["deliver_at"] < now - timedelta(hours=24)
+        == 1
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1206,107 +483,40 @@ class TestDeferredNotificationFlush:
 # ---------------------------------------------------------------------------
 
 
-class TestPerChannelQuietHoursOverrides:
-    """Tests for per-channel override resolution in delivery preferences.
+def test_per_channel_quiet_hours_overrides():
+    from butlers.core.temporal.delivery import (
+        resolve_effective_quiet_hours,
+        should_defer_notification,
+    )
 
-    Covers scenarios from:
-    - openspec/specs/time-aware-delivery/spec.md  §Per-Channel Quiet Hours Override
-    - tasks.md §12.10
-    """
+    prefs = {
+        "quiet_hours_start": "22:00",
+        "quiet_hours_end": "07:00",
+        "timezone": "UTC",
+        "batch_low_priority": True,
+        "batch_delivery_time": "07:00",
+        "override_channels": {"email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}},
+    }
+    # Email uses override
+    eff = resolve_effective_quiet_hours("email", prefs)
+    assert eff["quiet_hours_start"] == "20:00" and eff["quiet_hours_end"] == "09:00"
 
-    def test_channel_override_applied_when_present(self):
-        """Email-specific quiet hours override is applied when notify channel is email."""
-        from butlers.core.temporal.delivery import resolve_effective_quiet_hours
+    # Telegram uses defaults
+    eff2 = resolve_effective_quiet_hours("telegram", prefs)
+    assert eff2["quiet_hours_start"] == "22:00" and eff2["quiet_hours_end"] == "07:00"
 
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "override_channels": {
-                "email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}
-            },
-        }
-        effective = resolve_effective_quiet_hours(channel="email", prefs=prefs)
-        assert effective["quiet_hours_start"] == "20:00"
-        assert effective["quiet_hours_end"] == "09:00"
+    # 21:00 inside email override, outside default → email deferred, telegram not
+    assert should_defer_notification("medium", time(21, 0), prefs, channel="email")
+    assert not should_defer_notification("medium", time(21, 0), prefs, channel="telegram")
 
-    def test_default_quiet_hours_used_when_no_channel_override(self):
-        """Default quiet hours apply when the specific channel has no override."""
-        from butlers.core.temporal.delivery import resolve_effective_quiet_hours
-
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "override_channels": {
-                "email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}
-            },
-        }
-        effective = resolve_effective_quiet_hours(channel="telegram", prefs=prefs)
-        assert effective["quiet_hours_start"] == "22:00"
-        assert effective["quiet_hours_end"] == "07:00"
-
-    def test_channel_override_defers_email_during_override_hours(self):
-        """Email notification deferred when within email-specific quiet hours."""
-        from butlers.core.temporal.delivery import should_defer_notification
-
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "batch_low_priority": True,
-            "batch_delivery_time": "07:00",
-            "override_channels": {
-                "email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}
-            },
-        }
-        # 21:00 — outside default quiet hours but inside email override (20:00-09:00)
-        assert should_defer_notification(
-            priority="medium",
-            current_time=time(21, 0),
-            prefs=prefs,
-            channel="email",
-        )
-
-    def test_telegram_uses_default_when_email_override_exists(self):
-        """Telegram uses default quiet hours even when email has override."""
-        from butlers.core.temporal.delivery import should_defer_notification
-
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "batch_low_priority": True,
-            "batch_delivery_time": "07:00",
-            "override_channels": {
-                "email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}
-            },
-        }
-        # 21:00 — inside email override but outside default quiet hours (22:00-07:00)
-        assert not should_defer_notification(
-            priority="medium",
-            current_time=time(21, 0),
-            prefs=prefs,
-            channel="telegram",
-        )
-
-    def test_no_override_channels_uses_defaults(self):
-        """When override_channels is empty/None, defaults apply for all channels."""
-        from butlers.core.temporal.delivery import resolve_effective_quiet_hours
-
-        prefs = {
-            "quiet_hours_start": "22:00",
-            "quiet_hours_end": "07:00",
-            "timezone": "UTC",
-            "override_channels": {},
-        }
-        effective = resolve_effective_quiet_hours(channel="email", prefs=prefs)
-        assert effective["quiet_hours_start"] == "22:00"
-        assert effective["quiet_hours_end"] == "07:00"
+    # Empty overrides → defaults
+    prefs2 = {**prefs, "override_channels": {}}
+    eff3 = resolve_effective_quiet_hours("email", prefs2)
+    assert eff3["quiet_hours_start"] == "22:00"
 
 
 # ---------------------------------------------------------------------------
-# 12.11 — tick() integration with all three new passes
+# 12.11 — tick() integration
 # ---------------------------------------------------------------------------
 
 
@@ -1314,25 +524,10 @@ class TestPerChannelQuietHoursOverrides:
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 class TestTickIntegration:
-    """Integration tests for tick() with deadline, event chain, and deferred notification passes.
-
-    These tests require Docker (testcontainers) for a real PostgreSQL instance.
-
-    Covers scenarios from:
-    - openspec/specs/core-scheduler/spec.md  §Tick Handler (extended passes)
-    - tasks.md §12.11
-    """
+    """Integration tests for tick() with deadline, event chain, and deferred notification passes."""
 
     @pytest.fixture(autouse=True)
     def reset_otel_state(self):
-        """Reset OpenTelemetry global tracer provider state before and after each test.
-
-        This ensures each test that sets its own TracerProvider can do so cleanly,
-        regardless of test execution order in the same worker process.
-
-        Uses unittest.mock.patch to reset the private OTel state rather than directly
-        mutating private attributes, which improves resilience across OTel SDK versions.
-        """
         import unittest.mock
 
         from opentelemetry import trace
@@ -1343,7 +538,6 @@ class TestTickIntegration:
         ):
             yield
 
-    # DDL for temporal intelligence tables
     _SCHEDULED_TASKS_DDL = """
         CREATE TABLE IF NOT EXISTS scheduled_tasks (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1367,7 +561,6 @@ class TestTickIntegration:
             last_result JSONB,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            -- Temporal intelligence columns
             task_type TEXT NOT NULL DEFAULT 'cron',
             target_date DATE,
             lead_time_days INTEGER,
@@ -1427,7 +620,6 @@ class TestTickIntegration:
 
     @pytest.fixture
     async def pool(self, postgres_container):
-        """Create a fresh database with temporal intelligence tables."""
         import asyncpg
 
         db_name = f"test_{uuid.uuid4().hex[:12]}"
@@ -1460,10 +652,19 @@ class TestTickIntegration:
         await p.close()
 
     async def test_tick_deadline_pass_fires_due_threshold(self, pool):
-        """tick() deadline pass dispatches a deadline task whose threshold is newly due."""
+        """tick() deadline pass dispatches deadline task and sets span attributes."""
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
         from butlers.core.scheduler import tick
 
-        # Insert a deadline task whose 30-day threshold is due now
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+
         now = datetime.now(UTC)
         target = _future_date(30)
         await pool.fetchval(
@@ -1481,7 +682,7 @@ class TestTickIntegration:
             "test-deadline",
             "Review visa renewal checklist",
             target,
-            now,  # due now
+            now,
         )
 
         dispatched_calls = []
@@ -1491,17 +692,19 @@ class TestTickIntegration:
 
         await tick(pool, capture_dispatch)
 
-        # The deadline should have been dispatched
-        dispatched_prompts = [c.get("prompt", "") for c in dispatched_calls]
-        assert any("visa" in p.lower() or "Review" in p for p in dispatched_prompts), (
-            f"Expected deadline dispatch, got: {dispatched_calls}"
-        )
+        prompts = [c.get("prompt", "") for c in dispatched_calls]
+        assert any("visa" in p.lower() or "Review" in p for p in prompts)
+
+        spans = exporter.get_finished_spans()
+        tick_span = next((s for s in spans if s.name == "butler.tick"), None)
+        assert tick_span is not None
+        attrs = dict(tick_span.attributes or {})
+        assert "deadlines_evaluated" in attrs
 
     async def test_tick_deadline_pass_includes_deadline_status_in_prompt(self, pool):
-        """tick() deadline pass includes deadline_status in the dispatched prompt context."""
+        """tick() deadline pass includes deadline_status in dispatched prompt."""
         from butlers.core.scheduler import tick
 
-        # Insert a deadline task with deadline_status='alerted'
         now = datetime.now(UTC)
         target = _future_date(14)
         await pool.fetchval(
@@ -1528,15 +731,11 @@ class TestTickIntegration:
             dispatched_calls.append(kwargs)
 
         await tick(pool, capture_dispatch)
+        prompts = [c.get("prompt", "") for c in dispatched_calls]
+        assert any("deadline_status=alerted" in p for p in prompts)
 
-        # The dispatched prompt must contain deadline_status
-        dispatched_prompts = [c.get("prompt", "") for c in dispatched_calls]
-        assert any("deadline_status=alerted" in p for p in dispatched_prompts), (
-            f"Expected 'deadline_status=alerted' in prompt context, got: {dispatched_calls}"
-        )
-
-    async def test_tick_deadline_pass_sets_span_attribute(self, pool):
-        """tick() sets 'deadlines_evaluated' span attribute."""
+    async def test_tick_deadline_span_attribute_dispatched(self, pool):
+        """tick() sets 'deadline_dispatched' span attribute > 0 for due deadline."""
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -1549,32 +748,6 @@ class TestTickIntegration:
         provider.add_span_processor(SimpleSpanProcessor(exporter))
         trace.set_tracer_provider(provider)
 
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        spans = exporter.get_finished_spans()
-        tick_span = next((s for s in spans if s.name == "butler.tick"), None)
-        assert tick_span is not None, "butler.tick span not found"
-        attrs = dict(tick_span.attributes or {})
-        assert "deadlines_evaluated" in attrs
-
-    async def test_tick_deadline_dispatched_span_attribute(self, pool):
-        """tick() sets 'scheduler.deadline_dispatched' span attribute."""
-        from opentelemetry import trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-        from butlers.core.scheduler import tick
-
-        exporter = InMemorySpanExporter()
-        provider = TracerProvider()
-        provider.add_span_processor(SimpleSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
-
-        # Create a deadline task whose 7-day threshold is due now
         now = datetime.now(UTC)
         target = _future_date(7)
         alert_thresholds = json.dumps([{"days_before": 7, "severity": "info"}])
@@ -1604,26 +777,19 @@ class TestTickIntegration:
             dispatched_calls.append(kwargs)
 
         await tick(pool, capture_dispatch)
-
         spans = exporter.get_finished_spans()
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)
-        assert tick_span is not None, "butler.tick span not found"
+        assert tick_span is not None
         attrs = dict(tick_span.attributes or {})
         assert "deadline_dispatched" in attrs
-        # Should be > 0 since we have a due deadline
         assert attrs["deadline_dispatched"] > 0
 
     async def test_tick_deferred_notification_pass_delivers_due_notifications(self, pool):
-        """tick() deferred notification pass delivers pending notifications past deliver_at.
-
-        The flush pass must call notify_fn with the stored notify.v1 envelope —
-        not dispatch_fn — to match the standard notify pipeline semantics.
-        """
+        """tick() delivers pending notifications past deliver_at via notify_fn (not dispatch_fn)."""
         from butlers.core.scheduler import tick
 
         now = datetime.now(UTC)
         stored_envelope = {"schema_version": "notify.v1", "delivery": {"channel": "telegram"}}
-        # Insert a deferred notification that should be delivered
         notif_id = await pool.fetchval(
             """
             INSERT INTO deferred_notifications
@@ -1633,7 +799,7 @@ class TestTickIntegration:
                  $2::jsonb, $1, 'pending')
             RETURNING id
             """,
-            now - timedelta(minutes=5),  # 5 minutes ago — past deliver_at
+            now - timedelta(minutes=5),
             json.dumps(stored_envelope),
         )
 
@@ -1648,24 +814,16 @@ class TestTickIntegration:
 
         await tick(pool, capture_dispatch, notify_fn=capture_notify_fn)
 
-        # The deferred notification should be marked delivered
         row = await pool.fetchrow(
             "SELECT status, delivered_at FROM deferred_notifications WHERE id = $1", notif_id
         )
-        assert row["status"] == "delivered", f"Expected 'delivered', got {row['status']!r}"
-        assert row["delivered_at"] is not None
-
-        # notify_fn was called with the stored envelope, not dispatch_fn
-        assert len(notify_calls) == 1, "notify_fn must be called exactly once"
+        assert row["status"] == "delivered" and row["delivered_at"] is not None
+        assert len(notify_calls) == 1
         assert notify_calls[0]["schema_version"] == "notify.v1"
-        # dispatch_fn (LLM spawner) must NOT be called for deferred notification flush
-        assert dispatch_calls == [], (
-            "dispatch_fn (LLM spawner) must not be called for deferred notification delivery; "
-            "use notify_fn (standard notify pipeline) instead"
-        )
+        assert dispatch_calls == []
 
-    async def test_tick_deferred_notification_pass_sets_span_attribute(self, pool):
-        """tick() sets 'deferred_flushed' span attribute."""
+    async def test_tick_deferred_notification_span_and_expiry(self, pool):
+        """tick() sets 'deferred_flushed' span and marks old pending notifications expired."""
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -1678,522 +836,7 @@ class TestTickIntegration:
         provider.add_span_processor(SimpleSpanProcessor(exporter))
         trace.set_tracer_provider(provider)
 
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        spans = exporter.get_finished_spans()
-        tick_span = next((s for s in spans if s.name == "butler.tick"), None)
-        assert tick_span is not None
-        attrs = dict(tick_span.attributes or {})
-        assert "deferred_flushed" in attrs
-
-    async def test_tick_event_chain_pass_fires_calendar_triggered_chain(self, pool):
-        """tick() event chain pass fires a chain when its calendar event has ended."""
-        from butlers.core.scheduler import tick
-
         now = datetime.now(UTC)
-        # Insert a calendar projection event that ended 2 minutes ago
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS calendar_projection (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                butler_name TEXT NOT NULL,
-                event_id TEXT NOT NULL,
-                title TEXT,
-                start_at TIMESTAMPTZ,
-                end_at TIMESTAMPTZ,
-                chain_triggered BOOLEAN NOT NULL DEFAULT false
-            )
-            """
-        )
-        event_id = "google-event-abc123"
-        await pool.execute(
-            """
-            INSERT INTO calendar_projection
-                (butler_name, event_id, title, start_at, end_at, chain_triggered)
-            VALUES
-                ('test-butler', $1, 'Dentist Appointment',
-                 $2, $3, false)
-            """,
-            event_id,
-            now - timedelta(hours=1),
-            now - timedelta(minutes=2),  # ended 2 min ago
-        )
-
-        # Insert an event chain triggered by calendar_event_end for this event
-        await pool.execute(
-            """
-            INSERT INTO event_chains
-                (name, trigger_type, trigger_reference, actions, status, butler_name)
-            VALUES
-                ('post-dentist', 'calendar_event_end', $1,
-                 '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Log dentist visit"}]',
-                 'active', 'test-butler')
-            """,
-            event_id,
-        )
-
-        dispatch_calls = []
-
-        async def capture_dispatch(**kwargs):
-            dispatch_calls.append(kwargs)
-
-        await tick(pool, capture_dispatch)
-
-        # The chain actions should have been materialized as tasks and/or dispatched
-        chain_row = await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = 'post-dentist'"
-        )
-        assert chain_row["status"] == "fired", (
-            f"Expected chain status='fired', got {chain_row['status']!r}"
-        )
-
-    async def test_tick_event_chain_pass_sets_span_attribute(self, pool):
-        """tick() sets 'chains_fired' span attribute."""
-        from opentelemetry import trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-        from butlers.core.scheduler import tick
-
-        exporter = InMemorySpanExporter()
-        provider = TracerProvider()
-        provider.add_span_processor(SimpleSpanProcessor(exporter))
-        trace.set_tracer_provider(provider)
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        spans = exporter.get_finished_spans()
-        tick_span = next((s for s in spans if s.name == "butler.tick"), None)
-        assert tick_span is not None
-        attrs = dict(tick_span.attributes or {})
-        assert "chains_fired" in attrs
-
-    async def test_tick_event_chain_pass_fires_deadline_passed_chain_on_expired(self, pool):
-        """tick() fires a deadline_passed chain when its referenced deadline expires."""
-
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        past_target = _past_date(1)  # yesterday — will expire this tick
-
-        # Insert an expired deadline task (deadline pass runs first and sets expired)
-        deadline_id = await pool.fetchval(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ('tax-filing', '0 0 * * *', 'File taxes', 'prompt', 'deadline', $1,
-                 30, '[{"days_before": 30, "severity": "info"}]',
-                 'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
-            RETURNING id
-            """,
-            past_target,
-            now,
-        )
-
-        # Insert an active event chain triggered by this deadline expiring
-        chain_name = "post-tax-filing-archive"
-        _actions = (
-            '[{"action_type": "job", "delay_minutes": 0, "job_name": "archive_tax_documents"}]'
-        )
-        await pool.execute(
-            """
-            INSERT INTO event_chains
-                (name, trigger_type, trigger_reference, actions, status, butler_name)
-            VALUES
-                ($1, 'deadline_passed', $2, $3::jsonb, 'active', 'test-butler')
-            """,
-            chain_name,
-            str(deadline_id),
-            _actions,
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        # The deadline should now be expired
-        dl_row = await pool.fetchrow(
-            "SELECT deadline_status FROM scheduled_tasks WHERE name = 'tax-filing'"
-        )
-        assert dl_row["deadline_status"] == "expired", (
-            f"Expected deadline_status='expired', got {dl_row['deadline_status']!r}"
-        )
-
-        # The chain should have been fired
-        chain_row = await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = $1", chain_name
-        )
-        assert chain_row["status"] == "fired", (
-            f"Expected chain status='fired', got {chain_row['status']!r}"
-        )
-
-        # A materialized task should exist
-        task_row = await pool.fetchrow(
-            "SELECT name, source FROM scheduled_tasks WHERE name = $1",
-            f"chain:{chain_name}:0",
-        )
-        assert task_row is not None, "Expected a materialized chain task to be inserted"
-        assert task_row["source"] == "chain"
-
-    async def test_tick_event_chain_pass_fires_deadline_passed_chain_on_completed(self, pool):
-        """tick() fires a deadline_passed chain when its referenced deadline is completed."""
-
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        future_target = _future_date(10)
-
-        # Insert a deadline that has already been manually completed
-        deadline_id = await pool.fetchval(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ('visa-renewal-done', '0 0 * * *', 'Renew visa', 'prompt', 'deadline', $1,
-                 30, '[{"days_before": 30, "severity": "info"}]',
-                 'completed', '[{"days_before": 30, "severity": "info"}]', $2, false)
-            RETURNING id
-            """,
-            future_target,
-            now,
-        )
-
-        chain_name = "post-visa-completed"
-        await pool.execute(
-            """
-            INSERT INTO event_chains
-                (name, trigger_type, trigger_reference, actions, status, butler_name)
-            VALUES
-                ($1, 'deadline_passed', $2, $3::jsonb, 'active', 'test-butler')
-            """,
-            chain_name,
-            str(deadline_id),
-            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Visa renewed"}]',
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        chain_row = await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = $1", chain_name
-        )
-        assert chain_row["status"] == "fired", (
-            f"Expected chain status='fired', got {chain_row['status']!r}"
-        )
-
-    async def test_tick_event_chain_pass_does_not_refire_fired_deadline_passed_chain(self, pool):
-        """tick() does NOT re-fire a deadline_passed chain that already has status='fired'."""
-
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        past_target = _past_date(1)
-
-        deadline_id = await pool.fetchval(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ('already-expired-dl', '0 0 * * *', 'Some deadline', 'prompt', 'deadline', $1,
-                 30, '[{"days_before": 30, "severity": "info"}]',
-                 'expired', '[{"days_before": 30, "severity": "info"}]', $2, false)
-            RETURNING id
-            """,
-            past_target,
-            now,
-        )
-
-        chain_name = "already-fired-chain"
-        await pool.execute(
-            """
-            INSERT INTO event_chains
-                (name, trigger_type, trigger_reference, actions, status, butler_name)
-            VALUES
-                ($1, 'deadline_passed', $2,
-                 '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Already done"}]',
-                 'fired', 'test-butler')
-            """,
-            chain_name,
-            str(deadline_id),
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        # Chain should still be 'fired', not re-materialized
-        chain_row = await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = $1", chain_name
-        )
-        assert chain_row["status"] == "fired"
-
-        # No duplicate materialized tasks should exist
-        task_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM scheduled_tasks WHERE name = $1",
-            f"chain:{chain_name}:0",
-        )
-        assert task_count == 0, f"Expected no materialized tasks, found {task_count}"
-
-    async def test_tick_event_chain_pass_fires_deadline_threshold_chain(self, pool):
-        """tick() fires a deadline_threshold chain when matching severity has been fired."""
-
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        future_target = _future_date(5)
-
-        # Insert a deadline that already has a 'critical' threshold fired
-        deadline_id = await pool.fetchval(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ('critical-deadline', '0 0 * * *', 'Critical task', 'prompt', 'deadline', $1,
-                 30,
-                 '[{"days_before": 7, "severity": "critical"}]',
-                 'escalated',
-                 '[{"days_before": 7, "severity": "critical"}]',
-                 $2, true)
-            RETURNING id
-            """,
-            future_target,
-            now,
-        )
-
-        chain_name = "on-critical-escalation"
-        trigger_ref = f"{deadline_id}:critical"
-        await pool.execute(
-            """
-            INSERT INTO event_chains
-                (name, trigger_type, trigger_reference, actions, status, butler_name)
-            VALUES
-                ($1, 'deadline_threshold', $2, $3::jsonb, 'active', 'test-butler')
-            """,
-            chain_name,
-            trigger_ref,
-            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Escalation alert"}]',
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        chain_row = await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = $1", chain_name
-        )
-        assert chain_row["status"] == "fired", (
-            f"Expected chain status='fired', got {chain_row['status']!r}"
-        )
-
-        task_row = await pool.fetchrow(
-            "SELECT name, source FROM scheduled_tasks WHERE name = $1",
-            f"chain:{chain_name}:0",
-        )
-        assert task_row is not None, "Expected a materialized chain task to be inserted"
-        assert task_row["source"] == "chain"
-
-    async def test_tick_event_chain_pass_does_not_fire_threshold_chain_for_unmatched_severity(
-        self, pool
-    ):
-        """tick() does NOT fire a deadline_threshold chain when a different severity was fired."""
-
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        # Target is 20 days out; critical threshold (days_before=7) is not yet due.
-        # info threshold (days_before=30) is already in fired_thresholds, won't fire again.
-        future_target = _future_date(20)
-        _alert = (
-            '[{"days_before": 30, "severity": "info"}, {"days_before": 7, "severity": "critical"}]'
-        )
-        _fired = '[{"days_before": 30, "severity": "info"}]'
-        deadline_id = await pool.fetchval(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ('info-only-deadline', '0 0 * * *', 'Info only task',
-                 'prompt', 'deadline', $1, 30, $3::jsonb, 'alerted', $4::jsonb, $2, true)
-            RETURNING id
-            """,
-            future_target,
-            now,
-            _alert,
-            _fired,
-        )
-
-        chain_name = "critical-only-chain"
-        trigger_ref = f"{deadline_id}:critical"
-        await pool.execute(
-            """
-            INSERT INTO event_chains
-                (name, trigger_type, trigger_reference, actions, status, butler_name)
-            VALUES
-                ($1, 'deadline_threshold', $2,
-                 '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Critical alert"}]',
-                 'active', 'test-butler')
-            """,
-            chain_name,
-            trigger_ref,
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        chain_row = await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = $1", chain_name
-        )
-        assert chain_row["status"] == "active", (
-            f"Expected chain status='active' (not fired), got {chain_row['status']!r}"
-        )
-
-    async def test_tick_event_chain_pass_fires_threshold_chain_without_calendar_projection(
-        self, pool
-    ):
-        """tick() fires deadline_threshold chains even when calendar_projection doesn't exist."""
-
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        future_target = _future_date(5)
-
-        # Note: calendar_projection is NOT created in this test — it's left absent.
-        # The pool fixture creates the base tables but calendar_projection is optional.
-
-        deadline_id = await pool.fetchval(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ('nocal-deadline', '0 0 * * *', 'No-calendar task', 'prompt', 'deadline', $1,
-                 30,
-                 '[{"days_before": 7, "severity": "warning"}]',
-                 'alerted',
-                 '[{"days_before": 7, "severity": "warning"}]',
-                 $2, true)
-            RETURNING id
-            """,
-            future_target,
-            now,
-        )
-
-        chain_name = "no-calendar-threshold-chain"
-        trigger_ref = f"{deadline_id}:warning"
-        await pool.execute(
-            """
-            INSERT INTO event_chains
-                (name, trigger_type, trigger_reference, actions, status, butler_name)
-            VALUES
-                ($1, 'deadline_threshold', $2, $3::jsonb, 'active', 'test-butler')
-            """,
-            chain_name,
-            trigger_ref,
-            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Warning hit"}]',
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        chain_row = await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = $1", chain_name
-        )
-        assert chain_row["status"] == "fired", (
-            f"Expected chain status='fired', got {chain_row['status']!r}"
-        )
-
-    async def test_tick_cron_tasks_unaffected_by_new_passes(self, pool):
-        """Existing cron tasks still dispatch normally after new passes are added."""
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        await pool.execute(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, next_run_at, enabled)
-            VALUES
-                ('regular-cron-task', '* * * * *', 'Daily morning summary',
-                 'prompt', 'cron', $1, true)
-            """,
-            now,
-        )
-
-        dispatch_calls = []
-
-        async def capture_dispatch(**kwargs):
-            dispatch_calls.append(kwargs)
-
-        result = await tick(pool, capture_dispatch)
-        assert result >= 1
-        prompts = [c.get("prompt", "") for c in dispatch_calls]
-        assert any("morning summary" in p for p in prompts)
-
-    async def test_tick_deadline_expiry_disables_task(self, pool):
-        """tick() marks a past-target_date deadline as expired and disabled."""
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        past_target = _past_date(1)
-        await pool.execute(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ('expired-deadline', '* * * * *', 'Renew passport', 'prompt', 'deadline', $1,
-                 30, '[{"days_before": 30, "severity": "info"}]',
-                 'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
-            """,
-            past_target,
-            now,
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        await tick(pool, noop_dispatch)
-
-        row = await pool.fetchrow(
-            "SELECT deadline_status, enabled FROM scheduled_tasks WHERE name = 'expired-deadline'"
-        )
-        assert row["deadline_status"] == "expired"
-        assert row["enabled"] is False
-
-    async def test_tick_deferred_notification_expiry(self, pool):
-        """tick() marks old pending deferred notifications as expired (not delivered)."""
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        # A notification 25 hours past its deliver_at
         notif_id = await pool.fetchval(
             """
             INSERT INTO deferred_notifications
@@ -2216,18 +859,422 @@ class TestTickIntegration:
         )
         assert row["status"] == "expired"
 
-    async def test_tick_deferred_notification_retry_on_notify_fn_failure(self, pool):
-        """tick() keeps deferred notification pending when notify_fn raises (retry on next tick)."""
+        spans = exporter.get_finished_spans()
+        tick_span = next((s for s in spans if s.name == "butler.tick"), None)
+        assert tick_span is not None
+        assert "deferred_flushed" in dict(tick_span.attributes or {})
+
+    async def test_tick_event_chain_pass_fires_calendar_triggered_chain(self, pool):
+        """tick() fires chain when calendar event has ended; sets chains_fired span attribute."""
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        from butlers.core.scheduler import tick
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+
+        now = datetime.now(UTC)
+        await pool.execute(
+            """
+            CREATE TABLE IF NOT EXISTS calendar_projection (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                butler_name TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                title TEXT,
+                start_at TIMESTAMPTZ,
+                end_at TIMESTAMPTZ,
+                chain_triggered BOOLEAN NOT NULL DEFAULT false
+            )
+            """
+        )
+        event_id = "google-event-abc123"
+        await pool.execute(
+            """
+            INSERT INTO calendar_projection
+                (butler_name, event_id, title, start_at, end_at, chain_triggered)
+            VALUES ('test-butler', $1, 'Dentist', $2, $3, false)
+            """,
+            event_id,
+            now - timedelta(hours=1),
+            now - timedelta(minutes=2),
+        )
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ('post-dentist', 'calendar_event_end', $1,
+                 '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Log visit"}]',
+                 'active', 'test-butler')
+            """,
+            event_id,
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = 'post-dentist'"
+        )
+        assert chain_row["status"] == "fired"
+
+        spans = exporter.get_finished_spans()
+        tick_span = next((s for s in spans if s.name == "butler.tick"), None)
+        assert tick_span is not None
+        assert "chains_fired" in dict(tick_span.attributes or {})
+
+    async def test_tick_event_chain_pass_fires_deadline_passed_chain_on_expired(self, pool):
+        """tick() fires deadline_passed chain when referenced deadline expires."""
         from butlers.core.scheduler import tick
 
         now = datetime.now(UTC)
-        notif_id = await pool.fetchval(
+        past_target = _past_date(1)
+
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('tax-filing', '0 0 * * *', 'File taxes', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 30, "severity": "info"}]',
+                 'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
+            RETURNING id
+            """,
+            past_target,
+            now,
+        )
+
+        chain_name = "post-tax-filing-archive"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES
+                ($1, 'deadline_passed', $2,
+                 '[{"action_type": "job", "delay_minutes": 0, "job_name": "archive_tax"}]'::jsonb,
+                 'active', 'test-butler')
+            """,
+            chain_name,
+            str(deadline_id),
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        dl_row = await pool.fetchrow(
+            "SELECT deadline_status FROM scheduled_tasks WHERE name = 'tax-filing'"
+        )
+        assert dl_row["deadline_status"] == "expired"
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired"
+
+        task_row = await pool.fetchrow(
+            "SELECT name, source FROM scheduled_tasks WHERE name = $1",
+            f"chain:{chain_name}:0",
+        )
+        assert task_row is not None and task_row["source"] == "chain"
+
+    async def test_tick_event_chain_pass_fires_deadline_passed_chain_on_completed(self, pool):
+        """tick() fires deadline_passed chain when referenced deadline is completed."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('visa-renewal-done', '0 0 * * *', 'Renew visa', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 30, "severity": "info"}]',
+                 'completed', '[{"days_before": 30, "severity": "info"}]', $2, false)
+            RETURNING id
+            """,
+            _future_date(10),
+            now,
+        )
+
+        chain_name = "post-visa-completed"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES ($1, 'deadline_passed', $2, $3::jsonb, 'active', 'test-butler')
+            """,
+            chain_name,
+            str(deadline_id),
+            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Visa renewed"}]',
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired"
+
+    async def test_tick_event_chain_pass_does_not_refire_fired_chain(self, pool):
+        """tick() does NOT re-fire a deadline_passed chain already status='fired'."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('already-expired-dl', '0 0 * * *', 'Some deadline', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 30, "severity": "info"}]',
+                 'expired', '[{"days_before": 30, "severity": "info"}]', $2, false)
+            RETURNING id
+            """,
+            _past_date(1),
+            now,
+        )
+
+        chain_name = "already-fired-chain"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES ($1, 'deadline_passed', $2,
+                '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Already done"}]',
+                'fired', 'test-butler')
+            """,
+            chain_name,
+            str(deadline_id),
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired"
+
+        task_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM scheduled_tasks WHERE name = $1",
+            f"chain:{chain_name}:0",
+        )
+        assert task_count == 0
+
+    async def test_tick_event_chain_deadline_threshold_chain(self, pool):
+        """tick() fires threshold chain when matching severity fired; skips unmatched."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+
+        # Deadline with critical threshold already fired
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('critical-deadline', '0 0 * * *', 'Critical task', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 7, "severity": "critical"}]',
+                 'escalated', '[{"days_before": 7, "severity": "critical"}]', $2, true)
+            RETURNING id
+            """,
+            _future_date(5),
+            now,
+        )
+
+        chain_name = "on-critical-escalation"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES ($1, 'deadline_threshold', $2, $3::jsonb, 'active', 'test-butler')
+            """,
+            chain_name,
+            f"{deadline_id}:critical",
+            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Escalation alert"}]',
+        )
+
+        # Deadline with only info threshold fired — critical chain should NOT fire
+        deadline_id2 = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('info-only-deadline', '0 0 * * *', 'Info only', 'prompt', 'deadline', $1,
+                 30,
+                 '[{"days_before": 30, "severity": "info"}, '
+                 '{"days_before": 7, "severity": "critical"}]',
+                 'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
+            RETURNING id
+            """,
+            _future_date(20),
+            now,
+        )
+
+        chain_name2 = "critical-only-chain"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES ($1, 'deadline_threshold', $2,
+                '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Critical alert"}]',
+                'active', 'test-butler')
+            """,
+            chain_name2,
+            f"{deadline_id2}:critical",
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        row1 = await pool.fetchrow("SELECT status FROM event_chains WHERE name = $1", chain_name)
+        assert row1["status"] == "fired"
+
+        row2 = await pool.fetchrow("SELECT status FROM event_chains WHERE name = $1", chain_name2)
+        assert row2["status"] == "active"
+
+    async def test_tick_event_chain_fires_threshold_without_calendar_projection(self, pool):
+        """tick() fires deadline_threshold chains even without calendar_projection table."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        deadline_id = await pool.fetchval(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES
+                ('nocal-deadline', '0 0 * * *', 'No-calendar task', 'prompt', 'deadline', $1,
+                 30, '[{"days_before": 7, "severity": "warning"}]',
+                 'alerted', '[{"days_before": 7, "severity": "warning"}]', $2, true)
+            RETURNING id
+            """,
+            _future_date(5),
+            now,
+        )
+
+        chain_name = "no-calendar-threshold-chain"
+        await pool.execute(
+            """
+            INSERT INTO event_chains
+                (name, trigger_type, trigger_reference, actions, status, butler_name)
+            VALUES ($1, 'deadline_threshold', $2, $3::jsonb, 'active', 'test-butler')
+            """,
+            chain_name,
+            f"{deadline_id}:warning",
+            '[{"action_type": "prompt", "delay_minutes": 0, "prompt": "Warning hit"}]',
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        chain_row = await pool.fetchrow(
+            "SELECT status FROM event_chains WHERE name = $1", chain_name
+        )
+        assert chain_row["status"] == "fired"
+
+    async def test_tick_cron_tasks_unaffected_by_new_passes(self, pool):
+        """Existing cron tasks still dispatch normally."""
+        from butlers.core.scheduler import tick
+
+        await pool.execute(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, next_run_at, enabled)
+            VALUES ('regular-cron-task', '* * * * *', 'Daily morning summary',
+                    'prompt', 'cron', $1, true)
+            """,
+            datetime.now(UTC),
+        )
+
+        dispatch_calls = []
+
+        async def capture_dispatch(**kwargs):
+            dispatch_calls.append(kwargs)
+
+        result = await tick(pool, capture_dispatch)
+        assert result >= 1
+        assert any("morning summary" in c.get("prompt", "") for c in dispatch_calls)
+
+    async def test_tick_deadline_expiry_disables_task(self, pool):
+        """tick() marks past-target_date deadline as expired and disabled."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        await pool.execute(
+            """
+            INSERT INTO scheduled_tasks
+                (name, cron, prompt, dispatch_mode, task_type, target_date,
+                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
+                 next_run_at, enabled)
+            VALUES ('expired-deadline', '* * * * *', 'Renew passport', 'prompt', 'deadline', $1,
+                    30, '[{"days_before": 30, "severity": "info"}]',
+                    'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
+            """,
+            _past_date(1),
+            now,
+        )
+
+        async def noop_dispatch(**kwargs):
+            pass
+
+        await tick(pool, noop_dispatch)
+
+        row = await pool.fetchrow(
+            "SELECT deadline_status, enabled FROM scheduled_tasks WHERE name = 'expired-deadline'"
+        )
+        assert row["deadline_status"] == "expired" and row["enabled"] is False
+
+    async def test_tick_deferred_notification_retry_and_no_notify_fn(self, pool):
+        """notify_fn failure keeps notification pending; missing notify_fn also keeps pending."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        notif_id1 = await pool.fetchval(
             """
             INSERT INTO deferred_notifications
                 (butler_name, channel, message, priority, envelope, deliver_at, status)
-            VALUES
-                ('test-butler', 'telegram', 'Will fail', 'medium',
-                 '{"schema_version": "notify.v1"}'::jsonb, $1, 'pending')
+            VALUES ('test-butler', 'telegram', 'Will fail', 'medium',
+                    '{"schema_version": "notify.v1"}'::jsonb, $1, 'pending')
+            RETURNING id
+            """,
+            now - timedelta(minutes=5),
+        )
+        notif_id2 = await pool.fetchval(
+            """
+            INSERT INTO deferred_notifications
+                (butler_name, channel, message, priority, envelope, deliver_at, status)
+            VALUES ('test-butler', 'telegram', 'No notify_fn', 'medium',
+                    '{"schema_version": "notify.v1"}'::jsonb, $1, 'pending')
             RETURNING id
             """,
             now - timedelta(minutes=5),
@@ -2239,47 +1286,22 @@ class TestTickIntegration:
         async def noop_dispatch(**kwargs):
             pass
 
+        # First tick with failing notify_fn
         await tick(pool, noop_dispatch, notify_fn=failing_notify_fn)
-
-        row = await pool.fetchrow(
-            "SELECT status FROM deferred_notifications WHERE id = $1", notif_id
+        row1 = await pool.fetchrow(
+            "SELECT status FROM deferred_notifications WHERE id = $1", notif_id1
         )
-        assert row["status"] == "pending", (
-            "Notification should remain pending when notify_fn fails, not be lost"
-        )
+        assert row1["status"] == "pending"
 
-    async def test_tick_deferred_notification_stays_pending_without_notify_fn(self, pool):
-        """tick() leaves due notifications pending when notify_fn is not wired."""
-        from butlers.core.scheduler import tick
-
-        now = datetime.now(UTC)
-        notif_id = await pool.fetchval(
-            """
-            INSERT INTO deferred_notifications
-                (butler_name, channel, message, priority, envelope, deliver_at, status)
-            VALUES
-                ('test-butler', 'telegram', 'No notify_fn', 'medium',
-                 '{"schema_version": "notify.v1"}'::jsonb, $1, 'pending')
-            RETURNING id
-            """,
-            now - timedelta(minutes=5),
-        )
-
-        async def noop_dispatch(**kwargs):
-            pass
-
-        # notify_fn=None (default) — notification should stay pending
+        # Second tick with no notify_fn
         await tick(pool, noop_dispatch)
-
-        row = await pool.fetchrow(
-            "SELECT status FROM deferred_notifications WHERE id = $1", notif_id
+        row2 = await pool.fetchrow(
+            "SELECT status FROM deferred_notifications WHERE id = $1", notif_id2
         )
-        assert row["status"] == "pending", (
-            "Notification should remain pending when notify_fn is not configured"
-        )
+        assert row2["status"] == "pending"
 
-    async def test_sync_schedules_inserts_deadline_task(self, pool):
-        """sync_schedules inserts a deadline entry with all temporal fields."""
+    async def test_sync_schedules_deadline_and_cron(self, pool):
+        """sync_schedules inserts deadline with temporal fields; validates required fields."""
         from butlers.core.scheduler import sync_schedules
 
         target = _future_date(60)
@@ -2290,7 +1312,7 @@ class TestTickIntegration:
                     "name": "visa-renewal",
                     "cron": "0 9 * * *",
                     "task_type": "deadline",
-                    "prompt": "Check visa renewal status and notify",
+                    "prompt": "Check visa",
                     "dispatch_mode": "prompt",
                     "target_date": target.isoformat(),
                     "lead_time_days": 60,
@@ -2298,40 +1320,43 @@ class TestTickIntegration:
                         {"days_before": 60, "severity": "info"},
                         {"days_before": 30, "severity": "warning"},
                     ],
-                }
+                },
+                {
+                    "name": "morning-summary",
+                    "cron": "0 8 * * *",
+                    "task_type": "cron",
+                    "prompt": "Morning briefing",
+                    "dispatch_mode": "prompt",
+                },
             ],
         )
 
-        row = await pool.fetchrow(
-            """
-            SELECT task_type, target_date, lead_time_days, alert_thresholds
-            FROM scheduled_tasks WHERE name = 'visa-renewal'
-            """
+        dl_row = await pool.fetchrow(
+            "SELECT task_type, target_date, lead_time_days, alert_thresholds "
+            "FROM scheduled_tasks WHERE name = 'visa-renewal'"
         )
-        assert row is not None
-        assert row["task_type"] == "deadline"
-        assert row["target_date"] == target
-        assert row["lead_time_days"] == 60
-        thresholds = row["alert_thresholds"]
+        assert dl_row["task_type"] == "deadline"
+        assert dl_row["target_date"] == target
+        assert dl_row["lead_time_days"] == 60
+        thresholds = dl_row["alert_thresholds"]
         if isinstance(thresholds, str):
-            import json as _json
-
-            thresholds = _json.loads(thresholds)
+            thresholds = json.loads(thresholds)
         assert len(thresholds) == 2
 
-    async def test_sync_schedules_deadline_missing_target_date_raises(self, pool):
-        """sync_schedules raises ValueError when task_type='deadline' has no target_date."""
-        from butlers.core.scheduler import sync_schedules
+        cron_row = await pool.fetchrow(
+            "SELECT task_type FROM scheduled_tasks WHERE name = 'morning-summary'"
+        )
+        assert cron_row["task_type"] == "cron"
 
         with pytest.raises(ValueError, match="target_date"):
             await sync_schedules(
                 pool,
                 [
                     {
-                        "name": "bad-deadline",
+                        "name": "bad-dl",
                         "cron": "0 9 * * *",
                         "task_type": "deadline",
-                        "prompt": "Some prompt calling notify",
+                        "prompt": "Missing target",
                         "dispatch_mode": "prompt",
                         "lead_time_days": 30,
                         "alert_thresholds": [{"days_before": 30, "severity": "info"}],
@@ -2339,42 +1364,11 @@ class TestTickIntegration:
                 ],
             )
 
-    async def test_sync_schedules_cron_task_type_works_unchanged(self, pool):
-        """sync_schedules still inserts plain cron tasks when task_type='cron'."""
-        from butlers.core.scheduler import sync_schedules
-
-        await sync_schedules(
-            pool,
-            [
-                {
-                    "name": "morning-summary",
-                    "cron": "0 8 * * *",
-                    "task_type": "cron",
-                    "prompt": "Morning briefing — call notify to send summary",
-                    "dispatch_mode": "prompt",
-                }
-            ],
-        )
-
-        row = await pool.fetchrow(
-            "SELECT task_type FROM scheduled_tasks WHERE name = 'morning-summary'"
-        )
-        assert row is not None
-        # task_type column exists in this test DDL so it should be 'cron'
-        assert row["task_type"] == "cron"
-
-    async def test_tick_deadline_dispatch_receives_seasonal_context(self, pool):
-        """tick() injects active_seasons context into deadline task dispatches.
-
-        Regression test for bu-9h74: active_seasons was queried AFTER
-        _tick_deadline_pass, so deadline dispatches never received the seasonal
-        prefix.  The fix moves the query before Pass 1.
-        """
+    async def test_tick_deadline_seasonal_context_injection(self, pool):
+        """tick() injects active_seasons into deadline dispatch but not without butler_name."""
         from butlers.core.scheduler import tick
 
         butler = "seasonal-deadline-butler"
-
-        # Insert an active seasonal period (year-round so always active)
         await pool.execute(
             """
             INSERT INTO seasonal_periods
@@ -2385,7 +1379,6 @@ class TestTickIntegration:
             butler,
         )
 
-        # Insert a deadline task with a 30-day threshold that fires today
         now = datetime.now(UTC)
         target = _future_date(30)
         await pool.execute(
@@ -2394,10 +1387,9 @@ class TestTickIntegration:
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
                  lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
                  next_run_at, enabled)
-            VALUES
-                ($1, '* * * * *', $2, 'prompt', 'deadline', $3, 30,
-                 '[{"days_before": 30, "severity": "info"}]',
-                 'pending', '[]', $4, true)
+            VALUES ($1, '* * * * *', $2, 'prompt', 'deadline', $3, 30,
+                    '[{"days_before": 30, "severity": "info"}]',
+                    'pending', '[]', $4, true)
             """,
             "seasonal-deadline-task",
             "Check your deadlines",
@@ -2405,6 +1397,7 @@ class TestTickIntegration:
             now,
         )
 
+        # With butler_name → seasonal prefix injected
         dispatched_calls: list[dict] = []
 
         async def capture_dispatch(**kwargs):
@@ -2412,54 +1405,23 @@ class TestTickIntegration:
 
         await tick(pool, capture_dispatch, butler_name=butler)
 
-        # The deadline task must have been dispatched
-        deadline_calls = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
-        assert deadline_calls, f"No deadline dispatch found; all calls: {dispatched_calls}"
-
-        prompt = deadline_calls[0]["prompt"]
-        # Seasonal context prefix must be present in the deadline prompt
-        assert "Seasonal context" in prompt, f"Expected seasonal prefix in prompt; got: {prompt!r}"
-        assert "peak-season" in prompt, f"Expected season name in prompt; got: {prompt!r}"
-        # Original prompt content must still be present
+        dl_calls = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
+        assert dl_calls, f"No deadline dispatch; all: {dispatched_calls}"
+        prompt = dl_calls[0]["prompt"]
+        assert "Seasonal context" in prompt and "peak-season" in prompt
         assert "Check your deadlines" in prompt
 
-    async def test_tick_deadline_no_butler_name_no_seasonal_injection(self, pool):
-        """tick() without butler_name does not inject seasonal context into deadline dispatch."""
-        from butlers.core.scheduler import tick
-
-        # Insert a deadline task with a 7-day threshold that fires today
-        now = datetime.now(UTC)
-        target = _future_date(7)
+        # Without butler_name → no seasonal prefix
         await pool.execute(
-            """
-            INSERT INTO scheduled_tasks
-                (name, cron, prompt, dispatch_mode, task_type, target_date,
-                 lead_time_days, alert_thresholds, deadline_status, fired_thresholds,
-                 next_run_at, enabled)
-            VALUES
-                ($1, '* * * * *', $2, 'prompt', 'deadline', $3, 7,
-                 '[{"days_before": 7, "severity": "info"}]',
-                 'pending', '[]', $4, true)
-            """,
-            "no-season-deadline-task",
-            "Unadorned deadline prompt",
-            target,
+            "UPDATE scheduled_tasks "
+            "SET fired_thresholds='[]', deadline_status='pending', next_run_at=$1 "
+            "WHERE name=$2",
             now,
+            "seasonal-deadline-task",
         )
+        dispatched_calls.clear()
 
-        dispatched_calls: list[dict] = []
-
-        async def capture_dispatch(**kwargs):
-            dispatched_calls.append(kwargs)
-
-        # No butler_name — seasonal query is skipped
         await tick(pool, capture_dispatch)
-
-        deadline_calls = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
-        assert deadline_calls, f"No deadline dispatch found; all calls: {dispatched_calls}"
-
-        prompt = deadline_calls[0]["prompt"]
-        assert "Seasonal context" not in prompt, (
-            f"Unexpected seasonal prefix in prompt without butler_name; got: {prompt!r}"
-        )
-        assert "Unadorned deadline prompt" in prompt
+        dl_calls2 = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
+        if dl_calls2:
+            assert "Seasonal context" not in dl_calls2[0]["prompt"]

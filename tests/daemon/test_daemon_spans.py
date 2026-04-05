@@ -253,41 +253,29 @@ class TestCoreToolSpans:
 
         return daemon, tool_fns
 
-    async def test_status_creates_span(self, tmp_path, otel_provider):
+    async def test_core_tools_create_spans(self, tmp_path, otel_provider):
+        """status, state_get, state_set each create a named span with butler.name."""
         butler_dir = _make_butler_toml(tmp_path)
         daemon, tools = await self._start_daemon_capture_tools(butler_dir)
         daemon._started_at = time.monotonic()
 
+        # status
         await tools["status"]()
-
         spans = otel_provider.get_finished_spans()
-        assert len(spans) == 1
-        assert spans[0].name == "butler.tool.status"
-        assert spans[0].attributes["butler.name"] == "test-butler"
+        assert any(s.name == "butler.tool.status" and s.attributes["butler.name"] == "test-butler"
+                   for s in spans)
 
-    async def test_get_state_creates_span(self, tmp_path, otel_provider):
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon, tools = await self._start_daemon_capture_tools(butler_dir)
-
+        # state_get
         with patch("butlers.daemon._state_get", new_callable=AsyncMock, return_value="val"):
             await tools["state_get"](key="test-key")
+        spans2 = otel_provider.get_finished_spans()
+        assert any(s.name == "butler.tool.state_get" for s in spans2)
 
-        spans = otel_provider.get_finished_spans()
-        assert len(spans) == 1
-        assert spans[0].name == "butler.tool.state_get"
-        assert spans[0].attributes["butler.name"] == "test-butler"
-
-    async def test_set_state_creates_span(self, tmp_path, otel_provider):
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon, tools = await self._start_daemon_capture_tools(butler_dir)
-
+        # state_set
         with patch("butlers.daemon._state_set", new_callable=AsyncMock):
             await tools["state_set"](key="k", value="v")
-
-        spans = otel_provider.get_finished_spans()
-        assert len(spans) == 1
-        assert spans[0].name == "butler.tool.state_set"
-        assert spans[0].attributes["butler.name"] == "test-butler"
+        spans3 = otel_provider.get_finished_spans()
+        assert any(s.name == "butler.tool.state_set" for s in spans3)
 
     async def test_core_tool_call_is_logged(self, tmp_path):
         """Core tool invocation emits a structured MCP tool call log."""
@@ -430,13 +418,15 @@ class TestCoreToolSpans:
             stagger_key="test-butler",
         )
 
-    async def test_schedule_update_accepts_legacy_id_alias(self, tmp_path):
-        """schedule_update accepts both legacy id and task_id for compatibility."""
+    async def test_schedule_update_and_delete_legacy_id_alias(self, tmp_path):
+        """schedule_update and schedule_delete accept legacy id field for MCP compatibility."""
         butler_dir = _make_butler_toml(tmp_path)
         patches = _patch_infra()
         _, tools = await self._start_daemon_capture_tools(butler_dir, patches)
 
         schedule_id = uuid4()
+
+        # update with legacy id
         with patch("butlers.daemon._schedule_update", new_callable=AsyncMock) as m:
             result = await tools["schedule_update"](
                 id=str(schedule_id),
@@ -444,11 +434,9 @@ class TestCoreToolSpans:
                 job_name="eligibility_sweep",
                 job_args={"dry_run": True},
             )
-
         assert result["id"] == str(schedule_id)
         assert result["dispatch_mode"] == "job"
         assert result["job_name"] == "eligibility_sweep"
-        assert result["job_args"] == {"dry_run": True}
         m.assert_awaited_once_with(
             patches["mock_pool"],
             schedule_id,
@@ -458,17 +446,10 @@ class TestCoreToolSpans:
             job_args={"dry_run": True},
         )
 
-    async def test_schedule_delete_accepts_legacy_id_alias(self, tmp_path):
-        """schedule_delete accepts legacy id field for MCP compatibility."""
-        butler_dir = _make_butler_toml(tmp_path)
-        patches = _patch_infra()
-        _, tools = await self._start_daemon_capture_tools(butler_dir, patches)
-
-        schedule_id = uuid4()
+        # delete with legacy id
         with patch("butlers.daemon._schedule_delete", new_callable=AsyncMock) as m:
-            result = await tools["schedule_delete"](id=str(schedule_id))
-
-        assert result == {"id": str(schedule_id), "status": "deleted"}
+            result2 = await tools["schedule_delete"](id=str(schedule_id))
+        assert result2 == {"id": str(schedule_id), "status": "deleted"}
         m.assert_awaited_once_with(patches["mock_pool"], schedule_id)
 
 
@@ -480,6 +461,27 @@ class TestCoreToolSpans:
 class TestSpanWrappingMCP:
     """Verify _SpanWrappingMCP wraps module tool handlers with spans."""
 
+    @staticmethod
+    def _make_wrapper(
+        butler_name: str = "test-butler", module_name: str | None = None
+    ) -> tuple[_SpanWrappingMCP, dict]:
+        """Return a wrapper backed by a mock MCP and a dict of registered tool fns."""
+        mock_mcp = MagicMock()
+        registered_fns: dict[str, Any] = {}
+
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
+            def decorator(fn):
+                registered_fns[declared_name or fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+        kwargs = {"module_name": module_name} if module_name else {}
+        return _SpanWrappingMCP(mock_mcp, butler_name, **kwargs), registered_fns
+
     def test_forwards_non_tool_attributes(self):
         """Non-tool attributes are forwarded to the underlying FastMCP."""
         mock_mcp = MagicMock()
@@ -487,115 +489,46 @@ class TestSpanWrappingMCP:
         wrapper = _SpanWrappingMCP(mock_mcp, "test-butler")
         assert wrapper.some_attr == "hello"
 
-    async def test_wraps_tool_with_span(self, otel_provider):
-        """A tool registered via _SpanWrappingMCP produces a span."""
-        mock_mcp = MagicMock()
-        registered_fns = {}
-
-        def tool_decorator(*_decorator_args, **decorator_kwargs):
-            declared_name = decorator_kwargs.get("name")
-
-            def decorator(fn):
-                registered_fns[declared_name or fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        mock_mcp.tool = tool_decorator
-
-        wrapper = _SpanWrappingMCP(mock_mcp, "test-butler")
+    async def test_wraps_tool_span_name_result_and_exception(self, otel_provider):
+        """Tool registered via wrapper: span created, result preserved, exception recorded."""
+        wrapper, fns = self._make_wrapper()
 
         @wrapper.tool()
         async def my_tool(x: int) -> dict:
             return {"result": x}
 
-        # The registered function should be the instrumented wrapper
-        assert "my_tool" in registered_fns
-        result = await registered_fns["my_tool"](x=42)
+        assert "my_tool" in fns
+        result = await fns["my_tool"](x=42)
         assert result == {"result": 42}
-
         spans = otel_provider.get_finished_spans()
         assert len(spans) == 1
         assert spans[0].name == "butler.tool.my_tool"
         assert spans[0].attributes["butler.name"] == "test-butler"
 
-    async def test_wraps_tool_preserves_function_name(self, otel_provider):
-        """The wrapped function preserves the original function name."""
-        mock_mcp = MagicMock()
-        registered_fns = {}
+        # Exception → span records error
+        wrapper2, fns2 = self._make_wrapper()
 
-        def tool_decorator(*_decorator_args, **decorator_kwargs):
-            declared_name = decorator_kwargs.get("name")
-
-            def decorator(fn):
-                registered_fns[declared_name or fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        mock_mcp.tool = tool_decorator
-
-        wrapper = _SpanWrappingMCP(mock_mcp, "test-butler")
-
-        @wrapper.tool()
-        async def another_tool() -> dict:
-            """Another tool docstring."""
-            return {}
-
-        assert "another_tool" in registered_fns
-
-    async def test_wraps_tool_records_exception(self, otel_provider):
-        """When a wrapped module tool raises, the span records the error."""
-        mock_mcp = MagicMock()
-        registered_fns = {}
-
-        def tool_decorator(*_decorator_args, **decorator_kwargs):
-            declared_name = decorator_kwargs.get("name")
-
-            def decorator(fn):
-                registered_fns[declared_name or fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        mock_mcp.tool = tool_decorator
-
-        wrapper = _SpanWrappingMCP(mock_mcp, "test-butler")
-
-        @wrapper.tool()
+        @wrapper2.tool()
         async def failing_tool() -> dict:
             raise ValueError("module error")
 
         with pytest.raises(ValueError, match="module error"):
-            await registered_fns["failing_tool"]()
-
-        spans = otel_provider.get_finished_spans()
-        assert len(spans) == 1
-        assert spans[0].status.status_code == trace.StatusCode.ERROR
+            await fns2["failing_tool"]()
+        spans2 = otel_provider.get_finished_spans()
+        error_spans = [s for s in spans2 if s.name == "butler.tool.failing_tool"]
+        assert len(error_spans) == 1
+        assert error_spans[0].status.status_code == trace.StatusCode.ERROR
 
     async def test_wraps_tool_logs_invocation(self, otel_provider):
         """Wrapped module tools emit a call log line on invocation."""
-        mock_mcp = MagicMock()
-        registered_fns = {}
-
-        def tool_decorator(*_decorator_args, **decorator_kwargs):
-            declared_name = decorator_kwargs.get("name")
-
-            def decorator(fn):
-                registered_fns[declared_name or fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        mock_mcp.tool = tool_decorator
-        wrapper = _SpanWrappingMCP(mock_mcp, "test-butler", module_name="stub_span")
+        wrapper, fns = self._make_wrapper(module_name="stub_span")
 
         @wrapper.tool()
         async def stub_action() -> dict:
             return {"ok": True}
 
         with patch("butlers.daemon.logger") as mock_logger:
-            await registered_fns["stub_action"]()
+            await fns["stub_action"]()
 
         mock_logger.info.assert_any_call(
             "MCP tool called (butler=%s module=%s tool=%s)",

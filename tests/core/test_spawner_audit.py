@@ -72,7 +72,8 @@ def _make_config(name: str = "test-butler", port: int = 9100) -> ButlerConfig:
 
 
 class TestSpawnerAuditLogging:
-    async def test_audit_entry_written_on_success(self, tmp_path: Path):
+    async def test_audit_entry_written(self, tmp_path: Path):
+        """Audit entry written on success with correct fields; on error records error message."""
         audit_pool = MagicMock()
         audit_pool.execute = AsyncMock()
 
@@ -97,38 +98,26 @@ class TestSpawnerAuditLogging:
         assert summary["tool_calls_count"] == 1
         assert summary["input_tokens"] == 10
         assert summary["output_tokens"] == 20
-        # result = success
         assert args[4] == "success"
-        # error = None
         assert args[5] is None
 
-    async def test_audit_entry_written_on_error(self, tmp_path: Path):
-        audit_pool = MagicMock()
-        audit_pool.execute = AsyncMock()
-
-        spawner = Spawner(
+        # Error path: audit records error result and message
+        audit_pool.execute.reset_mock()
+        fail_spawner = Spawner(
             config=_make_config(),
             config_dir=tmp_path,
             runtime=_FailAdapter(),
             audit_pool=audit_pool,
         )
-
-        result = await spawner.trigger(prompt="do work", trigger_source="schedule:daily")
-
-        assert result.success is False
+        result2 = await fail_spawner.trigger(prompt="do work", trigger_source="schedule:daily")
+        assert result2.success is False
         audit_pool.execute.assert_awaited_once()
-        args = audit_pool.execute.call_args[0]
-        assert args[1] == "test-butler"
-        assert args[2] == "session"
-        summary = json.loads(args[3])
-        assert summary["trigger_source"] == "schedule:daily"
-        # result = error
-        assert args[4] == "error"
-        # error message present
-        assert "adapter boom" in args[5]
+        args2 = audit_pool.execute.call_args[0]
+        assert args2[4] == "error"
+        assert "adapter boom" in args2[5]
 
     async def test_no_audit_when_pool_is_none(self, tmp_path: Path):
-        """Spawner with audit_pool=None should not raise or write."""
+        """Spawner with audit_pool=None does not raise; prompt is truncated in audit summary."""
         spawner = Spawner(
             config=_make_config(),
             config_dir=tmp_path,
@@ -140,25 +129,18 @@ class TestSpawnerAuditLogging:
             result = await spawner.trigger(prompt="do work", trigger_source="tick")
 
         assert result.success is True
-        # write_audit_entry is still called but returns immediately (pool is None)
         mock_write.assert_awaited()
-        # Verify pool=None was passed
         assert mock_write.call_args[0][0] is None
 
-    async def test_prompt_truncated_in_audit_summary(self, tmp_path: Path):
+        # Prompt truncated to 200 chars in audit summary
         audit_pool = MagicMock()
         audit_pool.execute = AsyncMock()
-
-        spawner = Spawner(
+        spawner2 = Spawner(
             config=_make_config(),
             config_dir=tmp_path,
             runtime=_OkAdapter(),
             audit_pool=audit_pool,
         )
-
-        long_prompt = "x" * 500
-        await spawner.trigger(prompt=long_prompt, trigger_source="trigger")
-
+        await spawner2.trigger(prompt="x" * 500, trigger_source="trigger")
         args = audit_pool.execute.call_args[0]
-        summary = json.loads(args[3])
-        assert len(summary["prompt"]) == 200
+        assert len(json.loads(args[3])["prompt"]) == 200

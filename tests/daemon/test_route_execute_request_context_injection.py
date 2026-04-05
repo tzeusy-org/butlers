@@ -197,214 +197,87 @@ def _route_request_context(
     return ctx
 
 
+def _mock_trigger_result() -> MagicMock:
+    """Return a mock trigger result indicating success."""
+    r = MagicMock()
+    r.output = "ok"
+    r.success = True
+    r.error = None
+    r.duration_ms = 10
+    return r
+
+
+async def _call_route_execute(daemon, route_execute_fn, *, request_context, input_data) -> str:
+    """Call route_execute_fn, wait for background task, return context_arg."""
+    daemon.spawner.trigger = AsyncMock(return_value=_mock_trigger_result())
+    result = await route_execute_fn(
+        schema_version="route.v1",
+        request_context=request_context,
+        input=input_data,
+    )
+    await asyncio.sleep(0.05)
+    assert result["status"] == "accepted"
+    return daemon.spawner.trigger.call_args.kwargs.get("context")
+
+
 class TestRouteExecuteRequestContextInjection:
     """Verify that request_context is injected into runtime session context."""
 
-    async def test_request_context_injected_into_spawner_context(self, tmp_path: Path) -> None:
-        """Request context is prepended to spawner context for routes."""
+    async def test_request_context_content_and_fields(self, tmp_path: Path) -> None:
+        """Request context injected into spawner context; all fields preserved;
+        no input.context → no INPUT CONTEXT section; REQUEST CONTEXT present."""
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path, butler_name="health"), patches
+        )
         assert route_execute_fn is not None
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        request_ctx = _route_request_context(
-            source_channel="telegram_bot",
-            source_thread_identity="98765",
-            source_sender_identity="user123",
-            request_id="018f6f4e-5b3b-7b2d-9c2f-aaaaaabbbbbb",
+        # Basic injection: REQUEST CONTEXT with key fields
+        ctx_arg = await _call_route_execute(
+            daemon,
+            route_execute_fn,
+            request_context=_route_request_context(
+                source_channel="telegram_bot",
+                source_thread_identity="98765",
+                source_sender_identity="user123",
+                request_id="018f6f4e-5b3b-7b2d-9c2f-aaaaaabbbbbb",
+            ),
+            input_data={"prompt": "Run health check."},
         )
+        assert "REQUEST CONTEXT" in ctx_arg
+        assert "018f6f4e-5b3b-7b2d-9c2f-aaaaaabbbbbb" in ctx_arg
+        assert "telegram" in ctx_arg
+        assert "98765" in ctx_arg
+        assert "user123" in ctx_arg
+        assert "INPUT CONTEXT" not in ctx_arg
 
+        # All fields preserved (parse embedded JSON)
+        daemon.spawner.trigger = AsyncMock(return_value=_mock_trigger_result())
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=request_ctx,
-            input={"prompt": "Run health check."},
-        )
-
-        # Wait for the background route_inbox processing task to complete
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        daemon.spawner.trigger.assert_awaited_once()
-
-        # Extract the context argument passed to spawner.trigger
-        call_args = daemon.spawner.trigger.call_args
-        assert call_args is not None
-        context_arg = call_args.kwargs.get("context")
-
-        # Verify request_context is in the context
-        assert context_arg is not None
-        assert "REQUEST CONTEXT" in context_arg
-        assert "018f6f4e-5b3b-7b2d-9c2f-aaaaaabbbbbb" in context_arg
-        assert "telegram" in context_arg
-        assert "98765" in context_arg
-        assert "user123" in context_arg
-
-    async def test_request_context_with_dict_input_context(self, tmp_path: Path) -> None:
-        """Both request_context and input.context (dict) are in context."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={
-                "prompt": "Check vital signs.",
-                "context": {
-                    "patient_id": "patient-456",
-                    "visit_date": "2026-02-14",
-                },
-            },
-        )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        call_args = daemon.spawner.trigger.call_args
-        context_arg = call_args.kwargs.get("context")
-
-        # Verify both REQUEST CONTEXT and INPUT CONTEXT are present
-        assert "REQUEST CONTEXT" in context_arg
-        assert "INPUT CONTEXT" in context_arg
-        assert "patient-456" in context_arg
-        assert "2026-02-14" in context_arg
-
-    async def test_request_context_with_string_input_context(self, tmp_path: Path) -> None:
-        """Both request_context and input.context (string) are in context."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={
-                "prompt": "Check vital signs.",
-                "context": "Previous reading: BP 120/80, HR 72",
-            },
-        )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        call_args = daemon.spawner.trigger.call_args
-        context_arg = call_args.kwargs.get("context")
-
-        # Verify both REQUEST CONTEXT and INPUT CONTEXT are present
-        assert "REQUEST CONTEXT" in context_arg
-        assert "INPUT CONTEXT" in context_arg
-        assert "Previous reading: BP 120/80, HR 72" in context_arg
-
-    async def test_request_context_only_when_no_input_context(self, tmp_path: Path) -> None:
-        """Request context is injected when input.context is absent."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="email"),
-            input={"prompt": "Check vital signs."},
-        )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        call_args = daemon.spawner.trigger.call_args
-        context_arg = call_args.kwargs.get("context")
-
-        # Verify REQUEST CONTEXT is present but INPUT CONTEXT is not
-        assert "REQUEST CONTEXT" in context_arg
-        assert "email" in context_arg
-        assert "INPUT CONTEXT" not in context_arg
-
-    async def test_request_context_preserves_all_fields(self, tmp_path: Path) -> None:
-        """All request_context fields are preserved in spawner context."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        request_ctx = _route_request_context(
-            source_channel="telegram_bot",
-            source_thread_identity="thread-999",
-            source_sender_identity="sender-888",
-            source_endpoint_identity="switchboard",
-            request_id="018f6f4e-5b3b-7b2d-9c2f-ccccccdddddd",
-        )
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=request_ctx,
+            request_context=_route_request_context(
+                source_channel="telegram_bot",
+                source_thread_identity="thread-999",
+                source_sender_identity="sender-888",
+                source_endpoint_identity="switchboard",
+                request_id="018f6f4e-5b3b-7b2d-9c2f-ccccccdddddd",
+            ),
             input={"prompt": "Check status."},
         )
-
-        # Wait for background task
         await asyncio.sleep(0.05)
         assert result["status"] == "accepted"
-        call_args = daemon.spawner.trigger.call_args
-        context_arg = call_args.kwargs.get("context")
-
-        # Parse the JSON from the context to verify structure
-        assert "REQUEST CONTEXT" in context_arg
-        lines = context_arg.split("\n")
-        json_start = None
-        for i, line in enumerate(lines):
-            if line.strip().startswith("{"):
-                json_start = i
-                break
-
+        ctx_arg2 = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert "REQUEST CONTEXT" in ctx_arg2
+        lines = ctx_arg2.split("\n")
+        json_start = next((i for i, l in enumerate(lines) if l.strip().startswith("{")), None)
         assert json_start is not None
-        # Find the end of the JSON block
-        json_lines = []
-        brace_count = 0
+        json_lines, brace_count = [], 0
         for i in range(json_start, len(lines)):
             json_lines.append(lines[i])
             brace_count += lines[i].count("{") - lines[i].count("}")
             if brace_count == 0:
                 break
-
-        json_text = "\n".join(json_lines)
-        parsed_ctx = json.loads(json_text)
-
-        # Verify all fields are present
+        parsed_ctx = json.loads("\n".join(json_lines))
         assert parsed_ctx["request_id"] == "018f6f4e-5b3b-7b2d-9c2f-ccccccdddddd"
         assert parsed_ctx["source_channel"] == "telegram_bot"
         assert parsed_ctx["source_thread_identity"] == "thread-999"
@@ -412,117 +285,94 @@ class TestRouteExecuteRequestContextInjection:
         assert parsed_ctx["source_endpoint_identity"] == "switchboard"
         assert "received_at" in parsed_ctx
 
-    async def test_interactive_channel_injects_guidance_for_telegram(self, tmp_path: Path) -> None:
-        """Telegram source_channel triggers INTERACTIVE DATA SOURCE block."""
+    async def test_input_context_variants(self, tmp_path: Path) -> None:
+        """Both dict and string input.context are included under INPUT CONTEXT."""
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram_bot"),
-            input={"prompt": "Track medication."},
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path, butler_name="health"), patches
         )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert "INTERACTIVE DATA SOURCE" in context_arg
-        assert 'channel="telegram"' in context_arg
-        assert 'intent="reply"' in context_arg
-        assert "notify()" in context_arg
-        assert "/butler-notifications" in context_arg
-
-    async def test_interactive_channel_guidance_requires_request_context_for_notify(
-        self, tmp_path: Path
-    ) -> None:
-        """Interactive guidance should require passing request_context to notify()."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
         assert route_execute_fn is not None
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram_bot"),
-            input={"prompt": "Follow up with the user."},
+        # Dict input.context
+        ctx_arg = await _call_route_execute(
+            daemon,
+            route_execute_fn,
+            request_context=_route_request_context(),
+            input_data={
+                "prompt": "Check vital signs.",
+                "context": {"patient_id": "patient-456", "visit_date": "2026-02-14"},
+            },
         )
+        assert "REQUEST CONTEXT" in ctx_arg
+        assert "INPUT CONTEXT" in ctx_arg
+        assert "patient-456" in ctx_arg
+        assert "2026-02-14" in ctx_arg
 
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert "INTERACTIVE DATA SOURCE" in context_arg
-        assert 'channel="telegram"' in context_arg
-        assert 'intent="reply"' in context_arg
-        assert "notify()" in context_arg
-        assert "/routed-message-safety" in context_arg
-        assert "Pass the request_context" in context_arg
-        assert "telegram only" in context_arg
-        assert "request_id" in context_arg
-        assert "source_channel" in context_arg
-        assert "source_endpoint_identity" in context_arg
-        assert "source_sender_identity" in context_arg
-        assert "source_thread_identity" in context_arg
+        # String input.context
+        ctx_arg2 = await _call_route_execute(
+            daemon,
+            route_execute_fn,
+            request_context=_route_request_context(),
+            input_data={
+                "prompt": "Check vital signs.",
+                "context": "Previous reading: BP 120/80, HR 72",
+            },
+        )
+        assert "REQUEST CONTEXT" in ctx_arg2
+        assert "INPUT CONTEXT" in ctx_arg2
+        assert "Previous reading: BP 120/80, HR 72" in ctx_arg2
 
-    async def test_non_interactive_channel_omits_guidance(self, tmp_path: Path) -> None:
-        """MCP source_channel does NOT inject INTERACTIVE DATA SOURCE block."""
+    async def test_interactive_vs_non_interactive_channel(self, tmp_path: Path) -> None:
+        """Telegram injects INTERACTIVE DATA SOURCE with notify() guidance;
+        MCP (non-interactive) does not inject INTERACTIVE DATA SOURCE."""
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path, butler_name="health"), patches
+        )
         assert route_execute_fn is not None
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+        # Telegram: interactive guidance injected, request_context fields required for notify()
+        ctx_arg = await _call_route_execute(
+            daemon,
+            route_execute_fn,
+            request_context=_route_request_context(source_channel="telegram_bot"),
+            input_data={"prompt": "Track medication."},
+        )
+        assert "INTERACTIVE DATA SOURCE" in ctx_arg
+        assert 'channel="telegram"' in ctx_arg
+        assert 'intent="reply"' in ctx_arg
+        assert "notify()" in ctx_arg
+        assert "/butler-notifications" in ctx_arg
+        assert "/routed-message-safety" in ctx_arg
+        assert "Pass the request_context" in ctx_arg
+        assert "telegram only" in ctx_arg
+        assert "request_id" in ctx_arg
+        assert "source_channel" in ctx_arg
+        assert "source_endpoint_identity" in ctx_arg
+        assert "source_sender_identity" in ctx_arg
+        assert "source_thread_identity" in ctx_arg
 
-        result = await route_execute_fn(
-            schema_version="route.v1",
+        # MCP: non-interactive, no guidance block
+        ctx_arg2 = await _call_route_execute(
+            daemon,
+            route_execute_fn,
             request_context=_route_request_context(source_channel="mcp"),
-            input={"prompt": "Internal check."},
+            input_data={"prompt": "Internal check."},
         )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert "INTERACTIVE DATA SOURCE" not in context_arg
+        assert "INTERACTIVE DATA SOURCE" not in ctx_arg2
 
 
 class TestRouteExecuteConversationHistoryInjection:
     """Verify that conversation_history from route.v1 input is injected into context."""
 
-    async def test_conversation_history_injected_into_spawner_context(self, tmp_path: Path) -> None:
-        """Conversation history forwarded via input.conversation_history appears in context."""
+    async def test_conversation_history_injection_and_ordering(self, tmp_path: Path) -> None:
+        """Conversation history appears in CONVERSATION HISTORY section before INPUT CONTEXT;
+        content (user/butler messages) is preserved."""
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path, butler_name="health"), patches
+        )
         assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
 
         history_text = (
             "**user123** (2026-02-16T10:00:00Z):\n"
@@ -531,138 +381,59 @@ class TestRouteExecuteConversationHistoryInjection:
             "Done! I've recorded metformin 500mg twice daily."
         )
 
-        result = await route_execute_fn(
-            schema_version="route.v1",
+        # Part 1: history content is injected
+        ctx_arg = await _call_route_execute(
+            daemon,
+            route_execute_fn,
             request_context=_route_request_context(source_channel="telegram_bot"),
-            input={"prompt": "When should I take it?", "conversation_history": history_text},
+            input_data={"prompt": "When should I take it?", "conversation_history": history_text},
         )
+        assert "CONVERSATION HISTORY" in ctx_arg
+        assert "metformin 500mg" in ctx_arg
+        assert "user123" in ctx_arg
 
-        # Wait for the background route_inbox processing task to complete
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        daemon.spawner.trigger.assert_awaited_once()
-
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert context_arg is not None
-        assert "CONVERSATION HISTORY" in context_arg
-        assert "metformin 500mg" in context_arg
-        assert "user123" in context_arg
-
-    async def test_conversation_history_appears_before_input_context(self, tmp_path: Path) -> None:
-        """Conversation history is prepended before INPUT CONTEXT in the context string."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        history_text = "**user1** (2026-02-16T10:00:00Z):\nHello"
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
+        # Part 2: CONVERSATION HISTORY appears before INPUT CONTEXT
+        ctx_arg2 = await _call_route_execute(
+            daemon,
+            route_execute_fn,
             request_context=_route_request_context(source_channel="telegram_bot"),
-            input={
+            input_data={
                 "prompt": "Reply.",
                 "context": "Extra context here",
-                "conversation_history": history_text,
+                "conversation_history": "**user1** (2026-02-16T10:00:00Z):\nHello",
             },
         )
+        history_pos = ctx_arg2.find("CONVERSATION HISTORY")
+        input_ctx_pos = ctx_arg2.find("INPUT CONTEXT")
+        assert history_pos != -1 and input_ctx_pos != -1
+        assert history_pos < input_ctx_pos
 
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert context_arg is not None
-
-        history_pos = context_arg.find("CONVERSATION HISTORY")
-        input_ctx_pos = context_arg.find("INPUT CONTEXT")
-        assert history_pos != -1, "CONVERSATION HISTORY not in context"
-        assert input_ctx_pos != -1, "INPUT CONTEXT not in context"
-        assert history_pos < input_ctx_pos, "CONVERSATION HISTORY must come before INPUT CONTEXT"
-
-    async def test_no_conversation_history_omits_section(self, tmp_path: Path) -> None:
-        """When conversation_history is absent, CONVERSATION HISTORY section is not injected."""
+    @pytest.mark.parametrize(
+        "conversation_history",
+        [
+            pytest.param(None, id="none"),
+            pytest.param("", id="empty_string"),
+            pytest.param("absent", id="absent"),
+        ],
+    )
+    async def test_conversation_history_omitted_when_blank(
+        self, tmp_path: Path, conversation_history
+    ) -> None:
+        """CONVERSATION HISTORY section absent when history is None, empty, or not provided."""
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="mcp"),
-            input={"prompt": "Do something."},
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path, butler_name="health"), patches
         )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert context_arg is not None
-        assert "CONVERSATION HISTORY" not in context_arg
-
-    async def test_none_conversation_history_omits_section(self, tmp_path: Path) -> None:
-        """When conversation_history is None, CONVERSATION HISTORY section is omitted."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
         assert route_execute_fn is not None
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+        input_data: dict = {"prompt": "Do something."}
+        if conversation_history != "absent":
+            input_data["conversation_history"] = conversation_history
 
-        result = await route_execute_fn(
-            schema_version="route.v1",
+        ctx_arg = await _call_route_execute(
+            daemon,
+            route_execute_fn,
             request_context=_route_request_context(source_channel="telegram_bot"),
-            input={"prompt": "Do something.", "conversation_history": None},
+            input_data=input_data,
         )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert context_arg is not None
-        assert "CONVERSATION HISTORY" not in context_arg
-
-    async def test_empty_string_conversation_history_omits_section(self, tmp_path: Path) -> None:
-        """When conversation_history is an empty string, CONVERSATION HISTORY section is omitted."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram_bot"),
-            input={"prompt": "Do something.", "conversation_history": ""},
-        )
-
-        # Wait for background task
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert context_arg is not None
-        assert "CONVERSATION HISTORY" not in context_arg
+        assert "CONVERSATION HISTORY" not in ctx_arg

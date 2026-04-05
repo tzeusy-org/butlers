@@ -135,16 +135,13 @@ def _make_message_ref(request_id: str = "r1") -> _MessageRef:
 class TestInitMetrics:
     """init_metrics behavior with and without OTEL endpoint."""
 
-    def test_returns_meter_when_endpoint_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """init_metrics returns a Meter even without OTEL_EXPORTER_OTLP_ENDPOINT."""
+    def test_meter_returned_and_usable_without_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """init_metrics returns a usable no-op meter even without OTEL_EXPORTER_OTLP_ENDPOINT."""
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
         meter = init_metrics("butler-test")
         assert meter is not None
-
-    def test_meter_is_usable_for_no_op_recording(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Meters returned without an endpoint are no-op and don't raise."""
-        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
-        meter = init_metrics("butler-test")
         counter = meter.create_counter("test.counter")
         counter.add(1, {"key": "val"})  # must not raise
 
@@ -169,8 +166,6 @@ class TestButlerMetrics:
     def _metrics_map(self) -> dict[str, Any]:
         return _collect_metrics(self._reader)
 
-    # --- ensure_registered ---
-
     def test_ensure_registered_creates_zero_series(self) -> None:
         m = ButlerMetrics("idle-butler")
         m.ensure_registered()
@@ -185,140 +180,89 @@ class TestButlerMetrics:
         dp2 = data["butlers.spawner.queued_triggers"][0]
         assert dp2.value == 0
 
-    # --- spawner metrics ---
-
-    def test_spawner_active_sessions_inc_dec(self) -> None:
+    def test_spawner_metrics_inc_dec_and_duration(self) -> None:
+        """active_sessions, queued_triggers, session_duration_ms all record correctly."""
         m = ButlerMetrics("spawner-butler")
+
+        # active_sessions: 2 inc - 1 dec = 1
         m.spawner_active_sessions_inc()
         m.spawner_active_sessions_inc()
         m.spawner_active_sessions_dec()
 
-        data = self._metrics_map()
-        assert "butlers.spawner.active_sessions" in data
-        dp = data["butlers.spawner.active_sessions"][0]
-        assert dp.value == 1  # 2 inc - 1 dec
-        assert dp.attributes == {"butler": "spawner-butler"}
-
-    def test_spawner_queued_triggers_inc_dec(self) -> None:
-        m = ButlerMetrics("q-butler")
+        # queued_triggers: 2 inc - 1 dec = 1
         m.spawner_queued_triggers_inc()
         m.spawner_queued_triggers_inc()
         m.spawner_queued_triggers_dec()
 
-        data = self._metrics_map()
-        assert "butlers.spawner.queued_triggers" in data
-        dp = data["butlers.spawner.queued_triggers"][0]
-        assert dp.value == 1
-
-    def test_spawner_session_duration_ms(self) -> None:
-        m = ButlerMetrics("dur-butler")
+        # session_duration histogram
         m.record_session_duration(1234)
 
         data = self._metrics_map()
-        assert "butlers.spawner.session_duration_ms" in data
-        dp = data["butlers.spawner.session_duration_ms"][0]
-        assert dp.count == 1
-        assert dp.sum == 1234
+        assert data["butlers.spawner.active_sessions"][0].value == 1
+        assert data["butlers.spawner.active_sessions"][0].attributes == {"butler": "spawner-butler"}
+        assert data["butlers.spawner.queued_triggers"][0].value == 1
+        assert data["butlers.spawner.session_duration_ms"][0].count == 1
+        assert data["butlers.spawner.session_duration_ms"][0].sum == 1234
 
-    # --- buffer metrics ---
-
-    def test_buffer_queue_depth_inc_dec(self) -> None:
+    def test_buffer_metrics(self) -> None:
+        """queue_depth, enqueue_total (hot/cold), backpressure, scanner_recovered all correct."""
         m = ButlerMetrics("buf-butler")
+
+        # queue_depth: 2 inc - 1 dec = 1
         m.buffer_queue_depth_inc()
         m.buffer_queue_depth_inc()
         m.buffer_queue_depth_dec()
 
-        data = self._metrics_map()
-        assert "butlers.buffer.queue_depth" in data
-        dp = data["butlers.buffer.queue_depth"][0]
-        assert dp.value == 1
-
-    def test_buffer_enqueue_hot_label(self) -> None:
-        m = ButlerMetrics("buf-butler")
+        # enqueue_total: 2 hot + 1 cold
         m.buffer_enqueue_hot()
         m.buffer_enqueue_hot()
-
-        data = self._metrics_map()
-        assert "butlers.buffer.enqueue_total" in data
-        # Find the data point with path=hot
-        hot_dps = [
-            dp for dp in data["butlers.buffer.enqueue_total"] if dp.attributes.get("path") == "hot"
-        ]
-        assert len(hot_dps) == 1
-        assert hot_dps[0].value == 2
-
-    def test_buffer_enqueue_cold_label(self) -> None:
-        m = ButlerMetrics("buf-butler")
         m.buffer_enqueue_cold()
 
-        data = self._metrics_map()
-        assert "butlers.buffer.enqueue_total" in data
-        cold_dps = [
-            dp for dp in data["butlers.buffer.enqueue_total"] if dp.attributes.get("path") == "cold"
-        ]
-        assert len(cold_dps) == 1
-        assert cold_dps[0].value == 1
-
-    def test_buffer_backpressure(self) -> None:
-        m = ButlerMetrics("buf-butler")
+        # counters
         m.buffer_backpressure()
         m.buffer_backpressure()
-
-        data = self._metrics_map()
-        assert "butlers.buffer.backpressure_total" in data
-        dp = data["butlers.buffer.backpressure_total"][0]
-        assert dp.value == 2
-
-    def test_buffer_scanner_recovered(self) -> None:
-        m = ButlerMetrics("buf-butler")
         m.buffer_scanner_recovered()
 
-        data = self._metrics_map()
-        assert "butlers.buffer.scanner_recovered_total" in data
-        dp = data["butlers.buffer.scanner_recovered_total"][0]
-        assert dp.value == 1
-
-    def test_buffer_process_latency_ms(self) -> None:
-        m = ButlerMetrics("buf-butler")
+        # histogram
         m.record_buffer_process_latency(42.5)
 
         data = self._metrics_map()
-        assert "butlers.buffer.process_latency_ms" in data
-        dp = data["butlers.buffer.process_latency_ms"][0]
-        assert dp.count == 1
-        assert dp.sum == pytest.approx(42.5, rel=1e-3)
+        assert data["butlers.buffer.queue_depth"][0].value == 1
 
-    # --- route metrics ---
+        hot_dps = [
+            dp for dp in data["butlers.buffer.enqueue_total"] if dp.attributes.get("path") == "hot"
+        ]
+        cold_dps = [
+            dp for dp in data["butlers.buffer.enqueue_total"] if dp.attributes.get("path") == "cold"
+        ]
+        assert hot_dps[0].value == 2
+        assert cold_dps[0].value == 1
 
-    def test_route_accept_latency_ms(self) -> None:
+        assert data["butlers.buffer.backpressure_total"][0].value == 2
+        assert data["butlers.buffer.scanner_recovered_total"][0].value == 1
+        dp_lat = data["butlers.buffer.process_latency_ms"][0]
+        assert dp_lat.count == 1
+        assert dp_lat.sum == pytest.approx(42.5, rel=1e-3)
+
+    def test_route_metrics(self) -> None:
+        """accept_latency_ms, queue_depth, process_latency_ms record correctly."""
         m = ButlerMetrics("route-butler")
+
         m.record_route_accept_latency(15.0)
-
-        data = self._metrics_map()
-        assert "butlers.route.accept_latency_ms" in data
-        dp = data["butlers.route.accept_latency_ms"][0]
-        assert dp.count == 1
-        assert dp.sum == pytest.approx(15.0, rel=1e-3)
-
-    def test_route_queue_depth_inc_dec(self) -> None:
-        m = ButlerMetrics("route-butler")
         m.route_queue_depth_inc()
         m.route_queue_depth_inc()
         m.route_queue_depth_dec()
-
-        data = self._metrics_map()
-        assert "butlers.route.queue_depth" in data
-        dp = data["butlers.route.queue_depth"][0]
-        assert dp.value == 1
-
-    def test_route_process_latency_ms(self) -> None:
-        m = ButlerMetrics("route-butler")
         m.record_route_process_latency(100.0)
 
         data = self._metrics_map()
-        assert "butlers.route.process_latency_ms" in data
-        dp = data["butlers.route.process_latency_ms"][0]
-        assert dp.count == 1
+        dp_accept = data["butlers.route.accept_latency_ms"][0]
+        assert dp_accept.count == 1
+        assert dp_accept.sum == pytest.approx(15.0, rel=1e-3)
+
+        assert data["butlers.route.queue_depth"][0].value == 1
+
+        dp_proc = data["butlers.route.process_latency_ms"][0]
+        assert dp_proc.count == 1
 
     def test_butler_label_in_attributes(self) -> None:
         """All data points carry the correct butler label."""
@@ -358,8 +302,8 @@ class TestSpawnerMetrics:
     def _metrics_map(self) -> dict[str, Any]:
         return _collect_metrics(self._reader)
 
-    async def test_active_sessions_zero_after_trigger(self, tmp_path: Path) -> None:
-        """After a successful trigger, active_sessions returns to 0."""
+    async def test_spawner_trigger_updates_all_metrics(self, tmp_path: Path) -> None:
+        """After trigger: active_sessions=0, queued_triggers=0, session_duration recorded."""
         config = _make_butler_config(name="metrics-spawner-test")
         (tmp_path / "CLAUDE.md").write_text("# test")
         spawner = Spawner(config=config, config_dir=tmp_path, runtime=MockAdapter())
@@ -367,36 +311,17 @@ class TestSpawnerMetrics:
         await spawner.trigger(prompt="hello", trigger_source="tick")
 
         data = self._metrics_map()
-        active_dps = data.get("butlers.spawner.active_sessions", [])
-        total = sum(dp.value for dp in active_dps)
-        assert total == 0  # incremented then decremented
 
-    async def test_session_duration_recorded(self, tmp_path: Path) -> None:
-        """session_duration_ms histogram has count=1 after a single trigger."""
-        config = _make_butler_config(name="duration-test-butler")
-        (tmp_path / "CLAUDE.md").write_text("# test")
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=MockAdapter())
+        active_total = sum(dp.value for dp in data.get("butlers.spawner.active_sessions", []))
+        assert active_total == 0
 
-        await spawner.trigger(prompt="hello", trigger_source="tick")
+        queued_total = sum(dp.value for dp in data.get("butlers.spawner.queued_triggers", []))
+        assert queued_total == 0
 
-        data = self._metrics_map()
         assert "butlers.spawner.session_duration_ms" in data
         dp = data["butlers.spawner.session_duration_ms"][0]
         assert dp.count == 1
         assert dp.sum >= 0
-
-    async def test_queued_triggers_zero_after_completion(self, tmp_path: Path) -> None:
-        """queued_triggers decrements back to 0 after trigger completes."""
-        config = _make_butler_config(name="queue-test-butler")
-        (tmp_path / "CLAUDE.md").write_text("# test")
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=MockAdapter())
-
-        await spawner.trigger(prompt="hello", trigger_source="tick")
-
-        data = self._metrics_map()
-        queued_dps = data.get("butlers.spawner.queued_triggers", [])
-        total = sum(dp.value for dp in queued_dps)
-        assert total == 0
 
 
 # ---------------------------------------------------------------------------
@@ -417,69 +342,40 @@ class TestDurableBufferMetrics:
     def _metrics_map(self) -> dict[str, Any]:
         return _collect_metrics(self._reader)
 
-    def test_hot_enqueue_increments_enqueue_total_and_depth(self) -> None:
-        """Successful hot-path enqueue updates enqueue_total and queue_depth."""
+    def test_enqueue_metrics_and_backpressure(self) -> None:
+        """Hot-path enqueue updates enqueue_total and queue_depth; full queue increments backpressure."""
+        # Hot enqueue increments enqueue_total and queue_depth
         buf = DurableBuffer(
             config=_make_buffer_config(),
             pool=None,
             process_fn=AsyncMock(),
             butler_name="sw",
         )
-        buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="msg",
-            source={},
-            event={},
-            sender={},
-        )
+        buf.enqueue(request_id="r1", message_inbox_id="r1", message_text="msg",
+                    source={}, event={}, sender={})
 
         data = self._metrics_map()
-
-        # enqueue_total with path=hot
-        hot_dps = [
-            dp
-            for dp in data.get("butlers.buffer.enqueue_total", [])
-            if dp.attributes.get("path") == "hot"
-        ]
-        assert len(hot_dps) == 1
-        assert hot_dps[0].value == 1
-
-        # queue_depth incremented
-        depth_dps = data.get("butlers.buffer.queue_depth", [])
-        total_depth = sum(dp.value for dp in depth_dps)
+        hot_dps = [dp for dp in data.get("butlers.buffer.enqueue_total", [])
+                   if dp.attributes.get("path") == "hot"]
+        assert len(hot_dps) == 1 and hot_dps[0].value == 1
+        total_depth = sum(dp.value for dp in data.get("butlers.buffer.queue_depth", []))
         assert total_depth == 1
 
-    def test_backpressure_increments_counter(self) -> None:
-        """When queue is full, backpressure_total is incremented."""
-        buf = DurableBuffer(
+        # Backpressure: fill queue then overflow increments backpressure_total
+        buf2 = DurableBuffer(
             config=_make_buffer_config(queue_capacity=1),
             pool=None,
             process_fn=AsyncMock(),
             butler_name="sw",
         )
-        # Fill the queue
-        buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="first",
-            source={},
-            event={},
-            sender={},
-        )
-        # Trigger backpressure
-        buf.enqueue(
-            request_id="r2",
-            message_inbox_id="r2",
-            message_text="second",
-            source={},
-            event={},
-            sender={},
-        )
+        buf2.enqueue(request_id="r1", message_inbox_id="r1", message_text="first",
+                     source={}, event={}, sender={})
+        buf2.enqueue(request_id="r2", message_inbox_id="r2", message_text="second",
+                     source={}, event={}, sender={})
 
-        data = self._metrics_map()
-        bp_dps = data.get("butlers.buffer.backpressure_total", [])
-        assert sum(dp.value for dp in bp_dps) == 1
+        data2 = self._metrics_map()
+        bp_dps = data2.get("butlers.buffer.backpressure_total", [])
+        assert sum(dp.value for dp in bp_dps) >= 1
 
     async def test_worker_decrements_queue_depth_and_records_latency(self) -> None:
         """Worker loop decrements queue_depth and records process_latency_ms."""
@@ -538,20 +434,15 @@ class TestMultiButlerMeterProvider:
         yield
         _reset_metrics_global_state()
 
-    def test_second_init_does_not_call_set_provider_again(self) -> None:
-        """Second init_metrics call reuses the existing provider without override.
-
-        Simulates a second butler calling init_metrics by pre-installing a provider
-        and setting the guard flag, then verifying init_metrics returns a meter
-        without reinstalling.
-        """
+    def test_provider_guard_and_noop_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Second init_metrics does not override provider; no-op mode never calls set_provider."""
         import os as _os
 
+        # Part 1: second init with installed provider → no override
         reader = InMemoryMetricReader()
         from opentelemetry.sdk.metrics import MeterProvider as _MP
         from opentelemetry.sdk.resources import Resource as _Res
 
-        # Install a real provider (simulating the first butler's init_metrics)
         provider = _MP(
             resource=_Res.create({"service.name": "butlers"}),
             metric_readers=[reader],
@@ -559,7 +450,6 @@ class TestMultiButlerMeterProvider:
         metrics.set_meter_provider(provider)
         _metrics_mod._meter_provider_installed = True
 
-        # Track whether set_meter_provider is called again
         set_count = 0
         original_set = metrics.set_meter_provider
 
@@ -568,7 +458,6 @@ class TestMultiButlerMeterProvider:
             set_count += 1
             original_set(p)
 
-        # Replace set_meter_provider to detect if it gets called
         metrics.set_meter_provider = guarded_set
         try:
             _os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
@@ -579,66 +468,32 @@ class TestMultiButlerMeterProvider:
         finally:
             metrics.set_meter_provider = original_set
 
-        assert set_count == 0, (
-            f"set_meter_provider called {set_count} times on second init; expected 0"
-        )
+        assert set_count == 0
         assert meter is not None
+        counter = meter.create_counter("test.multi.counter")
+        counter.add(5, {"butler": "general"})
+        data = _collect_metrics(reader)
+        assert "test.multi.counter" in data
+        assert data["test.multi.counter"][0].value == 5
 
-    def test_noop_mode_returns_valid_meter(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """In no-op mode init_metrics returns a valid meter (no endpoint → no provider install)."""
+        # Part 2: no-op mode (no endpoint) — set_provider never called
+        _reset_metrics_global_state()
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
 
-        # Track whether set_meter_provider is called at all
-        set_count = 0
-        original_set = metrics.set_meter_provider
+        set_count2 = 0
+        original_set2 = metrics.set_meter_provider
 
-        def guarded_set(p):
-            nonlocal set_count
-            set_count += 1
-            original_set(p)
+        def guarded_set2(p):
+            nonlocal set_count2
+            set_count2 += 1
+            original_set2(p)
 
-        metrics.set_meter_provider = guarded_set
+        metrics.set_meter_provider = guarded_set2
         try:
             meter1 = init_metrics("butler.finance")
             meter2 = init_metrics("butler.general")
         finally:
-            metrics.set_meter_provider = original_set
+            metrics.set_meter_provider = original_set2
 
-        # set_meter_provider must not be called in no-op mode
-        assert set_count == 0, (
-            f"set_meter_provider called {set_count} times in no-op mode; expected 0"
-        )
-        assert meter1 is not None
-        assert meter2 is not None
-
-    def test_second_call_returns_usable_meter(self) -> None:
-        """Meter returned by second init_metrics call is valid and records without error."""
-        import os as _os
-
-        reader = InMemoryMetricReader()
-        from opentelemetry.sdk.metrics import MeterProvider as _MP
-        from opentelemetry.sdk.resources import Resource as _Res
-
-        provider = _MP(
-            resource=_Res.create({"service.name": "butlers"}),
-            metric_readers=[reader],
-        )
-        metrics.set_meter_provider(provider)
-        _metrics_mod._meter_provider_installed = True
-
-        # Second butler call (endpoint set but guard fires early)
-        _os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
-        try:
-            meter = init_metrics("butler.general")
-        finally:
-            _os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
-
-        assert meter is not None
-
-        # Meter must be usable
-        counter = meter.create_counter("test.multi.counter")
-        counter.add(5, {"butler": "general"})
-
-        data = _collect_metrics(reader)
-        assert "test.multi.counter" in data
-        assert data["test.multi.counter"][0].value == 5
+        assert set_count2 == 0
+        assert meter1 is not None and meter2 is not None

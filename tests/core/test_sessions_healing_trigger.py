@@ -18,48 +18,7 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# TRIGGER_SOURCES constant
-# ---------------------------------------------------------------------------
-
-
-def test_trigger_sources_includes_healing() -> None:
-    """TRIGGER_SOURCES frozenset must include 'healing'."""
-    from butlers.core.sessions import TRIGGER_SOURCES
-
-    assert "healing" in TRIGGER_SOURCES
-
-
-def test_trigger_sources_still_includes_all_original_values() -> None:
-    """All original trigger sources must still be present."""
-    from butlers.core.sessions import TRIGGER_SOURCES
-
-    for source in ("tick", "external", "trigger", "route"):
-        assert source in TRIGGER_SOURCES, f"Missing trigger source: {source}"
-
-
-# ---------------------------------------------------------------------------
-# _is_valid_trigger_source
-# ---------------------------------------------------------------------------
-
-
-def test_is_valid_trigger_source_healing() -> None:
-    """_is_valid_trigger_source('healing') must return True."""
-    from butlers.core.sessions import _is_valid_trigger_source
-
-    assert _is_valid_trigger_source("healing") is True
-
-
-def test_is_valid_trigger_source_unknown_still_false() -> None:
-    """_is_valid_trigger_source('unknown') must return False."""
-    from butlers.core.sessions import _is_valid_trigger_source
-
-    assert _is_valid_trigger_source("unknown") is False
-    assert _is_valid_trigger_source("heal") is False
-    assert _is_valid_trigger_source("healing:foo") is False
-
-
-# ---------------------------------------------------------------------------
-# session_create — healing trigger source is accepted
+# TRIGGER_SOURCES constant and _is_valid_trigger_source
 # ---------------------------------------------------------------------------
 
 
@@ -80,85 +39,40 @@ class _FakePool:
         return "UPDATE 1"
 
 
-async def test_session_create_accepts_healing_trigger_source() -> None:
-    """session_create must NOT raise ValueError for trigger_source='healing'."""
-    from butlers.core.sessions import session_create
-
-    pool = _FakePool()
-    request_id = str(uuid.uuid4())
-
-    # Should not raise
-    result = await session_create(
-        pool,
-        prompt="Healing agent investigating error abc123",
-        trigger_source="healing",
-        request_id=request_id,
+async def test_healing_trigger_sources_create_and_fingerprint() -> None:
+    """TRIGGER_SOURCES includes 'healing'; session_create accepts/rejects; fingerprint UPDATE works."""
+    from butlers.core.sessions import (
+        TRIGGER_SOURCES,
+        _is_valid_trigger_source,
+        session_create,
+        session_set_healing_fingerprint,
     )
 
+    # Trigger source set
+    assert "healing" in TRIGGER_SOURCES
+    for source in ("tick", "external", "trigger", "route"):
+        assert source in TRIGGER_SOURCES, f"Missing trigger source: {source}"
+    assert _is_valid_trigger_source("healing") is True
+    assert _is_valid_trigger_source("unknown") is False
+    assert _is_valid_trigger_source("heal") is False
+    assert _is_valid_trigger_source("healing:foo") is False
+
+    # session_create accepts 'healing'; rejects invalid
+    pool = _FakePool()
+    result = await session_create(pool, prompt="Healing agent", trigger_source="healing", request_id=str(uuid.uuid4()))
     assert result == pool._return_id
     assert len(pool.fetchval_calls) == 1
-
-
-async def test_session_create_rejects_invalid_trigger_source() -> None:
-    """session_create must raise ValueError for an unrecognised trigger_source."""
-    from butlers.core.sessions import session_create
-
-    pool = _FakePool()
-    with pytest.raises(ValueError, match="Invalid trigger_source"):
-        await session_create(
-            pool,
-            prompt="Test",
-            trigger_source="not_valid",
-            request_id=str(uuid.uuid4()),
-        )
-
-    assert pool.fetchval_calls == []
-
-
-async def test_session_create_error_message_mentions_healing() -> None:
-    """The ValueError message for invalid trigger_source must mention 'healing'."""
-    from butlers.core.sessions import session_create
-
-    pool = _FakePool()
     with pytest.raises(ValueError, match="healing"):
-        await session_create(
-            pool,
-            prompt="Test",
-            trigger_source="not_valid",
-            request_id=str(uuid.uuid4()),
-        )
+        await session_create(pool, prompt="Test", trigger_source="not_valid", request_id=str(uuid.uuid4()))
 
-
-# ---------------------------------------------------------------------------
-# session_set_healing_fingerprint
-# ---------------------------------------------------------------------------
-
-
-async def test_session_set_healing_fingerprint_calls_execute() -> None:
-    """session_set_healing_fingerprint must issue an UPDATE via pool.execute."""
-    from butlers.core.sessions import session_set_healing_fingerprint
-
-    pool = _FakePool()
+    # session_set_healing_fingerprint issues UPDATE; no raise on zero rows
+    pool2 = _FakePool()
     session_id = uuid.uuid4()
-    fingerprint = "a" * 64  # 64-char hex fingerprint
-
-    await session_set_healing_fingerprint(pool, session_id, fingerprint)
-
-    assert len(pool.execute_calls) == 1
-    sql, args = pool.execute_calls[0]
+    fingerprint = "a" * 64
+    await session_set_healing_fingerprint(pool2, session_id, fingerprint)
+    assert len(pool2.execute_calls) == 1
+    sql, args = pool2.execute_calls[0]
     assert "healing_fingerprint" in sql
     assert session_id in args
     assert fingerprint in args
-
-
-async def test_session_set_healing_fingerprint_no_error_on_missing_session() -> None:
-    """session_set_healing_fingerprint must not raise even if no row matched."""
-    from butlers.core.sessions import session_set_healing_fingerprint
-
-    pool = _FakePool()
-    # pool.execute returns "UPDATE 0" — zero rows affected — no exception
-    session_id = uuid.uuid4()
-    fingerprint = "b" * 64
-
-    # Should not raise
-    await session_set_healing_fingerprint(pool, session_id, fingerprint)
+    await session_set_healing_fingerprint(pool2, uuid.uuid4(), "b" * 64)

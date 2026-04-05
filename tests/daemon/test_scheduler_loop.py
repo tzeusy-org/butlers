@@ -121,7 +121,9 @@ def _patch_infra():
             ),
         ),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "start_mcp_server": patch.object(
+            ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock
+        ),
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
@@ -143,34 +145,22 @@ def _patch_infra():
 class TestSchedulerConfig:
     """Verify SchedulerConfig parsing from butler.toml."""
 
-    def test_default_tick_interval(self, tmp_path: Path) -> None:
-        """tick_interval_seconds defaults to 60 when not configured."""
+    def test_scheduler_config(self, tmp_path: Path) -> None:
+        """Default 60s; custom interval parsed; dataclass default correct; invalid rejected."""
+        # Default
         _make_butler_toml(tmp_path)
-        config = load_config(tmp_path)
-        assert config.scheduler.tick_interval_seconds == 60
+        assert load_config(tmp_path).scheduler.tick_interval_seconds == 60
+        assert SchedulerConfig().tick_interval_seconds == 60
 
-    def test_custom_tick_interval(self, tmp_path: Path) -> None:
-        """Custom tick_interval_seconds is parsed from [butler.scheduler]."""
+        # Custom
         _make_butler_toml(tmp_path, tick_interval_seconds=120)
-        config = load_config(tmp_path)
-        assert config.scheduler.tick_interval_seconds == 120
+        assert load_config(tmp_path).scheduler.tick_interval_seconds == 120
 
-    def test_invalid_zero_interval_rejected(self, tmp_path: Path) -> None:
-        """tick_interval_seconds=0 is rejected with ConfigError."""
-        _make_butler_toml(tmp_path, tick_interval_seconds=0)
-        with pytest.raises(ConfigError, match="tick_interval_seconds"):
-            load_config(tmp_path)
-
-    def test_invalid_negative_interval_rejected(self, tmp_path: Path) -> None:
-        """Negative tick_interval_seconds is rejected with ConfigError."""
-        _make_butler_toml(tmp_path, tick_interval_seconds=-10)
-        with pytest.raises(ConfigError, match="tick_interval_seconds"):
-            load_config(tmp_path)
-
-    def test_scheduler_config_dataclass_defaults(self) -> None:
-        """SchedulerConfig defaults are correct."""
-        cfg = SchedulerConfig()
-        assert cfg.tick_interval_seconds == 60
+        # Invalid: zero and negative
+        for invalid in (0, -10):
+            _make_butler_toml(tmp_path, tick_interval_seconds=invalid)
+            with pytest.raises(ConfigError, match="tick_interval_seconds"):
+                load_config(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +171,8 @@ class TestSchedulerConfig:
 class TestSchedulerLoopStartup:
     """Verify the scheduler loop task is created during daemon startup."""
 
-    async def test_scheduler_loop_task_created_on_start(self, tmp_path: Path) -> None:
-        """Daemon should create _scheduler_loop_task after start()."""
+    async def test_scheduler_loop_task_lifecycle(self, tmp_path: Path) -> None:
+        """Task created on start, cleared to None after shutdown."""
         butler_dir = _make_butler_toml(tmp_path)
         patches = _patch_infra()
 
@@ -208,37 +198,7 @@ class TestSchedulerLoopStartup:
             assert daemon._scheduler_loop_task is not None
             assert isinstance(daemon._scheduler_loop_task, asyncio.Task)
         finally:
-            daemon._scheduler_loop_task.cancel()
-            try:
-                await daemon._scheduler_loop_task
-            except asyncio.CancelledError:
-                pass
             await daemon.shutdown()
-
-    async def test_scheduler_loop_task_cleared_on_shutdown(self, tmp_path: Path) -> None:
-        """After shutdown(), _scheduler_loop_task should be None."""
-        butler_dir = _make_butler_toml(tmp_path)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["recover_route_inbox"],
-        ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-
-        await daemon.shutdown()
 
         assert daemon._scheduler_loop_task is None
 
@@ -248,39 +208,43 @@ class TestSchedulerLoopStartup:
 # ---------------------------------------------------------------------------
 
 
+def _make_daemon_with_loop(butler_dir: Path, name: str, interval: int) -> ButlerDaemon:
+    """Create a ButlerDaemon with scheduler config set up for loop tests."""
+    daemon = ButlerDaemon(butler_dir)
+    daemon.config = ButlerConfig(name=name, port=9100)
+    daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=interval)
+    mock_pool = AsyncMock()
+    mock_db = MagicMock()
+    mock_db.pool = mock_pool
+    daemon.db = mock_db
+    mock_spawner = MagicMock()
+    mock_spawner.trigger = AsyncMock()
+    daemon.spawner = mock_spawner
+    return daemon
+
+
 class TestSchedulerLoopBehavior:
     """Unit tests for the _scheduler_loop() coroutine behavior."""
 
-    async def test_tick_called_after_interval(self, tmp_path: Path) -> None:
-        """tick() should be called after sleeping for tick_interval_seconds."""
-        tick_calls: list[int] = []
+    async def test_tick_called_with_correct_params(self, tmp_path: Path) -> None:
+        """tick() called after interval; stagger_key and butler_name match config."""
+        tick_calls: list[tuple] = []
 
-        async def mock_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
-            tick_calls.append(1)
+        async def capturing_tick(
+            pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs
+        ):
+            tick_calls.append((stagger_key, butler_name))
             return 0
 
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon = ButlerDaemon(butler_dir)
-
-        # Set up minimal state needed by _scheduler_loop
-        daemon.config = ButlerConfig(name="test", port=9100)
-        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
+        daemon = _make_daemon_with_loop(
+            _make_butler_toml(tmp_path), name="health", interval=1
+        )
 
         with (
-            patch("butlers.daemon._tick", side_effect=mock_tick),
+            patch("butlers.daemon._tick", side_effect=capturing_tick),
             patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
         ):
             task = asyncio.create_task(daemon._scheduler_loop())
-            # Yield control so fast_sleep can fire multiple tick cycles
             await _real_sleep(0)
             await _real_sleep(0)
             await _real_sleep(0)
@@ -290,87 +254,12 @@ class TestSchedulerLoopBehavior:
             except asyncio.CancelledError:
                 pass
 
-        # Should have been called at least once
         assert len(tick_calls) >= 1
-
-    async def test_tick_uses_butler_name_stagger_key(self, tmp_path: Path) -> None:
-        """_scheduler_loop should pass butler name as the scheduler stagger key."""
-        seen_stagger_keys: list[str | None] = []
-
-        async def mock_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
-            seen_stagger_keys.append(stagger_key)
-            return 0
-
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon = ButlerDaemon(butler_dir)
-        daemon.config = ButlerConfig(name="health", port=9100)
-        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
-
-        with (
-            patch("butlers.daemon._tick", side_effect=mock_tick),
-            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
-        ):
-            task = asyncio.create_task(daemon._scheduler_loop())
-            await _real_sleep(0)
-            await _real_sleep(0)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        assert seen_stagger_keys
-        assert all(key == "health" for key in seen_stagger_keys)
-
-    async def test_tick_passes_butler_name(self, tmp_path: Path) -> None:
-        """_scheduler_loop should pass butler_name to tick() for seasonal context."""
-        seen_butler_names: list[str | None] = []
-
-        async def mock_tick(pool, dispatch_fn, *, stagger_key=None, butler_name=None, **kwargs):
-            seen_butler_names.append(butler_name)
-            return 0
-
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon = ButlerDaemon(butler_dir)
-        daemon.config = ButlerConfig(name="finance", port=9100)
-        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
-
-        with (
-            patch("butlers.daemon._tick", side_effect=mock_tick),
-            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
-        ):
-            task = asyncio.create_task(daemon._scheduler_loop())
-            await _real_sleep(0)
-            await _real_sleep(0)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        assert seen_butler_names
-        assert all(name == "finance" for name in seen_butler_names)
+        assert all(key == "health" for key, _ in tick_calls)
+        assert all(name == "health" for _, name in tick_calls)
 
     async def test_tick_exception_does_not_break_loop(self, tmp_path: Path) -> None:
-        """tick() exception should be logged but the loop should continue."""
+        """tick() exception is logged but the loop continues."""
         tick_call_count = 0
         second_tick_seen = asyncio.Event()
 
@@ -384,19 +273,7 @@ class TestSchedulerLoopBehavior:
             second_tick_seen.set()
             return 0
 
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon = ButlerDaemon(butler_dir)
-        daemon.config = ButlerConfig(name="test", port=9100)
-        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="test", interval=1)
 
         with (
             patch("butlers.daemon._tick", side_effect=failing_then_ok_tick),
@@ -410,11 +287,10 @@ class TestSchedulerLoopBehavior:
             except asyncio.CancelledError:
                 pass
 
-        # Loop continued after first failure — second tick was called
         assert tick_call_count >= 2
 
     async def test_loop_cancelled_on_shutdown(self, tmp_path: Path) -> None:
-        """Cancelling _scheduler_loop_task should terminate the loop cleanly."""
+        """Cancelling _scheduler_loop_task terminates the loop cleanly."""
         tick_started = asyncio.Event()
         tick_unblocked = asyncio.Event()
 
@@ -423,63 +299,39 @@ class TestSchedulerLoopBehavior:
             await tick_unblocked.wait()
             return 0
 
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon = ButlerDaemon(butler_dir)
-        daemon.config = ButlerConfig(name="test", port=9100)
-        # Short interval so tick starts quickly
-        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
+        daemon = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="test", interval=1)
 
         with (
             patch("butlers.daemon._tick", side_effect=blocking_tick),
             patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
         ):
             task = asyncio.create_task(daemon._scheduler_loop())
-
-            # Wait for tick to actually start
             await asyncio.wait_for(tick_started.wait(), timeout=3.0)
-
-            # Now cancel the task
             task.cancel()
-            # Unblock tick so it can complete (simulates in-progress protection)
             tick_unblocked.set()
-
             try:
                 await task
             except asyncio.CancelledError:
                 pass
 
-        # Task should be done
         assert task.done()
 
     async def test_loop_returns_when_db_not_ready(self, tmp_path: Path) -> None:
-        """_scheduler_loop should return immediately if DB or spawner is None."""
+        """_scheduler_loop returns immediately if DB or spawner is None; custom interval used."""
         butler_dir = _make_butler_toml(tmp_path)
+
+        # DB is None → returns immediately
         daemon = ButlerDaemon(butler_dir)
         daemon.config = ButlerConfig(name="test", port=9100)
         daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=60)
-
-        # db is None (not ready)
         daemon.db = None
         daemon.spawner = None
-
         tick_mock = AsyncMock()
         with patch("butlers.daemon._tick", tick_mock):
-            # Should return immediately without error
             await asyncio.wait_for(daemon._scheduler_loop(), timeout=1.0)
-
         tick_mock.assert_not_called()
 
-    async def test_custom_interval_used_in_loop(self, tmp_path: Path) -> None:
-        """Loop should use the configured tick_interval_seconds."""
+        # Custom interval is used in loop
         tick_calls: list[int] = []
         sleep_calls: list[float] = []
 
@@ -493,25 +345,13 @@ class TestSchedulerLoopBehavior:
             sleep_calls.append(delay)
             await _real_sleep(0)
 
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon = ButlerDaemon(butler_dir)
-        daemon.config = ButlerConfig(name="test", port=9100)
-        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=42)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
+        daemon2 = _make_daemon_with_loop(butler_dir, name="test", interval=42)
 
         with (
             patch("butlers.daemon._tick", side_effect=recording_tick),
             patch("butlers.daemon.asyncio.sleep", side_effect=recording_sleep),
         ):
-            task = asyncio.create_task(daemon._scheduler_loop())
+            task = asyncio.create_task(daemon2._scheduler_loop())
             await _real_sleep(0)
             await _real_sleep(0)
             task.cancel()
@@ -520,13 +360,11 @@ class TestSchedulerLoopBehavior:
             except asyncio.CancelledError:
                 pass
 
-        # At least one tick should have fired
         assert len(tick_calls) >= 1
-        # Verify the loop used the configured interval (42s) for all sleeps
         assert all(s == 42 for s in sleep_calls)
 
     async def test_shutdown_waits_for_tick_completion(self, tmp_path: Path) -> None:
-        """Shutdown should allow an in-progress tick() to finish before cancelling."""
+        """Shutdown allows an in-progress tick() to finish before cancelling."""
         tick_completed = asyncio.Event()
         tick_started = asyncio.Event()
 
@@ -556,13 +394,10 @@ class TestSchedulerLoopBehavior:
             patch("butlers.daemon._tick", side_effect=slow_tick),
             patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
         ):
-            # Use very short interval so tick starts immediately
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
-            # Override interval to trigger quickly
             daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
 
-            # Restart the scheduler loop with short interval
             if daemon._scheduler_loop_task:
                 daemon._scheduler_loop_task.cancel()
                 try:
@@ -571,11 +406,8 @@ class TestSchedulerLoopBehavior:
                     pass
 
             daemon._scheduler_loop_task = asyncio.create_task(daemon._scheduler_loop())
-            # Wait for tick to start
             await asyncio.wait_for(tick_started.wait(), timeout=3.0)
 
-            # Initiate shutdown while tick is in progress
             await daemon.shutdown()
 
-        # The tick should have completed (shutdown waited for it)
         assert tick_completed.is_set()

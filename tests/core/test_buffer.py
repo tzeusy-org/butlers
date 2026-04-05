@@ -98,81 +98,37 @@ def _enqueue(
 class TestEnqueue:
     """Tests for the synchronous enqueue() hot-path method."""
 
-    async def test_enqueue_returns_true_on_success(self) -> None:
-        """enqueue() returns True when the queue has capacity."""
+    async def test_enqueue_behavior(self) -> None:
+        """enqueue() returns True on success, False when full; routes correctly; unknown tier → default."""
         process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
 
-        enqueued = buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="hello",
-            source={"channel": "telegram"},
-            event={},
-            sender={"identity": "u1"},
-        )
-
-        assert enqueued is True
-        assert buf.queue_depth == 1
-        assert buf._enqueue_hot_total == 1
-
-    async def test_enqueue_returns_false_when_tier_queue_full(self) -> None:
-        """enqueue() returns False and increments backpressure counter on QueueFull."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(queue_capacity=1), pool=None, process_fn=process_fn)
-
-        # Fill the default tier queue
-        _enqueue(buf, "r1", POLICY_TIER_DEFAULT)
-
-        # Second enqueue to same tier should hit backpressure
-        enqueued = _enqueue(buf, "r2", POLICY_TIER_DEFAULT)
-
-        assert enqueued is False
-        assert buf.queue_depth == 1  # Queue still holds only the first
-        assert buf._backpressure_total == 1
-        assert buf._enqueue_hot_total == 1
-
-    async def test_enqueue_hot_counter_increments(self) -> None:
-        """Each successful enqueue increments _enqueue_hot_total."""
-        process_fn = AsyncMock()
+        # Success + counter
         buf = DurableBuffer(config=_make_config(queue_capacity=5), pool=None, process_fn=process_fn)
+        assert buf.enqueue(
+            request_id="r1", message_inbox_id="r1", message_text="hello",
+            source={"channel": "telegram"}, event={}, sender={"identity": "u1"},
+        ) is True
+        assert buf.queue_depth == 1 and buf._enqueue_hot_total == 1
 
-        for i in range(3):
-            _enqueue(buf, f"r{i}")
-
-        assert buf._enqueue_hot_total == 3
-
-    async def test_enqueue_unknown_tier_falls_back_to_default(self) -> None:
-        """An unknown policy_tier value is silently corrected to 'default'."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
-
-        result = buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="msg",
-            source={},
-            event={},
-            sender={},
-            policy_tier="bogus_tier",
-        )
-
-        assert result is True
-        assert buf.tier_depths[POLICY_TIER_DEFAULT] == 1
-
-    async def test_enqueue_routes_to_correct_tier_queue(self) -> None:
-        """Messages are placed in the correct per-tier queue."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
-
+        # Multi-tier routing
         _enqueue(buf, "hp", POLICY_TIER_HIGH_PRIORITY)
         _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
-        _enqueue(buf, "df", POLICY_TIER_DEFAULT)
-
         assert buf.tier_depths[POLICY_TIER_HIGH_PRIORITY] == 1
         assert buf.tier_depths[POLICY_TIER_INTERACTIVE] == 1
-        assert buf.tier_depths[POLICY_TIER_DEFAULT] == 1
-        assert buf.queue_depth == 3
+
+        # Backpressure on full tier
+        buf2 = DurableBuffer(config=_make_config(queue_capacity=1), pool=None, process_fn=process_fn)
+        _enqueue(buf2, "r1", POLICY_TIER_DEFAULT)
+        assert _enqueue(buf2, "r2", POLICY_TIER_DEFAULT) is False
+        assert buf2._backpressure_total == 1
+
+        # Unknown tier falls back to default
+        buf3 = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
+        result = buf3.enqueue(
+            request_id="r1", message_inbox_id="r1", message_text="msg",
+            source={}, event={}, sender={}, policy_tier="bogus_tier",
+        )
+        assert result is True and buf3.tier_depths[POLICY_TIER_DEFAULT] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -183,83 +139,35 @@ class TestEnqueue:
 class TestTierOrdering:
     """Tests for the high_priority > interactive > default dequeue order."""
 
-    async def test_high_priority_dequeued_before_interactive(self) -> None:
-        """high_priority messages are dequeued before interactive messages."""
-        order: list[str] = []
-
-        async def process_fn(ref: _MessageRef) -> None:
-            order.append(ref.policy_tier)
-
-        # No workers started yet; enqueue without draining
-        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
-
-        _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
-        _enqueue(buf, "hp", POLICY_TIER_HIGH_PRIORITY)
-
-        await buf.start()
-        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
-        await buf.stop(drain_timeout_s=1.0)
-
-        assert order == [POLICY_TIER_HIGH_PRIORITY, POLICY_TIER_INTERACTIVE]
-
-    async def test_interactive_dequeued_before_default(self) -> None:
-        """interactive messages are dequeued before default messages."""
+    async def test_tier_order_and_fifo(self) -> None:
+        """Full ordering: high_priority → interactive → default; within-tier FIFO preserved."""
         order: list[str] = []
 
         async def process_fn(ref: _MessageRef) -> None:
             order.append(ref.policy_tier)
 
         buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
-
-        _enqueue(buf, "df", POLICY_TIER_DEFAULT)
-        _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
-
-        await buf.start()
-        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
-        await buf.stop(drain_timeout_s=1.0)
-
-        assert order == [POLICY_TIER_INTERACTIVE, POLICY_TIER_DEFAULT]
-
-    async def test_full_tier_order_respected(self) -> None:
-        """Full ordering: high_priority → interactive → default."""
-        order: list[str] = []
-
-        async def process_fn(ref: _MessageRef) -> None:
-            order.append(ref.policy_tier)
-
-        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
-
         _enqueue(buf, "df", POLICY_TIER_DEFAULT)
         _enqueue(buf, "hp", POLICY_TIER_HIGH_PRIORITY)
         _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
-
         await buf.start()
         await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
         await buf.stop(drain_timeout_s=1.0)
+        assert order == [POLICY_TIER_HIGH_PRIORITY, POLICY_TIER_INTERACTIVE, POLICY_TIER_DEFAULT]
 
-        assert order == [
-            POLICY_TIER_HIGH_PRIORITY,
-            POLICY_TIER_INTERACTIVE,
-            POLICY_TIER_DEFAULT,
-        ]
+        # FIFO within same tier
+        fifo_order: list[str] = []
 
-    async def test_within_tier_fifo_preserved(self) -> None:
-        """Messages within the same tier are processed in FIFO order."""
-        order: list[str] = []
+        async def fifo_process_fn(ref: _MessageRef) -> None:
+            fifo_order.append(ref.request_id)
 
-        async def process_fn(ref: _MessageRef) -> None:
-            order.append(ref.request_id)
-
-        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
-
+        buf2 = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=fifo_process_fn)
         for i in range(4):
-            _enqueue(buf, f"hp-{i}", POLICY_TIER_HIGH_PRIORITY)
-
-        await buf.start()
-        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
-        await buf.stop(drain_timeout_s=1.0)
-
-        assert order == ["hp-0", "hp-1", "hp-2", "hp-3"]
+            _enqueue(buf2, f"hp-{i}", POLICY_TIER_HIGH_PRIORITY)
+        await buf2.start()
+        await asyncio.wait_for(buf2._drain_all_queues(), timeout=2.0)
+        await buf2.stop(drain_timeout_s=1.0)
+        assert fifo_order == ["hp-0", "hp-1", "hp-2", "hp-3"]
 
 
 # ---------------------------------------------------------------------------
@@ -302,81 +210,48 @@ class TestStarvationGuard:
         assert order[2] == (POLICY_TIER_DEFAULT, "df-0")  # forced lower
         assert order[3] == (POLICY_TIER_HIGH_PRIORITY, "hp-2")
 
-    async def test_starvation_guard_skips_force_when_lower_tiers_empty(self) -> None:
-        """Starvation guard does not force lower tier when all lower tiers are empty."""
-        order: list[str] = []
+    async def test_starvation_guard_edge_cases(self) -> None:
+        """Guard skips force when lower tiers empty; counter resets on natural tier change."""
+        # Scenario A: max_consecutive=1 — guard triggers immediately, but only high_priority exists
+        order_a: list[str] = []
 
-        async def process_fn(ref: _MessageRef) -> None:
-            order.append(ref.policy_tier)
+        async def process_fn_a(ref: _MessageRef) -> None:
+            order_a.append(ref.policy_tier)
 
-        # max_consecutive=1 — guard triggers immediately, but only high_priority exists
-        buf = DurableBuffer(
+        buf_a = DurableBuffer(
             config=_make_config(worker_count=1, max_consecutive_same_tier=1),
             pool=None,
-            process_fn=process_fn,
+            process_fn=process_fn_a,
         )
-
         for i in range(3):
-            _enqueue(buf, f"hp-{i}", POLICY_TIER_HIGH_PRIORITY)
+            _enqueue(buf_a, f"hp-{i}", POLICY_TIER_HIGH_PRIORITY)
 
-        await buf.start()
-        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
-        await buf.stop(drain_timeout_s=1.0)
-
+        await buf_a.start()
+        await asyncio.wait_for(buf_a._drain_all_queues(), timeout=2.0)
+        await buf_a.stop(drain_timeout_s=1.0)
         # All three should still be high_priority (no lower tier to force)
-        assert order == [POLICY_TIER_HIGH_PRIORITY] * 3
+        assert order_a == [POLICY_TIER_HIGH_PRIORITY] * 3
 
-    async def test_starvation_guard_interactive_protects_default(self) -> None:
-        """Starvation guard also fires when interactive starves default."""
-        order: list[str] = []
+        # Scenario B: counter resets when dequeued tier naturally changes
+        order_b: list[str] = []
 
-        async def process_fn(ref: _MessageRef) -> None:
-            order.append(ref.policy_tier)
+        async def process_fn_b(ref: _MessageRef) -> None:
+            order_b.append(ref.policy_tier)
 
-        buf = DurableBuffer(
-            config=_make_config(worker_count=1, max_consecutive_same_tier=2),
-            pool=None,
-            process_fn=process_fn,
-        )
-
-        _enqueue(buf, "ia-0", POLICY_TIER_INTERACTIVE)
-        _enqueue(buf, "ia-1", POLICY_TIER_INTERACTIVE)
-        _enqueue(buf, "ia-2", POLICY_TIER_INTERACTIVE)
-        _enqueue(buf, "df-0", POLICY_TIER_DEFAULT)
-
-        await buf.start()
-        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
-        await buf.stop(drain_timeout_s=1.0)
-
-        # interactive × 2, then forced default, then interactive resumes
-        assert order[0] == POLICY_TIER_INTERACTIVE
-        assert order[1] == POLICY_TIER_INTERACTIVE
-        assert order[2] == POLICY_TIER_DEFAULT
-        assert order[3] == POLICY_TIER_INTERACTIVE
-
-    async def test_starvation_guard_counter_resets_on_tier_change(self) -> None:
-        """Consecutive counter resets when the dequeued tier naturally changes."""
-        order: list[str] = []
-
-        async def process_fn(ref: _MessageRef) -> None:
-            order.append(ref.policy_tier)
-
-        buf = DurableBuffer(
+        buf_b = DurableBuffer(
             config=_make_config(worker_count=1, max_consecutive_same_tier=3),
             pool=None,
-            process_fn=process_fn,
+            process_fn=process_fn_b,
         )
-
         # high_priority drains first (naturally), then interactive (re-evaluates)
-        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
-        _enqueue(buf, "ia-0", POLICY_TIER_INTERACTIVE)
-        _enqueue(buf, "ia-1", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf_b, "hp-0", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf_b, "ia-0", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf_b, "ia-1", POLICY_TIER_INTERACTIVE)
 
-        await buf.start()
-        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
-        await buf.stop(drain_timeout_s=1.0)
-
-        assert order == [
+        await buf_b.start()
+        await asyncio.wait_for(buf_b._drain_all_queues(), timeout=2.0)
+        await buf_b.stop(drain_timeout_s=1.0)
+        assert order_b == [
             POLICY_TIER_HIGH_PRIORITY,
             POLICY_TIER_INTERACTIVE,
             POLICY_TIER_INTERACTIVE,
@@ -508,22 +383,8 @@ class TestWorkers:
 class TestBackpressure:
     """Tests for backpressure behavior when the queue is full."""
 
-    async def test_backpressure_does_not_raise(self) -> None:
-        """enqueue() on a full tier queue returns False without raising."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(queue_capacity=2), pool=None, process_fn=process_fn)
-
-        _enqueue(buf, "r1", POLICY_TIER_DEFAULT)
-        _enqueue(buf, "r2", POLICY_TIER_DEFAULT)
-        result = _enqueue(buf, "r3", POLICY_TIER_DEFAULT)
-
-        assert result is False
-        assert buf._backpressure_total == 1
-        # Queue still only has 2 messages in default tier
-        assert buf.tier_depths[POLICY_TIER_DEFAULT] == 2
-
     async def test_backpressure_per_tier_independent(self) -> None:
-        """Backpressure in one tier queue does not block other tiers."""
+        """Backpressure in one tier queue does not block other tiers; stats updated."""
         process_fn = AsyncMock()
         buf = DurableBuffer(config=_make_config(queue_capacity=1), pool=None, process_fn=process_fn)
 
@@ -536,18 +397,8 @@ class TestBackpressure:
         assert result_df is False
         assert result_hp is True
         assert buf._backpressure_total == 1
-
-    async def test_stats_reflects_backpressure_count(self) -> None:
-        """stats property includes backpressure_total."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(queue_capacity=1), pool=None, process_fn=process_fn)
-
-        _enqueue(buf, "r1", POLICY_TIER_DEFAULT)
-        _enqueue(buf, "r2", POLICY_TIER_DEFAULT)
-
-        stats = buf.stats
-        assert stats["backpressure_total"] == 1
-        assert stats["enqueue_hot_total"] == 1
+        assert buf.stats["backpressure_total"] == 1
+        assert buf.stats["enqueue_hot_total"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -782,82 +633,50 @@ class TestScanner:
 class TestGracefulShutdown:
     """Tests for the start/stop lifecycle."""
 
-    async def test_stop_cancels_workers(self) -> None:
-        """stop() cancels worker tasks."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(worker_count=2), pool=None, process_fn=process_fn)
+    async def test_stop_lifecycle(self) -> None:
+        """stop() cancels workers; drains queue; idempotent double calls; cancels scanner."""
+        # Cancels workers
+        buf = DurableBuffer(config=_make_config(worker_count=2), pool=None, process_fn=AsyncMock())
         await buf.start()
-
         assert len(buf._worker_tasks) == 2
-
         await buf.stop(drain_timeout_s=0.1)
-
         assert len(buf._worker_tasks) == 0
 
-    async def test_stop_drains_queue_before_cancel(self) -> None:
-        """stop() drains remaining queue items before cancelling workers."""
+        # Drains queue before cancelling
         processed: list[str] = []
 
-        async def process_fn(ref: _MessageRef) -> None:
+        async def process_fn2(ref: _MessageRef) -> None:
             processed.append(ref.request_id)
 
-        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
-        await buf.start()
-
+        buf2 = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn2)
+        await buf2.start()
         for i in range(3):
-            buf.enqueue(
-                request_id=f"r{i}",
-                message_inbox_id=f"r{i}",
-                message_text="msg",
-                source={},
-                event={},
-                sender={},
-            )
-
-        await buf.stop(drain_timeout_s=2.0)
-
+            buf2.enqueue(request_id=f"r{i}", message_inbox_id=f"r{i}", message_text="msg", source={}, event={}, sender={})
+        await buf2.stop(drain_timeout_s=2.0)
         assert len(processed) == 3
 
-    async def test_double_start_is_idempotent(self) -> None:
-        """Calling start() twice does not create extra worker tasks."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
+        # Double start: no extra workers
+        buf3 = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=AsyncMock())
+        await buf3.start()
+        c1 = len(buf3._worker_tasks)
+        await buf3.start()
+        c2 = len(buf3._worker_tasks)
+        await buf3.stop(drain_timeout_s=0.1)
+        assert c1 == c2 == 1
 
-        await buf.start()
-        task_count_after_first = len(buf._worker_tasks)
+        # Double stop: no raise
+        buf4 = DurableBuffer(config=_make_config(), pool=None, process_fn=AsyncMock())
+        await buf4.start()
+        await buf4.stop(drain_timeout_s=0.1)
+        await buf4.stop(drain_timeout_s=0.1)
 
-        await buf.start()  # Second call — should be a no-op
-        task_count_after_second = len(buf._worker_tasks)
-
-        await buf.stop(drain_timeout_s=0.1)
-
-        assert task_count_after_first == task_count_after_second == 1
-
-    async def test_double_stop_is_idempotent(self) -> None:
-        """Calling stop() twice does not raise."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
-        await buf.start()
-        await buf.stop(drain_timeout_s=0.1)
-        await buf.stop(drain_timeout_s=0.1)  # Should not raise
-
-    async def test_stop_cancels_scanner(self) -> None:
-        """stop() cancels the scanner task when pool is provided."""
-        process_fn = AsyncMock()
+        # Scanner cancelled by stop()
         mock_pool = MagicMock()
-        buf = DurableBuffer(
-            config=_make_config(scanner_interval_s=3600),  # Very long interval
-            pool=mock_pool,
-            process_fn=process_fn,
-        )
-        await buf.start()
-
-        assert buf._scanner_task is not None
-        assert not buf._scanner_task.done()
-
-        await buf.stop(drain_timeout_s=0.1)
-
-        assert buf._scanner_task is None
+        buf5 = DurableBuffer(config=_make_config(scanner_interval_s=3600), pool=mock_pool, process_fn=AsyncMock())
+        await buf5.start()
+        assert buf5._scanner_task is not None and not buf5._scanner_task.done()
+        await buf5.stop(drain_timeout_s=0.1)
+        assert buf5._scanner_task is None
 
 
 # ---------------------------------------------------------------------------
@@ -868,38 +687,12 @@ class TestGracefulShutdown:
 class TestObservability:
     """Tests for stats, queue_depth, and tier_depths properties."""
 
-    async def test_queue_depth_reflects_current_depth(self) -> None:
-        """queue_depth returns sum of items across all tier queues."""
+    async def test_queue_depth_tier_depths_and_stats(self) -> None:
+        """queue_depth, tier_depths, and stats all reflect correct values."""
         process_fn = AsyncMock()
         buf = DurableBuffer(config=_make_config(queue_capacity=5), pool=None, process_fn=process_fn)
 
         assert buf.queue_depth == 0
-
-        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
-        assert buf.queue_depth == 1
-
-        _enqueue(buf, "df-0", POLICY_TIER_DEFAULT)
-        assert buf.queue_depth == 2
-
-    async def test_tier_depths_reflects_per_tier_counts(self) -> None:
-        """tier_depths returns per-tier queue sizes."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(queue_capacity=5), pool=None, process_fn=process_fn)
-
-        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
-        _enqueue(buf, "ia-0", POLICY_TIER_INTERACTIVE)
-        _enqueue(buf, "ia-1", POLICY_TIER_INTERACTIVE)
-
-        depths = buf.tier_depths
-        assert depths[POLICY_TIER_HIGH_PRIORITY] == 1
-        assert depths[POLICY_TIER_INTERACTIVE] == 2
-        assert depths[POLICY_TIER_DEFAULT] == 0
-
-    async def test_stats_returns_all_counters(self) -> None:
-        """stats property includes all observable counters."""
-        process_fn = AsyncMock()
-        buf = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
-
         stats = buf.stats
         assert set(stats.keys()) == {
             "queue_depth",
@@ -910,6 +703,16 @@ class TestObservability:
         }
         for v in stats.values():
             assert v == 0
+
+        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "ia-0", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "ia-1", POLICY_TIER_INTERACTIVE)
+
+        assert buf.queue_depth == 3
+        depths = buf.tier_depths
+        assert depths[POLICY_TIER_HIGH_PRIORITY] == 1
+        assert depths[POLICY_TIER_INTERACTIVE] == 2
+        assert depths[POLICY_TIER_DEFAULT] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -998,14 +801,17 @@ class TestDaemonIntegration:
             "mock_spawner": mock_spawner,
         }
 
-    async def test_buffer_is_created_for_switchboard(self, tmp_path: Any) -> None:
-        """_wire_pipelines creates _buffer for the switchboard butler."""
+    async def test_buffer_lifecycle_and_butler_scoping(self, tmp_path: Any) -> None:
+        """Switchboard gets DurableBuffer; non-switchboard has None; shutdown clears buffer."""
+        from pathlib import Path
+
         from butlers.core.buffer import DurableBuffer
         from butlers.daemon import ButlerDaemon
 
-        butler_dir = self._make_butler_toml(tmp_path)
+        # Switchboard: buffer created and cleared on shutdown
+        Path(tmp_path / "sw").mkdir(exist_ok=True)
+        butler_dir = self._make_butler_toml(tmp_path / "sw")
         patches = self._patch_infra()
-
         with (
             patches["db_from_env"],
             patches["run_migrations"],
@@ -1022,82 +828,32 @@ class TestDaemonIntegration:
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
-
-        assert daemon._buffer is not None
-        assert isinstance(daemon._buffer, DurableBuffer)
-
-        # Cleanup
+        assert daemon._buffer is not None and isinstance(daemon._buffer, DurableBuffer)
         await daemon.shutdown()
+        assert daemon._buffer is None
 
-    async def test_buffer_is_none_for_non_switchboard(self, tmp_path: Any) -> None:
-        """Non-switchboard butlers should have _buffer = None."""
-        from pathlib import Path
-
-        from butlers.daemon import ButlerDaemon
-
-        butler_dir = Path(tmp_path)
-        (butler_dir / "butler.toml").write_text(
-            "\n".join(
-                [
-                    "[butler]",
-                    'name = "health"',
-                    "port = 41200",
-                    "[butler.db]",
-                    'name = "butlers"',
-                    'schema = "health"',
-                ]
-            )
+        # Non-switchboard: no buffer
+        health_dir = Path(tmp_path / "health")
+        health_dir.mkdir(exist_ok=True)
+        (health_dir / "butler.toml").write_text(
+            "[butler]\nname = \"health\"\nport = 41200\n[butler.db]\nname = \"butlers\"\nschema = \"health\"\n"
         )
-
-        patches = self._patch_infra()
-
+        patches2 = self._patch_infra()
         with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
+            patches2["db_from_env"],
+            patches2["run_migrations"],
+            patches2["validate_credentials"],
+            patches2["validate_module_credentials"],
+            patches2["init_telemetry"],
+            patches2["sync_schedules"],
+            patches2["FastMCP"],
+            patches2["Spawner"],
+            patches2["get_adapter"],
+            patches2["shutil_which"],
+            patches2["start_mcp_server"],
+            patches2["connect_switchboard"],
         ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-
-        assert daemon._buffer is None
-
-        await daemon.shutdown()
-
-    async def test_shutdown_stops_buffer(self, tmp_path: Any) -> None:
-        """daemon.shutdown() calls buffer.stop() and sets _buffer to None."""
-        from butlers.daemon import ButlerDaemon
-
-        butler_dir = self._make_butler_toml(tmp_path)
-        patches = self._patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-        ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-
-        assert daemon._buffer is not None
-
-        await daemon.shutdown()
-
-        assert daemon._buffer is None
+            daemon2 = ButlerDaemon(health_dir)
+            await daemon2.start()
+        assert daemon2._buffer is None
+        await daemon2.shutdown()

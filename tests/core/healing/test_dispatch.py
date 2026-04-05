@@ -123,7 +123,8 @@ def _make_spawner(success: bool = True, session_id: uuid.UUID | None = None) -> 
 
 
 class TestHealingConfig:
-    def test_defaults(self) -> None:
+    def test_defaults_and_from_module_config(self) -> None:
+        """Defaults are correct; from_module_config applies all fields; empty dict uses defaults."""
         cfg = HealingConfig()
         assert cfg.enabled is False
         assert cfg.severity_threshold == 2
@@ -134,31 +135,16 @@ class TestHealingConfig:
         assert cfg.gh_token_env_var == "GH_TOKEN"
         assert cfg.pr_labels == ["self-healing", "automated"]
 
-    def test_from_module_config_full(self) -> None:
-        cfg = HealingConfig.from_module_config(
-            {
-                "enabled": True,
-                "severity_threshold": 1,
-                "cooldown_minutes": 30,
-                "max_concurrent": 4,
-                "circuit_breaker_threshold": 3,
-                "timeout_minutes": 60,
-                "gh_token_env_var": "MY_GH_TOKEN",
-                "pr_labels": ["healing"],
-            }
-        )
-        assert cfg.enabled is True
-        assert cfg.severity_threshold == 1
-        assert cfg.cooldown_minutes == 30
-        assert cfg.max_concurrent == 4
-        assert cfg.circuit_breaker_threshold == 3
-        assert cfg.timeout_minutes == 60
-        assert cfg.gh_token_env_var == "MY_GH_TOKEN"
-        assert cfg.pr_labels == ["healing"]
+        full = HealingConfig.from_module_config({
+            "enabled": True, "severity_threshold": 1, "cooldown_minutes": 30,
+            "max_concurrent": 4, "circuit_breaker_threshold": 3, "timeout_minutes": 60,
+            "gh_token_env_var": "MY_GH_TOKEN", "pr_labels": ["healing"],
+        })
+        assert full.enabled is True
+        assert full.severity_threshold == 1
+        assert full.gh_token_env_var == "MY_GH_TOKEN"
 
-    def test_from_module_config_empty_dict(self) -> None:
-        cfg = HealingConfig.from_module_config({})
-        assert cfg.enabled is False  # default
+        assert HealingConfig.from_module_config({}).enabled is False
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +153,9 @@ class TestHealingConfig:
 
 
 class TestNoRecursionGate:
-    async def test_healing_trigger_source_rejected_immediately(self, tmp_path: Path) -> None:
-        """dispatch_healing returns no_recursion when trigger_source=healing."""
+    async def test_no_recursion_gate(self, tmp_path: Path) -> None:
+        """trigger_source=healing rejected with no_recursion; other values pass gate 1."""
+        # Rejected immediately for healing trigger_source
         result = await dispatch_healing(
             pool=MagicMock(),
             butler_name="email",
@@ -183,69 +170,36 @@ class TestNoRecursionGate:
         assert result.reason == "no_recursion"
         assert result.fingerprint is None  # before fingerprint computation
 
-    async def test_non_healing_trigger_passes_gate(self, tmp_path: Path) -> None:
-        """Other trigger_source values pass gate 1."""
+        # Non-healing trigger passes gate 1
         pool = _make_pool_all_pass()
-
         with (
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,  # 1 active (the one we just inserted) ≤ max_concurrent=2
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude_code", "claude-sonnet-4-5", []),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_healing_worktree",
-                new_callable=AsyncMock,
-                return_value=(
-                    tmp_path / ".healing-worktrees/self-healing/email/abc-1",
-                    "self-healing/email/abc-1",
-                ),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts", new_callable=AsyncMock,
+                  return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses", new_callable=AsyncMock,
+                  return_value=[]),
+            patch("butlers.core.healing.dispatch.resolve_model", new_callable=AsyncMock,
+                  return_value=("claude_code", "claude-sonnet-4-5", [])),
+            patch("butlers.core.healing.dispatch.create_healing_worktree", new_callable=AsyncMock,
+                  return_value=(tmp_path / ".healing-worktrees/self-healing/email/abc-1",
+                                "self-healing/email/abc-1")),
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
             patch("asyncio.create_task") as mock_create_task,
         ):
             mock_create_task.return_value = MagicMock()
-            result = await dispatch_healing(
-                pool=pool,
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
-                trigger_source="external",
+            result2 = await dispatch_healing(
+                pool=pool, butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(), repo_root=tmp_path,
+                spawner=_make_spawner(), trigger_source="external",
             )
-
-        assert result.accepted is True
-        assert result.reason == "dispatched"
+        assert result2.accepted is True
+        assert result2.reason == "dispatched"
 
 
 # ---------------------------------------------------------------------------
@@ -281,349 +235,173 @@ class TestOptInGate:
 
 
 class TestDualPathDispatch:
-    async def test_accepts_fingerprint_result_directly(self, tmp_path: Path) -> None:
-        """Module path: FingerprintResult is accepted without recomputation."""
+    async def test_fingerprint_result_and_exc_tb_tuple(self, tmp_path: Path) -> None:
+        """FingerprintResult accepted directly and fingerprint persisted; (exc, tb) tuple accepted and fingerprinted."""
+        # FingerprintResult path: fingerprint used directly, persisted
         fp = _make_fp(fingerprint="b" * 64)
-
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ) as mock_persist,
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude_code", "claude-sonnet-4-5", []),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_healing_worktree",
-                new_callable=AsyncMock,
-                return_value=(tmp_path / ".healing-worktrees/h/e/x", "self-healing/e/x"),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock) as mock_persist,
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts", new_callable=AsyncMock,
+                  return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("butlers.core.healing.dispatch.resolve_model", new_callable=AsyncMock,
+                  return_value=("claude_code", "claude-sonnet-4-5", [])),
+            patch("butlers.core.healing.dispatch.create_healing_worktree", new_callable=AsyncMock,
+                  return_value=(tmp_path / ".healing-worktrees/h/e/x", "self-healing/e/x")),
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
             patch("asyncio.create_task") as mock_create_task,
         ):
             mock_create_task.return_value = MagicMock()
             result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=fp,
-                config=_make_config(),
-                repo_root=tmp_path,
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=fp, config=_make_config(), repo_root=tmp_path,
                 spawner=_make_spawner(),
             )
-
         assert result.fingerprint == "b" * 64
-        # Fingerprint was persisted
         mock_persist.assert_called_once()
 
-    async def test_accepts_exc_tb_tuple(self, tmp_path: Path) -> None:
-        """Spawner fallback path: (exc, tb) tuple is accepted and fingerprinted."""
+        # (exc, tb) tuple path: fingerprint computed
         exc = ValueError("test error")
         tb: types.TracebackType | None = None
         try:
             raise exc
         except ValueError:
             import sys
-
             tb = sys.exc_info()[2]
-
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude_code", "claude-sonnet-4-5", []),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_healing_worktree",
-                new_callable=AsyncMock,
-                return_value=(tmp_path / ".healing-worktrees/h/e/x", "self-healing/e/x"),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-            patch("asyncio.create_task") as mock_create_task,
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts", new_callable=AsyncMock,
+                  return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("butlers.core.healing.dispatch.resolve_model", new_callable=AsyncMock,
+                  return_value=("claude_code", "claude-sonnet-4-5", [])),
+            patch("butlers.core.healing.dispatch.create_healing_worktree", new_callable=AsyncMock,
+                  return_value=(tmp_path / ".healing-worktrees/h/e/x", "self-healing/e/x")),
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
+            patch("asyncio.create_task") as mock_create_task2,
         ):
-            mock_create_task.return_value = MagicMock()
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=(exc, tb),
-                config=_make_config(),
-                repo_root=tmp_path,
+            mock_create_task2.return_value = MagicMock()
+            result2 = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=(exc, tb), config=_make_config(), repo_root=tmp_path,
                 spawner=_make_spawner(),
             )
-
-        assert result.accepted is True
-        assert result.fingerprint is not None
-        assert len(result.fingerprint) == 64
+        assert result2.accepted is True
+        assert result2.fingerprint is not None and len(result2.fingerprint) == 64
 
 
 # ---------------------------------------------------------------------------
-# Gate 6: Novelty gate
+# Gates 5/6/7/8: Novelty, severity, cooldown, concurrency gate rejections
 # ---------------------------------------------------------------------------
 
 
-class TestNoveltyGate:
-    async def test_already_investigating_rejected(self, tmp_path: Path) -> None:
-        """When create_or_join_attempt returns is_new=False, dispatch is skipped."""
+class TestGateRejections:
+    async def test_novelty_severity_cooldown_concurrency_gates(self, tmp_path: Path) -> None:
+        """already_investigating, severity_below_threshold, cooldown, concurrency_cap rejections."""
+        # Novelty gate: create_or_join_attempt returns is_new=False → already_investigating
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), False),  # is_new=False
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), False)),
         ):
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+            r_novelty = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
+        assert r_novelty.accepted is False and r_novelty.reason == "already_investigating"
 
-        assert result.accepted is False
-        assert result.reason == "already_investigating"
+        # Severity gate: severity 3 above threshold 2 → rejected
+        with (patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                    new_callable=AsyncMock),):
+            r_sev = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(severity=3), config=_make_config(severity_threshold=2),
+                repo_root=tmp_path, spawner=_make_spawner(),
+            )
+        assert r_sev.accepted is False and r_sev.reason == "severity_below_threshold"
 
-
-# ---------------------------------------------------------------------------
-# Gate 5: Severity gate
-# ---------------------------------------------------------------------------
-
-
-class TestSeverityGate:
-    async def test_severity_above_threshold_rejected(self, tmp_path: Path) -> None:
-        """Severity 3 (low) with threshold 2 (medium) → rejected."""
-        fp = _make_fp(severity=3)
-
+        # Severity gate passes: severity 1 == threshold 1 → dispatched
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts", new_callable=AsyncMock,
+                  return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("butlers.core.healing.dispatch.resolve_model", new_callable=AsyncMock,
+                  return_value=("claude_code", "model", [])),
+            patch("butlers.core.healing.dispatch.create_healing_worktree", new_callable=AsyncMock,
+                  return_value=(tmp_path / "wt", "self-healing/b/x")),
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
+            patch("asyncio.create_task") as mock_ct,
         ):
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=fp,
-                config=_make_config(severity_threshold=2),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+            mock_ct.return_value = MagicMock()
+            r_sev_pass = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(severity=1), config=_make_config(severity_threshold=1),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
+        assert r_sev_pass.accepted is True
 
-        assert result.accepted is False
-        assert result.reason == "severity_below_threshold"
-
-    async def test_severity_at_threshold_passes(self, tmp_path: Path) -> None:
-        """Severity == threshold passes (1 ≤ 1)."""
-        fp = _make_fp(severity=1)
-
-        with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude_code", "model", []),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_healing_worktree",
-                new_callable=AsyncMock,
-                return_value=(tmp_path / "wt", "self-healing/b/x"),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-            patch("asyncio.create_task") as mock_create_task,
-        ):
-            mock_create_task.return_value = MagicMock()
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=fp,
-                config=_make_config(severity_threshold=1),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
-            )
-
-        assert result.accepted is True
-
-
-# ---------------------------------------------------------------------------
-# Gate 7: Cooldown gate
-# ---------------------------------------------------------------------------
-
-
-class TestCooldownGate:
-    async def test_recent_terminal_rejected(self, tmp_path: Path) -> None:
-        """Recent terminal attempt within cooldown → rejected."""
+        # Cooldown gate: recent terminal attempt within cooldown → rejected
         recent_row = {"id": str(uuid.uuid4()), "status": "failed"}
-
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=recent_row,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=recent_row),
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
         ):
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+            r_cooldown = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
+        assert r_cooldown.accepted is False and r_cooldown.reason == "cooldown"
 
-        assert result.accepted is False
-        assert result.reason == "cooldown"
-
-
-# ---------------------------------------------------------------------------
-# Gate 8: Concurrency cap
-# ---------------------------------------------------------------------------
-
-
-class TestConcurrencyCap:
-    async def test_at_cap_rejected(self, tmp_path: Path) -> None:
-        """active_count > max_concurrent → rejected."""
+        # Concurrency cap: active_count > max_concurrent → rejected
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=3,  # max=2, row inserted → active=3 > 2
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts", new_callable=AsyncMock,
+                  return_value=3),  # max=2, row inserted → active=3 > 2
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
         ):
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(max_concurrent=2),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+            r_cap = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(max_concurrent=2),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
-
-        assert result.accepted is False
-        assert result.reason == "concurrency_cap"
+        assert r_cap.accepted is False and r_cap.reason == "concurrency_cap"
 
 
 # ---------------------------------------------------------------------------
@@ -632,109 +410,58 @@ class TestConcurrencyCap:
 
 
 class TestCircuitBreaker:
-    async def test_tripped_on_n_consecutive_failures(self, tmp_path: Path) -> None:
-        """Circuit breaker trips after N consecutive failures."""
+    async def test_circuit_breaker_trip_and_unfixable_exempt(self, tmp_path: Path) -> None:
+        """N consecutive failures trips circuit breaker; unfixable status does not count."""
+        # Failures trip the breaker
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=["failed", "failed", "failed"],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts", new_callable=AsyncMock,
+                  return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                  new_callable=AsyncMock, return_value=["failed", "failed", "failed"]),
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
         ):
             result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(circuit_breaker_threshold=3),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(circuit_breaker_threshold=3),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
-
         assert result.accepted is False
         assert result.reason == "circuit_breaker"
 
-    async def test_unfixable_does_not_trip_circuit_breaker(self, tmp_path: Path) -> None:
-        """unfixable status doesn't count as a circuit-breaker failure."""
+        # unfixable statuses don't count → circuit breaker not tripped
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=["unfixable", "unfixable", "unfixable"],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude_code", "model", []),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_healing_worktree",
-                new_callable=AsyncMock,
-                return_value=(tmp_path / "wt", "self-healing/b/x"),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt", new_callable=AsyncMock,
+                  return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt", new_callable=AsyncMock,
+                  return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts", new_callable=AsyncMock,
+                  return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                  new_callable=AsyncMock, return_value=["unfixable", "unfixable", "unfixable"]),
+            patch("butlers.core.healing.dispatch.resolve_model", new_callable=AsyncMock,
+                  return_value=("claude_code", "model", [])),
+            patch("butlers.core.healing.dispatch.create_healing_worktree", new_callable=AsyncMock,
+                  return_value=(tmp_path / "wt", "self-healing/b/x")),
+            patch("butlers.core.healing.dispatch.update_attempt_status", new_callable=AsyncMock,
+                  return_value=True),
             patch("asyncio.create_task") as mock_create_task,
         ):
             mock_create_task.return_value = MagicMock()
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(circuit_breaker_threshold=3),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+            result2 = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(circuit_breaker_threshold=3),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
-
-        # Circuit breaker NOT tripped → dispatch accepted
-        assert result.accepted is True
+        assert result2.accepted is True
 
 
 # ---------------------------------------------------------------------------
@@ -743,107 +470,55 @@ class TestCircuitBreaker:
 
 
 class TestModelResolutionGate:
-    async def test_no_model_rejected(self, tmp_path: Path) -> None:
-        """No self_healing model available → rejected."""
+    async def test_no_model_and_db_error_rejected(self, tmp_path: Path) -> None:
+        """No model available and DB error both result in no_model rejection."""
+        # No model returns None
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.resolve_model",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt",
+                  new_callable=AsyncMock, return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt",
+                  new_callable=AsyncMock, return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts",
+                  new_callable=AsyncMock, return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("butlers.core.healing.dispatch.update_attempt_status",
+                  new_callable=AsyncMock, return_value=True),
+            patch("butlers.core.healing.dispatch.resolve_model",
+                  new_callable=AsyncMock, return_value=None),
         ):
             result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
+        assert result.accepted is False and result.reason == "no_model"
 
-        assert result.accepted is False
-        assert result.reason == "no_model"
-
-    async def test_db_error_during_resolution_rejected(self, tmp_path: Path) -> None:
-        """DB error during model resolution → rejected (no_model)."""
+        # DB error during resolution also gives no_model
         with (
-            patch(
-                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.create_or_join_attempt",
-                new_callable=AsyncMock,
-                return_value=(uuid.uuid4(), True),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_attempt",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.count_active_attempts",
-                new_callable=AsyncMock,
-                return_value=1,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.get_recent_terminal_statuses",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "butlers.core.healing.dispatch.resolve_model",
-                new_callable=AsyncMock,
-                side_effect=ConnectionError("DB unavailable"),
-            ),
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
+            patch("butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                  new_callable=AsyncMock),
+            patch("butlers.core.healing.dispatch.create_or_join_attempt",
+                  new_callable=AsyncMock, return_value=(uuid.uuid4(), True)),
+            patch("butlers.core.healing.dispatch.get_recent_attempt",
+                  new_callable=AsyncMock, return_value=None),
+            patch("butlers.core.healing.dispatch.count_active_attempts",
+                  new_callable=AsyncMock, return_value=1),
+            patch("butlers.core.healing.dispatch.get_recent_terminal_statuses",
+                  new_callable=AsyncMock, return_value=[]),
+            patch("butlers.core.healing.dispatch.update_attempt_status",
+                  new_callable=AsyncMock, return_value=True),
+            patch("butlers.core.healing.dispatch.resolve_model",
+                  new_callable=AsyncMock, side_effect=ConnectionError("DB unavailable")),
         ):
-            result = await dispatch_healing(
-                pool=_make_pool_all_pass(),
-                butler_name="email",
-                session_id=uuid.uuid4(),
-                fingerprint_input=_make_fp(),
-                config=_make_config(),
-                repo_root=tmp_path,
-                spawner=_make_spawner(),
+            result2 = await dispatch_healing(
+                pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                fingerprint_input=_make_fp(), config=_make_config(),
+                repo_root=tmp_path, spawner=_make_spawner(),
             )
-
-        assert result.accepted is False
-        assert result.reason == "no_model"
+        assert result2.accepted is False and result2.reason == "no_model"
 
 
 # ---------------------------------------------------------------------------
@@ -917,32 +592,29 @@ class TestWorktreeCreationFailure:
 
 
 class TestPromptVariants:
-    def test_prompt_with_agent_context(self) -> None:
-        """Prompt includes agent_context section when context provided."""
+    def test_prompt_variants(self) -> None:
+        """Prompt: context section when provided; fallback when not; required fields always."""
+        # With context
         fp = _make_fp()
-        context = "SMTP auth failed — likely credential rotation"
-        prompt = _build_healing_prompt(fp, "email", "external", context)
+        prompt = _build_healing_prompt(fp, "email", "external", "SMTP auth failed")
         assert "SMTP auth failed" in prompt
         assert "Butler Diagnostic Context" in prompt
 
-    def test_prompt_without_agent_context(self) -> None:
-        """Prompt includes fallback note when no context provided."""
-        fp = _make_fp()
-        prompt = _build_healing_prompt(fp, "email", "tick", None)
-        assert "spawner fallback" in prompt.lower() or "hard crash" in prompt.lower()
-        assert "Butler Diagnostic Context" not in prompt
+        # Without context
+        no_ctx = _build_healing_prompt(fp, "email", "tick", None)
+        assert "spawner fallback" in no_ctx.lower() or "hard crash" in no_ctx.lower()
+        assert "Butler Diagnostic Context" not in no_ctx
 
-    def test_prompt_contains_required_fields(self) -> None:
-        """Prompt always includes fingerprint, exception_type, call_site."""
-        fp = _make_fp(
+        # Required fields always present
+        fp2 = _make_fp(
             fingerprint="c" * 64,
             exception_type="asyncpg.exceptions.UndefinedTableError",
             call_site="src/butlers/modules/email/tools.py:_send",
         )
-        prompt = _build_healing_prompt(fp, "email", "external", None)
-        assert "c" * 64 in prompt
-        assert "asyncpg.exceptions.UndefinedTableError" in prompt
-        assert "src/butlers/modules/email/tools.py:_send" in prompt
+        p2 = _build_healing_prompt(fp2, "email", "external", None)
+        assert "c" * 64 in p2
+        assert "asyncpg.exceptions.UndefinedTableError" in p2
+        assert "src/butlers/modules/email/tools.py:_send" in p2
 
 
 # ---------------------------------------------------------------------------
@@ -951,48 +623,36 @@ class TestPromptVariants:
 
 
 class TestTimeoutWatchdog:
-    async def test_watchdog_cancels_task_on_timeout(self, tmp_path: Path) -> None:
-        """Watchdog cancels healing_task and sets status to timeout."""
+    async def test_watchdog_behavior(self, tmp_path: Path) -> None:
+        """Watchdog cancels healing_task and sets timeout status; cancelled when task completes first."""
         pool = _make_pool_all_pass()
         attempt_id = uuid.uuid4()
         branch = "self-healing/email/abc-1"
 
-        # Create a task that never finishes
+        # Immediate timeout fires: cancels healing_task, records timeout status, removes worktree
         async def long_running():
             await asyncio.sleep(9999)
 
         healing_task = asyncio.create_task(long_running())
-
         status_updates: list[str] = []
+        remove_calls: list[str] = []
 
         async def mock_update_status(pool, attempt_id, status, **kwargs):
             status_updates.append(status)
             return True
 
-        remove_calls: list[str] = []
-
         async def mock_remove(repo_root, branch_name, **kwargs):
             remove_calls.append(branch_name)
 
         with (
-            patch(
-                "butlers.core.healing.dispatch.update_attempt_status",
-                side_effect=mock_update_status,
-            ),
-            patch(
-                "butlers.core.healing.dispatch.remove_healing_worktree",
-                side_effect=mock_remove,
-            ),
+            patch("butlers.core.healing.dispatch.update_attempt_status",
+                  side_effect=mock_update_status),
+            patch("butlers.core.healing.dispatch.remove_healing_worktree",
+                  side_effect=mock_remove),
         ):
             asyncio.create_task(
-                _timeout_watchdog(
-                    pool=pool,
-                    attempt_id=attempt_id,
-                    repo_root=tmp_path,
-                    branch_name=branch,
-                    healing_task=healing_task,
-                    timeout_minutes=0,  # immediate timeout
-                )
+                _timeout_watchdog(pool=pool, attempt_id=attempt_id, repo_root=tmp_path,
+                                  branch_name=branch, healing_task=healing_task, timeout_minutes=0)
             )
             await asyncio.sleep(0.05)  # let watchdog fire
 
@@ -1000,42 +660,29 @@ class TestTimeoutWatchdog:
         assert "timeout" in status_updates
         assert branch in remove_calls
 
-    async def test_watchdog_cancelled_when_task_completes(self, tmp_path: Path) -> None:
-        """Watchdog task is cancelled when healing completes before timeout."""
-        pool = _make_pool_all_pass()
-        attempt_id = uuid.uuid4()
-        branch = "self-healing/email/abc-2"
-
+        # Long timeout: watchdog cancelled before firing → no timeout status
         async def quick_task():
             pass
 
-        healing_task = asyncio.create_task(quick_task())
+        healing_task2 = asyncio.create_task(quick_task())
         await asyncio.sleep(0)  # let it complete
+        status_updates2: list[str] = []
 
-        status_updates: list[str] = []
-
-        async def mock_update_status(pool, attempt_id, status, **kwargs):
-            status_updates.append(status)
+        async def mock_update_status2(pool, attempt_id, status, **kwargs):
+            status_updates2.append(status)
             return True
 
         watchdog_task = asyncio.create_task(
-            _timeout_watchdog(
-                pool=pool,
-                attempt_id=attempt_id,
-                repo_root=tmp_path,
-                branch_name=branch,
-                healing_task=healing_task,
-                timeout_minutes=100,  # long timeout — should not fire
-            )
+            _timeout_watchdog(pool=pool, attempt_id=attempt_id, repo_root=tmp_path,
+                              branch_name="self-healing/email/abc-2", healing_task=healing_task2,
+                              timeout_minutes=100)
         )
         watchdog_task.cancel()
         try:
             await watchdog_task
         except asyncio.CancelledError:
             pass
-
-        # No timeout status should be set
-        assert "timeout" not in status_updates
+        assert "timeout" not in status_updates2
 
 
 # ---------------------------------------------------------------------------
@@ -1193,8 +840,9 @@ class TestCreatePr:
 
 
 class TestDispatchNeverRaises:
-    async def test_unexpected_exception_returns_internal_error(self, tmp_path: Path) -> None:
-        """An unexpected exception in dispatch returns DispatchResult(internal_error)."""
+    async def test_internal_error_cases(self, tmp_path: Path) -> None:
+        """Unexpected exception, DB error, and fingerprint all result in internal_error."""
+        # Unexpected exception → internal_error
         with patch(
             "butlers.core.healing.dispatch.session_set_healing_fingerprint",
             new_callable=AsyncMock,
@@ -1209,12 +857,10 @@ class TestDispatchNeverRaises:
                 repo_root=tmp_path,
                 spawner=_make_spawner(),
             )
-
         assert result.accepted is False
         assert result.reason == "internal_error"
 
-    async def test_gate_db_error_returns_internal_error(self, tmp_path: Path) -> None:
-        """DB error in novelty gate → internal_error, never raises."""
+        # DB error in novelty gate → internal_error
         with (
             patch(
                 "butlers.core.healing.dispatch.session_set_healing_fingerprint",
@@ -1226,7 +872,7 @@ class TestDispatchNeverRaises:
                 side_effect=Exception("asyncpg connection error"),
             ),
         ):
-            result = await dispatch_healing(
+            result2 = await dispatch_healing(
                 pool=_make_pool_all_pass(),
                 butler_name="email",
                 session_id=uuid.uuid4(),
@@ -1235,20 +881,17 @@ class TestDispatchNeverRaises:
                 repo_root=tmp_path,
                 spawner=_make_spawner(),
             )
+        assert result2.accepted is False
+        assert result2.reason == "internal_error"
 
-        assert result.accepted is False
-        assert result.reason == "internal_error"
-
-    async def test_fingerprint_is_preserved_in_internal_error(self, tmp_path: Path) -> None:
-        """When FingerprintResult is passed, its fingerprint appears in internal_error result."""
+        # Fingerprint preserved in internal_error result
         fp = _make_fp(fingerprint="d" * 64)
-
         with patch(
             "butlers.core.healing.dispatch.session_set_healing_fingerprint",
             new_callable=AsyncMock,
             side_effect=Exception("boom"),
         ):
-            result = await dispatch_healing(
+            result3 = await dispatch_healing(
                 pool=_make_pool_all_pass(),
                 butler_name="email",
                 session_id=uuid.uuid4(),
@@ -1257,8 +900,7 @@ class TestDispatchNeverRaises:
                 repo_root=tmp_path,
                 spawner=_make_spawner(),
             )
-
-        assert result.fingerprint == "d" * 64
+        assert result3.fingerprint == "d" * 64
 
 
 # ---------------------------------------------------------------------------
@@ -1513,36 +1155,25 @@ class TestDispatchHealingOtelSpan:
         assert result.accepted is True
         return exporter, expected_trace_id
 
-    async def test_failed_session_trace_id_recorded_as_span_attribute(self, tmp_path: Path) -> None:
-        """healing.dispatch span records healing.failed_session_trace_id from the failed session."""
+    async def test_failed_session_trace_id_span_attribute(self, tmp_path: Path) -> None:
+        """healing.dispatch span records trace ID when parent exists; omits it when absent."""
+        # With parent span: trace ID recorded as attribute
         exporter, expected_trace_id = await self._run_dispatch_with_otel(
             tmp_path, with_parent_span=True
         )
-
-        # Find the healing.dispatch span and verify the attribute.
         finished = exporter.get_finished_spans()
         dispatch_spans = [s for s in finished if s.name == "butlers.healing.dispatch"]
         assert dispatch_spans, "Expected at least one butlers.healing.dispatch span"
         dispatch_span = dispatch_spans[0]
-        assert "healing.failed_session_trace_id" in dispatch_span.attributes, (
-            "healing.dispatch span must record healing.failed_session_trace_id"
-        )
+        assert "healing.failed_session_trace_id" in dispatch_span.attributes
         assert dispatch_span.attributes["healing.failed_session_trace_id"] == expected_trace_id
 
-    async def test_failed_session_trace_id_omitted_when_no_parent_context(
-        self, tmp_path: Path
-    ) -> None:
-        """healing.dispatch span omits healing.failed_session_trace_id when no active trace."""
-        exporter, _ = await self._run_dispatch_with_otel(tmp_path, with_parent_span=False)
-
-        finished = exporter.get_finished_spans()
-        dispatch_spans = [s for s in finished if s.name == "butlers.healing.dispatch"]
-        assert dispatch_spans, "Expected at least one butlers.healing.dispatch span"
-        dispatch_span = dispatch_spans[0]
-        # When there's no active trace context, the attribute should not be set.
-        assert "healing.failed_session_trace_id" not in (dispatch_span.attributes or {}), (
-            "healing.failed_session_trace_id should be absent when there is no parent trace context"
-        )
+        # Without parent span: attribute omitted
+        exporter2, _ = await self._run_dispatch_with_otel(tmp_path, with_parent_span=False)
+        finished2 = exporter2.get_finished_spans()
+        dispatch_spans2 = [s for s in finished2 if s.name == "butlers.healing.dispatch"]
+        assert dispatch_spans2, "Expected at least one butlers.healing.dispatch span"
+        assert "healing.failed_session_trace_id" not in (dispatch_spans2[0].attributes or {})
 
     async def test_dispatch_works_when_otel_missing(self, tmp_path: Path) -> None:
         """dispatch_healing gracefully handles ImportError from opentelemetry."""
@@ -1580,14 +1211,13 @@ class TestDispatchHealingOtelSpan:
 class TestPrBodyTemplate:
     """Verify _build_pr_body includes First seen, Occurrences, and fingerprint footer."""
 
-    def test_first_seen_and_occurrences_in_body(self) -> None:
-        """_build_pr_body includes First seen and Occurrences fields."""
+    def test_pr_body_fields_and_defaults(self) -> None:
+        """PR body includes first_seen, occurrences, fingerprint; defaults to 'unknown'."""
         from butlers.core.healing.dispatch import _build_pr_body
 
-        fp = _make_fp(fingerprint="e" * 64)
         attempt_id = uuid.uuid4()
         body = _build_pr_body(
-            fp=fp,
+            fp=_make_fp(fingerprint="e" * 64),
             butler_name="email",
             attempt_id=attempt_id,
             repo_root=Path("/tmp"),
@@ -1599,38 +1229,16 @@ class TestPrBodyTemplate:
         assert "2026-01-01T00:00:00Z" in body
         assert "**Occurrences:**" in body
         assert "3" in body
-
-    def test_fingerprint_footer_in_body(self) -> None:
-        """_build_pr_body includes *Fingerprint: `<full-fingerprint>`* footer."""
-        from butlers.core.healing.dispatch import _build_pr_body
-
-        fp = _make_fp(fingerprint="f" * 64)
-        attempt_id = uuid.uuid4()
-        body = _build_pr_body(
-            fp=fp,
-            butler_name="email",
-            attempt_id=attempt_id,
-            repo_root=Path("/tmp"),
-            agent_context=None,
-        )
         assert "*Fingerprint:" in body
-        assert "f" * 64 in body
+        assert "e" * 64 in body
 
-    def test_defaults_when_not_provided(self) -> None:
-        """first_seen and occurrences default to 'unknown' when not supplied."""
-        from butlers.core.healing.dispatch import _build_pr_body
-
-        fp = _make_fp()
-        attempt_id = uuid.uuid4()
-        body = _build_pr_body(
-            fp=fp,
-            butler_name="email",
-            attempt_id=attempt_id,
-            repo_root=Path("/tmp"),
-            agent_context=None,
+        # Defaults to 'unknown' when not provided
+        body2 = _build_pr_body(
+            fp=_make_fp(), butler_name="email", attempt_id=attempt_id,
+            repo_root=Path("/tmp"), agent_context=None,
         )
-        assert "**First seen:** unknown" in body
-        assert "**Occurrences:** unknown" in body
+        assert "**First seen:** unknown" in body2
+        assert "**Occurrences:** unknown" in body2
 
 
 # ---------------------------------------------------------------------------
@@ -1704,14 +1312,13 @@ def _all_gates_pass_patches(tmp_path: Path):
 class TestTaskRegistry:
     """dispatch_healing appends watchdog task to task_registry when provided."""
 
-    async def test_watchdog_task_appended_to_registry(self, tmp_path: Path) -> None:
-        """When task_registry is provided, the watchdog task is appended to it."""
+    async def test_task_registry_behavior(self, tmp_path: Path) -> None:
+        """Watchdog appended on success; omitted on rejection; accumulates across dispatches."""
+        # Task appended on success
         registry: list[asyncio.Task] = []
         fake_watchdog = MagicMock(spec=asyncio.Task)
-
         with _all_gates_pass_patches(tmp_path) as _:
             with patch("asyncio.create_task") as mock_create_task:
-                # First call returns healing_task, second returns watchdog_task
                 mock_create_task.side_effect = [MagicMock(spec=asyncio.Task), fake_watchdog]
                 result = await dispatch_healing(
                     pool=_make_pool_all_pass(),
@@ -1723,16 +1330,14 @@ class TestTaskRegistry:
                     spawner=_make_spawner(),
                     task_registry=registry,
                 )
-
         assert result.accepted is True
         assert fake_watchdog in registry
 
-    async def test_no_task_registry_does_not_raise(self, tmp_path: Path) -> None:
-        """When task_registry is None (default), dispatch succeeds without error."""
+        # None registry (default) → no error
         with _all_gates_pass_patches(tmp_path) as _:
             with patch("asyncio.create_task") as mock_create_task:
                 mock_create_task.return_value = MagicMock(spec=asyncio.Task)
-                result = await dispatch_healing(
+                result2 = await dispatch_healing(
                     pool=_make_pool_all_pass(),
                     butler_name="email",
                     session_id=uuid.uuid4(),
@@ -1740,111 +1345,68 @@ class TestTaskRegistry:
                     config=_make_config(),
                     repo_root=tmp_path,
                     spawner=_make_spawner(),
-                    # task_registry omitted → None
                 )
+        assert result2.accepted is True
 
-        assert result.accepted is True
-
-    async def test_registry_not_populated_on_gate_rejection(self, tmp_path: Path) -> None:
-        """When dispatch is rejected (any gate), registry must remain empty."""
-        registry: list[asyncio.Task] = []
-        result = await dispatch_healing(
+        # Gate rejection → registry not populated
+        registry2: list[asyncio.Task] = []
+        result3 = await dispatch_healing(
             pool=_make_pool_all_pass(),
             butler_name="email",
             session_id=uuid.uuid4(),
             fingerprint_input=_make_fp(),
-            config=_make_config(enabled=False),  # gate 2 rejects
+            config=_make_config(enabled=False),
             repo_root=tmp_path,
             spawner=_make_spawner(),
-            task_registry=registry,
+            task_registry=registry2,
         )
-        assert result.accepted is False
-        assert registry == []
+        assert result3.accepted is False
+        assert registry2 == []
 
-    async def test_multiple_dispatches_accumulate_in_registry(self, tmp_path: Path) -> None:
-        """Multiple successful dispatches each append their watchdog to the same registry."""
-        registry: list[asyncio.Task] = []
+        # Multiple dispatches accumulate watchdogs
+        registry3: list[asyncio.Task] = []
         watchdog_a = MagicMock(spec=asyncio.Task)
         watchdog_b = MagicMock(spec=asyncio.Task)
-
-        # First dispatch
         with _all_gates_pass_patches(tmp_path) as _:
             with patch("asyncio.create_task") as mock_create_task:
                 mock_create_task.side_effect = [MagicMock(spec=asyncio.Task), watchdog_a]
                 await dispatch_healing(
-                    pool=_make_pool_all_pass(),
-                    butler_name="email",
-                    session_id=uuid.uuid4(),
-                    fingerprint_input=_make_fp(fingerprint="a" * 64),
-                    config=_make_config(),
-                    repo_root=tmp_path,
-                    spawner=_make_spawner(),
-                    task_registry=registry,
+                    pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                    fingerprint_input=_make_fp(fingerprint="a" * 64), config=_make_config(),
+                    repo_root=tmp_path, spawner=_make_spawner(), task_registry=registry3,
                 )
-
-        # Second dispatch
         with _all_gates_pass_patches(tmp_path) as _:
             with patch("asyncio.create_task") as mock_create_task:
                 mock_create_task.side_effect = [MagicMock(spec=asyncio.Task), watchdog_b]
                 await dispatch_healing(
-                    pool=_make_pool_all_pass(),
-                    butler_name="email",
-                    session_id=uuid.uuid4(),
-                    fingerprint_input=_make_fp(fingerprint="b" * 64),
-                    config=_make_config(),
-                    repo_root=tmp_path,
-                    spawner=_make_spawner(),
-                    task_registry=registry,
+                    pool=_make_pool_all_pass(), butler_name="email", session_id=uuid.uuid4(),
+                    fingerprint_input=_make_fp(fingerprint="b" * 64), config=_make_config(),
+                    repo_root=tmp_path, spawner=_make_spawner(), task_registry=registry3,
                 )
-
-        assert watchdog_a in registry
-        assert watchdog_b in registry
-        assert len(registry) == 2
-
-
-# ---------------------------------------------------------------------------
-# Unfixable sentinel: _is_unfixable helper
-# ---------------------------------------------------------------------------
-
-
-class TestIsUnfixable:
-    """Unit tests for the _is_unfixable sentinel detection helper."""
-
-    def test_returns_false_when_no_sentinel(self, tmp_path: Path) -> None:
-        """_is_unfixable returns False when UNFIXABLE file is absent."""
-        from butlers.core.healing.dispatch import _is_unfixable
-
-        assert _is_unfixable(tmp_path) is False
-
-    def test_returns_true_when_sentinel_present(self, tmp_path: Path) -> None:
-        """_is_unfixable returns True when UNFIXABLE file exists."""
-        from butlers.core.healing.dispatch import _is_unfixable
-
-        (tmp_path / "UNFIXABLE").write_text("External service is down.")
-        assert _is_unfixable(tmp_path) is True
-
-    def test_sentinel_filename_constant(self) -> None:
-        """The UNFIXABLE_SENTINEL_FILENAME constant is exactly 'UNFIXABLE'."""
-        from butlers.core.healing.dispatch import UNFIXABLE_SENTINEL_FILENAME
-
-        assert UNFIXABLE_SENTINEL_FILENAME == "UNFIXABLE"
-
-    def test_only_exact_filename_matches(self, tmp_path: Path) -> None:
-        """Partial or different-case filenames do not trigger the sentinel."""
-        from butlers.core.healing.dispatch import _is_unfixable
-
-        (tmp_path / "UNFIXABLE.txt").write_text("not the sentinel")
-        (tmp_path / "unfixable").write_text("wrong case")
-        assert _is_unfixable(tmp_path) is False
+        assert watchdog_a in registry3
+        assert watchdog_b in registry3
+        assert len(registry3) == 2
 
 
 # ---------------------------------------------------------------------------
-# Unfixable sentinel: _run_healing_session transitions
+# Unfixable sentinel: _is_unfixable helper + _run_healing_session transitions
 # ---------------------------------------------------------------------------
 
 
 class TestHealingSessionUnfixable:
-    """Verify _run_healing_session transitions to unfixable when sentinel is present."""
+    """Verify _is_unfixable detection and _run_healing_session transitions."""
+
+    def test_sentinel_detection(self, tmp_path: Path) -> None:
+        """False when absent; True when present; constant is 'UNFIXABLE'; exact match only."""
+        from butlers.core.healing.dispatch import UNFIXABLE_SENTINEL_FILENAME, _is_unfixable
+
+        assert UNFIXABLE_SENTINEL_FILENAME == "UNFIXABLE"
+        assert _is_unfixable(tmp_path) is False
+        (tmp_path / "UNFIXABLE.txt").write_text("not the sentinel")
+        (tmp_path / "unfixable").write_text("wrong case")
+        assert _is_unfixable(tmp_path) is False
+        (tmp_path / "UNFIXABLE").write_text("External service is down.")
+        assert _is_unfixable(tmp_path) is True
 
     async def _run_session(
         self,
@@ -1903,15 +1465,14 @@ class TestHealingSessionUnfixable:
                 gh_token=None,
             )
 
-    async def test_unfixable_sentinel_transitions_to_unfixable(self, tmp_path: Path) -> None:
-        """When agent creates UNFIXABLE file, status transitions to unfixable."""
+    async def test_unfixable_sentinel_behavior(self, tmp_path: Path) -> None:
+        """UNFIXABLE sentinel: status transitions to unfixable; no PR opened; worktree removed with delete_branch=True."""
+        # Status transitions to unfixable; no _create_pr called
         worktree_path = tmp_path / "healing-wt"
         worktree_path.mkdir()
-        # Place the UNFIXABLE sentinel (simulating a healing agent that left it)
         (worktree_path / "UNFIXABLE").write_text(
             "External payment API is returning HTTP 503. Not a code bug."
         )
-
         status_updates: list[str] = []
         remove_calls: list = []
         create_pr_called = []
@@ -1920,117 +1481,70 @@ class TestHealingSessionUnfixable:
             create_pr_called.append(True)
             raise AssertionError("_create_pr must not be called for unfixable errors")
 
-        spawner = _make_spawner(success=True)
         await self._run_session(
-            tmp_path=tmp_path,
-            worktree_path=worktree_path,
-            spawner=spawner,
-            status_updates=status_updates,
-            remove_calls=remove_calls,
-            create_pr_mock=should_not_be_called,
+            tmp_path=tmp_path, worktree_path=worktree_path,
+            spawner=_make_spawner(success=True), status_updates=status_updates,
+            remove_calls=remove_calls, create_pr_mock=should_not_be_called,
         )
-
         assert "unfixable" in status_updates
         assert "pr_open" not in status_updates
-        assert not create_pr_called, "_create_pr must not be called for unfixable"
+        assert not create_pr_called
 
-    async def test_unfixable_removes_worktree(self, tmp_path: Path) -> None:
-        """When unfixable, the worktree and branch are removed (no PR branch kept)."""
-        worktree_path = tmp_path / "healing-wt-rm"
-        worktree_path.mkdir()
-        (worktree_path / "UNFIXABLE").write_text("External service issue.")
-
-        status_updates: list[str] = []
-        remove_calls: list = []
+        # Worktree removed with delete_branch=True
+        worktree_path2 = tmp_path / "healing-wt-rm"
+        worktree_path2.mkdir()
+        (worktree_path2 / "UNFIXABLE").write_text("External service issue.")
+        status_updates2: list[str] = []
+        remove_calls2: list = []
 
         async def noop_pr(*args, **kwargs):
             return ("https://example.com/pull/1", 1, None)
 
-        spawner = _make_spawner(success=True)
         await self._run_session(
-            tmp_path=tmp_path,
-            worktree_path=worktree_path,
-            spawner=spawner,
-            status_updates=status_updates,
-            remove_calls=remove_calls,
-            create_pr_mock=noop_pr,
+            tmp_path=tmp_path, worktree_path=worktree_path2,
+            spawner=_make_spawner(success=True), status_updates=status_updates2,
+            remove_calls=remove_calls2, create_pr_mock=noop_pr,
         )
+        assert len(remove_calls2) == 1
+        assert remove_calls2[0].get("delete_branch") is True
 
-        assert len(remove_calls) == 1
-        # delete_branch=True — the healing branch is not kept for unfixable
-        assert remove_calls[0].get("delete_branch") is True
-
-    async def test_no_sentinel_proceeds_to_pr(self, tmp_path: Path) -> None:
-        """Without UNFIXABLE file, a successful agent proceeds to PR creation."""
-        worktree_path = tmp_path / "healing-wt-pr"
-        worktree_path.mkdir()
-        # No UNFIXABLE file — agent produced a code fix
-
-        status_updates: list[str] = []
-        remove_calls: list = []
+        # No sentinel: successful agent proceeds to PR creation
+        worktree_path3 = tmp_path / "healing-wt-pr"
+        worktree_path3.mkdir()
+        status_updates3: list[str] = []
+        remove_calls3: list = []
         create_pr_called = []
 
         async def record_pr_call(*args, **kwargs):
             create_pr_called.append(True)
             return ("https://github.com/example/repo/pull/99", 99, None)
 
-        spawner = _make_spawner(success=True)
         await self._run_session(
-            tmp_path=tmp_path,
-            worktree_path=worktree_path,
-            spawner=spawner,
-            status_updates=status_updates,
-            remove_calls=remove_calls,
-            create_pr_mock=record_pr_call,
+            tmp_path=tmp_path, worktree_path=worktree_path3, spawner=_make_spawner(success=True),
+            status_updates=status_updates3, remove_calls=remove_calls3, create_pr_mock=record_pr_call,
         )
+        assert "unfixable" not in status_updates3
+        assert "pr_open" in status_updates3
+        assert create_pr_called
 
-        assert "unfixable" not in status_updates
-        assert "pr_open" in status_updates
-        assert create_pr_called, "_create_pr should have been called"
-
-    async def test_failed_agent_with_sentinel_still_fails(self, tmp_path: Path) -> None:
-        """When the agent reports failure (result.success=False), the status is 'failed'
-        even if an UNFIXABLE file happens to be present — the failure check comes first."""
-        worktree_path = tmp_path / "healing-wt-fail"
-        worktree_path.mkdir()
-        # Place the UNFIXABLE sentinel
-        (worktree_path / "UNFIXABLE").write_text("External issue.")
-
-        status_updates: list[str] = []
-        remove_calls: list = []
+        # Failed agent with sentinel: failure check comes first → 'failed' not 'unfixable'
+        worktree_path4 = tmp_path / "healing-wt-fail"
+        worktree_path4.mkdir()
+        (worktree_path4 / "UNFIXABLE").write_text("External issue.")
+        status_updates4: list[str] = []
 
         async def noop_pr(*args, **kwargs):
             return ("https://example.com/pull/1", 1, None)
 
-        # Agent reports failure (result.success = False)
-        spawner = _make_spawner(success=False)
         await self._run_session(
-            tmp_path=tmp_path,
-            worktree_path=worktree_path,
-            spawner=spawner,
-            status_updates=status_updates,
-            remove_calls=remove_calls,
-            create_pr_mock=noop_pr,
+            tmp_path=tmp_path, worktree_path=worktree_path4, spawner=_make_spawner(success=False),
+            status_updates=status_updates4, remove_calls=[], create_pr_mock=noop_pr,
         )
+        assert "failed" in status_updates4 and "unfixable" not in status_updates4
 
-        # Failure is reported before unfixable is checked
-        assert "failed" in status_updates
-        assert "unfixable" not in status_updates
-
-    async def test_unfixable_prompt_describes_sentinel_convention(self) -> None:
-        """The healing prompt mentions the UNFIXABLE file and commit convention."""
+        # Prompt mentions UNFIXABLE sentinel convention
         from butlers.core.healing.dispatch import _build_healing_prompt
-
-        fp = _make_fp()
-        prompt = _build_healing_prompt(fp, "email", "external", None)
+        prompt = _build_healing_prompt(_make_fp(), "email", "external", None)
         assert "UNFIXABLE" in prompt
         assert "git add UNFIXABLE" in prompt
-
-    async def test_unfixable_prompt_mentions_no_pr_for_sentinel(self) -> None:
-        """The healing prompt explains that no PR is opened for unfixable errors."""
-        from butlers.core.healing.dispatch import _build_healing_prompt
-
-        fp = _make_fp()
-        prompt = _build_healing_prompt(fp, "email", "external", None)
-        # The prompt should tell the agent the dispatcher handles the unfixable transition
         assert "unfixable" in prompt.lower()

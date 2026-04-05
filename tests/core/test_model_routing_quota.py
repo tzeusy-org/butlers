@@ -37,74 +37,39 @@ docker_available = shutil.which("docker") is not None
 
 
 @pytest.mark.unit
-def test_quota_status_dataclass_fields() -> None:
-    """QuotaStatus dataclass exposes the required fields."""
-    qs = QuotaStatus(
-        allowed=True,
-        usage_24h=100,
-        limit_24h=500,
-        usage_30d=200,
-        limit_30d=None,
-    )
-    assert qs.allowed is True
-    assert qs.usage_24h == 100
-    assert qs.limit_24h == 500
-    assert qs.usage_30d == 200
-    assert qs.limit_30d is None
+async def test_quota_unit_behaviors() -> None:
+    """QuotaStatus fields; fail-open on DB error; record_token_usage best-effort."""
+    # QuotaStatus fields
+    qs = QuotaStatus(allowed=True, usage_24h=100, limit_24h=500, usage_30d=200, limit_30d=None)
+    assert qs.allowed is True and qs.usage_24h == 100 and qs.limit_24h == 500
+    assert qs.usage_30d == 200 and qs.limit_30d is None
+    qs2 = QuotaStatus(allowed=False, usage_24h=1000, limit_24h=500, usage_30d=0, limit_30d=None)
+    assert qs2.allowed is False and qs2.usage_24h == 1000
 
-
-@pytest.mark.unit
-def test_quota_status_allowed_false() -> None:
-    """QuotaStatus with allowed=False is constructed correctly."""
-    qs = QuotaStatus(
-        allowed=False,
-        usage_24h=1000,
-        limit_24h=500,
-        usage_30d=0,
-        limit_30d=None,
-    )
-    assert qs.allowed is False
-    assert qs.usage_24h == 1000
-    assert qs.limit_24h == 500
-
-
-@pytest.mark.unit
-async def test_check_token_quota_fail_open_on_db_error() -> None:
-    """check_token_quota returns allowed=True and logs a warning on DB error."""
+    # check_token_quota: fail-open on DB error
     pool = MagicMock()
     pool.fetchrow = AsyncMock(side_effect=RuntimeError("connection refused"))
     entry_id = uuid.uuid4()
-
     with patch("butlers.core.model_routing.logger") as mock_logger:
         result = await check_token_quota(pool, entry_id)
-
     assert result.allowed is True
-    assert result.usage_24h == 0
-    assert result.limit_24h is None
-    assert result.usage_30d == 0
-    assert result.limit_30d is None
+    assert result.usage_24h == 0 and result.limit_24h is None
+    assert result.usage_30d == 0 and result.limit_30d is None
     mock_logger.warning.assert_called_once()
 
-
-@pytest.mark.unit
-async def test_record_token_usage_best_effort_on_error() -> None:
-    """record_token_usage does not raise when the INSERT fails."""
-    pool = MagicMock()
-    pool.execute = AsyncMock(side_effect=RuntimeError("missing partition"))
-    entry_id = uuid.uuid4()
-
-    with patch("butlers.core.model_routing.logger") as mock_logger:
-        # Must not raise
+    # record_token_usage: best-effort (does not raise on INSERT error)
+    pool2 = MagicMock()
+    pool2.execute = AsyncMock(side_effect=RuntimeError("missing partition"))
+    with patch("butlers.core.model_routing.logger") as mock_logger2:
         await record_token_usage(
-            pool,
-            catalog_entry_id=entry_id,
+            pool2,
+            catalog_entry_id=uuid.uuid4(),
             butler_name="test-butler",
             session_id=None,
             input_tokens=100,
             output_tokens=50,
         )
-
-    mock_logger.warning.assert_called_once()
+    mock_logger2.warning.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -568,8 +533,9 @@ async def test_check_quota_disabled_entry_with_override_still_enforces_limits(
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_record_token_usage_inserts_row(postgres_container: Any) -> None:
-    """record_token_usage inserts a row with the correct fields."""
+    """record_token_usage inserts a row with correct fields; NULL session_id accepted."""
     async with _make_pool(postgres_container) as pool:
+        # With session_id
         entry_id = await _insert_catalog_entry(pool, alias="record-test")
         session_id = uuid.uuid4()
 
@@ -597,32 +563,24 @@ async def test_record_token_usage_inserts_row(postgres_container: Any) -> None:
         assert row["input_tokens"] == 123
         assert row["output_tokens"] == 456
 
-
-@pytest.mark.integration
-@pytest.mark.skipif(not docker_available, reason="Docker not available")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_record_token_usage_null_session_id(postgres_container: Any) -> None:
-    """record_token_usage accepts NULL session_id (discretion dispatcher calls)."""
-    async with _make_pool(postgres_container) as pool:
-        entry_id = await _insert_catalog_entry(pool, alias="record-null-session")
-
+        # NULL session_id (discretion dispatcher calls)
+        entry2_id = await _insert_catalog_entry(pool, alias="record-null-session")
         await record_token_usage(
             pool,
-            catalog_entry_id=entry_id,
+            catalog_entry_id=entry2_id,
             butler_name="__discretion__",
             session_id=None,
             input_tokens=10,
             output_tokens=20,
         )
-
-        row = await pool.fetchrow(
+        row2 = await pool.fetchrow(
             "SELECT session_id, butler_name FROM public.token_usage_ledger"
             " WHERE catalog_entry_id = $1",
-            entry_id,
+            entry2_id,
         )
-        assert row is not None
-        assert row["session_id"] is None
-        assert row["butler_name"] == "__discretion__"
+        assert row2 is not None
+        assert row2["session_id"] is None
+        assert row2["butler_name"] == "__discretion__"
 
 
 @pytest.mark.integration

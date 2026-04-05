@@ -43,86 +43,10 @@ def _make_threshold(days_before: int, severity: str = "info") -> dict[str, Any]:
 
 
 class TestBuildDeadlinePromptContext:
-    """Tests for the build_deadline_prompt_context() pure function.
+    """Tests for the build_deadline_prompt_context() pure function."""
 
-    Covers §2.5: Prompt includes structured deadline metadata.
-    """
-
-    def test_prompt_contains_original_text(self):
-        """The augmented prompt includes the original prompt text."""
-        from butlers.core.temporal.deadlines import build_deadline_prompt_context
-
-        target = _future_date(42)
-        result = build_deadline_prompt_context(
-            original_prompt="Begin visa renewal process",
-            target_date=target,
-            days_remaining=42,
-            fired_threshold=_make_threshold(42, "info"),
-            deadline_status="alerted",
-            all_thresholds=[_make_threshold(42, "info"), _make_threshold(7, "critical")],
-        )
-        assert "Begin visa renewal process" in result
-
-    def test_prompt_contains_target_date(self):
-        """The augmented prompt includes target_date."""
-        from butlers.core.temporal.deadlines import build_deadline_prompt_context
-
-        target = date(2026, 8, 15)
-        result = build_deadline_prompt_context(
-            original_prompt="Renew passport",
-            target_date=target,
-            days_remaining=42,
-            fired_threshold=_make_threshold(42, "info"),
-            deadline_status="pending",
-            all_thresholds=[_make_threshold(42, "info")],
-        )
-        assert "2026-08-15" in result
-
-    def test_prompt_contains_days_remaining(self):
-        """The augmented prompt includes days_remaining."""
-        from butlers.core.temporal.deadlines import build_deadline_prompt_context
-
-        result = build_deadline_prompt_context(
-            original_prompt="File tax return",
-            target_date=_future_date(14),
-            days_remaining=14,
-            fired_threshold=_make_threshold(14, "warning"),
-            deadline_status="alerted",
-            all_thresholds=[_make_threshold(14, "warning")],
-        )
-        assert "14" in result
-
-    def test_prompt_contains_fired_threshold(self):
-        """The augmented prompt includes the fired threshold details."""
-        from butlers.core.temporal.deadlines import build_deadline_prompt_context
-
-        threshold = _make_threshold(3, "critical")
-        result = build_deadline_prompt_context(
-            original_prompt="Emergency action required",
-            target_date=_future_date(3),
-            days_remaining=3,
-            fired_threshold=threshold,
-            deadline_status="escalated",
-            all_thresholds=[_make_threshold(30, "info"), threshold],
-        )
-        assert "critical" in result
-
-    def test_prompt_contains_deadline_status(self):
-        """The augmented prompt includes the current deadline_status."""
-        from butlers.core.temporal.deadlines import build_deadline_prompt_context
-
-        result = build_deadline_prompt_context(
-            original_prompt="Prepare submission",
-            target_date=_future_date(10),
-            days_remaining=10,
-            fired_threshold=_make_threshold(10, "warning"),
-            deadline_status="escalated",
-            all_thresholds=[_make_threshold(10, "warning")],
-        )
-        assert "escalated" in result
-
-    def test_prompt_contains_all_thresholds(self):
-        """The augmented prompt includes the full threshold list."""
+    def test_prompt_structure_and_content(self):
+        """Prompt includes original text, target_date, days_remaining, threshold, status, block."""
         from butlers.core.temporal.deadlines import build_deadline_prompt_context
 
         all_thresholds = [
@@ -131,47 +55,23 @@ class TestBuildDeadlinePromptContext:
             _make_threshold(3, "critical"),
         ]
         result = build_deadline_prompt_context(
-            original_prompt="Visa renewal",
-            target_date=_future_date(42),
+            original_prompt="Begin visa renewal process",
+            target_date=date(2026, 8, 15),
             days_remaining=42,
             fired_threshold=all_thresholds[0],
-            deadline_status="pending",
+            deadline_status="alerted",
             all_thresholds=all_thresholds,
         )
-        # All three thresholds should appear
+        assert "Begin visa renewal process" in result
+        assert "2026-08-15" in result
         assert "42" in result
-        assert "14" in result
-        assert "3" in result
-
-    def test_prompt_has_deadline_context_block(self):
-        """The augmented prompt ends with a [Deadline context: ...] block."""
-        from butlers.core.temporal.deadlines import build_deadline_prompt_context
-
-        result = build_deadline_prompt_context(
-            original_prompt="Check status",
-            target_date=_future_date(30),
-            days_remaining=30,
-            fired_threshold=_make_threshold(30, "info"),
-            deadline_status="pending",
-            all_thresholds=[_make_threshold(30, "info")],
-        )
+        assert "info" in result
+        assert "alerted" in result
+        # All three threshold days present
+        assert "14" in result and "3" in result
+        # Block present; original text before context block
         assert "[Deadline context:" in result
-
-    def test_prompt_original_text_comes_before_context_block(self):
-        """Original prompt text appears before the deadline context block."""
-        from butlers.core.temporal.deadlines import build_deadline_prompt_context
-
-        result = build_deadline_prompt_context(
-            original_prompt="My original prompt",
-            target_date=_future_date(30),
-            days_remaining=30,
-            fired_threshold=_make_threshold(30, "info"),
-            deadline_status="pending",
-            all_thresholds=[_make_threshold(30, "info")],
-        )
-        original_pos = result.index("My original prompt")
-        context_pos = result.index("[Deadline context:")
-        assert original_pos < context_pos, "Original prompt must appear before deadline context"
+        assert result.index("Begin visa renewal") < result.index("[Deadline context:")
 
 
 # ---------------------------------------------------------------------------
@@ -701,31 +601,24 @@ class TestDeadlineList:
         assert "list-deadline-2" in names
         assert "cron-task" not in names
 
-    async def test_deadline_list_filters_by_status_pending(self, pool):
-        """deadline_list(status='pending') returns only pending deadlines."""
+    async def test_deadline_list_filters_by_status(self, pool):
+        """deadline_list filters by status correctly."""
         from butlers.core.temporal.deadlines_db import deadline_list
 
-        await self._insert_deadline(pool, name="filter-pending", deadline_status="pending")
-        await self._insert_deadline(pool, name="filter-alerted", deadline_status="alerted")
+        await self._insert_deadline(pool, name="filter-status-pending", deadline_status="pending")
+        await self._insert_deadline(pool, name="filter-status-alerted", deadline_status="alerted")
+        await self._insert_deadline(
+            pool, name="filter-status-escalated", deadline_status="escalated"
+        )
 
-        results = await deadline_list(pool, status="pending")
-        names = [r["name"] for r in results]
-        assert "filter-pending" in names
-        assert "filter-alerted" not in names
+        pending = [r["name"] for r in await deadline_list(pool, status="pending")]
+        assert "filter-status-pending" in pending
+        assert "filter-status-alerted" not in pending
 
-    async def test_deadline_list_filters_by_status_alerted(self, pool):
-        """deadline_list(status='alerted') returns only alerted deadlines."""
-        from butlers.core.temporal.deadlines_db import deadline_list
-
-        await self._insert_deadline(pool, name="filter-pending2", deadline_status="pending")
-        await self._insert_deadline(pool, name="filter-alerted2", deadline_status="alerted")
-        await self._insert_deadline(pool, name="filter-escalated", deadline_status="escalated")
-
-        results = await deadline_list(pool, status="alerted")
-        names = [r["name"] for r in results]
-        assert "filter-alerted2" in names
-        assert "filter-pending2" not in names
-        assert "filter-escalated" not in names
+        alerted = [r["name"] for r in await deadline_list(pool, status="alerted")]
+        assert "filter-status-alerted" in alerted
+        assert "filter-status-pending" not in alerted
+        assert "filter-status-escalated" not in alerted
 
     async def test_deadline_list_invalid_status_raises(self, pool):
         """deadline_list raises ValueError for an invalid status filter."""

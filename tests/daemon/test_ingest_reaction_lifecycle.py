@@ -74,6 +74,18 @@ def _make_minimal_pipeline(result: RoutingResult | None = None) -> MessagePipeli
     )
 
 
+def _make_capturing_mod() -> tuple[TelegramModule, list]:
+    """Return a TelegramModule and a list that records reaction kwargs dicts."""
+    mod = TelegramModule()
+    calls: list[dict] = []
+
+    async def mock_reaction(**kwargs: Any) -> None:
+        calls.append(dict(kwargs))
+
+    mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
+    return mod, calls
+
+
 # ---------------------------------------------------------------------------
 # react_for_ingest unit tests
 # ---------------------------------------------------------------------------
@@ -82,276 +94,79 @@ def _make_minimal_pipeline(result: RoutingResult | None = None) -> MessagePipeli
 class TestReactForIngestParsing:
     """Test the parsing logic of react_for_ingest without network calls."""
 
-    async def test_valid_thread_id_calls_set_message_reaction(self) -> None:
-        """react_for_ingest parses 'chat_id:message_id' and calls _set_message_reaction."""
-        mod = TelegramModule()
-        calls: list[dict] = []
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            calls.append(dict(kwargs))
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(
-            external_thread_id="12345:678",
-            reaction=REACTION_IN_PROGRESS,
-        )
-
+    async def test_valid_thread_id_parsing(self) -> None:
+        """Valid 'chat_id:message_id' parsed; negative chat IDs (groups) also work."""
+        # Positive chat ID
+        mod, calls = _make_capturing_mod()
+        await mod.react_for_ingest(external_thread_id="12345:678", reaction=REACTION_IN_PROGRESS)
         assert len(calls) == 1
         assert calls[0]["chat_id"] == "12345"
         assert calls[0]["message_id"] == 678
         assert calls[0]["reaction"] == REACTION_IN_PROGRESS
 
-    async def test_negative_chat_id_valid(self) -> None:
-        """Groups/supergroups use negative chat IDs which must parse correctly."""
-        mod = TelegramModule()
-        calls: list[dict] = []
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            calls.append(dict(kwargs))
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(
-            external_thread_id="-100987654321:999",
-            reaction=REACTION_IN_PROGRESS,
+        # Negative chat ID (groups/supergroups)
+        mod2, calls2 = _make_capturing_mod()
+        await mod2.react_for_ingest(
+            external_thread_id="-100987654321:999", reaction=REACTION_IN_PROGRESS
         )
+        assert len(calls2) == 1
+        assert calls2[0]["chat_id"] == "-100987654321"
+        assert calls2[0]["message_id"] == 999
 
-        assert len(calls) == 1
-        assert calls[0]["chat_id"] == "-100987654321"
-        assert calls[0]["message_id"] == 999
-
-    async def test_none_is_noop(self) -> None:
-        """None external_thread_id → no _set_message_reaction call."""
-        mod = TelegramModule()
-        called = False
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            nonlocal called
-            called = True
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(external_thread_id=None, reaction=REACTION_IN_PROGRESS)
-        assert not called
-
-    async def test_empty_string_is_noop(self) -> None:
-        """Empty string external_thread_id → no _set_message_reaction call."""
-        mod = TelegramModule()
-        called = False
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            nonlocal called
-            called = True
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(external_thread_id="", reaction=REACTION_IN_PROGRESS)
-        assert not called
-
-    async def test_no_colon_separator_is_noop(self) -> None:
-        """Thread ID without colon is unparseable → noop."""
-        mod = TelegramModule()
-        called = False
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            nonlocal called
-            called = True
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(external_thread_id="12345", reaction=REACTION_IN_PROGRESS)
-        assert not called
-
-    async def test_non_integer_message_id_is_noop(self) -> None:
-        """Non-integer message_id → noop."""
-        mod = TelegramModule()
-        called = False
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            nonlocal called
-            called = True
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(external_thread_id="123:abc", reaction=REACTION_IN_PROGRESS)
-        assert not called
-
-    async def test_empty_chat_id_is_noop(self) -> None:
-        """Empty chat_id part (e.g. ':100') → noop."""
-        mod = TelegramModule()
-        called = False
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            nonlocal called
-            called = True
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(external_thread_id=":100", reaction=REACTION_IN_PROGRESS)
-        assert not called
-
-    async def test_only_chat_id_no_message_id_after_colon_is_noop(self) -> None:
-        """Thread ID 'chat_id:' with empty message_id part → noop."""
-        mod = TelegramModule()
-        called = False
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            nonlocal called
-            called = True
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(external_thread_id="12345:", reaction=REACTION_IN_PROGRESS)
-        assert not called
+    @pytest.mark.parametrize(
+        "thread_id",
+        [
+            None,  # None
+            "",  # empty string
+            "12345",  # no colon
+            "123:abc",  # non-integer message_id
+            ":100",  # empty chat_id
+            "12345:",  # empty message_id after colon
+        ],
+    )
+    async def test_invalid_thread_id_is_noop(self, thread_id: str | None) -> None:
+        """Unparseable or missing thread IDs → no _set_message_reaction call."""
+        mod, calls = _make_capturing_mod()
+        await mod.react_for_ingest(external_thread_id=thread_id, reaction=REACTION_IN_PROGRESS)
+        assert calls == []
 
 
-class TestReactForIngestReactionValues:
-    """Test that react_for_ingest passes the correct reaction strings through."""
+class TestReactForIngestBehavior:
+    """Tests for reaction values, error swallowing, non-telegram guard, and sequences."""
 
-    async def test_in_progress_reaction_value(self) -> None:
-        """REACTION_IN_PROGRESS is passed through to _set_message_reaction."""
-        mod = TelegramModule()
-        captured: list[str] = []
+    async def test_reaction_values_errors_and_sequences(self) -> None:
+        """IN_PROGRESS/SUCCESS/FAILURE pass through; API errors swallowed; non-telegram skipped;
+        IN_PROGRESS→SUCCESS and IN_PROGRESS→FAILURE sequences correct."""
+        # All reaction values forwarded correctly
+        for reaction in (REACTION_IN_PROGRESS, REACTION_SUCCESS, REACTION_FAILURE):
+            mod, calls = _make_capturing_mod()
+            await mod.react_for_ingest(external_thread_id="1:1", reaction=reaction)
+            assert calls == [{"chat_id": "1", "message_id": 1, "reaction": reaction}]
 
-        async def mock_reaction(**kwargs: Any) -> None:
-            captured.append(kwargs["reaction"])
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(
-            external_thread_id="1:1",
-            reaction=REACTION_IN_PROGRESS,
-        )
-
-        assert captured == [REACTION_IN_PROGRESS]
-
-    async def test_success_reaction_value(self) -> None:
-        """REACTION_SUCCESS is passed through to _set_message_reaction."""
-        mod = TelegramModule()
-        captured: list[str] = []
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            captured.append(kwargs["reaction"])
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(
-            external_thread_id="1:1",
-            reaction=REACTION_SUCCESS,
-        )
-
-        assert captured == [REACTION_SUCCESS]
-
-    async def test_failure_reaction_value(self) -> None:
-        """REACTION_FAILURE is passed through to _set_message_reaction."""
-        mod = TelegramModule()
-        captured: list[str] = []
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            captured.append(kwargs["reaction"])
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(
-            external_thread_id="1:1",
-            reaction=REACTION_FAILURE,
-        )
-
-        assert captured == [REACTION_FAILURE]
-
-    async def test_api_error_is_swallowed(self) -> None:
-        """Exceptions from _set_message_reaction do not propagate to the caller."""
+        # Exceptions from _set_message_reaction must not propagate
         mod = TelegramModule()
 
-        async def mock_reaction(**kwargs: Any) -> None:
+        async def raising_reaction(**kwargs: Any) -> None:
             raise RuntimeError("Telegram API unavailable")
 
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
+        mod._set_message_reaction = raising_reaction  # type: ignore[method-assign]
+        await mod.react_for_ingest(external_thread_id="123:456", reaction=REACTION_IN_PROGRESS)
 
-        # Should not raise
-        await mod.react_for_ingest(
-            external_thread_id="123:456",
-            reaction=REACTION_IN_PROGRESS,
-        )
-
-
-class TestIngestReactionNonTelegram:
-    """Non-Telegram messages must not trigger any Telegram reactions."""
-
-    async def test_react_for_ingest_is_not_called_for_email(self) -> None:
-        """Email messages (source_channel != 'telegram_bot') do not invoke react_for_ingest.
-
-        This test verifies the behavioral contract: the caller in daemon.py
-        must guard the react_for_ingest call with a channel check.
-        """
-        mod = TelegramModule()
-        called = False
-
-        async def mock_reaction(**kwargs: Any) -> None:
-            nonlocal called
-            called = True
-
-        mod._set_message_reaction = mock_reaction  # type: ignore[method-assign]
-
-        # Simulate what the daemon does: check channel before calling react_for_ingest
+        # Non-telegram: guard check prevents call (email channel → no react_for_ingest)
+        mod_email, calls_email = _make_capturing_mod()
         channel = "email"
         if channel == "telegram_bot":
-            await mod.react_for_ingest(
-                external_thread_id="123:456",
-                reaction=REACTION_IN_PROGRESS,
-            )
+            await mod_email.react_for_ingest(external_thread_id="123:456", reaction=REACTION_IN_PROGRESS)
+        assert calls_email == []
 
-        assert not called, "react_for_ingest must not be called for non-telegram channels"
+        # Success sequence
+        mod_s, seq_s = _make_capturing_mod()
+        await mod_s.react_for_ingest(external_thread_id="42:100", reaction=REACTION_IN_PROGRESS)
+        await mod_s.react_for_ingest(external_thread_id="42:100", reaction=REACTION_SUCCESS)
+        assert [c["reaction"] for c in seq_s] == [REACTION_IN_PROGRESS, REACTION_SUCCESS]
 
-
-class TestReactForIngestSequence:
-    """Test that react_for_ingest fires in the correct sequence for the pipeline flow."""
-
-    async def test_fires_in_progress_then_success(self) -> None:
-        """Simulates _buffer_process: 👀 before pipeline then ✅ after success."""
-        mod = TelegramModule()
-        reaction_sequence: list[str] = []
-
-        async def record_reaction(**kwargs: Any) -> None:
-            reaction_sequence.append(kwargs["reaction"])
-
-        mod._set_message_reaction = record_reaction  # type: ignore[method-assign]
-
-        # 1. Fire in-progress reaction (before pipeline.process())
-        await mod.react_for_ingest(
-            external_thread_id="42:100",
-            reaction=REACTION_IN_PROGRESS,
-        )
-
-        # 2. pipeline.process() runs (simulated by doing nothing here)
-
-        # 3. Fire success reaction (after pipeline.process())
-        await mod.react_for_ingest(
-            external_thread_id="42:100",
-            reaction=REACTION_SUCCESS,
-        )
-
-        assert reaction_sequence == [REACTION_IN_PROGRESS, REACTION_SUCCESS]
-
-    async def test_fires_in_progress_then_failure(self) -> None:
-        """Simulates _buffer_process: 👀 before pipeline then 👾 after failure."""
-        mod = TelegramModule()
-        reaction_sequence: list[str] = []
-
-        async def record_reaction(**kwargs: Any) -> None:
-            reaction_sequence.append(kwargs["reaction"])
-
-        mod._set_message_reaction = record_reaction  # type: ignore[method-assign]
-
-        await mod.react_for_ingest(
-            external_thread_id="99:200",
-            reaction=REACTION_IN_PROGRESS,
-        )
-
-        await mod.react_for_ingest(
-            external_thread_id="99:200",
-            reaction=REACTION_FAILURE,
-        )
-
-        assert reaction_sequence == [REACTION_IN_PROGRESS, REACTION_FAILURE]
+        # Failure sequence
+        mod_f, seq_f = _make_capturing_mod()
+        await mod_f.react_for_ingest(external_thread_id="99:200", reaction=REACTION_IN_PROGRESS)
+        await mod_f.react_for_ingest(external_thread_id="99:200", reaction=REACTION_FAILURE)
+        assert [c["reaction"] for c in seq_f] == [REACTION_IN_PROGRESS, REACTION_FAILURE]

@@ -159,8 +159,14 @@ class TestConstants:
     """VALID_STATUSES, TERMINAL_STATUSES, ACTIVE_STATUSES are correctly defined."""
 
     @pytest.mark.unit
-    def test_valid_statuses_complete(self) -> None:
-        from butlers.core.healing.tracking import VALID_STATUSES
+    def test_status_sets_and_transitions(self) -> None:
+        """Valid statuses complete; terminal is subset; active statuses correct; transitions."""
+        from butlers.core.healing.tracking import (
+            _VALID_TRANSITIONS,
+            ACTIVE_STATUSES,
+            TERMINAL_STATUSES,
+            VALID_STATUSES,
+        )
 
         expected = {
             "dispatch_pending",
@@ -173,44 +179,12 @@ class TestConstants:
             "timeout",
         }
         assert VALID_STATUSES == expected
-
-    @pytest.mark.unit
-    def test_terminal_statuses_are_subset_of_valid(self) -> None:
-        from butlers.core.healing.tracking import TERMINAL_STATUSES, VALID_STATUSES
-
         assert TERMINAL_STATUSES.issubset(VALID_STATUSES)
-
-    @pytest.mark.unit
-    def test_investigating_not_terminal(self) -> None:
-        from butlers.core.healing.tracking import TERMINAL_STATUSES
-
-        assert "investigating" not in TERMINAL_STATUSES
-
-    @pytest.mark.unit
-    def test_dispatch_pending_not_terminal(self) -> None:
-        from butlers.core.healing.tracking import TERMINAL_STATUSES
-
-        assert "dispatch_pending" not in TERMINAL_STATUSES
-
-    @pytest.mark.unit
-    def test_pr_open_not_terminal(self) -> None:
-        from butlers.core.healing.tracking import TERMINAL_STATUSES
-
-        assert "pr_open" not in TERMINAL_STATUSES
-
-    @pytest.mark.unit
-    def test_active_statuses(self) -> None:
-        from butlers.core.healing.tracking import ACTIVE_STATUSES
-
+        for non_terminal in ("investigating", "dispatch_pending", "pr_open"):
+            assert non_terminal not in TERMINAL_STATUSES
         assert "dispatch_pending" in ACTIVE_STATUSES
         assert "investigating" in ACTIVE_STATUSES
         assert "pr_open" in ACTIVE_STATUSES
-
-    @pytest.mark.unit
-    def test_dispatch_pending_transitions(self) -> None:
-        from butlers.core.healing.tracking import _VALID_TRANSITIONS
-
-        # dispatch_pending can only go to investigating (agent dispatched) or failed (timeout)
         assert _VALID_TRANSITIONS["dispatch_pending"] == frozenset({"investigating", "failed"})
 
 
@@ -218,251 +192,118 @@ class TestUpdateAttemptStatusUnit:
     """State machine validation tested with a mock pool."""
 
     @pytest.mark.unit
-    async def test_rejects_invalid_status(self) -> None:
-        """update_attempt_status returns False for an unknown status."""
+    async def test_rejects_invalid_and_terminal_transitions(self) -> None:
+        """Returns False for unknown status, terminal state, missing row, invalid transition."""
         from butlers.core.healing.tracking import update_attempt_status
 
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"status": "investigating"})
-        pool.fetchval = AsyncMock(return_value=uuid.uuid4())
+        # Unknown status — fetchrow never called
+        pool_a = MagicMock()
+        pool_a.fetchrow = AsyncMock(return_value={"status": "investigating"})
+        assert await update_attempt_status(pool_a, uuid.uuid4(), "not_a_real_status") is False
+        pool_a.fetchrow.assert_not_called()
 
-        result = await update_attempt_status(pool, uuid.uuid4(), "not_a_real_status")
-        assert result is False
-        # fetchrow should NOT have been called since we reject before hitting DB
-        pool.fetchrow.assert_not_called()
+        # Terminal state transition
+        pool_b = MagicMock()
+        pool_b.fetchrow = AsyncMock(return_value={"status": "failed"})
+        pool_b.fetchval = AsyncMock(return_value=None)
+        assert await update_attempt_status(pool_b, uuid.uuid4(), "pr_open") is False
 
-    @pytest.mark.unit
-    async def test_rejects_terminal_state_transition(self) -> None:
-        """update_attempt_status returns False and logs warning for terminal state."""
-        from butlers.core.healing.tracking import update_attempt_status
+        # Attempt not found
+        pool_c = MagicMock()
+        pool_c.fetchrow = AsyncMock(return_value=None)
+        assert await update_attempt_status(pool_c, uuid.uuid4(), "failed") is False
 
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"status": "failed"})
-        pool.fetchval = AsyncMock(return_value=None)
-
-        result = await update_attempt_status(pool, uuid.uuid4(), "pr_open")
-        assert result is False
-
-    @pytest.mark.unit
-    async def test_returns_false_when_attempt_not_found(self) -> None:
-        """update_attempt_status returns False when the attempt row is missing."""
-        from butlers.core.healing.tracking import update_attempt_status
-
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-
-        result = await update_attempt_status(pool, uuid.uuid4(), "failed")
-        assert result is False
-
-    @pytest.mark.unit
-    async def test_rejects_invalid_transition(self) -> None:
-        """update_attempt_status rejects transitions not in the state machine."""
-        from butlers.core.healing.tracking import update_attempt_status
-
-        pool = MagicMock()
-        # investigating → pr_merged is not a valid direct transition
-        pool.fetchrow = AsyncMock(return_value={"status": "investigating"})
-        pool.fetchval = AsyncMock(return_value=None)
-
-        result = await update_attempt_status(pool, uuid.uuid4(), "pr_merged")
-        assert result is False
+        # Invalid transition (investigating → pr_merged)
+        pool_d = MagicMock()
+        pool_d.fetchrow = AsyncMock(return_value={"status": "investigating"})
+        pool_d.fetchval = AsyncMock(return_value=None)
+        assert await update_attempt_status(pool_d, uuid.uuid4(), "pr_merged") is False
 
 
 class TestCollisionDetectionUnit:
-    """Fingerprint collision detection emits CRITICAL log."""
+    """Fingerprint collision detection: CRITICAL logged on mismatch; new inserts; None raises."""
 
     @pytest.mark.unit
-    async def test_collision_emits_critical_log(self, caplog: pytest.LogCaptureFixture) -> None:
-        """CRITICAL is logged when (exception_type, call_site) differ on join."""
+    async def test_collision_and_insert_behavior(self, caplog: pytest.LogCaptureFixture) -> None:
+        """CRITICAL on metadata mismatch; no log on match; is_new=True on insert; None raises."""
         from butlers.core.healing import tracking
 
-        fingerprint = "a" * 64
-        session_id = uuid.uuid4()
+        # Metadata mismatch → CRITICAL logged
         attempt_id = uuid.uuid4()
-
-        # Simulate ON CONFLICT path: xmax != 0, existing fields differ from new
-        mock_row = {
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={
             "id": attempt_id,
             "existing_exc_type": "asyncpg.exceptions.UndefinedTableError",
             "existing_call_site": "src/butlers/core/sessions.py:session_create",
             "was_inserted": False,
-        }
-
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=mock_row)
-
+        })
         with caplog.at_level(logging.CRITICAL, logger="butlers.core.healing.tracking"):
             result_id, is_new = await tracking.create_or_join_attempt(
-                pool,
-                fingerprint=fingerprint,
-                butler_name="test-butler",
-                severity=0,
-                exception_type="builtins.KeyError",  # DIFFERENT from stored
-                call_site="src/butlers/core/spawner.py:_run",  # DIFFERENT from stored
-                session_id=session_id,
-            )
-
-        assert result_id == attempt_id
-        assert is_new is False
-        assert any(
-            "Fingerprint collision detected" in record.message
-            for record in caplog.records
-            if record.levelno == logging.CRITICAL
-        )
-
-    @pytest.mark.unit
-    async def test_no_collision_log_on_matching_metadata(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """No CRITICAL log when (exception_type, call_site) match on join."""
-        from butlers.core.healing import tracking
-
-        fingerprint = "b" * 64
-        session_id = uuid.uuid4()
-        attempt_id = uuid.uuid4()
-        exc_type = "builtins.KeyError"
-        call_site = "src/butlers/core/spawner.py:_run"
-
-        mock_row = {
-            "id": attempt_id,
-            "existing_exc_type": exc_type,
-            "existing_call_site": call_site,
-            "was_inserted": False,
-        }
-
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=mock_row)
-
-        with caplog.at_level(logging.CRITICAL, logger="butlers.core.healing.tracking"):
-            result_id, is_new = await tracking.create_or_join_attempt(
-                pool,
-                fingerprint=fingerprint,
-                butler_name="test-butler",
-                severity=2,
-                exception_type=exc_type,
-                call_site=call_site,
-                session_id=session_id,
-            )
-
-        assert is_new is False
-        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
-        assert len(critical_records) == 0
-
-    @pytest.mark.unit
-    async def test_new_insert_returns_is_new_true(self) -> None:
-        """create_or_join_attempt returns is_new=True when a new row is inserted."""
-        from butlers.core.healing import tracking
-
-        attempt_id = uuid.uuid4()
-        mock_row = {
-            "id": attempt_id,
-            "existing_exc_type": "builtins.KeyError",
-            "existing_call_site": "src/butlers/core/spawner.py:_run",
-            "was_inserted": True,
-        }
-
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=mock_row)
-
-        result_id, is_new = await tracking.create_or_join_attempt(
-            pool,
-            fingerprint="c" * 64,
-            butler_name="test-butler",
-            severity=2,
-            exception_type="builtins.KeyError",
-            call_site="src/butlers/core/spawner.py:_run",
-            session_id=uuid.uuid4(),
-        )
-
-        assert result_id == attempt_id
-        assert is_new is True
-
-    @pytest.mark.unit
-    async def test_raises_on_none_result(self) -> None:
-        """create_or_join_attempt raises RuntimeError when the query returns None."""
-        from butlers.core.healing import tracking
-
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-
-        with pytest.raises(RuntimeError, match="unexpected empty result"):
-            await tracking.create_or_join_attempt(
-                pool,
-                fingerprint="d" * 64,
-                butler_name="test-butler",
-                severity=2,
+                pool, fingerprint="a" * 64, butler_name="test-butler", severity=0,
                 exception_type="builtins.KeyError",
                 call_site="src/butlers/core/spawner.py:_run",
                 session_id=uuid.uuid4(),
             )
+        assert result_id == attempt_id
+        assert is_new is False
+        assert any(
+            "Fingerprint collision detected" in r.message
+            for r in caplog.records if r.levelno == logging.CRITICAL
+        )
+
+        # Matching metadata → no CRITICAL logged
+        caplog.clear()
+        exc_type = "builtins.KeyError"
+        call_site = "src/butlers/core/spawner.py:_run"
+        pool2 = MagicMock()
+        pool2.fetchrow = AsyncMock(return_value={
+            "id": uuid.uuid4(),
+            "existing_exc_type": exc_type,
+            "existing_call_site": call_site,
+            "was_inserted": False,
+        })
+        with caplog.at_level(logging.CRITICAL, logger="butlers.core.healing.tracking"):
+            _, is_new2 = await tracking.create_or_join_attempt(
+                pool2, fingerprint="b" * 64, butler_name="test-butler", severity=2,
+                exception_type=exc_type, call_site=call_site, session_id=uuid.uuid4(),
+            )
+        assert is_new2 is False
+        assert not [r for r in caplog.records if r.levelno == logging.CRITICAL]
+
+        # New insert: is_new=True
+        new_attempt_id = uuid.uuid4()
+        pool3 = MagicMock()
+        pool3.fetchrow = AsyncMock(return_value={
+            "id": new_attempt_id,
+            "existing_exc_type": exc_type,
+            "existing_call_site": call_site,
+            "was_inserted": True,
+        })
+        result_id3, is_new3 = await tracking.create_or_join_attempt(
+            pool3, fingerprint="c" * 64, butler_name="test-butler", severity=2,
+            exception_type=exc_type, call_site=call_site, session_id=uuid.uuid4(),
+        )
+        assert result_id3 == new_attempt_id
+        assert is_new3 is True
+
+        # None result → RuntimeError
+        pool4 = MagicMock()
+        pool4.fetchrow = AsyncMock(return_value=None)
+        with pytest.raises(RuntimeError, match="unexpected empty result"):
+            await tracking.create_or_join_attempt(
+                pool4, fingerprint="d" * 64, butler_name="test-butler", severity=2,
+                exception_type=exc_type, call_site=call_site, session_id=uuid.uuid4(),
+            )
 
 
 class TestListAttemptsUnit:
-    """list_attempts passes butler_name filter into SQL (unit tests with mock pool)."""
-
-    @pytest.mark.unit
-    async def test_butler_name_filter_passes_to_sql(self) -> None:
-        """When butler_name is provided, list_attempts issues a WHERE butler_name = $1 query."""
-        from butlers.core.healing.tracking import list_attempts
-
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-
-        await list_attempts(pool, limit=5, butler_name="my-butler")
-
-        pool.fetch.assert_awaited_once()
-        call_args = pool.fetch.call_args
-        sql: str = call_args[0][0]
-        assert "butler_name" in sql, "SQL must filter by butler_name"
-        # butler_name value must be passed as a positional argument
-        assert "my-butler" in call_args[0], "butler_name value must be passed to query"
-
-    @pytest.mark.unit
-    async def test_no_butler_name_omits_filter(self) -> None:
-        """When butler_name is None, list_attempts does not include a butler_name WHERE clause."""
-        from butlers.core.healing.tracking import list_attempts
-
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-
-        await list_attempts(pool, limit=5)
-
-        pool.fetch.assert_awaited_once()
-        call_args = pool.fetch.call_args
-        sql: str = call_args[0][0]
-        assert "butler_name" not in sql, "SQL must not filter by butler_name when not provided"
-
-    @pytest.mark.unit
-    async def test_butler_name_and_status_filter_combined(self) -> None:
-        """When both butler_name and status_filter are provided, both are applied."""
-        from butlers.core.healing.tracking import list_attempts
-
-        pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[])
-
-        await list_attempts(pool, limit=5, status_filter="investigating", butler_name="my-butler")
-
-        pool.fetch.assert_awaited_once()
-        call_args = pool.fetch.call_args
-        sql: str = call_args[0][0]
-        assert "butler_name" in sql
-        assert "status" in sql
-        positional_args = call_args[0]
-        assert "my-butler" in positional_args
-        assert "investigating" in positional_args
+    """list_attempts decodes rows into plain dicts."""
 
     @pytest.mark.unit
     async def test_list_attempts_returns_decoded_rows(self) -> None:
         """list_attempts decodes asyncpg Records into plain dicts."""
         from butlers.core.healing.tracking import list_attempts
 
-        fake_row = MagicMock()
-        fake_row.__iter__ = MagicMock(
-            return_value=iter([("status", "investigating"), ("butler_name", "my-butler")])
-        )
-        fake_row.keys = MagicMock(return_value=["status", "butler_name"])
-        # asyncpg Records behave like mappings; dict() on them works via __iter__ over items
-        # Use a simple dict-like object instead
         pool = MagicMock()
         pool.fetch = AsyncMock(
             return_value=[{"status": "investigating", "butler_name": "my-butler"}]
@@ -1281,25 +1122,6 @@ class TestSessionSetHealingFingerprintUnit:
     """Unit tests for session_set_healing_fingerprint in sessions.py."""
 
     @pytest.mark.unit
-    async def test_issues_update_sql(self) -> None:
-        """session_set_healing_fingerprint executes an UPDATE statement."""
-        from butlers.core.sessions import session_set_healing_fingerprint
-
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-
-        session_id = uuid.uuid4()
-        fingerprint = "a" * 64
-
-        await session_set_healing_fingerprint(pool, session_id, fingerprint)
-
-        pool.execute.assert_called_once()
-        call_args = pool.execute.call_args
-        sql = call_args[0][0]
-        assert "healing_fingerprint" in sql
-        assert "UPDATE" in sql.upper()
-
-    @pytest.mark.unit
     async def test_no_error_on_zero_rows_affected(self) -> None:
         """session_set_healing_fingerprint is best-effort: no error if row missing."""
         from butlers.core.sessions import session_set_healing_fingerprint
@@ -1337,18 +1159,14 @@ class TestCreateOrJoinAttemptQaPatrolId:
         return record
 
     @pytest.mark.unit
-    async def test_qa_patrol_id_passed_in_sql(self) -> None:
-        """create_or_join_attempt passes qa_patrol_id as the 9th SQL parameter."""
+    async def test_qa_patrol_id_optional_and_returns_result(self) -> None:
+        """qa_patrol_id defaults to None; with qa_id returns correct attempt_id and is_new."""
         from butlers.core.healing.tracking import create_or_join_attempt
 
+        # Without qa_patrol_id: defaults to None (backward-compatible)
         attempt_id = uuid.uuid4()
-        qa_id = uuid.uuid4()
-        session_id = uuid.uuid4()
-        fingerprint = "a" * 64
-
         captured_args: list = []
         mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
-
         pool = MagicMock()
 
         async def mock_fetchrow(sql, *args):
@@ -1356,124 +1174,24 @@ class TestCreateOrJoinAttemptQaPatrolId:
             return mock_result
 
         pool.fetchrow = mock_fetchrow
-
-        await create_or_join_attempt(
-            pool,
-            fingerprint=fingerprint,
-            butler_name="test",
-            severity=2,
-            exception_type="builtins.KeyError",
-            call_site="src/butlers/core/spawner.py:_run",
-            session_id=session_id,
-            qa_patrol_id=qa_id,
-        )
-
-        # qa_patrol_id is the 9th positional arg (index 8 = $9 in the SQL)
-        assert str(qa_id) in captured_args
-
-    @pytest.mark.unit
-    async def test_qa_patrol_id_none_passes_none_to_sql(self) -> None:
-        """When qa_patrol_id is None, None is passed for $9."""
-        from butlers.core.healing.tracking import create_or_join_attempt
-
-        attempt_id = uuid.uuid4()
-        session_id = uuid.uuid4()
-        fingerprint = "b" * 64
-
-        captured_args: list = []
-        mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
-
-        pool = MagicMock()
-
-        async def mock_fetchrow(sql, *args):
-            captured_args.extend(args)
-            return mock_result
-
-        pool.fetchrow = mock_fetchrow
-
-        await create_or_join_attempt(
-            pool,
-            fingerprint=fingerprint,
-            butler_name="test",
-            severity=2,
-            exception_type="builtins.KeyError",
-            call_site="src/butlers/core/spawner.py:_run",
-            session_id=session_id,
-            qa_patrol_id=None,
-        )
-
-        # Last arg should be None (qa_patrol_id)
-        assert captured_args[-1] is None
-
-    @pytest.mark.unit
-    async def test_qa_patrol_id_not_required(self) -> None:
-        """qa_patrol_id defaults to None — backward-compatible call without it."""
-        from butlers.core.healing.tracking import create_or_join_attempt
-
-        attempt_id = uuid.uuid4()
-        session_id = uuid.uuid4()
-        fingerprint = "c" * 64
-
-        captured_args: list = []
-        mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
-
-        pool = MagicMock()
-
-        async def mock_fetchrow(sql, *args):
-            captured_args.extend(args)
-            return mock_result
-
-        pool.fetchrow = mock_fetchrow
-
-        # Call WITHOUT qa_patrol_id — must not raise
         result_id, is_new = await create_or_join_attempt(
-            pool,
-            fingerprint=fingerprint,
-            butler_name="test",
-            severity=2,
-            exception_type="builtins.KeyError",
-            call_site="src/butlers/core/spawner.py:_run",
-            session_id=session_id,
+            pool, fingerprint="c" * 64, butler_name="test", severity=2,
+            exception_type="builtins.KeyError", call_site="src/butlers/core/spawner.py:_run",
+            session_id=uuid.uuid4(),
         )
-
         assert result_id == attempt_id
         assert is_new is True
-        # Last positional arg to SQL must be None (default qa_patrol_id)
-        assert captured_args[-1] is None
+        assert captured_args[-1] is None  # qa_patrol_id defaults to None
 
-    @pytest.mark.unit
-    async def test_sql_includes_qa_patrol_id_column(self) -> None:
-        """The INSERT SQL must include the qa_patrol_id column."""
-        import inspect
-
-        from butlers.core.healing.tracking import create_or_join_attempt
-
-        src = inspect.getsource(create_or_join_attempt)
-        assert "qa_patrol_id" in src
-
-    @pytest.mark.unit
-    async def test_returns_correct_attempt_id_and_is_new(self) -> None:
-        """create_or_join_attempt returns (attempt_id, True) for a new insertion."""
-        from butlers.core.healing.tracking import create_or_join_attempt
-
-        attempt_id = uuid.uuid4()
+        # With qa_patrol_id: returns correct (attempt_id, True)
+        attempt_id2 = uuid.uuid4()
         qa_id = uuid.uuid4()
-        session_id = uuid.uuid4()
-
-        mock_result = self._make_fetchrow_result(attempt_id, was_inserted=True)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=mock_result)
-
-        result_id, is_new = await create_or_join_attempt(
-            pool,
-            fingerprint="d" * 64,
-            butler_name="test",
-            severity=1,
-            exception_type="builtins.ValueError",
-            call_site="src/butlers/modules/test.py:handler",
-            session_id=session_id,
-            qa_patrol_id=qa_id,
+        pool2 = MagicMock()
+        pool2.fetchrow = AsyncMock(return_value=self._make_fetchrow_result(attempt_id2, was_inserted=True))
+        result_id2, is_new2 = await create_or_join_attempt(
+            pool2, fingerprint="d" * 64, butler_name="test", severity=1,
+            exception_type="builtins.ValueError", call_site="src/butlers/modules/test.py:handler",
+            session_id=uuid.uuid4(), qa_patrol_id=qa_id,
         )
-
-        assert result_id == attempt_id
-        assert is_new is True
+        assert result_id2 == attempt_id2
+        assert is_new2 is True

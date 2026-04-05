@@ -182,21 +182,16 @@ async def _insert_override(
 
 
 @pytest.mark.unit
-def test_complexity_enum_values() -> None:
+def test_complexity_enum() -> None:
+    """Complexity enum has correct values, parses from string, and rejects invalid tiers."""
     assert Complexity.TRIVIAL.value == "trivial"
     assert Complexity.MEDIUM.value == "medium"
     assert Complexity.HIGH.value == "high"
     assert Complexity.EXTRA_HIGH.value == "extra_high"
 
-
-@pytest.mark.unit
-def test_complexity_enum_from_string() -> None:
     assert Complexity("trivial") is Complexity.TRIVIAL
     assert Complexity("extra_high") is Complexity.EXTRA_HIGH
 
-
-@pytest.mark.unit
-def test_complexity_enum_invalid_raises() -> None:
     with pytest.raises(ValueError):
         Complexity("impossible")
 

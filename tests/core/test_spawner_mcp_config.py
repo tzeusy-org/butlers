@@ -70,99 +70,83 @@ def _make_config(
 
 
 class TestSpawnerMcpServers:
-    async def test_only_butler_mcp_server_is_present_with_memory_enabled(self, tmp_path: Path):
-        config = _make_config(modules={"memory": {}})
-        adapter = MockAdapter()
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=adapter)
-
+    async def test_only_butler_mcp_server_present_with_or_without_memory(self, tmp_path: Path):
+        """MCP servers dict always contains only the butler server; memory fetch skipped when disabled."""
+        # Memory enabled
+        config_mem = _make_config(modules={"memory": {}})
+        adapter_mem = MockAdapter()
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
             return_value=None,
         ):
-            await spawner.trigger(prompt="test", trigger_source="trigger")
+            await Spawner(config=config_mem, config_dir=tmp_path, runtime=adapter_mem).trigger(
+                prompt="test", trigger_source="trigger"
+            )
+        assert adapter_mem.calls[0]["mcp_servers"] == {"test-butler": {"url": "http://localhost:9100/mcp"}}
 
-        mcp_servers = adapter.calls[0]["mcp_servers"]
-        assert mcp_servers == {"test-butler": {"url": "http://localhost:9100/mcp"}}
-
-    async def test_only_butler_mcp_server_is_present_with_memory_disabled(self, tmp_path: Path):
-        config = _make_config(modules={})
-        adapter = MockAdapter()
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=adapter)
-
+        # Memory disabled → fetch not called
+        config_no_mem = _make_config(modules={})
+        adapter_no_mem = MockAdapter()
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
         ) as mock_fetch:
-            await spawner.trigger(prompt="test", trigger_source="trigger")
+            await Spawner(config=config_no_mem, config_dir=tmp_path, runtime=adapter_no_mem).trigger(
+                prompt="test", trigger_source="trigger"
+            )
             mock_fetch.assert_not_called()
-
-        mcp_servers = adapter.calls[0]["mcp_servers"]
-        assert mcp_servers == {"test-butler": {"url": "http://localhost:9100/mcp"}}
+        assert adapter_no_mem.calls[0]["mcp_servers"] == {"test-butler": {"url": "http://localhost:9100/mcp"}}
 
 
 class TestMemoryFetchGating:
-    async def test_memory_context_fetched_when_module_enabled(self, tmp_path: Path):
-        config = _make_config(modules={"memory": {}})
-        adapter = MockAdapter()
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=adapter)
-
+    async def test_memory_fetch_gating_budget_and_injection(self, tmp_path: Path):
+        """Fetched when enabled (with default budget); not fetched when disabled; budget from config; appended to system prompt."""
+        # Enabled with default budget
+        adapter_on = MockAdapter()
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
             return_value="ctx",
         ) as mock_fetch:
-            await spawner.trigger(prompt="do task", trigger_source="trigger")
+            await Spawner(
+                config=_make_config(modules={"memory": {}}), config_dir=tmp_path, runtime=adapter_on
+            ).trigger(prompt="do task", trigger_source="trigger")
+        mock_fetch.assert_awaited_once_with(None, "test-butler", "do task", token_budget=3000)
 
-        mock_fetch.assert_awaited_once_with(
-            None,
-            "test-butler",
-            "do task",
-            token_budget=3000,
-        )
-
-    async def test_memory_context_not_fetched_when_module_disabled(self, tmp_path: Path):
-        config = _make_config(modules={})
-        adapter = MockAdapter()
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=adapter)
-
+        # Disabled → not called
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
-        ) as mock_fetch:
-            await spawner.trigger(prompt="do task", trigger_source="trigger")
+        ) as mock_fetch2:
+            await Spawner(
+                config=_make_config(modules={}), config_dir=tmp_path, runtime=MockAdapter()
+            ).trigger(prompt="do task", trigger_source="trigger")
+        mock_fetch2.assert_not_called()
 
-        mock_fetch.assert_not_called()
-
-    async def test_context_budget_comes_from_modules_memory_config(self, tmp_path: Path):
-        config = _make_config(
-            modules={"memory": {"retrieval": {"context_token_budget": 7777}}},
-        )
-        adapter = MockAdapter()
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=adapter)
-
+        # Custom budget from config
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
             return_value=None,
-        ) as mock_fetch:
-            await spawner.trigger(prompt="do task", trigger_source="trigger")
+        ) as mock_fetch3:
+            await Spawner(
+                config=_make_config(modules={"memory": {"retrieval": {"context_token_budget": 7777}}}),
+                config_dir=tmp_path,
+                runtime=MockAdapter(),
+            ).trigger(prompt="do task", trigger_source="trigger")
+        _, kwargs3 = mock_fetch3.call_args
+        assert kwargs3["token_budget"] == 7777
 
-        _, kwargs = mock_fetch.call_args
-        assert kwargs["token_budget"] == 7777
-
-    async def test_memory_context_appended_to_system_prompt(self, tmp_path: Path):
+        # Context appended to system prompt
         (tmp_path / "CLAUDE.md").write_text("Base prompt.")
-        config = _make_config(modules={"memory": {}})
-        adapter = MockAdapter()
-        spawner = Spawner(config=config, config_dir=tmp_path, runtime=adapter)
-
+        adapter_sys = MockAdapter()
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
             return_value="Remembered: user likes TDD.",
         ):
-            await spawner.trigger(prompt="do task", trigger_source="trigger")
-
-        system_prompt = adapter.calls[0]["system_prompt"]
-        assert system_prompt == "Base prompt.\n\nRemembered: user likes TDD."
+            await Spawner(
+                config=_make_config(modules={"memory": {}}), config_dir=tmp_path, runtime=adapter_sys
+            ).trigger(prompt="do task", trigger_source="trigger")
+        assert adapter_sys.calls[0]["system_prompt"] == "Base prompt.\n\nRemembered: user likes TDD."

@@ -69,24 +69,16 @@ def _make_config(name: str = "test-butler", port: int = 9100) -> ButlerConfig:
 
 @pytest.mark.unit
 class TestSpawnerResultSessionId:
-    """SpawnerResult.session_id field behavior."""
+    """SpawnerResult.session_id field behavior and Spawner population."""
 
-    def test_default_session_id_is_none(self):
-        r = SpawnerResult()
-        assert r.session_id is None
-
-    def test_session_id_set_explicitly(self):
+    def test_session_id_default_and_explicit(self):
+        """Default session_id is None; explicit value set correctly."""
+        assert SpawnerResult().session_id is None
         sid = uuid.uuid4()
-        r = SpawnerResult(session_id=sid)
-        assert r.session_id == sid
+        assert SpawnerResult(session_id=sid).session_id == sid
 
-
-@pytest.mark.unit
-class TestSpawnerSessionIdPopulation:
-    """Spawner populates session_id in SpawnerResult."""
-
-    async def test_session_id_set_on_success(self, tmp_path: Path):
-        """On successful invocation with a pool, SpawnerResult.session_id is set."""
+    async def test_session_id_populated_on_success_error_and_no_pool(self, tmp_path: Path):
+        """session_id set from pool on success and error; None without pool."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -94,54 +86,33 @@ class TestSpawnerSessionIdPopulation:
 
         fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000042")
 
+        # Success
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
         ):
             mock_create.return_value = fake_session_id
-            adapter = MockAdapter(result_text="ok")
-            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter(result_text="ok")
+            ).trigger("test", "tick")
+        assert result.session_id == fake_session_id and result.success is True
 
-            result = await spawner.trigger("test", "tick")
-
-        assert result.session_id == fake_session_id
-        assert result.success is True
-
-    async def test_session_id_set_on_error(self, tmp_path: Path):
-        """On failed invocation with a pool, SpawnerResult.session_id is still set."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-        mock_pool = AsyncMock()
-
-        fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000043")
-
+        # Error
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
         ):
-            mock_create.return_value = fake_session_id
-            adapter = MockAdapter(error="boom")
-            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000043")
+            result2 = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter(error="boom")
+            ).trigger("test", "tick")
+        assert result2.session_id is not None and result2.success is False
 
-            result = await spawner.trigger("test", "tick")
-
-        assert result.session_id == fake_session_id
-        assert result.success is False
-
-    async def test_session_id_none_without_pool(self, tmp_path: Path):
-        """Without a pool, session_id remains None."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(result_text="no pool")
-        spawner = Spawner(config=config, config_dir=config_dir, pool=None, runtime=adapter)
-
-        result = await spawner.trigger("test", "tick")
-
-        assert result.session_id is None
-        assert result.success is True
+        # No pool
+        result3 = await Spawner(
+            config=config, config_dir=config_dir, pool=None, runtime=MockAdapter(result_text="ok")
+        ).trigger("test", "tick")
+        assert result3.session_id is None and result3.success is True
 
 
 # ---------------------------------------------------------------------------

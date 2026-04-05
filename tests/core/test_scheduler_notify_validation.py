@@ -26,103 +26,51 @@ pytestmark = [
 class TestCheckNotifyReference:
     """Unit tests for the _check_notify_reference helper."""
 
-    def test_no_warning_when_prompt_contains_notify(self, caplog):
-        """No warning when 'notify' appears in the prompt text."""
+    def test_notify_reference_behavior(self, tmp_path, caplog):
+        """No warning when notify present (case-insensitive); warning with task name when absent;
+        skill with notify suppresses warning; skill without notify doesn't; missing dir is safe."""
+        # notify present: no warning
         with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="daily-report",
-                prompt="Summarize and then call notify() to deliver it.",
-                skills_dir=None,
-            )
+            _check_notify_reference(task_name="report", prompt="Call notify() to send.", skills_dir=None)
         assert "does not reference notify" not in caplog.text
 
-    def test_no_warning_when_prompt_contains_notify_uppercase(self, caplog):
-        """Case-insensitive match: NOTIFY should suppress the warning."""
+        # NOTIFY case-insensitive: no warning
+        caplog.clear()
         with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="task",
-                prompt="Call NOTIFY() when done.",
-                skills_dir=None,
-            )
+            _check_notify_reference(task_name="task", prompt="Call NOTIFY() when done.", skills_dir=None)
         assert "does not reference notify" not in caplog.text
 
-    def test_warning_when_prompt_missing_notify(self, caplog):
-        """Warning is emitted when 'notify' is absent from prompt and no skills provided."""
+        # notify absent: warning with task name
+        caplog.clear()
         with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="cleanup-task",
-                prompt="Delete old temp files.",
-                skills_dir=None,
-            )
+            _check_notify_reference(task_name="cleanup-task", prompt="Delete old temp files.", skills_dir=None)
         assert "does not reference notify" in caplog.text
         assert "cleanup-task" in caplog.text
 
-    def test_warning_includes_task_name(self, caplog):
-        """The warning message includes the task name for easy identification."""
-        with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="my-special-task",
-                prompt="Run some background maintenance.",
-                skills_dir=None,
-            )
-        assert "my-special-task" in caplog.text
-
-    def test_no_warning_when_skill_contains_notify(self, tmp_path, caplog):
-        """No warning when a skill's SKILL.md contains 'notify'."""
+        # Skill WITH notify suppresses warning
         skills_dir = tmp_path / "skills"
-        skill_dir = skills_dir / "daily-digest"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "# Daily Digest\nAfter composing, call notify() to send it.",
-            encoding="utf-8",
-        )
-
+        skill1 = skills_dir / "daily-digest"
+        skill1.mkdir(parents=True)
+        (skill1 / "SKILL.md").write_text("# Daily Digest\nCall notify() to send it.", encoding="utf-8")
+        caplog.clear()
         with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="digest",
-                prompt="Run the daily-digest skill.",
-                skills_dir=skills_dir,
-            )
+            _check_notify_reference(task_name="digest", prompt="Run the daily-digest skill.", skills_dir=skills_dir)
         assert "does not reference notify" not in caplog.text
 
-    def test_warning_when_skill_does_not_contain_notify(self, tmp_path, caplog):
-        """Warning emitted when skill SKILL.md exists but lacks 'notify'."""
-        skills_dir = tmp_path / "skills"
-        skill_dir = skills_dir / "log-archiver"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "# Log Archiver\nCompress and move old log files.",
-            encoding="utf-8",
-        )
-
+        # Skill WITHOUT notify does not suppress warning
+        skill2 = skills_dir / "log-archiver"
+        skill2.mkdir(parents=True)
+        (skill2 / "SKILL.md").write_text("# Log Archiver\nCompress old logs.", encoding="utf-8")
+        caplog.clear()
         with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="archive-logs",
-                prompt="Run the log-archiver skill.",
-                skills_dir=skills_dir,
-            )
+            _check_notify_reference(task_name="archive-logs", prompt="Run the log-archiver skill.", skills_dir=skills_dir)
         assert "does not reference notify" in caplog.text
 
-    def test_warning_when_skills_dir_is_missing(self, tmp_path, caplog):
-        """Missing skills dir does not raise; warning is still emitted when prompt lacks notify."""
+        # Missing skills dir does not raise; warning still emitted
+        caplog.clear()
         with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="task",
-                prompt="Run some-skill to do the work.",
-                skills_dir=tmp_path / "nonexistent-skills",
-            )
-        # Warning about missing notify should still be emitted (prompt has no 'notify')
+            _check_notify_reference(task_name="task", prompt="Run some-skill.", skills_dir=tmp_path / "nonexistent")
         assert "does not reference notify" in caplog.text
-
-    def test_no_warning_skills_dir_none_prompt_with_notify(self, caplog):
-        """When skills_dir is None and prompt has notify, no warning."""
-        with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-            _check_notify_reference(
-                task_name="report",
-                prompt="Compose summary. notify(channel='telegram', intent='send').",
-                skills_dir=None,
-            )
-        assert "does not reference notify" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

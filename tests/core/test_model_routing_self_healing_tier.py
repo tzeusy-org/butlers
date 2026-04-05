@@ -28,28 +28,13 @@ docker_available = shutil.which("docker") is not None
 
 
 @pytest.mark.unit
-def test_complexity_self_healing_exists() -> None:
-    """Complexity.SELF_HEALING must exist and equal the string 'self_healing'."""
+def test_complexity_self_healing() -> None:
+    """SELF_HEALING tier exists, parses from string, enum has all tiers, differs from DISCRETION."""
     assert Complexity.SELF_HEALING == "self_healing"
     assert Complexity.SELF_HEALING.value == "self_healing"
-
-
-@pytest.mark.unit
-def test_complexity_self_healing_from_string() -> None:
-    """Complexity('self_healing') must resolve to Complexity.SELF_HEALING."""
     assert Complexity("self_healing") is Complexity.SELF_HEALING
-
-
-@pytest.mark.unit
-def test_complexity_enum_has_all_tiers() -> None:
-    """All six tiers (including self_healing) must be present in the enum."""
     values = {m.value for m in Complexity}
     assert values == {"trivial", "medium", "high", "extra_high", "discretion", "self_healing"}
-
-
-@pytest.mark.unit
-def test_complexity_self_healing_not_equal_to_discretion() -> None:
-    """SELF_HEALING and DISCRETION are distinct tiers."""
     assert Complexity.SELF_HEALING != Complexity.DISCRETION
     assert Complexity.SELF_HEALING.value != Complexity.DISCRETION.value
 

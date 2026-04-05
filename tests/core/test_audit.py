@@ -13,10 +13,12 @@ pytestmark = pytest.mark.unit
 
 
 class TestWriteAuditEntry:
-    async def test_inserts_correct_row(self):
+    async def test_audit_entry_fields_and_serialization(self):
+        """Correct SQL/fields on success; serializes complex request_summary; error result recorded."""
         pool = MagicMock()
         pool.execute = AsyncMock()
 
+        # Basic success case
         await write_audit_entry(
             pool,
             butler="my-butler",
@@ -25,72 +27,40 @@ class TestWriteAuditEntry:
             result="success",
             error=None,
         )
-
         pool.execute.assert_awaited_once()
-        args = pool.execute.call_args
-        positional = args[0]
-        # SQL statement
-        assert "INSERT INTO dashboard_audit_log" in positional[0]
-        # butler
-        assert positional[1] == "my-butler"
-        # operation
-        assert positional[2] == "session"
-        # request_summary is JSON string
-        summary = json.loads(positional[3])
-        assert summary == {"session_id": "abc", "trigger_source": "tick"}
-        # result
-        assert positional[4] == "success"
-        # error
-        assert positional[5] is None
-        # user_context is empty JSON object
-        assert json.loads(positional[6]) == {}
+        args = pool.execute.call_args[0]
+        assert "INSERT INTO dashboard_audit_log" in args[0]
+        assert args[1] == "my-butler"
+        assert args[2] == "session"
+        assert json.loads(args[3]) == {"session_id": "abc", "trigger_source": "tick"}
+        assert args[4] == "success"
+        assert args[5] is None
+        assert json.loads(args[6]) == {}
 
-    async def test_noop_when_pool_is_none(self):
-        """Should silently return without error when pool is None."""
+        # Complex nested summary
+        pool.execute.reset_mock()
+        complex_summary = {"nested": {"list": [1, 2, 3]}, "flag": True}
+        await write_audit_entry(pool, butler="b", operation="session", request_summary=complex_summary)
+        assert json.loads(pool.execute.call_args[0][3]) == complex_summary
+
+        # Error result
+        pool.execute.reset_mock()
         await write_audit_entry(
-            None,
-            butler="any",
-            operation="session",
-            request_summary={},
+            pool, butler="b", operation="session", request_summary={},
+            result="error", error="RuntimeError: boom",
         )
+        err_args = pool.execute.call_args[0]
+        assert err_args[4] == "error"
+        assert err_args[5] == "RuntimeError: boom"
 
-    async def test_swallows_db_errors(self):
-        """Should log a warning but not raise when the INSERT fails."""
+    async def test_noop_and_swallows_errors(self):
+        """Silently returns when pool=None; swallows DB errors with a warning."""
+        # pool=None → no raise
+        await write_audit_entry(None, butler="any", operation="session", request_summary={})
+
+        # DB error → warning, no raise
         pool = MagicMock()
         pool.execute = AsyncMock(side_effect=RuntimeError("connection lost"))
-
         with patch("butlers.core.audit.logger") as mock_logger:
-            await write_audit_entry(
-                pool,
-                butler="my-butler",
-                operation="session",
-                request_summary={"key": "value"},
-            )
+            await write_audit_entry(pool, butler="my-butler", operation="session", request_summary={"key": "value"})
             mock_logger.warning.assert_called_once()
-
-    async def test_serializes_request_summary_as_json(self):
-        pool = MagicMock()
-        pool.execute = AsyncMock()
-
-        summary = {"nested": {"list": [1, 2, 3]}, "flag": True}
-        await write_audit_entry(pool, butler="b", operation="session", request_summary=summary)
-
-        args = pool.execute.call_args[0]
-        assert json.loads(args[3]) == summary
-
-    async def test_error_result(self):
-        pool = MagicMock()
-        pool.execute = AsyncMock()
-
-        await write_audit_entry(
-            pool,
-            butler="b",
-            operation="session",
-            request_summary={},
-            result="error",
-            error="RuntimeError: boom",
-        )
-
-        args = pool.execute.call_args[0]
-        assert args[4] == "error"
-        assert args[5] == "RuntimeError: boom"

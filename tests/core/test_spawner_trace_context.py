@@ -104,52 +104,24 @@ class ContextCapturingAdapter(RuntimeAdapter):
 class TestSpawnerSessionContext:
     """Spawner sets/clears active session context around runtime invocation."""
 
-    async def test_session_context_set_during_invocation(self, tmp_path: Path):
-        """Adapter sees a non-None active session context during invoke."""
+    async def test_session_context_lifecycle(self, tmp_path: Path):
+        """Context set during invoke, cleared after success and after error."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
+
+        # Success: context set during invoke, cleared after
         adapter = ContextCapturingAdapter()
-        spawner = Spawner(
-            config=_make_config(),
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
+        spawner = Spawner(config=_make_config(), config_dir=config_dir, runtime=adapter)
         await spawner.trigger(prompt="hello", trigger_source="test")
-
         assert adapter.captured_context is not None
         assert adapter.captured_context != "NOT_CALLED"
-
-    async def test_session_context_cleared_after_invocation(self, tmp_path: Path):
-        """After trigger returns, the active session context is None."""
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        adapter = ContextCapturingAdapter()
-        spawner = Spawner(
-            config=_make_config(),
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        await spawner.trigger(prompt="hello", trigger_source="test")
-
         assert get_active_session_context() is None
 
-    async def test_session_context_cleared_on_error(self, tmp_path: Path):
-        """Even when the adapter raises, session context is cleaned up."""
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        adapter = ContextCapturingAdapter(error="adapter exploded")
-        spawner = Spawner(
-            config=_make_config(),
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger(prompt="hello", trigger_source="test")
-
+        # Error: context still cleared, adapter saw it before raising
+        adapter2 = ContextCapturingAdapter(error="adapter exploded")
+        spawner2 = Spawner(config=_make_config(), config_dir=config_dir, runtime=adapter2)
+        result = await spawner2.trigger(prompt="hello", trigger_source="test")
         assert result.success is False
         assert get_active_session_context() is None
-        # Adapter did see the context before raising
-        assert adapter.captured_context is not None
-        assert adapter.captured_context != "NOT_CALLED"
+        assert adapter2.captured_context is not None
+        assert adapter2.captured_context != "NOT_CALLED"

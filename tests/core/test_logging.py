@@ -56,31 +56,26 @@ def _reset_logging():
 
 
 class TestButlerContext:
-    def test_set_and_get(self):
+    def test_set_get_and_inject(self):
+        """set/get ContextVar; add_butler_context injects name or None."""
+        assert get_butler_context() is None
+
         set_butler_context("health")
         assert get_butler_context() == "health"
 
-    def test_default_is_none(self):
-        assert get_butler_context() is None
-
-
-# ---------------------------------------------------------------------------
-# add_butler_context processor
-# ---------------------------------------------------------------------------
-
-
-class TestAddButlerContext:
-    def test_injects_butler_name(self):
         set_butler_context("switchboard")
-        event_dict = {"event": "test"}
-        result = add_butler_context(None, "info", event_dict)
+        result = add_butler_context(None, "info", {"event": "test"})
         assert result["butler"] == "switchboard"
 
-    def test_handles_unset_context(self):
-        """ContextVar not set — butler=None, no crash."""
-        event_dict = {"event": "test"}
-        result = add_butler_context(None, "info", event_dict)
-        assert result["butler"] is None
+        # Unset context — butler=None, no crash
+        from butlers.core.logging import _butler_context
+
+        tok = _butler_context.set(None)
+        try:
+            result2 = add_butler_context(None, "info", {"event": "test"})
+            assert result2["butler"] is None
+        finally:
+            _butler_context.reset(tok)
 
 
 # ---------------------------------------------------------------------------
@@ -89,26 +84,22 @@ class TestAddButlerContext:
 
 
 class TestAddOtelContext:
-    def test_zeroed_ids_when_no_span(self):
-        """No active OTel span — injects zeroed trace_id and span_id."""
-        event_dict = {"event": "test"}
-        result = add_otel_context(None, "info", event_dict)
-        assert result["trace_id"] == "0" * 32
-        assert result["span_id"] == "0" * 16
+    def test_otel_context_injection(self):
+        """No active span injects zeroed IDs; active span injects real hex IDs."""
+        result_no_span = add_otel_context(None, "info", {"event": "test"})
+        assert result_no_span["trace_id"] == "0" * 32
+        assert result_no_span["span_id"] == "0" * 16
 
-    def test_real_ids_when_span_active(self):
-        """Active OTel span — injects real hex trace_id and span_id."""
         from opentelemetry.sdk.trace import TracerProvider
 
         provider = TracerProvider()
         tracer = provider.get_tracer("test")
         with tracer.start_as_current_span("test-span"):
-            event_dict = {"event": "test"}
-            result = add_otel_context(None, "info", event_dict)
-            assert result["trace_id"] != "0" * 32
-            assert result["span_id"] != "0" * 16
-            assert len(result["trace_id"]) == 32
-            assert len(result["span_id"]) == 16
+            result_span = add_otel_context(None, "info", {"event": "test"})
+            assert result_span["trace_id"] != "0" * 32
+            assert result_span["span_id"] != "0" * 16
+            assert len(result_span["trace_id"]) == 32
+            assert len(result_span["span_id"]) == 16
         provider.shutdown()
 
 
@@ -118,41 +109,32 @@ class TestAddOtelContext:
 
 
 class TestConfigureLogging:
-    def test_text_format_installs_console_renderer(self):
-        configure_logging(fmt="text")
-        root = logging.getLogger()
-        assert len(root.handlers) >= 1
-        handler = root.handlers[0]
-        formatter = handler.formatter
-        assert isinstance(formatter, structlog.stdlib.ProcessorFormatter)
-        # The last processor should be ConsoleRenderer
-        last_proc = formatter.processors[-1]
-        assert isinstance(last_proc, structlog.dev.ConsoleRenderer)
-
-    def test_json_format_installs_json_renderer(self):
-        configure_logging(fmt="json")
-        root = logging.getLogger()
-        assert len(root.handlers) >= 1
-        handler = root.handlers[0]
-        formatter = handler.formatter
-        assert isinstance(formatter, structlog.stdlib.ProcessorFormatter)
-        last_proc = formatter.processors[-1]
-        assert isinstance(last_proc, structlog.processors.JSONRenderer)
-
-    def test_sets_butler_context(self):
-        configure_logging(butler_name="health")
-        assert get_butler_context() == "health"
-
-    def test_noise_loggers_suppressed(self):
-        configure_logging()
-        assert logging.getLogger("httpx").level >= logging.WARNING
-        assert logging.getLogger("httpcore").level >= logging.WARNING
-        assert logging.getLogger("uvicorn.access").level >= logging.WARNING
-
-    def test_log_level_applied(self):
-        configure_logging(level="DEBUG")
+    def test_configure_logging_behavior_and_formats(self):
+        """Text renderer, level, butler context, noise suppression; json format installs JSONRenderer."""
+        configure_logging(fmt="text", butler_name="health", level="DEBUG")
         root = logging.getLogger()
         assert root.level == logging.DEBUG
+        assert get_butler_context() == "health"
+        assert len(root.handlers) >= 1
+        formatter = root.handlers[0].formatter
+        assert isinstance(formatter, structlog.stdlib.ProcessorFormatter)
+        assert isinstance(formatter.processors[-1], structlog.dev.ConsoleRenderer)
+        assert logging.getLogger("httpx").level >= logging.WARNING
+        assert logging.getLogger("uvicorn.access").level >= logging.WARNING
+
+        # Reset before testing JSON format
+        for handler in list(root.handlers):
+            handler.close()
+        root.handlers.clear()
+        root.filters.clear()
+        root.setLevel(logging.WARNING)
+
+        configure_logging(fmt="json")
+        root2 = logging.getLogger()
+        assert len(root2.handlers) >= 1
+        formatter2 = root2.handlers[0].formatter
+        assert isinstance(formatter2, structlog.stdlib.ProcessorFormatter)
+        assert isinstance(formatter2.processors[-1], structlog.processors.JSONRenderer)
 
 
 # ---------------------------------------------------------------------------
@@ -161,17 +143,15 @@ class TestConfigureLogging:
 
 
 class TestResolveLogRoot:
-    def test_defaults_to_logs_when_unset(self, monkeypatch: pytest.MonkeyPatch):
+    def test_log_root_resolution(self, monkeypatch: pytest.MonkeyPatch):
+        """Default=logs; DISABLE_FILE_LOGGING=1 disables; BUTLERS_LOG_ROOT=none disables."""
         monkeypatch.delenv("BUTLERS_LOG_ROOT", raising=False)
         monkeypatch.delenv("BUTLERS_DISABLE_FILE_LOGGING", raising=False)
         assert resolve_log_root(None) == Path("logs")
 
-    def test_disable_file_logging_env_wins(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("BUTLERS_LOG_ROOT", raising=False)
         monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "1")
         assert resolve_log_root("/tmp/ignored") is None
 
-    def test_log_root_env_can_disable_with_sentinel(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("BUTLERS_LOG_ROOT", "none")
         monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "0")
         assert resolve_log_root("/tmp/ignored") is None
@@ -183,52 +163,37 @@ class TestResolveLogRoot:
 
 
 class TestLogDirectoryStructure:
-    def test_creates_subdirectories(self, tmp_path: Path):
-        """log_root creates butlers/, uvicorn/, connectors/ subdirs."""
-        configure_logging(log_root=tmp_path, butler_name="testbot")
+    def test_directory_structure_and_files(self, tmp_path: Path):
+        """Creates subdirs; butler/uvicorn logs land in correct dirs; file is always JSON."""
+        configure_logging(fmt="text", log_root=tmp_path, butler_name="health")
         assert (tmp_path / "butlers").is_dir()
         assert (tmp_path / "uvicorn").is_dir()
         assert (tmp_path / "connectors").is_dir()
 
-    def test_butler_log_file_created(self, tmp_path: Path):
-        """Butler log lands in butlers/ subdir."""
-        configure_logging(log_root=tmp_path, butler_name="health")
         root = logging.getLogger()
         file_handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) == 1
         assert str(file_handlers[0].baseFilename).endswith("butlers/health.log")
-
-    def test_uvicorn_log_file_created(self, tmp_path: Path):
-        """Noise loggers write to uvicorn/ subdir."""
-        configure_logging(log_root=tmp_path, butler_name="health")
-        uvicorn_logger = logging.getLogger("uvicorn.access")
-        file_handlers = [h for h in uvicorn_logger.handlers if isinstance(h, logging.FileHandler)]
-        assert len(file_handlers) >= 1
-        assert str(file_handlers[0].baseFilename).endswith("uvicorn/health.log")
-
-    def test_file_handler_always_json(self, tmp_path: Path):
-        """File handler uses JSON renderer regardless of console format."""
-        configure_logging(fmt="text", log_root=tmp_path, butler_name="testbot")
-        root = logging.getLogger()
-        file_handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+        # File handler always JSON regardless of console format
         formatter = file_handlers[0].formatter
         assert isinstance(formatter, structlog.stdlib.ProcessorFormatter)
-        last_proc = formatter.processors[-1]
-        assert isinstance(last_proc, structlog.processors.JSONRenderer)
+        assert isinstance(formatter.processors[-1], structlog.processors.JSONRenderer)
 
-    def test_nested_log_root_created(self, tmp_path: Path):
-        """log_root with nested path is created if missing."""
+        uvicorn_logger = logging.getLogger("uvicorn.access")
+        uv_handlers = [h for h in uvicorn_logger.handlers if isinstance(h, logging.FileHandler)]
+        assert len(uv_handlers) >= 1
+        assert str(uv_handlers[0].baseFilename).endswith("uvicorn/health.log")
+
+    def test_nested_log_root_and_json_output(self, tmp_path: Path):
+        """Nested path auto-created; log file writes parseable JSON."""
         log_dir = tmp_path / "deep" / "nested"
-        configure_logging(log_root=log_dir, butler_name="testbot")
+        configure_logging(fmt="json", log_root=log_dir, butler_name="jsontest")
         assert (log_dir / "butlers").is_dir()
 
-    def test_json_output_is_valid_json(self, tmp_path: Path):
-        """Butler log file writes parseable JSON."""
-        configure_logging(fmt="json", log_root=tmp_path, butler_name="jsontest")
         test_logger = logging.getLogger("butlers.test")
         test_logger.info("hello structured world")
 
-        log_file = tmp_path / "butlers" / "jsontest.log"
+        log_file = log_dir / "butlers" / "jsontest.log"
         assert log_file.exists()
         content = log_file.read_text().strip()
         if content:
@@ -258,98 +223,64 @@ class TestCredentialRedactionFilter:
         )
         return record
 
-    def test_telegram_token_in_url_is_redacted(self):
-        """Telegram bot token in URL path is replaced with [REDACTED]."""
+    def test_credential_redaction(self):
+        """Telegram token, Bearer token redacted; clean messages pass through."""
         f = CredentialRedactionFilter()
-        record = self._make_record(
+
+        # Telegram token
+        r1 = self._make_record(
             "HTTP Request: GET https://api.telegram.org/bot8448271413:AAHelloWorldToken_xyz/getUpdates"
         )
-        f.filter(record)
-        assert "[REDACTED]" in record.msg
-        assert "8448271413" not in record.msg
-        assert "AAHelloWorldToken_xyz" not in record.msg
+        f.filter(r1)
+        assert "[REDACTED]" in r1.msg
+        assert "8448271413" not in r1.msg
 
-    def test_bearer_token_is_redacted(self):
-        """Bearer token in Authorization header is scrubbed."""
-        f = CredentialRedactionFilter()
-        record = self._make_record(
-            "Sending request with Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc"
-        )
-        f.filter(record)
-        assert "[REDACTED]" in record.msg
-        assert "eyJhbGciOiJSUzI1NiJ9" not in record.msg
+        # Bearer token
+        r2 = self._make_record("Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc")
+        f.filter(r2)
+        assert "[REDACTED]" in r2.msg
+        assert "eyJhbGciOiJSUzI1NiJ9" not in r2.msg
 
-    def test_clean_message_unchanged(self):
-        """Messages with no credential patterns pass through unmodified."""
-        f = CredentialRedactionFilter()
-        original = "Normal log message without credentials"
-        record = self._make_record(original)
-        f.filter(record)
-        assert record.msg == original
-
-    def test_filter_always_returns_true(self):
-        """Filter never drops records — always returns True."""
-        f = CredentialRedactionFilter()
-        record = self._make_record("anything")
-        assert f.filter(record) is True
-
-    def test_args_cleared_on_redaction(self):
-        """When redaction occurs, args are cleared to prevent re-interpolation."""
-        f = CredentialRedactionFilter()
-        record = self._make_record(
-            "URL: https://api.telegram.org/bot123:TOKEN_abc/sendMessage extra=%s",
-            "value",
-        )
-        f.filter(record)
-        assert record.args == ()
-        assert "[REDACTED]" in record.msg
-
-    def test_args_preserved_when_no_redaction(self):
-        """When no redaction occurs, args are left intact."""
-        f = CredentialRedactionFilter()
-        record = self._make_record("Status: %s", "ok")
-        f.filter(record)
-        assert record.args == ("ok",)
-
-    def test_multiple_patterns_in_single_message(self):
-        """Both Telegram token and Bearer token in same message are both redacted."""
-        f = CredentialRedactionFilter()
-        record = self._make_record(
+        # Both patterns + args cleared on redaction
+        r3 = self._make_record(
             "GET https://api.telegram.org/bot999:SecretTok_en/getMe Authorization: Bearer abc123"
         )
-        f.filter(record)
-        # Token path redacted
-        assert "bot999:SecretTok_en" not in record.msg
-        # Bearer redacted
-        assert "abc123" not in record.msg
+        f.filter(r3)
+        assert "bot999:SecretTok_en" not in r3.msg
+        assert "abc123" not in r3.msg
 
-    def test_configure_logging_attaches_redaction_filter(self):
-        """configure_logging() attaches CredentialRedactionFilter to root logger."""
+        # Args cleared on redaction; preserved when no redaction
+        r4 = self._make_record(
+            "URL: https://api.telegram.org/bot123:TOKEN_abc/sendMessage extra=%s", "value"
+        )
+        f.filter(r4)
+        assert r4.args == ()
+
+        r5 = self._make_record("Status: %s", "ok")
+        f.filter(r5)
+        assert r5.args == ("ok",)
+
+        # Clean message unchanged; filter always returns True
+        original = "Normal log message without credentials"
+        r6 = self._make_record(original)
+        assert f.filter(r6) is True
+        assert r6.msg == original
+
+    def test_configure_logging_attaches_and_deduplicates_filter(self):
+        """configure_logging() attaches CredentialRedactionFilter; calling twice yields only one; httpx suppressed."""
         configure_logging()
         root = logging.getLogger()
         redaction_filters = [f for f in root.filters if isinstance(f, CredentialRedactionFilter)]
         assert len(redaction_filters) == 1
 
-    def test_configure_logging_called_twice_has_single_filter(self):
-        """Calling configure_logging() twice does not accumulate duplicate filters."""
+        # Calling again must not duplicate the filter
         configure_logging()
-        configure_logging()
-        root = logging.getLogger()
-        redaction_filters = [f for f in root.filters if isinstance(f, CredentialRedactionFilter)]
-        assert len(redaction_filters) == 1
+        root2 = logging.getLogger()
+        redaction_filters2 = [f for f in root2.filters if isinstance(f, CredentialRedactionFilter)]
+        assert len(redaction_filters2) == 1
 
-    def test_httpx_url_with_token_is_suppressed_or_redacted(self):
-        """httpx logger set to WARNING means INFO token URLs never reach handlers.
-
-        This test verifies that after configure_logging(), a simulated httpx
-        INFO record with a bot token in the URL would be redacted if it were
-        to pass the level gate (defense-in-depth).
-        """
-        configure_logging()
-        # Verify httpx is suppressed to WARNING (primary defense)
+        # httpx suppressed and redaction filter provides secondary defense
         assert logging.getLogger("httpx").level >= logging.WARNING
-
-        # Verify the redaction filter would also scrub the token (secondary defense)
         f = CredentialRedactionFilter()
         record = self._make_record(
             "HTTP Request: GET https://api.telegram.org/bot8448271413:ATokenHere123/getUpdates"

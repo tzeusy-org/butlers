@@ -14,7 +14,9 @@ from butlers.core.tool_call_capture import (
 )
 
 
-def test_capture_and_consume_runtime_session_tool_calls():
+def test_capture_consume_ignored_and_outcome():
+    """Capture/consume works; ignored without session; outcome/result/error persisted."""
+    # Capture and consume
     ensure_runtime_session_capture("sess-1")
     token = set_current_runtime_session_id("sess-1")
     try:
@@ -27,24 +29,15 @@ def test_capture_and_consume_runtime_session_tool_calls():
         reset_current_runtime_session_id(token)
 
     calls = consume_runtime_session_tool_calls("sess-1")
-    assert calls == [
-        {
-            "name": "route_to_butler",
-            "module": "core",
-            "input": {"butler": "relationship"},
-        }
-    ]
+    assert calls == [{"name": "route_to_butler", "module": "core", "input": {"butler": "relationship"}}]
 
-
-def test_capture_without_runtime_session_is_ignored():
+    # Ignored without session
     capture_tool_call(tool_name="route_to_butler", module_name="core", input_payload={})
-    calls = consume_runtime_session_tool_calls("unknown-session")
-    assert calls == []
+    assert consume_runtime_session_tool_calls("unknown-session") == []
 
-
-def test_capture_persists_outcome_result_and_error():
+    # Outcome/result/error persisted
     ensure_runtime_session_capture("sess-2")
-    token = set_current_runtime_session_id("sess-2")
+    token2 = set_current_runtime_session_id("sess-2")
     try:
         capture_tool_call(
             tool_name="route_to_butler",
@@ -55,10 +48,10 @@ def test_capture_persists_outcome_result_and_error():
             error="RuntimeError: routing failed",
         )
     finally:
-        reset_current_runtime_session_id(token)
+        reset_current_runtime_session_id(token2)
 
-    calls = consume_runtime_session_tool_calls("sess-2")
-    assert calls == [
+    calls2 = consume_runtime_session_tool_calls("sess-2")
+    assert calls2 == [
         {
             "name": "route_to_butler",
             "module": "core",

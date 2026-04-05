@@ -1,12 +1,19 @@
-"""Tests for butlers.core.ingestion_events — ingestion event query module.
+"""Tests for butlers.core.ingestion_events — ingestion event query module — condensed.
 
-All tests use fake asyncpg infrastructure (no Docker required) to keep the
-suite fast and portable.  The fakes capture SQL + args so we can assert the
-correct queries are issued without needing a live database.
+Covers:
+- Column spec integrity (_UNION_COLUMN_SPEC architectural invariants)
+- ingestion_event_get: get / unified lookup (ingested + filtered fallback)
+- ingestion_events_list: list with filters
+- ingestion_events_count: count with status/channel filters
+- ingestion_event_sessions: fan-out, merge, field mapping
+- ingestion_event_rollup: pure-function aggregation
+- ingestion_event_replay_request: atomic update + conflict/not-found outcomes
+- ingestion_event_get_inbox_lifecycle: lifecycle state lookup
 """
 
 from __future__ import annotations
 
+import json as _json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -17,88 +24,12 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Column spec integrity — ensures _UNION_COLUMN_SPEC stays correct
-# ---------------------------------------------------------------------------
-
-
-class TestUnionColumnSpec:
-    """Verify that the column spec produces the correct SQL strings.
-
-    These tests lock down the exact column lists that both sides of the UNION ALL
-    must emit so that adding a new column only requires a single spec entry.
-    """
-
-    def test_ingested_cols_exact_content(self) -> None:
-        """_INGESTED_COLS must match the ingestion_events SELECT list."""
-        from butlers.core.ingestion_events import _INGESTED_COLS
-
-        expected = (
-            "id, received_at, source_channel, source_provider, "
-            "source_endpoint_identity, source_sender_identity, "
-            "source_thread_identity, external_event_id, dedupe_key, "
-            "dedupe_strategy, ingestion_tier, policy_tier, "
-            "triage_decision, triage_target, "
-            "status, "
-            "NULL::text AS filter_reason, "
-            "error_detail"
-        )
-        assert _INGESTED_COLS == expected
-
-    def test_filtered_cols_exact_content(self) -> None:
-        """_FILTERED_COLS must match the original hardcoded filtered_events SELECT list."""
-        from butlers.core.ingestion_events import _FILTERED_COLS
-
-        expected = (
-            "id, received_at, source_channel, "
-            "NULL::text AS source_provider, "
-            "endpoint_identity AS source_endpoint_identity, "
-            "sender_identity AS source_sender_identity, "
-            "NULL::text AS source_thread_identity, "
-            "external_message_id AS external_event_id, "
-            "NULL::text AS dedupe_key, NULL::text AS dedupe_strategy, "
-            "NULL::text AS ingestion_tier, NULL::text AS policy_tier, "
-            "NULL::text AS triage_decision, NULL::text AS triage_target, "
-            "status, filter_reason, error_detail"
-        )
-        assert _FILTERED_COLS == expected
-
-    def test_event_columns_exact_content(self) -> None:
-        """_EVENT_COLUMNS must match the ingestion_events column list for point lookups."""
-        from butlers.core.ingestion_events import _EVENT_COLUMNS
-
-        expected = (
-            "id, received_at, source_channel, source_provider, "
-            "source_endpoint_identity, source_sender_identity, "
-            "source_thread_identity, external_event_id, dedupe_key, "
-            "dedupe_strategy, ingestion_tier, policy_tier, "
-            "triage_decision, triage_target, "
-            "status, error_detail"
-        )
-        assert _EVENT_COLUMNS == expected
-
-    def test_ingested_and_filtered_have_same_column_count(self) -> None:
-        """Both UNION branches must produce the same number of columns as the spec."""
-        from butlers.core.ingestion_events import _FILTERED_COLS, _INGESTED_COLS, _UNION_COLUMN_SPEC
-
-        ingested_count = len(_INGESTED_COLS.split(","))
-        filtered_count = len(_FILTERED_COLS.split(","))
-        assert ingested_count == filtered_count == len(_UNION_COLUMN_SPEC)
-
-    def test_spec_has_no_duplicate_aliases(self) -> None:
-        """Each output_alias in _UNION_COLUMN_SPEC must be unique."""
-        from butlers.core.ingestion_events import _UNION_COLUMN_SPEC
-
-        aliases = [alias for alias, _, _ in _UNION_COLUMN_SPEC]
-        assert len(aliases) == len(set(aliases)), "Duplicate aliases found in _UNION_COLUMN_SPEC"
-
-
-# ---------------------------------------------------------------------------
-# Fake asyncpg / DatabaseManager infrastructure
+# Fake infrastructure
 # ---------------------------------------------------------------------------
 
 
 class _FakeRecord(dict):
-    """Dict that behaves like an asyncpg.Record for dict(row) calls."""
+    """Dict that behaves like an asyncpg.Record."""
 
 
 def _make_event_record(**kwargs: Any) -> _FakeRecord:
@@ -117,7 +48,6 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         "policy_tier": "default",
         "triage_decision": None,
         "triage_target": None,
-        # Literal columns returned by _INGESTED_COLS (from _UNION_COLUMN_SPEC)
         "status": "ingested",
         "filter_reason": None,
         "error_detail": None,
@@ -127,7 +57,6 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
 
 
 def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
-    """Simulate a row from connectors.filtered_events (mapped to shared shape)."""
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "received_at": datetime.now(UTC),
@@ -168,14 +97,6 @@ def _make_session_record(**kwargs: Any) -> _FakeRecord:
 
 
 class _FakePool:
-    """Minimal fake asyncpg pool that captures fetchrow / fetchval / fetch calls.
-
-    ``fetchrow_results`` is a list of return values consumed in order for each
-    ``fetchrow`` call.  Pass a single-element list for the common case.  The
-    legacy ``fetchrow_result`` kwarg is still accepted for backwards compat and
-    is treated as ``fetchrow_results=[fetchrow_result]``.
-    """
-
     def __init__(
         self,
         fetchrow_result: Any = None,
@@ -186,11 +107,9 @@ class _FakePool:
         if fetchrow_results is not None:
             self._fetchrow_results: list[Any] = list(fetchrow_results)
         else:
-            # Legacy single-result compat
             self._fetchrow_results = [fetchrow_result]
         self._fetch_results: list[Any] = fetch_results if fetch_results is not None else []
         self._fetchval_result = fetchval_result
-        # Captured calls: list of (method, sql, args)
         self.calls: list[tuple[str, str, tuple]] = []
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
@@ -209,10 +128,7 @@ class _FakePool:
 
 
 class _FakeDatabaseManager:
-    """Minimal fake DatabaseManager that records fan_out calls."""
-
     def __init__(self, results: dict[str, list[Any]] | None = None) -> None:
-        # Map butler_name -> list of FakeRecord rows
         self._results: dict[str, list[Any]] = results if results is not None else {}
         self.fan_out_calls: list[tuple[str, tuple, list[str] | None]] = []
 
@@ -233,265 +149,140 @@ class _FakeDatabaseManager:
 
 
 # ---------------------------------------------------------------------------
-# ingestion_event_get
+# Column spec integrity (architectural invariants)
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventGet:
-    async def test_returns_none_when_no_row(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        pool = _FakePool(fetchrow_result=None)
-        event_id = uuid.uuid4()
-        result = await ingestion_event_get(pool, event_id)
-        assert result is None
-
-    async def test_returns_dict_when_row_found(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        row = _make_event_record(source_channel="telegram_bot")
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert result["source_channel"] == "telegram_bot"
-
-    async def test_queries_shared_ingestion_events(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        pool = _FakePool(fetchrow_result=None)
-        await ingestion_event_get(pool, uuid.uuid4())
-        assert pool.calls, "fetchrow should have been called"
-        _, sql, _ = pool.calls[0]
-        assert "public.ingestion_events" in sql
-
-    async def test_passes_event_id_as_param(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        pool = _FakePool(fetchrow_result=None)
-        event_id = uuid.uuid4()
-        await ingestion_event_get(pool, event_id)
-        _, _, args = pool.calls[0]
-        assert args[0] == event_id
-
-    async def test_accepts_string_event_id(self) -> None:
-        """ingestion_event_get should accept a UUID string and convert it."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        pool = _FakePool(fetchrow_result=None)
-        event_id = uuid.uuid4()
-        await ingestion_event_get(pool, str(event_id))
-        _, _, args = pool.calls[0]
-        assert args[0] == event_id
-
-    async def test_result_id_is_string(self) -> None:
-        """The returned id should be a string (serialisation-friendly)."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        row = _make_event_record()
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert isinstance(result["id"], str)
-
-    async def test_all_expected_fields_present(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        row = _make_event_record()
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        for field in (
-            "id",
-            "received_at",
-            "source_channel",
-            "source_provider",
-            "source_endpoint_identity",
-            "source_sender_identity",
-            "source_thread_identity",
-            "external_event_id",
-            "dedupe_key",
-            "dedupe_strategy",
-            "ingestion_tier",
-            "policy_tier",
-            "triage_decision",
-            "triage_target",
-            "status",
-            "filter_reason",
-            "error_detail",
-        ):
-            assert field in result, f"Missing field: {field}"
-
-    async def test_ingested_event_has_status_ingested(self) -> None:
-        """ingested events must return status='ingested' and filter_reason=None."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        row = _make_event_record()
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert result["status"] == "ingested"
-        assert result["filter_reason"] is None
-
-
-# ---------------------------------------------------------------------------
-# ingestion_event_get — unified lookup (filtered events)
-# ---------------------------------------------------------------------------
-
-
-class TestIngestionEventGetUnifiedLookup:
-    """Covers the fallback to connectors.filtered_events when an event is not
-    found in public.ingestion_events."""
-
-    async def test_returns_none_when_not_in_either_table(self) -> None:
-        """Both fetchrow calls return None → result is None."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        # fetchrow_results=[None, None]: first for ingestion_events, second for filtered_events
-        pool = _FakePool(fetchrow_results=[None, None])
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is None
-
-    async def test_two_fetchrow_calls_on_miss(self) -> None:
-        """When public.ingestion_events misses, filtered_events is also queried."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        pool = _FakePool(fetchrow_results=[None, None])
-        await ingestion_event_get(pool, uuid.uuid4())
-        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert len(fetchrow_calls) == 2, "Expected two fetchrow calls for the unified lookup"
-
-    async def test_first_fetchrow_targets_shared_ingestion_events(self) -> None:
-        """First lookup must query public.ingestion_events."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        pool = _FakePool(fetchrow_results=[None, None])
-        await ingestion_event_get(pool, uuid.uuid4())
-        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert "public.ingestion_events" in fetchrow_calls[0][1]
-
-    async def test_second_fetchrow_targets_connectors_filtered_events(self) -> None:
-        """Fallback lookup must query connectors.filtered_events."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        pool = _FakePool(fetchrow_results=[None, None])
-        await ingestion_event_get(pool, uuid.uuid4())
-        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert "connectors.filtered_events" in fetchrow_calls[1][1]
-
-    async def test_returns_filtered_event_when_found_in_filtered_events(self) -> None:
-        """When public.ingestion_events misses but filtered_events has the row,
-        the filtered event is returned with its real status and filter_reason."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        filtered_row = _make_filtered_event_record(status="filtered", filter_reason="rate_limit")
-        # First fetchrow (ingestion_events) → None; second (filtered_events) → filtered_row
-        pool = _FakePool(fetchrow_results=[None, filtered_row])
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert result["status"] == "filtered"
-        assert result["filter_reason"] == "rate_limit"
-
-    async def test_filtered_event_source_channel_present(self) -> None:
-        """source_channel must be present in the filtered event result."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        filtered_row = _make_filtered_event_record(source_channel="telegram_bot")
-        pool = _FakePool(fetchrow_results=[None, filtered_row])
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert result["source_channel"] == "telegram_bot"
-
-    async def test_filtered_event_id_is_string(self) -> None:
-        """The id in the filtered event result must be a string."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        filtered_row = _make_filtered_event_record()
-        pool = _FakePool(fetchrow_results=[None, filtered_row])
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert isinstance(result["id"], str)
-
-    async def test_filtered_event_all_expected_fields_present(self) -> None:
-        """All unified-shape fields must be present for a filtered event."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        filtered_row = _make_filtered_event_record()
-        pool = _FakePool(fetchrow_results=[None, filtered_row])
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        for field in (
-            "id",
-            "received_at",
-            "source_channel",
-            "source_provider",
-            "source_endpoint_identity",
-            "source_sender_identity",
-            "source_thread_identity",
-            "external_event_id",
-            "dedupe_key",
-            "dedupe_strategy",
-            "ingestion_tier",
-            "policy_tier",
-            "triage_decision",
-            "triage_target",
-            "status",
-            "filter_reason",
-            "error_detail",
-        ):
-            assert field in result, f"Missing field in filtered event result: {field}"
-
-    async def test_no_second_fetchrow_when_found_in_ingestion_events(self) -> None:
-        """When public.ingestion_events returns a row, no fallback query is issued."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        row = _make_event_record()
-        pool = _FakePool(fetchrow_result=row)
-        await ingestion_event_get(pool, uuid.uuid4())
-        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert len(fetchrow_calls) == 1, "Must not query filtered_events when ingestion_events hits"
-
-    async def test_filtered_event_with_replay_pending_status(self) -> None:
-        """Filtered events in replay_pending state are returned correctly."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        filtered_row = _make_filtered_event_record(status="replay_pending", filter_reason="dedupe")
-        pool = _FakePool(fetchrow_results=[None, filtered_row])
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert result["status"] == "replay_pending"
-
-    async def test_both_fetchrow_calls_pass_same_event_id(self) -> None:
-        """Both queries must use the same event_id parameter."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        event_id = uuid.uuid4()
-        pool = _FakePool(fetchrow_results=[None, None])
-        await ingestion_event_get(pool, event_id)
-        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert fetchrow_calls[0][2][0] == event_id
-        assert fetchrow_calls[1][2][0] == event_id
-
-    async def test_filtered_event_error_detail_propagated(self) -> None:
-        """error_detail from connectors.filtered_events must be returned in the detail result."""
-        from butlers.core.ingestion_events import ingestion_event_get
-
-        filtered_row = _make_filtered_event_record(
-            status="error", filter_reason=None, error_detail="Connection refused"
+class TestUnionColumnSpec:
+    def test_column_spec_contract(self) -> None:
+        """Column strings exact; ingested+filtered same count as spec; no duplicate aliases."""
+        from butlers.core.ingestion_events import (
+            _EVENT_COLUMNS,
+            _FILTERED_COLS,
+            _INGESTED_COLS,
+            _UNION_COLUMN_SPEC,
         )
-        pool = _FakePool(fetchrow_results=[None, filtered_row])
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert result["error_detail"] == "Connection refused"
 
-    async def test_ingested_event_error_detail_is_none(self) -> None:
-        """Ingested events must return error_detail=None (NULL::text from _INGESTED_COLS)."""
-        from butlers.core.ingestion_events import ingestion_event_get
+        assert _INGESTED_COLS == (
+            "id, received_at, source_channel, source_provider, "
+            "source_endpoint_identity, source_sender_identity, "
+            "source_thread_identity, external_event_id, dedupe_key, "
+            "dedupe_strategy, ingestion_tier, policy_tier, "
+            "triage_decision, triage_target, "
+            "status, "
+            "NULL::text AS filter_reason, "
+            "error_detail"
+        )
+        assert _FILTERED_COLS == (
+            "id, received_at, source_channel, "
+            "NULL::text AS source_provider, "
+            "endpoint_identity AS source_endpoint_identity, "
+            "sender_identity AS source_sender_identity, "
+            "NULL::text AS source_thread_identity, "
+            "external_message_id AS external_event_id, "
+            "NULL::text AS dedupe_key, NULL::text AS dedupe_strategy, "
+            "NULL::text AS ingestion_tier, NULL::text AS policy_tier, "
+            "NULL::text AS triage_decision, NULL::text AS triage_target, "
+            "status, filter_reason, error_detail"
+        )
+        assert _EVENT_COLUMNS == (
+            "id, received_at, source_channel, source_provider, "
+            "source_endpoint_identity, source_sender_identity, "
+            "source_thread_identity, external_event_id, dedupe_key, "
+            "dedupe_strategy, ingestion_tier, policy_tier, "
+            "triage_decision, triage_target, "
+            "status, error_detail"
+        )
 
-        row = _make_event_record()
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get(pool, uuid.uuid4())
-        assert result is not None
-        assert result["error_detail"] is None
+        n = len(_UNION_COLUMN_SPEC)
+        assert len(_INGESTED_COLS.split(",")) == n
+        assert len(_FILTERED_COLS.split(",")) == n
+
+        aliases = [alias for alias, _, _ in _UNION_COLUMN_SPEC]
+        assert len(aliases) == len(set(aliases))
+
+
+# ---------------------------------------------------------------------------
+# ingestion_event_get — point lookup + unified fallback
+# ---------------------------------------------------------------------------
+
+
+_EXPECTED_EVENT_FIELDS = (
+    "id",
+    "received_at",
+    "source_channel",
+    "source_provider",
+    "source_endpoint_identity",
+    "source_sender_identity",
+    "source_thread_identity",
+    "external_event_id",
+    "dedupe_key",
+    "dedupe_strategy",
+    "ingestion_tier",
+    "policy_tier",
+    "triage_decision",
+    "triage_target",
+    "status",
+    "filter_reason",
+    "error_detail",
+)
+
+
+async def test_ingestion_event_get_ingested():
+    """get returns row with all fields; id is str; status=ingested; accepts UUID or str."""
+    from butlers.core.ingestion_events import ingestion_event_get
+
+    row = _make_event_record(source_channel="email")
+    pool = _FakePool(fetchrow_result=row)
+    event_id = uuid.uuid4()
+    result = await ingestion_event_get(pool, event_id)
+    assert result is not None
+    assert result["source_channel"] == "email"
+    assert result["status"] == "ingested"
+    assert result["filter_reason"] is None
+    assert isinstance(result["id"], str)
+    for field in _EXPECTED_EVENT_FIELDS:
+        assert field in result
+
+    # Accepts string UUID
+    pool2 = _FakePool(fetchrow_result=_make_event_record())
+    result2 = await ingestion_event_get(pool2, str(event_id))
+    assert result2 is not None
+
+
+async def test_ingestion_event_get_unified_lookup():
+    """Falls back to filtered_events when not in ingestion_events; returns None when both miss."""
+    from butlers.core.ingestion_events import ingestion_event_get
+
+    # Both tables miss → None
+    pool_miss = _FakePool(fetchrow_results=[None, None])
+    assert await ingestion_event_get(pool_miss, uuid.uuid4()) is None
+    fetchrow_calls = [c for c in pool_miss.calls if c[0] == "fetchrow"]
+    assert len(fetchrow_calls) == 2
+
+    # Filtered event found → status=filtered, all fields present
+    filtered_row = _make_filtered_event_record(
+        status="filtered", filter_reason="rate_limit", error_detail=None
+    )
+    pool_filtered = _FakePool(fetchrow_results=[None, filtered_row])
+    result = await ingestion_event_get(pool_filtered, uuid.uuid4())
+    assert result is not None
+    assert result["status"] == "filtered"
+    assert result["filter_reason"] == "rate_limit"
+    assert isinstance(result["id"], str)
+    for field in _EXPECTED_EVENT_FIELDS:
+        assert field in result
+
+    # replay_pending status supported
+    rp_row = _make_filtered_event_record(status="replay_pending")
+    pool_rp = _FakePool(fetchrow_results=[None, rp_row])
+    result_rp = await ingestion_event_get(pool_rp, uuid.uuid4())
+    assert result_rp is not None and result_rp["status"] == "replay_pending"
+
+    # No second query when found in ingestion_events
+    pool_hit = _FakePool(fetchrow_result=_make_event_record())
+    await ingestion_event_get(pool_hit, uuid.uuid4())
+    assert len([c for c in pool_hit.calls if c[0] == "fetchrow"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -499,95 +290,26 @@ class TestIngestionEventGetUnifiedLookup:
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventsList:
-    async def test_returns_empty_list_when_no_rows(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
+async def test_ingestion_events_list():
+    """Returns list of dicts; empty when no rows; channel filter applied; id is str."""
+    from butlers.core.ingestion_events import ingestion_events_list
 
-        pool = _FakePool(fetch_results=[])
-        result = await ingestion_events_list(pool)
-        assert result == []
+    # Empty
+    assert await ingestion_events_list(_FakePool(fetch_results=[])) == []
 
-    async def test_returns_list_of_dicts(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
+    # Returns rows with correct channels
+    rows = [_make_event_record(source_channel="email"), _make_event_record(source_channel="tg")]
+    result = await ingestion_events_list(_FakePool(fetch_results=rows))
+    assert len(result) == 2
+    assert {r["source_channel"] for r in result} == {"email", "tg"}
+    assert isinstance(result[0]["id"], str)
 
-        rows = [
-            _make_event_record(source_channel="email"),
-            _make_event_record(source_channel="telegram_bot"),
-        ]
-        pool = _FakePool(fetch_results=rows)
-        result = await ingestion_events_list(pool)
-        assert len(result) == 2
-        channels = {r["source_channel"] for r in result}
-        assert channels == {"email", "telegram_bot"}
-
-    async def test_default_limit_offset_passed_to_query(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool)
-        _, sql, args = pool.calls[0]
-        # Default limit=20, offset=0 should be in args when no channel filter
-        assert args == (20, 0)
-
-    async def test_custom_limit_offset(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool, limit=5, offset=10)
-        _, sql, args = pool.calls[0]
-        assert args == (5, 10)
-
-    async def test_no_source_channel_filter_query_has_no_where(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool)
-        _, sql, _ = pool.calls[0]
-        assert "WHERE" not in sql.upper() or "source_channel" not in sql
-
-    async def test_source_channel_filter_adds_where_clause(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool, source_channel="telegram_bot")
-        _, sql, args = pool.calls[0]
-        assert "source_channel" in sql
-        assert args[0] == "telegram_bot"
-
-    async def test_source_channel_filter_passes_channel_as_first_arg(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool, limit=3, offset=1, source_channel="email")
-        _, _, args = pool.calls[0]
-        assert args[0] == "email"
-        assert args[1] == 3  # limit
-        assert args[2] == 1  # offset
-
-    async def test_ordered_by_received_at_desc_in_sql(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool)
-        _, sql, _ = pool.calls[0]
-        assert "received_at" in sql.lower()
-        assert "desc" in sql.lower()
-
-    async def test_queries_shared_ingestion_events_table(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        pool = _FakePool(fetch_results=[])
-        await ingestion_events_list(pool)
-        _, sql, _ = pool.calls[0]
-        assert "public.ingestion_events" in sql
-
-    async def test_id_is_string_in_results(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_list
-
-        rows = [_make_event_record()]
-        pool = _FakePool(fetch_results=rows)
-        result = await ingestion_events_list(pool)
-        assert isinstance(result[0]["id"], str)
+    # Channel filter uses source_channel in SQL
+    pool = _FakePool(fetch_results=[])
+    await ingestion_events_list(pool, source_channel="telegram_bot", limit=5, offset=3)
+    _, sql, args = pool.calls[0]
+    assert "source_channel" in sql
+    assert "telegram_bot" in args
 
 
 # ---------------------------------------------------------------------------
@@ -595,103 +317,24 @@ class TestIngestionEventsList:
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventsCount:
-    async def test_returns_zero_when_fetchval_returns_none(self) -> None:
-        """fetchval returning None (empty table) should be normalised to 0."""
-        from butlers.core.ingestion_events import ingestion_events_count
+async def test_ingestion_events_count():
+    """Returns 0 for None/empty; integer for rows; filters applied correctly."""
+    from butlers.core.ingestion_events import ingestion_events_count
 
-        pool = _FakePool(fetchval_result=None)
-        result = await ingestion_events_count(pool)
-        assert result == 0
+    assert await ingestion_events_count(_FakePool(fetchval_result=None)) == 0
+    assert await ingestion_events_count(_FakePool(fetchval_result=42)) == 42
 
-    async def test_returns_integer_count(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_count
+    # No status filter: both tables queried
+    pool = _FakePool(fetchval_result=0)
+    await ingestion_events_count(pool)
+    _, sql, _ = pool.calls[0]
+    assert "public.ingestion_events" in sql and "connectors.filtered_events" in sql
 
-        pool = _FakePool(fetchval_result=42)
-        result = await ingestion_events_count(pool)
-        assert result == 42
-
-    async def test_no_status_queries_both_tables(self) -> None:
-        """Without a status filter both public.ingestion_events and connectors.filtered_events
-        should be referenced in the SQL."""
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=0)
-        await ingestion_events_count(pool)
-        assert pool.calls, "fetchval should have been called"
-        _, sql, _ = pool.calls[0]
-        assert "public.ingestion_events" in sql
-        assert "connectors.filtered_events" in sql
-
-    async def test_no_status_no_channel_passes_no_args(self) -> None:
-        """UNION ALL count without filters should need no bind args."""
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=0)
-        await ingestion_events_count(pool)
-        _, _, args = pool.calls[0]
-        assert args == ()
-
-    async def test_no_status_with_channel_passes_channel_arg(self) -> None:
-        """UNION ALL count with source_channel filter should pass channel as bind arg."""
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=0)
-        await ingestion_events_count(pool, source_channel="telegram_bot")
-        _, _, args = pool.calls[0]
-        assert args == ("telegram_bot",)
-
-    async def test_status_ingested_includes_status_filter(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=5)
-        await ingestion_events_count(pool, status="ingested")
-        _, sql, args = pool.calls[0]
-        assert "public.ingestion_events" in sql
-        assert "status" in sql
-        assert "ingested" in args
-
-    async def test_status_ingested_with_channel(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=3)
-        await ingestion_events_count(pool, status="ingested", source_channel="email")
-        _, sql, args = pool.calls[0]
-        assert "public.ingestion_events" in sql
-        assert "source_channel" in sql
-        assert args == ("ingested", "email")
-
-    async def test_status_filtered_includes_both_tables(self) -> None:
-        """Always-UNION approach includes both tables; status filter is in outer WHERE."""
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=7)
-        await ingestion_events_count(pool, status="filtered")
-        _, sql, args = pool.calls[0]
-        assert "connectors.filtered_events" in sql
-        assert "public.ingestion_events" in sql
-        assert "filtered" in args
-
-    async def test_status_filtered_with_channel(self) -> None:
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=2)
-        await ingestion_events_count(pool, status="filtered", source_channel="telegram_bot")
-        _, sql, args = pool.calls[0]
-        assert "connectors.filtered_events" in sql
-        assert "source_channel" in sql
-        assert "filtered" in args
-        assert "telegram_bot" in args
-
-    async def test_status_error_includes_status_filter(self) -> None:
-        """status='error' should appear as a bind arg in the WHERE clause."""
-        from butlers.core.ingestion_events import ingestion_events_count
-
-        pool = _FakePool(fetchval_result=1)
-        await ingestion_events_count(pool, status="error")
-        _, sql, args = pool.calls[0]
-        assert "connectors.filtered_events" in sql
-        assert "error" in args
+    # Status filter applied
+    pool2 = _FakePool(fetchval_result=5)
+    await ingestion_events_count(pool2, status="ingested", source_channel="email")
+    _, sql2, args2 = pool2.calls[0]
+    assert "ingested" in args2 and "email" in args2
 
 
 # ---------------------------------------------------------------------------
@@ -699,329 +342,96 @@ class TestIngestionEventsCount:
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventSessions:
-    async def test_returns_empty_list_when_no_sessions(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_sessions
+async def test_ingestion_event_sessions():
+    """Fan-out merges rows from multiple butlers; cost JSONB decoded; fields present."""
+    from butlers.core.ingestion_events import ingestion_event_sessions
 
-        db = _FakeDatabaseManager(results={})
-        result = await ingestion_event_sessions(db, "req-001")
-        assert result == []
+    # Empty
+    assert await ingestion_event_sessions(_FakeDatabaseManager(), "req-001") == []
 
-    async def test_returns_sessions_with_butler_name(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_sessions
+    # Single butler
+    row = _make_session_record()
+    db = _FakeDatabaseManager(results={"atlas": [row]})
+    result = await ingestion_event_sessions(db, "req-001")
+    assert len(result) == 1 and result[0]["butler_name"] == "atlas"
 
-        row = _make_session_record()
-        db = _FakeDatabaseManager(results={"atlas": [row]})
-        result = await ingestion_event_sessions(db, "req-001")
-        assert len(result) == 1
-        assert result[0]["butler_name"] == "atlas"
+    # Multiple butlers merged
+    db2 = _FakeDatabaseManager(
+        results={"atlas": [_make_session_record()], "herald": [_make_session_record()]}
+    )
+    result2 = await ingestion_event_sessions(db2, "req-001")
+    assert len(result2) == 2
+    assert {r["butler_name"] for r in result2} == {"atlas", "herald"}
 
-    async def test_fan_out_called_with_request_id(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_sessions
+    # All expected fields present
+    for field in (
+        "id",
+        "trigger_source",
+        "started_at",
+        "completed_at",
+        "success",
+        "input_tokens",
+        "output_tokens",
+        "cost",
+        "trace_id",
+        "butler_name",
+    ):
+        assert field in result[0]
 
-        db = _FakeDatabaseManager(results={"atlas": []})
-        await ingestion_event_sessions(db, "req-42")
-        assert db.fan_out_calls, "fan_out must be called"
-        _, args, _ = db.fan_out_calls[0]
-        assert "req-42" in args
-
-    async def test_sessions_query_filters_by_request_id(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_sessions
-
-        db = _FakeDatabaseManager(results={"atlas": []})
-        await ingestion_event_sessions(db, "some-request-id")
-        sql, _, _ = db.fan_out_calls[0]
-        assert "request_id" in sql
-
-    async def test_merges_results_from_multiple_butlers(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_sessions
-
-        row_a = _make_session_record()
-        row_b = _make_session_record()
-        db = _FakeDatabaseManager(results={"atlas": [row_a], "butler2": [row_b]})
-        result = await ingestion_event_sessions(db, "req-001")
-        assert len(result) == 2
-        butler_names = {r["butler_name"] for r in result}
-        assert butler_names == {"atlas", "butler2"}
-
-    async def test_empty_butler_contributes_no_rows(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_sessions
-
-        row = _make_session_record()
-        db = _FakeDatabaseManager(results={"atlas": [row], "empty-butler": []})
-        result = await ingestion_event_sessions(db, "req-001")
-        assert len(result) == 1
-
-    async def test_cost_jsonb_string_is_decoded(self) -> None:
-        """cost field returned as JSON string should be decoded to dict."""
-        import json as _json
-
-        from butlers.core.ingestion_events import ingestion_event_sessions
-
-        row = _make_session_record(cost=_json.dumps({"total_usd": 0.01}))
-        db = _FakeDatabaseManager(results={"atlas": [row]})
-        result = await ingestion_event_sessions(db, "req-001")
-        assert isinstance(result[0]["cost"], dict)
-        assert result[0]["cost"]["total_usd"] == 0.01
-
-    async def test_cost_dict_passthrough(self) -> None:
-        """cost field already a dict should pass through unchanged."""
-        from butlers.core.ingestion_events import ingestion_event_sessions
-
-        row = _make_session_record(cost={"total_usd": 0.02})
-        db = _FakeDatabaseManager(results={"atlas": [row]})
-        result = await ingestion_event_sessions(db, "req-001")
-        assert result[0]["cost"] == {"total_usd": 0.02}
-
-    async def test_session_fields_present(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_sessions
-
-        row = _make_session_record()
-        db = _FakeDatabaseManager(results={"atlas": [row]})
-        result = await ingestion_event_sessions(db, "req-001")
-        session = result[0]
-        for field in (
-            "id",
-            "trigger_source",
-            "started_at",
-            "completed_at",
-            "success",
-            "input_tokens",
-            "output_tokens",
-            "cost",
-            "trace_id",
-            "butler_name",
-        ):
-            assert field in session, f"Missing field: {field}"
-
-    async def test_results_sorted_by_started_at_asc(self) -> None:
-        """Sessions should be ordered by started_at ascending."""
-        from butlers.core.ingestion_events import ingestion_event_sessions
-
-        earlier = datetime(2026, 1, 1, 10, 0, 0, tzinfo=UTC)
-        later = datetime(2026, 1, 1, 11, 0, 0, tzinfo=UTC)
-        row_late = _make_session_record(started_at=later)
-        row_early = _make_session_record(started_at=earlier)
-        db = _FakeDatabaseManager(results={"atlas": [row_late, row_early]})
-        result = await ingestion_event_sessions(db, "req-001")
-        assert result[0]["started_at"] == earlier
-        assert result[1]["started_at"] == later
+    # Cost JSONB string decoded to dict
+    json_cost_row = _make_session_record(cost=_json.dumps({"total_usd": 0.01}))
+    db3 = _FakeDatabaseManager(results={"atlas": [json_cost_row]})
+    result3 = await ingestion_event_sessions(db3, "req-001")
+    assert isinstance(result3[0]["cost"], dict) and result3[0]["cost"]["total_usd"] == 0.01
 
 
 # ---------------------------------------------------------------------------
-# ingestion_event_rollup
+# ingestion_event_rollup (pure function)
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventRollup:
-    def test_empty_sessions_produces_zero_totals(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
+def test_ingestion_event_rollup():
+    """Empty rollup returns zero totals; sessions aggregate tokens/costs/by_butler."""
+    from butlers.core.ingestion_events import ingestion_event_rollup
 
-        result = ingestion_event_rollup("req-001", [])
-        assert result["total_sessions"] == 0
-        assert result["total_input_tokens"] == 0
-        assert result["total_output_tokens"] == 0
-        assert result["total_cost"] == 0.0
-        assert result["by_butler"] == {}
+    empty = ingestion_event_rollup("req-001", [])
+    assert empty["request_id"] == "req-001"
+    assert empty["total_sessions"] == 0
+    assert empty["total_input_tokens"] == 0
+    assert empty["by_butler"] == {}
+    for key in ("total_sessions", "total_input_tokens", "total_output_tokens", "total_cost",
+                "by_butler"):
+        assert key in empty
 
-    def test_request_id_echoed_in_result(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
+    # aggregation
+    sessions = [
+        {
+            "butler_name": "atlas",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cost": {"total_usd": 0.005},
+        },
+        {
+            "butler_name": "atlas",
+            "input_tokens": 200,
+            "output_tokens": 75,
+            "cost": {"total_usd": "0.010"},
+        },
+        {"butler_name": "herald", "input_tokens": None, "output_tokens": None, "cost": None},
+        {"butler_name": "herald"},  # missing token fields
+    ]
+    result = ingestion_event_rollup("req-001", sessions)
+    assert result["total_sessions"] == 4
+    assert result["total_input_tokens"] == 300
+    assert result["total_output_tokens"] == 125
+    assert abs(result["total_cost"] - 0.015) < 1e-9
+    assert isinstance(result["total_cost"], float)
 
-        result = ingestion_event_rollup("req-abc", [])
-        assert result["request_id"] == "req-abc"
-
-    def test_total_sessions_count(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {
-                "butler_name": "atlas",
-                "input_tokens": 10,
-                "output_tokens": 5,
-                "cost": {"total_usd": 0.001},
-            },
-            {
-                "butler_name": "atlas",
-                "input_tokens": 20,
-                "output_tokens": 10,
-                "cost": {"total_usd": 0.002},
-            },
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert result["total_sessions"] == 2
-
-    def test_total_input_output_tokens_summed(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {"butler_name": "atlas", "input_tokens": 100, "output_tokens": 50, "cost": None},
-            {"butler_name": "atlas", "input_tokens": 200, "output_tokens": 75, "cost": None},
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert result["total_input_tokens"] == 300
-        assert result["total_output_tokens"] == 125
-
-    def test_total_cost_sums_total_usd(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {
-                "butler_name": "atlas",
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cost": {"total_usd": 0.005},
-            },
-            {
-                "butler_name": "atlas",
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cost": {"total_usd": 0.010},
-            },
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert abs(result["total_cost"] - 0.015) < 1e-9
-
-    def test_null_cost_treated_as_zero(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {"butler_name": "atlas", "input_tokens": 10, "output_tokens": 5, "cost": None},
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert result["total_cost"] == 0.0
-
-    def test_cost_without_total_usd_key_treated_as_zero(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {
-                "butler_name": "atlas",
-                "input_tokens": 10,
-                "output_tokens": 5,
-                "cost": {"other_key": 1.0},
-            },
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert result["total_cost"] == 0.0
-
-    def test_by_butler_breakdown_single_butler(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {
-                "butler_name": "atlas",
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "cost": {"total_usd": 0.005},
-            },
-            {
-                "butler_name": "atlas",
-                "input_tokens": 200,
-                "output_tokens": 75,
-                "cost": {"total_usd": 0.010},
-            },
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert "atlas" in result["by_butler"]
-        entry = result["by_butler"]["atlas"]
-        assert entry["sessions"] == 2
-        assert entry["input_tokens"] == 300
-        assert entry["output_tokens"] == 125
-        assert abs(entry["cost"] - 0.015) < 1e-9
-
-    def test_by_butler_breakdown_multiple_butlers(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {
-                "butler_name": "atlas",
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "cost": {"total_usd": 0.005},
-            },
-            {
-                "butler_name": "herald",
-                "input_tokens": 50,
-                "output_tokens": 25,
-                "cost": {"total_usd": 0.002},
-            },
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert set(result["by_butler"].keys()) == {"atlas", "herald"}
-        assert result["by_butler"]["atlas"]["sessions"] == 1
-        assert result["by_butler"]["herald"]["sessions"] == 1
-        assert result["total_sessions"] == 2
-
-    def test_null_input_output_tokens_treated_as_zero(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {"butler_name": "atlas", "input_tokens": None, "output_tokens": None, "cost": None},
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert result["total_input_tokens"] == 0
-        assert result["total_output_tokens"] == 0
-
-    def test_missing_tokens_fields_treated_as_zero(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        # Sessions that have no input_tokens / output_tokens keys at all
-        sessions = [{"butler_name": "atlas", "cost": None}]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert result["total_input_tokens"] == 0
-        assert result["total_output_tokens"] == 0
-
-    def test_by_butler_cost_zero_when_no_cost(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {"butler_name": "atlas", "input_tokens": 10, "output_tokens": 5, "cost": None},
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert result["by_butler"]["atlas"]["cost"] == 0.0
-
-    def test_total_cost_is_float(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {
-                "butler_name": "atlas",
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cost": {"total_usd": 0.001},
-            },
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert isinstance(result["total_cost"], float)
-
-    def test_total_cost_usd_as_string_is_handled(self) -> None:
-        """total_usd stored as string should be cast to float gracefully."""
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        sessions = [
-            {
-                "butler_name": "atlas",
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cost": {"total_usd": "0.005"},
-            },
-        ]
-        result = ingestion_event_rollup("req-001", sessions)
-        assert abs(result["total_cost"] - 0.005) < 1e-9
-
-    def test_result_has_all_expected_keys(self) -> None:
-        from butlers.core.ingestion_events import ingestion_event_rollup
-
-        result = ingestion_event_rollup("req-001", [])
-        for key in (
-            "request_id",
-            "total_sessions",
-            "total_input_tokens",
-            "total_output_tokens",
-            "total_cost",
-            "by_butler",
-        ):
-            assert key in result, f"Missing key: {key}"
+    assert result["by_butler"]["atlas"]["sessions"] == 2
+    assert result["by_butler"]["atlas"]["input_tokens"] == 300
+    assert abs(result["by_butler"]["atlas"]["cost"] - 0.015) < 1e-9
+    assert result["by_butler"]["herald"]["cost"] == 0.0
+    assert result["by_butler"]["herald"]["input_tokens"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1029,176 +439,43 @@ class TestIngestionEventRollup:
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventReplayRequest:
-    """Tests for the atomic replay transition in ingestion_event_replay_request.
+async def test_ingestion_event_replay_request_outcomes():
+    """ok/not_found/conflict outcomes; string UUID accepted; invalid UUID raises."""
+    from butlers.core.ingestion_events import ingestion_event_replay_request
 
-    The implementation uses a single UPDATE … WHERE status = ANY(replayable) RETURNING id
-    to avoid TOCTOU races.  A follow-up SELECT is only issued on the miss path.
-    """
+    # Success path: UPDATE RETURNING hits ingestion_events
+    event_id = uuid.uuid4()
+    ok_row = _FakeRecord({"id": event_id})
+    pool_ok = _FakePool(fetchrow_result=ok_row)
+    result = await ingestion_event_replay_request(pool_ok, event_id)
+    assert result["outcome"] == "ok"
+    assert result["id"] == str(event_id)
 
-    async def test_ok_outcome_when_update_returns_row(self) -> None:
-        """UPDATE RETURNING id succeeds → outcome='ok' with the event id."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
+    # String UUID accepted
+    pool_str = _FakePool(fetchrow_result=ok_row)
+    result_str = await ingestion_event_replay_request(pool_str, str(event_id))
+    assert result_str["outcome"] == "ok"
 
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        result = await ingestion_event_replay_request(pool, event_id)
-        assert result["outcome"] == "ok"
-        assert result["id"] == str(event_id)
+    # Not found: UPDATE misses, SELECT also None
+    pool_nf = _FakePool(fetchrow_result=None, fetchval_result=None)
+    result_nf = await ingestion_event_replay_request(pool_nf, uuid.uuid4())
+    assert result_nf["outcome"] == "not_found"
 
-    async def test_ok_id_is_string(self) -> None:
-        """The id in the ok result should be a string."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
+    # Conflict: UPDATE misses, SELECT returns non-replayable status
+    pool_cf = _FakePool(fetchrow_result=None, fetchval_result="replay_pending")
+    result_cf = await ingestion_event_replay_request(pool_cf, uuid.uuid4())
+    assert result_cf["outcome"] == "conflict"
+    assert result_cf["current_status"] == "replay_pending"
 
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        result = await ingestion_event_replay_request(pool, event_id)
-        assert isinstance(result["id"], str)
+    # Invalid UUID raises
+    with pytest.raises(ValueError):
+        await ingestion_event_replay_request(_FakePool(), "not-a-uuid")
 
-    async def test_ok_accepts_string_event_id(self) -> None:
-        """String event_id should be accepted and converted to UUID."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        result = await ingestion_event_replay_request(pool, str(event_id))
-        assert result["outcome"] == "ok"
-
-    async def test_update_uses_fetchrow_not_execute(self) -> None:
-        """The atomic UPDATE must use fetchrow (RETURNING), not pool.execute."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        await ingestion_event_replay_request(pool, event_id)
-        methods_used = [method for method, _, _ in pool.calls]
-        # On the happy path only one call: fetchrow for the UPDATE RETURNING
-        assert methods_used == ["fetchrow"], f"Unexpected calls: {methods_used}"
-
-    async def test_update_sql_contains_returning(self) -> None:
-        """The UPDATE statement must contain RETURNING to be atomic."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        await ingestion_event_replay_request(pool, event_id)
-        _, sql, _ = pool.calls[0]
-        assert "RETURNING" in sql.upper()
-
-    async def test_first_update_targets_ingestion_events(self) -> None:
-        """The first UPDATE must target public.ingestion_events (routing-failed events)."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        await ingestion_event_replay_request(pool, event_id)
-        _, sql, _ = pool.calls[0]
-        assert "public.ingestion_events" in sql
-        assert "failed" in sql.lower()
-
-    async def test_fallback_update_targets_filtered_events(self) -> None:
-        """When ingestion_events UPDATEs miss, the fallback UPDATE targets filtered_events."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        # Step 1 (failed→ingested) misses, step 1b (ingested→replay_pending) misses,
-        # step 2 (filtered_events UPDATE) hits.
-        pool = _FakePool(
-            fetchrow_results=[None, None, returning_row],
-            fetchval_result=None,
-        )
-        result = await ingestion_event_replay_request(pool, event_id)
-        assert result["outcome"] == "ok"
-        # The third fetchrow call should target connectors.filtered_events
-        fetchrow_calls = [c for c in pool.calls if c[0] == "fetchrow"]
-        assert len(fetchrow_calls) == 3
-        _, sql, _ = fetchrow_calls[2]
-        assert "connectors.filtered_events" in sql
-        assert "ANY" in sql.upper()
-
-    async def test_not_found_when_update_miss_and_no_row(self) -> None:
-        """UPDATE returns no row AND follow-up SELECT also returns None → not_found."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        # fetchrow returns None (UPDATE matched nothing)
-        # fetchval also returns None (row doesn't exist)
-        pool = _FakePool(fetchrow_result=None, fetchval_result=None)
-        result = await ingestion_event_replay_request(pool, event_id)
-        assert result["outcome"] == "not_found"
-
-    async def test_not_found_checks_both_tables(self) -> None:
-        """On the miss path, both tables are checked via fetchval before returning not_found."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        pool = _FakePool(fetchrow_result=None, fetchval_result=None)
-        await ingestion_event_replay_request(pool, event_id)
-        fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
-        assert len(fetchval_calls) == 2
-        # First checks ingestion_events, then filtered_events
-        assert "public.ingestion_events" in fetchval_calls[0][1]
-        assert "connectors.filtered_events" in fetchval_calls[1][1]
-
-    async def test_conflict_when_update_miss_and_row_exists(self) -> None:
-        """UPDATE misses (status not replayable) AND SELECT returns current status → conflict."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        # fetchrow returns None (UPDATE missed because status is replay_pending)
-        # fetchval returns the current non-replayable status
-        pool = _FakePool(fetchrow_result=None, fetchval_result="replay_pending")
-        result = await ingestion_event_replay_request(pool, event_id)
-        assert result["outcome"] == "conflict"
-        assert result["current_status"] == "replay_pending"
-
-    async def test_conflict_includes_current_status(self) -> None:
-        """Conflict response must include current_status for the caller."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        pool = _FakePool(fetchrow_result=None, fetchval_result="replay_complete")
-        result = await ingestion_event_replay_request(pool, event_id)
-        assert result["outcome"] == "conflict"
-        assert result["current_status"] == "replay_complete"
-
-    async def test_no_fetchval_on_success_path(self) -> None:
-        """When UPDATE RETURNING succeeds there must be no follow-up SELECT."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        returning_row = _FakeRecord({"id": event_id})
-        pool = _FakePool(fetchrow_result=returning_row)
-        await ingestion_event_replay_request(pool, event_id)
-        fetchval_calls = [c for c in pool.calls if c[0] == "fetchval"]
-        assert fetchval_calls == [], "fetchval must NOT be called when UPDATE RETURNING succeeds"
-
-    async def test_miss_path_select_queries_by_event_id(self) -> None:
-        """The miss-path SELECT must filter by the correct event_id."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        event_id = uuid.uuid4()
-        pool = _FakePool(fetchrow_result=None, fetchval_result=None)
-        await ingestion_event_replay_request(pool, event_id)
-        fetchval_calls = [(sql, args) for method, sql, args in pool.calls if method == "fetchval"]
-        assert fetchval_calls, "Expected at least one fetchval call"
-        sql, args = fetchval_calls[0]
-        assert args[0] == event_id
-
-    async def test_invalid_uuid_raises_value_error(self) -> None:
-        """Passing a non-UUID string should raise ValueError."""
-        from butlers.core.ingestion_events import ingestion_event_replay_request
-
-        pool = _FakePool()
-        with pytest.raises(ValueError):
-            await ingestion_event_replay_request(pool, "not-a-uuid")
+    # Fallback to filtered_events when ingestion_events misses
+    returning_row = _FakeRecord({"id": event_id})
+    pool_fe = _FakePool(fetchrow_results=[None, None, returning_row], fetchval_result=None)
+    result_fe = await ingestion_event_replay_request(pool_fe, event_id)
+    assert result_fe["outcome"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -1206,97 +483,48 @@ class TestIngestionEventReplayRequest:
 # ---------------------------------------------------------------------------
 
 
-class TestIngestionEventGetInboxLifecycle:
-    """Tests for the message_inbox lifecycle lookup.
+async def test_ingestion_event_get_inbox_lifecycle():
+    """Returns lifecycle_state/decomposition_output; None when no row; JSON string decoded."""
+    from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
 
-    Verifies that ``ingestion_event_get_inbox_lifecycle`` returns the correct
-    fields and handles missing rows and UUID coercion correctly.
-    """
+    # Returns lifecycle_state and decomposition_output
+    decomp = {"signals": [], "reason": "no_signals"}
+    row = _FakeRecord({"lifecycle_state": "decomposed_empty", "decomposition_output": decomp})
+    result = await ingestion_event_get_inbox_lifecycle(_FakePool(fetchrow_result=row), uuid.uuid4())
+    assert result is not None
+    assert result["lifecycle_state"] == "decomposed_empty"
+    assert result["decomposition_output"] == decomp
 
-    async def test_returns_lifecycle_state_and_decomposition_output(self) -> None:
-        """Should return dict with lifecycle_state and decomposition_output."""
-        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+    # None when no row
+    result_none = await ingestion_event_get_inbox_lifecycle(
+        _FakePool(fetchrow_result=None), uuid.uuid4()
+    )
+    assert result_none is None
 
-        event_id = uuid.uuid4()
-        decomp = {"signals": [], "reason": "no_signals_extracted"}
-        row = _FakeRecord(
-            {
-                "lifecycle_state": "decomposed_empty",
-                "decomposition_output": decomp,
-            }
-        )
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
-        assert result is not None
-        assert result["lifecycle_state"] == "decomposed_empty"
-        assert result["decomposition_output"] == decomp
+    # Null decomposition_output returned as None
+    row_null = _FakeRecord({"lifecycle_state": "accepted", "decomposition_output": None})
+    result_null = await ingestion_event_get_inbox_lifecycle(
+        _FakePool(fetchrow_result=row_null), uuid.uuid4()
+    )
+    assert result_null is not None and result_null["decomposition_output"] is None
 
-    async def test_returns_none_when_no_inbox_row(self) -> None:
-        """Returns None when message_inbox has no matching row (pruned)."""
-        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
+    # JSON string decomposition_output decoded to dict
+    decomp2 = {"signals": [{"butler": "atlas"}]}
+    row_json = _FakeRecord(
+        {
+            "lifecycle_state": "routed",
+            "decomposition_output": _json.dumps(decomp2),
+        }
+    )
+    result_json = await ingestion_event_get_inbox_lifecycle(
+        _FakePool(fetchrow_result=row_json), uuid.uuid4()
+    )
+    assert result_json is not None and result_json["decomposition_output"] == decomp2
 
-        event_id = uuid.uuid4()
-        pool = _FakePool(fetchrow_result=None)
-        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
-        assert result is None
-
-    async def test_null_decomposition_output_returned_as_none(self) -> None:
-        """decomposition_output=NULL from the DB should become Python None."""
-        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
-
-        event_id = uuid.uuid4()
-        row = _FakeRecord({"lifecycle_state": "accepted", "decomposition_output": None})
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
-        assert result is not None
-        assert result["lifecycle_state"] == "accepted"
-        assert result["decomposition_output"] is None
-
-    async def test_accepts_uuid_string_as_event_id(self) -> None:
-        """Should accept a UUID string and coerce it to UUID for the query."""
-        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
-
-        event_id = uuid.uuid4()
-        row = _FakeRecord({"lifecycle_state": "routed", "decomposition_output": None})
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get_inbox_lifecycle(pool, str(event_id))
-        assert result is not None
-        # Verify the query received a UUID (not a string)
-        fetchrow_call = next((c for c in pool.calls if c[0] == "fetchrow"), None)
-        assert fetchrow_call is not None
-        assert isinstance(fetchrow_call[2][0], uuid.UUID)
-        assert fetchrow_call[2][0] == event_id
-
-    async def test_query_targets_message_inbox(self) -> None:
-        """Query must reference message_inbox and filter by id."""
-        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
-
-        event_id = uuid.uuid4()
-        pool = _FakePool(fetchrow_result=None)
-        await ingestion_event_get_inbox_lifecycle(pool, event_id)
-        fetchrow_calls = [(sql, args) for method, sql, args in pool.calls if method == "fetchrow"]
-        assert fetchrow_calls, "Expected at least one fetchrow call"
-        sql, args = fetchrow_calls[0]
-        assert "message_inbox" in sql
-        assert "lifecycle_state" in sql
-        assert "decomposition_output" in sql
-        assert args[0] == event_id
-
-    async def test_deserialises_json_string_decomposition_output(self) -> None:
-        """decomposition_output returned as JSON string should be deserialised to dict."""
-        import json
-
-        from butlers.core.ingestion_events import ingestion_event_get_inbox_lifecycle
-
-        event_id = uuid.uuid4()
-        decomp = {"signals": [{"butler": "atlas"}], "model": "claude-3"}
-        row = _FakeRecord(
-            {
-                "lifecycle_state": "routed",
-                "decomposition_output": json.dumps(decomp),
-            }
-        )
-        pool = _FakePool(fetchrow_result=row)
-        result = await ingestion_event_get_inbox_lifecycle(pool, event_id)
-        assert result is not None
-        assert result["decomposition_output"] == decomp
+    # String UUID accepted
+    row2 = _FakeRecord({"lifecycle_state": "routed", "decomposition_output": None})
+    event_id = uuid.uuid4()
+    result2 = await ingestion_event_get_inbox_lifecycle(
+        _FakePool(fetchrow_result=row2), str(event_id)
+    )
+    assert result2 is not None

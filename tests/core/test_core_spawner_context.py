@@ -59,58 +59,21 @@ class _CapturingAdapter(RuntimeAdapter):
 class TestContextParameter:
     """Test that context parameter is properly prepended to prompt."""
 
-    async def test_trigger_without_context(self, tmp_path: Path):
-        """When context is not provided, prompt is used as-is."""
+    async def test_trigger_context_prepend(self, tmp_path: Path):
+        """No context → prompt as-is; with context → prepended; empty context → prompt as-is."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
-
         adapter = _CapturingAdapter()
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
 
         await spawner.trigger(prompt="do task", trigger_source="trigger_tool")
         assert adapter.captured_prompts[-1] == "do task"
 
-    async def test_trigger_with_context(self, tmp_path: Path):
-        """When context is provided, it is prepended to the prompt."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = _CapturingAdapter()
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
         await spawner.trigger(
-            prompt="do task",
-            context="Here is some context.",
-            trigger_source="trigger_tool",
+            prompt="do task", context="Here is some context.", trigger_source="trigger_tool"
         )
         assert adapter.captured_prompts[-1] == "Here is some context.\n\ndo task"
 
-    async def test_trigger_with_empty_context(self, tmp_path: Path):
-        """When context is empty string, prompt is used as-is."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = _CapturingAdapter()
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        await spawner.trigger(
-            prompt="do task",
-            context="",
-            trigger_source="trigger_tool",
-        )
+        await spawner.trigger(prompt="do task", context="", trigger_source="trigger_tool")
         assert adapter.captured_prompts[-1] == "do task"

@@ -58,20 +58,22 @@ class TestFetchMemoryContext:
             token_budget=4096,
         )
 
-    async def test_returns_none_when_tool_raises(self):
+    async def test_returns_none_for_failure_empty_pool_or_missing_tables(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """None on RuntimeError; None when pool=None; None for whitespace; None for missing table (no traceback)."""
+        # RuntimeError → None
         with patch(
             "butlers.modules.memory.tools.context.memory_context",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
-            result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
-        assert result is None
+            assert await fetch_memory_context(AsyncMock(), "my-butler", "hello") is None
 
-    async def test_returns_none_when_pool_missing(self):
-        result = await fetch_memory_context(None, "my-butler", "hello")
-        assert result is None
+        # pool=None → None (no call at all)
+        assert await fetch_memory_context(None, "my-butler", "hello") is None
 
-    async def test_returns_none_for_empty_context(self):
+        # Empty / whitespace context → None
         with (
             patch(
                 "butlers.modules.memory.tools.context.memory_context",
@@ -83,12 +85,9 @@ class TestFetchMemoryContext:
                 return_value=object(),
             ),
         ):
-            result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
-        assert result is None
+            assert await fetch_memory_context(AsyncMock(), "my-butler", "hello") is None
 
-    async def test_missing_memory_tables_returns_none_without_traceback(
-        self, caplog: pytest.LogCaptureFixture
-    ):
+        # Missing table → None without traceback
         with (
             patch(
                 "butlers.modules.memory.tools.context.memory_context",
@@ -98,7 +97,6 @@ class TestFetchMemoryContext:
             caplog.at_level(logging.WARNING, logger="butlers.core.spawner"),
         ):
             result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
-
         assert result is None
         record = next(r for r in caplog.records if "memory tables are missing" in r.getMessage())
         assert record.exc_info is None
@@ -138,49 +136,31 @@ class _CapturingAdapter(RuntimeAdapter):
 
 
 class TestSpawnerMemoryContextInjection:
-    async def test_memory_context_injected_when_memory_module_enabled(self, tmp_path: Path):
+    async def test_memory_context_injected_and_skipped_when_disabled(self, tmp_path: Path):
+        """Memory context injected with custom budget when enabled; not fetched when disabled."""
+        # Enabled: context injected with custom budget
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         (config_dir / "CLAUDE.md").write_text("Base prompt.")
         config = _make_config(modules={"memory": {"retrieval": {"context_token_budget": 1234}}})
-
         adapter = _CapturingAdapter()
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
             return_value="Remembered: user prefers concise answers.",
         ) as mock_fetch:
             await spawner.trigger(prompt="do task", trigger_source="trigger")
+        assert adapter.captured_system_prompts[-1] == "Base prompt.\n\nRemembered: user prefers concise answers."
+        mock_fetch.assert_awaited_once_with(None, "test-butler", "do task", token_budget=1234)
 
-        assert adapter.captured_system_prompts[-1] == (
-            "Base prompt.\n\nRemembered: user prefers concise answers."
-        )
-        mock_fetch.assert_awaited_once_with(
-            None,
-            "test-butler",
-            "do task",
-            token_budget=1234,
-        )
-
-    async def test_memory_context_not_fetched_when_module_disabled(self, tmp_path: Path):
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "CLAUDE.md").write_text("Base prompt.")
-        config = _make_config(modules={})
-
-        adapter = _CapturingAdapter()
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-        with patch(
-            "butlers.core.spawner.fetch_memory_context",
-            new_callable=AsyncMock,
-        ) as mock_fetch:
-            await spawner.trigger(prompt="do task", trigger_source="trigger")
-
-        mock_fetch.assert_not_called()
+        # Disabled: fetch not called
+        config_dir2 = tmp_path / "config2"
+        config_dir2.mkdir()
+        (config_dir2 / "CLAUDE.md").write_text("Base prompt.")
+        config2 = _make_config(modules={})
+        adapter2 = _CapturingAdapter()
+        spawner2 = Spawner(config=config2, config_dir=config_dir2, runtime=adapter2)
+        with patch("butlers.core.spawner.fetch_memory_context", new_callable=AsyncMock) as mock_fetch2:
+            await spawner2.trigger(prompt="do task", trigger_source="trigger")
+        mock_fetch2.assert_not_called()

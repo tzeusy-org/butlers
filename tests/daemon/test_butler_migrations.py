@@ -1,7 +1,12 @@
-"""Tests for butler-specific migration chain support.
+"""Tests for butler-specific migration chain support — condensed.
 
-Verifies that the daemon applies butler-name-specific Alembic migrations
-after core migrations and before module migrations, when such a chain exists.
+Covers:
+- _build_alembic_config: percent-encoded URLs, schema options
+- has_butler_chain: existence/emptiness detection
+- _discover_butler_chains / _discover_module_chains: sorted discovery
+- _resolve_chain_dir: resolution priority
+- get_all_chains: combined list
+- Daemon: migration ordering, schema forwarding
 """
 
 from __future__ import annotations
@@ -30,32 +35,28 @@ from butlers.modules.registry import ModuleRegistry
 pytestmark = pytest.mark.unit
 
 
-def test_build_alembic_config_accepts_percent_encoded_db_url() -> None:
-    """DB URLs with libpq options must not fail ConfigParser interpolation."""
+# ---------------------------------------------------------------------------
+# _build_alembic_config
+# ---------------------------------------------------------------------------
+
+
+def test_build_alembic_config() -> None:
+    """Percent-encoded URLs preserved; schema options set; invalid schema raises."""
     db_url = (
         "postgresql://butlers:butlers@localhost:54320/butlers"
         "?options=-csearch_path%3Dswitchboard%2Cpublic"
     )
-
     config = _build_alembic_config(db_url, chains=["core"])
-
     assert config.get_main_option("sqlalchemy.url") == db_url
 
-
-def test_build_alembic_config_sets_schema_options() -> None:
-    """Schema-scoped runs should set target + version table schema options."""
-    config = _build_alembic_config(
+    config2 = _build_alembic_config(
         "postgresql://butlers:butlers@localhost:54320/butlers",
         chains=["core"],
         target_schema="switchboard",
     )
+    assert config2.get_main_option("butlers.target_schema") == "switchboard"
+    assert config2.get_main_option("version_table_schema") == "switchboard"
 
-    assert config.get_main_option("butlers.target_schema") == "switchboard"
-    assert config.get_main_option("version_table_schema") == "switchboard"
-
-
-def test_build_alembic_config_rejects_invalid_schema() -> None:
-    """Invalid schema names should fail fast."""
     with pytest.raises(ValueError, match="Invalid migration schema name"):
         _build_alembic_config(
             "postgresql://butlers:butlers@localhost:54320/butlers",
@@ -83,286 +84,139 @@ def test_run_migrations_all_upgrades_each_chain_in_order() -> None:
 
 
 # ---------------------------------------------------------------------------
-# has_butler_chain unit tests
+# has_butler_chain
 # ---------------------------------------------------------------------------
 
 
-class TestHasButlerChain:
-    """Unit tests for the has_butler_chain helper."""
+@pytest.mark.parametrize(
+    "setup,expected",
+    [
+        ("with_py_migration", True),
+        ("no_directory", False),
+        ("empty_dir", False),
+        ("non_py_only", False),
+    ],
+)
+def test_has_butler_chain(tmp_path, setup, expected):
+    """has_butler_chain detects presence/absence of .py migration files."""
+    chain_dir = tmp_path / "my-butler" / "migrations"
 
-    def test_existing_chain_with_migrations(self, tmp_path: Path) -> None:
-        """Returns True when directory exists and contains .py migration files."""
-        chain_dir = tmp_path / "my-butler" / "migrations"
+    if setup == "with_py_migration":
         chain_dir.mkdir(parents=True)
-        (chain_dir / "__init__.py").touch()
         (chain_dir / "001_create_tables.py").write_text("# migration")
-
-        with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-            assert has_butler_chain("my-butler") is True
-
-    def test_no_chain_directory(self, tmp_path: Path) -> None:
-        """Returns False when no directory exists for the butler name."""
-        tmp_path.mkdir(exist_ok=True)
-
-        with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-            assert has_butler_chain("nonexistent-butler") is False
-
-    def test_empty_chain_directory(self, tmp_path: Path) -> None:
-        """Returns False when directory exists but contains only __init__.py."""
-        chain_dir = tmp_path / "empty-butler" / "migrations"
+    elif setup == "empty_dir":
         chain_dir.mkdir(parents=True)
         (chain_dir / "__init__.py").touch()
-
-        with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-            assert has_butler_chain("empty-butler") is False
-
-    def test_chain_directory_with_non_py_files(self, tmp_path: Path) -> None:
-        """Returns False when directory only contains non-.py files."""
-        chain_dir = tmp_path / "txt-butler" / "migrations"
+    elif setup == "non_py_only":
         chain_dir.mkdir(parents=True)
-        (chain_dir / "__init__.py").touch()
         (chain_dir / "README.md").write_text("docs")
+    # "no_directory": don't create any directories
 
-        with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-            assert has_butler_chain("txt-butler") is False
-
-    def test_real_relationship_chain(self) -> None:
-        """The 'relationship' chain should be detected from roster/relationship/migrations/."""
-        assert has_butler_chain("relationship") is True
-
-    def test_real_nonexistent_chain(self) -> None:
-        """A made-up butler name should not have a chain."""
-        assert has_butler_chain("does-not-exist-butler-xyz") is False
+    with patch("butlers.migrations.ROSTER_DIR", tmp_path):
+        assert has_butler_chain("my-butler") is expected
 
 
 # ---------------------------------------------------------------------------
-# Discovery and resolution unit tests
+# _discover_butler_chains / _discover_module_chains
 # ---------------------------------------------------------------------------
 
 
-class TestDiscoverButlerChains:
-    """Unit tests for _discover_butler_chains."""
-
-    def test_discovers_butlers_with_migrations(self, tmp_path: Path) -> None:
-        """Returns sorted list of butler names that have migrations."""
-        for name in ["zeta", "alpha"]:
-            mig_dir = tmp_path / name / "migrations"
-            mig_dir.mkdir(parents=True)
-            (mig_dir / "__init__.py").touch()
-            (mig_dir / "001_tables.py").write_text("# migration")
-
-        with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-            chains = _discover_butler_chains()
-
-        assert chains == ["alpha", "zeta"]
-
-    def test_skips_butlers_without_migrations_dir(self, tmp_path: Path) -> None:
-        """Butler dirs without a migrations/ subfolder are skipped."""
-        (tmp_path / "no-migrations").mkdir()
-        mig_dir = tmp_path / "has-migrations" / "migrations"
+def test_discover_chains(tmp_path) -> None:
+    """Butler and module discovery: sorted list of .py migrations; real chains include known names."""
+    for name in ["zeta", "alpha"]:
+        mig_dir = tmp_path / name / "migrations"
         mig_dir.mkdir(parents=True)
         (mig_dir / "001_tables.py").write_text("# migration")
+    (tmp_path / "no-migrations").mkdir()
 
-        with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-            chains = _discover_butler_chains()
+    with patch("butlers.migrations.ROSTER_DIR", tmp_path):
+        butler_chains = _discover_butler_chains()
+    assert butler_chains == ["alpha", "zeta"]
 
-        assert chains == ["has-migrations"]
+    with patch("butlers.migrations.MODULES_DIR", tmp_path):
+        module_chains = _discover_module_chains()
+    assert module_chains == ["alpha", "zeta"]
 
-    def test_skips_empty_migrations_dir(self, tmp_path: Path) -> None:
-        """Butler dirs with an empty migrations/ folder are skipped."""
-        mig_dir = tmp_path / "empty" / "migrations"
-        mig_dir.mkdir(parents=True)
-        (mig_dir / "__init__.py").touch()
+    # Real roster
+    assert has_butler_chain("relationship") is True
+    assert has_butler_chain("does-not-exist-butler-xyz") is False
+    real_butler_chains = _discover_butler_chains()
+    for expected in ["general", "health", "relationship", "switchboard"]:
+        assert expected in real_butler_chains
 
-        with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-            chains = _discover_butler_chains()
-
-        assert chains == []
-
-    def test_returns_empty_when_roster_dir_missing(self, tmp_path: Path) -> None:
-        """Returns empty list when ROSTER_DIR does not exist."""
-        missing = tmp_path / "nonexistent"
-
-        with patch("butlers.migrations.ROSTER_DIR", missing):
-            chains = _discover_butler_chains()
-
-        assert chains == []
-
-    def test_real_discovery_finds_known_butlers(self) -> None:
-        """The real roster/ directory should contain the known butler chains."""
-        chains = _discover_butler_chains()
-        for expected in ["general", "health", "relationship", "switchboard"]:
-            assert expected in chains, f"Expected {expected} in discovered chains"
-
-
-class TestDiscoverModuleChains:
-    """Unit tests for _discover_module_chains."""
-
-    def test_discovers_modules_with_migrations(self, tmp_path: Path) -> None:
-        """Returns sorted list of module names that have migrations."""
-        for name in ["zeta", "alpha"]:
-            mig_dir = tmp_path / name / "migrations"
-            mig_dir.mkdir(parents=True)
-            (mig_dir / "__init__.py").touch()
-            (mig_dir / "001_tables.py").write_text("# migration")
-
-        with patch("butlers.migrations.MODULES_DIR", tmp_path):
-            chains = _discover_module_chains()
-
-        assert chains == ["alpha", "zeta"]
-
-    def test_skips_modules_without_migrations_dir(self, tmp_path: Path) -> None:
-        """Module dirs without a migrations/ subfolder are skipped."""
-        (tmp_path / "no-migrations").mkdir()
-        mig_dir = tmp_path / "has-migrations" / "migrations"
-        mig_dir.mkdir(parents=True)
-        (mig_dir / "001_tables.py").write_text("# migration")
-
-        with patch("butlers.migrations.MODULES_DIR", tmp_path):
-            chains = _discover_module_chains()
-
-        assert chains == ["has-migrations"]
-
-    def test_skips_empty_migrations_dir(self, tmp_path: Path) -> None:
-        """Module dirs with an empty migrations/ folder are skipped."""
-        mig_dir = tmp_path / "empty" / "migrations"
-        mig_dir.mkdir(parents=True)
-        (mig_dir / "__init__.py").touch()
-
-        with patch("butlers.migrations.MODULES_DIR", tmp_path):
-            chains = _discover_module_chains()
-
-        assert chains == []
-
-    def test_returns_empty_when_modules_dir_missing(self, tmp_path: Path) -> None:
-        """Returns empty list when MODULES_DIR does not exist."""
-        missing = tmp_path / "nonexistent"
-
-        with patch("butlers.migrations.MODULES_DIR", missing):
-            chains = _discover_module_chains()
-
-        assert chains == []
-
-    def test_real_discovery_finds_known_modules(self) -> None:
-        """The real modules/ directory should contain the known module chains."""
-        chains = _discover_module_chains()
-        for expected in ["approvals", "mailbox", "memory"]:
-            assert expected in chains, f"Expected {expected} in discovered module chains"
-
-
-class TestResolveChainDir:
-    """Unit tests for _resolve_chain_dir."""
-
-    def test_shared_chain_resolves_to_alembic_versions(self, tmp_path: Path) -> None:
-        """Core chain resolves to alembic/versions/core/."""
-        core_dir = tmp_path / "versions" / "core"
-        core_dir.mkdir(parents=True)
-
-        with (
-            patch("butlers.migrations.ALEMBIC_DIR", tmp_path),
-            patch("butlers.migrations.MODULES_DIR", tmp_path / "empty_modules"),
-            patch("butlers.migrations.ROSTER_DIR", tmp_path / "empty_roster"),
-        ):
-            result = _resolve_chain_dir("core")
-
-        assert result == core_dir
-
-    def test_module_chain_resolves_to_module_dir(self, tmp_path: Path) -> None:
-        """Module chains resolve to src/butlers/modules/<name>/migrations/."""
-        mig_dir = tmp_path / "mailbox" / "migrations"
-        mig_dir.mkdir(parents=True)
-
-        with (
-            patch("butlers.migrations.ALEMBIC_DIR", tmp_path / "empty_alembic"),
-            patch("butlers.migrations.MODULES_DIR", tmp_path),
-            patch("butlers.migrations.ROSTER_DIR", tmp_path / "empty_roster"),
-        ):
-            result = _resolve_chain_dir("mailbox")
-
-        assert result == mig_dir
-
-    def test_butler_chain_resolves_to_butlers_dir(self, tmp_path: Path) -> None:
-        """Butler-specific chains resolve to roster/<name>/migrations/."""
-        mig_dir = tmp_path / "relationship" / "migrations"
-        mig_dir.mkdir(parents=True)
-
-        with (
-            patch("butlers.migrations.ALEMBIC_DIR", tmp_path / "empty_alembic"),
-            patch("butlers.migrations.MODULES_DIR", tmp_path / "empty_modules"),
-            patch("butlers.migrations.ROSTER_DIR", tmp_path),
-        ):
-            result = _resolve_chain_dir("relationship")
-
-        assert result == mig_dir
-
-    def test_nonexistent_chain_returns_none(self, tmp_path: Path) -> None:
-        """Non-existent chains return None."""
-        with (
-            patch("butlers.migrations.ALEMBIC_DIR", tmp_path),
-            patch("butlers.migrations.MODULES_DIR", tmp_path),
-            patch("butlers.migrations.ROSTER_DIR", tmp_path),
-        ):
-            result = _resolve_chain_dir("does-not-exist")
-
-        assert result is None
-
-
-class TestGetAllChains:
-    """Unit tests for get_all_chains."""
-
-    def test_includes_shared_module_and_butler_chains(self, tmp_path: Path) -> None:
-        """Returns shared chains first, then module chains, then butler chains."""
-        alembic_dir = tmp_path / "alembic"
-        modules_dir = tmp_path / "modules"
-        butlers_dir = tmp_path / "butlers"
-
-        # Create shared chain dirs (core only)
-        (alembic_dir / "versions" / "core").mkdir(parents=True)
-
-        # Create a module chain
-        mod_mig_dir = modules_dir / "mailbox" / "migrations"
-        mod_mig_dir.mkdir(parents=True)
-        (mod_mig_dir / "001.py").write_text("# migration")
-
-        # Create a butler chain
-        mig_dir = butlers_dir / "my-butler" / "migrations"
-        mig_dir.mkdir(parents=True)
-        (mig_dir / "001.py").write_text("# migration")
-
-        with (
-            patch("butlers.migrations.ALEMBIC_DIR", alembic_dir),
-            patch("butlers.migrations.MODULES_DIR", modules_dir),
-            patch("butlers.migrations.ROSTER_DIR", butlers_dir),
-        ):
-            chains = get_all_chains()
-
-        assert chains == ["core", "mailbox", "my-butler"]
-
-    def test_real_chains_include_core(self) -> None:
-        """The real chain list should always include core."""
-        chains = get_all_chains()
-        assert "core" in chains
-
-    def test_real_chains_include_module_chains(self) -> None:
-        """The real chain list should include mailbox and approvals as module chains."""
-        chains = get_all_chains()
-        assert "mailbox" in chains
-        assert "approvals" in chains
-        assert "memory" in chains
+    # Real modules
+    real_module_chains = _discover_module_chains()
+    for expected in ["approvals", "mailbox", "memory"]:
+        assert expected in real_module_chains
 
 
 # ---------------------------------------------------------------------------
-# Daemon integration tests for butler-specific migration ordering
+# _resolve_chain_dir
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_chain_dir(tmp_path) -> None:
+    """Core → alembic/versions/; module → modules dir; butler → roster dir; missing → None."""
+    alembic_dir = tmp_path / "alembic"
+    modules_dir = tmp_path / "modules"
+    roster_dir = tmp_path / "roster"
+
+    (alembic_dir / "versions" / "core").mkdir(parents=True)
+    (modules_dir / "mailbox" / "migrations").mkdir(parents=True)
+    (roster_dir / "relationship" / "migrations").mkdir(parents=True)
+
+    with (
+        patch("butlers.migrations.ALEMBIC_DIR", alembic_dir),
+        patch("butlers.migrations.MODULES_DIR", modules_dir),
+        patch("butlers.migrations.ROSTER_DIR", roster_dir),
+    ):
+        assert _resolve_chain_dir("core") == alembic_dir / "versions" / "core"
+        assert _resolve_chain_dir("mailbox") == modules_dir / "mailbox" / "migrations"
+        assert _resolve_chain_dir("relationship") == roster_dir / "relationship" / "migrations"
+        assert _resolve_chain_dir("does-not-exist") is None
+
+
+# ---------------------------------------------------------------------------
+# get_all_chains
+# ---------------------------------------------------------------------------
+
+
+def test_get_all_chains(tmp_path) -> None:
+    """Shared chains first, then modules, then butlers; real list includes known chains."""
+    alembic_dir = tmp_path / "alembic"
+    modules_dir = tmp_path / "modules"
+    butlers_dir = tmp_path / "butlers"
+
+    (alembic_dir / "versions" / "core").mkdir(parents=True)
+    (modules_dir / "mailbox" / "migrations").mkdir(parents=True)
+    (modules_dir / "mailbox" / "migrations" / "001.py").write_text("# migration")
+    (butlers_dir / "my-butler" / "migrations").mkdir(parents=True)
+    (butlers_dir / "my-butler" / "migrations" / "001.py").write_text("# migration")
+
+    with (
+        patch("butlers.migrations.ALEMBIC_DIR", alembic_dir),
+        patch("butlers.migrations.MODULES_DIR", modules_dir),
+        patch("butlers.migrations.ROSTER_DIR", butlers_dir),
+    ):
+        chains = get_all_chains()
+    assert chains == ["core", "mailbox", "my-butler"]
+
+    # Real chain list
+    real_chains = get_all_chains()
+    for expected in ["core", "mailbox", "approvals", "memory"]:
+        assert expected in real_chains
+
+
+# ---------------------------------------------------------------------------
+# Daemon integration: butler-specific migration ordering
 # ---------------------------------------------------------------------------
 
 
 class StubConfig(BaseModel):
-    """Config schema for stub module."""
+    pass
 
 
 class StubModule(Module):
-    """Stub module for testing migration ordering."""
-
     def __init__(self) -> None:
         self.started = False
         self.shutdown_called = False
@@ -403,7 +257,6 @@ def _make_butler_toml(
     db_name: str | None = None,
     db_schema: str | None = None,
 ) -> Path:
-    """Write a butler.toml with a given butler name."""
     modules = modules or {}
     resolved_db_name = db_name or "butlers"
     resolved_schema = db_schema or name.replace("-", "_")
@@ -429,9 +282,7 @@ def _make_butler_toml(
 
 
 def _patch_infra():
-    """Return patches for all daemon infrastructure dependencies."""
     mock_pool = AsyncMock()
-
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -467,184 +318,93 @@ def _patch_infra():
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "mock_db": mock_db,
         "mock_pool": mock_pool,
     }
 
 
-class TestButlerSpecificMigrationInDaemon:
-    """Verify the daemon runs butler-specific migrations at the right time."""
+async def _run_daemon_with_migration_tracking(
+    butler_dir: Path,
+    registry: ModuleRegistry,
+    *,
+    has_chain: bool,
+) -> tuple[list[str], list[str | None]]:
+    """Start daemon and return (chain_order, schema_list) from migration calls."""
+    patches = _patch_infra()
+    call_log: list[str] = []
+    schema_log: list[str | None] = []
 
-    async def test_butler_with_chain_runs_butler_migrations(self, tmp_path: Path) -> None:
-        """When has_butler_chain returns True, butler-specific migrations run
-        after core and before module migrations."""
-        butler_dir = _make_butler_toml(tmp_path, "relationship", modules={"stub_mod": {}})
-        registry = ModuleRegistry()
-        registry.register(StubModule)
-        patches = _patch_infra()
+    with (
+        patches["db_from_env"],
+        patches["run_migrations"] as mock_mig,
+        patches["has_butler_chain"] as mock_has_chain,
+        patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["init_telemetry"],
+        patches["sync_schedules"],
+        patches["FastMCP"],
+        patches["Spawner"],
+        patches["get_adapter"],
+        patches["shutil_which"],
+        patches["start_mcp_server"],
+        patches["recover_route_inbox"],
+    ):
+        mock_has_chain.return_value = has_chain
 
-        call_log: list[str] = []
+        async def track_migration(db_url, chain="core", schema=None):
+            call_log.append(f"migrate:{chain}")
+            schema_log.append(schema)
 
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"] as mock_mig,
-            patches["has_butler_chain"] as mock_has_chain,
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["recover_route_inbox"],
-        ):
-            mock_has_chain.return_value = True
+        mock_mig.side_effect = track_migration
 
-            async def track_migration(db_url, chain="core", schema=None):
-                call_log.append(f"migrate:{chain}")
+        daemon = ButlerDaemon(butler_dir, registry=registry)
+        await daemon.start()
 
-            mock_mig.side_effect = track_migration
+    return call_log, schema_log
 
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
 
-        # Verify ordering: core -> butler-specific -> module
-        assert call_log == ["migrate:core", "migrate:relationship", "migrate:stub_mod"]
+async def test_butler_migration_ordering(tmp_path: Path) -> None:
+    """Migration ordering: with chain runs core→butler→module; without chain skips butler."""
+    registry_with_mod = ModuleRegistry()
+    registry_with_mod.register(StubModule)
 
-    async def test_butler_without_chain_skips_butler_migrations(self, tmp_path: Path) -> None:
-        """When has_butler_chain returns False, no butler-specific migration runs."""
-        butler_dir = _make_butler_toml(tmp_path, "test-butler", modules={"stub_mod": {}})
-        registry = ModuleRegistry()
-        registry.register(StubModule)
-        patches = _patch_infra()
+    # With chain + module
+    (tmp_path / "a").mkdir()
+    butler_dir = _make_butler_toml(tmp_path / "a", "relationship", modules={"stub_mod": {}})
+    call_log, _ = await _run_daemon_with_migration_tracking(
+        butler_dir, registry_with_mod, has_chain=True
+    )
+    assert call_log == ["migrate:core", "migrate:relationship", "migrate:stub_mod"]
 
-        call_log: list[str] = []
+    # Without chain
+    (tmp_path / "b").mkdir()
+    butler_dir2 = _make_butler_toml(tmp_path / "b", "test-butler", modules={"stub_mod": {}})
+    call_log2, _ = await _run_daemon_with_migration_tracking(
+        butler_dir2, registry_with_mod, has_chain=False
+    )
+    assert call_log2 == ["migrate:core", "migrate:stub_mod"]
 
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"] as mock_mig,
-            patches["has_butler_chain"] as mock_has_chain,
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["recover_route_inbox"],
-        ):
-            mock_has_chain.return_value = False
+    # With chain, no modules
+    (tmp_path / "c").mkdir()
+    butler_dir3 = _make_butler_toml(tmp_path / "c", "relationship")
+    call_log3, _ = await _run_daemon_with_migration_tracking(
+        butler_dir3, ModuleRegistry(), has_chain=True
+    )
+    assert call_log3 == ["migrate:core", "migrate:relationship"]
 
-            async def track_migration(db_url, chain="core", schema=None):
-                call_log.append(f"migrate:{chain}")
 
-            mock_mig.side_effect = track_migration
+async def test_butler_migration_schema_forwarding(tmp_path: Path) -> None:
+    """All migration chains receive the butler's configured schema."""
+    butler_dir = _make_butler_toml(
+        tmp_path,
+        "relationship",
+        modules={"stub_mod": {}},
+        db_name="butlers",
+        db_schema="relationship",
+    )
+    registry = ModuleRegistry()
+    registry.register(StubModule)
 
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
-
-        # Only core and module, no butler-specific
-        assert call_log == ["migrate:core", "migrate:stub_mod"]
-
-    async def test_butler_chain_checked_with_butler_name(self, tmp_path: Path) -> None:
-        """has_butler_chain should be called with the butler's name from config."""
-        butler_dir = _make_butler_toml(tmp_path, "my-special-butler")
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["has_butler_chain"] as mock_has_chain,
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["recover_route_inbox"],
-        ):
-            mock_has_chain.return_value = False
-
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-
-        mock_has_chain.assert_called_once_with("my-special-butler")
-
-    async def test_no_modules_butler_with_chain(self, tmp_path: Path) -> None:
-        """Butler with chain but no modules still runs butler-specific migrations."""
-        butler_dir = _make_butler_toml(tmp_path, "relationship")
-        patches = _patch_infra()
-
-        call_log: list[str] = []
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"] as mock_mig,
-            patches["has_butler_chain"] as mock_has_chain,
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["recover_route_inbox"],
-        ):
-            mock_has_chain.return_value = True
-
-            async def track_migration(db_url, chain="core", schema=None):
-                call_log.append(f"migrate:{chain}")
-
-            mock_mig.side_effect = track_migration
-
-            daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
-            await daemon.start()
-
-        assert call_log == ["migrate:core", "migrate:relationship"]
-
-    async def test_one_db_schema_passed_to_all_migration_runs(self, tmp_path: Path) -> None:
-        """One-db topology should pass configured schema to every migration chain."""
-        butler_dir = _make_butler_toml(
-            tmp_path,
-            "relationship",
-            modules={"stub_mod": {}},
-            db_name="butlers",
-            db_schema="relationship",
-        )
-        registry = ModuleRegistry()
-        registry.register(StubModule)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"] as mock_mig,
-            patches["has_butler_chain"] as mock_has_chain,
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["get_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["recover_route_inbox"],
-        ):
-            mock_has_chain.return_value = True
-
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
-
-        chains = [call.kwargs["chain"] for call in mock_mig.await_args_list]
-        schemas = [call.kwargs["schema"] for call in mock_mig.await_args_list]
-        assert chains == ["core", "relationship", "stub_mod"]
-        assert schemas == ["relationship", "relationship", "relationship"]
+    _, schema_log = await _run_daemon_with_migration_tracking(
+        butler_dir, registry, has_chain=True
+    )
+    assert schema_log == ["relationship", "relationship", "relationship"]

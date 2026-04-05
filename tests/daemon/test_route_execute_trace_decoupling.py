@@ -354,41 +354,7 @@ class TestRequestIdAttribute:
     async def test_accept_span_has_request_id_attribute(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """The accept-phase route.execute span carries request_id as an attribute."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
-
-        trigger_result = MagicMock()
-        trigger_result.session_id = uuid.uuid4()
-        daemon.spawner.trigger = AsyncMock(return_value=trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-        )
-        assert result["status"] == "accepted"
-        await asyncio.sleep(0.05)
-
-        spans = otel_provider.get_finished_spans()
-        accept_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
-        assert len(accept_spans) == 1
-        accept_span = accept_spans[0]
-
-        assert "request_id" in accept_span.attributes, (
-            "Accept span must have request_id attribute for cross-trace correlation"
-        )
-        assert accept_span.attributes["request_id"] == _REQUEST_ID
-
-    async def test_process_span_has_request_id_attribute(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
-    ) -> None:
-        """The process span carries request_id as an attribute."""
+        """Both accept and process spans carry request_id as an attribute."""
         patches = _patch_infra("health")
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         tracer = trace.get_tracer("butlers")
@@ -410,9 +376,18 @@ class TestRequestIdAttribute:
         await asyncio.sleep(0.1)
 
         spans = otel_provider.get_finished_spans()
+        accept_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
         process_spans = [s for s in spans if s.name == "route.process"]
+        assert len(accept_spans) == 1
         assert len(process_spans) == 1
+
+        accept_span = accept_spans[0]
         process_span = process_spans[0]
+
+        assert "request_id" in accept_span.attributes, (
+            "Accept span must have request_id attribute for cross-trace correlation"
+        )
+        assert accept_span.attributes["request_id"] == _REQUEST_ID
 
         assert "request_id" in process_span.attributes, (
             "Process span must have request_id attribute for cross-trace correlation"
@@ -476,47 +451,10 @@ class TestSpanLink:
             "SpanLink span_id must match the accept-phase span's span_id"
         )
 
-    async def test_span_link_carries_request_id_attribute(
+    async def test_span_link_and_shared_trace(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """The SpanLink on route.process includes request_id in its attributes."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
-
-        trigger_result = MagicMock()
-        trigger_result.session_id = uuid.uuid4()
-        daemon.spawner.trigger = AsyncMock(return_value=trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-        )
-        assert result["status"] == "accepted"
-        await asyncio.sleep(0.1)
-
-        spans = otel_provider.get_finished_spans()
-        process_spans = [s for s in spans if s.name == "route.process"]
-        assert len(process_spans) == 1
-        process_span = process_spans[0]
-
-        assert len(process_span.links) >= 1
-        link = process_span.links[0]
-        assert link.attributes is not None
-        assert "request_id" in link.attributes, (
-            "SpanLink must carry request_id attribute for trace join lookups"
-        )
-        assert link.attributes["request_id"] == _REQUEST_ID
-
-    async def test_accept_and_process_share_same_trace(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
-    ) -> None:
-        """Accept and process spans should be in one trace and share request_id."""
+        """SpanLink carries request_id attribute; accept+process spans share same trace_id."""
         patches = _patch_infra("health")
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         tracer = trace.get_tracer("butlers")
@@ -540,18 +478,19 @@ class TestSpanLink:
         spans = otel_provider.get_finished_spans()
         accept_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
         process_spans = [s for s in spans if s.name == "route.process"]
-
-        assert len(accept_spans) == 1
-        assert len(process_spans) == 1
-
+        assert len(accept_spans) == 1 and len(process_spans) == 1
         accept_span = accept_spans[0]
         process_span = process_spans[0]
 
-        assert accept_span.context.trace_id == process_span.context.trace_id, (
-            "Accept and process spans must belong to the same distributed trace"
-        )
+        # SpanLink carries request_id attribute
+        assert len(process_span.links) >= 1
+        link = process_span.links[0]
+        assert link.attributes is not None
+        assert "request_id" in link.attributes
+        assert link.attributes["request_id"] == _REQUEST_ID
 
-        # Both carry the same request_id for correlation and auditing.
+        # Accept and process share the same trace_id and request_id
+        assert accept_span.context.trace_id == process_span.context.trace_id
         assert accept_span.attributes.get("request_id") == _REQUEST_ID
         assert process_span.attributes.get("request_id") == _REQUEST_ID
 

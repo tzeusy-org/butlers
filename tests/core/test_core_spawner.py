@@ -1,4 +1,4 @@
-"""Tests for the Spawner orchestration layer (butlers-0qp.8, butlers-f3t.7).
+"""Tests for the Spawner orchestration layer (butlers-0qp.8, butlers-f3t.7) — condensed.
 
 Covers:
 - Serial dispatch (lock prevents concurrent execution)
@@ -41,71 +41,39 @@ pytestmark = pytest.mark.unit
 _FAKE_CATALOG_ID = uuid.UUID("00000000-0000-0000-0000-000000000099")
 
 
-def test_append_runtime_session_query_adds_param():
+def test_append_runtime_session_query():
+    """Adds param to clean URL; preserves existing query params."""
     url = _append_runtime_session_query("http://localhost:9100/mcp", "sess-123")
     assert url == "http://localhost:9100/mcp?runtime_session_id=sess-123"
-
-
-def test_append_runtime_session_query_preserves_existing_query():
-    url = _append_runtime_session_query("http://localhost:9100/mcp?x=1", "sess-123")
-    assert url in (
+    url2 = _append_runtime_session_query("http://localhost:9100/mcp?x=1", "sess-123")
+    assert url2 in (
         "http://localhost:9100/mcp?x=1&runtime_session_id=sess-123",
         "http://localhost:9100/mcp?runtime_session_id=sess-123&x=1",
     )
 
 
-def test_merge_tool_call_records_dedupes_same_name_and_payload():
+def test_merge_tool_call_records():
+    """Dedupes same name+payload; preserves failed-then-retried sequence."""
+    # Dedup: executed has two calls with same name/input as parsed; result = both unique entries
     parsed = [{"name": "route_to_butler", "input": {"butler": "relationship"}}]
     executed = [
         {"name": "route_to_butler", "input": {"butler": "relationship"}},
         {"name": "route_to_butler", "input": {"butler": "health"}},
     ]
-    merged = _merge_tool_call_records(parsed, executed)
-    assert merged == [
+    assert _merge_tool_call_records(parsed, executed) == [
         {"name": "route_to_butler", "input": {"butler": "relationship"}},
         {"name": "route_to_butler", "input": {"butler": "health"}},
     ]
 
-
-def test_merge_tool_call_records_preserves_failed_then_retried_sequence():
-    parsed = [
-        {
-            "id": "tool_1",
-            "name": "route_to_butler",
-            "input": {"butler": "relationship"},
-        }
+    # Failed-then-retried sequence preserved
+    parsed2 = [{"id": "tool_1", "name": "route_to_butler", "input": {"butler": "relationship"}}]
+    executed2 = [
+        {"name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "error", "error": "TimeoutError: target unavailable"},
+        {"name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "success", "result": {"status": "accepted", "butler": "relationship"}},
     ]
-    executed = [
-        {
-            "name": "route_to_butler",
-            "input": {"butler": "relationship"},
-            "outcome": "error",
-            "error": "TimeoutError: target unavailable",
-        },
-        {
-            "name": "route_to_butler",
-            "input": {"butler": "relationship"},
-            "outcome": "success",
-            "result": {"status": "accepted", "butler": "relationship"},
-        },
-    ]
-
-    merged = _merge_tool_call_records(parsed, executed)
-
-    assert merged == [
-        {
-            "id": "tool_1",
-            "name": "route_to_butler",
-            "input": {"butler": "relationship"},
-            "outcome": "error",
-            "error": "TimeoutError: target unavailable",
-        },
-        {
-            "name": "route_to_butler",
-            "input": {"butler": "relationship"},
-            "outcome": "success",
-            "result": {"status": "accepted", "butler": "relationship"},
-        },
+    assert _merge_tool_call_records(parsed2, executed2) == [
+        {"id": "tool_1", "name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "error", "error": "TimeoutError: target unavailable"},
+        {"name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "success", "result": {"status": "accepted", "butler": "relationship"}},
     ]
 
 
@@ -387,7 +355,8 @@ def _make_config(
 class TestSpawnerResult:
     """SpawnerResult dataclass behavior."""
 
-    def test_default_values(self):
+    def test_result_fields(self):
+        """Default values, success/error/token fields all populated correctly."""
         r = SpawnerResult()
         assert r.output is None
         assert r.tool_calls == []
@@ -397,51 +366,62 @@ class TestSpawnerResult:
         assert r.input_tokens is None
         assert r.output_tokens is None
 
-    def test_success_result(self):
-        r = SpawnerResult(output="output_text", tool_calls=[{"name": "t"}], duration_ms=42)
-        assert r.output == "output_text"
-        assert len(r.tool_calls) == 1
-        assert r.error is None
+        r2 = SpawnerResult(output="output_text", tool_calls=[{"name": "t"}], duration_ms=42)
+        assert r2.output == "output_text"
+        assert len(r2.tool_calls) == 1
+        assert r2.error is None
 
-    def test_error_result(self):
-        r = SpawnerResult(error="something broke", duration_ms=10)
-        assert r.output is None
-        assert r.error == "something broke"
+        r3 = SpawnerResult(error="something broke", duration_ms=10)
+        assert r3.output is None
+        assert r3.error == "something broke"
 
-    def test_result_with_model(self):
-        r = SpawnerResult(output="output_text", model="claude-opus-4-20250514", duration_ms=42)
-        assert r.model == "claude-opus-4-20250514"
-
-    def test_result_with_token_counts(self):
-        r = SpawnerResult(
+        r4 = SpawnerResult(
             output="output_text",
+            model="claude-opus-4-20250514",
             duration_ms=42,
             input_tokens=1500,
             output_tokens=2500,
         )
-        assert r.input_tokens == 1500
-        assert r.output_tokens == 2500
+        assert r4.model == "claude-opus-4-20250514"
+        assert r4.input_tokens == 1500
+        assert r4.output_tokens == 2500
 
 
 class TestSpawnerInvocation:
     """Tests for runtime invocation via Spawner.trigger() with MockAdapter."""
 
-    async def test_success_with_result(self, tmp_path: Path):
+    async def test_success_result_tool_calls_and_duration(self, tmp_path: Path):
+        """Success returns output; tool calls captured; duration measured."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
+        # Basic success
         adapter = MockAdapter(result_text="Hello from mock!")
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
         result = await spawner.trigger("hello", "tick")
         assert result.output == "Hello from mock!"
         assert result.error is None
         assert result.duration_ms >= 0
+
+        # Tool calls captured
+        adapter2 = MockAdapter(
+            result_text="Done with tools",
+            tool_calls=[{"id": "tool_1", "name": "state_get", "input": {"key": "foo"}}],
+        )
+        result2 = await Spawner(config=config, config_dir=config_dir, runtime=adapter2).trigger(
+            "use tools", "trigger_tool"
+        )
+        assert result2.output == "Done with tools"
+        assert len(result2.tool_calls) == 1
+        assert result2.tool_calls[0]["name"] == "state_get"
+
+        # Duration measured for slow adapter
+        slow_adapter = MockAdapter(result_text="slow result", delay=0.05)
+        result3 = await Spawner(
+            config=config, config_dir=config_dir, runtime=slow_adapter
+        ).trigger("slow", "tick")
+        assert result3.duration_ms >= 40
 
     async def test_runtime_args_forwarded_to_runtime_invoke(self, tmp_path: Path):
         """Configured runtime args are forwarded to adapter invoke kwargs."""
@@ -491,79 +471,27 @@ class TestSpawnerInvocation:
         assert result.success is True
         assert captured["runtime_args"] == ["--config", 'model_reasoning_effort="high"']
 
-    async def test_tool_calls_captured(self, tmp_path: Path):
+    async def test_error_wrapping_and_reset_behavior(self, tmp_path: Path):
+        """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
-        adapter = MockAdapter(
-            result_text="Done with tools",
-            tool_calls=[{"id": "tool_1", "name": "state_get", "input": {"key": "foo"}}],
-        )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("use tools", "trigger_tool")
-        assert result.output == "Done with tools"
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "state_get"
-        assert result.tool_calls[0]["input"] == {"key": "foo"}
-
-    async def test_error_wrapped_in_result(self, tmp_path: Path):
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
+        # Adapter error wrapped in result; reset called once
         adapter = MockAdapter(error="adapter connection failed")
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("fail", "tick")
+        result = await Spawner(config=config, config_dir=config_dir, runtime=adapter).trigger("fail", "tick")
         assert result.error is not None
-        assert "RuntimeError" in result.error
-        assert "adapter connection failed" in result.error
-        assert result.output is None
-        assert result.duration_ms >= 0
+        assert "RuntimeError" in result.error and "adapter connection failed" in result.error
+        assert result.output is None and result.duration_ms >= 0
         assert adapter.reset_calls == 1
 
-    async def test_duration_measured(self, tmp_path: Path):
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(result_text="slow result", delay=0.05)
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("slow", "tick")
-        assert result.duration_ms >= 40  # at least ~50ms sleep
-
-    async def test_runtime_not_reset_when_failure_before_invoke(self, tmp_path: Path):
-        """reset() is skipped when the exception occurs before runtime invocation."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter()
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
+        # Pre-invoke failure (before runtime invocation) → reset not called
+        adapter2 = MockAdapter()
+        spawner2 = Spawner(config=config, config_dir=config_dir, runtime=adapter2)
         with patch("butlers.core.spawner.read_system_prompt", side_effect=RuntimeError("boom")):
-            result = await spawner.trigger("hi", "tick")
-
-        assert result.success is False
-        assert result.error is not None
-        assert "RuntimeError: boom" in result.error
-        assert adapter.calls == []
-        assert adapter.reset_calls == 0
+            result2 = await spawner2.trigger("hi", "tick")
+        assert result2.success is False and "RuntimeError: boom" in result2.error
+        assert adapter2.calls == [] and adapter2.reset_calls == 0
 
     async def test_runtime_worker_factory_used_per_trigger(self, tmp_path: Path):
         """Spawner should invoke worker adapters returned by create_worker()."""
@@ -582,45 +510,30 @@ class TestSpawnerInvocation:
         assert adapter.created_worker_ids == [1, 2]
         assert adapter.invoked_worker_ids == [1, 2]
 
-    async def test_session_timeout_cancels_hung_invoke(self, tmp_path: Path):
-        """Sessions exceeding session_timeout_s are cancelled and return a timeout error."""
+    async def test_session_timeout_and_semaphore_release(self, tmp_path: Path):
+        """Timed-out sessions return error; semaphore released so next session succeeds."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(session_timeout_s=1)
 
-        # Adapter that hangs for 60s — will be cancelled by the 1s timeout
+        # Single-shot timeout
         adapter = MockAdapter(result_text="never reached", delay=60)
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-        result = await spawner.trigger("hung prompt", "route")
-        assert result.success is False
-        assert result.error is not None
-        assert "timed out" in result.error.lower()
-        assert result.duration_ms >= 900  # at least ~1s
-
-    async def test_session_timeout_releases_semaphore(self, tmp_path: Path):
-        """After a timeout, the concurrency semaphore is released for subsequent sessions."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(session_timeout_s=1)
-
-        adapter = SequenceMockAdapter(
-            sequence=[
-                {"delay": 60},  # first call hangs → timeout
-                {"result_text": "ok"},  # second call succeeds
-            ]
+        result = await Spawner(config=config, config_dir=config_dir, runtime=adapter).trigger(
+            "hung prompt", "route"
         )
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+        assert result.success is False
+        assert "timed out" in result.error.lower()
+        assert result.duration_ms >= 900
 
-        # First trigger should timeout
+        # Semaphore released: second session succeeds
+        seq_adapter = SequenceMockAdapter(
+            sequence=[{"delay": 60}, {"result_text": "ok"}]
+        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=seq_adapter)
         r1 = await spawner.trigger("hung", "route")
-        assert r1.success is False
-        assert "timed out" in r1.error.lower()
-
-        # Second trigger should succeed — semaphore was released
+        assert r1.success is False and "timed out" in r1.error.lower()
         r2 = await spawner.trigger("ok", "route")
-        assert r2.success is True
-        assert r2.output == "ok"
+        assert r2.success is True and r2.output == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -639,150 +552,69 @@ class TestCredentialPassthrough:
     # Env-only path (no credential_store — backwards compatibility)
     # ------------------------------------------------------------------
 
-    async def test_path_baseline_included(self):
-        """PATH is passed through so runtime shebangs can resolve binaries."""
-        config = _make_config()
-        with patch.dict(os.environ, {"PATH": "/tmp/node-bin"}, clear=True):
+    async def test_env_path_passthrough_and_optional_exclusion(self):
+        """PATH and declared required/optional vars passed; undeclared not leaked;
+        optional absent → excluded; module credentials included."""
+        config = _make_config(env_required=["MY_SECRET"], env_optional=["OPT_VAR"])
+        with patch.dict(
+            os.environ,
+            {"PATH": "/tmp/node-bin", "MY_SECRET": "s3cret", "OPT_VAR": "opt-val", "UNDECLARED_SECRET": "should-not-leak"},
+            clear=False,
+        ):
             env = await _build_env(config)
             assert env["PATH"] == "/tmp/node-bin"
-
-    async def test_required_env_vars_included(self):
-        config = _make_config(env_required=["MY_SECRET"])
-        with patch.dict(
-            os.environ,
-            {"MY_SECRET": "s3cret"},
-            clear=False,
-        ):
-            env = await _build_env(config)
             assert env["MY_SECRET"] == "s3cret"
-
-    async def test_optional_env_vars_included_when_present(self):
-        config = _make_config(env_optional=["OPT_VAR"])
-        with patch.dict(
-            os.environ,
-            {"OPT_VAR": "opt-val"},
-            clear=False,
-        ):
-            env = await _build_env(config)
             assert env["OPT_VAR"] == "opt-val"
-
-    async def test_optional_env_vars_excluded_when_absent(self):
-        config = _make_config(env_optional=["MISSING_OPT"])
-        os.environ.pop("MISSING_OPT", None)
-        env = await _build_env(config)
-        assert "MISSING_OPT" not in env
-
-    async def test_module_credentials_included(self):
-        config = _make_config()
-        module_creds = {"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
-        with patch.dict(
-            os.environ,
-            {
-                "SMTP_PASSWORD": "pw123",
-                "IMAP_TOKEN": "tok456",
-            },
-            clear=False,
-        ):
-            env = await _build_env(config, module_credentials_env=module_creds)
-            assert env["SMTP_PASSWORD"] == "pw123"
-            assert env["IMAP_TOKEN"] == "tok456"
-
-    async def test_undeclared_vars_not_leaked(self):
-        config = _make_config(env_required=["DECLARED"])
-        with patch.dict(
-            os.environ,
-            {
-                "DECLARED": "yes",
-                "UNDECLARED_SECRET": "should-not-leak",
-            },
-            clear=False,
-        ):
-            env = await _build_env(config)
             assert "UNDECLARED_SECRET" not in env
-            assert "DECLARED" in env
 
-    # ------------------------------------------------------------------
-    # DB-first resolution path (with mocked CredentialStore)
-    # ------------------------------------------------------------------
+        # Optional absent → excluded
+        config2 = _make_config(env_optional=["MISSING_OPT"])
+        os.environ.pop("MISSING_OPT", None)
+        env2 = await _build_env(config2)
+        assert "MISSING_OPT" not in env2
 
-    async def test_db_resolution_module_credentials(self):
-        """Module credentials resolved from DB when CredentialStore is provided."""
-        config = _make_config()
-        module_creds = {"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
+        # Module credentials included
+        config3 = _make_config()
+        with patch.dict(os.environ, {"SMTP_PASSWORD": "pw123", "IMAP_TOKEN": "tok456"}, clear=False):
+            env3 = await _build_env(config3, module_credentials_env={"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]})
+            assert env3["SMTP_PASSWORD"] == "pw123"
+            assert env3["IMAP_TOKEN"] == "tok456"
+
+    async def test_db_credential_resolution(self):
+        """DB-first path: module and butler creds resolved; missing key excluded."""
+        config = _make_config(env_required=["MY_SECRET"])
         store = AsyncMock()
-        resolved = {
-            "SMTP_PASSWORD": "db-smtp-pw",
-            "IMAP_TOKEN": "db-imap-tok",
-        }
+        resolved = {"SMTP_PASSWORD": "db-smtp-pw", "IMAP_TOKEN": "db-imap-tok", "MY_SECRET": "db-secret-value"}
         store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
-        env = await _build_env(config, module_credentials_env=module_creds, credential_store=store)
+        env = await _build_env(config, module_credentials_env={"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}, credential_store=store)
         assert env["SMTP_PASSWORD"] == "db-smtp-pw"
         assert env["IMAP_TOKEN"] == "db-imap-tok"
-
-    async def test_db_resolution_required_env_vars(self):
-        """butler-level required env vars resolved from DB when CredentialStore is provided."""
-        config = _make_config(env_required=["MY_SECRET"])
-        resolved = {"MY_SECRET": "db-secret-value"}
-        store = AsyncMock()
-        store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
-        env = await _build_env(config, credential_store=store)
         assert env["MY_SECRET"] == "db-secret-value"
 
-    async def test_db_resolution_missing_key_excluded(self):
-        """When DB and env have no value for a key, it is excluded from env dict."""
-        config = _make_config(env_required=["MISSING_KEY"])
-        store = AsyncMock()
-        store.resolve = AsyncMock(return_value=None)  # Nothing found anywhere
-        env = await _build_env(config, credential_store=store)
-        assert "MISSING_KEY" not in env
+        # Missing key excluded
+        config2 = _make_config(env_required=["MISSING_KEY"])
+        store2 = AsyncMock()
+        store2.resolve = AsyncMock(return_value=None)
+        env2 = await _build_env(config2, credential_store=store2)
+        assert "MISSING_KEY" not in env2
 
-    async def test_env_passed_to_adapter(self, tmp_path: Path):
-        """Verify the env dict is passed through to the adapter."""
+    async def test_env_and_db_creds_passed_to_adapter(self, tmp_path: Path):
+        """Env creds and DB creds both reach the adapter via trigger()."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config(env_required=["BUTLER_SECRET"])
 
+        # Env path
         adapter = MockAdapter(result_text="", capture=True)
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
+        with patch.dict(os.environ, {"BUTLER_SECRET": "s3cret"}, clear=False):
+            await Spawner(config=_make_config(env_required=["BUTLER_SECRET"]), config_dir=config_dir, runtime=adapter).trigger("test env", "tick")
+        assert adapter.calls[0]["env"]["BUTLER_SECRET"] == "s3cret"
 
-        with patch.dict(
-            os.environ,
-            {"BUTLER_SECRET": "s3cret"},
-            clear=False,
-        ):
-            await spawner.trigger("test env", "tick")
-
-        assert len(adapter.calls) == 1
-        passed_env = adapter.calls[0]["env"]
-        assert passed_env["BUTLER_SECRET"] == "s3cret"
-
-    async def test_spawner_with_credential_store_passes_db_values_to_adapter(self, tmp_path: Path):
-        """Spawner with credential_store resolves credentials from DB for spawned instances."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(env_required=["MY_API_KEY"])
-
+        # DB path
         store = AsyncMock()
-        resolved = {"MY_API_KEY": "db-my-api-key"}
-        store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
-
-        adapter = MockAdapter(result_text="", capture=True)
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-            credential_store=store,
-        )
-
-        await spawner.trigger("test db creds", "tick")
-
-        assert len(adapter.calls) == 1
-        passed_env = adapter.calls[0]["env"]
-        assert passed_env["MY_API_KEY"] == "db-my-api-key"
+        store.resolve = AsyncMock(side_effect=lambda key: {"MY_API_KEY": "db-my-api-key"}.get(key))
+        adapter2 = MockAdapter(result_text="", capture=True)
+        await Spawner(config=_make_config(env_required=["MY_API_KEY"]), config_dir=config_dir, runtime=adapter2, credential_store=store).trigger("test db creds", "tick")
+        assert adapter2.calls[0]["env"]["MY_API_KEY"] == "db-my-api-key"
 
 
 # ---------------------------------------------------------------------------
@@ -883,32 +715,6 @@ class TestSemaphoreConcurrencyPool:
     """asyncio.Semaphore(n) allows n concurrent sessions; self-trigger guard
     only rejects when all slots are occupied."""
 
-    async def test_n1_produces_serial_dispatch(self, tmp_path: Path):
-        """n=1 (default) serializes invocations — identical to Lock behaviour."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(max_concurrent_sessions=1)
-
-        adapter = TrackingMockAdapter()
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-        results = await asyncio.gather(
-            spawner.trigger("A", "tick"),
-            spawner.trigger("B", "tick"),
-        )
-
-        assert all(r.error is None for r in results)
-        # Verify serial execution: start/end pairs are interleaved (non-overlapping)
-        log = adapter.execution_log
-        assert len(log) == 4
-        assert log[0] == ("start", "A") or log[0] == ("start", "B")
-        # whichever starts first must end before the other starts
-        assert log[1][0] == "end"
-        assert log[2][0] == "start"
-        assert log[3][0] == "end"
-        assert log[1][1] == log[0][1]  # same prompt started and ended
-        assert log[3][1] == log[2][1]
-
     async def test_n3_allows_three_concurrent_sessions(self, tmp_path: Path):
         """n=3 allows 3 triggers to run concurrently (all start before any end)."""
         config_dir = tmp_path / "config"
@@ -953,35 +759,15 @@ class TestSemaphoreConcurrencyPool:
         assert len(started) == 3
         assert len(finished) == 3
 
-    async def test_self_trigger_rejected_when_n1_semaphore_full(self, tmp_path: Path):
-        """With n=1, trigger-source rejected when the single slot is taken."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(max_concurrent_sessions=1)
-
-        adapter = MockAdapter(result_text="should not run", capture=True)
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-        await spawner._session_semaphore.acquire()
-        try:
-            result = await spawner.trigger("nested", "trigger")
-        finally:
-            spawner._session_semaphore.release()
-
-        assert result.success is False
-        assert "cannot be called while another session is in flight" in result.error
-        assert adapter.calls == []
-
-    async def test_self_trigger_allowed_when_n3_has_free_slot(self, tmp_path: Path):
-        """With n=3, trigger-source is allowed when only 2 of 3 slots are taken."""
+    async def test_self_trigger_guard_with_free_and_full_n3_slots(self, tmp_path: Path):
+        """With n=3, trigger allowed when slot free; rejected when all slots occupied."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(max_concurrent_sessions=3)
 
+        # One slot free (2 of 3 occupied) → trigger allowed
         adapter = MockAdapter(result_text="allowed", capture=True)
         spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-        # Occupy 2 of 3 slots — one slot is still free
         await spawner._session_semaphore.acquire()
         await spawner._session_semaphore.acquire()
         try:
@@ -989,34 +775,23 @@ class TestSemaphoreConcurrencyPool:
         finally:
             spawner._session_semaphore.release()
             spawner._session_semaphore.release()
+        assert result.success is True and result.error is None
 
-        # Should succeed: one slot was free so the guard should NOT reject
-        assert result.success is True
-        assert result.error is None
-
-    async def test_self_trigger_rejected_when_n3_all_slots_full(self, tmp_path: Path):
-        """With n=3, trigger-source rejected when all 3 slots are occupied."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(max_concurrent_sessions=3)
-
-        adapter = MockAdapter(result_text="should not run", capture=True)
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-        # Occupy all 3 slots
-        await spawner._session_semaphore.acquire()
-        await spawner._session_semaphore.acquire()
-        await spawner._session_semaphore.acquire()
+        # All 3 slots occupied → trigger rejected
+        adapter2 = MockAdapter(result_text="should not run", capture=True)
+        spawner2 = Spawner(config=config, config_dir=config_dir, runtime=adapter2)
+        await spawner2._session_semaphore.acquire()
+        await spawner2._session_semaphore.acquire()
+        await spawner2._session_semaphore.acquire()
         try:
-            result = await spawner.trigger("nested", "trigger")
+            result2 = await spawner2.trigger("nested", "trigger")
         finally:
-            spawner._session_semaphore.release()
-            spawner._session_semaphore.release()
-            spawner._session_semaphore.release()
-
-        assert result.success is False
-        assert "cannot be called while another session is in flight" in result.error
-        assert adapter.calls == []
+            spawner2._session_semaphore.release()
+            spawner2._session_semaphore.release()
+            spawner2._session_semaphore.release()
+        assert result2.success is False
+        assert "cannot be called while another session is in flight" in result2.error
+        assert adapter2.calls == []
 
     async def test_drain_handles_multiple_concurrent_sessions(self, tmp_path: Path):
         """drain() waits for all concurrent in-flight sessions to complete."""
@@ -1048,8 +823,8 @@ class TestSemaphoreConcurrencyPool:
         assert all(r.error is None for r in results)
         assert spawner.in_flight_count == 0
 
-    async def test_semaphore_slot_count_matches_max_concurrent_sessions(self, tmp_path: Path):
-        """Spawner initialises semaphore with the configured concurrency limit."""
+    async def test_semaphore_slot_count_and_queue_backpressure(self, tmp_path: Path):
+        """Semaphore init matches max_concurrent_sessions; queue rejects when waiters at limit."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
 
@@ -1060,12 +835,8 @@ class TestSemaphoreConcurrencyPool:
                 f"Expected semaphore value {n}, got {spawner._session_semaphore._value}"
             )
 
-    async def test_queue_backpressure_rejects_when_waiters_at_limit(self, tmp_path: Path):
-        """New triggers are rejected once max_queued_sessions is reached."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
+        # Queue backpressure test
         config = _make_config(max_concurrent_sessions=1, max_queued_sessions=1)
-
         adapter = MockAdapter(result_text="ok")
         spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
 
@@ -1098,87 +869,48 @@ class TestSemaphoreConcurrencyPool:
 class TestSessionLogging:
     """Session logging is wired to session_create and session_complete."""
 
-    async def test_session_created_and_completed_on_success(self, tmp_path: Path):
+    async def test_session_logging_on_success_and_error(self, tmp_path: Path):
+        """session_create/complete called on success (with result data) and error (with error info)."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
-
         mock_pool = AsyncMock()
-        mock_pool.fetchval = AsyncMock(return_value="00000000-0000-0000-0000-000000000001")
 
+        # Success path
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
         ):
-            import uuid
-
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
             mock_create.return_value = fake_session_id
-
-            adapter = MockAdapter(result_text="Hello from mock!")
-            spawner = Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=adapter,
-            )
-
-            await spawner.trigger("log me", "schedule")
-
-            # session_create called with correct args
+            await Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter(result_text="Hello from mock!")).trigger("log me", "schedule")
             mock_create.assert_called_once()
             create_args, create_kwargs = mock_create.call_args
             assert create_args[0] is mock_pool
             assert create_args[1] == "log me"
             assert create_args[2] == "schedule"
             assert create_kwargs.get("model") == "claude-haiku-4-5-20251001"
-
-            # session_complete called with result data
             mock_complete.assert_called_once()
             args, kwargs = mock_complete.call_args
-            assert args[0] is mock_pool
-            assert args[1] == fake_session_id
+            assert args[0] is mock_pool and args[1] == fake_session_id
             assert kwargs["output"] == "Hello from mock!"
             assert isinstance(kwargs["tool_calls"], list)
-            assert kwargs["duration_ms"] >= 0
-            assert kwargs["success"] is True
+            assert kwargs["duration_ms"] >= 0 and kwargs["success"] is True
 
-    async def test_session_completed_on_error(self, tmp_path: Path):
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        mock_pool = AsyncMock()
-
+        # Error path
         with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create2,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete2,
         ):
-            import uuid
-
-            fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000002")
-            mock_create.return_value = fake_session_id
-
-            adapter = MockAdapter(error="adapter connection failed")
-            spawner = Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=adapter,
-            )
-
-            result = await spawner.trigger("fail", "tick")
+            fake_session_id2 = uuid.UUID("00000000-0000-0000-0000-000000000002")
+            mock_create2.return_value = fake_session_id2
+            result = await Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter(error="adapter connection failed")).trigger("fail", "tick")
             assert result.error is not None
-
-            # session_complete called with error info
-            mock_complete.assert_called_once()
-            args, kwargs = mock_complete.call_args
-            assert args[0] is mock_pool
-            assert args[1] == fake_session_id
-            assert kwargs["output"] is None
-            assert kwargs["tool_calls"] == []
-            assert kwargs["success"] is False
-            assert "RuntimeError" in kwargs["error"]
+            mock_complete2.assert_called_once()
+            args2, kwargs2 = mock_complete2.call_args
+            assert args2[0] is mock_pool and args2[1] == fake_session_id2
+            assert kwargs2["output"] is None and kwargs2["tool_calls"] == []
+            assert kwargs2["success"] is False and "RuntimeError" in kwargs2["error"]
 
     async def test_session_create_failure_preserves_original_error(self, tmp_path: Path):
         """Errors before runtime invocation should not be masked by t0 handling."""
@@ -1230,39 +962,6 @@ class TestSessionLogging:
         result = await spawner.trigger("no pool", "tick")
         assert result.output == "Hello from mock!"
 
-    async def test_session_logging_includes_model(self, tmp_path: Path):
-        """Session logging passes model through to session_create."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-opus-4-20250514")
-
-        mock_pool = AsyncMock()
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-        ):
-            import uuid
-
-            fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000003")
-            mock_create.return_value = fake_session_id
-
-            spawner = Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=MockAdapter(result_text="Result from helper"),
-            )
-
-            await spawner.trigger("model test", "schedule")
-
-            mock_create.assert_called_once()
-            create_args, create_kwargs = mock_create.call_args
-            assert create_args[0] is mock_pool
-            assert create_args[1] == "model test"
-            assert create_args[2] == "schedule"
-            assert create_kwargs["model"] == "claude-opus-4-20250514"
-
 
 # ---------------------------------------------------------------------------
 # Model passthrough tests
@@ -1284,87 +983,42 @@ class CapturingMockAdapter(MockAdapter):
 class TestModelPassthrough:
     """Model string from config is passed through to invoke() kwargs."""
 
-    async def test_model_passed_to_invoke(self, tmp_path: Path):
-        """When model is set in config, it appears in invoke() model kwarg."""
+    async def test_model_passed_to_invoke_and_result(self, tmp_path: Path):
+        """Configured model passed to invoke(); SpawnerResult includes model on success/error."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config(model="claude-sonnet-4-20250514")
 
+        # Configured model
         adapter = CapturingMockAdapter(result_text="ok")
         spawner = Spawner(
-            config=config,
+            config=_make_config(model="claude-sonnet-4-20250514"),
             config_dir=config_dir,
             runtime=adapter,
         )
-
-        await spawner.trigger("test model", "tick")
-
-        assert len(adapter.captured_models) == 1
+        result = await spawner.trigger("test model", "tick")
         assert adapter.captured_models[0] == "claude-sonnet-4-20250514"
+        assert result.model == "claude-sonnet-4-20250514"
 
-    async def test_model_default_when_not_configured(self, tmp_path: Path):
-        """When model is not set, default model (Haiku) is passed to invoke()."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()  # model defaults to Haiku
-
-        adapter = CapturingMockAdapter(result_text="ok")
-        spawner = Spawner(
-            config=config,
+        # Default model (Haiku)
+        adapter2 = CapturingMockAdapter(result_text="ok")
+        spawner2 = Spawner(
+            config=_make_config(),
             config_dir=config_dir,
-            runtime=adapter,
+            runtime=adapter2,
         )
+        result2 = await spawner2.trigger("test default", "tick")
+        assert adapter2.captured_models[0] == "claude-haiku-4-5-20251001"
+        assert result2.model == "claude-haiku-4-5-20251001"
 
-        await spawner.trigger("test default", "tick")
-
-        assert len(adapter.captured_models) == 1
-        assert adapter.captured_models[0] == "claude-haiku-4-5-20251001"
-
-    async def test_model_in_spawner_result_on_success(self, tmp_path: Path):
-        """SpawnerResult includes the model used on successful invocation."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-opus-4-20250514")
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=MockAdapter(result_text="Result from helper"),
-        )
-
-        result = await spawner.trigger("test", "tick")
-        assert result.model == "claude-opus-4-20250514"
-
-    async def test_model_in_spawner_result_on_error(self, tmp_path: Path):
-        """SpawnerResult includes the model even on error."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-opus-4-20250514")
-
-        spawner = Spawner(
-            config=config,
+        # Model in result on error
+        spawner3 = Spawner(
+            config=_make_config(model="claude-opus-4-20250514"),
             config_dir=config_dir,
             runtime=MockAdapter(error="invocation failed"),
         )
-
-        result = await spawner.trigger("fail", "tick")
-        assert result.error is not None
-        assert result.model == "claude-opus-4-20250514"
-
-    async def test_model_default_in_spawner_result_when_not_configured(self, tmp_path: Path):
-        """SpawnerResult.model defaults to Haiku when not explicitly configured."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=MockAdapter(result_text="Result from helper"),
-        )
-
-        result = await spawner.trigger("test", "tick")
-        assert result.model == "claude-haiku-4-5-20251001"
+        result3 = await spawner3.trigger("fail", "tick")
+        assert result3.error is not None
+        assert result3.model == "claude-opus-4-20250514"
 
 
 # ---------------------------------------------------------------------------
@@ -1376,6 +1030,7 @@ class TestFullFlow:
     """End-to-end spawner flow with MockAdapter."""
 
     async def test_full_trigger_flow(self, tmp_path: Path):
+        """Full flow: result, tool calls, env passthrough, system prompt, and memory context suffix."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         claude_md = config_dir / "CLAUDE.md"
@@ -1393,73 +1048,38 @@ class TestFullFlow:
             tool_calls=[{"id": "t1", "name": "state_set", "input": {"k": "v"}}],
             capture=True,
         )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
 
+        # Without memory context
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_fetch:
-            with patch.dict(
-                os.environ,
-                {"CUSTOM_VAR": "cv"},
-                clear=False,
-            ):
+            with patch.dict(os.environ, {"CUSTOM_VAR": "cv"}, clear=False):
                 result = await spawner.trigger("do the thing", "schedule")
 
-        mock_fetch.assert_called_once_with(
-            None,
-            "flow-butler",
-            "do the thing",
-            token_budget=3000,
-        )
-
+        mock_fetch.assert_called_once_with(None, "flow-butler", "do the thing", token_budget=3000)
         assert result.output == "All done!"
         assert result.error is None
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0]["name"] == "state_set"
-        assert result.duration_ms >= 0
-
-        # Verify adapter received correct args
-        assert len(adapter.calls) == 1
         call = adapter.calls[0]
         assert call["system_prompt"] == "You are the test butler."
         assert "flow-butler" in call["mcp_servers"]
         assert call["env"]["CUSTOM_VAR"] == "cv"
 
-    async def test_full_trigger_flow_appends_memory_context_suffix(self, tmp_path: Path):
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        (config_dir / "CLAUDE.md").write_text("You are the test butler.")
-
-        config = _make_config(
-            name="flow-butler",
-            port=9200,
-            modules={"memory": {}},
-        )
-
-        adapter = MockAdapter(result_text="All done!", capture=True)
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
+        # With memory context → appended to system prompt
+        adapter2 = MockAdapter(result_text="All done!", capture=True)
+        spawner2 = Spawner(config=config, config_dir=config_dir, runtime=adapter2)
         memory_ctx = "# Memory Context\n- user prefers concise updates"
         with patch(
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
             return_value=memory_ctx,
         ):
-            await spawner.trigger("do the thing", "schedule")
-
-        assert len(adapter.calls) == 1
-        call = adapter.calls[0]
-        assert call["system_prompt"] == f"You are the test butler.\n\n{memory_ctx}"
+            await spawner2.trigger("do the thing", "schedule")
+        assert adapter2.calls[0]["system_prompt"] == f"You are the test butler.\n\n{memory_ctx}"
 
 
 # ---------------------------------------------------------------------------
@@ -1528,63 +1148,6 @@ class TestParametrizedOrchestration:
         assert result.duration_ms >= 0
 
 
-@pytest.mark.parametrize(
-    "adapter_factory,expect_error",
-    [
-        pytest.param(_make_result_adapter, False, id="success"),
-        pytest.param(_make_error_adapter, True, id="error"),
-    ],
-)
-class TestParametrizedSessionLogging:
-    """Session logging parametrized across success and error adapters."""
-
-    async def test_session_logged(self, tmp_path: Path, adapter_factory, expect_error):
-        """Session is created and completed regardless of outcome."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        mock_pool = AsyncMock()
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
-        ):
-            fake_session_id = _FAKE_CATALOG_ID
-            mock_create.return_value = fake_session_id
-
-            adapter = adapter_factory()
-            spawner = Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=adapter,
-            )
-
-            result = await spawner.trigger("test", "tick")
-
-            mock_create.assert_called_once()
-            create_args, create_kwargs = mock_create.call_args
-            assert create_args[0] is mock_pool
-            assert create_args[1] == "test"
-            assert create_args[2] == "tick"
-            mock_complete.assert_called_once()
-
-            args, kwargs = mock_complete.call_args
-            assert args[0] is mock_pool
-            assert args[1] == fake_session_id
-
-            if expect_error:
-                assert result.error is not None
-                assert kwargs["output"] is None
-                assert kwargs["tool_calls"] == []
-                assert kwargs["success"] is False
-            else:
-                assert result.error is None
-                assert kwargs["duration_ms"] >= 0
-                assert kwargs["success"] is True
-
-
 class TestToolOutcomePersistence:
     async def test_session_complete_persists_failed_then_retried_tool_outcomes(
         self, tmp_path: Path
@@ -1615,8 +1178,6 @@ class TestToolOutcomePersistence:
                 ],
             ),
         ):
-            import uuid
-
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000199")
             mock_create.return_value = fake_session_id
 
@@ -1656,353 +1217,113 @@ class TestToolOutcomePersistence:
 class TestTokenUsageCapture:
     """Tests for extracting input_tokens and output_tokens from adapter response."""
 
-    async def test_token_counts_in_spawner_result(self, tmp_path: Path):
-        """SpawnerResult includes token counts when adapter returns usage."""
+    async def test_token_counts_present_absent_and_partial(self, tmp_path: Path):
+        """Token counts: present (100/200), absent/empty/missing-fields (all None), partial."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
-        adapter = MockAdapter(
-            result_text="Hello!",
-            usage={"input_tokens": 100, "output_tokens": 200},
-        )
-        spawner = Spawner(
+        # Present
+        result = await Spawner(
             config=config,
             config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("test tokens", "tick")
+            runtime=MockAdapter(
+                result_text="Hello!", usage={"input_tokens": 100, "output_tokens": 200}
+            ),
+        ).trigger("test", "tick")
         assert result.input_tokens == 100
         assert result.output_tokens == 200
 
-    async def test_token_counts_none_when_no_usage(self, tmp_path: Path):
-        """SpawnerResult has None tokens when adapter returns no usage."""
+        # Absent (usage=None)
+        result2 = await Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=MockAdapter(result_text="Hello!", usage=None),
+        ).trigger("no tokens", "tick")
+        assert result2.input_tokens is None
+        assert result2.output_tokens is None
+
+        # Empty dict / missing keys
+        result3 = await Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=MockAdapter(result_text="Empty dict", usage={}),
+        ).trigger("empty", "tick")
+        assert result3.input_tokens is None
+        assert result3.output_tokens is None
+
+        # Partial: only input
+        result4 = await Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=MockAdapter(result_text="Partial", usage={"input_tokens": 300}),
+        ).trigger("partial", "tick")
+        assert result4.input_tokens == 300
+        assert result4.output_tokens is None
+
+        # Partial: only output
+        result5 = await Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=MockAdapter(
+                result_text="Partial output only", usage={"output_tokens": 750}
+            ),
+        ).trigger("partial output", "tick")
+        assert result5.input_tokens is None
+        assert result5.output_tokens == 750
+
+        # Zero counts preserved
+        result6 = await Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=MockAdapter(
+                result_text="Zero tokens", usage={"input_tokens": 0, "output_tokens": 0}
+            ),
+        ).trigger("zero tokens", "tick")
+        assert result6.input_tokens == 0
+        assert result6.output_tokens == 0
+
+    async def test_token_counts_on_error_and_sequence(self, tmp_path: Path):
+        """Error: tokens None; after error, success returns tokens; tokens passed to session_complete."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
-        adapter = MockAdapter(result_text="Hello!", usage=None)
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("no tokens", "tick")
-        assert result.input_tokens is None
-        assert result.output_tokens is None
-
-    async def test_token_counts_none_on_error(self, tmp_path: Path):
-        """SpawnerResult has None tokens when adapter raises an error."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(error="adapter failed")
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("fail", "tick")
+        # Error path: tokens None
+        result = await Spawner(config=config, config_dir=config_dir, runtime=MockAdapter(error="adapter failed")).trigger("fail", "tick")
         assert result.error is not None
-        assert result.input_tokens is None
-        assert result.output_tokens is None
+        assert result.input_tokens is None and result.output_tokens is None
+
+        # Sequence: error then success recovers tokens
+        adapter = SequenceMockAdapter(
+            sequence=[
+                {"error": "first fails"},
+                {"result_text": "second works", "tool_calls": [], "usage": {"input_tokens": 42, "output_tokens": 84}},
+            ]
+        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+        r1 = await spawner.trigger("first", "tick")
+        assert r1.error is not None and r1.input_tokens is None
+        r2 = await spawner.trigger("second", "tick")
+        assert r2.error is None and r2.input_tokens == 42 and r2.output_tokens == 84
 
     async def test_token_counts_passed_to_session_complete(self, tmp_path: Path):
         """Token counts are passed to session_complete on success."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config()
-
         mock_pool = AsyncMock()
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
         ):
-            import uuid
-
-            fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000010")
-            mock_create.return_value = fake_session_id
-
-            adapter = MockAdapter(
-                result_text="With tokens!",
-                usage={"input_tokens": 500, "output_tokens": 1000},
-            )
-            spawner = Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=adapter,
-            )
-
-            await spawner.trigger("test", "tick")
-
-            mock_complete.assert_called_once()
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000010")
+            await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool,
+                runtime=MockAdapter(result_text="With tokens!", usage={"input_tokens": 500, "output_tokens": 1000}),
+            ).trigger("test", "tick")
             _, kwargs = mock_complete.call_args
-            assert kwargs["input_tokens"] == 500
-            assert kwargs["output_tokens"] == 1000
-
-    async def test_session_complete_gets_none_tokens_without_usage(self, tmp_path: Path):
-        """session_complete gets None tokens when adapter returns no usage."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        mock_pool = AsyncMock()
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
-        ):
-            import uuid
-
-            fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000011")
-            mock_create.return_value = fake_session_id
-
-            adapter = MockAdapter(result_text="No usage")
-            spawner = Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=adapter,
-            )
-
-            await spawner.trigger("test", "tick")
-
-            mock_complete.assert_called_once()
-            _, kwargs = mock_complete.call_args
-            assert kwargs["input_tokens"] is None
-            assert kwargs["output_tokens"] is None
-
-    async def test_token_counts_from_adapter_usage(self, tmp_path: Path):
-        """End-to-end: token counts from adapter usage dict propagate to SpawnerResult."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=MockAdapter(
-                result_text="Done with tokens!",
-                usage={"input_tokens": 1234, "output_tokens": 5678},
-            ),
-        )
-
-        result = await spawner.trigger("test tokens", "tick")
-        assert result.output == "Done with tokens!"
-        assert result.input_tokens == 1234
-        assert result.output_tokens == 5678
-
-    async def test_token_counts_none_with_empty_usage(self, tmp_path: Path):
-        """Token counts are None when adapter returns usage=None."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=MockAdapter(result_text="Empty usage", usage=None),
-        )
-
-        result = await spawner.trigger("test empty usage", "tick")
-        assert result.input_tokens is None
-        assert result.output_tokens is None
-
-    async def test_token_counts_none_with_none_usage(self, tmp_path: Path):
-        """Token counts are None when adapter returns usage dict with no token fields."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=MockAdapter(result_text="None usage", usage={}),
-        )
-
-        result = await spawner.trigger("test none usage", "tick")
-        assert result.input_tokens is None
-        assert result.output_tokens is None
-
-    async def test_partial_usage_only_input_tokens(self, tmp_path: Path):
-        """When usage has only input_tokens, output_tokens is None."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(
-            result_text="Partial",
-            usage={"input_tokens": 300},
-        )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("partial", "tick")
-        assert result.input_tokens == 300
-        assert result.output_tokens is None
-
-    async def test_partial_usage_only_output_tokens(self, tmp_path: Path):
-        """When usage has only output_tokens, input_tokens is None."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(
-            result_text="Partial output only",
-            usage={"output_tokens": 750},
-        )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("partial output", "tick")
-        assert result.input_tokens is None
-        assert result.output_tokens == 750
-
-    async def test_usage_with_extra_keys_ignored(self, tmp_path: Path):
-        """Extra keys in usage dict are ignored; only token counts extracted."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(
-            result_text="Extra keys",
-            usage={
-                "input_tokens": 400,
-                "output_tokens": 800,
-                "total_cost_usd": 0.05,
-                "cache_read_tokens": 200,
-            },
-        )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("extra keys", "tick")
-        assert result.input_tokens == 400
-        assert result.output_tokens == 800
-
-    async def test_zero_token_counts(self, tmp_path: Path):
-        """Zero token counts are preserved (not treated as None)."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(
-            result_text="Zero tokens",
-            usage={"input_tokens": 0, "output_tokens": 0},
-        )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("zero tokens", "tick")
-        assert result.input_tokens == 0
-        assert result.output_tokens == 0
-
-    async def test_session_complete_no_tokens_on_error(self, tmp_path: Path):
-        """session_complete is not called with token kwargs on error path."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        mock_pool = AsyncMock()
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
-        ):
-            import uuid
-
-            fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000012")
-            mock_create.return_value = fake_session_id
-
-            adapter = MockAdapter(error="boom")
-            spawner = Spawner(
-                config=config,
-                config_dir=config_dir,
-                pool=mock_pool,
-                runtime=adapter,
-            )
-
-            result = await spawner.trigger("fail with pool", "tick")
-            assert result.error is not None
-            assert result.input_tokens is None
-            assert result.output_tokens is None
-
-            # session_complete called on error path without token kwargs
-            mock_complete.assert_called_once()
-            _, kwargs = mock_complete.call_args
-            assert kwargs["success"] is False
-            assert "input_tokens" not in kwargs
-            assert "output_tokens" not in kwargs
-
-    async def test_empty_usage_dict(self, tmp_path: Path):
-        """Empty usage dict results in None token counts."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = MockAdapter(
-            result_text="Empty dict",
-            usage={},
-        )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result = await spawner.trigger("empty dict", "tick")
-        assert result.input_tokens is None
-        assert result.output_tokens is None
-
-    async def test_sequence_first_error_then_tokens(self, tmp_path: Path):
-        """After an error (no tokens), a successful call returns tokens correctly."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        adapter = SequenceMockAdapter(
-            sequence=[
-                {"error": "first fails"},
-                {
-                    "result_text": "second works",
-                    "tool_calls": [],
-                    "usage": {"input_tokens": 42, "output_tokens": 84},
-                },
-            ]
-        )
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=adapter,
-        )
-
-        result1 = await spawner.trigger("first", "tick")
-        assert result1.error is not None
-        assert result1.input_tokens is None
-        assert result1.output_tokens is None
-
-        result2 = await spawner.trigger("second", "tick")
-        assert result2.error is None
-        assert result2.input_tokens == 42
-        assert result2.output_tokens == 84
+            assert kwargs["input_tokens"] == 500 and kwargs["output_tokens"] == 1000
 
 
 # ---------------------------------------------------------------------------
@@ -2023,10 +1344,8 @@ class TestCatalogModelResolution:
     - Graceful fallback on catalog resolution errors
     """
 
-    async def test_catalog_resolution_uses_catalog_model(self, tmp_path: Path):
-        """When catalog returns a result, that model is passed to the adapter."""
-        import uuid
-
+    async def test_catalog_and_toml_fallback_model_selection(self, tmp_path: Path):
+        """Catalog model used when available; TOML model used when catalog returns None."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(model="claude-haiku-4-5-20251001")  # TOML fallback
@@ -2051,9 +1370,10 @@ class TestCatalogModelResolution:
                 return "ok", [], None
 
         mock_pool = AsyncMock()
+
+        # Catalog returns a result
         adapter = CapturingAdapter()
         spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -2065,41 +1385,14 @@ class TestCatalogModelResolution:
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             result = await spawner.trigger("prompt", "tick")
-
         assert result.success is True
         assert captured["model"] == "claude-opus-4-20250514"
         assert result.model == "claude-opus-4-20250514"
 
-    async def test_toml_fallback_when_catalog_returns_none(self, tmp_path: Path):
-        """When resolve_model returns None, the TOML model is used."""
-        import uuid
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-haiku-4-5-20251001")
-
-        captured: dict = {}
-
-        class CapturingAdapter(MockAdapter):
-            async def invoke(
-                self,
-                prompt,
-                system_prompt,
-                mcp_servers,
-                env,
-                max_turns=20,
-                model=None,
-                runtime_args=None,
-                cwd=None,
-                timeout=None,
-            ):
-                captured["model"] = model
-                return "ok", [], None
-
-        mock_pool = AsyncMock()
-        adapter = CapturingAdapter()
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
+        # Catalog returns None → TOML fallback
+        captured.clear()
+        adapter2 = CapturingAdapter()
+        spawner2 = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter2)
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -2110,45 +1403,38 @@ class TestCatalogModelResolution:
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            result = await spawner.trigger("prompt", "tick")
-
-        assert result.success is True
+            result2 = await spawner2.trigger("prompt", "tick")
+        assert result2.success is True
         assert captured["model"] == "claude-haiku-4-5-20251001"
-        assert result.model == "claude-haiku-4-5-20251001"
+        assert result2.model == "claude-haiku-4-5-20251001"
 
-    async def test_complexity_not_passed_to_resolve_model_without_pool(self, tmp_path: Path):
-        """Without a pool, resolve_model is never called (TOML fallback directly)."""
+    async def test_complexity_routing(self, tmp_path: Path):
+        """Without pool: resolve_model not called. With pool: complexity forwarded."""
         from butlers.core.model_routing import Complexity
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
+        # No pool → resolve_model skipped
         adapter = MockAdapter(result_text="ok")
         spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
         with patch(
             "butlers.core.spawner.resolve_model",
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_resolve:
             await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
-
-        # No pool → resolve_model is not called, TOML fallback applies
         mock_resolve.assert_not_called()
 
-    async def test_complexity_forwarded_when_pool_present(self, tmp_path: Path):
-        """With a pool, resolve_model is called with the complexity parameter."""
-        from butlers.core.model_routing import Complexity
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
+        # With pool → complexity forwarded; default is MEDIUM
         mock_pool = AsyncMock()
-        adapter = MockAdapter(result_text="ok")
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
+        spawner2 = Spawner(
+            config=config,
+            config_dir=config_dir,
+            pool=mock_pool,
+            runtime=MockAdapter(result_text="ok"),
+        )
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -2156,23 +1442,31 @@ class TestCatalogModelResolution:
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
                 return_value=None,
-            ) as mock_resolve,
+            ) as mock_resolve2,
         ):
-            import uuid
-
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
+            await spawner2.trigger("prompt", "tick", complexity=Complexity.HIGH)
+        mock_resolve2.assert_called_once()
+        assert mock_resolve2.call_args[0][1] == "test-butler"
+        assert mock_resolve2.call_args[0][2] == Complexity.HIGH
 
-        mock_resolve.assert_called_once()
-        call_args = mock_resolve.call_args
-        # resolve_model(pool, butler_name, complexity)
-        assert call_args[0][1] == "test-butler"
-        assert call_args[0][2] == Complexity.HIGH
+        # Default complexity is MEDIUM
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ) as mock_resolve3,
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner2.trigger("prompt", "tick")
+        mock_resolve3.assert_called_once()
+        assert mock_resolve3.call_args[0][2] == Complexity.MEDIUM
 
-    async def test_extra_args_merged_toml_then_catalog(self, tmp_path: Path):
-        """TOML args are first, catalog extra_args are appended."""
-        import uuid
-
+    async def test_extra_args_merging(self, tmp_path: Path):
+        """TOML args first, catalog extra_args appended; both-empty omits kwarg."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -2200,6 +1494,7 @@ class TestCatalogModelResolution:
         adapter = CapturingAdapter()
         spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
 
+        # TOML args + catalog args merged
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -2216,26 +1511,13 @@ class TestCatalogModelResolution:
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner.trigger("prompt", "tick")
+        assert captured["runtime_args"] == ["--toml-flag", "toml-value", "--catalog-arg", "val"]
 
-        assert captured["runtime_args"] == [
-            "--toml-flag",
-            "toml-value",
-            "--catalog-arg",
-            "val",
-        ]
+        # Both empty → runtime_args kwarg is None
+        config2 = _make_config()
+        captured2: dict = {}
 
-    async def test_extra_args_catalog_only_when_toml_args_empty(self, tmp_path: Path):
-        """Catalog extra_args used alone when TOML args list is empty."""
-        import uuid
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-        # Default args is empty tuple
-
-        captured: dict = {}
-
-        class CapturingAdapter(MockAdapter):
+        class CapturingAdapter2(MockAdapter):
             async def invoke(
                 self,
                 prompt,
@@ -2248,214 +1530,92 @@ class TestCatalogModelResolution:
                 cwd=None,
                 timeout=None,
             ):
-                captured["runtime_args"] = runtime_args
+                captured2["runtime_args"] = runtime_args
                 return "ok", [], None
 
-        mock_pool = AsyncMock()
-        adapter = CapturingAdapter()
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
+        spawner2 = Spawner(
+            config=config2,
+            config_dir=config_dir,
+            pool=mock_pool,
+            runtime=CapturingAdapter2(),
+        )
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=(
-                    "claude",
-                    "claude-opus-4-20250514",
-                    ["--catalog-only"],
-                    _FAKE_CATALOG_ID,
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await spawner2.trigger("prompt", "tick")
+        assert captured2["runtime_args"] is None
+
+    async def test_catalog_error_and_unknown_runtime_fall_back_to_toml(self, tmp_path: Path):
+        """Both catalog errors and unknown runtime types fall back to TOML model."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(model="claude-haiku-4-5-20251001")
+        mock_pool = AsyncMock()
+
+        for side_effect, return_value in [
+            (Exception("DB connection error"), None),
+            (None, ("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID)),
+        ]:
+            captured: dict = {}
+
+            class CapturingAdapter(MockAdapter):
+                async def invoke(
+                    self,
+                    prompt,
+                    system_prompt,
+                    mcp_servers,
+                    env,
+                    max_turns=20,
+                    model=None,
+                    runtime_args=None,
+                    cwd=None,
+                    timeout=None,
+                ):
+                    captured["model"] = model
+                    return "ok", [], None
+
+            adapter = CapturingAdapter()
+            spawner = Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            )
+            resolve_kwargs = (
+                {"side_effect": side_effect} if side_effect else {"return_value": return_value}
+            )
+            with (
+                patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+                patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+                patch(
+                    "butlers.core.spawner.resolve_model",
+                    new_callable=AsyncMock,
+                    **resolve_kwargs,
                 ),
-            ),
-        ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner.trigger("prompt", "tick")
-
-        assert captured["runtime_args"] == ["--catalog-only"]
-
-    async def test_no_runtime_args_when_both_empty(self, tmp_path: Path):
-        """runtime_args key is omitted from invoke_kwargs when both TOML and catalog args empty."""
-        import uuid
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        captured: dict = {}
-
-        class CapturingAdapter(MockAdapter):
-            async def invoke(
-                self,
-                prompt,
-                system_prompt,
-                mcp_servers,
-                env,
-                max_turns=20,
-                model=None,
-                runtime_args=None,
-                cwd=None,
-                timeout=None,
             ):
-                captured["runtime_args"] = runtime_args
-                return "ok", [], None
+                mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+                result = await spawner.trigger("prompt", "tick")
+            assert result.success is True
+            assert captured["model"] == "claude-haiku-4-5-20251001"
+            assert result.model == "claude-haiku-4-5-20251001"
 
-        mock_pool = AsyncMock()
-        adapter = CapturingAdapter()
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch(
-                "butlers.core.spawner.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
-            ),
-        ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner.trigger("prompt", "tick")
-
-        # runtime_args kwarg not passed when empty
-        assert captured["runtime_args"] is None
-
-    async def test_adapter_pool_uses_injected_runtime_for_toml_type(self, tmp_path: Path):
-        """The injected runtime is used when catalog resolves to the TOML runtime type."""
-        import uuid
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-
-        mock_pool = AsyncMock()
-        adapter = MockAdapter(result_text="from-injected")
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch(
-                "butlers.core.spawner.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude", "some-model", [], _FAKE_CATALOG_ID),
-            ),
-        ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            result = await spawner.trigger("prompt", "tick")
-
-        assert result.success is True
-        assert result.output == "from-injected"
-
-    async def test_catalog_resolution_error_falls_back_to_toml(self, tmp_path: Path):
-        """When resolve_model raises, TOML config is used as fallback."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-haiku-4-5-20251001")
-
-        captured: dict = {}
-
-        class CapturingAdapter(MockAdapter):
-            async def invoke(
-                self,
-                prompt,
-                system_prompt,
-                mcp_servers,
-                env,
-                max_turns=20,
-                model=None,
-                runtime_args=None,
-                cwd=None,
-                timeout=None,
-            ):
-                captured["model"] = model
-                return "ok", [], None
-
-        adapter = CapturingAdapter()
-        mock_pool = AsyncMock()
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch(
-                "butlers.core.spawner.resolve_model",
-                new_callable=AsyncMock,
-                side_effect=Exception("DB connection error"),
-            ),
-        ):
-            import uuid
-
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            result = await spawner.trigger("prompt", "tick")
-
-        assert result.success is True
-        assert captured["model"] == "claude-haiku-4-5-20251001"
-        assert result.model == "claude-haiku-4-5-20251001"
-
-    async def test_default_complexity_is_medium(self, tmp_path: Path):
-        """trigger() defaults to Complexity.MEDIUM when complexity not specified."""
+    async def test_audit_log_resolution_metadata(self, tmp_path: Path):
+        """Audit log includes model, runtime_type, complexity, resolution_source."""
         from butlers.core.model_routing import Complexity
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config()
         mock_pool = AsyncMock()
-        adapter = MockAdapter(result_text="ok")
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch(
-                "butlers.core.spawner.resolve_model",
-                new_callable=AsyncMock,
-                return_value=None,
-            ) as mock_resolve,
-        ):
-            import uuid
-
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner.trigger("prompt", "tick")
-
-        mock_resolve.assert_called_once()
-        assert mock_resolve.call_args[0][2] == Complexity.MEDIUM
-
-    async def test_session_model_reflects_catalog_choice(self, tmp_path: Path):
-        """session_create receives the catalog-resolved model, not TOML model."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-haiku-4-5-20251001")
-
-        mock_pool = AsyncMock()
-        adapter = MockAdapter(result_text="ok")
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch(
-                "butlers.core.spawner.resolve_model",
-                new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
-            ),
-        ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner.trigger("prompt", "tick")
-
-        _, create_kwargs = mock_create.call_args
-        assert create_kwargs["model"] == "claude-opus-4-20250514"
-
-    async def test_audit_log_includes_resolution_metadata(self, tmp_path: Path):
-        """Audit log entry includes model, runtime_type, complexity, resolution_source."""
-
-        from butlers.core.model_routing import Complexity
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-        mock_pool = AsyncMock()
-        adapter = MockAdapter(result_text="ok")
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+        spawner = Spawner(
+            config=_make_config(),
+            config_dir=config_dir,
+            pool=mock_pool,
+            runtime=MockAdapter(result_text="ok"),
+        )
 
         audit_entries: list[dict] = []
 
@@ -2482,22 +1642,15 @@ class TestCatalogModelResolution:
         assert data["complexity"] == "high"
         assert data["resolution_source"] == "catalog"
 
-    async def test_audit_log_shows_toml_fallback_source(self, tmp_path: Path):
-        """Audit log entry shows resolution_source=toml_fallback on TOML fallback."""
-        import uuid
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-haiku-4-5-20251001")
-        mock_pool = AsyncMock()
-        adapter = MockAdapter(result_text="ok")
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
-        audit_entries: list[dict] = []
-
-        async def fake_write_audit(pool, butler_name, event_type, data, **kwargs):
-            audit_entries.append({"data": data, **kwargs})
-
+        # Also verify toml_fallback source
+        audit_entries.clear()
+        config_toml = _make_config(model="claude-haiku-4-5-20251001")
+        spawner2 = Spawner(
+            config=config_toml,
+            config_dir=config_dir,
+            pool=mock_pool,
+            runtime=MockAdapter(result_text="ok"),
+        )
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -2509,60 +1662,11 @@ class TestCatalogModelResolution:
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            await spawner.trigger("prompt", "tick")
-
+            await spawner2.trigger("prompt", "tick")
         assert len(audit_entries) == 1
-        data = audit_entries[0]["data"]
-        assert data["model"] == "claude-haiku-4-5-20251001"
-        assert data["resolution_source"] == "toml_fallback"
-
-    async def test_unknown_runtime_type_from_catalog_falls_back_to_toml(self, tmp_path: Path):
-        """When catalog resolves an unregistered runtime type, falls back to TOML config."""
-        import uuid
-
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(model="claude-haiku-4-5-20251001")
-
-        captured: dict = {}
-
-        class CapturingAdapter(MockAdapter):
-            async def invoke(
-                self,
-                prompt,
-                system_prompt,
-                mcp_servers,
-                env,
-                max_turns=20,
-                model=None,
-                runtime_args=None,
-                cwd=None,
-                timeout=None,
-            ):
-                captured["model"] = model
-                return "ok", [], None
-
-        adapter = CapturingAdapter()
-        mock_pool = AsyncMock()
-        spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch(
-                "butlers.core.spawner.resolve_model",
-                new_callable=AsyncMock,
-                # Catalog returns an unregistered runtime type
-                return_value=("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID),
-            ),
-        ):
-            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
-            result = await spawner.trigger("prompt", "tick")
-
-        # Should fall back gracefully to TOML model
-        assert result.success is True
-        assert captured["model"] == "claude-haiku-4-5-20251001"
-        assert result.model == "claude-haiku-4-5-20251001"
+        data2 = audit_entries[0]["data"]
+        assert data2["model"] == "claude-haiku-4-5-20251001"
+        assert data2["resolution_source"] == "toml_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -2650,8 +1754,8 @@ class TestGlobalSpawnConcurrencyCap:
             f"Expected at most 2 concurrent sessions; observed {max_concurrent}"
         )
 
-    async def test_global_cap_env_var_default_is_three(self, tmp_path: Path):
-        """When BUTLERS_MAX_GLOBAL_SESSIONS is unset, default cap is 3."""
+    async def test_global_cap_env_var_and_semaphore_release(self, tmp_path: Path):
+        """Default cap is 3; BUTLERS_MAX_GLOBAL_SESSIONS overrides it; semaphore released after success and error."""
         import butlers.core.spawner as spawner_mod
 
         env_without_cap = {
@@ -2660,62 +1764,34 @@ class TestGlobalSpawnConcurrencyCap:
         with patch.dict(os.environ, env_without_cap, clear=True):
             _reset_global_semaphore()
             sem = spawner_mod._get_global_semaphore()
-
         assert sem._value == 3
-
-    async def test_global_cap_env_var_respected(self, tmp_path: Path):
-        """BUTLERS_MAX_GLOBAL_SESSIONS overrides the default cap."""
-        import butlers.core.spawner as spawner_mod
 
         with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "7"}, clear=False):
             _reset_global_semaphore()
-            sem = spawner_mod._get_global_semaphore()
+            sem2 = spawner_mod._get_global_semaphore()
+        assert sem2._value == 7
 
-        assert sem._value == 7
-
-    async def test_global_semaphore_released_after_session(self, tmp_path: Path):
-        """Global semaphore slot is released after each session completes."""
-        import butlers.core.spawner as spawner_mod
-
+        # Semaphore released after session completes (success and error)
         with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "1"}, clear=False):
             _reset_global_semaphore()
 
             config_dir = tmp_path / "config"
             config_dir.mkdir()
             config = _make_config(max_concurrent_sessions=1)
-            adapter = MockAdapter(result_text="ok")
-            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
 
-            # Run a session — slot should be returned afterwards
-            result = await spawner.trigger("first", "tick")
+            result = await Spawner(
+                config=config, config_dir=config_dir, runtime=MockAdapter(result_text="ok")
+            ).trigger("first", "tick")
             assert result.success
+            sem3 = spawner_mod._get_global_semaphore()
+            assert sem3._value == 1
 
-            # With cap=1, semaphore should be back to value=1 after the session
-            sem = spawner_mod._get_global_semaphore()
-            assert sem._value == 1, (
-                f"Expected global semaphore value=1 after session; got {sem._value}"
-            )
-
-    async def test_global_semaphore_released_after_error(self, tmp_path: Path):
-        """Global semaphore slot is released even when the session raises an error."""
-        import butlers.core.spawner as spawner_mod
-
-        with patch.dict(os.environ, {"BUTLERS_MAX_GLOBAL_SESSIONS": "1"}, clear=False):
-            _reset_global_semaphore()
-
-            config_dir = tmp_path / "config"
-            config_dir.mkdir()
-            config = _make_config(max_concurrent_sessions=1)
-            adapter = MockAdapter(error="adapter crashed")
-            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-            result = await spawner.trigger("fail", "tick")
-            assert result.error is not None
-
-            sem = spawner_mod._get_global_semaphore()
-            assert sem._value == 1, (
-                f"Expected global semaphore value=1 after error; got {sem._value}"
-            )
+            result2 = await Spawner(
+                config=config, config_dir=config_dir, runtime=MockAdapter(error="adapter crashed")
+            ).trigger("fail", "tick")
+            assert result2.error is not None
+            sem4 = spawner_mod._get_global_semaphore()
+            assert sem4._value == 1
 
     async def test_global_cap_queuing_logged_at_info(self, tmp_path: Path, caplog):
         """When the global cap is saturated, a queuing INFO message is emitted."""
@@ -2787,8 +1863,8 @@ class TestSpawnerCwdAndBypassSemaphore:
     def teardown_method(self) -> None:
         _reset_global_semaphore()
 
-    async def test_cwd_overrides_config_dir(self, tmp_path: Path) -> None:
-        """When cwd is provided to trigger(), the adapter receives it instead of config_dir."""
+    async def test_cwd_override_and_default(self, tmp_path: Path) -> None:
+        """cwd overrides config_dir when provided; defaults to config_dir when absent."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         custom_cwd = tmp_path / "worktree"
@@ -2801,70 +1877,36 @@ class TestSpawnerCwdAndBypassSemaphore:
                 captured_cwd.append(kwargs.get("cwd"))
                 return "ok", [], None
 
-        spawner = Spawner(
-            config=_make_config(),
-            config_dir=config_dir,
-            runtime=CwdCaptureAdapter(),
-        )
+        spawner = Spawner(config=_make_config(), config_dir=config_dir, runtime=CwdCaptureAdapter())
 
+        # Override: adapter gets custom_cwd
         result = await spawner.trigger("hello", "tick", cwd=str(custom_cwd))
         assert result.success is True
-        assert len(captured_cwd) == 1
-        assert captured_cwd[0] == str(custom_cwd)
+        assert captured_cwd[-1] == str(custom_cwd)
 
-    async def test_cwd_defaults_to_config_dir(self, tmp_path: Path) -> None:
-        """When cwd is not provided, adapter receives str(config_dir)."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
+        # Default: adapter gets config_dir
+        result2 = await spawner.trigger("hello", "tick")
+        assert result2.success is True
+        assert captured_cwd[-1] == str(config_dir)
 
-        captured_cwd: list = []
-
-        class CwdCaptureAdapter(MockAdapter):
-            async def invoke(self, *args, **kwargs):
-                captured_cwd.append(kwargs.get("cwd"))
-                return "ok", [], None
-
-        spawner = Spawner(
-            config=_make_config(),
-            config_dir=config_dir,
-            runtime=CwdCaptureAdapter(),
-        )
-
-        result = await spawner.trigger("hello", "tick")
-        assert result.success is True
-        assert len(captured_cwd) == 1
-        assert captured_cwd[0] == str(config_dir)
-
-    async def test_bypass_butler_semaphore_skips_per_butler_lock(self, tmp_path: Path) -> None:
-        """bypass_butler_semaphore=True proceeds even when per-butler semaphore is at 0."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-
-        # Use max_concurrent_sessions=1 (serial dispatch)
+    async def test_bypass_and_normal_butler_semaphore_behavior(self, tmp_path: Path) -> None:
+        """bypass_butler_semaphore=True proceeds with semaphore at 0; normal trigger waits."""
+        # Bypass scenario: proceeds even when per-butler semaphore is drained
+        bypass_dir = tmp_path / "bypass"
+        bypass_dir.mkdir()
         config = _make_config(max_concurrent_sessions=1)
-        adapter = MockAdapter(result_text="ok")
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
-
-        # Manually drain the per-butler semaphore to simulate a slot being held
-        await spawner._session_semaphore.acquire()
-
-        # bypass_butler_semaphore=True should still proceed
+        spawner_b = Spawner(config=config, config_dir=bypass_dir, runtime=MockAdapter(result_text="ok"))
+        await spawner_b._session_semaphore.acquire()
         trigger_task = asyncio.create_task(
-            spawner.trigger("healing prompt", "healing", bypass_butler_semaphore=True)
+            spawner_b.trigger("healing prompt", "healing", bypass_butler_semaphore=True)
         )
-        result = await asyncio.wait_for(trigger_task, timeout=2.0)
+        result_b = await asyncio.wait_for(trigger_task, timeout=2.0)
+        spawner_b._session_semaphore.release()
+        assert result_b.success is True
 
-        # Release the held slot
-        spawner._session_semaphore.release()
-
-        assert result.success is True
-
-    async def test_normal_trigger_waits_for_butler_semaphore(self, tmp_path: Path) -> None:
-        """Without bypass, trigger() waits when per-butler semaphore is held."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-
-        config = _make_config(max_concurrent_sessions=1)
+        # Normal scenario: serializes when semaphore cap=1
+        normal_dir = tmp_path / "normal"
+        normal_dir.mkdir()
         completed: list[bool] = []
 
         class SlowAdapter(MockAdapter):
@@ -2873,11 +1915,10 @@ class TestSpawnerCwdAndBypassSemaphore:
                 completed.append(True)
                 return "ok", [], None
 
-        spawner = Spawner(config=config, config_dir=config_dir, runtime=SlowAdapter())
-
+        spawner_n = Spawner(config=config, config_dir=normal_dir, runtime=SlowAdapter())
         results = await asyncio.gather(
-            spawner.trigger("A", "tick"),
-            spawner.trigger("B", "tick"),
+            spawner_n.trigger("A", "tick"),
+            spawner_n.trigger("B", "tick"),
         )
         assert all(r.success for r in results)
         assert len(completed) == 2

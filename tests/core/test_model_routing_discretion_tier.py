@@ -27,21 +27,11 @@ docker_available = shutil.which("docker") is not None
 
 
 @pytest.mark.unit
-def test_complexity_discretion_exists() -> None:
-    """Complexity.DISCRETION must exist and equal the string 'discretion'."""
+def test_complexity_discretion_enum() -> None:
+    """DISCRETION exists, equals 'discretion', round-trips from string, and all expected tiers present."""
     assert Complexity.DISCRETION == "discretion"
     assert Complexity.DISCRETION.value == "discretion"
-
-
-@pytest.mark.unit
-def test_complexity_discretion_from_string() -> None:
-    """Complexity('discretion') must resolve to Complexity.DISCRETION."""
     assert Complexity("discretion") is Complexity.DISCRETION
-
-
-@pytest.mark.unit
-def test_complexity_enum_has_expected_tiers() -> None:
-    """All expected tiers (including discretion and self_healing) must be present."""
     values = {m.value for m in Complexity}
     assert {"trivial", "medium", "high", "extra_high", "discretion"}.issubset(values)
 

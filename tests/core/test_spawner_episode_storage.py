@@ -31,7 +31,8 @@ def _make_config(
 
 
 class TestStoreSessionEpisode:
-    async def test_returns_true_on_success(self):
+    async def test_returns_true_on_success_and_passes_session_id(self):
+        """True on success with correct args; session_id forwarded when provided."""
         pool = AsyncMock()
         with patch(
             "butlers.modules.memory.tools.writing.memory_store_episode",
@@ -41,47 +42,36 @@ class TestStoreSessionEpisode:
             result = await store_session_episode(pool, "my-butler", "session output text")
 
         assert result is True
-        mock_store.assert_awaited_once_with(
-            pool,
-            "session output text",
-            "my-butler",
-            session_id=None,
+        mock_store.assert_awaited_once_with(pool, "session output text", "my-butler", session_id=None)
+
+        # With session_id
+        sid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        with patch(
+            "butlers.modules.memory.tools.writing.memory_store_episode",
+            new_callable=AsyncMock,
+            return_value={"id": "abc"},
+        ) as mock_store2:
+            await store_session_episode(pool, "my-butler", "output text", session_id=sid)
+        mock_store2.assert_awaited_once_with(
+            pool, "output text", "my-butler", session_id="12345678-1234-5678-1234-567812345678"
         )
 
-    async def test_returns_false_when_tool_raises(self):
+    async def test_returns_false_on_error_no_pool_or_missing_tables(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """False on RuntimeError, None pool, whitespace output, or missing table (no traceback)."""
+        # RuntimeError → False
         with patch(
             "butlers.modules.memory.tools.writing.memory_store_episode",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
-            result = await store_session_episode(AsyncMock(), "my-butler", "session output")
-        assert result is False
+            assert await store_session_episode(AsyncMock(), "my-butler", "session output") is False
 
-    async def test_returns_false_when_pool_missing(self):
-        result = await store_session_episode(None, "my-butler", "session output")
-        assert result is False
+        # pool=None → False
+        assert await store_session_episode(None, "my-butler", "session output") is False
 
-    async def test_passes_session_id_when_provided(self):
-        pool = AsyncMock()
-        sid = uuid.UUID("12345678-1234-5678-1234-567812345678")
-
-        with patch(
-            "butlers.modules.memory.tools.writing.memory_store_episode",
-            new_callable=AsyncMock,
-            return_value={"id": "abc"},
-        ) as mock_store:
-            await store_session_episode(pool, "my-butler", "output text", session_id=sid)
-
-        mock_store.assert_awaited_once_with(
-            pool,
-            "output text",
-            "my-butler",
-            session_id="12345678-1234-5678-1234-567812345678",
-        )
-
-    async def test_missing_memory_tables_returns_false_without_traceback(
-        self, caplog: pytest.LogCaptureFixture
-    ):
+        # Missing table → False without traceback
         with (
             patch(
                 "butlers.modules.memory.tools.writing.memory_store_episode",
@@ -91,7 +81,6 @@ class TestStoreSessionEpisode:
             caplog.at_level(logging.WARNING, logger="butlers.core.spawner"),
         ):
             result = await store_session_episode(AsyncMock(), "my-butler", "session output")
-
         assert result is False
         record = next(r for r in caplog.records if "memory tables are missing" in r.getMessage())
         assert record.exc_info is None
@@ -133,79 +122,30 @@ class _MockAdapter:
 
 
 class TestSpawnerEpisodeStorageIntegration:
-    async def test_episode_stored_after_successful_session_when_memory_enabled(
-        self, tmp_path: Path
-    ):
+    async def test_episode_stored_when_memory_enabled_and_success_only(self, tmp_path: Path):
+        """Episode stored on success with memory enabled; not stored when disabled or on failure."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
+
+        # Memory enabled + success → stored
         config = _make_config(modules={"memory": {}})
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=_MockAdapter(result_text="Task completed"),
-        )
-
         with (
-            patch(
-                "butlers.core.spawner.fetch_memory_context",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "butlers.core.spawner.store_session_episode",
-                new_callable=AsyncMock,
-                return_value=True,
-            ) as mock_store,
+            patch("butlers.core.spawner.fetch_memory_context", new_callable=AsyncMock, return_value=None),
+            patch("butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True) as mock_store,
         ):
-            result = await spawner.trigger(prompt="do task", trigger_source="trigger")
-
+            result = await Spawner(config=config, config_dir=config_dir, runtime=_MockAdapter(result_text="Task completed")).trigger(prompt="do task", trigger_source="trigger")
         assert result.success is True
-        mock_store.assert_awaited_once_with(
-            None,
-            "test-butler",
-            "Task completed",
-            session_id=None,
-        )
+        mock_store.assert_awaited_once_with(None, "test-butler", "Task completed", session_id=None)
 
-    async def test_episode_not_stored_when_memory_module_disabled(self, tmp_path: Path):
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(modules={})
+        # Memory disabled → not stored
+        config2 = _make_config(modules={})
+        with patch("butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True) as mock_store2:
+            result2 = await Spawner(config=config2, config_dir=config_dir, runtime=_MockAdapter(result_text="Task completed")).trigger(prompt="do task", trigger_source="trigger")
+        assert result2.success is True
+        mock_store2.assert_not_called()
 
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=_MockAdapter(result_text="Task completed"),
-        )
-
-        with patch(
-            "butlers.core.spawner.store_session_episode",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_store:
-            result = await spawner.trigger(prompt="do task", trigger_source="trigger")
-
-        assert result.success is True
-        mock_store.assert_not_called()
-
-    async def test_episode_not_stored_after_failed_session(self, tmp_path: Path):
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config(modules={"memory": {}})
-
-        spawner = Spawner(
-            config=config,
-            config_dir=config_dir,
-            runtime=_MockAdapter(error="invocation failure"),
-        )
-
-        with patch(
-            "butlers.core.spawner.store_session_episode",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_store:
-            result = await spawner.trigger(prompt="do task", trigger_source="trigger")
-
-        assert result.success is False
-        mock_store.assert_not_called()
+        # Memory enabled + failure → not stored
+        with patch("butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True) as mock_store3:
+            result3 = await Spawner(config=config, config_dir=config_dir, runtime=_MockAdapter(error="invocation failure")).trigger(prompt="do task", trigger_source="trigger")
+        assert result3.success is False
+        mock_store3.assert_not_called()

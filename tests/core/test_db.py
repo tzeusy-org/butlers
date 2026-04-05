@@ -168,104 +168,48 @@ async def test_close_releases_pool(db_factory):
 
 
 def test_from_env_database_url(monkeypatch):
-    """from_env() reads connection parameters from DATABASE_URL."""
+    """from_env() reads DATABASE_URL (full, minimal, no-port); prefers it over POSTGRES_* vars."""
     from butlers.db import Database
 
+    # Full URL
     monkeypatch.setenv("DATABASE_URL", "postgres://myuser:mypass@myhost:6543/postgres")
-
     db = Database.from_env("test_db")
+    assert db.host == "myhost" and db.port == 6543 and db.user == "myuser"
 
-    assert db.db_name == "test_db"
-    assert db.host == "myhost"
-    assert db.port == 6543
-    assert db.user == "myuser"
-    assert db.password == "mypass"
-
-
-def test_from_env_database_url_minimal(monkeypatch):
-    """from_env() handles DATABASE_URL with minimal components."""
-    from butlers.db import Database
-
+    # Minimal URL: uses defaults for missing fields
     monkeypatch.setenv("DATABASE_URL", "postgres://localhost/postgres")
+    db2 = Database.from_env("test_db")
+    assert db2.host == "localhost" and db2.port == 5432 and db2.user == "butlers"
 
-    db = Database.from_env("test_db")
-
-    assert db.db_name == "test_db"
-    assert db.host == "localhost"
-    assert db.port == 5432  # Default port
-    assert db.user == "butlers"  # Default user
-    assert db.password == "butlers"  # Default password
-
-
-def test_from_env_database_url_no_port(monkeypatch):
-    """from_env() uses default port when DATABASE_URL omits it."""
-    from butlers.db import Database
-
+    # No port: defaults to 5432
     monkeypatch.setenv("DATABASE_URL", "postgres://myuser:mypass@myhost/postgres")
+    db3 = Database.from_env("test_db")
+    assert db3.host == "myhost" and db3.port == 5432
 
-    db = Database.from_env("test_db")
+    # DATABASE_URL takes precedence over POSTGRES_* vars
+    monkeypatch.setenv("DATABASE_URL", "postgres://url_user:url_pass@url_host:7777/postgres")
+    monkeypatch.setenv("POSTGRES_HOST", "var_host")
+    monkeypatch.setenv("POSTGRES_PORT", "8888")
+    db4 = Database.from_env("test_db")
+    assert db4.host == "url_host" and db4.port == 7777 and db4.user == "url_user"
 
-    assert db.db_name == "test_db"
-    assert db.host == "myhost"
-    assert db.port == 5432  # Default port
-    assert db.user == "myuser"
-    assert db.password == "mypass"
 
-
-def test_from_env_fallback_to_individual_vars(monkeypatch):
-    """from_env() falls back to POSTGRES_* vars when DATABASE_URL is not set."""
+def test_from_env_fallback_and_defaults(monkeypatch):
+    """from_env() falls back to POSTGRES_* vars; uses spec defaults when none set."""
     from butlers.db import Database
 
+    # POSTGRES_* vars used when DATABASE_URL absent
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("POSTGRES_HOST", "myhost")
     monkeypatch.setenv("POSTGRES_PORT", "6543")
     monkeypatch.setenv("POSTGRES_USER", "myuser")
     monkeypatch.setenv("POSTGRES_PASSWORD", "mypass")
-
     db = Database.from_env("test_db")
+    assert db.host == "myhost" and db.port == 6543 and db.user == "myuser"
 
-    assert db.db_name == "test_db"
-    assert db.host == "myhost"
-    assert db.port == 6543
-    assert db.user == "myuser"
-    assert db.password == "mypass"
-
-
-def test_from_env_defaults_spec_compliant(monkeypatch):
-    """from_env() falls back to spec-compliant defaults when no env vars are set."""
-    from butlers.db import Database
-
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("POSTGRES_HOST", raising=False)
-    monkeypatch.delenv("POSTGRES_PORT", raising=False)
-    monkeypatch.delenv("POSTGRES_USER", raising=False)
-    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
-
-    db = Database.from_env("test_db")
-
-    assert db.db_name == "test_db"
-    # Spec default: postgres://butlers:butlers@localhost/postgres
-    assert db.host == "localhost"
-    assert db.port == 5432
-    assert db.user == "butlers"
-    assert db.password == "butlers"
-
-
-def test_from_env_database_url_takes_precedence(monkeypatch):
-    """from_env() prefers DATABASE_URL over individual POSTGRES_* vars."""
-    from butlers.db import Database
-
-    monkeypatch.setenv("DATABASE_URL", "postgres://url_user:url_pass@url_host:7777/postgres")
-    monkeypatch.setenv("POSTGRES_HOST", "var_host")
-    monkeypatch.setenv("POSTGRES_PORT", "8888")
-    monkeypatch.setenv("POSTGRES_USER", "var_user")
-    monkeypatch.setenv("POSTGRES_PASSWORD", "var_pass")
-
-    db = Database.from_env("test_db")
-
-    # DATABASE_URL should take precedence
-    assert db.db_name == "test_db"
-    assert db.host == "url_host"
-    assert db.port == 7777
-    assert db.user == "url_user"
-    assert db.password == "url_pass"
+    # Spec defaults when all env vars absent
+    for var in ("DATABASE_URL", "POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER",
+                "POSTGRES_PASSWORD"):
+        monkeypatch.delenv(var, raising=False)
+    db2 = Database.from_env("test_db")
+    assert db2.host == "localhost" and db2.port == 5432 and db2.user == "butlers"

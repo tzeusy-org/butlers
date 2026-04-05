@@ -222,32 +222,24 @@ def _mock_route_inbox(monkeypatch):
 class TestRouteExecuteAuthzRejectsUntrustedCallers:
     """Verify that route.execute rejects callers not in trusted_route_callers."""
 
-    async def test_unauthenticated_caller_rejected_on_messenger(self, tmp_path: Path) -> None:
-        """Messenger butler rejects route.execute from unknown endpoint identity."""
+    async def test_untrusted_caller_rejected(self, tmp_path: Path) -> None:
+        """Messenger and non-messenger butlers reject untrusted callers;
+        empty endpoint identity also rejected."""
+        # Messenger rejects rogue-caller; delivery side effect not triggered
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(
-            tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
+            patches,
         )
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
         assert route_execute_fn is not None
-
         telegram_module = next(m for m in daemon._modules if m.name == "telegram")
         telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 999}})
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity="rogue-caller",
-            ),
-            input={
-                "prompt": "Deliver.",
-                "context": {
-                    "notify_request": _valid_notify_request(),
-                },
-            },
+            request_context=_route_request_context(source_endpoint_identity="rogue-caller"),
+            input={"prompt": "Deliver.", "context": {"notify_request": _valid_notify_request()}},
         )
-
-        # Must reject before any delivery side effect
         telegram_module._send_message.assert_not_awaited()
         assert result["schema_version"] == "route_response.v1"
         assert result["status"] == "error"
@@ -256,44 +248,36 @@ class TestRouteExecuteAuthzRejectsUntrustedCallers:
         assert "rogue-caller" in result["error"]["message"]
         assert "trusted_route_callers" in result["error"]["message"]
 
-    async def test_unauthenticated_caller_rejected_on_non_messenger(self, tmp_path: Path) -> None:
-        """Non-messenger butler also rejects untrusted callers."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        result = await route_execute_fn(
+        # Non-messenger also rejects unknown callers
+        patches2 = _patch_infra()
+        subdir2 = tmp_path / "h2"
+        subdir2.mkdir()
+        _, route_execute_fn2 = await _start_daemon_with_route_execute(
+            _make_butler_toml(subdir2, butler_name="health"), patches2
+        )
+        result2 = await route_execute_fn2(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity="unknown-origin",
-            ),
+            request_context=_route_request_context(source_endpoint_identity="unknown-origin"),
             input={"prompt": "Run health check."},
         )
+        assert result2["status"] == "error"
+        assert result2["error"]["class"] == "validation_error"
+        assert "unknown-origin" in result2["error"]["message"]
 
-        assert result["status"] == "error"
-        assert result["error"]["class"] == "validation_error"
-        assert "unknown-origin" in result["error"]["message"]
-
-    async def test_empty_string_endpoint_identity_rejected(self, tmp_path: Path) -> None:
-        """Empty endpoint identity fails envelope validation before authz."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        # Empty string should fail the NonEmptyStr validation in the
-        # route envelope before reaching authz; either way it's rejected.
-        result = await route_execute_fn(
+        # Empty/blank endpoint identity rejected
+        patches3 = _patch_infra()
+        subdir3 = tmp_path / "h3"
+        subdir3.mkdir()
+        _, route_execute_fn3 = await _start_daemon_with_route_execute(
+            _make_butler_toml(subdir3, butler_name="health"), patches3
+        )
+        result3 = await route_execute_fn3(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity=" ",
-            ),
+            request_context=_route_request_context(source_endpoint_identity=" "),
             input={"prompt": "Run health check."},
         )
-
-        assert result["status"] == "error"
-        assert result["error"]["class"] == "validation_error"
+        assert result3["status"] == "error"
+        assert result3["error"]["class"] == "validation_error"
 
 
 # ---------------------------------------------------------------------------
@@ -304,58 +288,44 @@ class TestRouteExecuteAuthzRejectsUntrustedCallers:
 class TestRouteExecuteAuthzAllowsTrustedCallers:
     """Verify that trusted callers are allowed through."""
 
-    async def test_switchboard_caller_allowed_by_default(self, tmp_path: Path) -> None:
-        """Default trusted_route_callers includes switchboard."""
+    async def test_trusted_callers_allowed(self, tmp_path: Path) -> None:
+        """Default switchboard caller allowed on messenger (delivery succeeds) and
+        non-messenger (trigger accepted) butlers."""
+        # Messenger: switchboard allowed, delivery proceeds
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(
-            tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
+            patches,
         )
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
         assert route_execute_fn is not None
-
         telegram_module = next(m for m in daemon._modules if m.name == "telegram")
         telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
 
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity="switchboard",
-            ),
-            input={
-                "prompt": "Deliver.",
-                "context": {
-                    "notify_request": _valid_notify_request(),
-                },
-            },
+            request_context=_route_request_context(source_endpoint_identity="switchboard"),
+            input={"prompt": "Deliver.", "context": {"notify_request": _valid_notify_request()}},
         )
-
         telegram_module._send_message.assert_awaited_once()
         assert result["status"] == "ok"
 
-    async def test_non_messenger_trigger_with_switchboard_succeeds(self, tmp_path: Path) -> None:
-        """Non-messenger butler routes via trigger when switchboard calls."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
+        # Non-messenger: switchboard triggers accepted
+        patches2 = _patch_infra()
+        subdir = tmp_path / "h"
+        subdir.mkdir()
+        daemon2, route_execute_fn2 = await _start_daemon_with_route_execute(
+            _make_butler_toml(subdir, butler_name="health"), patches2
+        )
+        mock_tr = MagicMock(output="done", success=True, error=None, duration_ms=42)
+        daemon2.spawner.trigger = AsyncMock(return_value=mock_tr)
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "done"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 42
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
+        result2 = await route_execute_fn2(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity="switchboard",
-            ),
+            request_context=_route_request_context(source_endpoint_identity="switchboard"),
             input={"prompt": "Run health check."},
         )
-
-        assert result["status"] == "accepted"
-        assert "inbox_id" in result
+        assert result2["status"] == "accepted"
+        assert "inbox_id" in result2
 
 
 # ---------------------------------------------------------------------------
@@ -366,78 +336,57 @@ class TestRouteExecuteAuthzAllowsTrustedCallers:
 class TestRouteExecuteCustomTrustedCallers:
     """Verify custom trusted_route_callers from butler.toml is respected."""
 
-    async def test_custom_trusted_caller_allowed(self, tmp_path: Path) -> None:
-        """A caller listed in custom trusted_route_callers is accepted."""
+    async def test_custom_trusted_callers(self, tmp_path: Path) -> None:
+        """Custom list caller allowed; switchboard rejected when not in list; empty list rejects all."""
+        # Custom caller in list → accepted
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(
-            tmp_path,
-            butler_name="health",
-            trusted_route_callers=["switchboard", "heartbeat"],
+        d1 = tmp_path / "c1"
+        d1.mkdir()
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(
+            _make_butler_toml(d1, butler_name="health", trusted_route_callers=["switchboard", "heartbeat"]),
+            patches,
         )
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
+        mock_tr = MagicMock(output="ok", success=True, error=None, duration_ms=10)
+        daemon.spawner.trigger = AsyncMock(return_value=mock_tr)
         result = await route_execute_fn(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity="heartbeat",
-            ),
+            request_context=_route_request_context(source_endpoint_identity="heartbeat"),
             input={"prompt": "Tick check."},
         )
-
         assert result["status"] == "accepted"
 
-    async def test_switchboard_rejected_when_not_in_custom_list(self, tmp_path: Path) -> None:
-        """Even switchboard is rejected if excluded from custom config."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(
-            tmp_path,
-            butler_name="health",
-            trusted_route_callers=["internal-only"],
+        # Switchboard excluded from custom list → rejected
+        patches2 = _patch_infra()
+        d2 = tmp_path / "c2"
+        d2.mkdir()
+        _, route_execute_fn2 = await _start_daemon_with_route_execute(
+            _make_butler_toml(d2, butler_name="health", trusted_route_callers=["internal-only"]),
+            patches2,
         )
-        _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        result = await route_execute_fn(
+        result2 = await route_execute_fn2(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity="switchboard",
-            ),
+            request_context=_route_request_context(source_endpoint_identity="switchboard"),
             input={"prompt": "Run health check."},
         )
+        assert result2["status"] == "error"
+        assert result2["error"]["class"] == "validation_error"
+        assert "switchboard" in result2["error"]["message"]
 
-        assert result["status"] == "error"
-        assert result["error"]["class"] == "validation_error"
-        assert "switchboard" in result["error"]["message"]
-
-    async def test_empty_trusted_callers_rejects_everyone(self, tmp_path: Path) -> None:
-        """An empty trusted_route_callers list rejects all callers."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(
-            tmp_path,
-            butler_name="health",
-            trusted_route_callers=[],
+        # Empty list → everyone rejected
+        patches3 = _patch_infra()
+        d3 = tmp_path / "c3"
+        d3.mkdir()
+        _, route_execute_fn3 = await _start_daemon_with_route_execute(
+            _make_butler_toml(d3, butler_name="health", trusted_route_callers=[]),
+            patches3,
         )
-        _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        result = await route_execute_fn(
+        result3 = await route_execute_fn3(
             schema_version="route.v1",
-            request_context=_route_request_context(
-                source_endpoint_identity="switchboard",
-            ),
+            request_context=_route_request_context(source_endpoint_identity="switchboard"),
             input={"prompt": "Run health check."},
         )
-
-        assert result["status"] == "error"
-        assert result["error"]["class"] == "validation_error"
+        assert result3["status"] == "error"
+        assert result3["error"]["class"] == "validation_error"
 
 
 # ---------------------------------------------------------------------------
@@ -448,43 +397,31 @@ class TestRouteExecuteCustomTrustedCallers:
 class TestTrustedRouteCallersConfig:
     """Verify config parsing of [butler.security].trusted_route_callers."""
 
-    def test_default_trusted_callers_is_switchboard(self, tmp_path: Path) -> None:
-        """Without explicit config, trusted_route_callers defaults to ('switchboard',)."""
-        from butlers.config import load_config
-
-        butler_dir = _make_butler_toml(tmp_path, butler_name="test_butler")
-        config = load_config(butler_dir)
-        assert config.trusted_route_callers == ("switchboard",)
-
-    def test_custom_trusted_callers_parsed(self, tmp_path: Path) -> None:
-        """Explicit trusted_route_callers in config is parsed correctly."""
-        from butlers.config import load_config
-
-        butler_dir = _make_butler_toml(
-            tmp_path,
-            butler_name="test_butler",
-            trusted_route_callers=["switchboard", "heartbeat", "admin"],
-        )
-        config = load_config(butler_dir)
-        assert config.trusted_route_callers == ("switchboard", "heartbeat", "admin")
-
-    def test_empty_trusted_callers_list(self, tmp_path: Path) -> None:
-        """Empty list produces an empty tuple."""
-        from butlers.config import load_config
-
-        butler_dir = _make_butler_toml(
-            tmp_path,
-            butler_name="test_butler",
-            trusted_route_callers=[],
-        )
-        config = load_config(butler_dir)
-        assert config.trusted_route_callers == ()
-
-    def test_invalid_trusted_callers_type_raises(self, tmp_path: Path) -> None:
-        """Non-list value for trusted_route_callers raises ConfigError."""
+    def test_trusted_callers_config_parsing(self, tmp_path: Path) -> None:
+        """Default is ('switchboard',); custom list parsed; empty gives ();
+        non-list value raises ConfigError."""
         from butlers.config import ConfigError, load_config
 
-        toml_content = """
+        # Default
+        assert load_config(_make_butler_toml(tmp_path, butler_name="test_butler")).trusted_route_callers == ("switchboard",)
+
+        # Custom list
+        d2 = tmp_path / "c2"
+        d2.mkdir()
+        cfg2 = load_config(_make_butler_toml(d2, butler_name="test_butler", trusted_route_callers=["switchboard", "heartbeat", "admin"]))
+        assert cfg2.trusted_route_callers == ("switchboard", "heartbeat", "admin")
+
+        # Empty list
+        d3 = tmp_path / "c3"
+        d3.mkdir()
+        cfg3 = load_config(_make_butler_toml(d3, butler_name="test_butler", trusted_route_callers=[]))
+        assert cfg3.trusted_route_callers == ()
+
+        # Non-list raises ConfigError
+        (tmp_path / "bad.toml").write_text("")
+        d4 = tmp_path / "c4"
+        d4.mkdir()
+        (d4 / "butler.toml").write_text("""
 [butler]
 name = "test_butler"
 port = 9100
@@ -501,10 +438,6 @@ trusted_route_callers = "switchboard"
 name = "daily-check"
 cron = "0 9 * * *"
 prompt = "Do the daily check"
-"""
-        (tmp_path / "butler.toml").write_text(toml_content)
-        with pytest.raises(
-            ConfigError,
-            match=r"butler\.security\.trusted_route_callers must be a list of strings",
-        ):
-            load_config(tmp_path)
+""")
+        with pytest.raises(ConfigError, match=r"butler\.security\.trusted_route_callers must be a list of strings"):
+            load_config(d4)

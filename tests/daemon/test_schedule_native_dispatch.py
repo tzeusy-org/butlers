@@ -14,222 +14,78 @@ pytestmark = pytest.mark.unit
 
 
 class TestNativeScheduleDispatch:
-    def test_registry_includes_memory_jobs_for_memory_enabled_butlers(self):
-        """Memory-enabled butlers should register deterministic memory jobs."""
+    def _make_daemon(self, tmp_path, butler_name="switchboard", port=41100):
+        daemon = ButlerDaemon(tmp_path)
+        daemon.config = ButlerConfig(name=butler_name, port=port)
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock()
+        daemon.spawner = mock_spawner
+        return daemon, mock_spawner
+
+    async def test_registry_and_job_dispatch_and_errors(self, tmp_path):
+        """Registry has memory jobs + eligibility_sweep; rollup jobs removed; job-mode dispatches; unknown/blank raise."""
         from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
-        expected_jobs = {"memory_consolidation", "memory_episode_cleanup"}
+        expected_memory_jobs = {"memory_consolidation", "memory_episode_cleanup"}
         for butler_name in ("general", "health", "home", "relationship", "switchboard"):
             jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler_name, {})
-            missing = expected_jobs - set(jobs)
-            assert not missing, (
-                f"Missing deterministic memory jobs for {butler_name}: {sorted(missing)}"
-            )
+            missing = expected_memory_jobs - set(jobs)
+            assert not missing, f"Missing memory jobs for {butler_name}: {sorted(missing)}"
+        switchboard_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
+        assert {"eligibility_sweep"} <= set(switchboard_jobs)
+        removed = {"connector_stats_hourly_rollup", "connector_stats_daily_rollup", "connector_stats_pruning"}
+        assert not (removed & set(switchboard_jobs)), f"Removed jobs still present: {sorted(removed & set(switchboard_jobs))}"
 
-    def test_registry_includes_switchboard_eligibility_sweep_job(self):
-        """Switchboard deterministic eligibility sweep job should be registered.
-
-        The connector stats rollup jobs (connector_stats_hourly_rollup,
-        connector_stats_daily_rollup, connector_stats_pruning) were removed in
-        butlers-ufzc and replaced by the OTel/Prometheus-native metrics pipeline.
-        """
-        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
-
-        jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
-        expected_jobs = {"eligibility_sweep"}
-        missing = expected_jobs - set(jobs)
-        assert not missing, f"Missing switchboard deterministic jobs: {sorted(missing)}"
-
-        # Verify rollup jobs are no longer present (removed in butlers-ufzc)
-        removed_jobs = {
-            "connector_stats_hourly_rollup",
-            "connector_stats_daily_rollup",
-            "connector_stats_pruning",
-        }
-        still_present = removed_jobs & set(jobs)
-        assert not still_present, (
-            f"Rollup jobs should have been removed (butlers-ufzc): {sorted(still_present)}"
-        )
-
-    async def test_switchboard_job_mode_dispatches_via_registry(self, tmp_path):
-        """Job-mode deterministic schedules should dispatch via registry handler."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=41100)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
-
+        daemon, mock_spawner = self._make_daemon(tmp_path)
         native_result = {"evaluated": 1, "skipped": 0, "transitioned": 0, "transitions": []}
         mock_handler = AsyncMock(return_value=native_result)
-        with patch.dict(
-            "butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
-            {"switchboard": {"eligibility_sweep": mock_handler}},
-            clear=True,
-        ):
-            result = await daemon._dispatch_scheduled_task(
-                trigger_source="schedule:eligibility_sweep",
-                job_name="eligibility_sweep",
-                job_args={"dry_run": True},
-            )
 
+        # Job-mode dispatches via registry; spawner not called
+        with patch.dict("butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY", {"switchboard": {"eligibility_sweep": mock_handler}}, clear=True):
+            result = await daemon._dispatch_scheduled_task(trigger_source="schedule:eligibility_sweep", job_name="eligibility_sweep", job_args={"dry_run": True})
         assert result == native_result
-        mock_handler.assert_awaited_once_with(mock_pool, {"dry_run": True})
+        mock_handler.assert_awaited_once_with(mock_pool := daemon.db.pool, {"dry_run": True})
         mock_spawner.trigger.assert_not_awaited()
 
-    async def test_non_native_schedule_falls_back_to_spawner(self, tmp_path):
-        """Schedules without native handlers should continue using spawner.trigger."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=41100)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        spawner_result = {"ok": True}
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock(return_value=spawner_result)
-        daemon.spawner = mock_spawner
-
-        result = await daemon._dispatch_scheduled_task(
-            prompt="run memory cleanup",
-            trigger_source="schedule:non-native-prompt-task",
-        )
-
-        assert result == spawner_result
-        mock_spawner.trigger.assert_awaited_once_with(
-            prompt="run memory cleanup",
-            trigger_source="schedule:non-native-prompt-task",
-            complexity=Complexity.MEDIUM,
-            max_token_budget=None,
-        )
-
-    async def test_prompt_dispatch_passes_complexity_to_spawner(self, tmp_path):
-        """Complexity parameter must be forwarded to spawner.trigger for prompt-mode tasks."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="general", port=41101)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        spawner_result = {"ok": True}
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock(return_value=spawner_result)
-        daemon.spawner = mock_spawner
-
-        result = await daemon._dispatch_scheduled_task(
-            prompt="do a complex analysis",
-            trigger_source="schedule:complex-task",
-            complexity=Complexity.HIGH,
-        )
-
-        assert result == spawner_result
-        mock_spawner.trigger.assert_awaited_once_with(
-            prompt="do a complex analysis",
-            trigger_source="schedule:complex-task",
-            complexity=Complexity.HIGH,
-            max_token_budget=None,
-        )
-
-    async def test_prompt_dispatch_defaults_complexity_to_medium(self, tmp_path):
-        """When complexity is not provided, spawner.trigger receives Complexity.MEDIUM."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="general", port=41101)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        spawner_result = {"ok": True}
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock(return_value=spawner_result)
-        daemon.spawner = mock_spawner
-
-        await daemon._dispatch_scheduled_task(
-            prompt="routine task",
-            trigger_source="schedule:routine",
-        )
-
-        call_kwargs = mock_spawner.trigger.call_args.kwargs
-        assert call_kwargs["complexity"] is Complexity.MEDIUM
-
-    async def test_job_dispatch_does_not_pass_complexity_to_handler(self, tmp_path):
-        """Deterministic job-mode dispatch ignores complexity (handler owns its own resources)."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=41100)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        native_result = {"evaluated": 1}
-        mock_handler = AsyncMock(return_value=native_result)
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
-
-        with patch.dict(
-            "butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
-            {"switchboard": {"eligibility_sweep": mock_handler}},
-            clear=True,
-        ):
-            result = await daemon._dispatch_scheduled_task(
-                trigger_source="schedule:eligibility_sweep",
-                job_name="eligibility_sweep",
-                complexity=Complexity.HIGH,  # complexity ignored for job mode
-            )
-
-        assert result == native_result
+        # Job-mode with complexity param: handler doesn't get complexity
+        mock_handler2 = AsyncMock(return_value={"evaluated": 1})
+        mock_spawner.trigger.reset_mock()
+        with patch.dict("butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY", {"switchboard": {"eligibility_sweep": mock_handler2}}, clear=True):
+            await daemon._dispatch_scheduled_task(trigger_source="schedule:eligibility_sweep", job_name="eligibility_sweep", complexity=Complexity.HIGH)
         mock_spawner.trigger.assert_not_awaited()
 
-    async def test_unknown_job_mode_raises(self, tmp_path):
-        """Unknown deterministic job names fail explicitly."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=41100)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
-
+        # Unknown job raises
         with pytest.raises(RuntimeError, match="Unknown deterministic scheduler job"):
-            await daemon._dispatch_scheduled_task(
-                trigger_source="schedule:some-job",
-                job_name="unregistered_job",
-            )
-        mock_spawner.trigger.assert_not_awaited()
+            await daemon._dispatch_scheduled_task(trigger_source="schedule:some-job", job_name="unregistered_job")
 
-    async def test_blank_job_name_rejected(self, tmp_path):
-        """Blank deterministic job names should fail with actionable error."""
-        daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=41100)
-
-        mock_pool = AsyncMock()
-        mock_db = MagicMock()
-        mock_db.pool = mock_pool
-        daemon.db = mock_db
-
-        mock_spawner = MagicMock()
-        mock_spawner.trigger = AsyncMock()
-        daemon.spawner = mock_spawner
-
+        # Blank job name raises
         with pytest.raises(RuntimeError, match="must be a non-empty string"):
-            await daemon._dispatch_scheduled_task(
-                trigger_source="schedule:eligibility_sweep",
-                job_name="  ",
-            )
-        mock_spawner.trigger.assert_not_awaited()
+            await daemon._dispatch_scheduled_task(trigger_source="schedule:eligibility_sweep", job_name="  ")
+
+    async def test_prompt_dispatch_complexity_and_fallback(self, tmp_path):
+        """Non-native schedule falls back to spawner; complexity forwarded; defaults to MEDIUM."""
+        daemon, mock_spawner = self._make_daemon(tmp_path, "general", 41101)
+
+        # Non-native falls back to spawner
+        spawner_result = {"ok": True}
+        mock_spawner.trigger.return_value = spawner_result
+        result = await daemon._dispatch_scheduled_task(prompt="run memory cleanup", trigger_source="schedule:non-native-prompt-task")
+        assert result == spawner_result
+        mock_spawner.trigger.assert_awaited_once_with(prompt="run memory cleanup", trigger_source="schedule:non-native-prompt-task", complexity=Complexity.MEDIUM, max_token_budget=None)
+
+        # Complexity forwarded
+        mock_spawner.trigger.reset_mock()
+        mock_spawner.trigger.return_value = spawner_result
+        await daemon._dispatch_scheduled_task(prompt="complex task", trigger_source="schedule:complex-task", complexity=Complexity.HIGH)
+        call_kwargs = mock_spawner.trigger.call_args.kwargs
+        assert call_kwargs["complexity"] is Complexity.HIGH
+
+        # Default complexity is MEDIUM
+        mock_spawner.trigger.reset_mock()
+        mock_spawner.trigger.return_value = spawner_result
+        await daemon._dispatch_scheduled_task(prompt="routine task", trigger_source="schedule:routine")
+        assert mock_spawner.trigger.call_args.kwargs["complexity"] is Complexity.MEDIUM
