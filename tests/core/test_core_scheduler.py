@@ -422,7 +422,7 @@ async def test_schedule_complexity_validation(pool):
 
 
 async def test_deadline_task_create(pool):
-    """schedule_create with task_type=deadline requires target_date, lead_time_days, and alert_thresholds."""
+    """schedule_create with task_type=deadline requires target_date and alert_thresholds."""
     import datetime as _dt
 
     from butlers.core.scheduler import schedule_create

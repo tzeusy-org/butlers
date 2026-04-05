@@ -177,7 +177,7 @@ async def test_get_active_seasons_filtering(pool):
         enabled=False,
     )
 
-    # Jan 5: tax-season active, winter active (cross-year Jan 5 is within Nov 15 - Jan 10), disabled excluded
+    # Jan 5: tax-season active, winter active (cross-year: Nov 15–Jan 10), disabled excluded
     active = await get_active_seasons(pool, butler, today=date(2025, 1, 5))
     names = {p["name"] for p in active}
     assert "tax-season" in names
