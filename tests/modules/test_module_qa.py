@@ -758,3 +758,145 @@ class TestFullCycleNoFindings:
         assert mod._last_patrol_at is not None
         assert mod._last_patrol_status == "clean"
         assert mod._last_patrol_findings == 0
+
+
+# ---------------------------------------------------------------------------
+# OTel span instrumentation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def otel_qa_module_exporter(monkeypatch):
+    """Provide an isolated in-memory OTel exporter for QA module tests.
+
+    Saves and restores the global TracerProvider and QA module globals
+    so tests do not leak state into subsequent tests in the same process.
+    """
+    import opentelemetry.trace as real_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import butlers.modules.qa as qa_mod
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    monkeypatch.setattr(real_trace, "_TRACER_PROVIDER", provider, raising=False)
+    monkeypatch.setattr(qa_mod, "_tracer", provider.get_tracer("butlers.qa"))
+    monkeypatch.setattr(qa_mod, "_HAS_OTEL", True)
+
+    return exporter
+
+
+class TestQaPatrolOtelSpans:
+    """Verify qa.patrol, qa.discover.*, qa.triage, and qa.dispatch spans are created."""
+
+    async def _run_clean_patrol_with_otel(self, otel_qa_module_exporter) -> object:
+        """Run a clean patrol cycle with the provided OTel exporter and return it."""
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+        pool = _make_pool()
+        mod._pool = pool
+
+        class EmptySource:
+            @property
+            def name(self) -> str:
+                return "butler_reports"
+
+            async def discover(self, lookback_minutes: int):
+                return []
+
+        mod._sources = [EmptySource()]
+        mod._butler_reports_source = None
+
+        with (
+            patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mock_triage,
+            patch(
+                "butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock
+            ) as mock_dispatch,
+            patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+        ):
+            mock_triage.return_value = MagicMock(
+                all_findings=[], novel_findings=[], dedup_counts={}
+            )
+            mock_dispatch.return_value = []
+
+            await mod._run_patrol_cycle()
+
+        return otel_qa_module_exporter
+
+    async def test_patrol_span_created(self, otel_qa_module_exporter) -> None:
+        """qa.patrol span is created for each patrol cycle."""
+        exporter = await self._run_clean_patrol_with_otel(otel_qa_module_exporter)
+        finished = exporter.get_finished_spans()
+        patrol_spans = [s for s in finished if s.name == "qa.patrol"]
+        assert patrol_spans, "Expected qa.patrol span to be created"
+
+    async def test_patrol_span_attributes(self, otel_qa_module_exporter) -> None:
+        """qa.patrol span has patrol_id and butler.name attributes."""
+        exporter = await self._run_clean_patrol_with_otel(otel_qa_module_exporter)
+        finished = exporter.get_finished_spans()
+        patrol_spans = [s for s in finished if s.name == "qa.patrol"]
+        assert patrol_spans
+        span = patrol_spans[0]
+        assert span.attributes.get("butler.name") == "qa"
+        assert "qa.patrol_id" in span.attributes
+        # sources_polled set to 1 (one source polled)
+        assert span.attributes.get("qa.sources_polled") == 1
+
+    async def test_discover_source_span_created(self, otel_qa_module_exporter) -> None:
+        """qa.discover.<source> child span is created for each source polled."""
+        exporter = await self._run_clean_patrol_with_otel(otel_qa_module_exporter)
+        finished = exporter.get_finished_spans()
+        discover_spans = [s for s in finished if s.name.startswith("qa.discover.")]
+        assert discover_spans, "Expected at least one qa.discover.* span"
+        assert discover_spans[0].name == "qa.discover.butler_reports"
+
+    async def test_triage_span_created(self, otel_qa_module_exporter) -> None:
+        """qa.triage child span is created for the triage phase."""
+        exporter = await self._run_clean_patrol_with_otel(otel_qa_module_exporter)
+        finished = exporter.get_finished_spans()
+        triage_spans = [s for s in finished if s.name == "qa.triage"]
+        assert triage_spans, "Expected qa.triage span to be created"
+
+    async def test_dispatch_span_created(self, otel_qa_module_exporter) -> None:
+        """qa.dispatch child span is created for the dispatch phase."""
+        exporter = await self._run_clean_patrol_with_otel(otel_qa_module_exporter)
+        finished = exporter.get_finished_spans()
+        dispatch_spans = [s for s in finished if s.name == "qa.dispatch"]
+        assert dispatch_spans, "Expected qa.dispatch span to be created"
+
+    async def test_patrol_span_ends(self, otel_qa_module_exporter) -> None:
+        """qa.patrol span is ended (recorded in exporter) after patrol cycle."""
+        exporter = await self._run_clean_patrol_with_otel(otel_qa_module_exporter)
+        finished = exporter.get_finished_spans()
+        patrol_spans = [s for s in finished if s.name == "qa.patrol"]
+        # All returned spans are already finished (exported)
+        assert len(patrol_spans) == 1
+
+    async def test_no_otel_no_error(self, monkeypatch) -> None:
+        """Patrol cycle completes without error when _HAS_OTEL is False."""
+        import butlers.modules.qa as qa_mod
+
+        monkeypatch.setattr(qa_mod, "_HAS_OTEL", False)
+
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+        pool = _make_pool()
+        mod._pool = pool
+        mod._sources = []
+        mod._butler_reports_source = None
+
+        with (
+            patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mt,
+            patch("butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock) as md,
+            patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+        ):
+            mt.return_value = MagicMock(all_findings=[], novel_findings=[], dedup_counts={})
+            md.return_value = []
+
+            result = await mod._run_patrol_cycle()
+
+        assert result["status"] == "clean"
