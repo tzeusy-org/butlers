@@ -405,12 +405,18 @@ async def get_qa_summary(
         """
     )
 
-    # All-time PR stats for QA-originated attempts
+    # All-time PR stats for QA-originated attempts.
+    # Uses the same failure statuses as CIRCUIT_BREAKER_FAILURE_STATUSES in
+    # butlers.core.healing.dispatch: 'failed', 'timeout', 'anonymization_failed'.
+    # 'unfixable' is intentionally excluded — it indicates "no fix is possible"
+    # (a design decision), not a dispatch failure.
     pr_stats_row = await pool.fetchrow(
         """
         SELECT
             COUNT(*) FILTER (WHERE status = 'pr_merged') AS prs_merged,
-            COUNT(*) FILTER (WHERE status IN ('failed', 'timeout', 'unfixable')) AS prs_failed,
+            COUNT(*) FILTER (
+                WHERE status IN ('failed', 'timeout', 'anonymization_failed')
+            ) AS prs_failed,
             COUNT(*) FILTER (WHERE status != 'dispatch_pending') AS total_dispatched
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
@@ -431,14 +437,19 @@ async def get_qa_summary(
         success_rate=round(success_rate, 4),
     )
 
-    # Circuit breaker — count consecutive failures at tail of healing_attempts
-    # (QA-originated, terminal failure statuses)
+    # Circuit breaker — count consecutive failures at tail of healing_attempts.
+    # Uses the same status sets as CIRCUIT_BREAKER_FAILURE_STATUSES and
+    # TERMINAL_STATUSES in butlers.core.healing.dispatch/tracking so dashboard
+    # reporting matches actual dispatcher semantics:
+    #   failure: 'failed', 'timeout', 'anonymization_failed'  (matches dispatch.py)
+    #   success: 'pr_merged'
+    #   excluded from circuit: 'unfixable' — indicates "no fix possible" by design
     cb_rows = await pool.fetch(
         """
         SELECT status
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
-          AND status IN ('pr_merged', 'failed', 'timeout', 'unfixable')
+          AND status IN ('pr_merged', 'failed', 'timeout', 'anonymization_failed')
         ORDER BY updated_at DESC
         LIMIT 20
         """
@@ -685,6 +696,7 @@ _VALID_INVESTIGATION_STATUSES = {
     "failed",
     "timeout",
     "unfixable",
+    "anonymization_failed",
 }
 
 
@@ -1003,18 +1015,20 @@ async def undismiss_known_issue(
 async def force_patrol(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ForcePatrolResponse]:
-    """Trigger an immediate QA patrol cycle.
+    """Request an immediate QA patrol cycle.
 
-    Inserts a sentinel 'running' patrol record and returns immediately with the
-    patrol ID and status 'triggered'. The QA module daemon will pick this up
-    and run the actual patrol asynchronously.
+    **Important limitation:** This endpoint creates a sentinel ``running``
+    patrol row in the database, but the QA daemon does not claim pre-existing
+    ``running`` rows — it always creates its own record when it runs.
+    The sentinel row will remain stuck as ``running`` until the daemon restarts
+    (at which point ``_recover_stale_patrols`` marks it ``error``).
 
-    Note: This endpoint creates the patrol record but does not directly invoke
-    the QA module's patrol logic (which runs in the butler daemon process).
-    In a deployment where the QA staffer is running, the ``force_patrol`` MCP
-    tool on the QA staffer itself should be used for immediate synchronous
-    execution. This HTTP endpoint serves as a dashboard trigger that creates a
-    patrol stub which the daemon will find and execute.
+    This endpoint fulfils the spec contract (returns ``patrol_id`` and
+    ``status: "triggered"``) but does **not** synchronously trigger a patrol.
+    For immediate synchronous execution, use the ``force_patrol`` MCP tool on
+    the QA staffer daemon directly.  This HTTP route exists as a dashboard
+    affordance and will be wired to a real trigger mechanism once the daemon
+    exposes a patrol-queue API.
     """
     pool = _shared_pool(db)
 

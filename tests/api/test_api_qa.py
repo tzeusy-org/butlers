@@ -360,6 +360,27 @@ class TestGetQaSummary:
         assert body["data"]["circuit_breaker"]["tripped"] is False
         assert body["data"]["circuit_breaker"]["consecutive_failures"] == 2
 
+    async def test_circuit_breaker_counts_anonymization_failed_as_failure(self) -> None:
+        """anonymization_failed must count as a CB failure (aligns with dispatch.py)."""
+        cb_rows = [
+            {"status": "anonymization_failed"},
+            {"status": "timeout"},
+            {"status": "failed"},
+            {"status": "anonymization_failed"},
+            {"status": "failed"},
+        ]
+        app, _ = _build_summary_app(cb_rows=cb_rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["circuit_breaker"]["tripped"] is True
+        assert body["data"]["circuit_breaker"]["consecutive_failures"] == 5
+
     async def test_summary_includes_prs_opened_24h(self) -> None:
         """stats_24h.prs_opened should reflect the fetchval result."""
         app, _ = _build_summary_app(prs_opened_24h=3)
@@ -694,6 +715,21 @@ class TestListInvestigations:
 
         assert response.status_code == 200
         assert response.json()["data"][0]["status"] == "pr_merged"
+
+    async def test_accepts_anonymization_failed_status_filter(self) -> None:
+        """anonymization_failed must be a valid filter value (it is in VALID_STATUSES)."""
+        row = _make_investigation_row(status="anonymization_failed")
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/api/qa/investigations", params={"status": "anonymization_failed"}
+            )
+
+        assert response.status_code == 200
+        assert response.json()["data"][0]["status"] == "anonymization_failed"
 
     async def test_rejects_invalid_status_filter(self) -> None:
         app, _ = _build_app()
