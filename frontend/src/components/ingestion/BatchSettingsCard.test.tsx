@@ -64,6 +64,7 @@ function makeMutation(overrides: object = {}) {
     failureCount: 0,
     failureReason: null,
     isPaused: false,
+    isPaused: false,
     submittedAt: 0,
     ...overrides,
   };

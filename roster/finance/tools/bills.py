@@ -217,7 +217,7 @@ async def upcoming_bills(
         and ``totals``.
     """
     now = datetime.now(UTC)
-    today = now.date()
+    today = date.today()
     horizon = today + timedelta(days=days_ahead)
 
     if include_overdue:
