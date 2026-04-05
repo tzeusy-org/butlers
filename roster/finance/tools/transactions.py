@@ -289,7 +289,7 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
     ``information_schema`` queries on every deduplication call.
     """
     per_pool = _column_existence_cache.setdefault(pool, {})
-    cache_key = (str(id(pool)), table, column)
+    cache_key = (table, column)
     if cache_key in per_pool:
         return per_pool[cache_key]
     count = await pool.fetchval(

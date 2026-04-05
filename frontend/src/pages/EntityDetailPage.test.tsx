@@ -56,7 +56,6 @@ const BASE_ENTITY: EntityDetail = {
   archived: false,
   metadata: {},
   recent_facts: [],
-  archived: false,
   entity_info: [],
 };
 
