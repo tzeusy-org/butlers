@@ -99,7 +99,8 @@ async def test_state_list(pool):
     assert len(all_entries) >= 3
 
     app_entries = await state_list(pool, prefix="app.")
-    assert all(e["key"].startswith("app.") for e in app_entries)
+    # state_list returns key strings by default (keys_only=True)
+    assert all(e.startswith("app.") for e in app_entries)
     assert len(app_entries) == 2
 
 
@@ -110,30 +111,30 @@ async def test_state_list(pool):
 
 async def test_state_cas_success_and_failure(pool):
     """CAS succeeds on matching version; fails on mismatch; no-op on missing key."""
-    from butlers.core.state import state_cas, state_set
+    from butlers.core.state import state_compare_and_set, state_set
 
     v1 = await state_set(pool, "cas-key", "initial")
-    new_v = await state_cas(pool, "cas-key", "updated", expected_version=v1)
+    new_v = await state_compare_and_set(pool, "cas-key", v1, "updated")
     assert new_v == v1 + 1
 
     # Wrong version fails
     with pytest.raises(Exception):
-        await state_cas(pool, "cas-key", "bad", expected_version=v1)
+        await state_compare_and_set(pool, "cas-key", v1, "bad")
 
     # Missing key fails
     with pytest.raises(Exception):
-        await state_cas(pool, "no-such-key", "val", expected_version=1)
+        await state_compare_and_set(pool, "no-such-key", 1, "val")
 
 
 async def test_state_cas_concurrent_exactly_one_wins(pool):
     """Concurrent CAS on same key: exactly one succeeds."""
-    from butlers.core.state import state_cas, state_set
+    from butlers.core.state import state_compare_and_set, state_set
 
     v = await state_set(pool, "race-key", "initial")
 
     results = await asyncio.gather(
-        state_cas(pool, "race-key", "winner-a", expected_version=v),
-        state_cas(pool, "race-key", "winner-b", expected_version=v),
+        state_compare_and_set(pool, "race-key", v, "winner-a"),
+        state_compare_and_set(pool, "race-key", v, "winner-b"),
         return_exceptions=True,
     )
     successes = [r for r in results if isinstance(r, int)]
@@ -159,13 +160,17 @@ class TestDecodeJsonb:
         ],
     )
     def test_decode_jsonb(self, input_val, expected):
-        from butlers.core.state import _decode_jsonb
+        from butlers.core.state import decode_jsonb
 
-        assert _decode_jsonb(input_val) == expected
+        assert decode_jsonb(input_val) == expected
 
     def test_string_value_passthrough(self):
-        from butlers.core.state import _decode_jsonb
+        from butlers.core.state import decode_jsonb
 
-        # Plain non-JSON string should pass through
-        result = _decode_jsonb("plain string")
+        # A JSON-encoded string (a valid JSON value) is decoded
+        result = decode_jsonb('"plain string"')
         assert result == "plain string"
+
+        # Non-string values pass through unchanged
+        assert decode_jsonb(42) == 42
+        assert decode_jsonb(None) is None

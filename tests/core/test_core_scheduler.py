@@ -373,7 +373,7 @@ async def test_schedule_update_and_delete(pool):
     """schedule_update changes fields; schedule_delete removes runtime tasks."""
     from butlers.core.scheduler import schedule_create, schedule_delete, schedule_update
 
-    task_id = await schedule_create(pool, "updatable", "0 9 * * *", "original", source="db")
+    task_id = await schedule_create(pool, "updatable", "0 9 * * *", "original")
 
     await schedule_update(pool, task_id, cron="0 10 * * *", prompt="updated")
     row = await pool.fetchrow("SELECT cron, prompt FROM scheduled_tasks WHERE id = $1", task_id)
@@ -435,7 +435,13 @@ async def test_deadline_task_create(pool):
         "deadline prompt",
         task_type="deadline",
         target_date=future_date,
-        alert_thresholds=[30, 14, 7, 1],
+        lead_time_days=45,
+        alert_thresholds=[
+            {"days_before": 30, "severity": "info"},
+            {"days_before": 14, "severity": "warning"},
+            {"days_before": 7, "severity": "warning"},
+            {"days_before": 1, "severity": "critical"},
+        ],
     )
     assert task_id is not None
 

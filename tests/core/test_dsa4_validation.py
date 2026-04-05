@@ -28,7 +28,7 @@ pytestmark = pytest.mark.unit
 # scopes path injection per testpath; 'roster/' is not auto-added for tests
 # under 'tests/').
 # ---------------------------------------------------------------------------
-_WORKTREE_ROOT = Path(__file__).resolve().parent.parent
+_WORKTREE_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_WORKTREE_ROOT) not in sys.path:
     sys.path.insert(0, str(_WORKTREE_ROOT))
 

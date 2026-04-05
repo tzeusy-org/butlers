@@ -105,6 +105,8 @@ async def test_create_correction_returns_id():
             description="Test correction",
             status=status,
             summary="Summary",
+            original_data_snapshot=None,
+            correction_details=None,
         )
         assert result is not None
 
@@ -163,20 +165,19 @@ async def test_data_correction_fails_when_session_not_found():
 @corrections_required
 async def test_misroute_handler_fails_unregistered_butler():
     """handle_misroute returns failed when the correct_butler is not registered."""
+    from unittest.mock import AsyncMock as AsyncMockLocal
+
     pool = _make_pool(session_row={"id": uuid.uuid4(), "ingestion_event_id": str(uuid.uuid4())})
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "butlers.core.corrections._get_registered_butlers",
-            lambda: ["finance", "general"],
-            raising=False,
-        )
-        result = await handle_misroute(
-            pool,
-            target_session_id=uuid.uuid4(),
-            correcting_session_id=uuid.uuid4(),
-            description="Wrong butler",
-            correct_butler="nonexistent_butler",
-        )
+    mock_switchboard = AsyncMockLocal()
+    result = await handle_misroute(
+        pool,
+        target_session_id=uuid.uuid4(),
+        correcting_session_id=uuid.uuid4(),
+        description="Wrong butler",
+        correct_butler="nonexistent_butler",
+        registered_butlers=["finance", "general"],
+        switchboard_client=mock_switchboard,
+    )
     assert result["status"] == "failed"
 
 
@@ -205,18 +206,58 @@ async def test_corrections_audit_queries_return_lists():
 
 @corrections_required
 @pytest.mark.parametrize(
-    "situation,expected_type",
+    "kwargs,expected_type",
     [
-        ("stored_data_wrong", CorrectionType.DATA_CORRECTION),
-        ("memory_wrong", CorrectionType.MEMORY_DELETION),
-        ("wrong_butler", CorrectionType.MISROUTE),
-        ("action_mistake", CorrectionType.ACTION_REVERSAL),
-        ("something_weird", None),
+        (
+            {
+                "stored_data_wrong": True,
+                "memory_wrong": False,
+                "wrong_butler": False,
+                "action_mistake": False,
+            },
+            CorrectionType.DATA_CORRECTION,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": True,
+                "wrong_butler": False,
+                "action_mistake": False,
+            },
+            CorrectionType.MEMORY_DELETION,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": False,
+                "wrong_butler": True,
+                "action_mistake": False,
+            },
+            CorrectionType.MISROUTE,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": False,
+                "wrong_butler": False,
+                "action_mistake": True,
+            },
+            CorrectionType.ACTION_REVERSAL,
+        ),
+        (
+            {
+                "stored_data_wrong": False,
+                "memory_wrong": False,
+                "wrong_butler": False,
+                "action_mistake": False,
+            },
+            None,
+        ),
     ],
 )
-def test_decision_tree_maps_situations_to_types(situation, expected_type):
+def test_decision_tree_maps_situations_to_types(kwargs, expected_type):
     """get_correction_type_for_situation returns the correct CorrectionType or None."""
-    result = get_correction_type_for_situation(situation)
+    result = get_correction_type_for_situation(**kwargs)
     assert result == expected_type
 
 
