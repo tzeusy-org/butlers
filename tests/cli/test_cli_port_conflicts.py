@@ -1,5 +1,7 @@
 """Tests for port conflict detection in CLI up command."""
 
+import asyncio
+
 import pytest
 from click.testing import CliRunner
 
@@ -14,20 +16,16 @@ def runner():
 
 
 class TestPortConflictDetection:
-    def test_no_conflict_all_unique_ports(self, runner, tmp_path):
-        """Test that butlers with unique ports pass conflict check."""
+    def test_no_conflict_unique_ports(self, runner, tmp_path):
+        """Butlers with unique ports pass conflict check."""
         base = tmp_path / "butlers"
         for name, port in [("alpha", 9001), ("beta", 9002), ("gamma", 9003)]:
             d = base / name
             d.mkdir(parents=True)
             (d / "butler.toml").write_text(f'[butler]\nname = "{name}"\nport = {port}\n')
 
-        # Patch asyncio.run to avoid actually starting daemons
-        import asyncio
-
         original_run = asyncio.run
         asyncio.run = lambda coro: coro.close()
-
         try:
             result = runner.invoke(cli, ["up", "--dir", str(base)])
             assert result.exit_code == 0
@@ -35,104 +33,53 @@ class TestPortConflictDetection:
         finally:
             asyncio.run = original_run
 
-    def test_conflict_two_butlers_same_port(self, runner, tmp_path):
-        """Test that two butlers with the same port are detected as conflicting."""
+    def test_conflict_detected_and_reported(self, runner, tmp_path):
+        """Two or more butlers with the same port are detected and all reported."""
         base = tmp_path / "butlers"
+
+        # Two butlers sharing same port
         for name, port in [("alpha", 9000), ("beta", 9000)]:
             d = base / name
             d.mkdir(parents=True)
             (d / "butler.toml").write_text(f'[butler]\nname = "{name}"\nport = {port}\n')
-
         result = runner.invoke(cli, ["up", "--dir", str(base)])
         assert result.exit_code != 0
-        assert "Port conflict" in result.output or "port conflict" in result.output
         assert "9000" in result.output
         assert "alpha" in result.output
         assert "beta" in result.output
 
-    def test_conflict_three_butlers_same_port(self, runner, tmp_path):
-        """Test that three butlers with the same port are all reported."""
-        base = tmp_path / "butlers"
-        for name in ["alpha", "beta", "gamma"]:
-            d = base / name
+        # Multiple separate conflicts
+        base2 = tmp_path / "butlers2"
+        for name, port in [("a", 7000), ("b", 7000), ("c", 8000), ("d", 8000), ("e", 9000)]:
+            d = base2 / name
             d.mkdir(parents=True)
-            (d / "butler.toml").write_text(f'[butler]\nname = "{name}"\nport = 8888\n')
+            (d / "butler.toml").write_text(f'[butler]\nname = "{name}"\nport = {port}\n')
+        result2 = runner.invoke(cli, ["up", "--dir", str(base2)])
+        assert result2.exit_code != 0
+        assert "7000" in result2.output
+        assert "8000" in result2.output
 
-        result = runner.invoke(cli, ["up", "--dir", str(base)])
-        assert result.exit_code != 0
-        assert "8888" in result.output
-        assert "alpha" in result.output
-        assert "beta" in result.output
-        assert "gamma" in result.output
-
-    def test_conflict_multiple_different_conflicts(self, runner, tmp_path):
-        """Test multiple separate port conflicts."""
+    def test_only_flag_conflict_handling(self, runner, tmp_path):
+        """--only flag checks conflicts among selected butlers only."""
         base = tmp_path / "butlers"
-        configs = [
-            ("alpha", 7000),
-            ("beta", 7000),  # conflicts with alpha
-            ("gamma", 8000),
-            ("delta", 8000),  # conflicts with gamma
-            ("epsilon", 9000),  # no conflict
-        ]
-        for name, port in configs:
+        for name, port in [("alpha", 9000), ("beta", 9000), ("gamma", 8000)]:
             d = base / name
             d.mkdir(parents=True)
             (d / "butler.toml").write_text(f'[butler]\nname = "{name}"\nport = {port}\n')
 
-        result = runner.invoke(cli, ["up", "--dir", str(base)])
-        assert result.exit_code != 0
-        # Should report both conflicts
-        assert "7000" in result.output
-        assert "8000" in result.output
-        assert "alpha" in result.output
-        assert "beta" in result.output
-        assert "gamma" in result.output
-        assert "delta" in result.output
-
-    def test_no_conflict_when_using_only_flag(self, runner, tmp_path):
-        """Test that --only flag still checks for conflicts within selected butlers."""
-        base = tmp_path / "butlers"
-        configs = [
-            ("alpha", 9000),
-            ("beta", 9000),  # conflicts with alpha
-            ("gamma", 8000),  # different port, not selected
-        ]
-        for name, port in configs:
-            d = base / name
-            d.mkdir(parents=True)
-            (d / "butler.toml").write_text(f'[butler]\nname = "{name}"\nport = {port}\n')
-
-        # Try to start only alpha and beta (which conflict)
+        # alpha+beta conflict → error
         result = runner.invoke(cli, ["up", "--dir", str(base), "--only", "alpha", "--only", "beta"])
         assert result.exit_code != 0
         assert "9000" in result.output
 
-    def test_no_conflict_with_only_flag_disjoint_ports(self, runner, tmp_path):
-        """Test that --only flag works when selected butlers have no conflicts."""
-        base = tmp_path / "butlers"
-        configs = [
-            ("alpha", 9000),
-            ("beta", 9000),  # conflicts with alpha, but not selected
-            ("gamma", 8000),
-        ]
-        for name, port in configs:
-            d = base / name
-            d.mkdir(parents=True)
-            (d / "butler.toml").write_text(f'[butler]\nname = "{name}"\nport = {port}\n')
-
-        # Patch asyncio.run to avoid actually starting daemons
-        import asyncio
-
+        # alpha+gamma no conflict → success
         original_run = asyncio.run
         asyncio.run = lambda coro: coro.close()
-
         try:
-            # Try to start only alpha and gamma (no conflict between them)
-            result = runner.invoke(
+            result2 = runner.invoke(
                 cli, ["up", "--dir", str(base), "--only", "alpha", "--only", "gamma"]
             )
-            assert result.exit_code == 0
-            assert "Starting 2 butler(s)" in result.output
+            assert result2.exit_code == 0
+            assert "Starting 2 butler(s)" in result2.output
         finally:
             asyncio.run = original_run

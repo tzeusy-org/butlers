@@ -1,4 +1,8 @@
-"""Tests for idempotent ingestion guards on Relationship butler tools."""
+"""Tests for idempotent ingestion guards on Relationship butler tools.
+
+Covers first-insert, duplicate-skips, and different-key-not-skipped for
+interaction_log, date_add, note_create, and life_event_log.
+"""
 
 from __future__ import annotations
 
@@ -131,7 +135,6 @@ async def pool(postgres_container):
     """)
 
     # SPO facts infrastructure (needed by store_fact called from _log_activity)
-    # public schema always exists; no need to create it.
     await p.execute("""
         CREATE TABLE IF NOT EXISTS public.entities (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -229,14 +232,7 @@ async def pool(postgres_container):
 
 
 def _extract_fact_id(result: dict) -> uuid.UUID:
-    """Extract the UUID from a tool result whose 'id' may be a store_fact dict.
-
-    store_fact() now returns ``{"id": UUID, "supersedes_id": ...}`` but the
-    relationship tools (interaction_log, note_create, life_event_log) put that
-    return value directly into ``result["id"]``.  This helper normalises the
-    nested dict back to a plain UUID so test assertions work regardless of the
-    store_fact return type.
-    """
+    """Extract UUID from a tool result whose 'id' may be a store_fact dict."""
     fact_id = result["id"]
     if isinstance(fact_id, dict):
         return fact_id["id"]
@@ -266,55 +262,30 @@ def patch_embedding_engine():
 # ------------------------------------------------------------------
 
 
-async def test_interaction_log_first_call_inserts(pool):
-    """First interaction_log call inserts normally."""
+async def test_interaction_log_idempotency(pool):
+    """interaction_log: first call inserts; same contact+type+date skips; different type/date inserts."""
     from butlers.tools.relationship import contact_create, interaction_log
 
     c = await contact_create(pool, "Dedup-Interaction")
     ts = datetime(2026, 3, 15, 10, 0, tzinfo=UTC)
-    result = await interaction_log(pool, c["id"], "call", summary="Catch-up", occurred_at=ts)
-    assert "id" in result
-    assert result["type"] == "call"
-    assert "skipped" not in result
+    ts2 = datetime(2026, 3, 16, 10, 0, tzinfo=UTC)
 
+    # First call inserts
+    first = await interaction_log(pool, c["id"], "call", summary="Catch-up", occurred_at=ts)
+    assert "id" in first and first["type"] == "call" and "skipped" not in first
 
-async def test_interaction_log_duplicate_skips(pool):
-    """Duplicate interaction_log (same contact+type+date) returns skip flag."""
-    from butlers.tools.relationship import contact_create, interaction_log
-
-    c = await contact_create(pool, "Dedup-Interaction-Dup")
-    ts = datetime(2026, 3, 15, 10, 0, tzinfo=UTC)
-    first = await interaction_log(pool, c["id"], "call", summary="First", occurred_at=ts)
-    assert "skipped" not in first
-
-    # Same contact, same type, same date => skip
+    # Duplicate → skip
     second = await interaction_log(pool, c["id"], "call", summary="Second", occurred_at=ts)
     assert second["skipped"] == "duplicate"
     assert second["existing_id"] == str(_extract_fact_id(first))
 
+    # Different type → not a duplicate
+    diff_type = await interaction_log(pool, c["id"], "email", occurred_at=ts)
+    assert "skipped" not in diff_type and diff_type["type"] == "email"
 
-async def test_interaction_log_different_type_not_skipped(pool):
-    """Different interaction type on same date is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, interaction_log
-
-    c = await contact_create(pool, "Dedup-Interaction-DiffType")
-    ts = datetime(2026, 3, 15, 10, 0, tzinfo=UTC)
-    await interaction_log(pool, c["id"], "call", occurred_at=ts)
-    result = await interaction_log(pool, c["id"], "email", occurred_at=ts)
-    assert "skipped" not in result
-    assert result["type"] == "email"
-
-
-async def test_interaction_log_different_date_not_skipped(pool):
-    """Same interaction type on different date is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, interaction_log
-
-    c = await contact_create(pool, "Dedup-Interaction-DiffDate")
-    ts1 = datetime(2026, 3, 15, 10, 0, tzinfo=UTC)
-    ts2 = datetime(2026, 3, 16, 10, 0, tzinfo=UTC)
-    await interaction_log(pool, c["id"], "call", occurred_at=ts1)
-    result = await interaction_log(pool, c["id"], "call", occurred_at=ts2)
-    assert "skipped" not in result
+    # Different date → not a duplicate
+    diff_date = await interaction_log(pool, c["id"], "call", occurred_at=ts2)
+    assert "skipped" not in diff_date
 
 
 # ------------------------------------------------------------------
@@ -322,49 +293,28 @@ async def test_interaction_log_different_date_not_skipped(pool):
 # ------------------------------------------------------------------
 
 
-async def test_date_add_first_call_inserts(pool):
-    """First date_add call inserts normally."""
+async def test_date_add_idempotency(pool):
+    """date_add: first call inserts; same contact+label+month+day skips; different label/day inserts."""
     from butlers.tools.relationship import contact_create, date_add
 
     c = await contact_create(pool, "Dedup-Date")
-    result = await date_add(pool, c["id"], "birthday", 6, 15)
-    assert "id" in result
-    assert result["label"] == "birthday"
-    assert "skipped" not in result
 
-
-async def test_date_add_duplicate_skips(pool):
-    """Duplicate date_add (same contact+label+month+day) returns skip flag."""
-    from butlers.tools.relationship import contact_create, date_add
-
-    c = await contact_create(pool, "Dedup-Date-Dup")
+    # First call inserts
     first = await date_add(pool, c["id"], "birthday", 6, 15)
-    assert "skipped" not in first
+    assert "id" in first and first["label"] == "birthday" and "skipped" not in first
 
+    # Duplicate → skip
     second = await date_add(pool, c["id"], "birthday", 6, 15, year=1990)
     assert second["skipped"] == "duplicate"
     assert second["existing_id"] == str(first["id"])
 
+    # Different label → not a duplicate
+    diff_label = await date_add(pool, c["id"], "anniversary", 6, 15)
+    assert "skipped" not in diff_label and diff_label["label"] == "anniversary"
 
-async def test_date_add_different_label_not_skipped(pool):
-    """Different label on same month/day is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, date_add
-
-    c = await contact_create(pool, "Dedup-Date-DiffLabel")
-    await date_add(pool, c["id"], "birthday", 6, 15)
-    result = await date_add(pool, c["id"], "anniversary", 6, 15)
-    assert "skipped" not in result
-    assert result["label"] == "anniversary"
-
-
-async def test_date_add_different_day_not_skipped(pool):
-    """Same label on different day is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, date_add
-
-    c = await contact_create(pool, "Dedup-Date-DiffDay")
-    await date_add(pool, c["id"], "birthday", 6, 15)
-    result = await date_add(pool, c["id"], "birthday", 6, 16)
-    assert "skipped" not in result
+    # Different day → not a duplicate
+    diff_day = await date_add(pool, c["id"], "birthday", 6, 16)
+    assert "skipped" not in diff_day
 
 
 # ------------------------------------------------------------------
@@ -372,61 +322,32 @@ async def test_date_add_different_day_not_skipped(pool):
 # ------------------------------------------------------------------
 
 
-async def test_note_create_first_call_inserts(pool):
-    """First note_create call inserts normally."""
+async def test_note_create_idempotency(pool):
+    """note_create: first call inserts; same contact+content within 1h skips; different/old content inserts."""
     from butlers.tools.relationship import contact_create, note_create
 
     c = await contact_create(pool, "Dedup-Note")
-    result = await note_create(pool, c["id"], "Some important note")
-    assert "id" in result
-    assert result["content"] == "Some important note"
-    assert "skipped" not in result
 
+    # First call inserts
+    first = await note_create(pool, c["id"], "Some important note")
+    assert "id" in first and first["content"] == "Some important note" and "skipped" not in first
 
-async def test_note_create_duplicate_within_hour_skips(pool):
-    """Duplicate note_create (same contact+content within 1h) returns skip flag."""
-    from butlers.tools.relationship import contact_create, note_create
-
-    c = await contact_create(pool, "Dedup-Note-Dup")
-    first = await note_create(pool, c["id"], "Repeated note content")
-    assert "skipped" not in first
-
-    second = await note_create(pool, c["id"], "Repeated note content")
+    # Duplicate within window → skip
+    second = await note_create(pool, c["id"], "Some important note")
     assert second["skipped"] == "duplicate"
     assert second["existing_id"] == str(_extract_fact_id(first))
 
+    # Different content → not a duplicate
+    diff = await note_create(pool, c["id"], "Different note")
+    assert "skipped" not in diff and diff["content"] == "Different note"
 
-async def test_note_create_different_content_not_skipped(pool):
-    """Different content is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, note_create
-
-    c = await contact_create(pool, "Dedup-Note-DiffContent")
-    await note_create(pool, c["id"], "First note")
-    result = await note_create(pool, c["id"], "Second note")
-    assert "skipped" not in result
-    assert result["content"] == "Second note"
-
-
-async def test_note_create_same_content_after_hour_not_skipped(pool):
-    """Same content after 1 hour window is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, note_create
-
-    c = await contact_create(pool, "Dedup-Note-OldContent")
-    # Insert a note, then backdate its created_at to 2 hours ago
-    first = await note_create(pool, c["id"], "Old note content")
-    assert "skipped" not in first
-
+    # Same content but outside 1-hour window → not a duplicate
+    old = await note_create(pool, c["id"], "Old note content")
+    assert "skipped" not in old
     two_hours_ago = datetime.now(UTC) - timedelta(hours=2)
-    await pool.execute(
-        "UPDATE facts SET created_at = $1 WHERE id = $2",
-        two_hours_ago,
-        _extract_fact_id(first),
-    )
-
-    # Same content, but the old note is now outside the 1-hour window
-    second = await note_create(pool, c["id"], "Old note content")
-    assert "skipped" not in second
-    assert "id" in second
+    await pool.execute("UPDATE facts SET created_at = $1 WHERE id = $2", two_hours_ago, _extract_fact_id(old))
+    after_window = await note_create(pool, c["id"], "Old note content")
+    assert "skipped" not in after_window and "id" in after_window
 
 
 # ------------------------------------------------------------------
@@ -434,55 +355,27 @@ async def test_note_create_same_content_after_hour_not_skipped(pool):
 # ------------------------------------------------------------------
 
 
-async def test_life_event_log_first_call_inserts(pool):
-    """First life_event_log call inserts normally."""
+async def test_life_event_log_idempotency(pool):
+    """life_event_log: first call inserts; same contact+type+date skips; different type/date inserts."""
     from butlers.tools.relationship import contact_create, life_event_log
 
     c = await contact_create(pool, "Dedup-LifeEvent")
     ts = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
-    result = await life_event_log(
-        pool, c["id"], "promotion", description="Got promoted", occurred_at=ts
-    )
-    assert "id" in result
-    assert result["type_name"] == "promotion"
-    assert "skipped" not in result
+    ts2 = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
 
+    # First call inserts
+    first = await life_event_log(pool, c["id"], "promotion", description="Got promoted", occurred_at=ts)
+    assert "id" in first and first["type_name"] == "promotion" and "skipped" not in first
 
-async def test_life_event_log_duplicate_skips(pool):
-    """Duplicate life_event_log (same contact+type+date) returns skip flag."""
-    from butlers.tools.relationship import contact_create, life_event_log
-
-    c = await contact_create(pool, "Dedup-LifeEvent-Dup")
-    ts = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
-    first = await life_event_log(pool, c["id"], "promotion", occurred_at=ts)
-    assert "skipped" not in first
-
-    second = await life_event_log(
-        pool, c["id"], "promotion", description="Different desc", occurred_at=ts
-    )
+    # Duplicate → skip
+    second = await life_event_log(pool, c["id"], "promotion", description="Different desc", occurred_at=ts)
     assert second["skipped"] == "duplicate"
     assert second["existing_id"] == str(_extract_fact_id(first))
 
+    # Different type → not a duplicate
+    diff_type = await life_event_log(pool, c["id"], "married", occurred_at=ts)
+    assert "skipped" not in diff_type and diff_type["type_name"] == "married"
 
-async def test_life_event_log_different_type_not_skipped(pool):
-    """Different event type on same date is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, life_event_log
-
-    c = await contact_create(pool, "Dedup-LifeEvent-DiffType")
-    ts = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
-    await life_event_log(pool, c["id"], "promotion", occurred_at=ts)
-    result = await life_event_log(pool, c["id"], "married", occurred_at=ts)
-    assert "skipped" not in result
-    assert result["type_name"] == "married"
-
-
-async def test_life_event_log_different_date_not_skipped(pool):
-    """Same event type on different date is NOT a duplicate."""
-    from butlers.tools.relationship import contact_create, life_event_log
-
-    c = await contact_create(pool, "Dedup-LifeEvent-DiffDate")
-    ts1 = datetime(2026, 5, 20, 12, 0, tzinfo=UTC)
-    ts2 = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
-    await life_event_log(pool, c["id"], "promotion", occurred_at=ts1)
-    result = await life_event_log(pool, c["id"], "promotion", occurred_at=ts2)
-    assert "skipped" not in result
+    # Different date → not a duplicate
+    diff_date = await life_event_log(pool, c["id"], "promotion", occurred_at=ts2)
+    assert "skipped" not in diff_date

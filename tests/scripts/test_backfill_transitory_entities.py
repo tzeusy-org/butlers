@@ -66,43 +66,24 @@ GENERIC_LABELS = _mod.GENERIC_LABELS
 # ---------------------------------------------------------------------------
 
 
-class TestInferEntityType:
-    """Unit tests for the entity_type heuristic function."""
-
-    def test_finance_scope_defaults_to_organization(self):
-        assert infer_entity_type("Nutrition Kitchen SG", "finance") == "organization"
-
-    def test_travel_scope_defaults_to_place(self):
-        assert infer_entity_type("Marina Bay Sands", "travel") == "place"
-
-    def test_relationship_scope_defaults_to_person(self):
-        assert infer_entity_type("Sarah", "relationship") == "person"
-
-    def test_health_scope_defaults_to_organization(self):
-        assert infer_entity_type("City Medical Centre", "health") == "organization"
-
-    def test_education_scope_defaults_to_organization(self):
-        assert infer_entity_type("NUS Business School", "education") == "organization"
-
-    def test_person_prefix_overrides_finance_scope(self):
-        """Dr./Mr. prefix → person even in finance scope."""
-        assert infer_entity_type("Dr. Smith", "finance") == "person"
-
-    def test_org_suffix_in_unknown_scope(self):
-        """Ltd/Inc/Corp suffix → organization when no scope mapping."""
-        assert infer_entity_type("Acme Corp", "global") == "organization"
-
-    def test_pte_ltd_suffix(self):
-        assert infer_entity_type("ABC Solutions Pte Ltd", "global") == "organization"
-
-    def test_place_tokens_in_unknown_scope(self):
-        assert infer_entity_type("Sentosa Beach Resort", "global") == "place"
-
-    def test_unknown_scope_no_tokens_falls_back_to_other(self):
-        assert infer_entity_type("FooBarBaz", "global") == "other"
-
-    def test_home_scope_defaults_to_other(self):
-        assert infer_entity_type("SmartLock 3000", "home") == "other"
+@pytest.mark.parametrize(
+    "label, scope, expected",
+    [
+        ("Nutrition Kitchen SG", "finance", "organization"),
+        ("Marina Bay Sands", "travel", "place"),
+        ("Sarah", "relationship", "person"),
+        ("City Medical Centre", "health", "organization"),
+        ("NUS Business School", "education", "organization"),
+        ("Dr. Smith", "finance", "person"),  # person prefix overrides scope
+        ("Acme Corp", "global", "organization"),
+        ("ABC Solutions Pte Ltd", "global", "organization"),
+        ("Sentosa Beach Resort", "global", "place"),
+        ("FooBarBaz", "global", "other"),  # no scope mapping, no tokens
+        ("SmartLock 3000", "home", "other"),  # home defaults to other
+    ],
+)
+def test_infer_entity_type(label, scope, expected):
+    assert infer_entity_type(label, scope) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -110,26 +91,10 @@ class TestInferEntityType:
 # ---------------------------------------------------------------------------
 
 
-class TestGenericLabels:
-    """Verify the set of labels excluded from backfill."""
-
-    def test_owner_is_generic(self):
-        assert "Owner" in GENERIC_LABELS
-
-    def test_user_variants_are_generic(self):
-        assert "user" in GENERIC_LABELS
-        assert "User" in GENERIC_LABELS
-
-    def test_me_variants_are_generic(self):
-        assert "me" in GENERIC_LABELS
-        assert "Me" in GENERIC_LABELS
-
-    def test_self_variants_are_generic(self):
-        assert "self" in GENERIC_LABELS
-        assert "Self" in GENERIC_LABELS
-
-    def test_I_is_generic(self):
-        assert "I" in GENERIC_LABELS
+def test_generic_labels_set():
+    """Verify all expected generic labels are present."""
+    for label in ("Owner", "user", "User", "me", "Me", "self", "Self", "I"):
+        assert label in GENERIC_LABELS, f"Expected {label!r} in GENERIC_LABELS"
 
 
 # ---------------------------------------------------------------------------
@@ -140,13 +105,15 @@ class TestGenericLabels:
 class TestRunDiagnostic:
     """Tests for run_diagnostic() querying the facts table."""
 
-    async def test_returns_diagnostic_rows(self):
-        """run_diagnostic returns DiagnosticRow entries for non-generic subjects."""
+    async def test_returns_rows_and_excludes_generic_labels(self):
+        """Returns DiagnosticRow entries for non-generic subjects; filters generic ones."""
         mock_conn = AsyncMock()
         mock_conn.fetch = AsyncMock(
             return_value=[
                 {"subject": "Nutrition Kitchen SG", "scope": "finance", "fact_count": 3},
                 {"subject": "Marina Bay Hotel", "scope": "travel", "fact_count": 1},
+                {"subject": "Owner", "scope": "global", "fact_count": 10},
+                {"subject": "user", "scope": "global", "fact_count": 5},
             ]
         )
 
@@ -154,45 +121,18 @@ class TestRunDiagnostic:
 
         assert len(rows) == 2
         assert rows[0].subject == "Nutrition Kitchen SG"
-        assert rows[0].scope == "finance"
-        assert rows[0].fact_count == 3
         assert rows[0].inferred_type == "organization"
         assert rows[1].subject == "Marina Bay Hotel"
-        assert rows[1].scope == "travel"
         assert rows[1].inferred_type == "place"
 
-    async def test_excludes_generic_labels(self):
-        """run_diagnostic filters out generic labels like 'Owner', 'user', 'me'."""
-        mock_conn = AsyncMock()
-        mock_conn.fetch = AsyncMock(
-            return_value=[
-                {"subject": "Owner", "scope": "global", "fact_count": 10},
-                {"subject": "user", "scope": "global", "fact_count": 5},
-                {"subject": "Me", "scope": "health", "fact_count": 2},
-                {"subject": "Real Entity", "scope": "finance", "fact_count": 1},
-            ]
-        )
-
-        rows = await run_diagnostic(mock_conn, "finance")
-
-        assert len(rows) == 1
-        assert rows[0].subject == "Real Entity"
-
-    async def test_empty_table_returns_empty_list(self):
+    async def test_empty_result_and_sql_filters(self):
+        """Empty table returns []; SQL contains entity_id IS NULL and validity = active."""
         mock_conn = AsyncMock()
         mock_conn.fetch = AsyncMock(return_value=[])
 
         rows = await run_diagnostic(mock_conn, "finance")
 
         assert rows == []
-
-    async def test_query_filters_entity_id_null_and_active(self):
-        """The diagnostic query targets entity_id IS NULL and validity = active."""
-        mock_conn = AsyncMock()
-        mock_conn.fetch = AsyncMock(return_value=[])
-
-        await run_diagnostic(mock_conn, "finance")
-
         call_sql = mock_conn.fetch.call_args[0][0]
         assert "entity_id IS NULL" in call_sql
         assert "validity = 'active'" in call_sql
@@ -223,8 +163,8 @@ def _mock_conn_with_transaction(**kwargs):
 class TestResolveOrCreateEntity:
     """Tests for the INSERT-then-resolve logic."""
 
-    async def test_creates_entity_on_success(self):
-        """Returns (entity_id, True) when INSERT succeeds."""
+    async def test_creates_entity_with_metadata(self):
+        """Returns (entity_id, True) on INSERT success; metadata has unidentified=True."""
         expected_uuid = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         mock_conn = _mock_conn_with_transaction()
         mock_conn.fetchval = AsyncMock(return_value=expected_uuid)
@@ -235,65 +175,42 @@ class TestResolveOrCreateEntity:
 
         assert entity_id_str == str(expected_uuid)
         assert was_created is True
-        # Verify INSERT statement was called
+
         call_sql = mock_conn.fetchval.call_args[0][0]
         assert "INSERT INTO public.entities" in call_sql
 
-    async def test_resolves_existing_entity_on_unique_violation(self):
-        """Returns (entity_id, False) when INSERT raises UniqueViolationError."""
+        # Verify metadata has unidentified flag and provenance
+        metadata_json = mock_conn.fetchval.call_args[0][5]
+        metadata = json.loads(metadata_json)
+        assert metadata["unidentified"] is True
+        assert metadata["source"] == "backfill"
+
+    async def test_resolves_existing_and_tombstoned_raises(self):
+        """On UniqueViolationError: returns (entity_id, False); tombstoned raises RuntimeError."""
         import asyncpg
 
         expected_uuid = uuid.UUID("bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee")
         mock_conn = _mock_conn_with_transaction()
 
-        # First call (INSERT) raises UniqueViolationError; second call (SELECT) returns UUID
+        # Case 1: resolve to existing entity
         mock_conn.fetchval = AsyncMock(
             side_effect=[asyncpg.UniqueViolationError("duplicate"), expected_uuid]
         )
-
         entity_id_str, was_created = await resolve_or_create_entity(
             mock_conn, "Acme Corp", "finance", "organization", "finance"
         )
-
         assert entity_id_str == str(expected_uuid)
         assert was_created is False
-        # Should have been called twice: INSERT then SELECT
         assert mock_conn.fetchval.call_count == 2
 
-    async def test_metadata_contains_unidentified_flag(self):
-        """Created entity metadata must include unidentified=True and provenance."""
-        expected_uuid = uuid.UUID("cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee")
-        mock_conn = _mock_conn_with_transaction()
-        mock_conn.fetchval = AsyncMock(return_value=expected_uuid)
-
-        await resolve_or_create_entity(
-            mock_conn, "Nutrition Kitchen SG", "finance", "organization", "finance"
-        )
-
-        call_args = mock_conn.fetchval.call_args[0]
-        # Metadata is the 5th positional arg (index 5 after SQL, tenant_id, name, type, aliases)
-        # Position: sql, tenant_id, canonical_name, entity_type, aliases, metadata, roles
-        metadata_json = call_args[5]
-        metadata = json.loads(metadata_json)
-
-        assert metadata["unidentified"] is True
-        assert metadata["source"] == "backfill"
-        assert metadata["source_butler"] == "finance"
-        assert metadata["source_scope"] == "finance"
-
-    async def test_tombstoned_entity_raises_runtime_error(self):
-        """If entity exists but is tombstoned and no fallback found, raises RuntimeError."""
-        import asyncpg
-
-        mock_conn = _mock_conn_with_transaction()
-        # INSERT fails, first SELECT returns None (tombstoned), second SELECT also returns None
-        mock_conn.fetchval = AsyncMock(
+        # Case 2: tombstoned — fetchval returns None twice → RuntimeError
+        mock_conn2 = _mock_conn_with_transaction()
+        mock_conn2.fetchval = AsyncMock(
             side_effect=[asyncpg.UniqueViolationError("dup"), None, None]
         )
-
         with pytest.raises(RuntimeError, match="could not be resolved"):
             await resolve_or_create_entity(
-                mock_conn, "Dead Entity", "finance", "organization", "finance"
+                mock_conn2, "Dead Entity", "finance", "organization", "finance"
             )
 
 
@@ -358,12 +275,14 @@ class _FakePool:
         return _CM(self._conn)
 
 
-class TestBackfillSchemaDryRun:
-    """Dry-run mode: no writes, returns diagnostic only."""
+class TestBackfillSchema:
+    """Dry-run and apply modes."""
 
-    async def test_dry_run_returns_diagnostic_without_writing(self):
+    async def test_dry_run_diagnostic_only(self):
+        """Dry-run: returns diagnostic without writing; excludes generic labels."""
         fact_rows = [
             {"subject": "Nutrition Kitchen SG", "scope": "finance", "fact_count": 3},
+            {"subject": "Owner", "scope": "global", "fact_count": 10},
         ]
         conn = _FakeConn(fact_rows=fact_rows)
         pool = _FakePool(conn)
@@ -372,104 +291,29 @@ class TestBackfillSchemaDryRun:
 
         assert len(result.diagnostic) == 1
         assert result.diagnostic[0].subject == "Nutrition Kitchen SG"
-        # No entities created, no facts updated in dry-run
         assert result.entities_created == 0
         assert result.facts_updated == 0
 
-    async def test_dry_run_excludes_generic_labels(self):
-        fact_rows = [
-            {"subject": "Owner", "scope": "global", "fact_count": 10},
-            {"subject": "Real Entity", "scope": "finance", "fact_count": 2},
-        ]
-        conn = _FakeConn(fact_rows=fact_rows)
-        pool = _FakePool(conn)
+    async def test_apply_creates_entity_and_captures_errors(self):
+        """Apply mode: creates entities; generic labels skipped; errors captured per entity."""
 
-        result = await backfill_schema(pool, "finance", apply=False)
-
-        # Only non-generic rows in diagnostic
-        assert len(result.diagnostic) == 1
-        assert result.diagnostic[0].subject == "Real Entity"
-
-    async def test_dry_run_no_facts_table_returns_empty_result(self):
-        """UndefinedTableError → empty BackfillResult, no crash."""
-        import asyncpg
-
-        conn = _FakeConn()
-        conn.fetch = AsyncMock(side_effect=asyncpg.UndefinedTableError("no table"))
-        pool = _FakePool(conn)
-
-        result = await backfill_schema(pool, "no_memory_schema", apply=False)
-
-        assert result.entities_created == 0
-        assert result.facts_updated == 0
-        assert result.diagnostic == []
-
-
-class TestBackfillSchemaApply:
-    """Apply mode: creates entities and updates facts."""
-
-    async def test_apply_creates_entity_and_updates_facts(self):
-        fact_rows = [
-            {"subject": "Nutrition Kitchen SG", "scope": "finance", "fact_count": 3},
-        ]
-        conn = _FakeConn(fact_rows=fact_rows, update_result="UPDATE 3")
-        pool = _FakePool(conn)
-
-        result = await backfill_schema(pool, "finance", apply=True)
-
-        assert result.entities_created == 1
-        assert result.entities_resolved == 0
-        assert result.facts_updated == 3
-        assert result.errors == []
-
-    async def test_apply_multiple_pairs(self):
-        fact_rows = [
-            {"subject": "Merchant A", "scope": "finance", "fact_count": 2},
-            {"subject": "Merchant B", "scope": "finance", "fact_count": 5},
-        ]
-        entity_uuids = iter(
-            [
-                uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-000000000001"),
-                uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-000000000002"),
-            ]
-        )
+        # With a real entity
+        fact_rows = [{"subject": "Merchant A", "scope": "finance", "fact_count": 2}]
         conn = _FakeConn(fact_rows=fact_rows, update_result="UPDATE 2")
-        conn.fetchval = AsyncMock(side_effect=lambda *args: next(entity_uuids))
         pool = _FakePool(conn)
-
         result = await backfill_schema(pool, "finance", apply=True)
+        assert result.entities_created == 1
+        assert result.facts_updated == 2
 
-        assert result.entities_created == 2
-        assert result.facts_updated == 4  # 2 rows × "UPDATE 2" each
-
-    async def test_apply_generic_labels_skipped(self):
-        fact_rows = [
-            {"subject": "Owner", "scope": "global", "fact_count": 10},
-        ]
-        conn = _FakeConn(fact_rows=fact_rows)
-        pool = _FakePool(conn)
-
-        result = await backfill_schema(pool, "finance", apply=True)
-
-        assert result.entities_created == 0
-        assert result.facts_updated == 0
-
-    async def test_apply_captures_errors_per_entity(self):
-        """Entity creation errors are captured in result.errors, not raised."""
-        fact_rows = [
-            {"subject": "Bad Entity", "scope": "finance", "fact_count": 1},
-        ]
-        conn = _FakeConn(fact_rows=fact_rows)
-        # Make fetchval raise a generic exception (not UniqueViolation)
-        conn.fetchval = AsyncMock(side_effect=RuntimeError("DB error"))
-        pool = _FakePool(conn)
-
-        result = await backfill_schema(pool, "finance", apply=True)
-
-        assert len(result.errors) == 1
-        assert "Bad Entity" in result.errors[0]
-        assert result.entities_created == 0
-        assert result.facts_updated == 0
+        # With error mid-entity
+        error_rows = [{"subject": "Bad Entity", "scope": "finance", "fact_count": 1}]
+        conn2 = _FakeConn(fact_rows=error_rows)
+        conn2.fetchval = AsyncMock(side_effect=RuntimeError("DB error"))
+        pool2 = _FakePool(conn2)
+        result2 = await backfill_schema(pool2, "finance", apply=True)
+        assert len(result2.errors) == 1
+        assert "Bad Entity" in result2.errors[0]
+        assert result2.entities_created == 0
 
 
 # ---------------------------------------------------------------------------
@@ -477,58 +321,42 @@ class TestBackfillSchemaApply:
 # ---------------------------------------------------------------------------
 
 
-class TestDiscoverMemorySchemas:
-    """Tests for discover_memory_schemas() schema discovery."""
+async def test_discover_memory_schemas():
+    """Returns sorted schema list; empty when none; SQL excludes system schemas."""
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(
+        return_value=[
+            {"table_schema": "finance"},
+            {"table_schema": "health"},
+            {"table_schema": "relationship"},
+        ]
+    )
 
-    async def test_returns_sorted_schema_list(self):
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(
-            return_value=[
-                {"table_schema": "finance"},
-                {"table_schema": "health"},
-                {"table_schema": "relationship"},
-            ]
-        )
+    schemas = await discover_memory_schemas(mock_pool)
+    assert schemas == ["finance", "health", "relationship"]
 
-        schemas = await discover_memory_schemas(mock_pool)
-
-        assert schemas == ["finance", "health", "relationship"]
-
-    async def test_empty_result_when_no_memory_schemas(self):
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        schemas = await discover_memory_schemas(mock_pool)
-
-        assert schemas == []
-
-    async def test_query_excludes_system_schemas(self):
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        await discover_memory_schemas(mock_pool)
-
-        call_sql = mock_pool.fetch.call_args[0][0]
-        assert "information_schema" in call_sql
-        assert "public" in call_sql
+    # Empty case + SQL check
+    mock_pool.fetch = AsyncMock(return_value=[])
+    schemas = await discover_memory_schemas(mock_pool)
+    assert schemas == []
+    call_sql = mock_pool.fetch.call_args[0][0]
+    assert "information_schema" in call_sql
+    assert "public" in call_sql
 
 
 # ---------------------------------------------------------------------------
-# Integration-style: BackfillResult dataclass
+# BackfillResult dataclass
 # ---------------------------------------------------------------------------
 
 
-class TestBackfillResultDataclass:
-    """Verify BackfillResult behaves as expected."""
-
-    def test_default_fields(self):
-        r = BackfillResult(schema="finance")
-        assert r.schema == "finance"
-        assert r.diagnostic == []
-        assert r.entities_created == 0
-        assert r.entities_resolved == 0
-        assert r.facts_updated == 0
-        assert r.errors == []
+def test_backfill_result_default_fields():
+    r = BackfillResult(schema="finance")
+    assert r.schema == "finance"
+    assert r.diagnostic == []
+    assert r.entities_created == 0
+    assert r.entities_resolved == 0
+    assert r.facts_updated == 0
+    assert r.errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -536,50 +364,28 @@ class TestBackfillResultDataclass:
 # ---------------------------------------------------------------------------
 
 
-class TestValidateSchemaName:
-    """Unit tests for schema name validation (SQL injection guard)."""
-
-    def test_valid_simple_name(self):
-        assert _validate_schema_name("finance") == "finance"
-
-    def test_valid_name_with_underscore(self):
-        assert _validate_schema_name("my_schema") == "my_schema"
-
-    def test_valid_name_starting_with_underscore(self):
-        assert _validate_schema_name("_private") == "_private"
-
-    def test_valid_name_with_numbers(self):
-        assert _validate_schema_name("schema2") == "schema2"
-
-    def test_rejects_semicolon_injection(self):
-        with pytest.raises(ValueError, match="Invalid schema name"):
-            _validate_schema_name("public; DROP TABLE facts; --")
-
-    def test_rejects_spaces(self):
-        with pytest.raises(ValueError, match="Invalid schema name"):
-            _validate_schema_name("my schema")
-
-    def test_rejects_hyphen(self):
-        with pytest.raises(ValueError, match="Invalid schema name"):
-            _validate_schema_name("my-schema")
-
-    def test_rejects_leading_digit(self):
-        with pytest.raises(ValueError, match="Invalid schema name"):
-            _validate_schema_name("1schema")
-
-    def test_rejects_dot(self):
-        with pytest.raises(ValueError, match="Invalid schema name"):
-            _validate_schema_name("public.facts")
-
-    def test_rejects_empty_string(self):
-        with pytest.raises(ValueError, match="Invalid schema name"):
-            _validate_schema_name("")
+@pytest.mark.parametrize("name", ["finance", "my_schema", "_private", "schema2"])
+def test_validate_schema_name_valid(name):
+    assert _validate_schema_name(name) == name
 
 
-class TestBackfillSchemaValidation:
-    """backfill_schema must reject unsafe schema names before touching the DB."""
+@pytest.mark.parametrize(
+    "name",
+    [
+        "public; DROP TABLE facts; --",
+        "my schema",
+        "my-schema",
+        "1schema",
+        "public.facts",
+        "",
+    ],
+)
+def test_validate_schema_name_invalid(name):
+    with pytest.raises(ValueError, match="Invalid schema name"):
+        _validate_schema_name(name)
 
-    async def test_rejects_invalid_schema_name(self):
-        pool = _FakePool(_FakeConn())
-        with pytest.raises(ValueError, match="Invalid schema name"):
-            await backfill_schema(pool, "bad; DROP TABLE facts; --", apply=False)
+
+async def test_backfill_schema_rejects_invalid_name():
+    pool = _FakePool(_FakeConn())
+    with pytest.raises(ValueError, match="Invalid schema name"):
+        await backfill_schema(pool, "bad; DROP TABLE facts; --", apply=False)

@@ -187,26 +187,12 @@ class TestSchemaIsolation:
             "A row written to public via butler_alpha must be visible via butler_beta"
         )
 
-    async def test_schema_search_path_builder(self):
-        """schema_search_path() returns the correct comma-separated path string."""
+    async def test_schema_search_path(self):
+        """schema_search_path(): correct path string; deduplicates public; None/blank returns None."""
         from butlers.db import schema_search_path
 
-        path = schema_search_path("my_butler")
-        assert path == "my_butler,public"
-
-    async def test_schema_search_path_deduplicates_public(self):
-        """schema_search_path() deduplicates if schema name is 'public'."""
-        from butlers.db import schema_search_path
-
-        path = schema_search_path("public")
-        # 'public' should appear only once; no duplicate in the path
-        parts = path.split(",")
-        assert parts.count("public") == 1
-
-    async def test_schema_search_path_none_returns_none(self):
-        """schema_search_path() returns None for None or blank schema."""
-        from butlers.db import schema_search_path
-
+        assert schema_search_path("my_butler") == "my_butler,public"
+        assert schema_search_path("public").split(",").count("public") == 1
         assert schema_search_path(None) is None
         assert schema_search_path("") is None
         assert schema_search_path("   ") is None

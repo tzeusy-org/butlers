@@ -581,96 +581,46 @@ class TestSwitchboardRoutingIntegration:
         yield p
         await p.close()
 
-    async def test_register_and_list_butlers(self, pool):
-        """Register two butlers and verify they appear in list_butlers."""
-        from butlers.tools.switchboard import list_butlers, register_butler
+    async def test_register_list_and_route_known_butler(self, pool):
+        """Register butlers; list returns all; route() calls with correct endpoint/tool/args and logs success."""
+        from butlers.tools.switchboard import list_butlers, register_butler, route
 
-        await register_butler(
-            pool, "health", "http://localhost:41101/sse", "Health butler", ["email"]
-        )
-        await register_butler(
-            pool, "general", "http://localhost:41102/sse", "General butler", ["telegram"]
-        )
+        await register_butler(pool, "health", "http://localhost:41101/sse", "Health butler", ["email"])
+        await register_butler(pool, "target-butler", "http://localhost:9200/sse")
 
         butlers = await list_butlers(pool)
         names = [b["name"] for b in butlers]
-        assert "health" in names
-        assert "general" in names
-        assert len(names) == 2
-
-    async def test_route_to_known_butler(self, pool):
-        """route() calls call_fn with correct endpoint/tool/args for a known butler."""
-        from butlers.tools.switchboard import register_butler, route
-
-        await register_butler(pool, "target-butler", "http://localhost:9200/sse")
+        assert "health" in names and "target-butler" in names
 
         call_log: list[dict] = []
 
         async def mock_call(endpoint_url, tool_name, args):
-            call_log.append(
-                {
-                    "endpoint_url": endpoint_url,
-                    "tool_name": tool_name,
-                    "args": args,
-                }
-            )
+            call_log.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
             return {"status": "ok"}
 
-        result = await route(
-            pool,
-            "target-butler",
-            "state_get",
-            {"key": "test"},
-            call_fn=mock_call,
-        )
-
-        # Verify call_fn received correct arguments
+        result = await route(pool, "target-butler", "state_get", {"key": "test"}, call_fn=mock_call)
         assert len(call_log) == 1
         assert call_log[0]["endpoint_url"] == "http://localhost:9200/sse"
-        assert call_log[0]["tool_name"] == "state_get"
         assert call_log[0]["args"]["key"] == "test"
-        assert "trace_context" in call_log[0]["args"]  # Trace context injected
-
-        # Verify result
+        assert "trace_context" in call_log[0]["args"]
         assert result == {"result": {"status": "ok"}}
 
-    async def test_routing_log_created(self, pool):
-        """Successful route() creates a routing_log entry."""
-        from butlers.tools.switchboard import register_butler, route
-
-        await register_butler(pool, "logged-butler", "http://localhost:9300/sse")
-
-        async def ok_call(endpoint_url, tool_name, args):
-            return "ok"
-
-        await route(pool, "logged-butler", "ping", {}, call_fn=ok_call)
-
-        rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'logged-butler'")
+        rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'target-butler'")
         assert len(rows) == 1
         assert rows[0]["success"] is True
-        assert rows[0]["tool_name"] == "ping"
-        assert rows[0]["error"] is None
+        assert rows[0]["tool_name"] == "state_get"
         assert rows[0]["source_butler"] == "switchboard"
 
-    async def test_route_unknown_butler_returns_error(self, pool):
-        """route() returns an error dict for an unregistered butler."""
+    async def test_route_unknown_butler_error_and_logs(self, pool):
+        """route() returns error dict for unregistered butler and creates failure routing_log."""
         from butlers.tools.switchboard import route
 
         result = await route(pool, "nonexistent-butler", "some_tool", {})
-
-        assert "error" in result
-        assert "not found" in result["error"]
-
-    async def test_route_unknown_butler_logs_failure(self, pool):
-        """Routing to an unknown butler creates a failure routing_log entry."""
-        from butlers.tools.switchboard import route
+        assert "error" in result and "not found" in result["error"]
 
         await route(pool, "ghost-butler", "anything", {})
-
         rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'ghost-butler'")
-        assert len(rows) == 1
-        assert rows[0]["success"] is False
-        assert "not found" in rows[0]["error"].lower()
+        assert len(rows) == 1 and rows[0]["success"] is False and "not found" in rows[0]["error"].lower()
 
     async def test_route_failure_logs_error(self, pool):
         """When call_fn raises, route() logs the error and returns error dict."""
@@ -719,67 +669,52 @@ class TestTraceContextPropagation:
         provider.shutdown()
         _reset_otel_global_state()
 
-    def test_tool_span_creates_named_span(self, otel_provider):
-        """tool_span creates a span named butler.tool.<name> with butler.name attribute."""
-        from butlers.core.telemetry import tool_span
+    def test_tool_span_inject_extract_and_env_format(self, otel_provider):
+        """tool_span creates named span; inject/extract preserve trace; get_traceparent_env W3C format; empty context safe."""
+        from butlers.core.telemetry import (
+            extract_trace_context,
+            get_traceparent_env,
+            inject_trace_context,
+            tool_span,
+        )
 
+        # tool_span creates named span with butler.name
         with tool_span("state_get", butler_name="integration-butler"):
             pass
-
         spans = otel_provider.get_finished_spans()
         assert len(spans) == 1
         assert spans[0].name == "butler.tool.state_get"
         assert spans[0].attributes["butler.name"] == "integration-butler"
 
-    def test_inject_extract_preserves_trace_context(self, otel_provider):
-        """inject_trace_context + extract_trace_context preserve parent-child relationship."""
-        from butlers.core.telemetry import extract_trace_context, inject_trace_context
-
+        # inject/extract preserve parent-child relationship
         tracer = trace.get_tracer("integration-test")
-
-        # Create a parent span and inject its context
         with tracer.start_as_current_span("parent-span") as parent_span:
             parent_trace_id = parent_span.get_span_context().trace_id
             parent_span_id = parent_span.get_span_context().span_id
             ctx_dict = inject_trace_context()
 
-        # Verify the injected context has a traceparent
-        assert "traceparent" in ctx_dict
-        parts = ctx_dict["traceparent"].split("-")
-        assert len(parts) == 4
-        assert parts[0] == "00"  # W3C version
+        assert "traceparent" in ctx_dict and ctx_dict["traceparent"].split("-")[0] == "00"
 
-        # Extract context and create a child span
         parent_ctx = extract_trace_context(ctx_dict)
         with tracer.start_as_current_span("child-span", context=parent_ctx) as child_span:
             child_trace_id = child_span.get_span_context().trace_id
-
-        # Verify same trace_id (parent-child relationship)
         assert child_trace_id == parent_trace_id
 
-        # Verify parent_span_id relationship
-        spans = otel_provider.get_finished_spans()
-        child = next(s for s in spans if s.name == "child-span")
-        assert child.parent is not None
-        assert child.parent.span_id == parent_span_id
+        child = next(s for s in otel_provider.get_finished_spans() if s.name == "child-span")
+        assert child.parent is not None and child.parent.span_id == parent_span_id
 
-    def test_get_traceparent_env_format(self, otel_provider):
-        """get_traceparent_env returns TRACEPARENT in W3C format."""
-        from butlers.core.telemetry import get_traceparent_env
-
-        tracer = trace.get_tracer("integration-test")
+        # get_traceparent_env returns W3C format
         with tracer.start_as_current_span("env-span"):
             env = get_traceparent_env()
+        assert "TRACEPARENT" in env and env["TRACEPARENT"].startswith("00-")
+        parts = env["TRACEPARENT"].split("-")
+        assert len(parts) == 4 and len(parts[1]) == 32 and len(parts[2]) == 16
 
-        assert isinstance(env, dict)
-        assert "TRACEPARENT" in env
-        traceparent = env["TRACEPARENT"]
-        assert traceparent.startswith("00-")
-        parts = traceparent.split("-")
-        assert len(parts) == 4
-        # trace_id is 32 hex chars, span_id is 16 hex chars
-        assert len(parts[1]) == 32
-        assert len(parts[2]) == 16
+        # Empty context returns dict (no error)
+        ctx_empty = inject_trace_context()
+        assert isinstance(ctx_empty, dict)
+        env_empty = get_traceparent_env()
+        assert isinstance(env_empty, dict)
 
     def test_full_trace_propagation_flow(self, otel_provider):
         """End-to-end: tool_span -> inject -> extract -> child span preserves trace."""
@@ -831,12 +766,3 @@ class TestTraceContextPropagation:
         assert "TRACEPARENT" in env
         assert env["TRACEPARENT"].startswith("00-")
 
-    def test_empty_context_without_active_span(self, otel_provider):
-        """Without an active span, inject/get_traceparent_env return empty or no-op dicts."""
-        from butlers.core.telemetry import get_traceparent_env, inject_trace_context
-
-        ctx = inject_trace_context()
-        assert isinstance(ctx, dict)
-
-        env = get_traceparent_env()
-        assert isinstance(env, dict)

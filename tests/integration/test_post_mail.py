@@ -20,7 +20,6 @@ pytestmark = [
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with switchboard tables and return a pool."""
     async with provisioned_postgres_pool() as p:
-        # Create switchboard tables (mirrors Alembic switchboard migration)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS butler_registry (
                 name TEXT PRIMARY KEY,
@@ -57,113 +56,50 @@ async def pool(provisioned_postgres_pool):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-
         yield p
 
 
 # ------------------------------------------------------------------
-# post_mail — target butler not found
+# Error paths: target not found / mailbox not enabled
 # ------------------------------------------------------------------
 
 
-async def test_post_mail_target_not_found(pool):
-    """post_mail returns error when target butler does not exist."""
+async def test_post_mail_error_not_found_and_logs(pool):
+    """post_mail returns error and logs failure when target butler does not exist."""
     from butlers.tools.switchboard import post_mail
 
     await pool.execute("DELETE FROM butler_registry")
     await pool.execute("DELETE FROM routing_log")
 
-    result = await post_mail(
-        pool,
-        target_butler="nonexistent",
-        sender="alice",
-        sender_channel="mcp",
-        body="Hello!",
-    )
+    result = await post_mail(pool, target_butler="nonexistent", sender="alice", sender_channel="mcp", body="Hello!")
+    assert "error" in result and "not found" in result["error"]
 
-    assert "error" in result
-    assert "not found" in result["error"]
+    rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'nonexistent'")
+    assert len(rows) == 1 and rows[0]["success"] is False and "not found" in rows[0]["error"].lower()
 
 
-async def test_post_mail_target_not_found_logs_routing(pool):
-    """post_mail logs a routing failure when target butler is not found."""
-    from butlers.tools.switchboard import post_mail
-
-    await pool.execute("DELETE FROM butler_registry")
-    await pool.execute("DELETE FROM routing_log")
-
-    await post_mail(
-        pool,
-        target_butler="ghost",
-        sender="alice",
-        sender_channel="mcp",
-        body="Hello!",
-    )
-
-    rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'ghost'")
-    assert len(rows) == 1
-    assert rows[0]["success"] is False
-    assert rows[0]["tool_name"] == "mailbox_post"
-    assert "not found" in rows[0]["error"].lower()
-
-
-# ------------------------------------------------------------------
-# post_mail — mailbox module not enabled
-# ------------------------------------------------------------------
-
-
-async def test_post_mail_mailbox_not_enabled(pool):
-    """post_mail returns error when target butler lacks the mailbox module."""
-    from butlers.tools.switchboard import post_mail, register_butler
-
-    await pool.execute("DELETE FROM butler_registry")
-    await pool.execute("DELETE FROM routing_log")
-
-    # Register a butler WITHOUT the mailbox module
-    await register_butler(pool, "bob", "http://localhost:41200/sse", "Bob butler", ["email"])
-
-    result = await post_mail(
-        pool,
-        target_butler="bob",
-        sender="alice",
-        sender_channel="mcp",
-        body="Hey Bob",
-    )
-
-    assert "error" in result
-    assert "mailbox module" in result["error"].lower()
-
-
-async def test_post_mail_mailbox_not_enabled_logs_routing(pool):
-    """post_mail logs a routing failure when mailbox module is not enabled."""
+async def test_post_mail_mailbox_not_enabled_and_logs(pool):
+    """post_mail returns error and logs failure when mailbox module is not enabled."""
     from butlers.tools.switchboard import post_mail, register_butler
 
     await pool.execute("DELETE FROM butler_registry")
     await pool.execute("DELETE FROM routing_log")
 
     await register_butler(pool, "nomb", "http://localhost:41200/sse", modules=["telegram"])
-
-    await post_mail(
-        pool,
-        target_butler="nomb",
-        sender="alice",
-        sender_channel="mcp",
-        body="test",
-    )
+    result = await post_mail(pool, target_butler="nomb", sender="alice", sender_channel="mcp", body="test")
+    assert "error" in result and "mailbox module" in result["error"].lower()
 
     rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'nomb'")
-    assert len(rows) == 1
-    assert rows[0]["success"] is False
-    assert "mailbox" in rows[0]["error"].lower()
+    assert len(rows) == 1 and rows[0]["success"] is False
 
 
 # ------------------------------------------------------------------
-# post_mail — success
+# Success: message_id, routing log, sender identity preserved
 # ------------------------------------------------------------------
 
 
-async def test_post_mail_success_returns_message_id(pool):
-    """post_mail returns message_id on successful delivery."""
+async def test_post_mail_success_returns_message_id_and_logs(pool):
+    """post_mail returns message_id and logs success=True on successful delivery."""
     from butlers.tools.switchboard import post_mail, register_butler
 
     await pool.execute("DELETE FROM butler_registry")
@@ -175,152 +111,49 @@ async def test_post_mail_success_returns_message_id(pool):
         assert tool_name == "mailbox_post"
         return {"message_id": "msg-abc-123"}
 
-    result = await post_mail(
-        pool,
-        target_butler="target",
-        sender="sender_bot",
-        sender_channel="mcp",
-        body="Important message",
-        call_fn=mock_call,
-    )
-
-    assert "message_id" in result
+    result = await post_mail(pool, target_butler="target", sender="sender_bot", sender_channel="mcp",
+                             body="Important", call_fn=mock_call)
     assert result["message_id"] == "msg-abc-123"
 
+    rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'target'")
+    assert len(rows) == 1 and rows[0]["success"] is True and rows[0]["source_butler"] == "sender_bot"
 
-async def test_post_mail_success_logs_routing(pool):
-    """Successful post_mail logs a routing entry with success=True."""
+
+async def test_post_mail_preserves_sender_identity_and_optional_fields(pool):
+    """post_mail forwards sender/channel/body/subject/priority/metadata; omits unset optionals."""
     from butlers.tools.switchboard import post_mail, register_butler
 
     await pool.execute("DELETE FROM butler_registry")
-    await pool.execute("DELETE FROM routing_log")
-
-    await register_butler(pool, "logged", "http://localhost:8400/sse", modules=["mailbox"])
-
-    async def mock_call(endpoint_url, tool_name, args):
-        return {"message_id": "msg-xyz"}
-
-    await post_mail(
-        pool,
-        target_butler="logged",
-        sender="sender_bot",
-        sender_channel="telegram_bot",
-        body="Hi",
-        call_fn=mock_call,
-    )
-
-    rows = await pool.fetch(
-        "SELECT * FROM routing_log WHERE target_butler = 'logged' AND tool_name = 'mailbox_post'"
-    )
-    assert len(rows) == 1
-    assert rows[0]["success"] is True
-    assert rows[0]["source_butler"] == "sender_bot"
-
-
-# ------------------------------------------------------------------
-# post_mail — sender identity preserved
-# ------------------------------------------------------------------
-
-
-async def test_post_mail_preserves_sender_identity(pool):
-    """post_mail passes sender and sender_channel through to mailbox_post args."""
-    from butlers.tools.switchboard import post_mail, register_butler
-
-    await pool.execute("DELETE FROM butler_registry")
-
     await register_butler(pool, "rcv", "http://localhost:8500/sse", modules=["mailbox"])
 
-    captured_args = {}
+    captured: dict = {}
 
     async def capture_call(endpoint_url, tool_name, args):
-        captured_args.update(args)
+        captured.update(args)
         return {"message_id": "msg-001"}
 
-    await post_mail(
-        pool,
-        target_butler="rcv",
-        sender="health-butler",
-        sender_channel="mcp",
-        body="Check-in",
-        call_fn=capture_call,
-    )
+    # Full optional fields
+    await post_mail(pool, target_butler="rcv", sender="health-butler", sender_channel="mcp",
+                    body="Check-in", subject="Urgent", priority=0, metadata={"thread_id": "t-99"},
+                    call_fn=capture_call)
+    assert captured["sender"] == "health-butler" and captured["body"] == "Check-in"
+    assert captured["subject"] == "Urgent" and json.loads(captured["metadata"]) == {"thread_id": "t-99"}
 
-    assert captured_args["sender"] == "health-butler"
-    assert captured_args["sender_channel"] == "mcp"
-    assert captured_args["body"] == "Check-in"
-
-
-# ------------------------------------------------------------------
-# post_mail — optional parameters
-# ------------------------------------------------------------------
-
-
-async def test_post_mail_passes_optional_fields(pool):
-    """post_mail forwards subject, priority, and metadata when provided."""
-    from butlers.tools.switchboard import post_mail, register_butler
-
-    await pool.execute("DELETE FROM butler_registry")
-
-    await register_butler(pool, "full", "http://localhost:8600/sse", modules=["mailbox"])
-
-    captured_args = {}
-
-    async def capture_call(endpoint_url, tool_name, args):
-        captured_args.update(args)
-        return {"message_id": "msg-full"}
-
-    await post_mail(
-        pool,
-        target_butler="full",
-        sender="alice",
-        sender_channel="email",
-        body="Detailed message",
-        subject="Urgent",
-        priority=0,
-        metadata={"thread_id": "t-99"},
-        call_fn=capture_call,
-    )
-
-    assert captured_args["subject"] == "Urgent"
-    assert captured_args["priority"] == 0
-    assert json.loads(captured_args["metadata"]) == {"thread_id": "t-99"}
-
-
-async def test_post_mail_omits_optional_fields_when_not_provided(pool):
-    """post_mail does not include optional fields in args when not set."""
-    from butlers.tools.switchboard import post_mail, register_butler
-
-    await pool.execute("DELETE FROM butler_registry")
-
+    # No optionals
+    captured.clear()
     await register_butler(pool, "minimal", "http://localhost:8700/sse", modules=["mailbox"])
-
-    captured_args = {}
-
-    async def capture_call(endpoint_url, tool_name, args):
-        captured_args.update(args)
-        return {"message_id": "msg-min"}
-
-    await post_mail(
-        pool,
-        target_butler="minimal",
-        sender="bob",
-        sender_channel="mcp",
-        body="Just a message",
-        call_fn=capture_call,
-    )
-
-    assert "subject" not in captured_args
-    assert "priority" not in captured_args
-    assert "metadata" not in captured_args
+    await post_mail(pool, target_butler="minimal", sender="bob", sender_channel="mcp",
+                    body="minimal", call_fn=capture_call)
+    assert "subject" not in captured and "priority" not in captured
 
 
 # ------------------------------------------------------------------
-# post_mail — route failure (tool call exception)
+# Route failure and non-dict result
 # ------------------------------------------------------------------
 
 
-async def test_post_mail_route_failure_returns_error(pool):
-    """post_mail returns error when the routed tool call fails."""
+async def test_post_mail_route_failure_and_logs(pool):
+    """post_mail returns error and logs failure when the routed tool call raises."""
     from butlers.tools.switchboard import post_mail, register_butler
 
     await pool.execute("DELETE FROM butler_registry")
@@ -331,49 +164,12 @@ async def test_post_mail_route_failure_returns_error(pool):
     async def failing_call(endpoint_url, tool_name, args):
         raise ConnectionError("Connection refused")
 
-    result = await post_mail(
-        pool,
-        target_butler="broken",
-        sender="alice",
-        sender_channel="mcp",
-        body="Will fail",
-        call_fn=failing_call,
-    )
+    result = await post_mail(pool, target_butler="broken", sender="alice", sender_channel="mcp",
+                             body="Will fail", call_fn=failing_call)
+    assert "error" in result and "ConnectionError" in result["error"]
 
-    assert "error" in result
-    assert "ConnectionError" in result["error"]
-
-
-async def test_post_mail_route_failure_logs_routing(pool):
-    """post_mail logs routing failure when the tool call raises."""
-    from butlers.tools.switchboard import post_mail, register_butler
-
-    await pool.execute("DELETE FROM butler_registry")
-    await pool.execute("DELETE FROM routing_log")
-
-    await register_butler(pool, "errlog", "http://localhost:8900/sse", modules=["mailbox"])
-
-    async def failing_call(endpoint_url, tool_name, args):
-        raise RuntimeError("kaboom")
-
-    await post_mail(
-        pool,
-        target_butler="errlog",
-        sender="alice",
-        sender_channel="mcp",
-        body="Will fail",
-        call_fn=failing_call,
-    )
-
-    rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'errlog'")
-    assert len(rows) == 1
-    assert rows[0]["success"] is False
-    assert "kaboom" in rows[0]["error"]
-
-
-# ------------------------------------------------------------------
-# post_mail — message_id extraction from non-dict result
-# ------------------------------------------------------------------
+    rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'broken'")
+    assert len(rows) == 1 and rows[0]["success"] is False
 
 
 async def test_post_mail_string_result_as_message_id(pool):
@@ -381,20 +177,11 @@ async def test_post_mail_string_result_as_message_id(pool):
     from butlers.tools.switchboard import post_mail, register_butler
 
     await pool.execute("DELETE FROM butler_registry")
-
     await register_butler(pool, "strres", "http://localhost:9000/sse", modules=["mailbox"])
 
     async def string_call(endpoint_url, tool_name, args):
         return "msg-plain-string"
 
-    result = await post_mail(
-        pool,
-        target_butler="strres",
-        sender="alice",
-        sender_channel="mcp",
-        body="test",
-        call_fn=string_call,
-    )
-
-    assert "message_id" in result
+    result = await post_mail(pool, target_butler="strres", sender="alice", sender_channel="mcp",
+                             body="test", call_fn=string_call)
     assert result["message_id"] == "msg-plain-string"

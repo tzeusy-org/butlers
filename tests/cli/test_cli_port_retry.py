@@ -11,17 +11,11 @@ from butlers.cli import _is_port_conflict, _start_all
 pytestmark = pytest.mark.unit
 
 
-class TestIsPortConflict:
-    def test_eaddrinuse_detected(self):
-        exc = OSError(errno.EADDRINUSE, "Address already in use")
-        assert _is_port_conflict(exc) is True
-
-    def test_other_oserror_not_detected(self):
-        exc = OSError(errno.EACCES, "Permission denied")
-        assert _is_port_conflict(exc) is False
-
-    def test_non_oserror_not_detected(self):
-        assert _is_port_conflict(RuntimeError("boom")) is False
+def test_is_port_conflict():
+    """EADDRINUSE returns True; other OSError and non-OSError return False."""
+    assert _is_port_conflict(OSError(errno.EADDRINUSE, "Address already in use")) is True
+    assert _is_port_conflict(OSError(errno.EACCES, "Permission denied")) is False
+    assert _is_port_conflict(RuntimeError("boom")) is False
 
 
 class TestStartAllPortRetry:
@@ -64,7 +58,7 @@ class TestStartAllPortRetry:
                 with patch.object(loop, "add_signal_handler"):
                     await _start_all(configs)
 
-            assert call_count == 3  # failed twice, succeeded on third
+            assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_retries_indefinitely_on_port_conflict(self, configs):
@@ -98,7 +92,7 @@ class TestStartAllPortRetry:
                 with patch.object(loop, "add_signal_handler"):
                     await _start_all(configs)
 
-            assert call_count == max_failures + 1  # retried past old limit
+            assert call_count == max_failures + 1
 
     @pytest.mark.asyncio
     async def test_non_port_error_fails_immediately(self, configs):
@@ -129,4 +123,4 @@ class TestStartAllPortRetry:
                 with patch.object(loop, "add_signal_handler"):
                     await _start_all(configs)
 
-            assert call_count == 1  # no retry
+            assert call_count == 1

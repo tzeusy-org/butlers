@@ -617,56 +617,32 @@ class TestCrossSourceDeduplication:
 class TestSandboxEnforcement:
     """Integration: investigation agent environment is properly sandboxed."""
 
-    def test_sandbox_env_strips_all_butlers_vars(self, monkeypatch):
-        """All BUTLERS_* vars are stripped from investigation env."""
+    def test_sandbox_env_strips_secrets_and_preserves_tools(self, monkeypatch):
+        """Strips BUTLERS_*, DATABASE_*, PG*, ANTHROPIC_* vars; preserves PATH/HOME/UV_CACHE_DIR."""
         monkeypatch.setenv("BUTLERS_DB_URL", "postgres://secret")
         monkeypatch.setenv("BUTLERS_SECRET_KEY", "topsecret")
         monkeypatch.setenv("BUTLERS_EMAIL_PASSWORD", "pass123")
         monkeypatch.setenv("BUTLERS_API_KEY", "key-abc")
-
-        env = build_sandbox_env(None)
-
-        for key in (
-            "BUTLERS_DB_URL",
-            "BUTLERS_SECRET_KEY",
-            "BUTLERS_EMAIL_PASSWORD",
-            "BUTLERS_API_KEY",
-        ):
-            assert key not in env, f"{key} should be stripped from sandbox env"
-
-    def test_sandbox_env_strips_database_credentials(self, monkeypatch):
-        """DATABASE_* and PG* vars are stripped from investigation env."""
         monkeypatch.setenv("DATABASE_URL", "postgres://host/db")
         monkeypatch.setenv("PGPASSWORD", "dbpass")
         monkeypatch.setenv("PGHOST", "localhost")
         monkeypatch.setenv("PGUSER", "admin")
-
-        env = build_sandbox_env(None)
-
-        for key in ("DATABASE_URL", "PGPASSWORD", "PGHOST", "PGUSER"):
-            assert key not in env, f"{key} should be stripped from sandbox env"
-
-    def test_sandbox_env_strips_anthropic_keys(self, monkeypatch):
-        """ANTHROPIC_* credentials are stripped from investigation env."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
-
-        env = build_sandbox_env(None)
-
-        assert "ANTHROPIC_API_KEY" not in env
-        assert "ANTHROPIC_AUTH_TOKEN" not in env
-
-    def test_sandbox_env_preserves_build_tools(self, monkeypatch):
-        """PATH, HOME, UV_CACHE_DIR, TMPDIR are preserved."""
         monkeypatch.setenv("PATH", "/usr/bin:/usr/local/bin")
         monkeypatch.setenv("HOME", "/home/user")
         monkeypatch.setenv("UV_CACHE_DIR", "/tmp/uv-cache")
 
         env = build_sandbox_env(None)
 
-        assert "PATH" in env
-        assert "HOME" in env
-        assert "UV_CACHE_DIR" in env
+        for key in (
+            "BUTLERS_DB_URL", "BUTLERS_SECRET_KEY", "BUTLERS_EMAIL_PASSWORD", "BUTLERS_API_KEY",
+            "DATABASE_URL", "PGPASSWORD", "PGHOST", "PGUSER",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+        ):
+            assert key not in env, f"{key} should be stripped from sandbox env"
+        for key in ("PATH", "HOME", "UV_CACHE_DIR"):
+            assert key in env, f"{key} should be preserved in sandbox env"
 
     def test_sandbox_env_injects_gh_token_only_when_provided(self, monkeypatch):
         """GH_TOKEN is present only when explicitly provided via argument."""

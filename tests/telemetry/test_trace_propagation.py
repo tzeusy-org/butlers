@@ -35,60 +35,40 @@ def otel_provider():
 class TestExtractTraceContextFromToolArgs:
     """Test that tool handlers extract _trace_context from incoming args."""
 
-    async def test_extracts_trace_context_from_kwargs(self, otel_provider):
-        """Tool handler extracts _trace_context and creates child span."""
-
+    async def test_extracts_context_and_removes_key(self, otel_provider):
+        """Extracts _trace_context from kwargs, creates child span, removes the key."""
         tracer = trace.get_tracer("test")
 
-        # Simulate switchboard creating a parent span and injecting context
         with tracer.start_as_current_span("switchboard.route") as parent_span:
             parent_span_id = parent_span.get_span_context().span_id
             trace_context = inject_trace_context()
 
-        # Simulate daemon tool handler receiving args with _trace_context
         kwargs = {"key": "value", "_trace_context": trace_context}
-
-        # Extract and create child span
         parent_ctx = extract_trace_from_args(kwargs)
+
+        # Key must be removed
+        assert "_trace_context" not in kwargs
+        assert "key" in kwargs
+
         with tracer.start_as_current_span("butler.tool.get_state", context=parent_ctx):
             pass
 
-        # Verify parent-child relationship
         spans = otel_provider.get_finished_spans()
         tool_span = next(s for s in spans if s.name == "butler.tool.get_state")
         assert tool_span.parent.span_id == parent_span_id
 
     async def test_no_trace_context_in_args(self, otel_provider):
         """Tool handler works when _trace_context is absent."""
-
         tracer = trace.get_tracer("test")
-
-        # No _trace_context in kwargs
         kwargs = {"key": "value"}
-
-        # Extract should return None or empty context
         parent_ctx = extract_trace_from_args(kwargs)
+
         with tracer.start_as_current_span("butler.tool.get_state", context=parent_ctx):
             pass
 
-        # Should still create a span (just no parent)
         spans = otel_provider.get_finished_spans()
         assert len(spans) == 1
         assert spans[0].name == "butler.tool.get_state"
-
-    async def test_removes_trace_context_from_kwargs(self, otel_provider):
-        """extract_trace_from_args removes _trace_context from kwargs."""
-
-        tracer = trace.get_tracer("test")
-        with tracer.start_as_current_span("parent"):
-            trace_context = inject_trace_context()
-
-        kwargs = {"key": "value", "_trace_context": trace_context}
-        extract_trace_from_args(kwargs)
-
-        # _trace_context should be removed
-        assert "_trace_context" not in kwargs
-        assert "key" in kwargs
 
 
 class TestEndToEndTracePropagation:
@@ -96,28 +76,20 @@ class TestEndToEndTracePropagation:
 
     async def test_trace_hierarchy_across_butlers(self, otel_provider):
         """Trace hierarchy is maintained across butler boundaries."""
-
         tracer = trace.get_tracer("test")
 
-        # 1. External request creates root span
         with tracer.start_as_current_span("external.request") as root_span:
             root_trace_id = root_span.get_span_context().trace_id
-
-            # 2. Switchboard receives and routes
             with tracer.start_as_current_span("switchboard.route"):
                 trace_context = inject_trace_context()
 
-        # 3. Target butler extracts context and processes
         kwargs = {"key": "value", "_trace_context": trace_context}
         parent_ctx = extract_trace_from_args(kwargs)
 
-        with tracer.start_as_current_span("butler.tool.get_state", context=parent_ctx) as tool_span:
-            tool_trace_id = tool_span.get_span_context().trace_id
+        with tracer.start_as_current_span("butler.tool.get_state", context=parent_ctx) as ts:
+            tool_trace_id = ts.get_span_context().trace_id
 
-        # All spans should share the same trace_id
         assert tool_trace_id == root_trace_id
-
         spans = otel_provider.get_finished_spans()
         assert len(spans) == 3
-        trace_ids = {s.context.trace_id for s in spans}
-        assert len(trace_ids) == 1  # All same trace
+        assert len({s.context.trace_id for s in spans}) == 1

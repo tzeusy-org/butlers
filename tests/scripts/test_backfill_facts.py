@@ -97,36 +97,23 @@ def _row(**kwargs):
 
 
 # ---------------------------------------------------------------------------
-# _backfill_key
+# _backfill_key and _fact_exists
 # ---------------------------------------------------------------------------
 
 
-def test_backfill_key_format():
-    key = bf._backfill_key("measurements", 42)
-    assert key == "measurements:42"
-
-
-def test_backfill_key_uuid():
+def test_backfill_key():
+    assert bf._backfill_key("measurements", 42) == "measurements:42"
     uid = uuid.uuid4()
-    key = bf._backfill_key("symptoms", uid)
-    assert key == f"symptoms:{uid}"
-
-
-# ---------------------------------------------------------------------------
-# _fact_exists
-# ---------------------------------------------------------------------------
+    assert bf._backfill_key("symptoms", uid) == f"symptoms:{uid}"
 
 
 @pytest.mark.asyncio
-async def test_fact_exists_true(monkeypatch):
-    pool = _pool_with_rows([], fetchrow_return={"1": 1})
-    assert await bf._fact_exists(pool, "measurements:1") is True
+async def test_fact_exists(monkeypatch):
+    pool_true = _pool_with_rows([], fetchrow_return={"1": 1})
+    assert await bf._fact_exists(pool_true, "measurements:1") is True
 
-
-@pytest.mark.asyncio
-async def test_fact_exists_false(monkeypatch):
-    pool = _pool_with_rows([], fetchrow_return=None)
-    assert await bf._fact_exists(pool, "measurements:99") is False
+    pool_false = _pool_with_rows([], fetchrow_return=None)
+    assert await bf._fact_exists(pool_false, "measurements:99") is False
 
 
 # ---------------------------------------------------------------------------
@@ -135,43 +122,38 @@ async def test_fact_exists_false(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_owner_entity_id_from_contacts():
+async def test_owner_entity_id():
     eid = uuid.uuid4()
+
+    # Found via contacts join
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value={"id": eid})
-    result = await bf._owner_entity_id(pool)
-    assert result == eid
+    assert await bf._owner_entity_id(pool) == eid
 
+    # Fallback path
+    pool2 = AsyncMock()
+    pool2.fetchrow = AsyncMock(side_effect=[None, {"id": eid}])
+    assert await bf._owner_entity_id(pool2) == eid
 
-@pytest.mark.asyncio
-async def test_owner_entity_id_fallback():
-    eid = uuid.uuid4()
-    pool = AsyncMock()
-    # First call (contacts join) returns None; second call (entities direct) returns row.
-    pool.fetchrow = AsyncMock(side_effect=[None, {"id": eid}])
-    result = await bf._owner_entity_id(pool)
-    assert result == eid
-
-
-@pytest.mark.asyncio
-async def test_owner_entity_id_none_when_absent():
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    result = await bf._owner_entity_id(pool)
-    assert result is None
+    # Not found
+    pool3 = AsyncMock()
+    pool3.fetchrow = AsyncMock(return_value=None)
+    assert await bf._owner_entity_id(pool3) is None
 
 
 # ---------------------------------------------------------------------------
-# _insert_fact — dry run
+# _insert_fact — dry-run and live path
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_insert_fact_dry_run_does_not_call_execute(monkeypatch):
+async def test_insert_fact_dry_run_and_live(monkeypatch):
     monkeypatch.setattr(bf, "_load_embedding_engine", lambda: _make_fake_embedding_engine())
-    pool = AsyncMock()
+
+    # Dry run: execute must not be called
+    pool_dry = AsyncMock()
     await bf._insert_fact(
-        pool,
+        pool_dry,
         subject="user",
         predicate="medication",
         content="Aspirin, 100mg, daily",
@@ -182,22 +164,14 @@ async def test_insert_fact_dry_run_does_not_call_execute(monkeypatch):
         backfill_key="medications:1",
         dry_run=True,
     )
-    pool.execute.assert_not_called()
+    pool_dry.execute.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# _insert_fact — live path (mock pool.execute)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_insert_fact_live_calls_execute(monkeypatch):
-    monkeypatch.setattr(bf, "_load_embedding_engine", lambda: _make_fake_embedding_engine())
-    pool = AsyncMock()
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
+    # Live path: execute must be called with INSERT INTO facts
+    pool_live = AsyncMock()
+    pool_live.execute = AsyncMock(return_value="INSERT 0 1")
     eid = uuid.uuid4()
     await bf._insert_fact(
-        pool,
+        pool_live,
         subject="user",
         predicate="condition_status",
         content="Hypertension, active",
@@ -207,10 +181,8 @@ async def test_insert_fact_live_calls_execute(monkeypatch):
         source_butler="health",
         backfill_key="conditions:abc",
     )
-    pool.execute.assert_called_once()
-    call_args = pool.execute.call_args[0]
-    # The SQL INSERT should reference $1 .. $16
-    assert "INSERT INTO facts" in call_args[0]
+    pool_live.execute.assert_called_once()
+    assert "INSERT INTO facts" in pool_live.execute.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +191,7 @@ async def test_insert_fact_live_calls_execute(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_backfill_health_measurements_happy(monkeypatch):
+async def test_backfill_health_measurements(monkeypatch):
     monkeypatch.setattr(bf, "_load_embedding_engine", lambda: _make_fake_embedding_engine())
     owner_id = uuid.uuid4()
     rows = [
@@ -231,44 +203,23 @@ async def test_backfill_health_measurements_happy(monkeypatch):
             measured_at=datetime(2024, 3, 1, tzinfo=UTC),
         ),
     ]
+
+    # Happy path: inserts
     pool = _pool_with_rows(rows)
-    # _fact_exists → no existing fact
     pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value="INSERT 0 1")
-
     stats = bf.Stats()
     await bf._backfill_health_measurements(pool, owner_id, stats, dry_run=False)
+    assert stats.processed == 1 and stats.inserted == 1 and stats.skipped == 0
 
-    assert stats.processed == 1
-    assert stats.inserted == 1
-    assert stats.skipped == 0
-    assert stats.errors == 0
-
-
-@pytest.mark.asyncio
-async def test_backfill_health_measurements_skips_existing(monkeypatch):
-    monkeypatch.setattr(bf, "_load_embedding_engine", lambda: _make_fake_embedding_engine())
-    owner_id = uuid.uuid4()
-    rows = [
-        _row(
-            id=1,
-            type="weight",
-            value='{"kg": 75}',
-            notes=None,
-            measured_at=datetime(2024, 3, 1, tzinfo=UTC),
-        ),
-    ]
-    pool = _pool_with_rows(rows)
-    # _fact_exists → fact already present
-    pool.fetchrow = AsyncMock(return_value={"1": 1})
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
-
-    stats = bf.Stats()
-    await bf._backfill_health_measurements(pool, owner_id, stats, dry_run=False)
-
-    assert stats.skipped == 1
-    assert stats.inserted == 0
-    pool.execute.assert_not_called()
+    # Skip existing fact
+    pool2 = _pool_with_rows(rows)
+    pool2.fetchrow = AsyncMock(return_value={"1": 1})
+    pool2.execute = AsyncMock(return_value="INSERT 0 1")
+    stats2 = bf.Stats()
+    await bf._backfill_health_measurements(pool2, owner_id, stats2, dry_run=False)
+    assert stats2.skipped == 1 and stats2.inserted == 0
+    pool2.execute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -292,17 +243,15 @@ async def test_backfill_health_medications_property_fact(monkeypatch):
         )
     ]
     pool = _pool_with_rows(rows)
-    pool.fetchrow = AsyncMock(return_value=None)  # no existing fact
+    pool.fetchrow = AsyncMock(return_value=None)
     pool.execute = AsyncMock(return_value="INSERT 0 1")
 
     stats = bf.Stats()
     await bf._backfill_health_medications(pool, owner_id, stats, dry_run=False)
 
     assert stats.inserted == 1
-    # Confirm valid_at=None was passed (property fact)
-    call_args = pool.execute.call_args[0]
-    # The 16th positional arg ($16) maps to valid_at — should be None
-    assert call_args[16] is None
+    # valid_at should be None (property fact — 16th positional arg)
+    assert pool.execute.call_args[0][16] is None
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +322,8 @@ async def test_backfill_fin_transactions_happy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_backfill_home_happy(monkeypatch):
+async def test_backfill_home(monkeypatch):
+    """Happy path inserts; missing table is skipped gracefully."""
     monkeypatch.setattr(bf, "_load_embedding_engine", lambda: _make_fake_embedding_engine())
     owner_id = uuid.uuid4()
     rows = [
@@ -387,42 +337,29 @@ async def test_backfill_home_happy(monkeypatch):
     ]
 
     pool = AsyncMock()
-    # _owner_entity_id call uses fetchrow; backfill uses fetch + fetchrow (exists check)
     call_count = [0]
 
     async def _fetchrow_side_effect(*args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            # owner entity lookup
             return {"id": owner_id}
-        return None  # _fact_exists → no existing fact
-
-    async def _fetch_side_effect(*args, **kwargs):
-        return rows
+        return None
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
-    pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
+    pool.fetch = AsyncMock(return_value=rows)
     pool.execute = AsyncMock(return_value="INSERT 0 1")
 
     stats = await bf.backfill_home(pool, dry_run=False)
+    assert stats.inserted == 1 and stats.errors == 0
 
-    assert stats.inserted == 1
-    assert stats.errors == 0
-
-
-@pytest.mark.asyncio
-async def test_backfill_home_table_missing(monkeypatch):
-    """Should skip gracefully when ha_entity_snapshot does not exist."""
+    # Missing table: skip gracefully
     import asyncpg
 
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetch = AsyncMock(side_effect=asyncpg.UndefinedTableError("ha_entity_snapshot"))
-
-    stats = await bf.backfill_home(pool, dry_run=False)
-
-    assert stats.processed == 0
-    assert stats.errors == 0
+    pool2 = AsyncMock()
+    pool2.fetchrow = AsyncMock(return_value=None)
+    pool2.fetch = AsyncMock(side_effect=asyncpg.UndefinedTableError("ha_entity_snapshot"))
+    stats2 = await bf.backfill_home(pool2, dry_run=False)
+    assert stats2.processed == 0 and stats2.errors == 0
 
 
 # ---------------------------------------------------------------------------
@@ -443,49 +380,33 @@ def test_stats_report(caplog):
 
 
 # ---------------------------------------------------------------------------
-# CLI argument parsing
+# CLI argument parsing and _main exit codes
 # ---------------------------------------------------------------------------
 
 
-def test_parse_args_phase():
-    args = bf._parse_args(["--phase", "health"])
-    assert args.phase == "health"
-    assert args.dry_run is False
+def test_parse_args():
+    args_phase = bf._parse_args(["--phase", "health"])
+    assert args_phase.phase == "health" and args_phase.dry_run is False
 
+    args_dry = bf._parse_args(["--phase", "finance", "--dry-run"])
+    assert args_dry.dry_run is True
 
-def test_parse_args_dry_run():
-    args = bf._parse_args(["--phase", "finance", "--dry-run"])
-    assert args.dry_run is True
-
-
-def test_parse_args_invalid_phase():
     with pytest.raises(SystemExit):
         bf._parse_args(["--phase", "invalid"])
 
 
-# ---------------------------------------------------------------------------
-# _main exit code
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_main_returns_0_on_success(monkeypatch):
+async def test_main_exit_codes(monkeypatch):
+    # Success
     monkeypatch.setattr(bf, "_run_phase", AsyncMock(return_value=bf.Stats()))
-    code = await bf._main(["--phase", "home"])
-    assert code == 0
+    assert await bf._main(["--phase", "home"]) == 0
 
-
-@pytest.mark.asyncio
-async def test_main_returns_1_on_error(monkeypatch):
+    # Errors in stats
     errored = bf.Stats()
     errored.errors = 1
     monkeypatch.setattr(bf, "_run_phase", AsyncMock(return_value=errored))
-    code = await bf._main(["--phase", "home"])
-    assert code == 1
+    assert await bf._main(["--phase", "home"]) == 1
 
-
-@pytest.mark.asyncio
-async def test_main_returns_1_on_exception(monkeypatch):
+    # Exception
     monkeypatch.setattr(bf, "_run_phase", AsyncMock(side_effect=RuntimeError("boom")))
-    code = await bf._main(["--phase", "home"])
-    assert code == 1
+    assert await bf._main(["--phase", "home"]) == 1

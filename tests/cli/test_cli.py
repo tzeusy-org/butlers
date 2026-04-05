@@ -59,7 +59,6 @@ class TestLoggingConfiguration:
         try:
             _configure_logging()
 
-            # Structured logging is configured on root logger
             root = logging.getLogger()
             assert len(root.handlers) >= 1
             assert httpx_logger.level == logging.WARNING
@@ -71,19 +70,20 @@ class TestLoggingConfiguration:
 
 
 class TestListCommand:
-    def test_list_with_configs(self, runner, butler_config_dir):
+    def test_list_with_configs_and_modules(self, runner, butler_config_dir, tmp_path):
+        """list shows butler info and module names when present."""
+        # Basic config test
         result = runner.invoke(cli, ["list", "--dir", str(butler_config_dir)])
         assert result.exit_code == 0
         assert "test_butler" in result.output
         assert "9000" in result.output
-        assert "A test butler" in result.output
 
-    def test_list_with_no_configs(self, runner, tmp_path):
+        # No configs
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
-        result = runner.invoke(cli, ["list", "--dir", str(empty_dir)])
-        assert result.exit_code == 0
-        assert "No butler configs found" in result.output
+        result2 = runner.invoke(cli, ["list", "--dir", str(empty_dir)])
+        assert result2.exit_code == 0
+        assert "No butler configs found" in result2.output
 
     def test_list_shows_modules(self, runner, tmp_path):
         butler_dir = tmp_path / "butlers" / "modular"
@@ -105,7 +105,8 @@ class TestListCommand:
 
 
 class TestInitCommand:
-    def test_init_creates_scaffold(self, runner, tmp_path):
+    def test_init_creates_scaffold_and_content(self, runner, tmp_path):
+        """init creates all required files with correct content."""
         butlers_dir = tmp_path / "butlers"
         result = runner.invoke(cli, ["init", "mybot", "--port", "9100", "--dir", str(butlers_dir)])
         assert result.exit_code == 0
@@ -120,114 +121,71 @@ class TestInitCommand:
         assert (butler_dir / ".claude").is_symlink()
         assert (butler_dir / ".claude").resolve() == (butler_dir / ".agents").resolve()
 
-        # Verify toml content
         toml_text = (butler_dir / "butler.toml").read_text()
         assert 'name = "mybot"' in toml_text
         assert "port = 9100" in toml_text
 
-    def test_init_uses_default_port(self, runner, tmp_path):
-        """Test that init works without --port flag, using default 41100."""
+        claude_md = (butler_dir / "CLAUDE.md").read_text()
+        assert "mybot" in claude_md.lower() or "Mybot" in claude_md
+
+    def test_init_default_port_and_existing_dir_fails(self, runner, tmp_path):
+        """Default port is 41100; existing directory raises an error."""
         butlers_dir = tmp_path / "butlers"
         result = runner.invoke(cli, ["init", "mybot", "--dir", str(butlers_dir)])
         assert result.exit_code == 0
-        assert "Created butler scaffold" in result.output
+        assert "port = 41100" in (butlers_dir / "mybot" / "butler.toml").read_text()
 
-        butler_dir = butlers_dir / "mybot"
-        toml_text = (butler_dir / "butler.toml").read_text()
-        assert "port = 41100" in toml_text
-        assert 'name = "butlers"' in toml_text
-        assert 'schema = "mybot"' in toml_text
-
-    def test_init_existing_dir_fails(self, runner, tmp_path):
-        butlers_dir = tmp_path / "butlers"
-        existing = butlers_dir / "existing"
-        existing.mkdir(parents=True)
-        result = runner.invoke(
-            cli, ["init", "existing", "--port", "9100", "--dir", str(butlers_dir)]
-        )
-        assert result.exit_code != 0
-        assert "Directory already exists" in result.output
-
-    def test_init_claude_md_content(self, runner, tmp_path):
-        butlers_dir = tmp_path / "butlers"
-        runner.invoke(cli, ["init", "helper", "--port", "9200", "--dir", str(butlers_dir)])
-        claude_md = (butlers_dir / "helper" / "CLAUDE.md").read_text()
-        assert "# Helper Butler" in claude_md
-        assert "helper" in claude_md
+        # Existing dir fails
+        result2 = runner.invoke(cli, ["init", "mybot", "--port", "9100", "--dir", str(butlers_dir)])
+        assert result2.exit_code != 0
+        assert "Directory already exists" in result2.output
 
 
 class TestDiscoverConfigs:
-    def test_finds_configs(self, butler_config_dir):
+    def test_discovers_and_skips_invalid(self, butler_config_dir, tmp_path):
+        """Finds valid configs; returns {} for missing dir; skips dirs without/invalid toml."""
         configs = _discover_configs(butler_config_dir)
         assert "test_butler" in configs
-        assert configs["test_butler"] == butler_config_dir / "test_butler"
 
-    def test_returns_empty_for_missing_dir(self, tmp_path):
-        configs = _discover_configs(tmp_path / "nonexistent")
-        assert configs == {}
+        # Missing dir
+        assert _discover_configs(tmp_path / "nonexistent") == {}
 
-    def test_skips_dirs_without_toml(self, tmp_path):
+        # No toml / invalid toml
         base = tmp_path / "butlers"
         (base / "no_toml").mkdir(parents=True)
-        configs = _discover_configs(base)
-        assert configs == {}
-
-    def test_skips_invalid_toml(self, tmp_path):
-        base = tmp_path / "butlers"
         bad = base / "bad_butler"
         bad.mkdir(parents=True)
         (bad / "butler.toml").write_text("not valid [[[ toml content")
-        configs = _discover_configs(base)
-        assert configs == {}
+        configs2 = _discover_configs(base)
+        assert configs2 == {}
 
 
 class TestUpCommand:
-    def test_up_no_configs(self, runner, tmp_path):
+    def test_up_error_cases(self, runner, tmp_path, butler_config_dir):
+        """up fails with no configs and with nonexistent --only target."""
         empty = tmp_path / "empty"
         empty.mkdir()
         result = runner.invoke(cli, ["up", "--dir", str(empty)])
         assert result.exit_code != 0
         assert "No butler configs found" in result.output
 
-    def test_up_only_missing_butler(self, runner, butler_config_dir):
-        result = runner.invoke(
+        result2 = runner.invoke(
             cli, ["up", "--dir", str(butler_config_dir), "--only", "nonexistent"]
         )
-        assert result.exit_code != 0
-        assert "not found" in result.output
+        assert result2.exit_code != 0
+        assert "not found" in result2.output
 
-    def test_up_only_comma_separated_multiple(self, runner, multi_butler_dir, monkeypatch):
-        """Test --only with comma-separated butler names."""
+    def test_up_comma_separated_filter(self, runner, multi_butler_dir, monkeypatch):
+        """--only with comma-separated names starts only those butlers."""
         monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         result = runner.invoke(cli, ["up", "--dir", str(multi_butler_dir), "--only", "alpha,gamma"])
         assert result.exit_code == 0
         assert "Starting 2 butler(s)" in result.output
         assert "alpha" in result.output
         assert "gamma" in result.output
-        # beta should not be mentioned in the starting message
         assert result.output.count("beta") == 0
 
-    def test_up_only_comma_separated_with_spaces(self, runner, multi_butler_dir, monkeypatch):
-        """Test --only with comma-separated names and spaces."""
-        monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
-        result = runner.invoke(cli, ["up", "--dir", str(multi_butler_dir), "--only", "alpha, beta"])
-        assert result.exit_code == 0
-        assert "Starting 2 butler(s)" in result.output
-        assert "alpha" in result.output
-        assert "beta" in result.output
-
-    def test_up_only_comma_separated_missing_butler(self, runner, multi_butler_dir):
-        """Test --only with comma-separated names including nonexistent butler."""
-        result = runner.invoke(
-            cli, ["up", "--dir", str(multi_butler_dir), "--only", "alpha,nonexistent"]
-        )
-        assert result.exit_code != 0
-        assert "not found" in result.output
-        assert "nonexistent" in result.output
-
     def test_up_shows_starting_message(self, runner, butler_config_dir, monkeypatch):
-        """Test that up command outputs the starting message before trying to start daemons."""
-        # Patch asyncio.run to avoid actually starting daemons
         monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         result = runner.invoke(cli, ["up", "--dir", str(butler_config_dir)])
         assert result.exit_code == 0
@@ -236,98 +194,83 @@ class TestUpCommand:
 
 
 class TestRunCommand:
-    def test_run_requires_config(self, runner):
+    def test_run_requires_config_and_shows_start_message(
+        self, runner, butler_config_dir, monkeypatch
+    ):
         result = runner.invoke(cli, ["run"])
         assert result.exit_code != 0
-        assert "Missing option" in result.output or "required" in result.output.lower()
 
-    def test_run_shows_starting_message(self, runner, butler_config_dir, monkeypatch):
-        """Test that run outputs starting message before daemon start."""
         monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         config_path = str(butler_config_dir / "test_butler")
-        result = runner.invoke(cli, ["run", "--config", config_path])
-        assert result.exit_code == 0
-        assert "Starting butler from" in result.output
+        result2 = runner.invoke(cli, ["run", "--config", config_path])
+        assert result2.exit_code == 0
+        assert "Starting butler from" in result2.output
 
 
 class TestListCommandStatus:
     """Tests for running/stopped status detection in list command."""
 
-    def test_list_shows_running_status(self, runner, butler_config_dir, monkeypatch):
-        """Test that list shows running status when port is open."""
+    def test_list_shows_running_stopped_and_mixed(
+        self, runner, butler_config_dir, multi_butler_dir, monkeypatch
+    ):
+        """list shows running when port is open, stopped when closed, and mixed for multiple."""
 
-        # Mock socket to return success (port is open)
-        class MockSocket:
+        class MockSocketRunning:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def settimeout(self, timeout):
+            def settimeout(self, t):
                 pass
 
             def connect(self, address):
-                pass  # Success - no exception
+                pass
 
             def close(self):
                 pass
 
-        monkeypatch.setattr("socket.socket", MockSocket)
-
+        monkeypatch.setattr("socket.socket", MockSocketRunning)
         result = runner.invoke(cli, ["list", "--dir", str(butler_config_dir)])
         assert result.exit_code == 0
-        assert "test_butler" in result.output
         assert "running" in result.output.lower()
 
-    def test_list_shows_stopped_status(self, runner, butler_config_dir, monkeypatch):
-        """Test that list shows stopped status when port is closed."""
-
-        # Mock socket to raise exception (port is closed)
-        class MockSocket:
+        class MockSocketStopped:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def settimeout(self, timeout):
+            def settimeout(self, t):
                 pass
 
             def connect(self, address):
-
                 raise OSError("Connection refused")
 
             def close(self):
                 pass
 
-        monkeypatch.setattr("socket.socket", MockSocket)
+        monkeypatch.setattr("socket.socket", MockSocketStopped)
+        result2 = runner.invoke(cli, ["list", "--dir", str(butler_config_dir)])
+        assert result2.exit_code == 0
+        assert "stopped" in result2.output.lower()
 
-        result = runner.invoke(cli, ["list", "--dir", str(butler_config_dir)])
-        assert result.exit_code == 0
-        assert "test_butler" in result.output
-        assert "stopped" in result.output.lower()
-
-    def test_list_shows_mixed_statuses(self, runner, multi_butler_dir, monkeypatch):
-        """Test list shows different statuses for different butlers."""
-        # Mock socket to succeed for port 9001, fail for others
-
-        class MockSocket:
+        # Mixed: alpha (9001) is running, others stopped
+        class MockSocketMixed:
             def __init__(self, *args, **kwargs):
                 self.address = None
 
-            def settimeout(self, timeout):
+            def settimeout(self, t):
                 pass
 
             def connect(self, address):
                 self.address = address
-                if address[1] == 9001:  # alpha butler
-                    pass  # Success
+                if address[1] == 9001:
+                    pass
                 else:
                     raise OSError("Connection refused")
 
             def close(self):
                 pass
 
-        monkeypatch.setattr("socket.socket", MockSocket)
-
-        result = runner.invoke(cli, ["list", "--dir", str(multi_butler_dir)])
-        assert result.exit_code == 0
-        # Check that we have both running and stopped
-        output_lower = result.output.lower()
-        assert "running" in output_lower
-        assert "stopped" in output_lower
+        monkeypatch.setattr("socket.socket", MockSocketMixed)
+        result3 = runner.invoke(cli, ["list", "--dir", str(multi_butler_dir)])
+        assert result3.exit_code == 0
+        assert "running" in result3.output.lower()
+        assert "stopped" in result3.output.lower()

@@ -301,29 +301,13 @@ async def test_export_single_contact_basic(pool):
     assert "VERSION:" in vcf
 
 
-async def test_export_contact_with_phone_email(pool):
-    """Test exporting a contact with phone and email."""
+async def test_export_contact_with_phone_email_and_address(pool):
+    """Test exporting a contact with phone, email, and address."""
     from butlers.tools.relationship import contact_create, contact_export_vcard
 
     details = {
         "phones": [{"number": "+1-555-1234", "type": "CELL"}],
         "emails": [{"address": "john@example.com", "type": "WORK"}],
-    }
-    contact = await contact_create(pool, "John Doe", details)
-
-    vcf = await contact_export_vcard(pool, contact["id"])
-
-    assert "TEL" in vcf
-    assert "+1-555-1234" in vcf
-    assert "EMAIL" in vcf
-    assert "john@example.com" in vcf
-
-
-async def test_export_contact_with_address(pool):
-    """Test exporting a contact with address."""
-    from butlers.tools.relationship import contact_create, contact_export_vcard
-
-    details = {
         "addresses": [
             {
                 "street": "123 Main St",
@@ -333,12 +317,16 @@ async def test_export_contact_with_address(pool):
                 "country": "USA",
                 "type": "HOME",
             }
-        ]
+        ],
     }
-    contact = await contact_create(pool, "Jane Smith", details)
+    contact = await contact_create(pool, "John Doe", details)
 
     vcf = await contact_export_vcard(pool, contact["id"])
 
+    assert "TEL" in vcf
+    assert "+1-555-1234" in vcf
+    assert "EMAIL" in vcf
+    assert "john@example.com" in vcf
     assert "ADR" in vcf
     assert "123 Main St" in vcf
     assert "Springfield" in vcf

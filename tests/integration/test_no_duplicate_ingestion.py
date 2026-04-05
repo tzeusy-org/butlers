@@ -10,19 +10,12 @@ from __future__ import annotations
 class TestConnectorModuleBoundary:
     """Test that connector and module paths have clear boundaries."""
 
-    def test_telegram_connector_does_not_depend_on_module(self):
-        """Verify TelegramBotConnector can operate independently of TelegramModule."""
+    def test_connectors_independent_of_modules(self):
+        """Telegram and Gmail connectors can be imported independently of their modules."""
+        from butlers.connectors.gmail import GmailConnectorRuntime
         from butlers.connectors.telegram_bot import TelegramBotConnector
 
-        # Should be able to import and instantiate connector without module
-        # This verifies no circular dependency or tight coupling
         assert TelegramBotConnector is not None
-
-    def test_gmail_connector_does_not_depend_on_email_module(self):
-        """Verify GmailConnector can operate independently of EmailModule."""
-        from butlers.connectors.gmail import GmailConnectorRuntime
-
-        # Should be able to import connector without email module
         assert GmailConnectorRuntime is not None
 
     def test_modules_no_longer_have_pipeline(self):

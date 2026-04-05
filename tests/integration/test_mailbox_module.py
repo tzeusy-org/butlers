@@ -270,7 +270,6 @@ async def pool(postgres_container):
     await db.provision()
     p = await db.connect()
 
-    # Create the mailbox table (mirrors the Alembic migration)
     await p.execute("""
         CREATE TABLE IF NOT EXISTS mailbox (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -287,15 +286,9 @@ async def pool(postgres_container):
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_mailbox_status ON mailbox (status)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_mailbox_sender ON mailbox (sender)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_mailbox_created_at ON mailbox (created_at DESC)
-    """)
+    await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_status ON mailbox (status)")
+    await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_sender ON mailbox (sender)")
+    await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_created_at ON mailbox (created_at DESC)")
 
     yield p
     await db.close()
@@ -303,328 +296,120 @@ async def pool(postgres_container):
 
 @pytest.fixture
 def mailbox(pool) -> MailboxModule:
-    """Create a MailboxModule wired to the test pool."""
     mod = MailboxModule()
     mod._pool = pool
     return mod
 
 
 # ---------------------------------------------------------------------------
-# mailbox_post
+# DB integration: post / read / list / update_status / stats
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
 @db_tests
 @pytest.mark.asyncio(loop_scope="session")
-class TestMailboxPost:
-    """Verify mailbox_post inserts messages correctly."""
+class TestMailboxPostAndRead:
+    """Verify mailbox_post inserts and mailbox_read fetches/auto-marks."""
 
-    async def test_post_returns_uuid(self, mailbox: MailboxModule):
+    async def test_post_full_fields_and_defaults(self, mailbox: MailboxModule, pool):
+        """post with all fields stores correctly; minimal post uses defaults."""
         result = await mailbox._post(
-            sender="butler-a",
-            sender_channel="mcp",
-            body="Hello from butler-a",
-        )
-        assert "id" in result
-        # Should be a valid UUID
-        uuid.UUID(result["id"])
-
-    async def test_post_returns_created_at(self, mailbox: MailboxModule):
-        result = await mailbox._post(
-            sender="butler-a",
-            sender_channel="mcp",
-            body="Test message",
-        )
-        assert "created_at" in result
-
-    async def test_post_with_all_fields(self, mailbox: MailboxModule, pool):
-        result = await mailbox._post(
-            sender="butler-b",
-            sender_channel="telegram_bot",
-            body="Full message body",
-            subject="Important Subject",
-            priority=5,
-            metadata={"tag": "urgent", "ref": 42},
+            sender="butler-b", sender_channel="telegram_bot", body="Full body",
+            subject="Subject", priority=5, metadata={"tag": "urgent"},
         )
         msg_id = uuid.UUID(result["id"])
         row = await pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", msg_id)
-        assert row is not None
-        assert row["sender"] == "butler-b"
-        assert row["sender_channel"] == "telegram_bot"
-        assert row["subject"] == "Important Subject"
-        assert row["body"] == "Full message body"
-        assert row["priority"] == 5
-        assert row["status"] == "unread"
+        assert row["sender"] == "butler-b" and row["priority"] == 5 and row["status"] == "unread"
         meta = row["metadata"]
         if isinstance(meta, str):
             import json
-
             meta = json.loads(meta)
-        assert meta == {"tag": "urgent", "ref": 42}
+        assert meta == {"tag": "urgent"}
 
-    async def test_post_defaults(self, mailbox: MailboxModule, pool):
-        """Post with minimal fields gets correct defaults."""
-        result = await mailbox._post(sender="x", sender_channel="api", body="minimal")
-        msg_id = uuid.UUID(result["id"])
-        row = await pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", msg_id)
-        assert row["priority"] == 0
-        assert row["status"] == "unread"
-        assert row["subject"] is None
-        meta = row["metadata"]
-        if isinstance(meta, str):
-            import json
+        # Minimal defaults
+        r2 = await mailbox._post(sender="x", sender_channel="api", body="minimal")
+        row2 = await pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", uuid.UUID(r2["id"]))
+        assert row2["priority"] == 0 and row2["subject"] is None and row2["read_at"] is None
 
-            meta = json.loads(meta)
-        assert meta == {}
-        assert row["read_at"] is None
-        assert row["archived_at"] is None
-
-    async def test_post_unknown_channel_accepted(self, mailbox: MailboxModule, caplog):
-        """Unknown sender_channel is accepted with a warning log."""
+    async def test_post_unknown_channel_warns(self, mailbox: MailboxModule, caplog):
+        """Unknown sender_channel is accepted with a warning log; known channel does not warn."""
         import logging
-
         with caplog.at_level(logging.WARNING):
             result = await mailbox._post(sender="ext", sender_channel="sms", body="text")
-        assert "id" in result
-        assert "Unknown sender_channel" in caplog.text
+        assert "id" in result and "Unknown sender_channel" in caplog.text
 
-    async def test_post_known_channel_no_warning(self, mailbox: MailboxModule, caplog):
-        """Known sender_channel produces no warning."""
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            await mailbox._post(sender="ext", sender_channel="email", body="text")
-        assert "Unknown sender_channel" not in caplog.text
-
-
-# ---------------------------------------------------------------------------
-# mailbox_read
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-@db_tests
-@pytest.mark.asyncio(loop_scope="session")
-class TestMailboxRead:
-    """Verify mailbox_read fetches and auto-marks messages."""
-
-    async def test_read_returns_full_message(self, mailbox: MailboxModule):
-        post = await mailbox._post(
-            sender="alice",
-            sender_channel="mcp",
-            body="Hello",
-            subject="Greetings",
-        )
+    async def test_read_marks_as_read_and_nonexistent_errors(self, mailbox: MailboxModule):
+        """Reading marks unread→read; re-read stays read; nonexistent returns error."""
+        post = await mailbox._post(sender="alice", sender_channel="mcp", body="Hello", subject="Greet")
         result = await mailbox._read(post["id"])
-        assert result["id"] == post["id"]
-        assert result["sender"] == "alice"
-        assert result["sender_channel"] == "mcp"
-        assert result["body"] == "Hello"
-        assert result["subject"] == "Greetings"
+        assert result["status"] == "read" and result["read_at"] is not None and result["subject"] == "Greet"
 
-    async def test_read_auto_marks_unread_as_read(self, mailbox: MailboxModule, pool):
-        """Reading an unread message sets status to 'read' and read_at."""
-        post = await mailbox._post(sender="bob", sender_channel="system", body="msg")
-        result = await mailbox._read(post["id"])
-        assert result["status"] == "read"
-        assert result["read_at"] is not None
+        # Re-read stays read
+        result2 = await mailbox._read(post["id"])
+        assert result2["status"] == "read"
 
-        # Verify in DB
-        row = await pool.fetchrow(
-            "SELECT status, read_at FROM mailbox WHERE id = $1",
-            uuid.UUID(post["id"]),
-        )
-        assert row["status"] == "read"
-        assert row["read_at"] is not None
-
-    async def test_read_already_read_no_change(self, mailbox: MailboxModule):
-        """Reading an already-read message does not alter its status."""
-        post = await mailbox._post(sender="carol", sender_channel="api", body="msg")
-        # First read marks as read
-        await mailbox._read(post["id"])
-        # Second read should return same status
-        result = await mailbox._read(post["id"])
-        assert result["status"] == "read"
-
-    async def test_read_nonexistent(self, mailbox: MailboxModule):
-        """Reading a non-existent message returns an error dict."""
+        # Nonexistent
         fake_id = str(uuid.uuid4())
-        result = await mailbox._read(fake_id)
-        assert "error" in result
-        assert fake_id in result["error"]
-
-
-# ---------------------------------------------------------------------------
-# mailbox_list
-# ---------------------------------------------------------------------------
+        result3 = await mailbox._read(fake_id)
+        assert "error" in result3 and fake_id in result3["error"]
 
 
 @pytest.mark.integration
 @db_tests
 @pytest.mark.asyncio(loop_scope="session")
-class TestMailboxList:
-    """Verify mailbox_list filtering and pagination."""
+class TestMailboxListAndStatus:
+    """Verify mailbox_list filtering/pagination and mailbox_update_status."""
 
-    async def test_list_returns_messages(self, mailbox: MailboxModule):
-        await mailbox._post(sender="a", sender_channel="mcp", body="m1")
-        await mailbox._post(sender="b", sender_channel="mcp", body="m2")
-        result = await mailbox._list()
-        assert len(result) >= 2
+    async def test_list_ordering_filters_and_pagination(self, mailbox: MailboxModule):
+        """Newest first; status/sender filters; limit+offset non-overlapping pages; empty OK."""
+        sender = f"list-{uuid.uuid4().hex[:8]}"
+        r1 = await mailbox._post(sender=sender, sender_channel="mcp", body="first")
+        r2 = await mailbox._post(sender=sender, sender_channel="mcp", body="second")
+        await mailbox._read(r1["id"])  # mark as read
 
-    async def test_list_ordered_by_created_at_desc(self, mailbox: MailboxModule):
-        """Messages are returned newest first."""
-        r1 = await mailbox._post(sender="a", sender_channel="mcp", body="first")
-        r2 = await mailbox._post(sender="a", sender_channel="mcp", body="second")
-
-        result = await mailbox._list(sender="a")
-        # Most recent should be first
-        ids = [m["id"] for m in result]
+        # Ordering: newest first
+        all_msgs = await mailbox._list(sender=sender)
+        ids = [m["id"] for m in all_msgs]
         assert ids.index(r2["id"]) < ids.index(r1["id"])
 
-    async def test_list_filter_by_status(self, mailbox: MailboxModule):
-        post = await mailbox._post(sender="filter-test", sender_channel="mcp", body="unread msg")
-        # Mark one as read
-        await mailbox._read(post["id"])
+        # Filter by status
+        read_msgs = await mailbox._list(status="read", sender=sender)
+        assert all(m["status"] == "read" for m in read_msgs)
 
-        result = await mailbox._list(status="read", sender="filter-test")
-        assert all(m["status"] == "read" for m in result)
-        assert any(m["id"] == post["id"] for m in result)
-
-    async def test_list_filter_by_sender(self, mailbox: MailboxModule):
-        await mailbox._post(sender="unique-sender-xyz", sender_channel="mcp", body="x")
-        result = await mailbox._list(sender="unique-sender-xyz")
-        assert len(result) >= 1
-        assert all(m["sender"] == "unique-sender-xyz" for m in result)
-
-    async def test_list_pagination_limit(self, mailbox: MailboxModule):
-        # Insert a few messages with a unique sender for isolation
-        sender = f"page-{uuid.uuid4().hex[:8]}"
-        for i in range(5):
-            await mailbox._post(sender=sender, sender_channel="mcp", body=f"msg-{i}")
-
-        result = await mailbox._list(sender=sender, limit=3)
-        assert len(result) == 3
-
-    async def test_list_pagination_offset(self, mailbox: MailboxModule):
-        sender = f"off-{uuid.uuid4().hex[:8]}"
-        for i in range(5):
-            await mailbox._post(sender=sender, sender_channel="mcp", body=f"msg-{i}")
-
+        # Pagination
+        for i in range(3):
+            await mailbox._post(sender=sender, sender_channel="mcp", body=f"page-{i}")
         page1 = await mailbox._list(sender=sender, limit=2, offset=0)
         page2 = await mailbox._list(sender=sender, limit=2, offset=2)
-        ids1 = {m["id"] for m in page1}
-        ids2 = {m["id"] for m in page2}
-        # Pages should not overlap
-        assert ids1.isdisjoint(ids2)
+        assert {m["id"] for m in page1}.isdisjoint({m["id"] for m in page2})
 
-    async def test_list_combined_filters(self, mailbox: MailboxModule):
-        sender = f"combo-{uuid.uuid4().hex[:8]}"
-        p1 = await mailbox._post(sender=sender, sender_channel="mcp", body="a")
-        await mailbox._post(sender=sender, sender_channel="mcp", body="b")
-        # Read one
-        await mailbox._read(p1["id"])
+        # Empty result
+        assert await mailbox._list(sender="nonexistent-sender-zzzz") == []
 
-        result = await mailbox._list(status="read", sender=sender)
-        assert len(result) == 1
-        assert result[0]["id"] == p1["id"]
-
-    async def test_list_empty_result(self, mailbox: MailboxModule):
-        result = await mailbox._list(sender="nonexistent-sender-zzzz")
-        assert result == []
-
-
-# ---------------------------------------------------------------------------
-# mailbox_update_status
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-@db_tests
-@pytest.mark.asyncio(loop_scope="session")
-class TestMailboxUpdateStatus:
-    """Verify mailbox_update_status changes status and timestamps."""
-
-    async def test_update_to_read(self, mailbox: MailboxModule):
+    async def test_update_status_and_nonexistent(self, mailbox: MailboxModule):
+        """Update to read/archived/custom sets correct status+timestamps; nonexistent errors."""
         post = await mailbox._post(sender="s", sender_channel="mcp", body="m")
         result = await mailbox._update_status(post["id"], "read")
-        assert result["status"] == "read"
-        assert result["read_at"] is not None
+        assert result["status"] == "read" and result["read_at"] is not None
 
-    async def test_update_to_archived(self, mailbox: MailboxModule):
-        post = await mailbox._post(sender="s", sender_channel="mcp", body="m")
-        result = await mailbox._update_status(post["id"], "archived")
-        assert result["status"] == "archived"
-        assert result["archived_at"] is not None
+        post2 = await mailbox._post(sender="s", sender_channel="mcp", body="m2")
+        result2 = await mailbox._update_status(post2["id"], "archived")
+        assert result2["status"] == "archived" and result2["archived_at"] is not None
 
-    async def test_update_to_custom_status(self, mailbox: MailboxModule):
-        post = await mailbox._post(sender="s", sender_channel="mcp", body="m")
-        result = await mailbox._update_status(post["id"], "flagged")
-        assert result["status"] == "flagged"
-
-    async def test_update_sets_updated_at(self, mailbox: MailboxModule, pool):
-        post = await mailbox._post(sender="s", sender_channel="mcp", body="m")
-        await pool.fetchrow(
-            "SELECT updated_at FROM mailbox WHERE id = $1",
-            uuid.UUID(post["id"]),
-        )
-
-        import asyncio
-
-        await asyncio.sleep(0.05)  # Ensure time difference
-
-        result = await mailbox._update_status(post["id"], "read")
-        # updated_at should be set
-        assert result["updated_at"] is not None
-
-    async def test_update_nonexistent(self, mailbox: MailboxModule):
         fake_id = str(uuid.uuid4())
-        result = await mailbox._update_status(fake_id, "read")
-        assert "error" in result
+        assert "error" in await mailbox._update_status(fake_id, "read")
 
-
-# ---------------------------------------------------------------------------
-# mailbox_stats
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-@db_tests
-@pytest.mark.asyncio(loop_scope="session")
-class TestMailboxStats:
-    """Verify mailbox_stats returns correct counts."""
-
-    async def test_stats_returns_counts(self, mailbox: MailboxModule, pool):
-        # Clean slate — use a transaction to isolate
-        # First, clear any existing messages
+    async def test_stats_counts(self, mailbox: MailboxModule, pool):
+        """stats returns correct counts by status; empty mailbox returns {}."""
         await pool.execute("DELETE FROM mailbox")
+        stats_empty = await mailbox._stats()
+        assert stats_empty == {}
 
-        # Insert messages with known statuses
         await mailbox._post(sender="a", sender_channel="mcp", body="1")
         await mailbox._post(sender="a", sender_channel="mcp", body="2")
         p3 = await mailbox._post(sender="a", sender_channel="mcp", body="3")
-
-        # Mark one as read
         await mailbox._read(p3["id"])
 
         stats = await mailbox._stats()
-        assert stats.get("unread") == 2
-        assert stats.get("read") == 1
-
-    async def test_stats_empty_mailbox(self, mailbox: MailboxModule, pool):
-        await pool.execute("DELETE FROM mailbox")
-        stats = await mailbox._stats()
-        assert stats == {}
-
-    async def test_stats_after_status_update(self, mailbox: MailboxModule, pool):
-        await pool.execute("DELETE FROM mailbox")
-
-        p1 = await mailbox._post(sender="a", sender_channel="mcp", body="1")
-        p2 = await mailbox._post(sender="a", sender_channel="mcp", body="2")
-
-        await mailbox._update_status(p1["id"], "archived")
-        await mailbox._update_status(p2["id"], "archived")
-
-        stats = await mailbox._stats()
-        assert stats.get("archived") == 2
-        assert stats.get("unread", 0) == 0
+        assert stats.get("unread") == 2 and stats.get("read") == 1

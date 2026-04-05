@@ -114,35 +114,31 @@ async def _insert_message(
 # ---------------------------------------------------------------------------
 
 
-async def test_realtime_history_returns_messages(switchboard_dsn):
-    """Realtime history query runs against v2 schema and returns correct data."""
+async def test_realtime_history_basic(switchboard_dsn):
+    """Realtime history returns messages for thread; empty thread returns []; excludes other threads."""
     pool = await asyncpg.create_pool(switchboard_dsn)
     try:
         now = datetime.now(UTC)
         thread = f"chat:{uuid.uuid4().hex[:8]}"
+        thread_b = f"chat:{uuid.uuid4().hex[:8]}"
 
-        await _insert_message(
-            pool,
-            text="hello",
-            sender="user1",
-            thread_identity=thread,
-            received_at=now - timedelta(minutes=5),
-        )
-        await _insert_message(
-            pool,
-            text="world",
-            sender="user2",
-            thread_identity=thread,
-            received_at=now - timedelta(minutes=3),
-        )
+        await _insert_message(pool, text="hello", sender="user1", thread_identity=thread,
+                              received_at=now - timedelta(minutes=5))
+        await _insert_message(pool, text="world", sender="user2", thread_identity=thread,
+                              received_at=now - timedelta(minutes=3))
+        await _insert_message(pool, text="other thread", sender="u2", thread_identity=thread_b,
+                              received_at=now - timedelta(minutes=2))
 
         messages = await _load_realtime_history(pool, thread, now)
-
         assert len(messages) == 2
-        assert messages[0]["raw_content"] == "hello"
-        assert messages[0]["sender_id"] == "user1"
-        assert messages[1]["raw_content"] == "world"
-        assert messages[1]["sender_id"] == "user2"
+        assert messages[0]["raw_content"] == "hello" and messages[0]["sender_id"] == "user1"
+
+        # Excludes other thread
+        msgs_a_only = await _load_realtime_history(pool, thread, now)
+        assert all(m["raw_content"] != "other thread" for m in msgs_a_only)
+
+        # Empty thread
+        assert await _load_realtime_history(pool, "nonexistent:thread", now) == []
     finally:
         await pool.close()
 
@@ -172,47 +168,6 @@ async def test_realtime_history_count_window(switchboard_dsn):
 
         assert len(messages) == 1
         assert messages[0]["raw_content"] == "old msg"
-    finally:
-        await pool.close()
-
-
-async def test_realtime_history_empty_thread(switchboard_dsn):
-    """Returns empty list for a thread with no messages."""
-    pool = await asyncpg.create_pool(switchboard_dsn)
-    try:
-        now = datetime.now(UTC)
-        messages = await _load_realtime_history(pool, "nonexistent:thread", now)
-        assert messages == []
-    finally:
-        await pool.close()
-
-
-async def test_realtime_history_excludes_other_threads(switchboard_dsn):
-    """Messages from other threads are not included."""
-    pool = await asyncpg.create_pool(switchboard_dsn)
-    try:
-        now = datetime.now(UTC)
-        thread_a = f"chat:{uuid.uuid4().hex[:8]}"
-        thread_b = f"chat:{uuid.uuid4().hex[:8]}"
-
-        await _insert_message(
-            pool,
-            text="thread A",
-            sender="u1",
-            thread_identity=thread_a,
-            received_at=now - timedelta(minutes=2),
-        )
-        await _insert_message(
-            pool,
-            text="thread B",
-            sender="u2",
-            thread_identity=thread_b,
-            received_at=now - timedelta(minutes=2),
-        )
-
-        messages = await _load_realtime_history(pool, thread_a, now)
-        assert len(messages) == 1
-        assert messages[0]["raw_content"] == "thread A"
     finally:
         await pool.close()
 
@@ -330,41 +285,22 @@ async def test_email_history_truncates_oldest(switchboard_dsn):
 # ---------------------------------------------------------------------------
 
 
-async def test_conversation_history_telegram(switchboard_dsn):
-    """Full dispatcher path for telegram produces formatted history."""
+async def test_conversation_history_channels(switchboard_dsn):
+    """Telegram returns formatted history; API channel returns empty string."""
     pool = await asyncpg.create_pool(switchboard_dsn)
     try:
         now = datetime.now(UTC)
         thread = f"chat:{uuid.uuid4().hex[:8]}"
 
-        await _insert_message(
-            pool,
-            text="previous message",
-            sender="user42",
-            thread_identity=thread,
-            received_at=now - timedelta(minutes=5),
-        )
+        await _insert_message(pool, text="previous message", sender="user42",
+                               thread_identity=thread, received_at=now - timedelta(minutes=5))
 
         result = await _load_conversation_history(pool, "telegram_bot", thread, now)
+        assert "## Recent Conversation History" in result and "previous message" in result and "user42" in result
 
-        assert "## Recent Conversation History" in result
-        assert "previous message" in result
-        assert "user42" in result
-    finally:
-        await pool.close()
-
-
-async def test_conversation_history_none_for_api(switchboard_dsn):
-    """API channel returns empty string (no history loaded)."""
-    pool = await asyncpg.create_pool(switchboard_dsn)
-    try:
-        result = await _load_conversation_history(
-            pool,
-            "api",
-            "some-thread",
-            datetime.now(UTC),
-        )
-        assert result == ""
+        # API channel returns empty string
+        api_result = await _load_conversation_history(pool, "api", "some-thread", now)
+        assert api_result == ""
     finally:
         await pool.close()
 
@@ -414,44 +350,8 @@ async def _insert_outbound_message(
     )
 
 
-async def test_realtime_history_includes_outbound_messages(switchboard_dsn):
-    """Outbound butler responses appear in _load_realtime_history results."""
-    pool = await asyncpg.create_pool(switchboard_dsn)
-    try:
-        now = datetime.now(UTC)
-        thread = f"chat:{uuid.uuid4().hex[:8]}"
-
-        await _insert_message(
-            pool,
-            text="Dua um lives in 71 nim road 804975",
-            sender="user42",
-            thread_identity=thread,
-            received_at=now - timedelta(minutes=5),
-        )
-        await _insert_outbound_message(
-            pool,
-            text="Got it! I've stored Dua um's address as 71 nim road 804975.",
-            origin_butler="relationship",
-            thread_identity=thread,
-            received_at=now - timedelta(minutes=4),
-        )
-
-        messages = await _load_realtime_history(pool, thread, now)
-
-        assert len(messages) == 2
-        # Inbound user message
-        assert messages[0]["raw_content"] == "Dua um lives in 71 nim road 804975"
-        assert messages[0]["direction"] == "inbound"
-        # Outbound butler response
-        assert "Got it!" in messages[1]["raw_content"]
-        assert messages[1]["direction"] == "outbound"
-        assert messages[1]["sender_id"] == "relationship"
-    finally:
-        await pool.close()
-
-
-async def test_realtime_history_formatted_shows_butler_arrow_prefix(switchboard_dsn):
-    """Formatted conversation history shows '**butler → X**' for outbound messages."""
+async def test_realtime_history_outbound_messages_and_formatted(switchboard_dsn):
+    """Outbound butler responses appear in realtime history; formatted shows butler arrow prefix."""
     from butlers.modules.pipeline import _format_history_context
 
     pool = await asyncpg.create_pool(switchboard_dsn)
@@ -459,28 +359,20 @@ async def test_realtime_history_formatted_shows_butler_arrow_prefix(switchboard_
         now = datetime.now(UTC)
         thread = f"chat:{uuid.uuid4().hex[:8]}"
 
-        await _insert_message(
-            pool,
-            text="So does da pe pe",
-            sender="user42",
-            thread_identity=thread,
-            received_at=now - timedelta(minutes=3),
-        )
-        await _insert_outbound_message(
-            pool,
-            text="Got it! I've stored da pe pe's address too.",
-            origin_butler="relationship",
-            thread_identity=thread,
-            received_at=now - timedelta(minutes=2),
-        )
+        await _insert_message(pool, text="So does da pe pe", sender="user42",
+                               thread_identity=thread, received_at=now - timedelta(minutes=3))
+        await _insert_outbound_message(pool, text="Got it! I've stored da pe pe's address too.",
+                                       origin_butler="relationship", thread_identity=thread,
+                                       received_at=now - timedelta(minutes=2))
 
         messages = await _load_realtime_history(pool, thread, now)
-        result = _format_history_context(messages)
+        assert len(messages) == 2
+        assert messages[0]["direction"] == "inbound" and messages[1]["direction"] == "outbound"
+        assert messages[1]["sender_id"] == "relationship"
 
-        assert "**user42**" in result
-        assert "**butler → relationship**" in result
+        result = _format_history_context(messages)
+        assert "**user42**" in result and "**butler → relationship**" in result
         assert "So does da pe pe" in result
-        assert "da pe pe's address too" in result
     finally:
         await pool.close()
 
