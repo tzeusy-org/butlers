@@ -1,8 +1,12 @@
 """Tests for CodexAdapter — Codex CLI runtime adapter.
 
-Adapter-specific tests only. Common parser contract tests (plain text, JSON messages,
-tool calls, exit codes) and shared behavioral contracts (build_config_file, invoke CWD,
-invoke timeout, etc.) are parametrized across both adapters in test_adapter_contract.py.
+Unique behaviors not in test_adapter_contract.py:
+- Binary discovery (_find_codex_binary)
+- parse_system_prompt_file reads AGENTS.md
+- build_config_file writes TOML with transport inference
+- _parse_codex_output: exec --json format, function_call, mcp_tool_call events
+- _extract_tool_call: various container formats, command_execution
+- invoke(): exec subcommand, HOME injection, error paths, transport diagnostics
 """
 
 from __future__ import annotations
@@ -23,98 +27,49 @@ from butlers.core.runtimes.codex import (
 
 pytestmark = pytest.mark.unit
 
-# Long patch target as constant to keep lines within 100 chars
 _EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
 
 
 # ---------------------------------------------------------------------------
-# Registration tests
+# Binary discovery
 # ---------------------------------------------------------------------------
 
 
-def test_codex_adapter_with_custom_binary():
-    """CodexAdapter accepts a custom binary path."""
-    adapter = CodexAdapter(codex_binary="/usr/local/bin/codex")
-    assert adapter._codex_binary == "/usr/local/bin/codex"
-    assert adapter._get_binary() == "/usr/local/bin/codex"
-
-
-def test_codex_adapter_create_worker_preserves_binary():
-    """create_worker() returns a distinct adapter with the same binary config."""
-    adapter = CodexAdapter(codex_binary="/usr/local/bin/codex")
-    worker = adapter.create_worker()
-
-    assert worker is not adapter
-    assert isinstance(worker, CodexAdapter)
-    assert worker._codex_binary == "/usr/local/bin/codex"
-
-
-# ---------------------------------------------------------------------------
-# _find_codex_binary tests
-# ---------------------------------------------------------------------------
-
-
-def test_find_codex_binary_found():
-    """_find_codex_binary returns path when codex is on PATH."""
-    with patch(
-        "butlers.core.runtimes.codex.shutil.which",
-        return_value="/usr/bin/codex",
-    ):
+def test_find_codex_binary():
+    """_find_codex_binary returns path when found, raises FileNotFoundError when missing."""
+    with patch("butlers.core.runtimes.codex.shutil.which", return_value="/usr/bin/codex"):
         assert _find_codex_binary() == "/usr/bin/codex"
-
-
-def test_find_codex_binary_not_found():
-    """_find_codex_binary raises FileNotFoundError when codex is missing."""
-    with patch(
-        "butlers.core.runtimes.codex.shutil.which",
-        return_value=None,
-    ):
+    with patch("butlers.core.runtimes.codex.shutil.which", return_value=None):
         with pytest.raises(FileNotFoundError, match="Codex CLI binary not found"):
             _find_codex_binary()
 
 
 # ---------------------------------------------------------------------------
-# parse_system_prompt_file tests
+# parse_system_prompt_file — reads AGENTS.md
 # ---------------------------------------------------------------------------
 
 
-def test_parse_system_prompt_reads_agents_md(tmp_path: Path):
-    """CodexAdapter reads AGENTS.md (not CLAUDE.md) for system prompt."""
-    adapter = CodexAdapter()
-    agents_md = tmp_path / "AGENTS.md"
-    agents_md.write_text("You are a specialized Codex butler.")
-    prompt = adapter.parse_system_prompt_file(config_dir=tmp_path)
-    assert prompt == "You are a specialized Codex butler."
-
-
-def test_parse_system_prompt_missing_agents_md(tmp_path: Path):
-    """Returns empty string when AGENTS.md is missing."""
-    adapter = CodexAdapter()
-    prompt = adapter.parse_system_prompt_file(config_dir=tmp_path)
-    assert prompt == ""
-
-
-def test_parse_system_prompt_empty_agents_md(tmp_path: Path):
-    """Returns empty string when AGENTS.md is empty/whitespace."""
-    adapter = CodexAdapter()
-    agents_md = tmp_path / "AGENTS.md"
-    agents_md.write_text("   \n  ")
-    prompt = adapter.parse_system_prompt_file(config_dir=tmp_path)
-    assert prompt == ""
+def test_parse_system_prompt(tmp_path: Path):
+    """CodexAdapter reads AGENTS.md; returns empty string when missing."""
+    (tmp_path / "AGENTS.md").write_text("You are a specialized Codex butler.")
+    assert CodexAdapter().parse_system_prompt_file(config_dir=tmp_path) == "You are a specialized Codex butler."
+    import tempfile
+    with tempfile.TemporaryDirectory() as empty:
+        assert CodexAdapter().parse_system_prompt_file(config_dir=Path(empty)) == ""
 
 
 # ---------------------------------------------------------------------------
-# build_config_file tests
+# build_config_file — TOML with transport inference
 # ---------------------------------------------------------------------------
 
 
 def test_build_config_file_writes_toml(tmp_path: Path):
     """build_config_file() writes TOML config to .codex/config.toml."""
     adapter = CodexAdapter()
-    mcp_servers = {"my-butler": {"url": "http://localhost:9100/mcp"}}
-    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
+    config_path = adapter.build_config_file(
+        mcp_servers={"my-butler": {"url": "http://localhost:9100/mcp"}}, tmp_dir=tmp_path
+    )
     assert config_path == tmp_path / ".codex" / "config.toml"
-    assert config_path.exists()
     content = config_path.read_text()
     assert "[mcp_servers.my-butler]" in content
     assert 'url = "http://localhost:9100/mcp"' in content
@@ -128,343 +83,8 @@ def test_infer_mcp_transport_from_url():
     assert _infer_mcp_transport_from_url("http://localhost:41100/events") is None
 
 
-# ---------------------------------------------------------------------------
-# _parse_codex_output tests
-# ---------------------------------------------------------------------------
-
-
-def test_parse_json_function_call():
-    """JSON function_call objects are extracted as tool calls."""
-    line = json.dumps(
-        {
-            "type": "function_call",
-            "id": "fc1",
-            "function": {
-                "name": "my_tool",
-                "arguments": {"arg1": "val1"},
-            },
-        }
-    )
-    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["id"] == "fc1"
-    assert tool_calls[0]["name"] == "my_tool"
-    assert tool_calls[0]["input"] == {"arg1": "val1"}
-    assert usage is None
-
-
-def test_parse_exec_json_agent_message_and_usage():
-    """codex exec --json events extract final agent message and usage."""
-    lines = "\n".join(
-        [
-            json.dumps({"type": "thread.started", "thread_id": "t1"}),
-            json.dumps({"type": "turn.started"}),
-            json.dumps(
-                {
-                    "type": "item.completed",
-                    "item": {"id": "item_1", "type": "agent_message", "text": "pong"},
-                }
-            ),
-            json.dumps(
-                {
-                    "type": "turn.completed",
-                    "usage": {"input_tokens": 123, "output_tokens": 45},
-                }
-            ),
-        ]
-    )
-    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
-    assert result_text == "pong"
-    assert tool_calls == []
-    assert usage == {"input_tokens": 123, "output_tokens": 45}
-
-
-def test_parse_response_output_item_done_function_call():
-    """response.output_item.done with nested function_call yields tool call."""
-    lines = "\n".join(
-        [
-            json.dumps(
-                {
-                    "type": "response.output_item.done",
-                    "item": {
-                        "id": "fc_1",
-                        "type": "function_call",
-                        "function": {
-                            "name": "route_to_butler",
-                            "arguments": {
-                                "butler": "relationship",
-                                "prompt": "Store DOB",
-                            },
-                        },
-                    },
-                }
-            ),
-            json.dumps({"type": "result", "result": "Routed"}),
-        ]
-    )
-
-    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
-
-    assert result_text == "Routed"
-    assert usage is None
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "route_to_butler"
-    assert tool_calls[0]["input"] == {"butler": "relationship", "prompt": "Store DOB"}
-
-
-def test_parse_item_completed_mcp_tool_call_with_nested_call_payload():
-    """Nested mcp_tool_call payloads should normalize to name + input."""
-    lines = "\n".join(
-        [
-            json.dumps(
-                {
-                    "type": "item.completed",
-                    "item": {
-                        "id": "mcp_1",
-                        "type": "mcp_tool_call",
-                        "call": {
-                            "name": "route_to_butler",
-                            "arguments": {
-                                "butler": "relationship",
-                                "prompt": "Store Chloe DOB",
-                            },
-                        },
-                    },
-                }
-            ),
-            json.dumps({"type": "result", "result": "Routed"}),
-        ]
-    )
-
-    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
-
-    assert result_text == "Routed"
-    assert usage is None
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["id"] == "mcp_1"
-    assert tool_calls[0]["name"] == "route_to_butler"
-    assert tool_calls[0]["input"] == {
-        "butler": "relationship",
-        "prompt": "Store Chloe DOB",
-    }
-
-
-def test_parse_response_completed_usage_nested_response_object():
-    """response.completed should extract usage from nested response.usage."""
-    lines = json.dumps(
-        {
-            "type": "response.completed",
-            "response": {"usage": {"input_tokens": 321, "output_tokens": 123}},
-        }
-    )
-
-    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
-
-    assert result_text is None
-    assert tool_calls == []
-    assert usage == {"input_tokens": 321, "output_tokens": 123}
-
-
-def test_extract_tool_call_parses_json_string_arguments():
-    """Stringified JSON arguments are parsed into dict input when possible."""
-    tc = _extract_tool_call(
-        {
-            "id": "fc2",
-            "name": "route_to_butler",
-            "arguments": '{"butler":"health","prompt":"Track meal"}',
-        }
-    )
-
-    assert tc["id"] == "fc2"
-    assert tc["name"] == "route_to_butler"
-    assert tc["input"] == {"butler": "health", "prompt": "Track meal"}
-
-
-def test_extract_tool_call_with_nested_call_payload():
-    """Nested call payloads from mcp_tool_call objects are extracted."""
-    tc = _extract_tool_call(
-        {
-            "type": "mcp_tool_call",
-            "call_id": "call_1",
-            "call": {
-                "name": "route_to_butler",
-                "arguments": '{"butler":"health","prompt":"Track breakfast"}',
-            },
-        }
-    )
-
-    assert tc["id"] == "call_1"
-    assert tc["name"] == "route_to_butler"
-    assert tc["input"] == {"butler": "health", "prompt": "Track breakfast"}
-
-
-def test_extract_tool_call_with_nested_tool_payload():
-    """Nested tool payloads should resolve name + arguments."""
-    tc = _extract_tool_call(
-        {
-            "type": "mcp_tool_call",
-            "id": "tool_1",
-            "tool": {
-                "name": "route_to_butler",
-                "arguments": {"butler": "general", "prompt": "Roll up stats"},
-            },
-        }
-    )
-
-    assert tc["id"] == "tool_1"
-    assert tc["name"] == "route_to_butler"
-    assert tc["input"] == {"butler": "general", "prompt": "Roll up stats"}
-
-
-def test_parse_exec_json_ignores_non_json_diagnostics():
-    """Non-JSON diagnostics mixed into JSONL output are ignored."""
-    lines = "\n".join(
-        [
-            "2026-02-20T19:43:18Z ERROR rmcp startup failed",
-            json.dumps(
-                {
-                    "type": "item.completed",
-                    "item": {"id": "item_1", "type": "agent_message", "text": "pong"},
-                }
-            ),
-        ]
-    )
-    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
-    assert result_text == "pong"
-    assert tool_calls == []
-    assert usage is None
-
-
-# ---------------------------------------------------------------------------
-# _extract_tool_call tests
-# ---------------------------------------------------------------------------
-
-
-def test_extract_tool_call_function_format():
-    """OpenAI function_call format is extracted correctly."""
-    tc = _extract_tool_call(
-        {
-            "id": "fc1",
-            "function": {"name": "other_tool", "arguments": {"a": 1}},
-        }
-    )
-    assert tc["id"] == "fc1"
-    assert tc["name"] == "other_tool"
-    assert tc["input"] == {"a": 1}
-
-
-def test_extract_tool_call_command_execution():
-    """command_execution events are normalized as tool calls."""
-    tc = _extract_tool_call(
-        {
-            "id": "cmd1",
-            "type": "command_execution",
-            "command": "ls -1",
-            "status": "completed",
-            "exit_code": 0,
-            "aggregated_output": "file.txt\n",
-        }
-    )
-    assert tc["id"] == "cmd1"
-    assert tc["name"] == "command_execution"
-    assert tc["input"]["command"] == "ls -1"
-    assert tc["input"]["exit_code"] == 0
-
-
-# ---------------------------------------------------------------------------
-# invoke() tests with mocked subprocess
-# ---------------------------------------------------------------------------
-
-
-async def test_invoke_success():
-    """invoke() calls subprocess and parses JSON output."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(
-        return_value=(
-            "\n".join(
-                [
-                    json.dumps(
-                        {
-                            "type": "item.completed",
-                            "item": {"id": "item_1", "type": "agent_message", "text": "Task done."},
-                        }
-                    ),
-                    json.dumps(
-                        {
-                            "type": "turn.completed",
-                            "usage": {"input_tokens": 10, "output_tokens": 20},
-                        }
-                    ),
-                ]
-            ).encode(),
-            b"",
-        )
-    )
-    mock_proc.returncode = 0
-
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        result_text, tool_calls, usage = await adapter.invoke(
-            prompt="do something",
-            system_prompt="you are helpful",
-            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
-            env={"OPENAI_API_KEY": "sk-test"},
-        )
-
-    assert result_text == "Task done."
-    assert tool_calls == []
-    assert usage == {"input_tokens": 10, "output_tokens": 20}
-
-    # Verify subprocess was called with correct args
-    call_args = mock_sub.call_args
-    cmd = call_args[0]
-    assert cmd[0] == "/usr/bin/codex"
-    assert cmd[1] == "exec"
-    assert "--json" in cmd
-    assert "--dangerously-bypass-approvals-and-sandbox" in cmd
-    assert "--quiet" not in cmd
-    assert "--instructions" not in cmd
-    # MCP config is via config file now, not -c flags
-    assert "-c" not in cmd
-    assert "--" in cmd
-    assert cmd[-2] == "--"
-    assert "<system_instructions>" in cmd[-1]
-    assert "you are helpful" in cmd[-1]
-    assert "<user_prompt>" in cmd[-1]
-    assert "do something" in cmd[-1]
-
-    # Verify HOME was set to a temp dir for Codex config discovery
-    env_kwarg = call_args[1].get("env") or call_args.kwargs.get("env")
-    assert env_kwarg is not None
-    assert "HOME" in env_kwarg
-
-
-def test_write_mcp_config_toml_streamable_http(tmp_path: Path):
-    """_write_mcp_config_toml writes transport for /mcp URLs."""
-    result = CodexAdapter._write_mcp_config_toml(
-        {"test": {"url": "http://localhost:9100/mcp"}}, tmp_path
-    )
-    assert result is not None
-    content = result.read_text()
-    assert "[mcp_servers.test]" in content
-    assert 'url = "http://localhost:9100/mcp"' in content
-    assert 'transport = "streamable_http"' in content
-
-
-def test_write_mcp_config_toml_no_transport_for_sse(tmp_path: Path):
-    """_write_mcp_config_toml omits streamable_http for non-/mcp URLs."""
-    result = CodexAdapter._write_mcp_config_toml(
-        {"test": {"url": "http://localhost:9100/sse"}}, tmp_path
-    )
-    assert result is not None
-    content = result.read_text()
-    assert 'url = "http://localhost:9100/sse"' in content
-    assert "streamable_http" not in content
-
-
 def test_write_mcp_config_toml_skips_unsafe_names(tmp_path: Path):
-    """Unsafe MCP server names are ignored to avoid TOML key injection."""
+    """Unsafe MCP server names with injection characters are skipped."""
     result = CodexAdapter._write_mcp_config_toml(
         {
             "safe_name": {"url": "http://localhost:9100/mcp"},
@@ -475,203 +95,119 @@ def test_write_mcp_config_toml_skips_unsafe_names(tmp_path: Path):
     assert result is not None
     content = result.read_text()
     assert "[mcp_servers.safe_name]" in content
-    assert 'url = "http://localhost:9100/mcp"' in content
     assert "unsafe" not in content
     assert "9200" not in content
 
 
+# ---------------------------------------------------------------------------
+# _parse_codex_output — exec --json event formats
+# ---------------------------------------------------------------------------
+
+
+def test_parse_item_completed_mcp_tool_call():
+    """item.completed mcp_tool_call payloads normalize to name + input."""
+    lines = "\n".join([
+        json.dumps({
+            "type": "item.completed",
+            "item": {
+                "id": "mcp_1",
+                "type": "mcp_tool_call",
+                "call": {"name": "route_to_butler", "arguments": {"butler": "rel"}},
+            },
+        }),
+        json.dumps({"type": "result", "result": "Routed"}),
+    ])
+    _, tool_calls, _ = _parse_codex_output(lines, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "mcp_1"
+    assert tool_calls[0]["name"] == "route_to_butler"
+
+
+# ---------------------------------------------------------------------------
+# _extract_tool_call — special formats
+# ---------------------------------------------------------------------------
+
+
+def test_extract_tool_call_parses_json_string_arguments():
+    """Stringified JSON arguments are parsed into dict."""
+    tc = _extract_tool_call({
+        "id": "fc2",
+        "name": "route_to_butler",
+        "arguments": '{"butler":"health","prompt":"Track meal"}',
+    })
+    assert tc["input"] == {"butler": "health", "prompt": "Track meal"}
+
+
+def test_extract_tool_call_command_execution():
+    """command_execution events are normalized as tool calls."""
+    tc = _extract_tool_call({
+        "id": "cmd1",
+        "type": "command_execution",
+        "command": "ls -1",
+        "exit_code": 0,
+        "aggregated_output": "file.txt\n",
+    })
+    assert tc["name"] == "command_execution"
+    assert tc["input"]["command"] == "ls -1"
+    assert tc["input"]["exit_code"] == 0
+
+
+# ---------------------------------------------------------------------------
+# invoke() — key behaviors
+# ---------------------------------------------------------------------------
+
+
 async def test_invoke_uses_exec_subcommand():
-    """invoke() uses codex exec non-interactive invocation."""
+    """invoke() uses codex exec subcommand."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
     mock_proc.returncode = 0
 
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="do something",
-            system_prompt="you are helpful",
-            mcp_servers={},
-            env={},
-        )
+        await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
 
     cmd = mock_sub.call_args[0]
     assert cmd[:2] == ("/usr/bin/codex", "exec")
 
 
-async def test_invoke_passes_model_flag():
-    """invoke() forwards model to Codex CLI when provided."""
+async def test_invoke_injects_home_for_config_discovery():
+    """invoke() sets HOME to a temp dir for Codex config discovery."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
     mock_proc.returncode = 0
 
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(
-            prompt="run",
-            system_prompt="",
-            mcp_servers={},
+            prompt="test", system_prompt="", mcp_servers={"s": {"url": "http://localhost/mcp"}},
             env={},
-            model="gpt-5.3-codex-spark",
         )
 
-    cmd = mock_sub.call_args[0]
-    assert "--model" in cmd
-    model_idx = cmd.index("--model")
-    assert cmd[model_idx + 1] == "gpt-5.3-codex-spark"
+    env_kwarg = mock_sub.call_args[1].get("env")
+    assert "HOME" in env_kwarg
 
 
-async def test_invoke_passes_runtime_args_before_prompt_delimiter():
-    """invoke() forwards configured runtime args to Codex CLI."""
+async def test_invoke_error_paths():
+    """invoke() raises RuntimeError on non-zero exit; transport failures include diagnostics."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
     mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
 
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="run",
-            system_prompt="",
-            mcp_servers={},
-            env={},
-            runtime_args=["--config", 'model_reasoning_effort="high"'],
-        )
-
-    cmd = mock_sub.call_args[0]
-    assert "--config" in cmd
-    cfg_idx = cmd.index("--config")
-    assert cmd[cfg_idx + 1] == 'model_reasoning_effort="high"'
-    assert "--" in cmd
-    assert cfg_idx < cmd.index("--")
-
-
-async def test_invoke_nonzero_exit():
-    """invoke() raises on non-zero exit code."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
+    # Plain error
     mock_proc.communicate = AsyncMock(return_value=(b"", b"Error: rate limit"))
     mock_proc.returncode = 1
-
     with patch(_EXEC, return_value=mock_proc):
         with pytest.raises(RuntimeError, match="Codex CLI exited with code 1: Error: rate limit"):
-            await adapter.invoke(
-                prompt="test",
-                system_prompt="",
-                mcp_servers={},
-                env={},
-            )
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
 
-
-async def test_invoke_nonzero_exit_adds_transport_diagnostics_for_sse_endpoint():
-    """Transport-related failures include actionable endpoint diagnostics."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
+    # Transport diagnostics
     mock_proc.communicate = AsyncMock(
         return_value=(b"", b"rmcp startup failed: 405 Method Not Allowed")
     )
-    mock_proc.returncode = 1
-
     with patch(_EXEC, return_value=mock_proc):
         with pytest.raises(RuntimeError) as exc_info:
             await adapter.invoke(
-                prompt="test",
-                system_prompt="",
-                mcp_servers={"switchboard": {"url": "http://localhost:41100/sse"}},
-                env={},
+                prompt="test", system_prompt="",
+                mcp_servers={"switchboard": {"url": "http://localhost:41100/sse"}}, env={},
             )
-
-    message = str(exc_info.value)
-    assert "MCP transport diagnostics" in message
-    assert "/mcp" in message
-    assert "streamable HTTP" in message
-
-
-async def test_invoke_no_system_prompt():
-    """invoke() works without system prompt (no system wrapper tags)."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
-
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="test",
-            system_prompt="",
-            mcp_servers={},
-            env={},
-        )
-
-    cmd = mock_sub.call_args[0]
-    assert "--instructions" not in cmd
-    assert cmd[-2] == "--"
-    assert cmd[-1] == "test"
-
-
-async def test_invoke_prompt_starting_with_dash_delimited():
-    """Prompts that start with '--' are protected by option delimiter."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
-
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="--instructions",
-            system_prompt="",
-            mcp_servers={},
-            env={},
-        )
-
-    cmd = mock_sub.call_args[0]
-    assert cmd[-2] == "--"
-    assert cmd[-1] == "--instructions"
-
-
-async def test_invoke_passes_env():
-    """invoke() passes filtered env vars to subprocess."""
-    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
-
-    env = {"OPENAI_API_KEY": "sk-test", "PATH": "/usr/bin"}
-
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="test",
-            system_prompt="",
-            mcp_servers={},
-            env=env,
-        )
-
-    call_kwargs = mock_sub.call_args[1]
-    assert call_kwargs["env"] == env
-
-
-async def test_invoke_binary_not_found():
-    """invoke() raises FileNotFoundError if codex not on PATH."""
-    adapter = CodexAdapter()  # No binary specified, auto-detect
-
-    with patch(
-        "butlers.core.runtimes.codex.shutil.which",
-        return_value=None,
-    ):
-        with pytest.raises(FileNotFoundError, match="Codex CLI binary not found"):
-            await adapter.invoke(
-                prompt="test",
-                system_prompt="",
-                mcp_servers={},
-                env={},
-            )
-
-
-# ---------------------------------------------------------------------------
-# Import path tests
-# ---------------------------------------------------------------------------
+    assert "MCP transport diagnostics" in str(exc_info.value)

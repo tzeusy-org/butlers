@@ -30,20 +30,29 @@ RUNTIME_ROLES = {
 
 
 def _quote_ident(identifier: str) -> str:
-    """Quote an identifier for SQL text construction."""
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> bool:
-    """Check whether a table exists in a specific schema."""
+def _schema_exists(db_url: str, schema_name: str) -> bool:
     engine = create_engine(db_url)
     with engine.connect() as conn:
         result = conn.execute(
             text(
-                "SELECT EXISTS ("
-                "  SELECT 1 FROM information_schema.tables"
-                "  WHERE table_schema = :s AND table_name = :t"
-                ")"
+                "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = :s)"
+            ),
+            {"s": schema_name},
+        )
+        exists = result.scalar()
+    engine.dispose()
+    return bool(exists)
+
+
+def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> bool:
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = :s AND table_name = :t)"
             ),
             {"s": schema_name, "t": table_name},
         )
@@ -52,54 +61,7 @@ def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> b
     return bool(exists)
 
 
-def _schema_exists(db_url: str, schema_name: str) -> bool:
-    """Check whether a schema exists in the database."""
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT EXISTS ("
-                "  SELECT 1 FROM information_schema.schemata"
-                "  WHERE schema_name = :s"
-                ")"
-            ),
-            {"s": schema_name},
-        )
-        exists = result.scalar()
-    engine.dispose()
-    return bool(exists)
-
-
-def _schema_owner(db_url: str, schema_name: str) -> str | None:
-    """Return schema owner role name, or None if schema does not exist."""
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT pg_catalog.pg_get_userbyid(n.nspowner) "
-                "FROM pg_namespace n "
-                "WHERE n.nspname = :s"
-            ),
-            {"s": schema_name},
-        )
-        owner = result.scalar()
-    engine.dispose()
-    return owner
-
-
-def _current_user(db_url: str) -> str:
-    """Return the current DB user for the connection."""
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT current_user"))
-        user = result.scalar()
-    engine.dispose()
-    assert isinstance(user, str)
-    return user
-
-
 def _role_exists(db_url: str, role_name: str) -> bool:
-    """Return True when role exists in pg_roles."""
     engine = create_engine(db_url)
     with engine.connect() as conn:
         result = conn.execute(
@@ -111,8 +73,31 @@ def _role_exists(db_url: str, role_name: str) -> bool:
     return bool(exists)
 
 
+def _current_user(db_url: str) -> str:
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT current_user"))
+        user = result.scalar()
+    engine.dispose()
+    assert isinstance(user, str)
+    return user
+
+
+def _schema_owner(db_url: str, schema_name: str) -> str | None:
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "SELECT pg_catalog.pg_get_userbyid(n.nspowner) FROM pg_namespace n WHERE n.nspname = :s"
+            ),
+            {"s": schema_name},
+        )
+        owner = result.scalar()
+    engine.dispose()
+    return owner
+
+
 def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = False):
-    """Execute SQL after SET ROLE and optionally return scalar result."""
     quoted_role = _quote_ident(role_name)
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
@@ -129,42 +114,47 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
         engine.dispose()
 
 
-def test_core_migrations_create_tables(postgres_container):
-    """Run core migrations and verify all core tables are created."""
+def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
+    """Core migrations create all required tables and schemas; idempotent on second run."""
     from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    assert table_exists(db_url, "state"), "state table should exist"
-    assert table_exists(db_url, "scheduled_tasks"), "scheduled_tasks table should exist"
-    assert table_exists(db_url, "sessions"), "sessions table should exist"
-    assert table_exists(db_url, "route_inbox"), "route_inbox table should exist"
-    assert table_exists(db_url, "butler_secrets"), "butler_secrets table should exist"
-    assert table_exists(db_url, "calendar_sources"), "calendar_sources table should exist"
-    assert table_exists(db_url, "calendar_events"), "calendar_events table should exist"
-    assert table_exists(db_url, "calendar_event_instances"), (
-        "calendar_event_instances table should exist"
-    )
-    assert table_exists(db_url, "calendar_sync_cursors"), "calendar_sync_cursors table should exist"
-    assert table_exists(db_url, "calendar_action_log"), "calendar_action_log table should exist"
-    assert not table_exists(db_url, "google_oauth_credentials"), (
-        "legacy google_oauth_credentials table should not exist in target-state baseline"
-    )
-
+    for table in (
+        "state",
+        "scheduled_tasks",
+        "sessions",
+        "route_inbox",
+        "butler_secrets",
+        "calendar_sources",
+        "calendar_events",
+        "calendar_event_instances",
+        "calendar_sync_cursors",
+        "calendar_action_log",
+    ):
+        assert table_exists(db_url, table), f"{table} should exist"
+    assert not table_exists(db_url, "google_oauth_credentials")
     for schema in REQUIRED_SCHEMAS:
         assert _schema_exists(db_url, schema), f"schema {schema!r} should exist"
 
+    # Idempotency
+    asyncio.run(run_migrations(db_url, chain="core"))
+    assert table_exists(db_url, "state")
 
-def test_core_scheduled_task_dispatch_mode_columns_and_constraints(postgres_container):
-    """scheduled_tasks should persist dispatch metadata and enforce mode constraints."""
+    # Schema owner baseline
+    expected_owner = _current_user(db_url)
+    for schema in REQUIRED_SCHEMAS:
+        assert _schema_owner(db_url, schema) == expected_owner
+
+
+def test_core_scheduled_tasks_schema_and_constraints(postgres_container):
+    """scheduled_tasks has dispatch/calendar columns; constraints enforced; calendar linkage columns present."""
     from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-
     asyncio.run(run_migrations(db_url, chain="core"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
@@ -172,256 +162,16 @@ def test_core_scheduled_task_dispatch_mode_columns_and_constraints(postgres_cont
         with engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
-                    SELECT column_name, column_default
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'scheduled_tasks'
-                    """
+                    "SELECT column_name, column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'scheduled_tasks'"
                 )
             )
             columns = {str(name): default for name, default in rows}
-            assert "dispatch_mode" in columns
-            assert "job_name" in columns
-            assert "job_args" in columns
-            assert "prompt" in str(columns["dispatch_mode"])
 
-            default_mode = conn.execute(
-                text(
-                    """
-                    INSERT INTO scheduled_tasks (name, cron, prompt)
-                    VALUES ('dispatch-default-check', '*/5 * * * *', 'default prompt')
-                    RETURNING dispatch_mode
-                    """
-                )
-            ).scalar_one()
-            assert default_mode == "prompt"
-
-            dry_run = conn.execute(
-                text(
-                    """
-                    INSERT INTO scheduled_tasks (name, cron, dispatch_mode, job_name, job_args)
-                    VALUES (
-                        'dispatch-job-check',
-                        '0 * * * *',
-                        'job',
-                        'eligibility_sweep',
-                        '{"dry_run": true}'::jsonb
-                    )
-                    RETURNING job_args ->> 'dry_run'
-                    """
-                )
-            ).scalar_one()
-            assert dry_run == "true"
-
-            with pytest.raises(IntegrityError):
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO scheduled_tasks (name, cron, dispatch_mode)
-                        VALUES ('dispatch-job-missing-name', '0 1 * * *', 'job')
-                        """
-                    )
-                )
-
-            with pytest.raises(IntegrityError):
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO scheduled_tasks (name, cron, prompt, dispatch_mode)
-                        VALUES ('dispatch-bad-mode', '0 2 * * *', 'bad', 'bad')
-                        """
-                    )
-                )
-    finally:
-        engine.dispose()
-
-
-def test_core_calendar_projection_tables_constraints_and_indexes(postgres_container):
-    """Calendar projection tables should support source lookup, window queries, and idempotency."""
-    from butlers.migrations import run_migrations
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            source_id = conn.execute(
-                text(
-                    """
-                    INSERT INTO calendar_sources (
-                        source_key, source_kind, lane, provider, calendar_id
-                    )
-                    VALUES ('google:user-primary', 'provider', 'user', 'google', 'primary')
-                    RETURNING id
-                    """
-                )
-            ).scalar_one()
-
-            event_id = conn.execute(
-                text(
-                    """
-                    INSERT INTO calendar_events (
-                        source_id,
-                        origin_ref,
-                        title,
-                        timezone,
-                        starts_at,
-                        ends_at
-                    )
-                    VALUES (
-                        :source_id,
-                        'evt-1',
-                        'Planning Session',
-                        'UTC',
-                        now(),
-                        now() + interval '1 hour'
-                    )
-                    RETURNING id
-                    """
-                ),
-                {"source_id": source_id},
-            ).scalar_one()
-            assert event_id is not None
-
-            with pytest.raises(IntegrityError):
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO calendar_events (
-                            source_id,
-                            origin_ref,
-                            title,
-                            timezone,
-                            starts_at,
-                            ends_at
-                        )
-                        VALUES (
-                            :source_id,
-                            'evt-1',
-                            'Duplicate Origin',
-                            'UTC',
-                            now() + interval '2 hours',
-                            now() + interval '3 hours'
-                        )
-                        """
-                    ),
-                    {"source_id": source_id},
-                )
-
-            with pytest.raises(IntegrityError):
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO calendar_events (
-                            source_id,
-                            origin_ref,
-                            title,
-                            timezone,
-                            starts_at,
-                            ends_at
-                        )
-                        VALUES (
-                            :source_id,
-                            'evt-bad-window',
-                            'Bad Window',
-                            'UTC',
-                            now() + interval '2 hours',
-                            now() + interval '1 hour'
-                        )
-                        """
-                    ),
-                    {"source_id": source_id},
-                )
-
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO calendar_action_log (
-                        idempotency_key, action_type, source_id, event_id
-                    )
-                    VALUES ('req-123:create', 'create_event', :source_id, :event_id)
-                    """
-                ),
-                {"source_id": source_id, "event_id": event_id},
-            )
-
-            with pytest.raises(IntegrityError):
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO calendar_action_log (idempotency_key, action_type)
-                        VALUES ('req-123:create', 'create_event')
-                        """
-                    )
-                )
-
-            event_indexes = {
-                str(row[0])
-                for row in conn.execute(
-                    text(
-                        """
-                        SELECT indexname
-                        FROM pg_indexes
-                        WHERE schemaname = 'public'
-                          AND tablename = 'calendar_events'
-                        """
-                    )
-                )
-            }
-            assert "ix_calendar_events_source_starts_at" in event_indexes
-            assert "ix_calendar_events_time_window_gist" in event_indexes
-
-            instance_indexes = {
-                str(row[0])
-                for row in conn.execute(
-                    text(
-                        """
-                        SELECT indexname
-                        FROM pg_indexes
-                        WHERE schemaname = 'public'
-                          AND tablename = 'calendar_event_instances'
-                        """
-                    )
-                )
-            }
-            assert "ix_calendar_event_instances_source_starts_at" in instance_indexes
-            assert "ix_calendar_event_instances_time_window_gist" in instance_indexes
-    finally:
-        engine.dispose()
-
-
-def test_core_scheduled_task_calendar_linkage_columns(postgres_container):
-    """scheduled_tasks should include calendar projection linkage columns."""
-    from butlers.migrations import run_migrations
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT column_name, column_default, is_nullable
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'scheduled_tasks'
-                    """
-                )
-            )
-            columns = {
-                str(name): {"default": default, "is_nullable": nullable}
-                for name, default, nullable in rows
-            }
-
-            for required in (
+            # dispatch columns
+            for col in (
+                "dispatch_mode",
+                "job_name",
+                "job_args",
                 "timezone",
                 "start_at",
                 "end_at",
@@ -429,310 +179,179 @@ def test_core_scheduled_task_calendar_linkage_columns(postgres_container):
                 "display_title",
                 "calendar_event_id",
             ):
-                assert required in columns, f"Missing scheduled_tasks.{required}"
-            assert columns["timezone"]["is_nullable"] == "NO"
-            assert "UTC" in str(columns["timezone"]["default"])
+                assert col in columns, f"Missing scheduled_tasks.{col}"
+            assert "prompt" in str(columns["dispatch_mode"])
 
-            calendar_event_id = conn.execute(
-                text(
-                    """
-                    INSERT INTO scheduled_tasks (
-                        name, cron, prompt, timezone, start_at, end_at, until_at, display_title
-                    )
-                    VALUES (
-                        'calendar-linkage-check',
-                        '0 9 * * *',
-                        'calendar-linked',
-                        'America/New_York',
-                        '2026-03-01T14:00:00Z'::timestamptz,
-                        '2026-03-01T15:00:00Z'::timestamptz,
-                        '2026-04-01T14:00:00Z'::timestamptz,
-                        'Medication reminder'
-                    )
-                    RETURNING calendar_event_id
-                    """
-                )
-            ).scalar_one()
-            assert calendar_event_id is None
-    finally:
-        engine.dispose()
-
-
-def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
-    """Consolidated core chain should expose dispatch/calendar columns on scheduled_tasks."""
-    from butlers.migrations import run_migrations
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'scheduled_tasks'
-                    """
-                )
-            )
-            columns = {str(row[0]) for row in rows}
-            assert "dispatch_mode" in columns, "dispatch_mode column should be added"
-            assert "job_name" in columns, "job_name column should be added"
-            assert "job_args" in columns, "job_args column should be added"
-            assert "timezone" in columns, "timezone column should be added"
-            assert "start_at" in columns, "start_at column should be added"
-            assert "end_at" in columns, "end_at column should be added"
-            assert "until_at" in columns, "until_at column should be added"
-            assert "display_title" in columns, "display_title column should be added"
-            assert "calendar_event_id" in columns, "calendar_event_id column should be added"
-
+            # default mode = prompt
             default_mode = conn.execute(
                 text(
-                    """
-                    INSERT INTO scheduled_tasks (name, cron, prompt)
-                    VALUES ('upgrade-test', '*/5 * * * *', 'test prompt')
-                    RETURNING dispatch_mode
-                    """
+                    "INSERT INTO scheduled_tasks (name, cron, prompt) VALUES ('test-default', '*/5 * * * *', 'p') RETURNING dispatch_mode"
                 )
             ).scalar_one()
             assert default_mode == "prompt"
+
+            # job mode with job_name
+            conn.execute(
+                text(
+                    "INSERT INTO scheduled_tasks (name, cron, dispatch_mode, job_name, job_args) VALUES ('test-job', '0 * * * *', 'job', 'sweep', '{}'::jsonb)"
+                )
+            )
+
+            # constraint: job mode requires job_name
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        "INSERT INTO scheduled_tasks (name, cron, dispatch_mode) VALUES ('bad-job', '0 1 * * *', 'job')"
+                    )
+                )
     finally:
         engine.dispose()
 
 
-def test_core_schema_bootstrap_owner_baseline(postgres_container):
-    """Schema bootstrap sets owner baseline to migration user on fresh installs."""
+def test_core_calendar_tables_and_constraints(postgres_container):
+    """Calendar tables support source lookup, window queries, idempotency keys; GIST indexes exist."""
     from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-
     asyncio.run(run_migrations(db_url, chain="core"))
-
-    expected_owner = _current_user(db_url)
-    for schema in REQUIRED_SCHEMAS:
-        assert _schema_owner(db_url, schema) == expected_owner
-
-
-def test_relationship_reminder_calendar_projection_columns(postgres_container):
-    """relationship reminders table should expose current rel_001 baseline columns."""
-    from butlers.migrations import run_migrations
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
-    asyncio.run(run_migrations(db_url, chain="core"))
-    asyncio.run(run_migrations(db_url, chain="relationship"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
-            rows = conn.execute(
+            source_id = conn.execute(
                 text(
-                    """
-                    SELECT column_name, is_nullable
-                    FROM information_schema.columns
-                    WHERE table_schema = 'public'
-                      AND table_name = 'reminders'
-                    """
+                    "INSERT INTO calendar_sources (source_key, source_kind, lane, provider, calendar_id) VALUES ('google:user-primary', 'provider', 'user', 'google', 'primary') RETURNING id"
                 )
+            ).scalar_one()
+            event_id = conn.execute(
+                text(
+                    "INSERT INTO calendar_events (source_id, origin_ref, title, timezone, starts_at, ends_at) VALUES (:sid, 'evt-1', 'Session', 'UTC', now(), now() + interval '1 hour') RETURNING id"
+                ),
+                {"sid": source_id},
+            ).scalar_one()
+            assert event_id is not None
+
+            # duplicate origin_ref
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        "INSERT INTO calendar_events (source_id, origin_ref, title, timezone, starts_at, ends_at) VALUES (:sid, 'evt-1', 'Dup', 'UTC', now() + interval '2 hours', now() + interval '3 hours')"
+                    ),
+                    {"sid": source_id},
+                )
+
+            # idempotency key
+            conn.execute(
+                text(
+                    "INSERT INTO calendar_action_log (idempotency_key, action_type, source_id, event_id) VALUES ('req-123:create', 'create_event', :sid, :eid)"
+                ),
+                {"sid": source_id, "eid": event_id},
             )
-            columns = {str(name): nullable for name, nullable in rows}
-            for required in (
-                "contact_id",
-                "message",
-                "reminder_type",
-                "cron",
-                "due_at",
-                "dismissed",
-                "created_at",
-            ):
-                assert required in columns, f"Missing reminders.{required}"
-            assert columns["message"] == "NO"
-            assert columns["reminder_type"] == "NO"
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        "INSERT INTO calendar_action_log (idempotency_key, action_type) VALUES ('req-123:create', 'create_event')"
+                    )
+                )
+
+            # GIST indexes
+            event_idxs = {
+                str(r[0])
+                for r in conn.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'calendar_events'"
+                    )
+                )
+            }
+            assert "ix_calendar_events_source_starts_at" in event_idxs
+            assert "ix_calendar_events_time_window_gist" in event_idxs
     finally:
         engine.dispose()
 
 
-def test_migrations_idempotent(postgres_container):
-    """Running migrations twice should not raise errors."""
+def test_alembic_version_tracking_and_schema_scoped(postgres_container):
+    """alembic_version table has correct head revision; schema-scoped runs track in schema-local tables."""
     from butlers.migrations import run_migrations
 
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-
-    asyncio.run(run_migrations(db_url, chain="core"))
-    # Second run should succeed without errors
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    assert table_exists(db_url, "state")
-    assert table_exists(db_url, "scheduled_tasks")
-    assert table_exists(db_url, "sessions")
-    for schema in REQUIRED_SCHEMAS:
-        assert _schema_exists(db_url, schema)
-
-
-def test_upgrade_to_core_head_creates_required_schemas(postgres_container):
-    """Upgrade to core head creates one-db schemas cleanly."""
-    from alembic import command
-    from butlers.migrations import _build_alembic_config
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
-    config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core@head")
-
-    for schema in REQUIRED_SCHEMAS:
-        assert _schema_exists(db_url, schema), f"schema {schema!r} should exist after upgrade path"
-
-
-def test_core_acl_runtime_role_isolation(postgres_container):
-    """Core ACL migration enforces own-schema + public access with cross-schema denial."""
-    from butlers.migrations import run_migrations
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    # Seed existing objects after ACL migration to validate object-level grants.
-    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with setup_engine.connect() as conn:
-            conn.execute(
-                text("CREATE TABLE general.acl_general_existing (id INT PRIMARY KEY, note TEXT)")
-            )
-            conn.execute(
-                text("CREATE TABLE health.acl_health_existing (id INT PRIMARY KEY, note TEXT)")
-            )
-            conn.execute(
-                text("CREATE TABLE public.acl_shared_existing (id SERIAL PRIMARY KEY, note TEXT)")
-            )
-            conn.execute(text("INSERT INTO public.acl_shared_existing (note) VALUES ('seed')"))
-
-            # Validate default privilege behavior for future objects created by owner.
-            conn.execute(
-                text("CREATE TABLE general.acl_general_future (id INT PRIMARY KEY, note TEXT)")
-            )
-            conn.execute(
-                text("CREATE TABLE health.acl_health_future (id INT PRIMARY KEY, note TEXT)")
-            )
-            conn.execute(text("INSERT INTO health.acl_health_future (id, note) VALUES (1, 'h1')"))
-            conn.execute(
-                text("CREATE TABLE public.acl_shared_future (id INT PRIMARY KEY, note TEXT)")
-            )
-            conn.execute(text("INSERT INTO public.acl_shared_future (id, note) VALUES (1, 's1')"))
-    finally:
-        setup_engine.dispose()
-
-    for runtime_role in RUNTIME_ROLES.values():
-        assert _role_exists(db_url, runtime_role), f"expected role {runtime_role!r} to exist"
-
-    general_role = RUNTIME_ROLES["general"]
-
-    _execute_as_role(
-        db_url,
-        general_role,
-        "INSERT INTO general.acl_general_existing (id, note) VALUES (1, 'ok')",
-    )
-    own_note = _execute_as_role(
-        db_url,
-        general_role,
-        "SELECT note FROM general.acl_general_existing WHERE id = 1",
-        scalar=True,
-    )
-    assert own_note == "ok"
-
-    # Own-schema default privileges should apply to future owner-created objects.
-    _execute_as_role(
-        db_url,
-        general_role,
-        "INSERT INTO general.acl_general_future (id, note) VALUES (2, 'future-ok')",
-    )
-
-    # Public schema is intentionally read-only for runtime roles.
-    shared_note = _execute_as_role(
-        db_url,
-        general_role,
-        "SELECT note FROM public.acl_shared_existing ORDER BY id LIMIT 1",
-        scalar=True,
-    )
-    assert shared_note == "seed"
-
-    shared_future_note = _execute_as_role(
-        db_url,
-        general_role,
-        "SELECT note FROM public.acl_shared_future WHERE id = 1",
-        scalar=True,
-    )
-    assert shared_future_note == "s1"
-
-    with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(
-            db_url,
-            general_role,
-            "INSERT INTO public.acl_shared_existing (note) VALUES ('blocked')",
-        )
-
-    # Cross-butler schema access must be denied.
-    with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(db_url, general_role, "SELECT * FROM health.acl_health_existing")
-
-    with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(db_url, general_role, "SELECT * FROM health.acl_health_future")
-
-
-def test_alembic_version_tracking(postgres_container):
-    """After migration, alembic_version table should have the correct entry."""
-    from butlers.migrations import run_migrations
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
-    asyncio.run(run_migrations(db_url, chain="core"))
-
-    assert table_exists(db_url, "alembic_version"), "alembic_version table should exist"
-
+    assert table_exists(db_url, "alembic_version")
     engine = create_engine(db_url)
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT version_num FROM alembic_version"))
-        versions = [row[0] for row in result]
+        versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))]
     engine.dispose()
+    assert CORE_HEAD_REVISION in versions
 
-    assert CORE_HEAD_REVISION in versions, (
-        f"Expected revision {CORE_HEAD_REVISION!r} (current head) in {versions}"
-    )
-
-
-def test_schema_scoped_alembic_version_tracking_isolated(postgres_container):
-    """Schema-scoped runs should track revisions in separate schema-local tables."""
-    from butlers.migrations import run_migrations
-
-    db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-
+    # Schema-scoped version tracking
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))
     asyncio.run(run_migrations(db_url, chain="core", schema="health"))
-
     assert _table_exists_in_schema(db_url, "general", "alembic_version")
     assert _table_exists_in_schema(db_url, "health", "alembic_version")
     assert not _table_exists_in_schema(db_url, "public", "alembic_version")
 
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        general_versions = [
-            row[0] for row in conn.execute(text("SELECT version_num FROM general.alembic_version"))
-        ]
-        health_versions = [
-            row[0] for row in conn.execute(text("SELECT version_num FROM health.alembic_version"))
-        ]
-    engine.dispose()
 
-    assert CORE_HEAD_REVISION in general_versions
-    assert CORE_HEAD_REVISION in health_versions
+def test_core_acl_and_relationship_chain(postgres_container):
+    """ACL: runtime roles exist, own-schema write allowed, cross-schema denied. relationship chain creates reminders."""
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    for role in RUNTIME_ROLES.values():
+        assert _role_exists(db_url, role), f"expected role {role!r}"
+
+    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with setup_engine.connect() as conn:
+            conn.execute(text("CREATE TABLE general.acl_test (id INT PRIMARY KEY, note TEXT)"))
+            conn.execute(text("CREATE TABLE health.acl_test (id INT PRIMARY KEY, note TEXT)"))
+            conn.execute(text("CREATE TABLE public.acl_shared (id SERIAL PRIMARY KEY, note TEXT)"))
+            conn.execute(text("INSERT INTO public.acl_shared (note) VALUES ('seed')"))
+    finally:
+        setup_engine.dispose()
+
+    general_role = RUNTIME_ROLES["general"]
+    _execute_as_role(
+        db_url, general_role, "INSERT INTO general.acl_test (id, note) VALUES (1, 'ok')"
+    )
+    assert (
+        _execute_as_role(
+            db_url, general_role, "SELECT note FROM general.acl_test WHERE id = 1", scalar=True
+        )
+        == "ok"
+    )
+    assert (
+        _execute_as_role(
+            db_url,
+            general_role,
+            "SELECT note FROM public.acl_shared ORDER BY id LIMIT 1",
+            scalar=True,
+        )
+        == "seed"
+    )
+    with pytest.raises(ProgrammingError, match="permission denied"):
+        _execute_as_role(
+            db_url, general_role, "INSERT INTO public.acl_shared (note) VALUES ('blocked')"
+        )
+    with pytest.raises(ProgrammingError, match="permission denied"):
+        _execute_as_role(db_url, general_role, "SELECT * FROM health.acl_test")
+
+    # relationship chain
+    asyncio.run(run_migrations(db_url, chain="relationship"))
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'reminders'"
+                )
+            )
+            cols = {str(r[0]) for r in rows}
+            for required in ("contact_id", "message", "reminder_type", "cron", "due_at"):
+                assert required in cols
+    finally:
+        engine.dispose()

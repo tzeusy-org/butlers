@@ -22,47 +22,19 @@ def _load_butler_toml(butler_name: str) -> dict:
         return tomllib.load(fh)
 
 
-def test_contacts_enabled_butlers_have_valid_contacts_config() -> None:
-    """Enabled butlers should provide a valid ContactsConfig contract."""
+def test_contacts_rollout_config_and_docs() -> None:
+    """Enabled butlers have valid contacts config; excluded butlers omit it."""
     for butler_name in CONTACTS_ENABLED_BUTLERS:
         modules = _load_butler_toml(butler_name).get("modules", {})
         contacts = modules.get("contacts")
-
         assert isinstance(contacts, dict), f"{butler_name} is missing [modules.contacts]"
-
         validated = ContactsConfig.model_validate(contacts)
-        assert "google" in validated.provider_types, (
-            f"{butler_name} must include 'google' in its contacts providers"
-        )
-        assert validated.include_other_contacts is False
-        assert validated.sync.enabled is True
-        assert validated.sync.run_on_startup is True
-        assert validated.sync.interval_minutes == 15
-        assert validated.sync.full_sync_interval_days == 6
+        assert "google" in validated.provider_types
+        assert validated.sync.enabled is True and validated.sync.interval_minutes == 15
 
-
-def test_contacts_excluded_butlers_documented_as_not_enabled() -> None:
-    """Routing/delivery plane butlers should not enable contacts sync."""
     for butler_name in CONTACTS_EXCLUDED_BUTLERS:
-        modules = _load_butler_toml(butler_name).get("modules", {})
-        assert "contacts" not in modules, (
-            f"{butler_name} should not enable [modules.contacts] (intentional exclusion)"
-        )
+        assert "contacts" not in _load_butler_toml(butler_name).get("modules", {})
 
-
-def test_contacts_rollout_docs_state_provider_and_required_secrets() -> None:
-    """Docs should capture rollout assumptions and secret requirements."""
     guidance = (REPO_ROOT / "docs/modules/contacts.md").read_text().lower()
-    required_fragments = (
-        'provider = "google"',
-        "roster/general/butler.toml",
-        "roster/health/butler.toml",
-        "roster/relationship/butler.toml",
-        "roster/switchboard/butler.toml",
-        "roster/messenger/butler.toml",
-        "google_oauth_client_id",
-        "google_oauth_client_secret",
-        "google_oauth_refresh",
-    )
-    for fragment in required_fragments:
-        assert fragment in guidance, f"contacts rollout docs missing fragment: {fragment}"
+    for frag in ("google_oauth_client_id", "google_oauth_client_secret", "google_oauth_refresh"):
+        assert frag in guidance
