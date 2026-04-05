@@ -251,7 +251,9 @@ Only variables explicitly declared in `environment:` or `env_file:` are visible.
 
 The spawner's `_build_env()` is even more restrictive: LLM runtime subprocesses
 receive only `PATH` plus explicitly declared credentials resolved from the
-credential store.
+credential store. `HOME` is NOT included by default — adapters that need it
+(e.g. CodexAdapter) set it explicitly per invocation, pointing to an isolated
+temp directory containing session-specific config.
 
 ### Persistent Runtime State
 
@@ -259,6 +261,11 @@ LLM runtime CLIs (codex, opencode, claude-code, gemini) store OAuth tokens and
 settings in their config directories (`~/.codex/`, `~/.claude/`, etc.). These
 are backed by named Docker volumes so tokens survive container restarts without
 requiring re-authentication.
+
+Note: The CodexAdapter overrides `HOME` to a per-invocation temp directory for
+MCP config discovery. The persistent `runtime_codex` volume at `/root/.codex`
+stores auth tokens used by the container-level `codex` binary, but session MCP
+config is always ephemeral and written to the temp directory.
 
 ### Principles
 

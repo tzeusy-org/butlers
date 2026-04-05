@@ -101,9 +101,13 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 
 #### Scenario: Codex adapter invocation
 - **WHEN** the butler's runtime type is `codex`
-- **THEN** the CodexAdapter runs `codex exec --json --full-auto` as an async subprocess
+- **THEN** the CodexAdapter runs `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check` as an async subprocess
+- **AND** writes a per-invocation TOML config file at `<tmp>/.codex/config.toml` with MCP server entries (url, transport)
+- **AND** sets `HOME` to the temp directory so the CLI discovers `~/.codex/config.toml` during its earliest init phase
 - **AND** embeds the system prompt into the initial prompt payload (Codex has no system prompt flag)
 - **AND** parses JSON-lines output for result text, tool calls, and usage metrics
+- **AND** cleans up the temp directory in a `finally` block
+- **AND** warns when MCP servers were configured but only `command_execution` events (shell commands) were recorded — indicating MCP connection failure
 
 #### Scenario: Gemini adapter invocation
 - **WHEN** the butler's runtime type is `gemini`

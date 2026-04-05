@@ -152,7 +152,13 @@ LLM CLI config directories are backed by named Docker volumes:
 | `runtime_opencode` | `/root/.opencode` | OpenCode config, auth |
 | `runtime_gemini` | `/root/.gemini` | Gemini CLI OAuth tokens |
 
-These volumes persist across container restarts. `HOME=/root` is set explicitly in the container environment so spawned LLM CLI subprocesses find their config directories.
+These volumes persist across container restarts. `HOME=/root` is set in the
+container environment so CLI tools find their auth tokens. However, the
+CodexAdapter overrides `HOME` to a per-invocation temp directory containing
+`~/.codex/config.toml` with session-specific MCP server config. This ensures
+the Codex CLI discovers MCP servers during its earliest init phase (before
+`-c` overrides are applied). The `runtime_codex` volume still stores
+persistent auth tokens used by the container-level `codex` binary.
 
 ## Invariants
 
