@@ -993,7 +993,7 @@ class QaModule(Module):
         isolation so PR check failures don't abort the patrol cycle.
         """
         try:
-            await check_open_pr_statuses(pool, gh_token)
+            await check_open_pr_statuses(pool, self._repo_root, gh_token)
         except Exception:
             logger.warning("QaModule: check_open_pr_statuses failed (non-fatal)", exc_info=True)
 
