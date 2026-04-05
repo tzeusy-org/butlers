@@ -52,7 +52,10 @@ def test_find_codex_binary():
 def test_parse_system_prompt(tmp_path: Path):
     """CodexAdapter reads AGENTS.md; returns empty string when missing."""
     (tmp_path / "AGENTS.md").write_text("You are a specialized Codex butler.")
-    assert CodexAdapter().parse_system_prompt_file(config_dir=tmp_path) == "You are a specialized Codex butler."
+    assert (
+        CodexAdapter().parse_system_prompt_file(config_dir=tmp_path)
+        == "You are a specialized Codex butler."
+    )
     import tempfile
     with tempfile.TemporaryDirectory() as empty:
         assert CodexAdapter().parse_system_prompt_file(config_dir=Path(empty)) == ""

@@ -6,8 +6,6 @@ Verifies adapters populate last_process_info after invoke() completes
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,13 +14,20 @@ from butlers.core.runtimes import ClaudeCodeAdapter, CodexAdapter, GeminiAdapter
 
 pytestmark = pytest.mark.unit
 
+_CLAUDE_EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
+_CODEX_EXEC = "butlers.core.runtimes.codex.asyncio.create_subprocess_exec"
+_GEMINI_EXEC = "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec"
+
 _SUBPROCESS_ADAPTERS = [
-    pytest.param(ClaudeCodeAdapter, "claude_binary", "/usr/bin/claude",
-                 "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec", "claude", id="claude"),
-    pytest.param(CodexAdapter, "codex_binary", "/usr/bin/codex",
-                 "butlers.core.runtimes.codex.asyncio.create_subprocess_exec", "codex", id="codex"),
-    pytest.param(GeminiAdapter, "gemini_binary", "/usr/bin/gemini",
-                 "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec", "gemini", id="gemini"),
+    pytest.param(
+        ClaudeCodeAdapter, "claude_binary", "/usr/bin/claude", _CLAUDE_EXEC, "claude", id="claude"
+    ),
+    pytest.param(
+        CodexAdapter, "codex_binary", "/usr/bin/codex", _CODEX_EXEC, "codex", id="codex"
+    ),
+    pytest.param(
+        GeminiAdapter, "gemini_binary", "/usr/bin/gemini", _GEMINI_EXEC, "gemini", id="gemini"
+    ),
 ]
 
 

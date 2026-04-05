@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -149,12 +148,15 @@ def _classified(severity, name, days_delta=0):
 
 
 def test_build_notification_text():
-    """build_notification_text: empty→"", single items per severity, ordering, empty groups skipped."""
+    """build_notification_text: empty, single severity items, ordering, empty groups skipped."""
     assert build_notification_text([]) == ""
 
     # Single critical
     text = build_notification_text([_classified(SEVERITY_CRITICAL, "Water Heater", -45)])
-    assert all(s in text for s in ["Home Maintenance Reminder", "CRITICAL", "Water Heater", "45 day(s) overdue"])
+    assert all(
+        s in text
+        for s in ["Home Maintenance Reminder", "CRITICAL", "Water Heater", "45 day(s) overdue"]
+    )
 
     # Ordering: critical before overdue before due before upcoming
     items = [
@@ -164,7 +166,11 @@ def test_build_notification_text():
         _classified(SEVERITY_OVERDUE, "O", -15),
     ]
     text = build_notification_text(items)
-    assert text.index("CRITICAL") < text.index("OVERDUE") < text.index("DUE (") < text.index("UPCOMING")
+    critical_i = text.index("CRITICAL")
+    overdue_i = text.index("OVERDUE")
+    due_i = text.index("DUE (")
+    upcoming_i = text.index("UPCOMING")
+    assert critical_i < overdue_i < due_i < upcoming_i
 
     # Empty groups not included
     text2 = build_notification_text([_classified(SEVERITY_CRITICAL, "X", -50)])
@@ -326,7 +332,7 @@ def test_build_health_check_notification():
 
 
 async def test_run_device_health_check_scenarios():
-    """Empty snapshot → error; healthy devices → issues_found=0; critical battery → critical_count=1."""
+    """Empty snapshot returns error; healthy devices get 0 issues; critical battery raises count."""
     # Empty snapshot
     pool = _make_health_pool(entity_rows=[])
     with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock):
@@ -334,7 +340,10 @@ async def test_run_device_health_check_scenarios():
     assert result == {"error": "no_entity_snapshot"}
 
     # Healthy devices
-    rows = [_make_entity_row("sensor.temp", state="22"), _make_entity_row("light.kitchen", state="off")]
+    rows = [
+        _make_entity_row("sensor.temp", state="22"),
+        _make_entity_row("light.kitchen", state="off"),
+    ]
     pool2 = _make_health_pool(entity_rows=rows)
     with (
         patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock) as mock_notify,

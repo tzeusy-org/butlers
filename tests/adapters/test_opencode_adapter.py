@@ -15,16 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.runtimes import get_adapter
 from butlers.core.runtimes.opencode import (
     OpenCodeAdapter,
-    _extract_envelope_tool_call,
     _extract_opencode_tool_call,
     _extract_usage,
     _find_opencode_binary,
@@ -150,7 +147,10 @@ def test_parse_tool_call_event_types(event_type: str):
             {"usage": {"input_tokens": 200, "output_tokens": 80}},
             {"input_tokens": 200, "output_tokens": 80},
         ),
-        ({"prompt_tokens": 150, "completion_tokens": 60}, {"input_tokens": 150, "output_tokens": 60}),
+        (
+            {"prompt_tokens": 150, "completion_tokens": 60},
+            {"input_tokens": 150, "output_tokens": 60},
+        ),
         ({"type": "text", "text": "hello"}, None),
         ({"input_tokens": "many", "output_tokens": None}, None),
         (None, None),  # non-dict returns None
@@ -196,9 +196,9 @@ def test_looks_like_tool_call_event(obj: dict, expected: bool):
         # Standard tool_use
         ({"id": "t1", "name": "do_thing", "input": {"k": "v"}}, "do_thing", {"k": "v"}),
         # function container
-        ({"id": "fc1", "function": {"name": "my_tool", "arguments": {"x": 1}}}, "my_tool", {"x": 1}),
+        ({"id": "fc1", "function": {"name": "my_tool", "arguments": {"x": 1}}}, "my_tool", {"x": 1}),  # noqa: E501
         # call container (MCP style)
-        ({"id": "mcp_1", "call": {"name": "router", "arguments": {"b": "g"}}}, "router", {"b": "g"}),
+        ({"id": "mcp_1", "call": {"name": "router", "arguments": {"b": "g"}}}, "router", {"b": "g"}),  # noqa: E501
         # stringified JSON arguments
         ({"id": "t3", "name": "fn", "arguments": '{"k":"v"}'}, "fn", {"k": "v"}),
     ],

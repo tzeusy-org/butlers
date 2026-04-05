@@ -7,7 +7,6 @@ run_environment_report, and daemon registry.
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -50,7 +49,8 @@ def _make_pool(*, snapshot_count=3, snapshot_rows=None, facts_row=None) -> Magic
 def _make_snapshot_row(entity_id, state="72.0", attributes=None) -> MagicMock:
     row = MagicMock()
     attrs = attributes or {"friendly_name": entity_id.split(".")[-1].replace("_", " ").title()}
-    row.__getitem__ = lambda self, key: {"entity_id": entity_id, "state": state, "attributes": attrs}[key]
+    data = {"entity_id": entity_id, "state": state, "attributes": attrs}
+    row.__getitem__ = lambda self, key: data[key]
     return row
 
 
@@ -157,7 +157,13 @@ def test_build_environment_report_message():
     assert "Bedroom" in msg2 and "72.0°F" in msg2 and "✅" in msg2
 
     # Critical shows red icon
-    area_crit = [{"area": "garage", "readings": {"temperature": 55.0}, "deviations": {"temperature": "critical"}}]
+    area_crit = [
+        {
+            "area": "garage",
+            "readings": {"temperature": 55.0},
+            "deviations": {"temperature": "critical"},
+        }
+    ]
     msg3 = _build_environment_report_message(area_crit, _DEFAULTS)
     assert "🔴" in msg3
 
@@ -219,7 +225,7 @@ async def test_run_environment_report_counts_and_deviations():
     with (
         patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
         patch("butlers.jobs.home.state_get", new_callable=AsyncMock, return_value=None),
-        patch("butlers.jobs.home.store_fact", new_callable=AsyncMock, return_value=None) as mock_store,
+        patch("butlers.jobs.home.store_fact", new_callable=AsyncMock, return_value=None) as mock_store,  # noqa: E501
     ):
         result2 = await run_environment_report(pool_crit, None)
     assert result2["deviations_found"] >= 1

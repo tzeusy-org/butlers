@@ -124,7 +124,9 @@ def test_extract_tool_call_gemini_function_formats():
     assert tc1["name"] == "tool_a"
     assert tc1["input"] == {"a": 1}
 
-    tc2 = _extract_tool_call({"id": "fc2", "functionCall": {"name": "tool_b", "arguments": {"b": 2}}})
+    tc2 = _extract_tool_call(
+        {"id": "fc2", "functionCall": {"name": "tool_b", "arguments": {"b": 2}}}
+    )
     assert tc2["name"] == "tool_b"
     assert tc2["input"] == {"b": 2}
 
@@ -155,10 +157,13 @@ async def test_invoke():
     assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" in cmd
 
     # functionCall output
-    output_lines = "\n".join([
-        json.dumps({"type": "functionCall", "id": "fc1", "functionCall": {"name": "state_get", "args": {"key": "bar"}}}),
-        json.dumps({"type": "result", "result": "Complete"}),
-    ])
+    fc_payload = {
+        "type": "functionCall",
+        "id": "fc1",
+        "functionCall": {"name": "state_get", "args": {"key": "bar"}},
+    }
+    fc_line = json.dumps(fc_payload)
+    output_lines = "\n".join([fc_line, json.dumps({"type": "result", "result": "Complete"})])
     mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
     with patch(_EXEC, return_value=mock_proc):
         result_text2, tool_calls, _ = await adapter.invoke(

@@ -85,7 +85,11 @@ async def test_get_owner_entity_id_graceful_fallbacks(side_effect, expected):
 @pytest.mark.parametrize(
     "fetchrow_result, fetchrow_side_effect, expected_entity_id",
     [
-        ({"id": uuid.UUID("aaaabbbb-cccc-dddd-eeee-000000000001")}, None, "aaaabbbb-cccc-dddd-eeee-000000000001"),
+        (
+            {"id": uuid.UUID("aaaabbbb-cccc-dddd-eeee-000000000001")},
+            None,
+            "aaaabbbb-cccc-dddd-eeee-000000000001",
+        ),
         (None, None, None),
         (None, asyncpg.exceptions.UndefinedTableError("no table"), None),
     ],
@@ -93,7 +97,9 @@ async def test_get_owner_entity_id_graceful_fallbacks(side_effect, expected):
 async def test_meal_log_entity_fallback(fetchrow_result, fetchrow_side_effect, expected_entity_id):
     """meal_log succeeds and passes correct entity_id regardless of owner lookup outcome."""
     fact_id = uuid.uuid4()
-    pool = _make_full_pool(fetchrow_result=fetchrow_result, fetchrow_side_effect=fetchrow_side_effect)
+    pool = _make_full_pool(
+        fetchrow_result=fetchrow_result, fetchrow_side_effect=fetchrow_side_effect
+    )
 
     with (
         patch(

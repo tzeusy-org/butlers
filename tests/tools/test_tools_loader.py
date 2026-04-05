@@ -15,12 +15,14 @@ ROSTER_ROOT = REPO_ROOT / "roster"
 
 def test_butler_tools_importable():
     """Core butler tools from each domain are importable after registration."""
-    from butlers.tools.switchboard import register_butler
     from butlers.tools.general import collection_create
     from butlers.tools.health import measurement_log
     from butlers.tools.relationship import contact_create
+    from butlers.tools.switchboard import register_butler
 
-    assert all(callable(f) for f in [register_butler, collection_create, measurement_log, contact_create])
+    assert all(
+        callable(f) for f in [register_butler, collection_create, measurement_log, contact_create]
+    )
 
 
 def test_discovered_modules_in_sys_modules():
@@ -57,9 +59,9 @@ def test_idempotent_registration():
 
 def test_missing_tools_file_raises():
     """Butlers without tools.py raise FileNotFoundError."""
-    from butlers.tools._loader import register_butler_tools
-
     import tempfile
+
+    from butlers.tools._loader import register_butler_tools
     with tempfile.TemporaryDirectory() as tmp:
         empty_dir = Path(tmp) / "empty_butler"
         empty_dir.mkdir()
@@ -69,10 +71,10 @@ def test_missing_tools_file_raises():
 
 def test_shared_tools_importable():
     """Shared tools (extraction, extraction_queue) are importable from src/."""
-    from butlers.tools.extraction import ExtractorSchema, route
-    from butlers.tools.extraction_queue import extraction_queue_add
     import butlers.tools.extraction as ext_mod
     import butlers.tools.extraction_queue as queue_mod
+    from butlers.tools.extraction import ExtractorSchema, route
+    from butlers.tools.extraction_queue import extraction_queue_add
 
     assert ExtractorSchema is not None
     assert callable(route)

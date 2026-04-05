@@ -19,7 +19,6 @@ import butlers.tools.finance.transactions as _txn_module
 from butlers.tools.finance.spending import spending_summary
 from butlers.tools.finance.transactions import (
     bulk_recategorize,
-    delete_transaction,
     list_transactions,
     merge_duplicates,
     record_transaction,

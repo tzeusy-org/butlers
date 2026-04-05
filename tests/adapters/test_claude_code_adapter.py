@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.runtimes import ClaudeCodeAdapter, get_adapter
+from butlers.core.runtimes import ClaudeCodeAdapter
 from butlers.core.runtimes.claude_code import _find_claude_binary
 
 pytestmark = pytest.mark.unit
@@ -92,7 +92,9 @@ async def test_invoke_optional_flags():
 
     # --system-prompt when non-empty
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(prompt="test", system_prompt="You are helpful.", mcp_servers={}, env={})
+        await adapter.invoke(
+            prompt="test", system_prompt="You are helpful.", mcp_servers={}, env={}
+        )
     cmd = mock_sub.call_args[0]
     assert "--system-prompt" in cmd and cmd[cmd.index("--system-prompt") + 1] == "You are helpful."
 
@@ -103,7 +105,9 @@ async def test_invoke_optional_flags():
 
     # --model when provided
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(prompt="run", system_prompt="", mcp_servers={}, env={}, model="claude-opus-4-5")
+        await adapter.invoke(
+            prompt="run", system_prompt="", mcp_servers={}, env={}, model="claude-opus-4-5"
+        )
     cmd = mock_sub.call_args[0]
     assert "--model" in cmd and cmd[cmd.index("--model") + 1] == "claude-opus-4-5"
 

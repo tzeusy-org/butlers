@@ -6,10 +6,7 @@ Adapter registration and subclass checks are in test_adapter_contract.py.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
-
-
 
 import pytest
 

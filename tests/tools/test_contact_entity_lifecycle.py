@@ -109,7 +109,9 @@ async def test_contact_create_always_resolves_entity_and_failure_raises():
     with (
         patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
         patch.object(_contacts_mod, "_log_activity", AsyncMock()),
-        patch.object(_contacts_mod, "_ensure_entity", AsyncMock(return_value=str(ENTITY_UUID))) as mock_ensure,
+        patch.object(
+            _contacts_mod, "_ensure_entity", AsyncMock(return_value=str(ENTITY_UUID))
+        ) as mock_ensure,
     ):
         result = await contact_create(pool, first_name="Alice", last_name="Smith", nickname="Ali")
         mock_ensure.assert_awaited_once()
@@ -120,7 +122,9 @@ async def test_contact_create_always_resolves_entity_and_failure_raises():
     with (
         patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
         patch.object(_contacts_mod, "_log_activity", AsyncMock()),
-        patch.object(_contacts_mod, "_ensure_entity", AsyncMock(side_effect=RuntimeError("failed"))),
+        patch.object(
+            _contacts_mod, "_ensure_entity", AsyncMock(side_effect=RuntimeError("failed"))
+        ),
     ):
         with pytest.raises(RuntimeError, match="failed"):
             await contact_create(pool2, first_name="Alice", last_name="Smith")
@@ -197,4 +201,6 @@ async def test_entity_merge_validation():
         return pool
 
     with pytest.raises(ValueError):
-        await entity_merge(_mock_missing_src(), str(ENTITY_UUID), str(ENTITY_UUID2), tenant_id="rel")
+        await entity_merge(
+            _mock_missing_src(), str(ENTITY_UUID), str(ENTITY_UUID2), tenant_id="rel"
+        )

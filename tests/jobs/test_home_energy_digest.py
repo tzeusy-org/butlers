@@ -6,7 +6,6 @@ _build_digest_message, run_energy_digest, and daemon registry.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +14,6 @@ import pytest
 from butlers.jobs.home import (
     _build_digest_message,
     _compute_device_totals,
-    _extract_numeric_state,
     _is_energy_entity,
     detect_anomalies,
     run_energy_digest,
@@ -28,7 +26,8 @@ def _make_pool(*, snapshot_count=5, snapshot_rows=None, state_rows=None, facts_r
     pool = MagicMock()
 
     async def _fetchval(query, *args, **kwargs):
-        return snapshot_count if "count(*)" in query.lower() and "ha_entity_snapshot" in query.lower() else None
+        count_q = "count(*)" in query.lower() and "ha_entity_snapshot" in query.lower()
+        return snapshot_count if count_q else None
 
     async def _fetch(query, *args, **kwargs):
         q = query.lower()
@@ -158,7 +157,9 @@ def test_detect_anomalies_edge_cases():
 
 def test_build_digest_message():
     """Digest message includes heading, total kWh, trend, consumers, and anomaly sections."""
-    msg = _build_digest_message(total_kwh=100.0, top_consumers=[], anomalies=[], baseline_total=None)
+    msg = _build_digest_message(
+        total_kwh=100.0, top_consumers=[], anomalies=[], baseline_total=None
+    )
     assert "Energy Digest" in msg and "100.0" in msg
 
     # Trend
@@ -211,8 +212,11 @@ async def test_run_energy_digest_full_run_with_anomalies():
               new_callable=AsyncMock, return_value=weekly_stats),
         patch("butlers.jobs.home._load_energy_baselines",
               new_callable=AsyncMock, return_value=baselines),
-        patch("butlers.jobs.home._load_energy_thresholds",
-              new_callable=AsyncMock, return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0}),
+        patch(
+            "butlers.jobs.home._load_energy_thresholds",
+            new_callable=AsyncMock,
+            return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
+        ),
         patch("butlers.jobs.home.store_fact", new_callable=AsyncMock),
     ):
         result = await run_energy_digest(pool, None)
