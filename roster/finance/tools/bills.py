@@ -216,8 +216,8 @@ async def upcoming_bills(
         UpcomingBillsResponse with ``as_of``, ``window_days``, ``items``,
         and ``totals``.
     """
-    now = datetime.now(UTC)
-    today = now.date()
+    # Local date for comparing against plain-date due_date columns.
+    today = date.today()
     horizon = today + timedelta(days=days_ahead)
 
     if include_overdue:
@@ -277,7 +277,7 @@ async def upcoming_bills(
             pass
 
     return {
-        "as_of": now.isoformat(),
+        "as_of": datetime.now(UTC).isoformat(),
         "window_days": days_ahead,
         "items": items,
         "totals": {

@@ -85,8 +85,8 @@ def _budget_row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _today_utc() -> date:
-    return datetime.now(UTC).date()
+def _today() -> date:
+    return date.today()
 
 
 def _month_start(d: date) -> date:
@@ -520,7 +520,7 @@ async def spending_trends(
     if comparison not in ("mom", "yoy"):
         raise ValueError(f"Invalid comparison {comparison!r}. Must be 'mom' or 'yoy'.")
 
-    today = _today_utc()
+    today = _today()
 
     if comparison == "mom":
         return await _spending_trends_mom(pool, today=today, months=months, category=category)
@@ -726,7 +726,7 @@ async def spending_forecast(
                 ]
             }
     """
-    today = _today_utc()
+    today = _today()
     month_start = _month_start(today)
     days_in_month = _days_in_month(month_start)
     days_elapsed = today.day  # day-of-month (1-indexed)

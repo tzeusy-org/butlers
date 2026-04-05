@@ -249,7 +249,15 @@ Do NOT route to general alongside specialist butlers. If any part of a multi-dom
 
 ## Routing via `route_to_butler` Tool
 
-For each target butler, call the `route_to_butler` tool with exactly these parameters (no others):
+**Call this as an MCP tool — do NOT try to invoke it via shell/bash.**
+
+Depending on your runtime, this tool may appear in your tool list under either name:
+- `route_to_butler`
+- `mcp__switchboard__route_to_butler`
+
+Both names refer to the same tool. Use whichever appears in your available tools.
+
+For each target butler, call the tool with exactly these parameters (no others):
 
 - `butler`: the target butler name (e.g. "finance", "health", "relationship", "travel", "education", "general")
 - `prompt`: a self-contained sub-prompt for that butler

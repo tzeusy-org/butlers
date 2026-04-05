@@ -3970,18 +3970,21 @@ class ButlerDaemon:
                 context: str | None = None,
                 complexity: str | None = None,
             ) -> dict[str, Any]:
-                """Route a message to a specific butler.
+                """ROUTING TOOL — call this to send a message to a specialist butler.
 
-                IMPORTANT: This tool accepts exactly four parameters: butler,
-                prompt, context, and complexity. Do NOT pass any other keyword arguments.
+                This is the primary routing tool for the Switchboard. You MUST call
+                this tool (not a shell command) to route messages. It may also appear
+                in your tool list as ``mcp__switchboard__route_to_butler``.
 
                 Args:
-                    butler: Target butler name (e.g. "health", "relationship").
-                    prompt: Self-contained prompt for the target butler.
-                    context: Optional — key details and context the target butler needs to act on
-                        this request.
-                    complexity: Task complexity tier — one of "trivial", "medium", "high",
-                        "extra_high". Defaults to "medium" when omitted or invalid.
+                    butler: Target butler name — one of: "finance", "health",
+                        "relationship", "travel", "education", "lifestyle", "general".
+                    prompt: Self-contained prompt for the target butler. Must be
+                        independently understandable without conversation history.
+                    context: Optional — key details and context the target butler
+                        needs to act on this request.
+                    complexity: Task complexity tier — one of "trivial", "medium",
+                        "high", "extra_high". Defaults to "medium" when omitted.
                 """
                 _routing_ctx = _routing_ctx_var.get() or {}
                 if not isinstance(_routing_ctx, dict):

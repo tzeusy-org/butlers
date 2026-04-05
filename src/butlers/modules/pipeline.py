@@ -433,9 +433,12 @@ def _build_routing_prompt(
     # Keep routing logic in /message-triage so ingestion prompt stays lean.
     prompt_parts = [
         "Please use the /message-triage skill to analyze the following message and route "
-        "relevant components to the appropriate butler(s) by calling `route_to_butler` "
-        "on your configured MCP.\n\n"
-        "IMPORTANT: You MUST call at least one `route_to_butler` tool.\n"
+        "relevant components to the appropriate butler(s) by calling the `route_to_butler` "
+        "MCP tool.\n\n"
+        "IMPORTANT: You MUST call the MCP tool `route_to_butler` at least once. "
+        "In your tool list it may appear as `mcp__switchboard__route_to_butler` — "
+        "that is the same tool. Do NOT try to find or invoke it via shell commands; "
+        "call it directly as an MCP tool.\n"
         "Do NOT call `notify` — you are a routing session, not a delivery session. "
         "If the message warrants an outbound reply, route to the appropriate butler "
         "and let it decide whether and how to respond.\n\n"

@@ -144,7 +144,7 @@ async def run_subscription_renewal_alerts(db_pool: asyncpg.Pool) -> dict:
     logger.info("Running subscription renewal alerts job")
 
     async with db_pool.acquire() as conn:
-        today = datetime.now(UTC).date()
+        today = date.today()
         horizon = today + timedelta(days=7)
         rows = await conn.fetch(
             """
@@ -406,7 +406,7 @@ async def run_finance_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """
     logger.info("Running finance insight scan job")
 
-    today = datetime.now(UTC).date()
+    today = date.today()
     year_month = today.strftime("%Y-%m")
 
     counts: dict[str, int] = {
