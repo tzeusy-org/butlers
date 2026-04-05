@@ -248,15 +248,20 @@ class ListeningSessionTracker:
     """State machine for aggregating Spotify playback into listening sessions.
 
     Emits batched events to minimise downstream token costs:
-    - context_start: when a new playlist/album context begins
-    - session_summary: when a session ends (context change, idle timeout)
+    - context_start: when playback begins from idle (user starts listening)
+    - session_summary: when a session ends (drain timeout after playback stops)
 
-    Individual track changes within a session are accumulated silently.
-    The connector checks for periodic digest emission separately.
+    All track and context changes during continuous playback are accumulated
+    silently — no events are emitted for them.  Sessions end ONLY when playback
+    stops long enough for the drain timeout to expire.  This prevents autoplay,
+    radio, and DJ mode from generating per-track LLM sessions when Spotify
+    cycles through different context URIs.
+
+    The connector checks for periodic digest emission separately (hourly).
 
     States:
         idle     — no active playback
-        active   — currently playing
+        active   — currently playing (context changes are accumulated, not split)
         draining — playback stopped; waiting for idle timeout before closing session
     """
 
@@ -294,8 +299,9 @@ class ListeningSessionTracker:
             ("context_start") and closed_sessions is a list of sessions that were
             closed (each should emit a session_summary).
 
-        Track changes within the same context are accumulated silently — no event
-        is returned for them.
+        Track changes during continuous playback are accumulated silently —
+        no per-track or per-context events are emitted.  Sessions end only
+        when playback stops (drain timeout).
         """
         if now is None:
             now = datetime.now(UTC)
@@ -321,37 +327,25 @@ class ListeningSessionTracker:
             if track_id == self._last_track_id:
                 # Same track: update last activity, no event
                 self._session.last_activity_at = now
-            elif context_uri == self._session.context_uri:
-                # Track changed, same context: accumulate silently
+            else:
+                # Track changed — accumulate silently regardless of context.
+                # Context changes during continuous playback (autoplay, radio,
+                # DJ) are not reliable session boundaries.  Sessions end only
+                # when playback stops (drain timeout).
                 self._last_track_id = track_id
                 self._session.track_names.append(track_name)
                 self._session.last_activity_at = now
-            else:
-                # Context changed: close current session, start new one
-                old_session = self._session
-                closed_sessions.append(old_session)
-                self._session = ListeningSession(
-                    context_uri=context_uri,
-                    started_at=now,
-                    track_names=[track_name],
-                    last_activity_at=now,
-                    last_digest_at=now,
-                )
-                self._last_track_id = track_id
-                # State remains active
-                events.append("context_start")
 
         elif self._state == "draining":
             assert self._session is not None
-            # Playback resumed: continue existing session, clear drain timer
+            # Playback resumed: continue existing session, clear drain timer.
+            # Context may have changed (user switched playlists during brief
+            # pause) but the session is still alive — accumulate silently.
             self._session.drain_started_at = None
             self._session.last_activity_at = now
             if track_id != self._last_track_id:
                 self._last_track_id = track_id
                 self._session.track_names.append(track_name)
-                # Same context resume: accumulate silently (no event)
-                # Different context is not possible here — context_uri not
-                # checked in draining resume (upstream handles context change)
             self._state = "active"
 
         return events, closed_sessions

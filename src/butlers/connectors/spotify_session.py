@@ -6,24 +6,26 @@ batched events to minimise downstream token costs.
 
 Event model (batched)
 ---------------------
-- ``spotify.context_start`` — emitted once when a new listening context begins
-  (playlist, album, etc.).  Carries the first track's metadata.
+- ``spotify.context_start`` — emitted once when playback begins from idle.
+  Carries the first track's metadata.
 - ``spotify.listening_digest`` — emitted periodically (default every 60 min of
   active listening) with all tracks accumulated since the last digest or
   context_start.
-- ``spotify.session_summary`` — emitted when a session ends (context change,
-  idle timeout, or forced shutdown).
+- ``spotify.session_summary`` — emitted when a session ends (drain timeout
+  after playback stops, or forced shutdown).
 
 State machine transitions:
 
     idle ──(playback detected)──────────────────────────────→ active (emit context_start)
-    active ──(same track, same context)─────────────────────→ active (no event)
-    active ──(new track, same context)──────────────────────→ active (accumulate silently)
-    active ──(context changed)──────────────→ active (emit session_summary + context_start)
+    active ──(same track)───────────────────────────────────→ active (no event)
+    active ──(new track, any context)───────────────────────→ active (accumulate silently)
     active ──(playback stopped)─────────────────────────────→ draining
     draining ──(idle timeout exceeded)──────────────────────→ idle (emit session_summary)
-    draining ──(playback resumed, same context)──────────────→ active (continue session)
-    draining ──(playback resumed, different context)─────────→ active (emit summary + context_start)
+    draining ──(playback resumed)───────────────────────────→ active (continue session)
+
+Context changes during continuous playback (autoplay, radio, DJ) are NOT
+session boundaries — they are accumulated silently.  Sessions end ONLY when
+playback stops long enough for the drain timeout to expire.
 
 At the end of every ``on_poll()`` call, the tracker checks whether a digest is
 due and appends a ``spotify.listening_digest`` event if so.
@@ -404,7 +406,12 @@ class ListeningSessionTracker:
         played_at_ms: int,
         now: float,
     ) -> list[SessionEvent]:
-        """Handle a poll result while in ACTIVE state."""
+        """Handle a poll result while in ACTIVE state.
+
+        All track and context changes during continuous playback are accumulated
+        silently.  Context changes (autoplay, radio, DJ) are NOT session
+        boundaries — sessions end only on playback gaps (drain timeout).
+        """
         events: list[SessionEvent] = []
 
         if not result.is_playing or not result.track_id:
@@ -417,36 +424,7 @@ class ListeningSessionTracker:
             )
             return events
 
-        context_changed = self._context_changed(result.context_uri)
-
-        if context_changed:
-            # Context changed → end current session, emit summary, start new session.
-            assert self._session is not None
-            summary = self._session.build_summary_event(played_at_ms)
-            events.append(summary)
-            logger.debug(
-                "active: context changed (%s→%s), emitting session_summary",
-                self._session.context_uri,
-                result.context_uri,
-            )
-
-            # Start fresh session for the new context.
-            detail = self._make_track_detail(result, played_at_ms)
-            self._session = _SessionAccumulator(
-                context_uri=result.context_uri,
-                context_name=result.context_name,
-                start_ms=played_at_ms,
-                last_active_ms=played_at_ms,
-            )
-            self._session.record_track(
-                result.track_id, result.track_name, played_at_ms, detail=detail
-            )
-            self._current_track_id = result.track_id
-            # Emit context_start for the new listening context.
-            events.append(self._make_context_start_event(result, played_at_ms))
-            return events
-
-        # Same context — accumulate silently (no per-track events).
+        # Accumulate silently regardless of context change.
         if result.track_id != self._current_track_id:
             assert self._session is not None
             detail = self._make_track_detail(result, played_at_ms)
@@ -459,7 +437,7 @@ class ListeningSessionTracker:
                 result.track_id,
             )
         else:
-            # Same track, same context — update last_active timestamp only.
+            # Same track — update last_active timestamp only.
             assert self._session is not None
             self._session.last_active_ms = played_at_ms
 
@@ -475,37 +453,8 @@ class ListeningSessionTracker:
         events: list[SessionEvent] = []
 
         if result.is_playing and result.track_id:
-            # Playback resumed.
-            context_changed = self._context_changed(result.context_uri)
-
-            if context_changed:
-                # Different context → end current session, emit summary, start new session.
-                assert self._session is not None
-                end_ms = played_at_ms
-                summary = self._session.build_summary_event(end_ms)
-                events.append(summary)
-                logger.debug(
-                    "draining: resumed with different context (%s→%s), emitting session_summary",
-                    self._session.context_uri,
-                    result.context_uri,
-                )
-                detail = self._make_track_detail(result, played_at_ms)
-                self._session = _SessionAccumulator(
-                    context_uri=result.context_uri,
-                    context_name=result.context_name,
-                    start_ms=played_at_ms,
-                    last_active_ms=played_at_ms,
-                )
-                self._session.record_track(
-                    result.track_id, result.track_name, played_at_ms, detail=detail
-                )
-                self._current_track_id = result.track_id
-                self._drain_started_at = None
-                self._state = SessionState.ACTIVE
-                events.append(self._make_context_start_event(result, played_at_ms))
-                return events
-
-            # Same context → resume, accumulate silently.
+            # Playback resumed — continue existing session regardless of context.
+            # The drain timeout hasn't expired, so the session is still alive.
             assert self._session is not None
             if result.track_id != self._current_track_id:
                 detail = self._make_track_detail(result, played_at_ms)
@@ -545,12 +494,6 @@ class ListeningSessionTracker:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _context_changed(self, new_context_uri: str | None) -> bool:
-        """Return True when the context URI has changed since the active session started."""
-        if self._session is None:
-            return False
-        return new_context_uri != self._session.context_uri
 
     def _transition_to_idle(self) -> None:
         """Reset machine state to IDLE."""

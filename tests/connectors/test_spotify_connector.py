@@ -7,6 +7,7 @@ Verifies:
 - ingest.v1 envelope production for context_start, listening_digest, session_summary
 - ListeningSessionTracker state machine: key transitions
 - Idempotency key determinism
+- Playback-gap-only session boundaries (context changes never split sessions)
 
 [bu-35fm7]
 """
@@ -119,7 +120,7 @@ def test_session_summary_schema_version() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Session state machine (non-trivial branching — keep condensed)
+# Session state machine — core transitions
 # ---------------------------------------------------------------------------
 
 
@@ -135,17 +136,6 @@ def test_first_playback_transitions_to_active(tracker: ListeningSessionTracker) 
     assert tracker.state == "active"
     assert "context_start" in events
     assert closed == []
-
-
-def test_active_context_change_closes_session(tracker: ListeningSessionTracker) -> None:
-    tracker.process_playback(track_id="t1", track_name="A", context_uri="ctx:1", now=_NOW)
-    events, closed = tracker.process_playback(
-        track_id="t2", track_name="B", context_uri="ctx:2",
-        now=_NOW + timedelta(minutes=5),
-    )
-    assert len(closed) == 1
-    assert closed[0].context_uri == "ctx:1"
-    assert "context_start" in events
 
 
 def test_no_playback_transitions_to_draining(tracker: ListeningSessionTracker) -> None:
@@ -176,3 +166,122 @@ def test_draining_resume_returns_to_active(tracker: ListeningSessionTracker) -> 
     )
     assert tracker.state == "active"
     assert closed == []
+
+
+# ---------------------------------------------------------------------------
+# Playback-gap-only session boundaries
+#
+# Context changes during continuous playback (autoplay, radio, DJ) must NOT
+# split sessions.  Sessions end only when playback stops (drain timeout).
+# ---------------------------------------------------------------------------
+
+
+def test_context_change_does_not_split_active_session(tracker: ListeningSessionTracker) -> None:
+    """Different context_uri during active playback: accumulate, don't split."""
+    tracker.process_playback(track_id="t1", track_name="A", context_uri="ctx:1", now=_NOW)
+    events, closed = tracker.process_playback(
+        track_id="t2", track_name="B", context_uri="ctx:2",
+        now=_NOW + timedelta(minutes=5),
+    )
+    assert closed == [], "context change must not close session during continuous playback"
+    assert events == [], "context change must not emit context_start during continuous playback"
+    assert tracker.state == "active"
+    assert tracker.current_session is not None
+    assert tracker.current_session.track_count == 2
+
+
+def test_null_context_does_not_split_session(tracker: ListeningSessionTracker) -> None:
+    """When autoplay drops context_uri to None, session continues."""
+    tracker.process_playback(
+        track_id="t1", track_name="Rain 1", context_uri="spotify:playlist:rain", now=_NOW
+    )
+    events, closed = tracker.process_playback(
+        track_id="t2", track_name="Rain 2", context_uri=None,
+        now=_NOW + timedelta(minutes=4),
+    )
+    assert closed == []
+    assert events == []
+    assert tracker.current_session is not None
+    assert tracker.current_session.context_uri == "spotify:playlist:rain"
+    assert tracker.current_session.track_count == 2
+
+
+def test_overnight_rain_sounds_single_session(tracker: ListeningSessionTracker) -> None:
+    """Overnight scenario: playlist → many autoplay tracks with varying contexts.
+
+    Should produce exactly ONE session, not one per track.
+    """
+    # Playlist starts
+    tracker.process_playback(
+        track_id="t1", track_name="Rain 1", context_uri="spotify:playlist:rain", now=_NOW
+    )
+    # Autoplay takes over with different contexts
+    contexts = [None, "spotify:artist:abc", None, "spotify:album:xyz", "spotify:artist:def"]
+    for i, ctx in enumerate(contexts, start=2):
+        events, closed = tracker.process_playback(
+            track_id=f"t{i}", track_name=f"Rain {i}", context_uri=ctx,
+            now=_NOW + timedelta(minutes=4 * i),
+        )
+        assert closed == [], f"track {i} should not close session"
+        assert events == [], f"track {i} should not emit events"
+
+    assert tracker.current_session is not None
+    assert tracker.current_session.track_count == 6
+    assert tracker.state == "active"
+
+
+def test_session_ends_on_playback_gap_not_context(tracker: ListeningSessionTracker) -> None:
+    """Session ends when playback stops + drain timeout, not on context change."""
+    tracker.process_playback(track_id="t1", track_name="A", context_uri="ctx:1", now=_NOW)
+    tracker.process_playback(
+        track_id="t2", track_name="B", context_uri="ctx:2",
+        now=_NOW + timedelta(minutes=5),
+    )
+    # Playback stops
+    tracker.process_no_playback(now=_NOW + timedelta(minutes=6))
+    assert tracker.state == "draining"
+    # Drain timeout expires
+    closed = tracker.process_no_playback(now=_NOW + timedelta(minutes=8))
+    assert tracker.state == "idle"
+    assert len(closed) == 1
+    assert closed[0].track_count == 2  # both tracks in one session
+
+
+def test_draining_resume_with_different_context_continues(
+    tracker: ListeningSessionTracker,
+) -> None:
+    """Resuming from draining with a different context continues the session."""
+    tracker.process_playback(track_id="t1", track_name="A", context_uri="ctx:1", now=_NOW)
+    tracker.process_no_playback(now=_NOW + timedelta(seconds=10))
+    assert tracker.state == "draining"
+
+    # Resume with different context (e.g. user switched playlists during brief pause)
+    events, closed = tracker.process_playback(
+        track_id="t2", track_name="B", context_uri="ctx:2",
+        now=_NOW + timedelta(seconds=30),
+    )
+    assert tracker.state == "active"
+    assert closed == [], "resume from draining should not close session"
+    assert events == [], "resume from draining should not emit context_start"
+    assert tracker.current_session is not None
+    assert tracker.current_session.track_count == 2
+
+
+def test_new_session_after_full_drain(tracker: ListeningSessionTracker) -> None:
+    """After drain timeout completes, next playback starts a genuinely new session."""
+    tracker.process_playback(track_id="t1", track_name="A", context_uri="ctx:1", now=_NOW)
+    tracker.process_no_playback(now=_NOW + timedelta(seconds=5))
+    closed = tracker.process_no_playback(now=_NOW + timedelta(seconds=70))
+    assert tracker.state == "idle"
+    assert len(closed) == 1
+
+    # New session starts
+    events, closed = tracker.process_playback(
+        track_id="t2", track_name="B", context_uri="ctx:2",
+        now=_NOW + timedelta(seconds=80),
+    )
+    assert tracker.state == "active"
+    assert "context_start" in events
+    assert closed == []
+    assert tracker.current_session is not None
+    assert tracker.current_session.track_count == 1
