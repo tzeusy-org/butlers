@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-from butlers.modules.memory.tools._helpers import _storage, get_embedding_engine
+from butlers.modules.memory.tools._helpers import _storage, get_embedding_engine, validate_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ def _extract_request_context(
     tenant_id_val = request_context.get("tenant_id")
     request_id = request_context.get("request_id") or None
     tenant_id = "shared" if tenant_id_val in (None, "") else str(tenant_id_val)
+    validate_tenant_id(tenant_id)
     return tenant_id, str(request_id) if request_id is not None else None
 
 

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-from butlers.modules.memory.tools._helpers import _serialize_row
+from butlers.modules.memory.tools._helpers import _serialize_row, validate_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,7 @@ async def entity_create(
         ValueError: If the (tenant_id, canonical_name, entity_type) already exists
                     or if entity_type is invalid.
     """
+    validate_tenant_id(tenant_id)
     if entity_type not in VALID_ENTITY_TYPES:
         raise ValueError(
             f"Invalid entity_type '{entity_type}'. Must be one of: {sorted(VALID_ENTITY_TYPES)}"
@@ -145,6 +146,7 @@ async def entity_get(
     Returns:
         Serialized entity dict or None if not found.
     """
+    validate_tenant_id(tenant_id)
     row = await pool.fetchrow(
         """
         SELECT id, tenant_id, canonical_name, entity_type, aliases, metadata,
@@ -187,6 +189,7 @@ async def entity_update(
     Returns:
         Updated serialized entity dict or None if not found.
     """
+    validate_tenant_id(tenant_id)
     eid = uuid.UUID(entity_id)
 
     current = await pool.fetchrow(
@@ -284,6 +287,7 @@ async def entity_resolve(
         ValueError: If both ``name`` and ``identifier`` are provided, or
             neither is provided.
     """
+    validate_tenant_id(tenant_id)
     if name and identifier:
         raise ValueError("Provide either 'name' or 'identifier', not both.")
 
@@ -637,6 +641,7 @@ async def entity_neighbors(
           - fact_id: UUID string of the edge fact
           - path: list of entity ID strings along the traversal path
     """
+    validate_tenant_id(tenant_id)
     max_depth = max(1, min(max_depth, 5))
     eid = uuid.UUID(entity_id)
 
@@ -940,6 +945,7 @@ async def entity_merge(
         ValueError: If source or target entity not found for this tenant,
                     or if source == target.
     """
+    validate_tenant_id(tenant_id)
     if source_entity_id == target_entity_id:
         raise ValueError("source_entity_id and target_entity_id must be different.")
 

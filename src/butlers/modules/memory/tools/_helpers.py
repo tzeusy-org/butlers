@@ -9,6 +9,41 @@ from pathlib import Path
 from typing import Any
 
 # ---------------------------------------------------------------------------
+# Valid tenant IDs — "shared" + butler roster names
+# ---------------------------------------------------------------------------
+
+VALID_TENANT_IDS = frozenset(
+    {
+        "shared",
+        "education",
+        "finance",
+        "general",
+        "health",
+        "home",
+        "lifestyle",
+        "messenger",
+        "qa",
+        "relationship",
+        "switchboard",
+        "travel",
+    }
+)
+
+
+def validate_tenant_id(tenant_id: str) -> str:
+    """Validate that *tenant_id* is in the allowed set.
+
+    Returns the tenant_id unchanged on success; raises ``ValueError`` with an
+    actionable message listing valid values on failure.
+    """
+    if tenant_id not in VALID_TENANT_IDS:
+        raise ValueError(
+            f"Invalid tenant_id '{tenant_id}'. Must be one of: {sorted(VALID_TENANT_IDS)}"
+        )
+    return tenant_id
+
+
+# ---------------------------------------------------------------------------
 # Load sibling modules from disk (roster/ is not a Python package).
 # ---------------------------------------------------------------------------
 

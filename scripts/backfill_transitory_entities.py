@@ -517,9 +517,24 @@ async def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Target a specific butler schema (default: all schemas with a facts table)",
     )
+    _valid_tenants = [
+        "shared",
+        "education",
+        "finance",
+        "general",
+        "health",
+        "home",
+        "lifestyle",
+        "messenger",
+        "qa",
+        "relationship",
+        "switchboard",
+        "travel",
+    ]
     parser.add_argument(
         "--tenant-id",
         default="shared",
+        choices=_valid_tenants,
         help="Tenant ID to use for created entities (default: shared)",
     )
     parser.add_argument(

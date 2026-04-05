@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-from butlers.modules.memory.tools._helpers import _search, _serialize_row, _storage
+from butlers.modules.memory.tools._helpers import (
+    _search,
+    _serialize_row,
+    _storage,
+    validate_tenant_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +80,7 @@ async def memory_recall(
         rc_tenant = request_context.get("tenant_id")
         if isinstance(rc_tenant, str) and rc_tenant.strip():
             tenant_id = rc_tenant.strip()
+    validate_tenant_id(tenant_id)
 
     results = await _search.recall(
         pool,

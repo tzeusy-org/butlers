@@ -181,6 +181,6 @@ class TestMemoryContext:
                 MagicMock(),
                 "p",
                 "g",
-                request_context={"tenant_id": "custom-t"},
+                request_context={"tenant_id": "health"},
             )
-        assert captured["tenant_id"] == "custom-t"
+        assert captured["tenant_id"] == "health"

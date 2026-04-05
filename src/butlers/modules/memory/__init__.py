@@ -815,7 +815,7 @@ class MemoryModule(Module):
                     description=(
                         "Optional request context dict with 'tenant_id' (default 'shared') "
                         "and 'request_id' (optional trace ID). tenant_id scopes all retrieval. "
-                        "When omitted, defaults to tenant_id='owner' and no request_id."
+                        "When omitted, defaults to tenant_id='shared' and no request_id."
                     )
                 ),
             ] = None,
@@ -850,7 +850,14 @@ class MemoryModule(Module):
                 Field(description="Entity type: person | organization | place | other."),
             ],
             tenant_id: Annotated[
-                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+                str,
+                Field(
+                    description=(
+                        "Tenant scope for isolation. Defaults to 'shared'. "
+                        "Valid values: shared, education, finance, general, health, "
+                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
+                    )
+                ),
             ] = "shared",
             aliases: Annotated[
                 list[str] | None,
@@ -883,7 +890,14 @@ class MemoryModule(Module):
         async def memory_entity_get(
             entity_id: Annotated[str, Field(description="UUID string of the entity.")],
             tenant_id: Annotated[
-                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+                str,
+                Field(
+                    description=(
+                        "Tenant scope for isolation. Defaults to 'shared'. "
+                        "Valid values: shared, education, finance, general, health, "
+                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
+                    )
+                ),
             ] = "shared",
         ) -> dict[str, Any] | None:
             """Retrieve a named entity from the memory entity graph by ID.
@@ -901,7 +915,14 @@ class MemoryModule(Module):
         async def memory_entity_update(
             entity_id: Annotated[str, Field(description="UUID string of the entity to update.")],
             tenant_id: Annotated[
-                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+                str,
+                Field(
+                    description=(
+                        "Tenant scope for isolation. Defaults to 'shared'. "
+                        "Valid values: shared, education, finance, general, health, "
+                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
+                    )
+                ),
             ] = "shared",
             canonical_name: Annotated[
                 str | None,
@@ -986,7 +1007,14 @@ class MemoryModule(Module):
         async def memory_entity_neighbors(
             entity_id: Annotated[str, Field(description="UUID string of the starting entity.")],
             tenant_id: Annotated[
-                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+                str,
+                Field(
+                    description=(
+                        "Tenant scope for isolation. Defaults to 'shared'. "
+                        "Valid values: shared, education, finance, general, health, "
+                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
+                    )
+                ),
             ] = "shared",
             max_depth: Annotated[
                 int,
@@ -1068,7 +1096,14 @@ class MemoryModule(Module):
                 str, Field(description="UUID string of the surviving entity.")
             ],
             tenant_id: Annotated[
-                str, Field(description="Tenant scope for isolation. Defaults to 'shared'.")
+                str,
+                Field(
+                    description=(
+                        "Tenant scope for isolation. Defaults to 'shared'. "
+                        "Valid values: shared, education, finance, general, health, "
+                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
+                    )
+                ),
             ] = "shared",
         ) -> dict[str, Any] | None:
             """Merge source entity into target entity in the memory entity graph.

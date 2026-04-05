@@ -25,7 +25,7 @@ from butlers.modules.memory.tools.entities import (
 
 pytestmark = pytest.mark.unit
 
-TENANT = "tenant-abc"
+TENANT = "shared"
 ENTITY_UUID = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 ENTITY_STR = str(ENTITY_UUID)
 SOURCE_UUID = uuid.UUID("aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa")

@@ -166,7 +166,19 @@ class TestWritingToolRequestContext:
                 pool,
                 "text",
                 "butler",
-                request_context={"tenant_id": "tenant-a", "request_id": "req-123"},
+                request_context={"tenant_id": "finance", "request_id": "req-123"},
             )
         kw = mock_storage.store_episode.call_args[1]
-        assert kw["tenant_id"] == "tenant-a" and kw["request_id"] == "req-123"
+        assert kw["tenant_id"] == "finance" and kw["request_id"] == "req-123"
+
+    async def test_invalid_tenant_rejected(self) -> None:
+        mod, mock_storage = self._load_writing_tools()
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=None)
+        with patch.object(mod, "_storage", mock_storage), pytest.raises(ValueError, match="owner"):
+            await mod.memory_store_episode(
+                pool,
+                "text",
+                "butler",
+                request_context={"tenant_id": "owner"},
+            )
