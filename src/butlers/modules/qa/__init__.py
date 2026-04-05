@@ -741,12 +741,12 @@ class QaModule(Module):
         if pool is None:
             return {"status": "error", "reason": "no_db_pool"}
 
+        patrol_start = time.monotonic()
         patrol_id = await self._create_patrol_record(pool)
         self._current_patrol_id = patrol_id
         sources_polled: list[str] = []
         all_findings = []
         error_detail: str | None = None
-        patrol_start = time.monotonic()
 
         # Start the qa.patrol parent span (root — not child of any calling context)
         _patrol_span = None
@@ -1150,10 +1150,12 @@ class QaModule(Module):
         (qa_patrol_id IS NOT NULL).  Updates the qa_investigations_active gauge with
         the current count of rows with status='investigating'.  Records
         qa_investigation_duration_seconds for any QA investigations that closed since
-        the last patrol (closed_at within the last patrol_interval_minutes * 2 window).
+        the last patrol, anchored to self._last_patrol_at to avoid double-counting
+        across overlapping lookback windows.
 
         This method is called once per patrol cycle and does not raise — any DB or
         metric errors are caught and logged at DEBUG level so they cannot abort a patrol.
+        Asyncio CancelledError is always re-raised so task cancellation propagates.
         """
         try:
             # Update active investigation gauge
@@ -1172,23 +1174,42 @@ class QaModule(Module):
                     logger.debug(
                         "QaModule: failed to set qa_investigations_active metric", exc_info=True
                     )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.debug("QaModule: failed to query active investigation count", exc_info=True)
 
-        # Record durations for investigations that closed within the patrol window
+        # Record durations for investigations that closed since the last patrol.
+        # Using self._last_patrol_at as a high-water mark avoids double-counting rows
+        # that would otherwise reappear in a rolling lookback window across multiple patrols.
         try:
-            lookback_interval = self._config.patrol_interval_minutes * 2
-            recently_closed = await pool.fetch(
-                """
-                SELECT status,
-                       EXTRACT(EPOCH FROM (closed_at - created_at)) AS duration_seconds
-                FROM public.healing_attempts
-                WHERE qa_patrol_id IS NOT NULL
-                  AND closed_at IS NOT NULL
-                  AND closed_at >= now() - ($1 * INTERVAL '1 minute')
-                """,
-                lookback_interval,
-            )
+            if self._last_patrol_at is not None:
+                recently_closed = await pool.fetch(
+                    """
+                    SELECT status,
+                           EXTRACT(EPOCH FROM (closed_at - created_at)) AS duration_seconds
+                    FROM public.healing_attempts
+                    WHERE qa_patrol_id IS NOT NULL
+                      AND closed_at IS NOT NULL
+                      AND closed_at > $1
+                    """,
+                    self._last_patrol_at,
+                )
+            else:
+                # First patrol run: look back one interval to catch any investigations
+                # that closed before this patrol but after daemon startup.
+                lookback_interval = self._config.patrol_interval_minutes
+                recently_closed = await pool.fetch(
+                    """
+                    SELECT status,
+                           EXTRACT(EPOCH FROM (closed_at - created_at)) AS duration_seconds
+                    FROM public.healing_attempts
+                    WHERE qa_patrol_id IS NOT NULL
+                      AND closed_at IS NOT NULL
+                      AND closed_at >= now() - ($1 * INTERVAL '1 minute')
+                    """,
+                    lookback_interval,
+                )
             if _qa_investigation_duration_seconds is not None:
                 for row in recently_closed:
                     try:
@@ -1200,6 +1221,8 @@ class QaModule(Module):
                             "QaModule: failed to record qa_investigation_duration_seconds metric",
                             exc_info=True,
                         )
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.debug("QaModule: failed to query recently closed investigations", exc_info=True)
 

@@ -1290,3 +1290,89 @@ class TestMetricsInvestigationDuration:
             await mod._record_investigation_metrics(pool)  # must not raise
         finally:
             qa_module._qa_investigation_duration_seconds = original
+
+    async def test_investigation_duration_uses_last_patrol_at_as_high_water_mark(self):
+        """When _last_patrol_at is set, query anchors to that timestamp (no double-counting)."""
+        fetch_calls: list = []
+
+        async def capturing_fetch(sql, *args):
+            fetch_calls.append({"sql": sql, "args": args})
+            return []
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = capturing_fetch
+
+        mod = _make_module()
+        mod._config = QaConfig()
+        last_at = datetime.now(UTC)
+        mod._last_patrol_at = last_at
+
+        await mod._record_investigation_metrics(pool)
+
+        assert fetch_calls, "fetch should have been called"
+        # The query should use a $1 parameter = last_patrol_at (no rolling multiplier)
+        assert last_at in fetch_calls[0]["args"], (
+            "Expected _last_patrol_at to be passed as query parameter for high-water mark"
+        )
+
+    async def test_investigation_duration_uses_single_interval_on_first_run(self):
+        """On first patrol (no _last_patrol_at), query uses a single patrol_interval lookback."""
+        fetch_calls: list = []
+
+        async def capturing_fetch(sql, *args):
+            fetch_calls.append({"sql": sql, "args": args})
+            return []
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = capturing_fetch
+
+        mod = _make_module()
+        interval = 10
+        mod._config = QaConfig(patrol_interval_minutes=interval)
+        mod._last_patrol_at = None  # First run
+
+        await mod._record_investigation_metrics(pool)
+
+        assert fetch_calls, "fetch should have been called"
+        # The lookback should be exactly one interval (not 2x)
+        assert interval in fetch_calls[0]["args"], (
+            "Expected patrol_interval_minutes (not 2x) to be passed as query parameter on first run"
+        )
+
+
+class TestMetricsCancelledError:
+    """asyncio.CancelledError propagates through _record_investigation_metrics."""
+
+    async def test_cancelled_error_propagates_on_fetchval(self):
+        """CancelledError from fetchval is not swallowed."""
+        import asyncio
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(side_effect=asyncio.CancelledError())
+        pool.fetch = AsyncMock(return_value=[])
+
+        mod = _make_module()
+        mod._config = QaConfig()
+
+        import pytest
+
+        with pytest.raises(asyncio.CancelledError):
+            await mod._record_investigation_metrics(pool)
+
+    async def test_cancelled_error_propagates_on_fetch(self):
+        """CancelledError from fetch is not swallowed."""
+        import asyncio
+
+        pool = _make_pool()
+        pool.fetchval = AsyncMock(return_value=0)
+        pool.fetch = AsyncMock(side_effect=asyncio.CancelledError())
+
+        mod = _make_module()
+        mod._config = QaConfig()
+
+        import pytest
+
+        with pytest.raises(asyncio.CancelledError):
+            await mod._record_investigation_metrics(pool)
