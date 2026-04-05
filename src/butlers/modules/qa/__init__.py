@@ -52,6 +52,8 @@ try:
     from opentelemetry import context as otel_context
     from opentelemetry import trace
 
+    from butlers.core.telemetry import tag_butler_span
+
     _tracer = trace.get_tracer("butlers.qa")
     _HAS_OTEL = True
 except ImportError:
@@ -636,17 +638,18 @@ class QaModule(Module):
         all_findings = []
         error_detail: str | None = None
 
-        # Start the qa.patrol parent span (root — not child of any patrol)
+        # Start the qa.patrol parent span (root — not child of any calling context)
         _patrol_span = None
         _patrol_span_token = None
         if _HAS_OTEL:
             _patrol_span = _tracer.start_span(
                 "qa.patrol",
+                context=otel_context.Context(),  # fresh context — root span
                 attributes={
-                    "butler.name": "qa",
                     "qa.patrol_id": str(patrol_id),
                 },
             )
+            tag_butler_span(_patrol_span, "qa")
             _patrol_span_token = otel_context.attach(trace.set_span_in_context(_patrol_span))
 
         try:
@@ -705,6 +708,11 @@ class QaModule(Module):
                     findings=all_findings,
                     cooldown_minutes=60,  # default cooldown
                 )
+            except Exception as triage_exc:
+                if _HAS_OTEL and _triage_span is not None:
+                    _triage_span.record_exception(triage_exc)
+                    _triage_span.set_status(trace.StatusCode.ERROR, str(triage_exc))
+                raise
             finally:
                 if _HAS_OTEL and _triage_span is not None:
                     _triage_span.end()
@@ -746,6 +754,11 @@ class QaModule(Module):
                     gh_token=gh_token,
                     task_registry=self._watchdog_tasks,
                 )
+            except Exception as dispatch_exc:
+                if _HAS_OTEL and _dispatch_span is not None:
+                    _dispatch_span.record_exception(dispatch_exc)
+                    _dispatch_span.set_status(trace.StatusCode.ERROR, str(dispatch_exc))
+                raise
             finally:
                 if _HAS_OTEL and _dispatch_span is not None:
                     _dispatch_span.end()

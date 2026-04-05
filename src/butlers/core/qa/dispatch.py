@@ -72,7 +72,8 @@ logger = logging.getLogger(__name__)
 try:
     from opentelemetry import context as otel_context
     from opentelemetry import trace
-    from opentelemetry.propagate import inject as _otel_inject
+
+    from butlers.core.telemetry import get_traceparent_env, tag_butler_span
 
     _tracer = trace.get_tracer("butlers.qa")
     _HAS_OTEL = True
@@ -490,13 +491,13 @@ async def _run_investigation_session(
             "qa.investigation",
             context=otel_context.Context(),  # fresh context — root span
             attributes={
-                "butler.name": "qa",
                 "qa.attempt_id": str(attempt_id),
                 "qa.fingerprint": finding.fingerprint,
                 "qa.source_butler": finding.source_butler,
                 "qa.severity": finding.severity,
             },
         )
+        tag_butler_span(_inv_span, "qa")
         _inv_span_token = otel_context.attach(trace.set_span_in_context(_inv_span))
 
     try:
@@ -512,11 +513,7 @@ async def _run_investigation_session(
         # Inject the investigation root span's trace context as TRACEPARENT so the
         # spawned agent can continue this trace as a child process.
         if _HAS_OTEL and _inv_span is not None:
-            _carrier: dict[str, str] = {}
-            _otel_inject(_carrier)
-            _traceparent = _carrier.get("traceparent")
-            if _traceparent:
-                sandbox_env["TRACEPARENT"] = _traceparent
+            sandbox_env.update(get_traceparent_env())
 
         # Spawn the investigation agent with sandbox env override
         result = await spawner.trigger(

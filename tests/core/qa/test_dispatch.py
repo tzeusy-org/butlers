@@ -841,9 +841,13 @@ async def test_check_open_pr_statuses_no_open_prs():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_investigation_otel_span_created(tmp_path):
-    """_run_investigation_session creates a qa.investigation root span with expected attributes."""
+@pytest.fixture
+def otel_dispatch_exporter(monkeypatch):
+    """Provide an isolated in-memory OTel exporter for dispatch module tests.
+
+    Saves and restores the global TracerProvider and dispatch module globals
+    so tests do not leak state into subsequent tests in the same process.
+    """
     import opentelemetry.trace as real_trace
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -854,10 +858,18 @@ async def test_investigation_otel_span_created(tmp_path):
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    real_trace.set_tracer_provider(provider)
 
-    dispatch_mod._tracer = provider.get_tracer("butlers.qa")
-    dispatch_mod._HAS_OTEL = True
+    monkeypatch.setattr(real_trace, "_TRACER_PROVIDER", provider, raising=False)
+    monkeypatch.setattr(dispatch_mod, "_tracer", provider.get_tracer("butlers.qa"))
+    monkeypatch.setattr(dispatch_mod, "_HAS_OTEL", True)
+
+    return exporter
+
+
+@pytest.mark.asyncio
+async def test_investigation_otel_span_created(tmp_path, otel_dispatch_exporter):
+    """_run_investigation_session creates a qa.investigation root span with expected attributes."""
+    from dataclasses import dataclass
 
     from butlers.core.qa.dispatch import _run_investigation_session
 
@@ -871,8 +883,6 @@ async def test_investigation_otel_span_created(tmp_path):
     config = QaDispatchConfig()
 
     spawner = MagicMock()
-
-    from dataclasses import dataclass
 
     @dataclass
     class _SpawnerResult:
@@ -905,7 +915,7 @@ async def test_investigation_otel_span_created(tmp_path):
             gh_token=None,
         )
 
-    finished = exporter.get_finished_spans()
+    finished = otel_dispatch_exporter.get_finished_spans()
     inv_spans = [s for s in finished if s.name == "qa.investigation"]
     assert inv_spans, "Expected qa.investigation span to be created"
 
@@ -918,22 +928,9 @@ async def test_investigation_otel_span_created(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_investigation_otel_span_is_root(tmp_path):
+async def test_investigation_otel_span_is_root(tmp_path, otel_dispatch_exporter):
     """qa.investigation span is an independent root span (not a child of patrol)."""
-    import opentelemetry.trace as real_trace
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    import butlers.core.qa.dispatch as dispatch_mod
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    real_trace.set_tracer_provider(provider)
-
-    dispatch_mod._tracer = provider.get_tracer("butlers.qa")
-    dispatch_mod._HAS_OTEL = True
+    from dataclasses import dataclass
 
     from butlers.core.qa.dispatch import _run_investigation_session
 
@@ -946,8 +943,6 @@ async def test_investigation_otel_span_is_root(tmp_path):
     config = QaDispatchConfig()
 
     spawner = MagicMock()
-
-    from dataclasses import dataclass
 
     @dataclass
     class _SpawnerResult:
@@ -980,7 +975,7 @@ async def test_investigation_otel_span_is_root(tmp_path):
             gh_token=None,
         )
 
-    finished = exporter.get_finished_spans()
+    finished = otel_dispatch_exporter.get_finished_spans()
     inv_spans = [s for s in finished if s.name == "qa.investigation"]
     assert inv_spans
 
@@ -992,22 +987,11 @@ async def test_investigation_otel_span_is_root(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_investigation_traceparent_injected_into_sandbox_env(tmp_path):
+async def test_investigation_traceparent_injected_into_sandbox_env(
+    tmp_path, otel_dispatch_exporter
+):
     """TRACEPARENT is injected into the investigation sandbox env when OTel is active."""
-    import opentelemetry.trace as real_trace
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    import butlers.core.qa.dispatch as dispatch_mod
-
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    real_trace.set_tracer_provider(provider)
-
-    dispatch_mod._tracer = provider.get_tracer("butlers.qa")
-    dispatch_mod._HAS_OTEL = True
+    from dataclasses import dataclass
 
     from butlers.core.qa.dispatch import _run_investigation_session
 
@@ -1022,8 +1006,6 @@ async def test_investigation_traceparent_injected_into_sandbox_env(tmp_path):
     captured_env: dict | None = None
 
     spawner = MagicMock()
-
-    from dataclasses import dataclass
 
     @dataclass
     class _SpawnerResult:
