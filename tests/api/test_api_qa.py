@@ -5,9 +5,14 @@ Covers:
 - GET /api/qa/patrols                           — paginated patrol list
 - GET /api/qa/patrols/{patrolId}                — full patrol with nested findings
 - GET /api/qa/patrols/{patrolId}/findings       — findings for a patrol
+- GET /api/qa/investigations                    — paginated QA-originated healing attempts
 - GET /api/qa/known-issues                      — known issue tracker
 - POST /api/qa/known-issues/{fp}/dismiss        — dismiss a known issue
 - DELETE /api/qa/known-issues/{fp}/dismiss      — un-dismiss a known issue
+- POST /api/qa/force-patrol                     — trigger immediate patrol
+- GET  /api/qa/trends                           — daily aggregated stats
+- GET  /api/qa/dismissals                       — list active dismissals
+- DELETE /api/qa/dismissals/{fingerprint}       — remove a dismissal
 """
 
 from __future__ import annotations
@@ -117,6 +122,46 @@ def _make_dismissal_row(
     }
 
 
+def _make_investigation_row(
+    *,
+    attempt_id: uuid.UUID | None = None,
+    fingerprint: str = "a" * 64,
+    butler_name: str = "general",
+    status: str = "investigating",
+    severity: int = 2,
+    exception_type: str = "KeyError",
+    call_site: str = "src/foo.py:bar",
+    sanitized_msg: str | None = "error msg",
+    pr_url: str | None = None,
+    pr_number: int | None = None,
+    healing_session_id: uuid.UUID | None = None,
+    qa_patrol_id: uuid.UUID | None = None,
+    created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+    closed_at: datetime | None = None,
+    error_detail: str | None = None,
+) -> dict[str, Any]:
+    """Build a fake healing_attempts row dict."""
+    return {
+        "id": attempt_id or uuid.uuid4(),
+        "fingerprint": fingerprint,
+        "butler_name": butler_name,
+        "status": status,
+        "severity": severity,
+        "exception_type": exception_type,
+        "call_site": call_site,
+        "sanitized_msg": sanitized_msg,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "healing_session_id": healing_session_id,
+        "qa_patrol_id": qa_patrol_id or uuid.uuid4(),
+        "created_at": created_at or _NOW,
+        "updated_at": updated_at or _NOW,
+        "closed_at": closed_at,
+        "error_detail": error_detail,
+    }
+
+
 class _MockRecord(dict):
     """A dict subclass that mimics asyncpg Record access patterns."""
 
@@ -172,6 +217,66 @@ def _build_app(
     return app, mock_pool
 
 
+def _make_stats_row(
+    patrols_completed: int = 0,
+    total_findings: int = 0,
+    novel_findings: int = 0,
+    dispatched_investigations: int = 0,
+) -> dict[str, Any]:
+    return {
+        "patrols_completed": patrols_completed,
+        "total_findings": total_findings,
+        "novel_findings": novel_findings,
+        "dispatched_investigations": dispatched_investigations,
+        "total_patrols": patrols_completed,
+    }
+
+
+def _make_pr_stats_row(
+    prs_merged: int = 0,
+    prs_failed: int = 0,
+    total_dispatched: int = 0,
+) -> dict[str, Any]:
+    return {
+        "prs_merged": prs_merged,
+        "prs_failed": prs_failed,
+        "total_dispatched": total_dispatched,
+    }
+
+
+def _build_summary_app(
+    *,
+    last_patrol: dict[str, Any] | None = None,
+    stats_24h: dict[str, Any] | None = None,
+    prs_opened_24h: int = 0,
+    all_time_stats: dict[str, Any] | None = None,
+    pr_stats: dict[str, Any] | None = None,
+    cb_rows: list[dict[str, Any]] | None = None,
+    source_rows: list[dict[str, Any]] | None = None,
+) -> tuple[Any, MagicMock]:
+    """Build a test app with mocks wired to the summary endpoint's call sequence."""
+    if stats_24h is None:
+        stats_24h = _make_stats_row()
+    if all_time_stats is None:
+        all_time_stats = _make_stats_row()
+    if pr_stats is None:
+        pr_stats = _make_pr_stats_row()
+
+    return _build_app(
+        fetchrow_side_effect=[
+            _mock_record(last_patrol) if last_patrol is not None else None,
+            _mock_record(stats_24h),
+            _mock_record(all_time_stats),
+            _mock_record(pr_stats),
+        ],
+        fetchval_side_effect=[prs_opened_24h],
+        fetch_side_effect=[
+            [_mock_record(r) for r in (cb_rows or [])],  # circuit breaker rows
+            [_mock_record(r) for r in (source_rows or [])],  # active sources
+        ],
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/qa/summary
 # ---------------------------------------------------------------------------
@@ -180,15 +285,7 @@ def _build_app(
 class TestGetQaSummary:
     async def test_returns_summary_with_empty_db(self) -> None:
         """When no patrols exist, summary should return zeros and no last_patrol."""
-        empty_stats_row = _make_stats_row()
-        app, _ = _build_app(
-            fetchrow_side_effect=[
-                None,  # last patrol
-                _mock_record(empty_stats_row),  # 24h stats
-                _mock_record(empty_stats_row),  # all-time stats
-            ],
-            fetch_rows=[],  # active sources
-        )
+        app, _ = _build_summary_app()
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -207,13 +304,11 @@ class TestGetQaSummary:
         patrol_id = uuid.uuid4()
         patrol = _make_patrol_row(patrol_id=patrol_id, status="clean", findings_count=3)
         stats = _make_stats_row(patrols_completed=5, total_findings=10)
-        app, _ = _build_app(
-            fetchrow_side_effect=[
-                _mock_record(patrol),
-                _mock_record(stats),
-                _mock_record(stats),
-            ],
-            fetch_rows=[_mock_record({"sources_polled": ["log_scanner", "session_records"]})],
+        app, _ = _build_summary_app(
+            last_patrol=patrol,
+            stats_24h=stats,
+            all_time_stats=stats,
+            source_rows=[{"sources_polled": ["log_scanner", "session_records"]}],
         )
 
         async with httpx.AsyncClient(
@@ -229,6 +324,70 @@ class TestGetQaSummary:
         assert body["data"]["stats_24h"]["patrols_completed"] == 5
         assert "log_scanner" in body["data"]["active_sources"]
 
+    async def test_returns_circuit_breaker_tripped_when_enough_failures(self) -> None:
+        """Circuit breaker should trip when 5+ consecutive failures exist."""
+        cb_rows = [{"status": "failed"} for _ in range(5)]
+        app, _ = _build_summary_app(cb_rows=cb_rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["circuit_breaker"]["tripped"] is True
+        assert body["data"]["circuit_breaker"]["consecutive_failures"] == 5
+        assert body["data"]["staffer_status"] == "circuit_breaker_tripped"
+
+    async def test_returns_circuit_breaker_not_tripped_after_success(self) -> None:
+        """Circuit breaker should not trip when failures are interrupted by a success."""
+        cb_rows = [
+            {"status": "failed"},
+            {"status": "failed"},
+            {"status": "pr_merged"},  # resets the count
+            {"status": "failed"},
+        ]
+        app, _ = _build_summary_app(cb_rows=cb_rows)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["circuit_breaker"]["tripped"] is False
+        assert body["data"]["circuit_breaker"]["consecutive_failures"] == 2
+
+    async def test_summary_includes_prs_opened_24h(self) -> None:
+        """stats_24h.prs_opened should reflect the fetchval result."""
+        app, _ = _build_summary_app(prs_opened_24h=3)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        assert response.json()["data"]["stats_24h"]["prs_opened"] == 3
+
+    async def test_summary_includes_all_time_pr_stats(self) -> None:
+        """stats_all_time should include prs_merged, prs_failed, success_rate."""
+        pr_stats = _make_pr_stats_row(prs_merged=10, prs_failed=2, total_dispatched=20)
+        app, _ = _build_summary_app(pr_stats=pr_stats)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["stats_all_time"]["prs_merged"] == 10
+        assert data["stats_all_time"]["prs_failed"] == 2
+        assert data["stats_all_time"]["success_rate"] == 0.5
+
     async def test_returns_503_when_db_unavailable(self) -> None:
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.side_effect = KeyError("no pool")
@@ -242,21 +401,6 @@ class TestGetQaSummary:
             response = await client.get("/api/qa/summary")
 
         assert response.status_code == 503
-
-
-def _make_stats_row(
-    patrols_completed: int = 0,
-    total_findings: int = 0,
-    novel_findings: int = 0,
-    dispatched_investigations: int = 0,
-) -> dict[str, Any]:
-    return {
-        "patrols_completed": patrols_completed,
-        "total_findings": total_findings,
-        "novel_findings": novel_findings,
-        "dispatched_investigations": dispatched_investigations,
-        "total_patrols": patrols_completed,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +634,105 @@ class TestListPatrolFindings:
         body = response.json()
         assert body["meta"]["offset"] == 20
         assert body["meta"]["limit"] == 10
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/investigations
+# ---------------------------------------------------------------------------
+
+
+class TestListInvestigations:
+    async def test_returns_empty_list_when_no_investigations(self) -> None:
+        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+
+    async def test_returns_investigations_with_pr_info(self) -> None:
+        attempt_id = uuid.uuid4()
+        patrol_id = uuid.uuid4()
+        row = _make_investigation_row(
+            attempt_id=attempt_id,
+            qa_patrol_id=patrol_id,
+            status="pr_open",
+            pr_url="https://github.com/foo/bar/pull/42",
+            pr_number=42,
+        )
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["data"]) == 1
+        inv = body["data"][0]
+        assert inv["id"] == str(attempt_id)
+        assert inv["status"] == "pr_open"
+        assert inv["pr_url"] == "https://github.com/foo/bar/pull/42"
+        assert inv["pr_number"] == 42
+        assert inv["qa_patrol_id"] == str(patrol_id)
+        assert body["meta"]["total"] == 1
+
+    async def test_accepts_valid_status_filter(self) -> None:
+        row = _make_investigation_row(status="pr_merged")
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations", params={"status": "pr_merged"})
+
+        assert response.status_code == 200
+        assert response.json()["data"][0]["status"] == "pr_merged"
+
+    async def test_rejects_invalid_status_filter(self) -> None:
+        app, _ = _build_app()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations", params={"status": "not_a_status"})
+
+        assert response.status_code == 422
+        assert "not_a_status" in response.json()["detail"]
+
+    async def test_pagination_parameters_accepted(self) -> None:
+        app, _ = _build_app(fetch_rows=[], fetchval_result=100)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations", params={"limit": 5, "offset": 10})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["limit"] == 5
+        assert body["meta"]["offset"] == 10
+        assert body["meta"]["total"] == 100
+
+    async def test_returns_503_when_db_unavailable(self) -> None:
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -869,5 +1112,280 @@ class TestUndismissKnownIssue:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.delete("/api/qa/known-issues/abc/dismiss")
+
+        assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# POST /api/qa/force-patrol
+# ---------------------------------------------------------------------------
+
+
+class TestForcePatrol:
+    async def test_returns_patrol_id_and_triggered_status(self) -> None:
+        patrol_id = uuid.uuid4()
+        app, _ = _build_app(fetchval_result=patrol_id)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/qa/force-patrol")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["status"] == "triggered"
+        assert body["data"]["patrol_id"] == str(patrol_id)
+
+    async def test_returns_500_when_insert_fails(self) -> None:
+        app, _ = _build_app(fetchval_result=None)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/qa/force-patrol")
+
+        assert response.status_code == 500
+
+    async def test_returns_503_when_db_unavailable(self) -> None:
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/qa/force-patrol")
+
+        assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/trends
+# ---------------------------------------------------------------------------
+
+
+def _make_trend_patrol_row(
+    day: str = "2026-04-05",
+    patrols: int = 3,
+    findings: int = 10,
+    novel: int = 4,
+    dispatched: int = 2,
+) -> dict[str, Any]:
+    """Build a fake trends patrol aggregate row."""
+    return {
+        "day": day,
+        "patrols": patrols,
+        "findings": findings,
+        "novel": novel,
+        "dispatched": dispatched,
+    }
+
+
+def _make_trend_pr_row(
+    day: str = "2026-04-05",
+    prs_opened: int = 2,
+    prs_merged: int = 1,
+) -> dict[str, Any]:
+    return {"day": day, "prs_opened": prs_opened, "prs_merged": prs_merged}
+
+
+def _make_trend_source_row(
+    day: str = "2026-04-05",
+    source_type: str = "log_scanner",
+    cnt: int = 5,
+) -> dict[str, Any]:
+    return {"day": day, "source_type": source_type, "cnt": cnt}
+
+
+class TestGetQaTrends:
+    async def test_returns_empty_list_when_no_data(self) -> None:
+        app, _ = _build_app(
+            fetch_side_effect=[[], [], []],
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/trends")
+
+        assert response.status_code == 200
+        assert response.json()["data"] == []
+
+    async def test_returns_daily_entries_with_per_source_breakdown(self) -> None:
+        day = "2026-04-05"
+        app, _ = _build_app(
+            fetch_side_effect=[
+                [_mock_record(_make_trend_patrol_row(day=day, patrols=3, dispatched=2))],
+                [_mock_record(_make_trend_pr_row(day=day, prs_opened=2, prs_merged=1))],
+                [
+                    _mock_record(_make_trend_source_row(day=day, source_type="log_scanner", cnt=6)),
+                    _mock_record(
+                        _make_trend_source_row(day=day, source_type="session_records", cnt=4)
+                    ),
+                ],
+            ]
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/trends")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert len(data) == 1
+        entry = data[0]
+        assert entry["date"] == day
+        assert entry["patrols"] == 3
+        assert entry["dispatched"] == 2
+        assert entry["prs_opened"] == 2
+        assert entry["prs_merged"] == 1
+        assert entry["success_rate"] == 0.5
+        assert entry["by_source"]["log_scanner"] == 6
+        assert entry["by_source"]["session_records"] == 4
+
+    async def test_accepts_days_parameter(self) -> None:
+        app, _ = _build_app(fetch_side_effect=[[], [], []])
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/trends", params={"days": 30})
+
+        assert response.status_code == 200
+
+    async def test_rejects_days_out_of_range(self) -> None:
+        app, _ = _build_app()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/trends", params={"days": 0})
+
+        assert response.status_code == 422
+
+    async def test_returns_503_when_db_unavailable(self) -> None:
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/trends")
+
+        assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/dismissals
+# ---------------------------------------------------------------------------
+
+
+class TestListDismissals:
+    async def test_returns_empty_list_when_no_dismissals(self) -> None:
+        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/dismissals")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+
+    async def test_returns_active_dismissals(self) -> None:
+        fp = "p" * 64
+        dismissal = _make_dismissal_row(fingerprint=fp)
+        app, _ = _build_app(fetch_rows=[dismissal], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/dismissals")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["data"]) == 1
+        assert body["data"][0]["fingerprint"] == fp
+        assert body["meta"]["total"] == 1
+
+    async def test_pagination_parameters_accepted(self) -> None:
+        app, _ = _build_app(fetch_rows=[], fetchval_result=50)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/dismissals", params={"limit": 10, "offset": 5})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["limit"] == 10
+        assert body["meta"]["offset"] == 5
+        assert body["meta"]["total"] == 50
+
+    async def test_returns_503_when_db_unavailable(self) -> None:
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/dismissals")
+
+        assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/qa/dismissals/{fingerprint}
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteDismissal:
+    async def test_deletes_existing_dismissal(self) -> None:
+        fp = "q" * 64
+        app, _ = _build_app(execute_result="DELETE 1")
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.delete(f"/api/qa/dismissals/{fp}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["fingerprint"] == fp
+        assert body["data"]["deleted"] is True
+
+    async def test_returns_404_when_not_found(self) -> None:
+        fp = "r" * 64
+        app, _ = _build_app(execute_result="DELETE 0")
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.delete(f"/api/qa/dismissals/{fp}")
+
+        assert response.status_code == 404
+
+    async def test_returns_503_when_db_unavailable(self) -> None:
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.delete("/api/qa/dismissals/abc")
 
         assert response.status_code == 503
