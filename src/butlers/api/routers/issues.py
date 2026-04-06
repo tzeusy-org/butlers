@@ -142,7 +142,14 @@ async def _list_audit_error_issues(db: DatabaseManager | None) -> list[Issue]:
                     butler,
                     created_at,
                     COALESCE(
-                        NULLIF(BTRIM(SPLIT_PART(error, E'\n', 1)), ''),
+                        NULLIF(BTRIM(
+                            REGEXP_REPLACE(
+                                SPLIT_PART(error, E'\n', 1),
+                                '/tmp/tmp[a-zA-Z0-9_]+/',
+                                '/tmp/.../',
+                                'g'
+                            )
+                        ), ''),
                         'Unknown error'
                     ) AS error_summary,
                     (

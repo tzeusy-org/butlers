@@ -600,10 +600,12 @@ class CodexAdapter(RuntimeAdapter):
         if config_toml:
             logger.debug("Wrote Codex MCP config to %s", config_toml)
 
-        # Copy auth.json from the real ~/.codex/ into the temp directory so the
-        # CLI can still authenticate after we override HOME.  The persistent
-        # auth token is restored to the real home by cli_auth.persistence on
-        # application startup.
+        # Symlink auth.json from the real ~/.codex/ into the temp directory so
+        # the CLI can still authenticate after we override HOME.  A symlink
+        # (rather than a copy) ensures that token refreshes performed by the
+        # CLI are written back to the canonical location and survive temp-dir
+        # cleanup.  This also prevents the "refresh_token_reused" error that
+        # occurred when concurrent invocations each copied a stale token.
         import os as _os  # noqa: PLC0415
 
         real_home = _os.environ.get("HOME", "")
@@ -611,9 +613,8 @@ class CodexAdapter(RuntimeAdapter):
             real_auth = Path(real_home) / ".codex" / "auth.json"
             tmp_auth = codex_config_dir / "auth.json"
             if real_auth.is_file():
-                shutil.copy2(real_auth, tmp_auth)
-                tmp_auth.chmod(0o600)
-                logger.debug("Copied Codex auth.json from %s to %s", real_auth, tmp_auth)
+                _os.symlink(real_auth, tmp_auth)
+                logger.debug("Symlinked Codex auth.json: %s → %s", tmp_auth, real_auth)
             else:
                 logger.warning(
                     "No Codex auth.json found at %s — CLI may fail to authenticate",

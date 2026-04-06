@@ -7,10 +7,14 @@ are still valid (not just present on disk).
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.cli_auth.session import _strip_ansi
@@ -19,6 +23,38 @@ from butlers.credential_store import CredentialStore
 logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT = 15  # seconds
+
+
+def _check_jwt_expiry(token_path: Path) -> tuple[bool, str | None]:
+    """Check if the access token JWT in an auth file has expired.
+
+    Returns (is_expired, detail_message).  Returns (False, None) if the
+    token cannot be parsed (optimistic — let the status command decide).
+    """
+    try:
+        data = json.loads(token_path.read_text(encoding="utf-8"))
+        access_token = (data.get("tokens") or {}).get("access_token", "")
+        if not access_token:
+            return False, None
+
+        # Decode JWT payload (second segment) without signature verification
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return False, None
+
+        # JWT base64url → standard base64 with padding
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        exp = payload.get("exp")
+        if not isinstance(exp, int | float):
+            return False, None
+
+        if time.time() > exp:
+            return True, "Access token expired — re-login required."
+        return False, None
+    except Exception:
+        # Can't parse → don't block the probe
+        return False, None
 
 
 class AuthHealthState(StrEnum):
@@ -140,6 +176,16 @@ async def probe_provider(
         output = _strip_ansi(raw_output.decode(errors="replace"))
 
         if proc.returncode == 0 and provider.status_ok_pattern.search(output):
+            # Status command says authenticated — verify the JWT hasn't expired.
+            # The CLI's status check often only inspects the file, not the token.
+            if provider.token_path is not None:
+                expired, expiry_detail = _check_jwt_expiry(provider.token_path)
+                if expired:
+                    return AuthHealthResult(
+                        provider=provider.name,
+                        state=AuthHealthState.not_authenticated,
+                        detail=expiry_detail or "Token expired.",
+                    )
             return AuthHealthResult(
                 provider=provider.name,
                 state=AuthHealthState.authenticated,
