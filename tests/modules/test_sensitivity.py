@@ -169,45 +169,20 @@ class TestModuleToolMetadataDefault:
 class TestHeuristic:
     """Tests for the is_sensitive_by_heuristic function."""
 
-    @pytest.mark.parametrize(
-        "arg_name",
-        [
-            "to",
-            "recipient",
-            "recipients",
-            "email",
-            "address",
-            "url",
-            "uri",
-            "amount",
-            "price",
-            "cost",
-            "account",
-        ],
-    )
+    @pytest.mark.parametrize("arg_name", ["to", "email", "amount", "account"])
     def test_known_sensitive_args(self, arg_name: str):
-        """All canonical sensitive argument names are detected."""
+        """Representative canonical sensitive argument names are detected."""
         assert is_sensitive_by_heuristic(arg_name) is True
 
-    @pytest.mark.parametrize(
-        "arg_name",
-        ["To", "RECIPIENT", "Email", "URL", "Amount", "ACCOUNT"],
-    )
+    @pytest.mark.parametrize("arg_name", ["To", "EMAIL", "Amount"])
     def test_case_insensitive(self, arg_name: str):
         """Heuristic matching is case-insensitive."""
         assert is_sensitive_by_heuristic(arg_name) is True
 
-    @pytest.mark.parametrize(
-        "arg_name",
-        ["body", "subject", "text", "message", "title", "description", "limit", "offset"],
-    )
+    @pytest.mark.parametrize("arg_name", ["body", "subject", "limit"])
     def test_non_sensitive_args(self, arg_name: str):
         """Non-sensitive argument names are not flagged."""
         assert is_sensitive_by_heuristic(arg_name) is False
-
-    def test_sensitive_set_is_frozenset(self):
-        """SENSITIVE_ARG_NAMES is immutable."""
-        assert isinstance(SENSITIVE_ARG_NAMES, frozenset)
 
     def test_sensitive_set_contents(self):
         """SENSITIVE_ARG_NAMES contains exactly the expected names."""

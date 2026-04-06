@@ -35,18 +35,13 @@ def whatsapp_module() -> WhatsAppModule:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self) -> None:
-        assert issubclass(WhatsAppModule, Module)
-
-    def test_name(self, whatsapp_module: WhatsAppModule) -> None:
-        assert whatsapp_module.name == "whatsapp"
-
-    def test_config_schema(self, whatsapp_module: WhatsAppModule) -> None:
-        assert whatsapp_module.config_schema is WhatsAppConfig
-
-    def test_in_default_registry(self) -> None:
+    def test_module_contract(self, whatsapp_module: WhatsAppModule) -> None:
+        """WhatsAppModule satisfies Module ABC: name, config_schema, registry."""
         from butlers.modules.registry import default_registry
 
+        assert issubclass(WhatsAppModule, Module)
+        assert whatsapp_module.name == "whatsapp"
+        assert whatsapp_module.config_schema is WhatsAppConfig
         assert "whatsapp" in default_registry().available_modules
 
 

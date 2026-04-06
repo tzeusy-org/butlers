@@ -521,16 +521,21 @@ class TestQaAvailabilityCache:
 
 
 class TestWireRuntimeSwitchboard:
-    def test_wire_runtime_sets_switchboard_client(self):
+    def test_wire_runtime_sets_all_fields(self):
+        """wire_runtime wires switchboard_client and butler fields correctly."""
         mod = _make_module()
         mock_client = MagicMock()
+        spawner = MagicMock()
         mod.wire_runtime(
-            butler_name="general",
-            spawner=MagicMock(),
-            repo_root="/tmp/repo",
+            butler_name="health",
+            spawner=spawner,
+            repo_root="/repo/root",
             switchboard_client=mock_client,
         )
         assert mod._switchboard_client is mock_client
+        assert mod._butler_name == "health"
+        assert mod._spawner is spawner
+        assert str(mod._repo_root) == "/repo/root"
 
     def test_wire_runtime_switchboard_client_defaults_none(self):
         mod = _make_module()
@@ -540,19 +545,6 @@ class TestWireRuntimeSwitchboard:
             repo_root="/tmp/repo",
         )
         assert mod._switchboard_client is None
-
-    def test_wire_runtime_still_sets_other_fields(self):
-        mod = _make_module()
-        spawner = MagicMock()
-        mod.wire_runtime(
-            butler_name="health",
-            spawner=spawner,
-            repo_root="/repo/root",
-            switchboard_client=None,
-        )
-        assert mod._butler_name == "health"
-        assert mod._spawner is spawner
-        assert str(mod._repo_root) == "/repo/root"
 
 
 # ---------------------------------------------------------------------------

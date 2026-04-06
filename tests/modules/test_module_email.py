@@ -57,18 +57,13 @@ def mock_mcp() -> MagicMock:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self) -> None:
-        assert issubclass(EmailModule, Module)
-
-    def test_name(self, email_module: EmailModule) -> None:
-        assert email_module.name == "email"
-
-    def test_config_schema(self, email_module: EmailModule) -> None:
-        assert email_module.config_schema is EmailConfig
-
-    def test_in_default_registry(self) -> None:
+    def test_module_contract(self, email_module: EmailModule) -> None:
+        """EmailModule satisfies Module ABC: name, config_schema, registry."""
         from butlers.modules.registry import default_registry
 
+        assert issubclass(EmailModule, Module)
+        assert email_module.name == "email"
+        assert email_module.config_schema is EmailConfig
         assert "email" in default_registry().available_modules
 
 

@@ -307,20 +307,13 @@ def human_actor() -> dict[str, Any]:
 
 
 class TestModuleABC:
-    def test_is_module_subclass(self):
+    def test_module_contract(self):
+        """ApprovalsModule satisfies Module ABC: name, config_schema, revisions."""
+        mod = ApprovalsModule()
         assert issubclass(ApprovalsModule, Module)
-
-    def test_instantiates(self):
-        assert isinstance(ApprovalsModule(), Module)
-
-    def test_name(self):
-        assert ApprovalsModule().name == "approvals"
-
-    def test_config_schema(self):
-        assert ApprovalsModule().config_schema is ApprovalsConfig
-
-    def test_migration_revisions(self):
-        assert ApprovalsModule().migration_revisions() == "approvals"
+        assert mod.name == "approvals"
+        assert mod.config_schema is ApprovalsConfig
+        assert mod.migration_revisions() == "approvals"
 
 
 # ---------------------------------------------------------------------------

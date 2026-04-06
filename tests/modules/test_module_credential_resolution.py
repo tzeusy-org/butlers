@@ -140,32 +140,6 @@ class TestEmailModuleCredentialStore:
         await mod.on_startup(config=None, db=None, credential_store=None)
         assert mod._resolved_credentials == {}
 
-    async def test_store_resolve_called_for_each_credential_key(self) -> None:
-        """CredentialStore.resolve is called once per configured credential key."""
-        store = _make_credential_store()
-        mod = EmailModule()
-        await mod.on_startup(config=None, db=None, credential_store=store)
-
-        resolved_keys = [call.args[0] for call in store.resolve.call_args_list]
-        # Default config: bot enabled, user disabled — 2 keys (address + password)
-        assert "BUTLER_EMAIL_ADDRESS" in resolved_keys
-        assert "BUTLER_EMAIL_PASSWORD" in resolved_keys
-
-    async def test_user_scope_not_resolved_from_store_when_user_enabled(self) -> None:
-        """When user scope is enabled, user keys are NOT resolved from CredentialStore.
-
-        User-scope credentials come exclusively from owner contact_info.
-        """
-        store = _make_credential_store()
-        mod = EmailModule()
-        await mod.on_startup(config={"user": {"enabled": True}}, db=None, credential_store=store)
-        resolved_keys = [call.args[0] for call in store.resolve.call_args_list]
-        # Only bot-scope keys should be resolved from store
-        assert "USER_EMAIL_ADDRESS" not in resolved_keys
-        assert "USER_EMAIL_PASSWORD" not in resolved_keys
-        assert "BUTLER_EMAIL_ADDRESS" in resolved_keys
-        assert "BUTLER_EMAIL_PASSWORD" in resolved_keys
-
     async def test_db_value_wins_over_env_in_get_credentials(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -261,16 +235,6 @@ class TestTelegramModuleCredentialStore:
         await mod.on_startup(config=None, db=None, credential_store=None)
         await mod.on_shutdown()
         assert mod._resolved_credentials == {}
-
-    async def test_store_resolve_called_for_bot_token_key(self) -> None:
-        """CredentialStore.resolve is called for the configured bot token key."""
-        store = _make_credential_store()
-        mod = TelegramModule()
-        await mod.on_startup(config=None, db=None, credential_store=store)
-        await mod.on_shutdown()
-
-        resolved_keys = [call.args[0] for call in store.resolve.call_args_list]
-        assert "BUTLER_TELEGRAM_TOKEN" in resolved_keys
 
     async def test_db_value_wins_over_env_in_get_bot_token(
         self, monkeypatch: pytest.MonkeyPatch

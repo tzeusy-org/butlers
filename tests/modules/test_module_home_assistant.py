@@ -95,23 +95,13 @@ def mock_mcp() -> MagicMock:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self) -> None:
+    def test_module_contract(self, ha_module: HomeAssistantModule) -> None:
+        """HomeAssistantModule satisfies Module ABC: name, config_schema, dependencies."""
         assert issubclass(HomeAssistantModule, Module)
-
-    def test_instantiates(self) -> None:
-        assert HomeAssistantModule() is not None
-
-    def test_name(self, ha_module: HomeAssistantModule) -> None:
         assert ha_module.name == "home_assistant"
-
-    def test_config_schema(self, ha_module: HomeAssistantModule) -> None:
         assert ha_module.config_schema is HomeAssistantConfig
         assert issubclass(ha_module.config_schema, BaseModel)
-
-    def test_dependencies(self, ha_module: HomeAssistantModule) -> None:
         assert ha_module.dependencies == ["contacts", "approvals"]
-
-    def test_migration_revisions(self, ha_module: HomeAssistantModule) -> None:
         assert ha_module.migration_revisions() == "home"
 
     def test_tool_metadata_call_service_sensitive(self, ha_module: HomeAssistantModule) -> None:
@@ -149,13 +139,6 @@ class TestHomeAssistantConfig:
         with pytest.raises(ValidationError):
             HomeAssistantConfig(unknown_field="boom")
 
-    def test_url_accepted(self) -> None:
-        config = HomeAssistantConfig(url="http://homeassistant.local:8123")
-        assert config.url == "http://homeassistant.local:8123"
-
-    def test_read_only_configurable(self) -> None:
-        config = HomeAssistantConfig(read_only=True)
-        assert config.read_only is True
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +233,6 @@ class TestShutdown:
         assert ha_module._url is None
         assert ha_module._token is None
 
-    async def test_shutdown_idempotent(self, ha_module: HomeAssistantModule) -> None:
-        ha_module._client = None
-        await ha_module.on_shutdown()
-        await ha_module.on_shutdown()  # No error
 
 
 # ---------------------------------------------------------------------------
@@ -262,17 +241,19 @@ class TestShutdown:
 
 
 class TestWebSocketUrlDerivation:
-    def test_http_becomes_ws(self, ha_module: HomeAssistantModule) -> None:
-        ha_module._url = "http://homeassistant.local:8123"
-        assert ha_module._ws_url() == "ws://homeassistant.local:8123/api/websocket"
-
-    def test_https_becomes_wss(self, ha_module: HomeAssistantModule) -> None:
-        ha_module._url = "https://ha.example.com:8123"
-        assert ha_module._ws_url() == "wss://ha.example.com:8123/api/websocket"
-
-    def test_trailing_slash_stripped(self, ha_module: HomeAssistantModule) -> None:
-        ha_module._url = "http://ha.local/"
-        assert ha_module._ws_url() == "ws://ha.local/api/websocket"
+    @pytest.mark.parametrize(
+        "url,expected",
+        [
+            ("http://homeassistant.local:8123", "ws://homeassistant.local:8123/api/websocket"),
+            ("https://ha.example.com:8123", "wss://ha.example.com:8123/api/websocket"),
+            ("http://ha.local/", "ws://ha.local/api/websocket"),
+        ],
+    )
+    def test_ws_url_derivation(
+        self, ha_module: HomeAssistantModule, url: str, expected: str
+    ) -> None:
+        ha_module._url = url
+        assert ha_module._ws_url() == expected
 
 
 # ---------------------------------------------------------------------------

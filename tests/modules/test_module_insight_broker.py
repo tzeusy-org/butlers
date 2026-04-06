@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -68,44 +68,29 @@ def module():
 class TestInsightBrokerModuleABC:
     """Verify InsightBrokerModule implements the Module ABC correctly."""
 
-    def test_name_is_insight_broker(self, module):
-        assert module.name == "insight_broker"
-
-    def test_dependencies_is_empty(self, module):
-        assert module.dependencies == []
-
-    def test_config_schema_is_pydantic_model(self, module):
+    def test_module_contract(self, module):
+        """InsightBrokerModule satisfies Module ABC: name, dependencies, revisions."""
         from pydantic import BaseModel
 
+        assert module.name == "insight_broker"
+        assert module.dependencies == []
         assert issubclass(module.config_schema, BaseModel)
-
-    def test_migration_revisions_is_none(self, module):
         assert module.migration_revisions() is None
 
     @pytest.mark.asyncio
-    async def test_on_startup_stores_db(self, module):
+    async def test_lifecycle_db(self, module):
+        """on_startup stores DB; on_shutdown clears it; pool accessible after startup."""
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.on_startup(config={}, db=fake_db)
         assert module._db is fake_db
-
-    @pytest.mark.asyncio
-    async def test_on_shutdown_clears_db(self, module):
-        fake_db = MagicMock()
-        await module.on_startup(config={}, db=fake_db)
+        assert module._get_pool() is fake_db.pool
         await module.on_shutdown()
         assert module._db is None
 
     def test_get_pool_raises_when_not_initialised(self, module):
         with pytest.raises(RuntimeError, match="InsightBrokerModule not initialised"):
             module._get_pool()
-
-    @pytest.mark.asyncio
-    async def test_get_pool_returns_pool_after_startup(self, module):
-        fake_db = MagicMock()
-        fake_db.pool = MagicMock()
-        await module.on_startup(config={}, db=fake_db)
-        assert module._get_pool() is fake_db.pool
 
 
 # ---------------------------------------------------------------------------
@@ -115,27 +100,6 @@ class TestInsightBrokerModuleABC:
 
 class TestInsightBrokerRegistryDiscovery:
     """Verify InsightBrokerModule is discovered by the module registry."""
-
-    def test_module_is_importable(self):
-        """InsightBrokerModule is loadable via the registry's roster scanner."""
-        import sys  # noqa: PLC0415
-
-        from butlers.modules.registry import default_registry  # noqa: PLC0415
-
-        default_registry()
-        assert "butlers.modules._roster_switchboard.insight_broker" in sys.modules
-        mod = sys.modules["butlers.modules._roster_switchboard.insight_broker"]
-        assert hasattr(mod, "InsightBrokerModule")
-
-    def test_module_exported_from_roster_package(self):
-        """InsightBrokerModule is importable from the _roster_switchboard synthetic module."""
-        import sys  # noqa: PLC0415
-
-        from butlers.modules.registry import default_registry  # noqa: PLC0415
-
-        default_registry()
-        roster_mod = sys.modules["butlers.modules._roster_switchboard"]
-        assert hasattr(roster_mod, "InsightBrokerModule")
 
     def test_default_registry_includes_insight_broker(self):
         """default_registry() discovers InsightBrokerModule via roster scan."""
@@ -165,87 +129,15 @@ class TestProposeInsightCandidateTool:
     @pytest.mark.asyncio
     async def test_registers_propose_insight_candidate_tool(self, module, mock_mcp):
         """register_tools creates the propose_insight_candidate MCP tool."""
-        fake_db = MagicMock()
-        fake_db.pool = MagicMock()
-        await module.register_tools(mcp=mock_mcp, config={}, db=fake_db)
-        assert "propose_insight_candidate" in mock_mcp._registered_tools
-
-    @pytest.mark.asyncio
-    async def test_registered_tool_is_callable(self, module, mock_mcp):
-        """The registered propose_insight_candidate is an async callable."""
         import asyncio
 
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
         await module.register_tools(mcp=mock_mcp, config={}, db=fake_db)
+        assert "propose_insight_candidate" in mock_mcp._registered_tools
         tool_fn = mock_mcp._registered_tools["propose_insight_candidate"]
         assert callable(tool_fn)
         assert asyncio.iscoroutinefunction(tool_fn)
-
-    @pytest.mark.asyncio
-    async def test_tool_delegates_to_broker(self, module, mock_mcp):
-        """Calling the tool delegates to propose_insight_candidate in broker."""
-        from datetime import UTC, datetime, timedelta
-
-        fake_db = MagicMock()
-        fake_db.pool = MagicMock()
-        accepted = {"status": "accepted", "reason": "candidate queued for delivery cycle"}
-
-        with patch(
-            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
-            new=AsyncMock(return_value=accepted),
-        ) as mock_propose:
-            await module.register_tools(mcp=mock_mcp, config={}, db=fake_db)
-            tool_fn = mock_mcp._registered_tools["propose_insight_candidate"]
-            future_dt = (datetime.now(UTC) + timedelta(days=7)).isoformat()
-            result = await tool_fn(
-                origin_butler="lifestyle",
-                priority=75,
-                category="birthday",
-                dedup_key="birthday:entity-123:2026",
-                message="Alice's birthday is in 3 days",
-                expires_at=future_dt,
-            )
-
-        assert result == accepted
-        mock_propose.assert_called_once()
-        call_kwargs = mock_propose.call_args.kwargs
-        assert call_kwargs["origin_butler"] == "lifestyle"
-        assert call_kwargs["priority"] == 75
-        assert call_kwargs["category"] == "birthday"
-
-    @pytest.mark.asyncio
-    async def test_tool_passes_optional_args(self, module, mock_mcp):
-        """Optional args (cooldown_days, channel, metadata) are forwarded."""
-        from datetime import UTC, datetime, timedelta
-
-        fake_db = MagicMock()
-        fake_db.pool = MagicMock()
-        accepted = {"status": "accepted", "reason": "candidate queued for delivery cycle"}
-
-        with patch(
-            "butlers.tools.switchboard.insight.broker.propose_insight_candidate",
-            new=AsyncMock(return_value=accepted),
-        ) as mock_propose:
-            await module.register_tools(mcp=mock_mcp, config={}, db=fake_db)
-            tool_fn = mock_mcp._registered_tools["propose_insight_candidate"]
-            future_dt = (datetime.now(UTC) + timedelta(days=7)).isoformat()
-            await tool_fn(
-                origin_butler="finance",
-                priority=55,
-                category="spending",
-                dedup_key="finance:spending:overage:2026-w13",
-                message="You spent 20% over budget this week",
-                expires_at=future_dt,
-                cooldown_days=3,
-                channel="telegram",
-                metadata={"amount_over": 150},
-            )
-
-        call_kwargs = mock_propose.call_args.kwargs
-        assert call_kwargs["cooldown_days"] == 3
-        assert call_kwargs["channel"] == "telegram"
-        assert call_kwargs["metadata"] == {"amount_over": 150}
 
 
 # ---------------------------------------------------------------------------

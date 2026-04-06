@@ -75,23 +75,13 @@ def mock_mcp() -> MagicMock:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self) -> None:
+    def test_module_contract(self, steam_module: SteamModule) -> None:
+        """SteamModule satisfies Module ABC: name, config_schema, dependencies."""
         assert issubclass(SteamModule, Module)
-
-    def test_instantiates(self) -> None:
-        assert SteamModule() is not None
-
-    def test_name(self, steam_module: SteamModule) -> None:
         assert steam_module.name == "steam"
-
-    def test_config_schema(self, steam_module: SteamModule) -> None:
         assert steam_module.config_schema is SteamModuleConfig
         assert issubclass(steam_module.config_schema, BaseModel)
-
-    def test_dependencies_empty(self, steam_module: SteamModule) -> None:
         assert steam_module.dependencies == []
-
-    def test_migration_revisions_none(self, steam_module: SteamModule) -> None:
         assert steam_module.migration_revisions() is None
 
 

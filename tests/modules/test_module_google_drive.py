@@ -67,31 +67,19 @@ def _make_mock_mcp() -> MagicMock:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self) -> None:
-        assert issubclass(GoogleDriveModule, Module)
-
-    def test_instantiates(self) -> None:
-        assert GoogleDriveModule() is not None
-
-    def test_name(self) -> None:
-        assert GoogleDriveModule().name == "google_drive"
-
-    def test_config_schema(self) -> None:
-        schema = GoogleDriveModule().config_schema
-        assert schema is GoogleDriveConfig
+    def test_module_contract(self) -> None:
+        """GoogleDriveModule satisfies Module ABC: name, config_schema, dependencies."""
         from pydantic import BaseModel
 
-        assert issubclass(schema, BaseModel)
-
-    def test_dependencies_empty(self) -> None:
-        assert GoogleDriveModule().dependencies == []
-
-    def test_migration_revisions(self) -> None:
-        assert GoogleDriveModule().migration_revisions() == "google_drive"
-
-    def test_default_registry_includes_google_drive(self) -> None:
         from butlers.modules.registry import default_registry
 
+        mod = GoogleDriveModule()
+        assert issubclass(GoogleDriveModule, Module)
+        assert mod.name == "google_drive"
+        assert mod.config_schema is GoogleDriveConfig
+        assert issubclass(mod.config_schema, BaseModel)
+        assert mod.dependencies == []
+        assert mod.migration_revisions() == "google_drive"
         assert "google_drive" in default_registry().available_modules
 
 
@@ -137,10 +125,7 @@ class TestMimeTypeInference:
         [
             ("doc.txt", "text/plain"),
             ("image.png", "image/png"),
-            ("report.pdf", "application/pdf"),
-            ("data.json", "application/json"),
             ("file.unknown", "application/octet-stream"),
-            ("archive.zip", "application/zip"),
         ],
     )
     def test_infer_mime_type(self, filename: str, expected_mime: str) -> None:

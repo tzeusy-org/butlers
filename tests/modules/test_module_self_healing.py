@@ -34,22 +34,16 @@ def _make_module() -> SelfHealingModule:
 
 
 class TestModuleABC:
-    def test_is_module_subclass(self) -> None:
-        assert issubclass(SelfHealingModule, Module)
-
-    def test_name(self) -> None:
-        assert _make_module().name == "self_healing"
-
-    def test_config_schema(self) -> None:
-        assert _make_module().config_schema is SelfHealingConfig
-
-    def test_migration_revisions(self) -> None:
-        # Schema owned by core migration (public.healing_attempts)
-        assert _make_module().migration_revisions() is None
-
-    def test_in_default_registry(self) -> None:
+    def test_module_contract(self) -> None:
+        """SelfHealingModule satisfies Module ABC: name, config_schema, revisions, registry."""
         from butlers.modules.registry import default_registry
 
+        mod = _make_module()
+        assert issubclass(SelfHealingModule, Module)
+        assert mod.name == "self_healing"
+        assert mod.config_schema is SelfHealingConfig
+        # Schema owned by core migration (public.healing_attempts)
+        assert mod.migration_revisions() is None
         assert "self_healing" in default_registry().available_modules
 
 

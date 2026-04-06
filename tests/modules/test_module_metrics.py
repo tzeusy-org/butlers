@@ -55,26 +55,14 @@ class TestMetricsModuleConfig:
 
 
 class TestMetricsModuleABC:
-    def test_is_module_subclass(self):
-        assert issubclass(MetricsModule, Module)
-
-    def test_instantiates(self):
-        assert isinstance(MetricsModule(), Module)
-
-    def test_name(self):
-        assert MetricsModule().name == "metrics"
-
-    def test_config_schema(self):
+    def test_module_contract(self):
+        """MetricsModule satisfies Module ABC: name, config_schema, dependencies, revisions."""
         mod = MetricsModule()
+        assert issubclass(MetricsModule, Module)
+        assert mod.name == "metrics"
         assert mod.config_schema is MetricsModuleConfig
-
-    def test_dependencies_empty(self):
-        assert MetricsModule().dependencies == []
-
-    def test_migration_revisions_none(self):
-        assert MetricsModule().migration_revisions() is None
-
-    def test_in_default_registry(self):
+        assert mod.dependencies == []
+        assert mod.migration_revisions() is None
         assert "metrics" in default_registry().available_modules
 
 

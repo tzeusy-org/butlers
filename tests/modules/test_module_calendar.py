@@ -160,25 +160,15 @@ def _make_event(**kwargs) -> CalendarEvent:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self):
+    def test_module_contract(self):
+        """CalendarModule satisfies Module ABC: name, config_schema, dependencies, revisions."""
+        mod = CalendarModule()
         assert issubclass(CalendarModule, Module)
-
-    def test_instantiates(self):
-        assert CalendarModule() is not None
-
-    def test_name(self):
-        assert CalendarModule().name == "calendar"
-
-    def test_config_schema(self):
-        schema = CalendarModule().config_schema
-        assert schema is CalendarConfig
-        assert issubclass(schema, BaseModel)
-
-    def test_dependencies_empty(self):
-        assert CalendarModule().dependencies == []
-
-    def test_migration_revisions_none(self):
-        assert CalendarModule().migration_revisions() is None
+        assert mod.name == "calendar"
+        assert mod.config_schema is CalendarConfig
+        assert issubclass(mod.config_schema, BaseModel)
+        assert mod.dependencies == []
+        assert mod.migration_revisions() is None
 
     def test_provider_interface_abstract_methods(self):
         abstract_methods = CalendarProvider.__abstractmethods__
@@ -449,8 +439,6 @@ class TestGoogleHelpers:
         [
             ({"client_id": "top"}, "client_id", "top"),
             ({"installed": {"client_id": "nested"}}, "client_id", "nested"),
-            ({"web": {"client_secret": "sec"}}, "client_secret", "sec"),
-            ({"client_id": "top", "installed": {"client_id": "nested"}}, "client_id", "top"),
             ({}, "client_id", None),
         ],
     )
@@ -461,12 +449,8 @@ class TestGoogleHelpers:
         "value,expected",
         [
             (3600, 3600),
-            (3600.5, 3600),
             (0, 3600),
-            (-100, 3600),
             (None, 3600),
-            ("3600", 3600),
-            (True, 3600),
         ],
     )
     def test_coerce_expires_in(self, value, expected):

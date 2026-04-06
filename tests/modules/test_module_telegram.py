@@ -57,24 +57,14 @@ def mock_mcp() -> MagicMock:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self) -> None:
-        assert issubclass(TelegramModule, Module)
-
-    def test_instantiates(self) -> None:
-        assert TelegramModule() is not None
-
-    def test_name(self, telegram_module: TelegramModule) -> None:
-        assert telegram_module.name == "telegram"
-
-    def test_config_schema(self, telegram_module: TelegramModule) -> None:
-        assert telegram_module.config_schema is TelegramConfig
-
-    def test_dependencies_empty(self, telegram_module: TelegramModule) -> None:
-        assert telegram_module.dependencies == []
-
-    def test_in_default_registry(self) -> None:
+    def test_module_contract(self, telegram_module: TelegramModule) -> None:
+        """TelegramModule satisfies Module ABC: name, config_schema, dependencies, registry."""
         from butlers.modules.registry import default_registry
 
+        assert issubclass(TelegramModule, Module)
+        assert telegram_module.name == "telegram"
+        assert telegram_module.config_schema is TelegramConfig
+        assert telegram_module.dependencies == []
         assert "telegram" in default_registry().available_modules
 
 

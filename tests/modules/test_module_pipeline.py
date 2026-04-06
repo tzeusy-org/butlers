@@ -196,13 +196,11 @@ class TestMessagePipelineProcess:
 
 
 class TestPipelineModule:
-    def test_name(self):
+    def test_module_contract(self):
         from butlers.modules.base import Module
 
         assert issubclass(PipelineModule, Module)
         assert PipelineModule().name == "pipeline"
-
-    def test_migration_revisions_none(self):
         assert PipelineModule().migration_revisions() is None
 
 

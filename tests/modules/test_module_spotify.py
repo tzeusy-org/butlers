@@ -89,23 +89,13 @@ def mock_mcp() -> MagicMock:
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self, spotify_module: SpotifyModule) -> None:
+    def test_module_contract(self, spotify_module: SpotifyModule) -> None:
+        """SpotifyModule satisfies Module ABC: name, config_schema, dependencies."""
         assert issubclass(SpotifyModule, Module)
-
-    def test_instantiates(self) -> None:
-        assert SpotifyModule() is not None
-
-    def test_name(self, spotify_module: SpotifyModule) -> None:
         assert spotify_module.name == "spotify"
-
-    def test_config_schema(self, spotify_module: SpotifyModule) -> None:
         assert spotify_module.config_schema is SpotifyModuleConfig
         assert issubclass(spotify_module.config_schema, BaseModel)
-
-    def test_dependencies_empty(self, spotify_module: SpotifyModule) -> None:
         assert spotify_module.dependencies == []
-
-    def test_migration_revisions_none(self, spotify_module: SpotifyModule) -> None:
         assert spotify_module.migration_revisions() is None
 
 

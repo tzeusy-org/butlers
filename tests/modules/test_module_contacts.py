@@ -47,25 +47,14 @@ pytestmark = pytest.mark.unit
 
 
 class TestModuleABCCompliance:
-    def test_is_module_subclass(self) -> None:
+    def test_module_contract(self) -> None:
+        """ContactsModule satisfies Module ABC: name, config_schema, dependencies, revisions."""
+        mod = ContactsModule()
         assert issubclass(ContactsModule, Module)
-
-    def test_instantiates(self) -> None:
-        assert isinstance(ContactsModule(), Module)
-
-    def test_name(self) -> None:
-        assert ContactsModule().name == "contacts"
-
-    def test_config_schema(self) -> None:
-        assert ContactsModule().config_schema is ContactsConfig
-
-    def test_dependencies_empty(self) -> None:
-        assert ContactsModule().dependencies == []
-
-    def test_migration_revisions_returns_contacts(self) -> None:
-        assert ContactsModule().migration_revisions() == "contacts"
-
-    def test_module_in_default_registry(self) -> None:
+        assert mod.name == "contacts"
+        assert mod.config_schema is ContactsConfig
+        assert mod.dependencies == []
+        assert mod.migration_revisions() == "contacts"
         assert "contacts" in default_registry().available_modules
 
 
