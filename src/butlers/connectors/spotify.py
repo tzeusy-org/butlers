@@ -94,6 +94,7 @@ _DEFAULT_POLL_ACTIVE_S = 60
 _DEFAULT_POLL_IDLE_S = 300
 _DEFAULT_SESSION_IDLE_TIMEOUT_S = 300
 _DEFAULT_DIGEST_INTERVAL_S = 3600
+_DEFAULT_GAP_FILL_IDLE_INTERVAL_S = 10800  # 3 hrs — batch recently-played during idle
 _DEFAULT_HEALTH_PORT = 40083
 _DEFAULT_MAX_INFLIGHT = 8
 
@@ -176,6 +177,7 @@ class SpotifyConnectorConfig:
     poll_idle_s: int = _DEFAULT_POLL_IDLE_S
     session_idle_timeout_s: int = _DEFAULT_SESSION_IDLE_TIMEOUT_S
     digest_interval_s: int = _DEFAULT_DIGEST_INTERVAL_S
+    gap_fill_idle_interval_s: int = _DEFAULT_GAP_FILL_IDLE_INTERVAL_S
 
     # Concurrency / health
     max_inflight: int = _DEFAULT_MAX_INFLIGHT
@@ -208,6 +210,9 @@ class SpotifyConnectorConfig:
                 "SPOTIFY_SESSION_IDLE_TIMEOUT_S", _DEFAULT_SESSION_IDLE_TIMEOUT_S
             ),
             digest_interval_s=_int("SPOTIFY_DIGEST_INTERVAL_S", _DEFAULT_DIGEST_INTERVAL_S),
+            gap_fill_idle_interval_s=_int(
+                "SPOTIFY_GAP_FILL_IDLE_INTERVAL_S", _DEFAULT_GAP_FILL_IDLE_INTERVAL_S
+            ),
             max_inflight=_int("CONNECTOR_MAX_INFLIGHT", _DEFAULT_MAX_INFLIGHT),
             health_port=_int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
         )
@@ -641,6 +646,7 @@ class SpotifyConnector:
         # Polling state
         self._current_poll_interval_s: float = config.poll_active_s
         self._last_recently_played_cursor: str | None = None  # after= timestamp (ms)
+        self._last_gap_fill_poll_at: float = 0.0  # monotonic; 0 = never polled
 
         # Session tracking
         self._session_tracker = ListeningSessionTracker(
@@ -1304,7 +1310,17 @@ class SpotifyConnector:
             await self._handle_no_playback(now, observed_at)
 
         # --- Gap-fill via recently-played ---
-        await self._poll_recently_played(now, observed_at)
+        # Throttle gap-fill to gap_fill_idle_interval_s (default 3 hrs) so
+        # recently-played tracks are batched into infrequent bulk digests
+        # rather than one ingestion per track every few minutes.
+        # Active playback detection via currently-playing is unaffected.
+        gap_fill_due = self._last_gap_fill_poll_at == 0.0 or (
+            time.monotonic() - self._last_gap_fill_poll_at
+            >= self._config.gap_fill_idle_interval_s
+        )
+        if gap_fill_due:
+            await self._poll_recently_played(now, observed_at)
+            self._last_gap_fill_poll_at = time.monotonic()
 
     async def _handle_active_playback(
         self,
