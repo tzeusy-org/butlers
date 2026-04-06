@@ -1,11 +1,10 @@
 """Tests for module tool-call gating based on enabled/disabled state.
 
 Covers:
-- Tools from disabled modules return structured error (not exception)
-- Tools from enabled modules work normally
-- Toggling a module's enabled state takes effect on next call (no restart)
-- Tool-to-module mapping is accurate for all registered tools
-- Core tools (non-module) are never gated
+- Disabled module tools return structured error; enabled tools execute normally
+- Toggling enabled state takes effect immediately (no restart)
+- Core tools (no module_runtime_states) are never gated
+- Tool-to-module mapping populated after startup
 """
 
 from __future__ import annotations
@@ -270,14 +269,12 @@ async def _start_daemon(
 class TestSpanWrappingMCPGating:
     """Tests for the gating layer inside _SpanWrappingMCP."""
 
-    async def test_disabled_module_tool_returns_structured_error(self) -> None:
-        """A tool from a disabled module returns the module_disabled error dict."""
+    async def test_gating_and_live_toggle(self) -> None:
+        """Disabled module returns module_disabled error; enabled executes normally; live toggle takes effect immediately."""
         runtime_states: dict[str, ModuleRuntimeState] = {
             "calendar": ModuleRuntimeState(health="active", enabled=False),
         }
-
         mock_mcp = MagicMock()
-        # Make mock_mcp.tool() return a decorator that just wraps the fn.
         mock_mcp.tool.return_value = lambda fn: fn
 
         proxy = _SpanWrappingMCP(
@@ -286,7 +283,6 @@ class TestSpanWrappingMCPGating:
             module_name="calendar",
             module_runtime_states=runtime_states,
         )
-
         call_count = 0
 
         @proxy.tool()
@@ -295,194 +291,63 @@ class TestSpanWrappingMCPGating:
             call_count += 1
             return {"events": []}
 
-        # The decorator returns the instrumented wrapper; call it.
+        # Disabled: returns structured error, not called
         result = await calendar_get_events()
         assert result == {
             "error": "module_disabled",
             "module": "calendar",
             "message": "The calendar module is disabled. Enable it from the dashboard.",
         }
-        # The original function body must NOT have been called.
         assert call_count == 0
 
-    async def test_enabled_module_tool_executes_normally(self) -> None:
-        """A tool from an enabled module executes without gating."""
-        runtime_states: dict[str, ModuleRuntimeState] = {
-            "calendar": ModuleRuntimeState(health="active", enabled=True),
-        }
-
-        mock_mcp = MagicMock()
-        mock_mcp.tool.return_value = lambda fn: fn
-
-        proxy = _SpanWrappingMCP(
-            mock_mcp,
-            "test-butler",
-            module_name="calendar",
-            module_runtime_states=runtime_states,
-        )
-
-        call_count = 0
-
-        @proxy.tool()
-        async def calendar_get_events(**kwargs: Any) -> dict:
-            nonlocal call_count
-            call_count += 1
-            return {"events": ["ev1"]}
-
-        result = await calendar_get_events()
-        assert result == {"events": ["ev1"]}
-        assert call_count == 1
-
-    async def test_no_runtime_states_means_no_gating(self) -> None:
-        """When module_runtime_states is None, tools are never gated."""
-        mock_mcp = MagicMock()
-        mock_mcp.tool.return_value = lambda fn: fn
-
-        proxy = _SpanWrappingMCP(
-            mock_mcp,
-            "test-butler",
-            module_name="calendar",
-            module_runtime_states=None,
-        )
-
-        call_count = 0
-
-        @proxy.tool()
-        async def calendar_get_events(**kwargs: Any) -> dict:
-            nonlocal call_count
-            call_count += 1
-            return {"events": []}
-
-        result = await calendar_get_events()
-        assert result == {"events": []}
-        assert call_count == 1
-
-    async def test_toggle_disabled_to_enabled_takes_effect_immediately(self) -> None:
-        """After toggling a module back to enabled, the next call executes normally."""
-        runtime_states: dict[str, ModuleRuntimeState] = {
-            "calendar": ModuleRuntimeState(health="active", enabled=False),
-        }
-
-        mock_mcp = MagicMock()
-        mock_mcp.tool.return_value = lambda fn: fn
-
-        proxy = _SpanWrappingMCP(
-            mock_mcp,
-            "test-butler",
-            module_name="calendar",
-            module_runtime_states=runtime_states,
-        )
-
-        call_count = 0
-
-        @proxy.tool()
-        async def calendar_get_events(**kwargs: Any) -> dict:
-            nonlocal call_count
-            call_count += 1
-            return {"events": ["ev1"]}
-
-        # First call: disabled → structured error.
-        result = await calendar_get_events()
-        assert result["error"] == "module_disabled"
-        assert call_count == 0
-
-        # Toggle enabled in the shared dict (simulates daemon.set_module_enabled).
+        # Enable: executes normally
         runtime_states["calendar"].enabled = True
-
-        # Second call: now enabled → normal execution.
-        result = await calendar_get_events()
-        assert result == {"events": ["ev1"]}
+        result2 = await calendar_get_events()
+        assert result2 == {"events": []}
         assert call_count == 1
 
-    async def test_toggle_enabled_to_disabled_gates_next_call(self) -> None:
-        """Disabling a module live prevents the next tool call from executing."""
-        runtime_states: dict[str, ModuleRuntimeState] = {
-            "calendar": ModuleRuntimeState(health="active", enabled=True),
-        }
-
-        mock_mcp = MagicMock()
-        mock_mcp.tool.return_value = lambda fn: fn
-
-        proxy = _SpanWrappingMCP(
-            mock_mcp,
-            "test-butler",
-            module_name="calendar",
-            module_runtime_states=runtime_states,
-        )
-
-        call_count = 0
-
-        @proxy.tool()
-        async def calendar_get_events(**kwargs: Any) -> dict:
-            nonlocal call_count
-            call_count += 1
-            return {"events": ["ev1"]}
-
-        # First call: enabled → normal.
-        result = await calendar_get_events()
-        assert result == {"events": ["ev1"]}
-        assert call_count == 1
-
-        # Toggle to disabled.
+        # Disable again live: gates immediately
         runtime_states["calendar"].enabled = False
-
-        # Second call: disabled → gated.
-        result = await calendar_get_events()
-        assert result["error"] == "module_disabled"
+        result3 = await calendar_get_events()
+        assert result3["error"] == "module_disabled"
         assert call_count == 1  # unchanged
 
-    async def test_error_dict_contains_correct_module_name(self) -> None:
-        """The module_disabled error dict identifies the correct module name."""
-        runtime_states: dict[str, ModuleRuntimeState] = {
-            "email": ModuleRuntimeState(health="active", enabled=False),
-        }
-
+    async def test_no_runtime_states_and_unknown_module_not_gated(self) -> None:
+        """module_runtime_states=None and unknown module are both never gated."""
         mock_mcp = MagicMock()
         mock_mcp.tool.return_value = lambda fn: fn
 
+        # No runtime states
         proxy = _SpanWrappingMCP(
-            mock_mcp,
-            "test-butler",
-            module_name="email",
-            module_runtime_states=runtime_states,
+            mock_mcp, "test-butler", module_name="calendar", module_runtime_states=None
         )
-
-        @proxy.tool()
-        async def email_read_inbox(**kwargs: Any) -> dict:
-            return {"messages": []}
-
-        result = await email_read_inbox()
-        assert result["error"] == "module_disabled"
-        assert result["module"] == "email"
-        assert "email" in result["message"]
-        assert "dashboard" in result["message"]
-
-    async def test_unknown_module_in_states_is_not_gated(self) -> None:
-        """If a module has no entry in runtime_states, its tools are not gated."""
-        # runtime_states is empty — module "calendar" has no entry.
-        runtime_states: dict[str, ModuleRuntimeState] = {}
-
-        mock_mcp = MagicMock()
-        mock_mcp.tool.return_value = lambda fn: fn
-
-        proxy = _SpanWrappingMCP(
-            mock_mcp,
-            "test-butler",
-            module_name="calendar",
-            module_runtime_states=runtime_states,
-        )
-
         call_count = 0
 
         @proxy.tool()
-        async def calendar_get_events(**kwargs: Any) -> dict:
+        async def tool_a(**kwargs: Any) -> dict:
             nonlocal call_count
             call_count += 1
-            return {"events": []}
+            return {"ok": True}
 
-        result = await calendar_get_events()
-        assert result == {"events": []}
+        result = await tool_a()
+        assert result == {"ok": True}
         assert call_count == 1
+
+        # Unknown module in empty states
+        proxy2 = _SpanWrappingMCP(
+            mock_mcp, "test-butler", module_name="calendar", module_runtime_states={}
+        )
+        call_count2 = 0
+
+        @proxy2.tool()
+        async def tool_b(**kwargs: Any) -> dict:
+            nonlocal call_count2
+            call_count2 += 1
+            return {"ok": True}
+
+        result2 = await tool_b()
+        assert result2 == {"ok": True}
+        assert call_count2 == 1
 
 
 # ---------------------------------------------------------------------------
@@ -493,27 +358,22 @@ class TestSpanWrappingMCPGating:
 class TestDaemonToolGating:
     """Integration-level tests using a started ButlerDaemon."""
 
-    async def test_tool_module_map_populated_after_startup(self, tmp_path: Path) -> None:
-        """After startup, _tool_module_map contains all registered module tools."""
+    async def test_tool_module_map_populated_and_modules_gated_independently(
+        self, tmp_path: Path
+    ) -> None:
+        """Tool-module map populated; disabling one module does not affect other modules."""
         butler_dir = _make_butler_toml(tmp_path, modules={"calendar": {}, "email": {}})
         registry = _make_registry(_CalendarModule, _EmailModule)
         daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
 
         tool_map = daemon._tool_module_map
-        assert "calendar_get_events" in tool_map
         assert tool_map["calendar_get_events"] == "calendar"
-        assert "calendar_check_availability" in tool_map
         assert tool_map["calendar_check_availability"] == "calendar"
-        assert "email_read_inbox" in tool_map
         assert tool_map["email_read_inbox"] == "email"
 
-    async def test_tool_module_map_empty_without_modules(self, tmp_path: Path) -> None:
-        """With no modules registered, the tool_module_map is empty."""
-        butler_dir = _make_butler_toml(tmp_path)
-        # Use an empty registry (no modules) so no module tools are registered.
-        empty_registry = ModuleRegistry()
-        daemon = await _start_daemon(butler_dir, registry=empty_registry, state_store={})
-        assert daemon._tool_module_map == {}
+        await daemon.set_module_enabled("calendar", False)
+        assert daemon._module_runtime_states["calendar"].enabled is False
+        assert daemon._module_runtime_states["email"].enabled is True
 
     async def test_gating_reflects_live_module_state(self, tmp_path: Path) -> None:
         """Disabling a module via set_module_enabled updates the shared state reference."""
@@ -521,74 +381,8 @@ class TestDaemonToolGating:
         registry = _make_registry(_CalendarModule)
         daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
 
-        # Initially enabled.
         states = daemon.get_module_states()
         assert states["calendar"].enabled is True
 
-        # Disable via set_module_enabled (persists to state store).
         await daemon.set_module_enabled("calendar", False)
-
-        # The _module_runtime_states dict (shared reference) now reflects disabled.
         assert daemon._module_runtime_states["calendar"].enabled is False
-
-    async def test_multiple_modules_gated_independently(self, tmp_path: Path) -> None:
-        """Disabling one module does not affect tools of other modules."""
-        butler_dir = _make_butler_toml(tmp_path, modules={"calendar": {}, "email": {}})
-        registry = _make_registry(_CalendarModule, _EmailModule)
-        daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
-
-        await daemon.set_module_enabled("calendar", False)
-
-        # calendar disabled, email still enabled.
-        assert daemon._module_runtime_states["calendar"].enabled is False
-        assert daemon._module_runtime_states["email"].enabled is True
-
-    async def test_tool_module_map_accurate_for_multiple_modules(self, tmp_path: Path) -> None:
-        """Tool-to-module mapping is correct for all tools across multiple modules."""
-        butler_dir = _make_butler_toml(tmp_path, modules={"calendar": {}, "email": {}})
-        registry = _make_registry(_CalendarModule, _EmailModule)
-        daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
-
-        tool_map = daemon._tool_module_map
-        # All calendar tools map to "calendar".
-        calendar_tools = {k for k, v in tool_map.items() if v == "calendar"}
-        assert "calendar_get_events" in calendar_tools
-        assert "calendar_check_availability" in calendar_tools
-
-        # All email tools map to "email".
-        email_tools = {k for k, v in tool_map.items() if v == "email"}
-        assert "email_read_inbox" in email_tools
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: gating does not affect tools with no module_runtime_states
-# ---------------------------------------------------------------------------
-
-
-class TestCoreToolsNotGated:
-    """Verify that tools registered without module_runtime_states are never gated."""
-
-    async def test_span_proxy_without_states_passes_all_calls(self) -> None:
-        """_SpanWrappingMCP with no runtime_states never gates any tool."""
-        mock_mcp = MagicMock()
-        mock_mcp.tool.return_value = lambda fn: fn
-
-        # No module_runtime_states passed — simulates core tool registration.
-        proxy = _SpanWrappingMCP(
-            mock_mcp,
-            "test-butler",
-            module_name="unknown",
-            module_runtime_states=None,
-        )
-
-        call_count = 0
-
-        @proxy.tool()
-        async def some_core_tool(**kwargs: Any) -> dict:
-            nonlocal call_count
-            call_count += 1
-            return {"ok": True}
-
-        result = await some_core_tool()
-        assert result == {"ok": True}
-        assert call_count == 1

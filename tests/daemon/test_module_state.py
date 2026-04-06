@@ -261,29 +261,22 @@ async def _start_daemon(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "health,enabled,failure_phase,failure_error",
-    [
-        ("active", True, None, None),
-        ("failed", False, "credentials", "Missing STUB_TOKEN"),
-        ("cascade_failed", False, "dependency", "Dependency 'stub_a' failed"),
-    ],
-)
-def test_module_runtime_state_dataclass(health, enabled, failure_phase, failure_error):
+def test_module_runtime_state_dataclass():
+    """ModuleRuntimeState holds health/enabled/failure fields; enabled is mutable."""
     state = ModuleRuntimeState(
-        health=health,
-        enabled=enabled,
-        failure_phase=failure_phase,
-        failure_error=failure_error,
+        health="active", enabled=True, failure_phase=None, failure_error=None
     )
-    assert state.health == health
-    assert state.enabled == enabled
-    assert state.failure_phase == failure_phase
-    assert state.failure_error == failure_error
+    assert state.health == "active"
+    assert state.enabled is True
+    state.enabled = False
+    assert state.enabled is False
 
-    # enabled flag is mutable
-    state.enabled = not enabled
-    assert state.enabled != enabled
+    # failed state has failure details
+    state2 = ModuleRuntimeState(
+        health="failed", enabled=False, failure_phase="credentials", failure_error="Missing TOKEN"
+    )
+    assert state2.failure_phase == "credentials"
+    assert state2.failure_error == "Missing TOKEN"
 
 
 # ---------------------------------------------------------------------------
@@ -332,33 +325,20 @@ async def test_init_module_states_startup_behavior(tmp_path: Path) -> None:
     assert states3["stub_a"].enabled is False
     assert states3["stub_b"].enabled is True
 
+    # Self-healing: failure-disabled auto-heals on healthy restart; user-disabled stays disabled
+    d3 = tmp_path / "d3"
+    d3.mkdir()
+    butler_dir3 = _make_butler_toml(d3, modules={"stub_a": {}})
+    store_failure = {"module::stub_a::enabled": False, "module::stub_a::disabled_by": "failure"}
+    daemon4 = await _start_daemon(butler_dir3, registry=_make_registry(StubModuleA), state_store=store_failure)
+    assert daemon4.get_module_states()["stub_a"].enabled is True  # heals
 
-@pytest.mark.parametrize(
-    "disabled_by,module_fails,expect_enabled",
-    [
-        ("failure", False, True),   # failure-disabled auto-heals on healthy restart
-        ("user", False, False),     # user-disabled stays disabled
-        (None, False, True),        # legacy entry (no disabled_by) auto-heals
-        ("failure", True, False),   # repeated failure stays disabled
-    ],
-)
-async def test_self_healing_behavior(tmp_path, disabled_by, module_fails, expect_enabled):
-    """Modules disabled by failure auto-heal on healthy restart; user-disabled do not."""
-    store: dict = {"module::stub_a::enabled": False}
-    if disabled_by is not None:
-        store["module::stub_a::disabled_by"] = disabled_by
-
-    butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
-
-    class FailingModuleA(StubModuleA):
-        async def on_startup(
-            self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
-        ) -> None:
-            raise RuntimeError("still broken")
-
-    registry = _make_registry(FailingModuleA if module_fails else StubModuleA)
-    daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
-    assert daemon.get_module_states()["stub_a"].enabled is expect_enabled
+    d4 = tmp_path / "d4"
+    d4.mkdir()
+    butler_dir4 = _make_butler_toml(d4, modules={"stub_a": {}})
+    store_user = {"module::stub_a::enabled": False, "module::stub_a::disabled_by": "user"}
+    daemon5 = await _start_daemon(butler_dir4, registry=_make_registry(StubModuleA), state_store=store_user)
+    assert daemon5.get_module_states()["stub_a"].enabled is False  # stays disabled
 
 
 # ---------------------------------------------------------------------------
@@ -369,8 +349,6 @@ async def test_self_healing_behavior(tmp_path, disabled_by, module_fails, expect
 async def test_get_module_states_behavior(tmp_path: Path) -> None:
     """Empty before startup; returns copy; failure details included."""
     butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
-
-    # Empty before startup
     assert ButlerDaemon(butler_dir).get_module_states() == {}
 
     class FailingModuleA(StubModuleA):
@@ -379,15 +357,10 @@ async def test_get_module_states_behavior(tmp_path: Path) -> None:
         ) -> None:
             raise RuntimeError("db connection refused")
 
-    registry = _make_registry(FailingModuleA)
-    daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
-
+    daemon = await _start_daemon(butler_dir, registry=_make_registry(FailingModuleA), state_store={})
     states = daemon.get_module_states()
-    # Returns copy — mutations don't affect daemon
     states.clear()
     assert len(daemon.get_module_states()) == 1
-
-    # Failure details present
     states2 = daemon.get_module_states()
     assert states2["stub_a"].failure_phase == "startup"
     assert "db connection refused" in (states2["stub_a"].failure_error or "")

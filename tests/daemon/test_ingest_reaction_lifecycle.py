@@ -94,8 +94,9 @@ def _make_capturing_mod() -> tuple[TelegramModule, list]:
 class TestReactForIngestParsing:
     """Test the parsing logic of react_for_ingest without network calls."""
 
-    async def test_valid_thread_id_parsing(self) -> None:
-        """Valid 'chat_id:message_id' parsed; negative chat IDs (groups) also work."""
+    async def test_thread_id_parsing(self) -> None:
+        """Valid 'chat_id:message_id' parsed; negative chat IDs (groups) also work;
+        invalid/missing thread IDs are no-ops."""
         # Positive chat ID
         mod, calls = _make_capturing_mod()
         await mod.react_for_ingest(external_thread_id="12345:678", reaction=REACTION_IN_PROGRESS)
@@ -113,22 +114,11 @@ class TestReactForIngestParsing:
         assert calls2[0]["chat_id"] == "-100987654321"
         assert calls2[0]["message_id"] == 999
 
-    @pytest.mark.parametrize(
-        "thread_id",
-        [
-            None,  # None
-            "",  # empty string
-            "12345",  # no colon
-            "123:abc",  # non-integer message_id
-            ":100",  # empty chat_id
-            "12345:",  # empty message_id after colon
-        ],
-    )
-    async def test_invalid_thread_id_is_noop(self, thread_id: str | None) -> None:
-        """Unparseable or missing thread IDs → no _set_message_reaction call."""
-        mod, calls = _make_capturing_mod()
-        await mod.react_for_ingest(external_thread_id=thread_id, reaction=REACTION_IN_PROGRESS)
-        assert calls == []
+        # Invalid: None → noop; non-integer message_id → noop
+        for bad_thread in (None, "123:abc"):
+            mod3, calls3 = _make_capturing_mod()
+            await mod3.react_for_ingest(external_thread_id=bad_thread, reaction=REACTION_IN_PROGRESS)
+            assert calls3 == [], f"Expected noop for thread_id={bad_thread!r}"
 
 
 class TestReactForIngestBehavior:

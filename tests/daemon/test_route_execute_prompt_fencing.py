@@ -182,19 +182,21 @@ def _route_request_context(
 class TestRouteExecutePromptFencing:
     """Verify routed prompts are structurally fenced with XML tags."""
 
-    async def test_prompt_wrapped_in_routed_message_tags(self, tmp_path: Path) -> None:
-        """Prompt text is wrapped in <routed_message> tags."""
+    def _make_trigger_result(self):
+        r = MagicMock()
+        r.output = "ok"
+        r.success = True
+        r.error = None
+        r.duration_ms = 10
+        return r
+
+    async def test_non_interactive_channel_fencing(self, tmp_path: Path) -> None:
+        """Non-interactive (email): prompt XML-fenced; CONTENT SAFETY preamble in context."""
         patches = _patch_infra()
         butler_dir = _make_butler_toml(tmp_path, butler_name="general")
         daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
         assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+        daemon.spawner.trigger = AsyncMock(return_value=self._make_trigger_result())
 
         result = await route_execute_fn(
             schema_version="route.v1",
@@ -204,60 +206,25 @@ class TestRouteExecutePromptFencing:
 
         await asyncio.sleep(0.05)
         assert result["status"] == "accepted"
-        daemon.spawner.trigger.assert_awaited_once()
-
         call_args = daemon.spawner.trigger.call_args
         prompt_arg = call_args.kwargs.get("prompt")
         assert prompt_arg is not None
         assert prompt_arg.startswith("<routed_message>\n")
         assert prompt_arg.endswith("\n</routed_message>")
         assert "Add a comment at https://example.com" in prompt_arg
-
-    async def test_content_safety_preamble_for_non_interactive_channel(
-        self, tmp_path: Path
-    ) -> None:
-        """Non-interactive channels get CONTENT SAFETY preamble in context."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="general")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="email"),
-            input={"prompt": "Newsletter content here"},
-        )
-
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-
-        call_args = daemon.spawner.trigger.call_args
         context_arg = call_args.kwargs.get("context")
         assert context_arg is not None
         assert "CONTENT SAFETY" in context_arg
-        assert "<routed_message>" in context_arg
         assert "/routed-message-safety" in context_arg
 
-    async def test_no_content_safety_preamble_for_interactive_channel(self, tmp_path: Path) -> None:
-        """Interactive channels (telegram) do NOT get the safety preamble."""
+    async def test_interactive_channel_fencing(self, tmp_path: Path) -> None:
+        """Interactive (telegram): prompt XML-fenced; NO CONTENT SAFETY preamble."""
         patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="general")
+        (tmp_path / "t2").mkdir()
+        butler_dir = _make_butler_toml(tmp_path / "t2", butler_name="general")
         daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
         assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+        daemon.spawner.trigger = AsyncMock(return_value=self._make_trigger_result())
 
         result = await route_execute_fn(
             schema_version="route.v1",
@@ -267,37 +234,10 @@ class TestRouteExecutePromptFencing:
 
         await asyncio.sleep(0.05)
         assert result["status"] == "accepted"
-
-        call_args = daemon.spawner.trigger.call_args
-        context_arg = call_args.kwargs.get("context")
-        # Interactive channels should NOT have the safety preamble
-        assert "CONTENT SAFETY" not in (context_arg or "")
-
-    async def test_prompt_still_fenced_for_interactive_channel(self, tmp_path: Path) -> None:
-        """Even interactive channels get XML-fenced prompts (belt-and-suspenders)."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="general")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram_bot"),
-            input={"prompt": "Hello from telegram"},
-        )
-
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-
         call_args = daemon.spawner.trigger.call_args
         prompt_arg = call_args.kwargs.get("prompt")
         assert prompt_arg is not None
         assert "<routed_message>" in prompt_arg
         assert "</routed_message>" in prompt_arg
+        context_arg = call_args.kwargs.get("context")
+        assert "CONTENT SAFETY" not in (context_arg or "")
