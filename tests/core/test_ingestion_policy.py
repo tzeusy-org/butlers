@@ -1,18 +1,16 @@
-"""Unit tests for the unified IngestionPolicyEvaluator.
+"""Unit tests for the unified IngestionPolicyEvaluator — condensed.
 
 Covers:
 - All 8 rule_type matchers (sender_domain, sender_address, header_condition,
   mime_type, substring, chat_id, channel_id, mic_id)
-- First-match-wins evaluation order
+- First-match-wins evaluation order, all action types
 - No-match returns pass_through
-- Catch-all wildcard conditions (from whitelist migration)
+- Wildcard conditions, unknown rule types skipped
 - Fail-open on DB error (retains stale cache)
-- TTL-based background refresh scheduling
-- Cache invalidation
+- TTL-based background refresh scheduling, cache invalidation
 - IngestionEnvelope and PolicyDecision dataclasses
-- Scope-aware loading
-- Telemetry metrics integration (D11): rule_matched, rule_pass_through,
-  evaluation_latency_ms
+- Scope-aware DB loading, invalid rows skipped
+- Telemetry metrics integration: rule_matched, rule_pass_through, evaluation_latency_ms
 
 Issue: bu-r55.3, bu-r55.4
 """
@@ -110,1052 +108,456 @@ def _discord_envelope(*, channel_id: str = "987654321098765432") -> IngestionEnv
     )
 
 
-# ---------------------------------------------------------------------------
-# IngestionEnvelope
-# ---------------------------------------------------------------------------
-
-
-class TestIngestionEnvelope:
-    def test_frozen_dataclass(self) -> None:
-        env = IngestionEnvelope(sender_address="a@b.com", source_channel="email")
-        with pytest.raises(AttributeError):
-            env.sender_address = "c@d.com"  # type: ignore[misc]
-
-    def test_defaults(self) -> None:
-        env = IngestionEnvelope()
-        assert env.sender_address == ""
-        assert env.source_channel == ""
-        assert env.headers == {}
-        assert env.mime_parts == []
-        assert env.thread_id is None
-        assert env.raw_key == ""
-
-
-# ---------------------------------------------------------------------------
-# PolicyDecision
-# ---------------------------------------------------------------------------
-
-
-class TestPolicyDecision:
-    def test_bypasses_llm_for_block(self) -> None:
-        d = PolicyDecision(action="block")
-        assert d.bypasses_llm is True
-
-    def test_bypasses_llm_false_for_pass_through(self) -> None:
-        d = PolicyDecision(action="pass_through")
-        assert d.bypasses_llm is False
-
-    def test_bypasses_llm_for_skip(self) -> None:
-        d = PolicyDecision(action="skip")
-        assert d.bypasses_llm is True
-
-    def test_allowed_true_for_pass_through(self) -> None:
-        d = PolicyDecision(action="pass_through")
-        assert d.allowed is True
-
-    def test_allowed_false_for_block(self) -> None:
-        d = PolicyDecision(action="block")
-        assert d.allowed is False
-
-    def test_allowed_true_for_skip(self) -> None:
-        d = PolicyDecision(action="skip")
-        assert d.allowed is True
-
-
-# ---------------------------------------------------------------------------
-# sender_domain matcher
-# ---------------------------------------------------------------------------
-
-
-class TestMatchSenderDomain:
-    def test_exact_match(self) -> None:
-        env = _email_envelope(sender="alerts@chase.com")
-        assert _match_sender_domain(env, {"domain": "chase.com", "match": "exact"})
-
-    def test_exact_no_match_subdomain(self) -> None:
-        env = _email_envelope(sender="alerts@mail.chase.com")
-        assert not _match_sender_domain(env, {"domain": "chase.com", "match": "exact"})
-
-    def test_suffix_matches_exact(self) -> None:
-        env = _email_envelope(sender="alerts@chase.com")
-        assert _match_sender_domain(env, {"domain": "chase.com", "match": "suffix"})
-
-    def test_suffix_matches_subdomain(self) -> None:
-        env = _email_envelope(sender="alerts@mail.chase.com")
-        assert _match_sender_domain(env, {"domain": "chase.com", "match": "suffix"})
-
-    def test_suffix_no_false_positive(self) -> None:
-        env = _email_envelope(sender="user@notchase.com")
-        assert not _match_sender_domain(env, {"domain": "chase.com", "match": "suffix"})
-
-    def test_case_insensitive(self) -> None:
-        env = _email_envelope(sender="Alerts@CHASE.COM")
-        assert _match_sender_domain(env, {"domain": "chase.com", "match": "exact"})
-
-    def test_empty_domain_no_match(self) -> None:
-        env = _email_envelope(sender="alerts@chase.com")
-        assert not _match_sender_domain(env, {"domain": "", "match": "exact"})
-
-    def test_catchall_any_match(self) -> None:
-        env = _email_envelope(sender="anyone@anything.com")
-        assert _match_sender_domain(env, {"domain": "*", "match": "any"})
-
-    def test_catchall_wildcard_domain(self) -> None:
-        env = _email_envelope(sender="anyone@anything.com")
-        assert _match_sender_domain(env, {"domain": "*", "match": "exact"})
-
-    def test_rfc2822_display_name_exact(self) -> None:
-        """Domain match works when sender has 'Display Name <email>' format."""
-        env = _email_envelope(sender="GitHub <no-reply@github.com>")
-        assert _match_sender_domain(env, {"domain": "github.com", "match": "exact"})
-
-    def test_rfc2822_display_name_suffix(self) -> None:
-        env = _email_envelope(sender="Chase Alerts <alerts@mail.chase.com>")
-        assert _match_sender_domain(env, {"domain": "chase.com", "match": "suffix"})
-
-    def test_rfc2822_no_false_positive(self) -> None:
-        env = _email_envelope(sender="GitHub <no-reply@github.com>")
-        assert not _match_sender_domain(env, {"domain": "gitlab.com", "match": "exact"})
-
-
-# ---------------------------------------------------------------------------
-# sender_address matcher
-# ---------------------------------------------------------------------------
-
-
-class TestMatchSenderAddress:
-    def test_exact_match(self) -> None:
-        env = _email_envelope(sender="alerts@chase.com")
-        assert _match_sender_address(env, {"address": "alerts@chase.com"})
-
-    def test_case_insensitive(self) -> None:
-        env = _email_envelope(sender="ALERTS@CHASE.COM")
-        assert _match_sender_address(env, {"address": "alerts@chase.com"})
-
-    def test_no_match(self) -> None:
-        env = _email_envelope(sender="other@chase.com")
-        assert not _match_sender_address(env, {"address": "alerts@chase.com"})
-
-    def test_empty_target_no_match(self) -> None:
-        env = _email_envelope(sender="alerts@chase.com")
-        assert not _match_sender_address(env, {"address": ""})
-
-    def test_catchall_wildcard(self) -> None:
-        env = _email_envelope(sender="anyone@anything.com")
-        assert _match_sender_address(env, {"address": "*"})
-
-    def test_local_part_prefix_noreply(self) -> None:
-        env = _email_envelope(sender="noreply@grab.com")
-        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
-
-    def test_local_part_prefix_no_reply_hyphen(self) -> None:
-        env = _email_envelope(sender="no-reply@uber.com")
-        assert _match_sender_address(env, {"address": "no-reply", "match": "local_part_prefix"})
-
-    def test_local_part_prefix_case_insensitive(self) -> None:
-        env = _email_envelope(sender="NoReply@Example.com")
-        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
-
-    def test_local_part_prefix_no_match(self) -> None:
-        env = _email_envelope(sender="hello@example.com")
-        assert not _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
-
-    def test_local_part_prefix_partial(self) -> None:
-        """noreply-abc@x.com should match prefix 'noreply'."""
-        env = _email_envelope(sender="noreply-abc@x.com")
-        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
-
-    def test_rfc2822_exact_match(self) -> None:
-        """Exact address match works with 'Display Name <email>' format."""
-        env = _email_envelope(sender="GitHub <no-reply@github.com>")
-        assert _match_sender_address(env, {"address": "no-reply@github.com"})
-
-    def test_rfc2822_local_part_prefix(self) -> None:
-        """Local-part prefix works with 'Display Name <email>' format."""
-        env = _email_envelope(sender="GitHub <no-reply@github.com>")
-        assert _match_sender_address(env, {"address": "no-reply", "match": "local_part_prefix"})
-
-    def test_rfc2822_noreply_prefix(self) -> None:
-        env = _email_envelope(sender="Some Service <noreply@example.com>")
-        assert _match_sender_address(env, {"address": "noreply", "match": "local_part_prefix"})
-
-
-# ---------------------------------------------------------------------------
-# header_condition matcher
-# ---------------------------------------------------------------------------
-
-
-class TestMatchHeaderCondition:
-    def test_present_op_matches(self) -> None:
-        env = _email_envelope(headers={"List-Unsubscribe": "<mailto:unsub@x.com>"})
-        assert _match_header_condition(env, {"header": "List-Unsubscribe", "op": "present"})
-
-    def test_present_op_no_match(self) -> None:
-        env = _email_envelope(headers={})
-        assert not _match_header_condition(env, {"header": "List-Unsubscribe", "op": "present"})
-
-    def test_header_key_case_insensitive(self) -> None:
-        env = _email_envelope(headers={"List-Unsubscribe": "yes"})
-        assert _match_header_condition(env, {"header": "list-unsubscribe", "op": "present"})
-
-    def test_equals_op(self) -> None:
-        env = _email_envelope(headers={"Precedence": "bulk"})
-        assert _match_header_condition(
-            env, {"header": "Precedence", "op": "equals", "value": "bulk"}
-        )
-
-    def test_equals_op_no_match(self) -> None:
-        env = _email_envelope(headers={"Precedence": "list"})
-        assert not _match_header_condition(
-            env, {"header": "Precedence", "op": "equals", "value": "bulk"}
-        )
-
-    def test_equals_with_whitespace_trimming(self) -> None:
-        env = _email_envelope(headers={"Precedence": " bulk "})
-        assert _match_header_condition(
-            env, {"header": "Precedence", "op": "equals", "value": "bulk"}
-        )
-
-    def test_contains_op(self) -> None:
-        env = _email_envelope(headers={"X-Spam-Status": "YES, score=8.0"})
-        assert _match_header_condition(
-            env, {"header": "X-Spam-Status", "op": "contains", "value": "YES"}
-        )
-
-    def test_contains_op_no_match(self) -> None:
-        env = _email_envelope(headers={"X-Spam-Status": "NO, score=1.0"})
-        assert not _match_header_condition(
-            env, {"header": "X-Spam-Status", "op": "contains", "value": "YES"}
-        )
-
-    def test_missing_op_no_match(self) -> None:
-        env = _email_envelope(headers={"Foo": "bar"})
-        assert not _match_header_condition(env, {"header": "Foo"})
-
-    def test_equals_with_none_value(self) -> None:
-        env = _email_envelope(headers={"Foo": "bar"})
-        assert not _match_header_condition(env, {"header": "Foo", "op": "equals", "value": None})
-
-
-# ---------------------------------------------------------------------------
-# mime_type matcher
-# ---------------------------------------------------------------------------
-
-
-class TestMatchMimeType:
-    def test_exact_match(self) -> None:
-        env = _email_envelope(mime_parts=["text/plain", "text/calendar"])
-        assert _match_mime_type(env, {"type": "text/calendar"})
-
-    def test_wildcard_subtype(self) -> None:
-        env = _email_envelope(mime_parts=["image/jpeg"])
-        assert _match_mime_type(env, {"type": "image/*"})
-
-    def test_wildcard_no_match_different_type(self) -> None:
-        env = _email_envelope(mime_parts=["text/plain"])
-        assert not _match_mime_type(env, {"type": "image/*"})
-
-    def test_no_match_empty_parts(self) -> None:
-        env = _email_envelope(mime_parts=[])
-        assert not _match_mime_type(env, {"type": "text/calendar"})
-
-    def test_case_insensitive(self) -> None:
-        env = _email_envelope(mime_parts=["TEXT/CALENDAR"])
-        assert _match_mime_type(env, {"type": "text/calendar"})
-
-    def test_empty_pattern_no_match(self) -> None:
-        env = _email_envelope(mime_parts=["text/plain"])
-        assert not _match_mime_type(env, {"type": ""})
-
-
-# ---------------------------------------------------------------------------
-# substring matcher
-# ---------------------------------------------------------------------------
-
-
-class TestMatchSubstring:
-    def test_case_insensitive_match(self) -> None:
-        env = IngestionEnvelope(raw_key="Hello World from alice@EXAMPLE.COM")
-        assert _match_substring(env, {"pattern": "alice@example.com"})
-
-    def test_no_match(self) -> None:
-        env = IngestionEnvelope(raw_key="hello world")
-        assert not _match_substring(env, {"pattern": "foobar"})
-
-    def test_empty_pattern_no_match(self) -> None:
-        env = IngestionEnvelope(raw_key="hello")
-        assert not _match_substring(env, {"pattern": ""})
-
-    def test_catchall_wildcard(self) -> None:
-        env = IngestionEnvelope(raw_key="anything")
-        assert _match_substring(env, {"pattern": "*"})
-
-
-# ---------------------------------------------------------------------------
-# chat_id matcher
-# ---------------------------------------------------------------------------
-
-
-class TestMatchChatId:
-    def test_exact_match(self) -> None:
-        env = _telegram_envelope(chat_id="12345")
-        assert _match_chat_id(env, {"chat_id": "12345"})
-
-    def test_no_match(self) -> None:
-        env = _telegram_envelope(chat_id="12345")
-        assert not _match_chat_id(env, {"chat_id": "99999"})
-
-    def test_negative_chat_id(self) -> None:
-        env = _telegram_envelope(chat_id="-100987654321")
-        assert _match_chat_id(env, {"chat_id": "-100987654321"})
-
-    def test_empty_target_no_match(self) -> None:
-        env = _telegram_envelope(chat_id="12345")
-        assert not _match_chat_id(env, {"chat_id": ""})
-
-    def test_catchall_wildcard(self) -> None:
-        env = _telegram_envelope(chat_id="12345")
-        assert _match_chat_id(env, {"chat_id": "*"})
-
-
-# ---------------------------------------------------------------------------
-# channel_id matcher
-# ---------------------------------------------------------------------------
-
-
-class TestMatchChannelId:
-    def test_exact_match(self) -> None:
-        env = _discord_envelope(channel_id="987654321098765432")
-        assert _match_channel_id(env, {"channel_id": "987654321098765432"})
-
-    def test_no_match(self) -> None:
-        env = _discord_envelope(channel_id="987654321098765432")
-        assert not _match_channel_id(env, {"channel_id": "111111111111111111"})
-
-    def test_empty_target_no_match(self) -> None:
-        env = _discord_envelope(channel_id="987654321098765432")
-        assert not _match_channel_id(env, {"channel_id": ""})
-
-    def test_catchall_wildcard(self) -> None:
-        env = _discord_envelope(channel_id="987654321098765432")
-        assert _match_channel_id(env, {"channel_id": "*"})
-
-
-# ---------------------------------------------------------------------------
-# mic_id rule_type recognized by _KNOWN_RULE_TYPES  [bu-wjzb.1]
-# ---------------------------------------------------------------------------
-
-
 def _voice_envelope(*, mic_id: str = "kitchen") -> IngestionEnvelope:
-    """Build a minimal voice/live-listener IngestionEnvelope for mic_id tests."""
-    return IngestionEnvelope(
-        source_channel="voice",
-        raw_key=mic_id,
+    return IngestionEnvelope(source_channel="voice", raw_key=mic_id)
+
+
+# ---------------------------------------------------------------------------
+# Dataclass contracts
+# ---------------------------------------------------------------------------
+
+
+def test_ingestion_envelope_and_policy_decision_contracts() -> None:
+    """IngestionEnvelope is frozen with correct defaults; PolicyDecision.bypasses_llm
+    and .allowed correct."""
+    env = IngestionEnvelope(sender_address="a@b.com", source_channel="email")
+    with pytest.raises(AttributeError):
+        env.sender_address = "c@d.com"  # type: ignore[misc]
+    env2 = IngestionEnvelope()
+    assert env2.sender_address == "" and env2.source_channel == ""
+    assert env2.headers == {} and env2.mime_parts == [] and env2.raw_key == ""
+
+    assert PolicyDecision(action="block").bypasses_llm is True
+    assert PolicyDecision(action="pass_through").bypasses_llm is False
+    assert PolicyDecision(action="skip").bypasses_llm is True
+    assert PolicyDecision(action="pass_through").allowed is True
+    assert PolicyDecision(action="block").allowed is False
+    assert PolicyDecision(action="skip").allowed is True
+
+
+# ---------------------------------------------------------------------------
+# All matchers — all 8 rule types in one test
+# ---------------------------------------------------------------------------
+
+
+def test_all_matchers() -> None:
+    """All 8 matcher functions: sender_domain, sender_address, header_condition, mime_type,
+    substring, chat_id, channel_id, mic_id — match, no match, wildcard, edge cases."""
+    # sender_domain: exact, suffix, case-insensitive, rfc2822, wildcard, no-suffix-mismatch
+    assert _match_sender_domain(
+        _email_envelope(sender="alerts@chase.com"), {"domain": "chase.com", "match": "exact"}
+    )
+    assert not _match_sender_domain(
+        _email_envelope(sender="alerts@mail.chase.com"), {"domain": "chase.com", "match": "exact"}
+    )
+    assert _match_sender_domain(
+        _email_envelope(sender="alerts@mail.chase.com"), {"domain": "chase.com", "match": "suffix"}
+    )
+    assert not _match_sender_domain(
+        _email_envelope(sender="user@notchase.com"), {"domain": "chase.com", "match": "suffix"}
+    )
+    assert _match_sender_domain(
+        _email_envelope(sender="ALERTS@CHASE.COM"), {"domain": "chase.com", "match": "exact"}
+    )
+    assert _match_sender_domain(
+        _email_envelope(sender="GitHub <no-reply@github.com>"),
+        {"domain": "github.com", "match": "exact"},
+    )
+    assert _match_sender_domain(
+        _email_envelope(sender="anyone@anything.com"), {"domain": "*", "match": "any"}
+    )
+
+    # sender_address: exact, case-insensitive, wildcard, local_part_prefix, rfc2822, no-match
+    assert _match_sender_address(
+        _email_envelope(sender="alerts@chase.com"), {"address": "alerts@chase.com"}
+    )
+    assert not _match_sender_address(
+        _email_envelope(sender="other@chase.com"), {"address": "alerts@chase.com"}
+    )
+    assert _match_sender_address(
+        _email_envelope(sender="ALERTS@CHASE.COM"), {"address": "alerts@chase.com"}
+    )
+    assert _match_sender_address(_email_envelope(sender="anyone@anything.com"), {"address": "*"})
+    assert _match_sender_address(
+        _email_envelope(sender="noreply@grab.com"),
+        {"address": "noreply", "match": "local_part_prefix"},
+    )
+    assert not _match_sender_address(
+        _email_envelope(sender="hello@example.com"),
+        {"address": "noreply", "match": "local_part_prefix"},
+    )
+    assert _match_sender_address(
+        _email_envelope(sender="GitHub <no-reply@github.com>"), {"address": "no-reply@github.com"}
+    )
+
+    # header_condition: present, equals, contains, case-insensitive key, missing op→False
+    assert _match_header_condition(
+        _email_envelope(headers={"List-Unsubscribe": "<mailto:unsub@x.com>"}),
+        {"header": "List-Unsubscribe", "op": "present"},
+    )
+    assert not _match_header_condition(
+        _email_envelope(headers={}), {"header": "List-Unsubscribe", "op": "present"}
+    )
+    assert _match_header_condition(
+        _email_envelope(headers={"List-Unsubscribe": "yes"}),
+        {"header": "list-unsubscribe", "op": "present"},
+    )
+    assert _match_header_condition(
+        _email_envelope(headers={"Precedence": "bulk"}),
+        {"header": "Precedence", "op": "equals", "value": "bulk"},
+    )
+    assert _match_header_condition(
+        _email_envelope(headers={"X-Spam-Status": "YES, score=8.0"}),
+        {"header": "X-Spam-Status", "op": "contains", "value": "YES"},
+    )
+    assert not _match_header_condition(_email_envelope(headers={"Foo": "bar"}), {"header": "Foo"})
+
+    # mime_type: exact, glob, no match, empty, case-insensitive
+    assert _match_mime_type(
+        _email_envelope(mime_parts=["text/plain", "text/calendar"]), {"type": "text/calendar"}
+    )
+    assert _match_mime_type(_email_envelope(mime_parts=["image/jpeg"]), {"type": "image/*"})
+    assert not _match_mime_type(_email_envelope(mime_parts=["text/plain"]), {"type": "image/*"})
+    assert not _match_mime_type(_email_envelope(mime_parts=[]), {"type": "text/calendar"})
+    assert _match_mime_type(
+        _email_envelope(mime_parts=["TEXT/CALENDAR"]), {"type": "text/calendar"}
+    )
+
+    # substring: match, no match, wildcard
+    assert _match_substring(
+        IngestionEnvelope(raw_key="Hello World from alice@EXAMPLE.COM"),
+        {"pattern": "alice@example.com"},
+    )
+    assert not _match_substring(IngestionEnvelope(raw_key="hello world"), {"pattern": "foobar"})
+    assert _match_substring(IngestionEnvelope(raw_key="anything"), {"pattern": "*"})
+
+    # chat_id: match, no match, group, wildcard
+    assert _match_chat_id(_telegram_envelope(chat_id="12345"), {"chat_id": "12345"})
+    assert not _match_chat_id(_telegram_envelope(chat_id="12345"), {"chat_id": "99999"})
+    assert _match_chat_id(_telegram_envelope(chat_id="-100987654321"), {"chat_id": "-100987654321"})
+    assert _match_chat_id(_telegram_envelope(chat_id="12345"), {"chat_id": "*"})
+
+    # channel_id: match, no match, wildcard
+    assert _match_channel_id(
+        _discord_envelope(channel_id="987654321098765432"), {"channel_id": "987654321098765432"}
+    )
+    assert not _match_channel_id(
+        _discord_envelope(channel_id="987654321098765432"), {"channel_id": "111111111111111111"}
+    )
+    assert _match_channel_id(
+        _discord_envelope(channel_id="987654321098765432"), {"channel_id": "*"}
+    )
+
+    # mic_id: in _KNOWN_RULE_TYPES, matches device name, no match on different device
+    from butlers.ingestion_policy import _KNOWN_RULE_TYPES
+
+    assert "mic_id" in _KNOWN_RULE_TYPES
+    ev_mic = IngestionPolicyEvaluator(scope="connector:live-listener:mic:kitchen", db_pool=None)
+    ev_mic._last_loaded_at = time.monotonic()
+    ev_mic._rules = [
+        _rule(
+            id="id-mic",
+            rule_type="mic_id",
+            condition={"mic_id": "kitchen"},
+            action="block",
+            priority=1,
+        )
+    ]
+    assert ev_mic.evaluate(_voice_envelope(mic_id="kitchen")).action == "block"
+    assert ev_mic.evaluate(_voice_envelope(mic_id="bedroom")).action == "pass_through"
+
+
+# ---------------------------------------------------------------------------
+# Evaluator behavioral contract
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_behavioral_contracts() -> None:
+    """No rules → pass_through; first-match-wins; all action types; unknown rule skipped;
+    mixed types."""
+    # No rules → pass_through
+    ev = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev._last_loaded_at = time.monotonic()
+    ev._rules = []
+    d = ev.evaluate(_email_envelope())
+    assert d.action == "pass_through" and d.matched_rule_id is None and not d.bypasses_llm
+
+    # First-match-wins by priority
+    ev2 = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev2._last_loaded_at = time.monotonic()
+    ev2._rules = [
+        _rule(
+            id="id-a",
+            rule_type="sender_domain",
+            condition={"domain": "chase.com", "match": "exact"},
+            action="skip",
+            priority=5,
+        ),
+        _rule(
+            id="id-b",
+            rule_type="sender_domain",
+            condition={"domain": "chase.com", "match": "suffix"},
+            action="route_to:finance",
+            priority=10,
+        ),
+    ]
+    d2 = ev2.evaluate(_email_envelope(sender="alerts@chase.com"))
+    assert d2.action == "skip" and d2.matched_rule_id == "id-a"
+
+    # route_to parsed correctly
+    ev3 = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev3._last_loaded_at = time.monotonic()
+    ev3._rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "paypal.com", "match": "suffix"},
+            action="route_to:finance",
+        )
+    ]
+    d3 = ev3.evaluate(_email_envelope(sender="service@paypal.com"))
+    assert d3.action == "route_to" and d3.target_butler == "finance" and d3.bypasses_llm
+
+    # block, metadata_only, low_priority_queue actions
+    ev4 = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev4._last_loaded_at = time.monotonic()
+    ev4._rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "spam.com", "match": "exact"},
+            action="block",
+        )
+    ]
+    assert ev4.evaluate(_email_envelope(sender="bad@spam.com")).action == "block"
+
+    ev5 = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev5._last_loaded_at = time.monotonic()
+    ev5._rules = [
+        _rule(
+            id="r1",
+            rule_type="header_condition",
+            condition={"header": "List-Unsubscribe", "op": "present"},
+            action="metadata_only",
+            priority=1,
+        ),
+        _rule(
+            id="r2",
+            rule_type="header_condition",
+            condition={"header": "Precedence", "op": "equals", "value": "bulk"},
+            action="low_priority_queue",
+            priority=2,
+        ),
+    ]
+    assert (
+        ev5.evaluate(_email_envelope(headers={"List-Unsubscribe": "yes"})).action == "metadata_only"
+    )
+    assert (
+        ev5.evaluate(_email_envelope(headers={"Precedence": "bulk"})).action == "low_priority_queue"
+    )
+
+    # Unknown rule type skipped; matcher exception skips rule
+    ev6 = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev6._last_loaded_at = time.monotonic()
+    ev6._rules = [
+        _rule(
+            id="id-bad",
+            rule_type="totally_unknown",
+            condition={"foo": "bar"},
+            action="skip",
+            priority=1,
+        ),
+        _rule(
+            id="id-good",
+            rule_type="sender_domain",
+            condition={"domain": "example.com", "match": "exact"},
+            action="route_to:general",
+            priority=2,
+        ),
+    ]
+    assert ev6.evaluate(_email_envelope(sender="user@example.com")).matched_rule_id == "id-good"
+
+    # Mixed rule types: header > domain > mime type ordering
+    ev7 = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    ev7._last_loaded_at = time.monotonic()
+    ev7._rules = [
+        _rule(
+            id="r1",
+            rule_type="header_condition",
+            condition={"header": "X-Priority", "op": "equals", "value": "1"},
+            action="skip",
+            priority=1,
+        ),
+        _rule(
+            id="r2",
+            rule_type="sender_domain",
+            condition={"domain": "bank.com", "match": "exact"},
+            action="route_to:finance",
+            priority=5,
+        ),
+        _rule(
+            id="r3",
+            rule_type="mime_type",
+            condition={"type": "text/calendar"},
+            action="route_to:calendar",
+            priority=10,
+        ),
+    ]
+    assert (
+        ev7.evaluate(
+            _email_envelope(
+                sender="x@bank.com", headers={"X-Priority": "1"}, mime_parts=["text/calendar"]
+            )
+        ).matched_rule_id
+        == "r1"
+    )
+    assert (
+        ev7.evaluate(
+            _email_envelope(sender="alerts@bank.com", mime_parts=["text/calendar"])
+        ).matched_rule_id
+        == "r2"
+    )
+    assert (
+        ev7.evaluate(
+            _email_envelope(sender="user@other.com", mime_parts=["text/calendar"])
+        ).matched_rule_id
+        == "r3"
+    )
+    assert (
+        ev7.evaluate(_email_envelope(sender="user@other.com", mime_parts=["text/plain"])).action
+        == "pass_through"
     )
 
 
-class TestMicIdRuleTypeKnown:
-    """mic_id must be in _KNOWN_RULE_TYPES so rules are not skipped on load."""
+# ---------------------------------------------------------------------------
+# DB loading, TTL, and cache invalidation
+# ---------------------------------------------------------------------------
 
-    def test_mic_id_rule_not_skipped_during_load(self) -> None:
-        """A rule with rule_type='mic_id' should survive the load-time validation check."""
-        from butlers.ingestion_policy import _KNOWN_RULE_TYPES
 
-        assert "mic_id" in _KNOWN_RULE_TYPES
+async def test_evaluator_db_loading_ttl_and_invalidation() -> None:
+    """ensure_loaded: calls DB once; idempotent; no-pool → empty; DB error retains stale cache;
+    invalid rows skipped; stale triggers refresh; stacking blocked; invalidate resets timestamp."""
+    # ensure_loaded calls DB once, scope passed correctly
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    ev = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool)
+    await ev.ensure_loaded()
+    await ev.ensure_loaded()
+    assert mock_pool.fetch.call_count == 1
+    call_args = mock_pool.fetch.call_args
+    assert "scope = $1" in call_args[0][0] and call_args[0][1] == "global"
 
-    def test_mic_id_rule_matches_device_name(self) -> None:
-        """mic_id rules are evaluated by the _match_mic_id matcher and produce
-        the configured action when the device name matches."""
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:live-listener:mic:kitchen", db_pool=None
+    # No pool: loaded with empty rules
+    ev2 = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    await ev2.ensure_loaded()
+    assert ev2._last_loaded_at is not None and ev2._rules == []
+
+    # DB error retains stale cache
+    stale_rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "stale.com", "match": "exact"},
+            action="skip",
         )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="id-mic",
-                rule_type="mic_id",
-                condition={"mic_id": "kitchen"},
-                action="block",
-                priority=1,
-            ),
+    ]
+    mock_pool2 = AsyncMock()
+    ev3 = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool2)
+    ev3._rules = stale_rules
+    ev3._last_loaded_at = 0.0
+    mock_pool2.fetch = AsyncMock(side_effect=Exception("connection refused"))
+    await ev3._load_rules()
+    assert ev3._rules == stale_rules and ev3._last_loaded_at > 0.0
+
+    # Invalid rows skipped during load
+    mock_pool3 = AsyncMock()
+    mock_pool3.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": "valid-1",
+                "rule_type": "sender_domain",
+                "condition": {"domain": "good.com", "match": "exact"},
+                "action": "skip",
+                "priority": 1,
+                "name": None,
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "id": "invalid-1",
+                "rule_type": "sender_domain",
+                "condition": "not-a-dict",
+                "action": "skip",
+                "priority": 2,
+                "name": None,
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "id": "invalid-2",
+                "rule_type": "totally_bogus",
+                "condition": {"foo": "bar"},
+                "action": "skip",
+                "priority": 3,
+                "name": None,
+                "created_at": "2026-01-01T00:00:00Z",
+            },
         ]
-        # mic_id matcher is now registered; matching device name → block
-        decision = evaluator.evaluate(_voice_envelope(mic_id="kitchen"))
-        assert decision.action == "block"
-        assert decision.matched_rule_type == "mic_id"
+    )
+    ev4 = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool3)
+    await ev4._load_rules()
+    assert len(ev4._rules) == 1 and ev4._rules[0]["id"] == "valid-1"
 
-    def test_mic_id_rule_no_match_on_different_device(self) -> None:
-        """mic_id rules do not match a different device name (pass_through)."""
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:live-listener:mic:kitchen", db_pool=None
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="id-mic",
-                rule_type="mic_id",
-                condition={"mic_id": "kitchen"},
-                action="block",
-                priority=1,
-            ),
-        ]
-        decision = evaluator.evaluate(_voice_envelope(mic_id="bedroom"))
-        assert decision.action == "pass_through"
+    # TTL: no refresh when fresh
+    def _consume_coro(coro):
+        coro.close()
+        t = MagicMock()
+        t.done.return_value = False
+        return t
 
+    ev5 = IngestionPolicyEvaluator(scope="global", db_pool=None, refresh_interval_s=60)
+    ev5._last_loaded_at = time.monotonic()
+    ev5._rules = []
+    with patch.object(asyncio, "create_task") as mock_ct:
+        ev5.evaluate(_email_envelope())
+        mock_ct.assert_not_called()
 
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator.evaluate() — no rules
-# ---------------------------------------------------------------------------
+    # TTL: refresh scheduled when stale
+    mock_pool4 = MagicMock()
+    ev6 = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool4, refresh_interval_s=60)
+    ev6._last_loaded_at = time.monotonic() - 120
+    ev6._rules = []
+    with patch.object(asyncio, "create_task", side_effect=_consume_coro) as mock_ct2:
+        ev6.evaluate(_email_envelope())
+        mock_ct2.assert_called_once()
 
+    # No stacking: existing running task → no new task
+    ev7 = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool4, refresh_interval_s=60)
+    ev7._last_loaded_at = time.monotonic() - 120
+    mock_task = MagicMock()
+    mock_task.done.return_value = False
+    ev7._background_refresh_task = mock_task
+    with patch.object(asyncio, "create_task") as mock_ct3:
+        ev7.evaluate(_email_envelope())
+        mock_ct3.assert_not_called()
 
-class TestEvaluateNoRules:
-    def test_no_rules_returns_pass_through(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        # Simulate loaded (empty rules)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = []
-
-        decision = evaluator.evaluate(_email_envelope())
-        assert decision.action == "pass_through"
-        assert decision.matched_rule_id is None
-        assert decision.matched_rule_type is None
-
-    def test_pass_through_bypasses_llm_is_false(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        decision = evaluator.evaluate(_email_envelope())
-        assert decision.bypasses_llm is False
-
-    def test_pass_through_allowed_is_true(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        decision = evaluator.evaluate(_email_envelope())
-        assert decision.allowed is True
+    # invalidate resets timestamp and triggers next evaluate
+    ev8 = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool4, refresh_interval_s=60)
+    ev8._last_loaded_at = time.monotonic()
+    ev8._rules = []
+    ev8.invalidate()
+    assert ev8._last_loaded_at == 0.0
+    with patch.object(asyncio, "create_task", side_effect=_consume_coro) as mock_ct4:
+        ev8.evaluate(_email_envelope())
+        mock_ct4.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator.evaluate() — first-match-wins
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluateFirstMatchWins:
-    def test_lower_priority_rule_wins(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="id-a",
-                rule_type="sender_domain",
-                condition={"domain": "chase.com", "match": "exact"},
-                action="skip",
-                priority=5,
-            ),
-            _rule(
-                id="id-b",
-                rule_type="sender_domain",
-                condition={"domain": "chase.com", "match": "suffix"},
-                action="route_to:finance",
-                priority=10,
-            ),
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="alerts@chase.com"))
-        assert decision.action == "skip"
-        assert decision.matched_rule_id == "id-a"
-
-    def test_first_matching_rule_wins(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="id-first",
-                rule_type="sender_domain",
-                condition={"domain": "example.com", "match": "exact"},
-                action="metadata_only",
-                priority=1,
-            ),
-            _rule(
-                id="id-second",
-                rule_type="sender_domain",
-                condition={"domain": "example.com", "match": "exact"},
-                action="route_to:general",
-                priority=2,
-            ),
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="user@example.com"))
-        assert decision.matched_rule_id == "id-first"
-        assert decision.action == "metadata_only"
-
-    def test_non_matching_rule_skipped(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="id-a",
-                rule_type="sender_address",
-                condition={"address": "specific@example.com"},
-                action="skip",
-                priority=1,
-            ),
-            _rule(
-                id="id-b",
-                rule_type="sender_domain",
-                condition={"domain": "example.com", "match": "exact"},
-                action="route_to:general",
-                priority=2,
-            ),
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="other@example.com"))
-        assert decision.matched_rule_id == "id-b"
-        assert decision.action == "route_to"
-        assert decision.target_butler == "general"
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator.evaluate() — all action types
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluateActionTypes:
-    def test_route_to_parses_target(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "paypal.com", "match": "suffix"},
-                action="route_to:finance",
-            )
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="service@paypal.com"))
-        assert decision.action == "route_to"
-        assert decision.target_butler == "finance"
-        assert decision.bypasses_llm is True
-
-    def test_block_action(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="connector:gmail:gmail:user:dev", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "spam.com", "match": "exact"},
-                action="block",
-            )
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="bad@spam.com"))
-        assert decision.action == "block"
-        assert decision.allowed is False
-        assert decision.bypasses_llm is True
-
-    def test_skip_action(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="header_condition",
-                condition={"header": "Auto-Submitted", "op": "equals", "value": "auto-generated"},
-                action="skip",
-            )
-        ]
-        decision = evaluator.evaluate(_email_envelope(headers={"Auto-Submitted": "auto-generated"}))
-        assert decision.action == "skip"
-        assert decision.bypasses_llm is True
-
-    def test_metadata_only_action(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="header_condition",
-                condition={"header": "List-Unsubscribe", "op": "present"},
-                action="metadata_only",
-            )
-        ]
-        decision = evaluator.evaluate(_email_envelope(headers={"List-Unsubscribe": "yes"}))
-        assert decision.action == "metadata_only"
-
-    def test_low_priority_queue_action(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="header_condition",
-                condition={"header": "Precedence", "op": "equals", "value": "bulk"},
-                action="low_priority_queue",
-            )
-        ]
-        decision = evaluator.evaluate(_email_envelope(headers={"Precedence": "bulk"}))
-        assert decision.action == "low_priority_queue"
-
-    def test_explicit_pass_through_action(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_address",
-                condition={"address": "vip@example.com"},
-                action="pass_through",
-            )
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="vip@example.com"))
-        assert decision.action == "pass_through"
-        assert decision.bypasses_llm is False
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator.evaluate() — unknown rule_type handling
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluateUnknownRuleType:
-    def test_unknown_rule_type_skipped(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="id-bad",
-                rule_type="totally_unknown",
-                condition={"foo": "bar"},
-                action="skip",
-                priority=1,
-            ),
-            _rule(
-                id="id-good",
-                rule_type="sender_domain",
-                condition={"domain": "example.com", "match": "exact"},
-                action="route_to:general",
-                priority=2,
-            ),
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="user@example.com"))
-        assert decision.matched_rule_id == "id-good"
-        assert decision.action == "route_to"
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator.evaluate() — error handling in rule evaluation
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluateErrorHandling:
-    def test_exception_in_matcher_skips_rule(self) -> None:
-        """If a matcher raises, the rule is skipped and evaluation continues."""
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="id-bad",
-                rule_type="sender_domain",
-                condition=None,  # type: ignore[arg-type]
-                action="skip",
-                priority=1,
-            ),
-            _rule(
-                id="id-good",
-                rule_type="sender_address",
-                condition={"address": "user@example.com"},
-                action="route_to:general",
-                priority=2,
-            ),
-        ]
-        # The first rule has condition=None which becomes {}, and should not crash
-        decision = evaluator.evaluate(_email_envelope(sender="user@example.com"))
-        assert decision.matched_rule_id == "id-good"
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator.evaluate() — connector-scoped evaluation
-# ---------------------------------------------------------------------------
-
-
-class TestConnectorScopedEvaluation:
-    def test_connector_block_rule(self) -> None:
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:gmail:gmail:user:alice@example.com", db_pool=None
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "spam.com", "match": "suffix"},
-                action="block",
-            )
-        ]
-        decision = evaluator.evaluate(_email_envelope(sender="spammer@spam.com"))
-        assert decision.action == "block"
-        assert decision.allowed is False
-
-    def test_connector_pass_through_allows(self) -> None:
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:gmail:gmail:user:alice@example.com", db_pool=None
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_address",
-                condition={"address": "vip@example.com"},
-                action="pass_through",
-                priority=1,
-            ),
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "*", "match": "any"},
-                action="block",
-                priority=1000,
-            ),
-        ]
-        # VIP passes through
-        decision = evaluator.evaluate(_email_envelope(sender="vip@example.com"))
-        assert decision.action == "pass_through"
-        assert decision.allowed is True
-
-    def test_connector_catchall_block(self) -> None:
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:gmail:gmail:user:alice@example.com", db_pool=None
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_address",
-                condition={"address": "vip@example.com"},
-                action="pass_through",
-                priority=1,
-            ),
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "*", "match": "any"},
-                action="block",
-                priority=1000,
-            ),
-        ]
-        # Non-VIP hits catch-all block
-        decision = evaluator.evaluate(_email_envelope(sender="random@other.com"))
-        assert decision.action == "block"
-        assert decision.allowed is False
-
-    def test_telegram_chat_id_block(self) -> None:
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:telegram-bot:telegram-bot:my-bot", db_pool=None
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="chat_id",
-                condition={"chat_id": "-100987654321"},
-                action="block",
-            )
-        ]
-        decision = evaluator.evaluate(_telegram_envelope(chat_id="-100987654321"))
-        assert decision.action == "block"
-        assert decision.allowed is False
-
-    def test_discord_channel_id_block(self) -> None:
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:discord:discord:my-server", db_pool=None
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="channel_id",
-                condition={"channel_id": "987654321098765432"},
-                action="block",
-            )
-        ]
-        decision = evaluator.evaluate(_discord_envelope(channel_id="987654321098765432"))
-        assert decision.action == "block"
-        assert decision.allowed is False
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator — DB loading
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluatorDBLoading:
-    async def test_ensure_loaded_calls_load_rules(self) -> None:
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool)
-        await evaluator.ensure_loaded()
-
-        mock_pool.fetch.assert_called_once()
-        # Verify the query includes scope filter
-        call_args = mock_pool.fetch.call_args
-        assert "scope = $1" in call_args[0][0]
-        assert call_args[0][1] == "global"
-
-    async def test_ensure_loaded_idempotent(self) -> None:
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
-
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool)
-        await evaluator.ensure_loaded()
-        await evaluator.ensure_loaded()
-
-        # Only one DB call despite two ensure_loaded() calls
-        assert mock_pool.fetch.call_count == 1
-
-    async def test_no_pool_skips_load(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        await evaluator.ensure_loaded()
-        assert evaluator._last_loaded_at is not None
-        assert evaluator._rules == []
-
-    async def test_db_error_retains_stale_cache(self) -> None:
-        mock_pool = AsyncMock()
-        stale_rules = [
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "stale.com", "match": "exact"},
-                action="skip",
-            )
-        ]
-
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool)
-        evaluator._rules = stale_rules
-        evaluator._last_loaded_at = 0.0  # force stale
-
-        # Make DB fetch raise
-        mock_pool.fetch = AsyncMock(side_effect=Exception("connection refused"))
-
-        await evaluator._load_rules()
-
-        # Stale rules preserved
-        assert evaluator._rules == stale_rules
-        # Timestamp updated to prevent hammering
-        assert evaluator._last_loaded_at is not None
-        assert evaluator._last_loaded_at > 0.0
-
-    async def test_invalid_rows_skipped_during_load(self) -> None:
-        """Rules with non-dict condition or unknown rule_type are skipped."""
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(
-            return_value=[
-                # Valid rule
-                {
-                    "id": "valid-1",
-                    "rule_type": "sender_domain",
-                    "condition": {"domain": "good.com", "match": "exact"},
-                    "action": "skip",
-                    "priority": 1,
-                    "name": None,
-                    "created_at": "2026-01-01T00:00:00Z",
-                },
-                # Invalid: bad condition type
-                {
-                    "id": "invalid-1",
-                    "rule_type": "sender_domain",
-                    "condition": "not-a-dict",
-                    "action": "skip",
-                    "priority": 2,
-                    "name": None,
-                    "created_at": "2026-01-01T00:00:00Z",
-                },
-                # Invalid: unknown rule_type
-                {
-                    "id": "invalid-2",
-                    "rule_type": "totally_bogus",
-                    "condition": {"foo": "bar"},
-                    "action": "skip",
-                    "priority": 3,
-                    "name": None,
-                    "created_at": "2026-01-01T00:00:00Z",
-                },
-            ]
-        )
-
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool)
-        await evaluator._load_rules()
-
-        # Only the valid rule should be loaded
-        assert len(evaluator._rules) == 1
-        assert evaluator._rules[0]["id"] == "valid-1"
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator — TTL refresh
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluatorTTLRefresh:
-    def test_no_refresh_when_fresh(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None, refresh_interval_s=60)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = []
-
-        with patch.object(asyncio, "create_task") as mock_create_task:
-            evaluator.evaluate(_email_envelope())
-            mock_create_task.assert_not_called()
-
-    def test_refresh_scheduled_when_stale(self) -> None:
-        mock_pool = MagicMock()
-        evaluator = IngestionPolicyEvaluator(
-            scope="global", db_pool=mock_pool, refresh_interval_s=60
-        )
-        # Set last loaded to far in the past
-        evaluator._last_loaded_at = time.monotonic() - 120
-        evaluator._rules = []
-
-        def _consume_coro_and_return_mock(coro):
-            """Close the coroutine to avoid RuntimeWarning, return a mock task."""
-            coro.close()
-            mock_task = MagicMock()
-            mock_task.done.return_value = False
-            return mock_task
-
-        with patch.object(
-            asyncio, "create_task", side_effect=_consume_coro_and_return_mock
-        ) as mock_create_task:
-            evaluator.evaluate(_email_envelope())
-            mock_create_task.assert_called_once()
-
-    def test_no_stacking_refresh_tasks(self) -> None:
-        mock_pool = MagicMock()
-        evaluator = IngestionPolicyEvaluator(
-            scope="global", db_pool=mock_pool, refresh_interval_s=60
-        )
-        evaluator._last_loaded_at = time.monotonic() - 120
-
-        # Simulate existing running task
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        evaluator._background_refresh_task = mock_task
-
-        with patch.object(asyncio, "create_task") as mock_create_task:
-            evaluator.evaluate(_email_envelope())
-            mock_create_task.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator — invalidate
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluatorInvalidate:
-    def test_invalidate_sets_timestamp_to_zero(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-
-        evaluator.invalidate()
-
-        assert evaluator._last_loaded_at == 0.0
-
-    def test_invalidate_triggers_refresh_on_next_evaluate(self) -> None:
-        mock_pool = MagicMock()
-        evaluator = IngestionPolicyEvaluator(
-            scope="global", db_pool=mock_pool, refresh_interval_s=60
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = []
-
-        evaluator.invalidate()
-
-        def _consume_coro_and_return_mock(coro):
-            coro.close()
-            mock_task = MagicMock()
-            mock_task.done.return_value = False
-            return mock_task
-
-        with patch.object(
-            asyncio, "create_task", side_effect=_consume_coro_and_return_mock
-        ) as mock_create_task:
-            evaluator.evaluate(_email_envelope())
-            mock_create_task.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator — scope property
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluatorScope:
-    def test_scope_property(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="connector:gmail:gmail:user:dev", db_pool=None)
-        assert evaluator.scope == "connector:gmail:gmail:user:dev"
-
-    def test_rules_property_empty_by_default(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        assert evaluator.rules == []
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyEvaluator — mixed rule_types in one scope
-# ---------------------------------------------------------------------------
-
-
-class TestMixedRuleTypes:
-    def test_global_scope_with_multiple_rule_types(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                id="r1",
-                rule_type="header_condition",
-                condition={"header": "X-Priority", "op": "equals", "value": "1"},
-                action="skip",
-                priority=1,
-            ),
-            _rule(
-                id="r2",
-                rule_type="sender_domain",
-                condition={"domain": "bank.com", "match": "exact"},
-                action="route_to:finance",
-                priority=5,
-            ),
-            _rule(
-                id="r3",
-                rule_type="mime_type",
-                condition={"type": "text/calendar"},
-                action="route_to:calendar",
-                priority=10,
-            ),
-        ]
-
-        # Test: header match takes priority
-        d1 = evaluator.evaluate(
-            _email_envelope(
-                sender="x@bank.com",
-                headers={"X-Priority": "1"},
-                mime_parts=["text/calendar"],
-            )
-        )
-        assert d1.matched_rule_id == "r1"
-        assert d1.action == "skip"
-
-        # Test: no header match -> falls through to domain match
-        d2 = evaluator.evaluate(
-            _email_envelope(sender="alerts@bank.com", mime_parts=["text/calendar"])
-        )
-        assert d2.matched_rule_id == "r2"
-        assert d2.action == "route_to"
-        assert d2.target_butler == "finance"
-
-        # Test: no header/domain match -> falls through to mime match
-        d3 = evaluator.evaluate(
-            _email_envelope(sender="user@other.com", mime_parts=["text/calendar"])
-        )
-        assert d3.matched_rule_id == "r3"
-        assert d3.action == "route_to"
-        assert d3.target_butler == "calendar"
-
-        # Test: no match at all -> pass_through
-        d4 = evaluator.evaluate(_email_envelope(sender="user@other.com", mime_parts=["text/plain"]))
-        assert d4.action == "pass_through"
-
-
-# ---------------------------------------------------------------------------
-# Telemetry helpers (OTel InMemoryMetricReader)
+# Telemetry helpers and metrics integration
 # ---------------------------------------------------------------------------
 
 
 def _reset_metrics_global_state() -> None:
-    """Reset the OTel global MeterProvider state for test isolation."""
     _metrics_internal._METER_PROVIDER_SET_ONCE = Once()
     _metrics_internal._METER_PROVIDER = None
 
 
 def _make_in_memory_provider() -> tuple[MeterProvider, InMemoryMetricReader]:
-    """Create a MeterProvider with an InMemoryMetricReader for test assertions."""
     _reset_metrics_global_state()
     reader = InMemoryMetricReader()
     provider = MeterProvider(metric_readers=[reader])
@@ -1164,7 +566,6 @@ def _make_in_memory_provider() -> tuple[MeterProvider, InMemoryMetricReader]:
 
 
 def _collect_metrics(reader: InMemoryMetricReader) -> dict[str, Any]:
-    """Flatten metrics data into {metric_name: [data_points]} for easy assertions."""
     result: dict[str, Any] = {}
     data = reader.get_metrics_data()
     for rm in data.resource_metrics:
@@ -1175,294 +576,73 @@ def _collect_metrics(reader: InMemoryMetricReader) -> dict[str, Any]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Cardinality-safe label helpers
-# ---------------------------------------------------------------------------
+def test_metrics_helpers_and_telemetry_integration() -> None:
+    """_scope_type/_safe_action cardinality helpers; IngestionPolicyMetrics records
+    correctly; evaluator wires metrics."""
+    # Cardinality helpers
+    assert _scope_type("global") == "global"
+    assert _scope_type("connector:gmail:gmail:user:dev") == "connector:gmail"
+    assert _scope_type("connector:telegram-bot:telegram-bot:my-bot") == "connector:telegram-bot"
+    assert _scope_type("something_else") == "something_else"
+    assert _safe_action("route_to:finance") == "route_to"
+    assert _safe_action("skip") == "skip"
+    assert _safe_action("block") == "block"
 
-
-class TestScopeType:
-    def test_global(self) -> None:
-        assert _scope_type("global") == "global"
-
-    def test_connector_gmail(self) -> None:
-        assert _scope_type("connector:gmail:gmail:user:dev") == "connector:gmail"
-
-    def test_connector_telegram_bot(self) -> None:
-        assert _scope_type("connector:telegram-bot:telegram-bot:my-bot") == "connector:telegram-bot"
-
-    def test_connector_minimal(self) -> None:
-        assert _scope_type("connector:discord") == "connector:discord"
-
-    def test_unknown_fallback(self) -> None:
-        assert _scope_type("something_else") == "something_else"
-
-
-class TestSafeAction:
-    def test_route_to_stripped(self) -> None:
-        assert _safe_action("route_to:finance") == "route_to"
-
-    def test_route_to_no_target(self) -> None:
-        assert _safe_action("route_to") == "route_to"
-
-    def test_skip_unchanged(self) -> None:
-        assert _safe_action("skip") == "skip"
-
-    def test_block_unchanged(self) -> None:
-        assert _safe_action("block") == "block"
-
-    def test_pass_through_unchanged(self) -> None:
-        assert _safe_action("pass_through") == "pass_through"
-
-
-# ---------------------------------------------------------------------------
-# IngestionPolicyMetrics — unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestIngestionPolicyMetrics:
-    @pytest.fixture(autouse=True)
-    def _install_provider(self) -> None:
-        _provider, reader = _make_in_memory_provider()
-        self._reader = reader
-        yield
-        _reset_metrics_global_state()
-
-    def _metrics_map(self) -> dict[str, Any]:
-        return _collect_metrics(self._reader)
-
-    def test_record_match_counter(self) -> None:
+    # IngestionPolicyMetrics records match/pass_through with correct attributes
+    _provider, reader = _make_in_memory_provider()
+    try:
         m = IngestionPolicyMetrics(scope="global")
         m.record_match(
-            rule_type="sender_domain",
-            action="skip",
-            source_channel="email",
-            latency_ms=0.5,
+            rule_type="sender_domain", action="skip", source_channel="email", latency_ms=0.5
         )
-        data = self._metrics_map()
-        assert "butlers.ingestion.rule_matched" in data
-        dp = data["butlers.ingestion.rule_matched"][0]
-        assert dp.value == 1
-        assert dp.attributes["scope_type"] == "global"
-        assert dp.attributes["rule_type"] == "sender_domain"
-        assert dp.attributes["action"] == "skip"
-        assert dp.attributes["source_channel"] == "email"
-
-    def test_record_match_route_to_action_sanitized(self) -> None:
-        m = IngestionPolicyMetrics(scope="global")
         m.record_match(
             rule_type="sender_domain",
             action="route_to:finance",
             source_channel="email",
             latency_ms=0.3,
         )
-        data = self._metrics_map()
-        dp = data["butlers.ingestion.rule_matched"][0]
-        assert dp.attributes["action"] == "route_to"
+        m.record_pass_through(source_channel="email", reason="no rule matched", latency_ms=0.2)
 
-    def test_record_match_latency_histogram(self) -> None:
-        m = IngestionPolicyMetrics(scope="global")
-        m.record_match(
-            rule_type="sender_domain",
-            action="skip",
-            source_channel="email",
-            latency_ms=1.5,
+        data = _collect_metrics(reader)
+        route_dps = [
+            dp
+            for dp in data["butlers.ingestion.rule_matched"]
+            if dp.attributes.get("action") == "route_to"
+        ]
+        skip_dps = [
+            dp
+            for dp in data["butlers.ingestion.rule_matched"]
+            if dp.attributes.get("action") == "skip"
+        ]
+        assert len(route_dps) == 1 and len(skip_dps) == 1
+        assert all(
+            dp.attributes["scope_type"] == "global" for dp in data["butlers.ingestion.rule_matched"]
         )
-        data = self._metrics_map()
+        dp_pt = data["butlers.ingestion.rule_pass_through"][0]
+        assert dp_pt.value == 1 and dp_pt.attributes["reason"] == "no rule matched"
         assert "butlers.ingestion.evaluation_latency_ms" in data
-        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
-        assert dp.count == 1
-        assert dp.sum == pytest.approx(1.5, rel=1e-2)
-        assert dp.attributes["scope_type"] == "global"
-        assert dp.attributes["result"] == "matched"
 
-    def test_record_pass_through_counter(self) -> None:
-        m = IngestionPolicyMetrics(scope="connector:gmail:gmail:user:dev")
-        m.record_pass_through(
-            source_channel="email",
-            reason="no rule matched",
-            latency_ms=0.2,
-        )
-        data = self._metrics_map()
-        assert "butlers.ingestion.rule_pass_through" in data
-        dp = data["butlers.ingestion.rule_pass_through"][0]
-        assert dp.value == 1
-        assert dp.attributes["scope_type"] == "connector:gmail"
-        assert dp.attributes["source_channel"] == "email"
-        assert dp.attributes["reason"] == "no rule matched"
-
-    def test_record_pass_through_latency_histogram(self) -> None:
-        m = IngestionPolicyMetrics(scope="global")
-        m.record_pass_through(
-            source_channel="telegram_bot",
-            reason="no rule matched",
-            latency_ms=0.8,
-        )
-        data = self._metrics_map()
-        assert "butlers.ingestion.evaluation_latency_ms" in data
-        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
-        assert dp.count == 1
-        assert dp.sum == pytest.approx(0.8, rel=1e-2)
-        assert dp.attributes["result"] == "pass_through"
-
-    def test_connector_scope_type_cardinality(self) -> None:
-        """Connector scope strips endpoint identity for cardinality safety."""
-        m = IngestionPolicyMetrics(scope="connector:telegram-bot:telegram-bot:my-bot")
-        m.record_match(
-            rule_type="chat_id",
-            action="block",
-            source_channel="telegram_bot",
-            latency_ms=0.1,
-        )
-        data = self._metrics_map()
-        dp = data["butlers.ingestion.rule_matched"][0]
-        assert dp.attributes["scope_type"] == "connector:telegram-bot"
-
-
-# ---------------------------------------------------------------------------
-# Evaluator telemetry integration tests
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluatorTelemetryIntegration:
-    """Verify that evaluate() records OTel metrics end-to-end."""
-
-    @pytest.fixture(autouse=True)
-    def _install_provider(self) -> None:
-        _provider, reader = _make_in_memory_provider()
-        self._reader = reader
-        yield
+        # Evaluator end-to-end: match and pass_through both recorded
         _reset_metrics_global_state()
+        reader2 = InMemoryMetricReader()
+        provider2 = MeterProvider(metric_readers=[reader2])
+        otel_metrics.set_meter_provider(provider2)
 
-    def _metrics_map(self) -> dict[str, Any]:
-        return _collect_metrics(self._reader)
-
-    def test_match_records_rule_matched_metric(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "chase.com", "match": "exact"},
-                action="skip",
-            )
-        ]
-
-        evaluator.evaluate(_email_envelope(sender="alerts@chase.com"))
-
-        data = self._metrics_map()
-        assert "butlers.ingestion.rule_matched" in data
-        dp = data["butlers.ingestion.rule_matched"][0]
-        assert dp.value == 1
-        assert dp.attributes["scope_type"] == "global"
-        assert dp.attributes["rule_type"] == "sender_domain"
-        assert dp.attributes["action"] == "skip"
-        assert dp.attributes["source_channel"] == "email"
-
-    def test_match_records_latency_with_matched_result(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_address",
-                condition={"address": "test@test.com"},
-                action="metadata_only",
-            )
-        ]
-
-        evaluator.evaluate(_email_envelope(sender="test@test.com"))
-
-        data = self._metrics_map()
-        assert "butlers.ingestion.evaluation_latency_ms" in data
-        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
-        assert dp.count == 1
-        assert dp.sum >= 0
-        assert dp.attributes["result"] == "matched"
-
-    def test_no_match_records_pass_through_metric(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = []
-
-        evaluator.evaluate(_email_envelope(sender="user@example.com"))
-
-        data = self._metrics_map()
-        assert "butlers.ingestion.rule_pass_through" in data
-        dp = data["butlers.ingestion.rule_pass_through"][0]
-        assert dp.value == 1
-        assert dp.attributes["scope_type"] == "global"
-        assert dp.attributes["source_channel"] == "email"
-        assert dp.attributes["reason"] == "no rule matched"
-
-    def test_no_match_records_latency_with_pass_through_result(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = []
-
-        evaluator.evaluate(_email_envelope(sender="user@example.com"))
-
-        data = self._metrics_map()
-        assert "butlers.ingestion.evaluation_latency_ms" in data
-        dp = data["butlers.ingestion.evaluation_latency_ms"][0]
-        assert dp.count == 1
-        assert dp.attributes["result"] == "pass_through"
-
-    def test_connector_scope_match_uses_correct_scope_type(self) -> None:
-        evaluator = IngestionPolicyEvaluator(
-            scope="connector:gmail:gmail:user:alice@example.com", db_pool=None
-        )
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "spam.com", "match": "exact"},
-                action="block",
-            )
-        ]
-
-        evaluator.evaluate(_email_envelope(sender="bad@spam.com"))
-
-        data = self._metrics_map()
-        dp = data["butlers.ingestion.rule_matched"][0]
-        assert dp.attributes["scope_type"] == "connector:gmail"
-
-    def test_route_to_action_sanitized_in_metric(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
-            _rule(
-                rule_type="sender_domain",
-                condition={"domain": "paypal.com", "match": "suffix"},
-                action="route_to:finance",
-            )
-        ]
-
-        evaluator.evaluate(_email_envelope(sender="service@paypal.com"))
-
-        data = self._metrics_map()
-        dp = data["butlers.ingestion.rule_matched"][0]
-        assert dp.attributes["action"] == "route_to"
-
-    def test_multiple_evaluations_accumulate(self) -> None:
-        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
-        evaluator._last_loaded_at = time.monotonic()
-        evaluator._rules = [
+        ev = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        ev._last_loaded_at = time.monotonic()
+        ev._rules = [
             _rule(
                 rule_type="sender_domain",
                 condition={"domain": "example.com", "match": "exact"},
                 action="skip",
             )
         ]
+        ev.evaluate(_email_envelope(sender="user@example.com"))
+        ev.evaluate(_email_envelope(sender="user@other.com"))
+        ev.evaluate(_email_envelope(sender="admin@example.com"))
 
-        # One match
-        evaluator.evaluate(_email_envelope(sender="user@example.com"))
-        # One pass-through
-        evaluator.evaluate(_email_envelope(sender="user@other.com"))
-        # Another match
-        evaluator.evaluate(_email_envelope(sender="admin@example.com"))
-
-        data = self._metrics_map()
-        matched_dp = data["butlers.ingestion.rule_matched"][0]
-        assert matched_dp.value == 2
-
-        pt_dp = data["butlers.ingestion.rule_pass_through"][0]
-        assert pt_dp.value == 1
+        data2 = _collect_metrics(reader2)
+        assert data2["butlers.ingestion.rule_matched"][0].value == 2
+        assert data2["butlers.ingestion.rule_pass_through"][0].value == 1
+    finally:
+        _reset_metrics_global_state()

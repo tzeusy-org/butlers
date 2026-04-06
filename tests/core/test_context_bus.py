@@ -31,7 +31,6 @@ from butlers.context_bus import (
 )
 
 docker_available = shutil.which("docker") is not None
-pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 _NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
@@ -52,13 +51,9 @@ def _entry(
     )
 
 
-# ---------------------------------------------------------------------------
-# ContextSignal enum
-# ---------------------------------------------------------------------------
-
-
-def test_context_signal_enum_contract():
-    """All 11 signal types present; StrEnum semantics; invalid raises."""
+def test_context_signal_and_write_permission_and_ttl():
+    """ContextSignal enum; write permission enforcement; TTL clamping per signal type."""
+    # ContextSignal enum: all 11 types present; StrEnum semantics; invalid raises
     expected = {
         "traveling",
         "sleeping",
@@ -78,57 +73,37 @@ def test_context_signal_enum_contract():
     with pytest.raises(ValueError):
         ContextSignal("partying")
 
+    # Write permission: allowed pairs
+    for butler, signal in [
+        ("health", "exercising"),
+        ("general", "meeting"),
+        ("travel", "traveling"),
+        ("switchboard", "dnd"),
+    ]:
+        _check_write_permission(butler, signal)  # must not raise
 
-# ---------------------------------------------------------------------------
-# Write permission
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "butler,signal,should_raise",
-    [
-        ("health", "exercising", False),
-        ("finance", "exercising", True),
-        ("general", "meeting", False),
-        ("general", "exercising", True),
-        ("travel", "traveling", False),
-        ("switchboard", "dnd", False),
-        ("travel", "exercising", True),
-    ],
-)
-def test_write_permission_enforcement(butler, signal, should_raise):
-    if should_raise:
+    # Write permission: denied pairs
+    for butler, signal in [
+        ("finance", "exercising"),
+        ("general", "exercising"),
+        ("travel", "exercising"),
+    ]:
         with pytest.raises(PermissionError):
             _check_write_permission(butler, signal)
-    else:
-        _check_write_permission(butler, signal)  # should not raise
 
-
-# ---------------------------------------------------------------------------
-# TTL clamping
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "signal,max_td",
-    [
+    # TTL clamping: result ≤ signal max
+    for signal, max_td in [
         ("meeting", timedelta(hours=4)),
         ("traveling", timedelta(days=30)),
         ("sleeping", timedelta(hours=12)),
         ("commuting", timedelta(hours=3)),
-    ],
-)
-def test_ttl_clamped_to_signal_max(signal, max_td):
-    result = _clamp_ttl(signal, _NOW, _NOW + max_td * 2)
-    assert abs((result - (_NOW + max_td)).total_seconds()) < 2
+    ]:
+        result = _clamp_ttl(signal, _NOW, _NOW + max_td * 2)
+        assert abs((result - (_NOW + max_td)).total_seconds()) < 2
 
 
-# ---------------------------------------------------------------------------
-# format_context_preamble
-# ---------------------------------------------------------------------------
-
-
-def test_format_context_preamble():
+def test_format_context_preamble_and_validation():
+    """format_context_preamble output; set_context validation without DB."""
     assert format_context_preamble([]) == ""
     assert (
         format_context_preamble([_entry("traveling", value="Paris")])
@@ -142,11 +117,7 @@ def test_format_context_preamble():
     assert result.index("traveling") < result.index("meeting")
 
 
-# ---------------------------------------------------------------------------
-# Validation (no DB)
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.asyncio
 async def test_set_context_validation():
     with pytest.raises(ValueError):
         await set_context(MagicMock(), butler_name="general", signal_type="partying")
@@ -154,12 +125,8 @@ async def test_set_context_validation():
         await set_context(MagicMock(), butler_name="finance", signal_type="exercising")
 
 
-# ---------------------------------------------------------------------------
-# Integration tests
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 class TestContextBusIntegration:
     """Full round-trip tests via testcontainers PostgreSQL."""
@@ -203,24 +170,22 @@ class TestContextBusIntegration:
         await pool.execute("TRUNCATE public.user_context")
         yield
 
-    async def test_set_context_upsert_and_reactivation(self, pool):
-        """set_context inserts; upserts on repeat; clears superseded_at on reactivation."""
+    async def test_set_clear_get_context(self, pool):
+        """set_context inserts/upserts/reactivates; clear_context butler-scoped; get_active_context
+        excludes expired/superseded; is_user_in_context filters confidence; metadata persisted."""
+        # set_context inserts; upserts value; reactivates after supersede
         await set_context(pool, butler_name="health", signal_type="exercising", value="run")
         row = await pool.fetchrow(
             "SELECT value, superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
         )
-        assert row["value"] == "run"
-        assert row["superseded_at"] is None
+        assert row["value"] == "run" and row["superseded_at"] is None
 
-        # Upsert updates value
         await set_context(pool, butler_name="health", signal_type="exercising", value="swim")
         rows = await pool.fetch(
             "SELECT * FROM public.user_context WHERE signal_type = 'exercising'"
         )
-        assert len(rows) == 1
-        assert rows[0]["value"] == "swim"
+        assert len(rows) == 1 and rows[0]["value"] == "swim"
 
-        # Manually supersede then re-set clears it
         await pool.execute(
             "UPDATE public.user_context SET superseded_at = now() "
             "WHERE signal_type = 'exercising' AND set_by_butler = 'health'"
@@ -231,47 +196,41 @@ class TestContextBusIntegration:
         )
         assert row2["superseded_at"] is None
 
-    async def test_set_context_stores_metadata(self, pool):
-        """set_context persists metadata JSONB."""
+        # Metadata persisted
         payload = {"location": "gym", "activity": "weights"}
         await set_context(pool, butler_name="health", signal_type="exercising", metadata=payload)
-        row = await pool.fetchrow(
-            "SELECT metadata FROM public.user_context WHERE signal_type = 'exercising'"
-        )
-        raw = row["metadata"]
+        raw = (
+            await pool.fetchrow(
+                "SELECT metadata FROM public.user_context WHERE signal_type = 'exercising'"
+            )
+        )["metadata"]
         if isinstance(raw, str):
             raw = json.loads(raw)
         assert raw == payload
 
-    async def test_clear_context_and_butler_scoping(self, pool):
-        """clear_context sets superseded_at; scoped to butler (different butler = noop)."""
-        await set_context(pool, butler_name="health", signal_type="exercising")
-
-        # Different butler's clear is a no-op
+        # clear_context: different butler noop; correct butler clears
         await clear_context(pool, "general", "exercising")
-        row = await pool.fetchrow(
-            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
-        )
-        assert row["superseded_at"] is None
-
-        # Correct butler clears it
+        assert (
+            await pool.fetchrow(
+                "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
+            )
+        )["superseded_at"] is None
         await clear_context(pool, "health", "exercising")
-        row2 = await pool.fetchrow(
-            "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
-        )
-        assert row2["superseded_at"] is not None
+        assert (
+            await pool.fetchrow(
+                "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
+            )
+        )["superseded_at"] is not None
 
-    async def test_get_active_context_and_is_user_in_context(self, pool):
-        """get_active_context excludes expired/superseded; is_user_in_context filters confidence."""
+        # get_active_context: excludes expired; is_user_in_context checks confidence
+        await pool.execute("TRUNCATE public.user_context")
         await set_context(pool, butler_name="general", signal_type="meeting")
         await set_context(pool, butler_name="travel", signal_type="traveling", confidence=0.9)
 
         results = await get_active_context(pool)
         signal_types = {e.signal_type for e in results}
-        assert "meeting" in signal_types
-        assert "traveling" in signal_types
+        assert "meeting" in signal_types and "traveling" in signal_types
 
-        # Expire meeting
         await pool.execute(
             "UPDATE public.user_context SET expires_at = now() - interval '1 second' "
             "WHERE signal_type = 'meeting'"
@@ -279,6 +238,5 @@ class TestContextBusIntegration:
         after = await get_active_context(pool)
         assert not any(e.signal_type == "meeting" for e in after)
 
-        # is_user_in_context checks confidence threshold
         assert await is_user_in_context(pool, "traveling") is True
         assert await is_user_in_context(pool, "traveling", min_confidence=0.95) is False

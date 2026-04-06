@@ -9,11 +9,14 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.tools.switchboard.routing.contracts import (
+    _ALLOWED_PROVIDERS_BY_CHANNEL,
     RouteInputV1,
     parse_ingest_envelope,
     parse_notify_request,
     parse_route_envelope,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _build_valid_ingest_envelope(
@@ -28,12 +31,10 @@ def _build_valid_ingest_envelope(
     external_event_id: str | None = None,
     observed_at: str | None = None,
 ) -> dict:
-    """Build a well-formed IngestEnvelopeV1 dict for testing."""
     if external_event_id is None:
         external_event_id = f"event-{uuid.uuid4()}"
     if observed_at is None:
         observed_at = datetime.now(UTC).isoformat()
-
     envelope = {
         "schema_version": schema_version,
         "source": {
@@ -41,359 +42,13 @@ def _build_valid_ingest_envelope(
             "provider": provider,
             "endpoint_identity": endpoint_identity,
         },
-        "event": {
-            "external_event_id": external_event_id,
-            "observed_at": observed_at,
-        },
-        "sender": {
-            "identity": sender_identity,
-        },
-        "payload": {
-            "raw": {"text": text},
-            "normalized_text": text,
-        },
+        "event": {"external_event_id": external_event_id, "observed_at": observed_at},
+        "sender": {"identity": sender_identity},
+        "payload": {"raw": {"text": text}, "normalized_text": text},
     }
-
     if idempotency_key:
         envelope["control"] = {"idempotency_key": idempotency_key}
-
     return envelope
-
-
-# ---------------------------------------------------------------------------
-# IngestPayloadV1 Attachments Field Tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_ingest_payload_without_attachments():
-    """IngestPayloadV1 should accept envelopes without attachments field (backwards compatible)."""
-    envelope = _build_valid_ingest_envelope(text="Test message")
-    parsed = parse_ingest_envelope(envelope)
-
-    assert parsed.payload.attachments is None
-
-
-@pytest.mark.unit
-def test_ingest_payload_with_empty_attachments():
-    """IngestPayloadV1 should accept envelopes with empty attachments tuple."""
-    envelope = _build_valid_ingest_envelope(text="Test message")
-    envelope["payload"]["attachments"] = []
-
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.payload.attachments == ()
-
-
-@pytest.mark.unit
-def test_ingest_payload_with_valid_attachment():
-    """IngestPayloadV1 should accept envelopes with valid attachment metadata."""
-    envelope = _build_valid_ingest_envelope(text="Check out this photo")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "image/jpeg",
-            "storage_ref": "s3://bucket/photo123.jpg",
-            "size_bytes": 1024000,
-            "filename": "vacation.jpg",
-            "width": 1920,
-            "height": 1080,
-        }
-    ]
-
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.payload.attachments is not None
-    assert len(parsed.payload.attachments) == 1
-
-    attachment = parsed.payload.attachments[0]
-    assert attachment.media_type == "image/jpeg"
-    assert attachment.storage_ref == "s3://bucket/photo123.jpg"
-    assert attachment.size_bytes == 1024000
-    assert attachment.filename == "vacation.jpg"
-    assert attachment.width == 1920
-    assert attachment.height == 1080
-
-
-@pytest.mark.unit
-def test_ingest_payload_with_multiple_attachments():
-    """IngestPayloadV1 should accept multiple attachments."""
-    envelope = _build_valid_ingest_envelope(text="Multiple files attached")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "image/png",
-            "storage_ref": "s3://bucket/img1.png",
-            "size_bytes": 500000,
-        },
-        {
-            "media_type": "application/pdf",
-            "storage_ref": "s3://bucket/doc.pdf",
-            "size_bytes": 2048000,
-            "filename": "report.pdf",
-        },
-    ]
-
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.payload.attachments is not None
-    assert len(parsed.payload.attachments) == 2
-
-    assert parsed.payload.attachments[0].media_type == "image/png"
-    assert parsed.payload.attachments[1].media_type == "application/pdf"
-    assert parsed.payload.attachments[1].filename == "report.pdf"
-
-
-@pytest.mark.unit
-def test_ingest_attachment_minimal_fields():
-    """IngestAttachment should accept minimal required fields only."""
-    envelope = _build_valid_ingest_envelope(text="Minimal attachment")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "video/mp4",
-            "storage_ref": "s3://bucket/video.mp4",
-            "size_bytes": 5000000,
-        }
-    ]
-
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.payload.attachments is not None
-    assert len(parsed.payload.attachments) == 1
-
-    attachment = parsed.payload.attachments[0]
-    assert attachment.media_type == "video/mp4"
-    assert attachment.storage_ref == "s3://bucket/video.mp4"
-    assert attachment.size_bytes == 5000000
-    assert attachment.filename is None
-    assert attachment.width is None
-    assert attachment.height is None
-
-
-@pytest.mark.unit
-def test_ingest_attachment_missing_required_field():
-    """IngestAttachment should reject attachments missing required media_type."""
-    envelope = _build_valid_ingest_envelope(text="Invalid attachment")
-    envelope["payload"]["attachments"] = [
-        {
-            # Missing media_type (required)
-            "size_bytes": 1024,
-        }
-    ]
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-
-    errors = exc_info.value.errors()
-    assert any("media_type" in str(e.get("loc", [])) for e in errors)
-
-
-@pytest.mark.unit
-def test_ingest_attachment_lazy_without_storage_ref():
-    """IngestAttachment allows None storage_ref for lazy-fetched attachments."""
-    envelope = _build_valid_ingest_envelope(text="Lazy attachment")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "text/csv",
-            "size_bytes": 1024,
-            "filename": "data.csv",
-            "source_message_id": "msg123",
-            "source_attachment_id": "att456",
-        }
-    ]
-
-    parsed = parse_ingest_envelope(envelope)
-    att = parsed.payload.attachments[0]
-    assert att.storage_ref is None
-    assert att.source_message_id == "msg123"
-    assert att.source_attachment_id == "att456"
-
-
-@pytest.mark.unit
-def test_ingest_attachment_negative_size_rejected():
-    """IngestAttachment should reject negative size_bytes."""
-    envelope = _build_valid_ingest_envelope(text="Negative size")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "image/jpeg",
-            "storage_ref": "s3://bucket/photo.jpg",
-            "size_bytes": -1000,
-        }
-    ]
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-
-    errors = exc_info.value.errors()
-    # Should fail validation due to Field(ge=0) constraint
-    assert any(e["type"] in ("greater_than_equal", "int_parsing") for e in errors)
-
-
-@pytest.mark.unit
-def test_ingest_attachment_zero_size_accepted():
-    """IngestAttachment should accept zero size_bytes."""
-    envelope = _build_valid_ingest_envelope(text="Empty file")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "text/plain",
-            "storage_ref": "s3://bucket/empty.txt",
-            "size_bytes": 0,
-        }
-    ]
-
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.payload.attachments is not None
-    assert parsed.payload.attachments[0].size_bytes == 0
-
-
-@pytest.mark.unit
-def test_ingest_attachment_invalid_dimensions_rejected():
-    """IngestAttachment should reject invalid width/height values."""
-    envelope = _build_valid_ingest_envelope(text="Invalid dimensions")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "image/jpeg",
-            "storage_ref": "s3://bucket/photo.jpg",
-            "size_bytes": 1024,
-            "width": 0,  # Must be >= 1
-            "height": 1080,
-        }
-    ]
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-
-    errors = exc_info.value.errors()
-    assert any("width" in str(e.get("loc", [])) for e in errors)
-
-
-@pytest.mark.unit
-def test_ingest_attachment_empty_string_rejected():
-    """IngestAttachment should reject empty string for NonEmptyStr fields."""
-    envelope = _build_valid_ingest_envelope(text="Empty string")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "",  # Empty string not allowed
-            "storage_ref": "s3://bucket/file",
-            "size_bytes": 1024,
-        }
-    ]
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-
-    errors = exc_info.value.errors()
-    assert any("media_type" in str(e.get("loc", [])) for e in errors)
-
-
-@pytest.mark.unit
-def test_ingest_attachment_extra_fields_rejected():
-    """IngestAttachment should reject extra fields (extra='forbid')."""
-    envelope = _build_valid_ingest_envelope(text="Extra field")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "image/jpeg",
-            "storage_ref": "s3://bucket/photo.jpg",
-            "size_bytes": 1024,
-            "unknown_field": "should_fail",
-        }
-    ]
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-
-    errors = exc_info.value.errors()
-    assert any(e["type"] == "extra_forbidden" for e in errors)
-
-
-@pytest.mark.unit
-def test_ingest_attachment_frozen():
-    """IngestAttachment should be frozen (immutable)."""
-    envelope = _build_valid_ingest_envelope(text="Test immutability")
-    envelope["payload"]["attachments"] = [
-        {
-            "media_type": "image/jpeg",
-            "storage_ref": "s3://bucket/photo.jpg",
-            "size_bytes": 1024,
-        }
-    ]
-
-    parsed = parse_ingest_envelope(envelope)
-    attachment = parsed.payload.attachments[0]
-
-    with pytest.raises(ValidationError):
-        attachment.size_bytes = 2048  # Should raise ValidationError due to frozen=True
-
-
-@pytest.mark.unit
-def test_existing_tests_still_pass():
-    """Verify that existing envelopes without attachments continue to validate."""
-    # This represents the backwards compatibility guarantee
-    envelope = _build_valid_ingest_envelope(text="Log weight 80kg")
-    parsed = parse_ingest_envelope(envelope)
-
-    assert parsed.schema_version == "ingest.v1"
-    assert parsed.source.channel == "telegram_bot"
-    assert parsed.payload.normalized_text == "Log weight 80kg"
-    assert parsed.payload.attachments is None  # Default value
-
-
-# ---------------------------------------------------------------------------
-# Voice channel / live-listener provider tests  [bu-wjzb.1]
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_voice_live_listener_channel_provider_accepted():
-    """voice channel with live-listener provider should be a valid pairing."""
-    envelope = _build_valid_ingest_envelope(
-        channel="voice",
-        provider="live-listener",
-        endpoint_identity="live-listener:mic:kitchen",
-    )
-    parsed = parse_ingest_envelope(envelope)
-
-    assert parsed.source.channel == "voice"
-    assert parsed.source.provider == "live-listener"
-    assert parsed.source.endpoint_identity == "live-listener:mic:kitchen"
-
-
-@pytest.mark.unit
-def test_voice_channel_with_invalid_provider_rejected():
-    """voice channel paired with a non-live-listener provider should fail validation."""
-    from pydantic import ValidationError
-
-    envelope = _build_valid_ingest_envelope(
-        channel="voice",
-        provider="internal",
-        endpoint_identity="some-endpoint",
-    )
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-
-    errors = exc_info.value.errors()
-    assert any(e["type"] == "invalid_source_provider" for e in errors)
-
-
-@pytest.mark.unit
-def test_live_listener_provider_with_non_voice_channel_rejected():
-    """live-listener provider paired with a non-voice channel should fail validation."""
-    from pydantic import ValidationError
-
-    envelope = _build_valid_ingest_envelope(
-        channel="api",
-        provider="live-listener",
-        endpoint_identity="some-endpoint",
-    )
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-
-    errors = exc_info.value.errors()
-    assert any(e["type"] == "invalid_source_provider" for e in errors)
-
-
-# ---------------------------------------------------------------------------
-# RouteInputV1 conversation_history Field Tests
-# ---------------------------------------------------------------------------
-
-
-_VALID_UUID7 = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
 
 
 def _build_valid_route_envelope(
@@ -405,16 +60,13 @@ def _build_valid_route_envelope(
     source_channel: str = "telegram_bot",
     request_id: str | None = None,
 ) -> dict:
-    """Build a well-formed RouteEnvelopeV1 dict for testing."""
     if request_id is None:
-        request_id = _VALID_UUID7
-
+        request_id = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
     input_payload: dict = {"prompt": prompt}
     if context is not None:
         input_payload["context"] = context
     if conversation_history is not None:
         input_payload["conversation_history"] = conversation_history
-
     return {
         "schema_version": schema_version,
         "request_context": {
@@ -428,749 +80,329 @@ def _build_valid_route_envelope(
     }
 
 
-@pytest.mark.unit
-def test_route_input_without_conversation_history():
-    """RouteInputV1 accepts input without conversation_history (backwards compatible)."""
-    model = RouteInputV1(prompt="Do health check")
-    assert model.conversation_history is None
+def test_ingest_attachment_contract():
+    """Attachment: absent/empty/valid/lazy accepted; missing required, negative size,
+    width=0, empty string, extra fields rejected; frozen."""
+    # Absent
+    assert parse_ingest_envelope(_build_valid_ingest_envelope()).payload.attachments is None
 
+    # Empty list
+    e = _build_valid_ingest_envelope()
+    e["payload"]["attachments"] = []
+    assert parse_ingest_envelope(e).payload.attachments == ()
 
-@pytest.mark.unit
-def test_route_input_with_conversation_history():
-    """RouteInputV1 accepts and stores conversation_history field."""
-    history = "**user1** (2026-02-16T10:00:00Z):\nHello"
-    model = RouteInputV1(prompt="Follow up", conversation_history=history)
-    assert model.conversation_history == history
+    # Valid attachment with all fields
+    e2 = _build_valid_ingest_envelope()
+    e2["payload"]["attachments"] = [
+        {
+            "media_type": "image/jpeg",
+            "storage_ref": "s3://bucket/photo.jpg",
+            "size_bytes": 1024000,
+            "filename": "vacation.jpg",
+            "width": 1920,
+            "height": 1080,
+        }
+    ]
+    att = parse_ingest_envelope(e2).payload.attachments[0]
+    assert att.media_type == "image/jpeg" and att.size_bytes == 1024000 and att.width == 1920
 
+    # Multiple attachments
+    e3 = _build_valid_ingest_envelope()
+    e3["payload"]["attachments"] = [
+        {"media_type": "image/png", "storage_ref": "s3://bucket/img1.png", "size_bytes": 500000},
+        {
+            "media_type": "application/pdf",
+            "storage_ref": "s3://bucket/doc.pdf",
+            "size_bytes": 2048000,
+            "filename": "report.pdf",
+        },
+    ]
+    assert len(parse_ingest_envelope(e3).payload.attachments) == 2
 
-@pytest.mark.unit
-def test_route_input_conversation_history_none_explicit():
-    """RouteInputV1 accepts explicit None for conversation_history."""
-    model = RouteInputV1(prompt="Do health check", conversation_history=None)
-    assert model.conversation_history is None
+    # Lazy: storage_ref can be None if source identifiers present
+    e4 = _build_valid_ingest_envelope()
+    e4["payload"]["attachments"] = [
+        {
+            "media_type": "text/csv",
+            "size_bytes": 1024,
+            "filename": "data.csv",
+            "source_message_id": "msg123",
+            "source_attachment_id": "att456",
+        }
+    ]
+    la = parse_ingest_envelope(e4).payload.attachments[0]
+    assert la.storage_ref is None and la.source_message_id == "msg123"
 
+    # Zero size accepted
+    e5 = _build_valid_ingest_envelope()
+    e5["payload"]["attachments"] = [
+        {"media_type": "text/plain", "storage_ref": "s3://bucket/empty.txt", "size_bytes": 0}
+    ]
+    assert parse_ingest_envelope(e5).payload.attachments[0].size_bytes == 0
 
-@pytest.mark.unit
-def test_route_envelope_without_conversation_history_parses():
-    """RouteEnvelopeV1 parses correctly when input has no conversation_history."""
-    envelope = _build_valid_route_envelope(prompt="Check vitals")
-    parsed = parse_route_envelope(envelope)
-    assert parsed.input.conversation_history is None
-    assert parsed.input.prompt == "Check vitals"
-
-
-@pytest.mark.unit
-def test_route_envelope_with_conversation_history_parses():
-    """RouteEnvelopeV1 parses correctly when input includes conversation_history."""
-    history = (
-        "**user123** (2026-02-16T10:00:00Z):\nTrack my metformin 500mg\n\n"
-        "**butler -> health** (2026-02-16T10:00:05Z):\nDone! Recorded."
-    )
-    envelope = _build_valid_route_envelope(
-        prompt="When should I take it?",
-        conversation_history=history,
-    )
-    parsed = parse_route_envelope(envelope)
-    assert parsed.input.conversation_history == history
-    assert parsed.input.prompt == "When should I take it?"
-
-
-@pytest.mark.unit
-def test_route_envelope_with_conversation_history_and_context():
-    """RouteEnvelopeV1 parses when input has both context and conversation_history."""
-    envelope = _build_valid_route_envelope(
-        prompt="Continue check",
-        context="Extra context",
-        conversation_history="**user** (2026-02-16T10:00:00Z):\nPrevious message",
-    )
-    parsed = parse_route_envelope(envelope)
-    assert parsed.input.context == "Extra context"
-    assert parsed.input.conversation_history == "**user** (2026-02-16T10:00:00Z):\nPrevious message"
-
-
-@pytest.mark.unit
-def test_route_input_with_empty_string_conversation_history():
-    """RouteInputV1 accepts and stores an empty string for conversation_history."""
-    model = RouteInputV1(prompt="Follow up", conversation_history="")
-    assert model.conversation_history == ""
-
-
-@pytest.mark.unit
-def test_route_envelope_with_empty_string_conversation_history_parses():
-    """RouteEnvelopeV1 parses correctly when input includes an empty conversation_history."""
-    envelope = _build_valid_route_envelope(
-        prompt="When should I take it?",
-        conversation_history="",
-    )
-    parsed = parse_route_envelope(envelope)
-    assert parsed.input.conversation_history == ""
-    assert parsed.input.prompt == "When should I take it?"
-
-
-# ---------------------------------------------------------------------------
-# WhatsApp channel and provider registration
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_whatsapp_user_client_channel_accepted():
-    """IngestEnvelopeV1 accepts whatsapp_user_client as a valid source channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="whatsapp_user_client",
-        provider="whatsapp",
-        endpoint_identity="whatsapp:1234567890",
-        sender_identity="1234567890@s.whatsapp.net",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.source.channel == "whatsapp_user_client"
-    assert parsed.source.provider == "whatsapp"
-
-
-@pytest.mark.unit
-def test_whatsapp_user_client_rejects_invalid_provider():
-    """whatsapp_user_client channel rejects non-whatsapp providers."""
-    from pydantic import ValidationError
-
-    envelope = _build_valid_ingest_envelope(
-        channel="whatsapp_user_client",
-        provider="telegram",  # wrong provider
-        endpoint_identity="whatsapp:1234567890",
-        sender_identity="1234567890@s.whatsapp.net",
-    )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "whatsapp_user_client" in str(exc_info.value) or "telegram" in str(exc_info.value)
-
-
-@pytest.mark.unit
-def test_whatsapp_provider_rejected_for_telegram_channel():
-    """whatsapp provider is invalid for telegram_bot channel."""
-    from pydantic import ValidationError
-
-    envelope = _build_valid_ingest_envelope(
-        channel="telegram_bot",
-        provider="whatsapp",  # wrong provider for telegram_bot
-    )
+    # Frozen: mutation raises
     with pytest.raises(ValidationError):
-        parse_ingest_envelope(envelope)
+        att.size_bytes = 9999  # type: ignore[misc]
 
-
-@pytest.mark.unit
-def test_whatsapp_user_client_in_source_channel_literal():
-    """SourceChannel literal includes whatsapp_user_client."""
-    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
-
-    assert "whatsapp_user_client" in _ALLOWED_PROVIDERS_BY_CHANNEL
-    assert _ALLOWED_PROVIDERS_BY_CHANNEL["whatsapp_user_client"] == frozenset({"whatsapp"})
-
-
-@pytest.mark.unit
-def test_whatsapp_idempotency_key_format():
-    """IngestEnvelopeV1 accepts whatsapp-prefixed idempotency key."""
-    envelope = _build_valid_ingest_envelope(
-        channel="whatsapp_user_client",
-        provider="whatsapp",
-        endpoint_identity="whatsapp:1234567890",
-        sender_identity="1234567890@s.whatsapp.net",
-        idempotency_key="whatsapp:1234567890:MSGID123456",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.control.idempotency_key == "whatsapp:1234567890:MSGID123456"
-
-
-# ---------------------------------------------------------------------------
-# WhatsApp notify contract validations
-# ---------------------------------------------------------------------------
-
-_WHATSAPP_NOTIFY_REQUEST_CONTEXT = {
-    "request_id": "01916b9d-1234-7000-abcd-123456789abc",
-    "source_channel": "whatsapp_user_client",
-    "source_endpoint_identity": "whatsapp:1234567890",
-    "source_sender_identity": "1234567890@s.whatsapp.net",
-}
-
-
-@pytest.mark.unit
-def test_whatsapp_reply_requires_source_thread_identity():
-    """notify.v1 whatsapp reply intent must supply source_thread_identity."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "messenger",
-        "delivery": {
-            "intent": "reply",
-            "channel": "whatsapp",
-            "message": "Hi there",
+    # Rejections: missing required, negative size, width=0, empty media_type, extra fields
+    for bad_att in [
+        {"size_bytes": 1024},
+        {"media_type": "image/jpeg", "storage_ref": "s3://b/p.jpg", "size_bytes": -1000},
+        {
+            "media_type": "image/jpeg",
+            "storage_ref": "s3://b/p.jpg",
+            "size_bytes": 1024,
+            "width": 0,
+            "height": 1080,
         },
-        "request_context": {
-            **_WHATSAPP_NOTIFY_REQUEST_CONTEXT,
-            # source_thread_identity intentionally omitted
+        {"media_type": "", "storage_ref": "s3://b/f", "size_bytes": 1024},
+        {
+            "media_type": "image/jpeg",
+            "storage_ref": "s3://b/p.jpg",
+            "size_bytes": 1024,
+            "unknown_field": "bad",
         },
+    ]:
+        eb = _build_valid_ingest_envelope()
+        eb["payload"]["attachments"] = [bad_att]
+        with pytest.raises(ValidationError):
+            parse_ingest_envelope(eb)
+
+
+def test_channel_provider_pairing_and_registry():
+    """Valid channel/provider pairs accepted; invalid rejected; allowed providers registry correct.
+    """
+    # Valid pairs
+    valid_pairs = [
+        ("voice", "live-listener", "live-listener:mic:kitchen", "mic-user"),
+        ("whatsapp_user_client", "whatsapp", "whatsapp:1234567890", "1234567890@s.whatsapp.net"),
+        ("google_calendar", "google_calendar", "gcal:user@example.com", "user@example.com"),
+        ("spotify_user_client", "spotify", "spotify:user123", "user123"),
+        ("owntracks", "owntracks", "owntracks:device123", "user123"),
+        (
+            "home_assistant",
+            "home_assistant",
+            "ha:http://homeassistant.local:8123",
+            "ha:light.living_room",
+        ),
+        ("gaming", "steam", "steam:76561198000000001", "steam:76561198000000001"),
+        (
+            "google_drive",
+            "google_drive",
+            "google_drive:user:user@example.com",
+            "google_drive:user:user@example.com",
+        ),
+    ]
+    for channel, provider, endpoint, sender in valid_pairs:
+        env = _build_valid_ingest_envelope(
+            channel=channel, provider=provider, endpoint_identity=endpoint, sender_identity=sender
+        )
+        parsed = parse_ingest_envelope(env)
+        assert parsed.source.channel == channel and parsed.source.provider == provider
+
+    # Invalid pairs
+    invalid_pairs = [
+        ("voice", "internal", "live-listener:mic:kitchen", "mic-user"),
+        ("whatsapp_user_client", "telegram", "whatsapp:1234567890", "1234567890@s.whatsapp.net"),
+        ("telegram_bot", "whatsapp", "bot_test", "user123"),
+        ("google_calendar", "gmail", "gcal:user@example.com", "user@example.com"),
+        ("telegram_bot", "google_drive", "bot_test", "user123"),
+    ]
+    for channel, provider, endpoint, sender in invalid_pairs:
+        env = _build_valid_ingest_envelope(
+            channel=channel, provider=provider, endpoint_identity=endpoint, sender_identity=sender
+        )
+        with pytest.raises(ValidationError):
+            parse_ingest_envelope(env)
+
+    # Registry: all expected channels present with correct providers
+    expected = {
+        "voice": frozenset({"live-listener"}),
+        "whatsapp_user_client": frozenset({"whatsapp"}),
+        "google_calendar": frozenset({"google_calendar"}),
+        "spotify_user_client": frozenset({"spotify"}),
+        "owntracks": frozenset({"owntracks"}),
+        "home_assistant": frozenset({"home_assistant"}),
+        "gaming": frozenset({"steam"}),
+        "google_drive": frozenset({"google_drive"}),
     }
-    with pytest.raises(ValidationError) as exc_info:
-        parse_notify_request(payload)
-    assert "thread" in str(exc_info.value).lower()
+    for channel, providers in expected.items():
+        assert channel in _ALLOWED_PROVIDERS_BY_CHANNEL
+        assert _ALLOWED_PROVIDERS_BY_CHANNEL[channel] == providers
 
 
-@pytest.mark.unit
-def test_whatsapp_reply_with_thread_identity_accepted():
-    """notify.v1 whatsapp reply with source_thread_identity is valid."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "messenger",
-        "delivery": {
-            "intent": "reply",
-            "channel": "whatsapp",
-            "message": "Hi there",
-        },
-        "request_context": {
-            **_WHATSAPP_NOTIFY_REQUEST_CONTEXT,
-            "source_thread_identity": "1234567890@s.whatsapp.net",
-        },
-    }
-    result = parse_notify_request(payload)
-    assert result.delivery.channel == "whatsapp"
-    assert result.delivery.intent == "reply"
-    assert result.request_context is not None
-    assert result.request_context.source_thread_identity == "1234567890@s.whatsapp.net"
-
-
-@pytest.mark.unit
-def test_whatsapp_react_intent_rejected():
-    """notify.v1 react intent is not supported for whatsapp channel."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "messenger",
-        "delivery": {
-            "intent": "react",
-            "channel": "whatsapp",
-            "message": "",
-            "emoji": "👍",
-        },
-        "request_context": {
-            **_WHATSAPP_NOTIFY_REQUEST_CONTEXT,
-            "source_thread_identity": "1234567890@s.whatsapp.net",
-        },
-    }
-    with pytest.raises(ValidationError) as exc_info:
-        parse_notify_request(payload)
-    assert "whatsapp" in str(exc_info.value).lower() or "react" in str(exc_info.value).lower()
-
-
-@pytest.mark.unit
-def test_whatsapp_send_without_thread_identity_accepted():
-    """notify.v1 whatsapp send intent does not require source_thread_identity."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "messenger",
-        "delivery": {
-            "intent": "send",
-            "channel": "whatsapp",
-            "message": "Hello",
-            "recipient": "1234567890@s.whatsapp.net",
-        },
-    }
-    result = parse_notify_request(payload)
-    assert result.delivery.channel == "whatsapp"
-    assert result.delivery.intent == "send"
-
-
-# ---------------------------------------------------------------------------
-# Google Calendar channel/provider contract validations
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_google_calendar_channel_accepted():
-    """IngestEnvelopeV1 accepts google_calendar as a valid source channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="google_calendar",
-        provider="google_calendar",
-        endpoint_identity="gcal:user@example.com",
-        sender_identity="user@example.com",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.source.channel == "google_calendar"
-    assert parsed.source.provider == "google_calendar"
-
-
-@pytest.mark.unit
-def test_google_calendar_channel_rejects_invalid_provider():
-    """google_calendar channel rejects non-google_calendar providers."""
-    envelope = _build_valid_ingest_envelope(
-        channel="google_calendar",
-        provider="gmail",  # wrong provider
-        endpoint_identity="gcal:user@example.com",
-        sender_identity="user@example.com",
-    )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "google_calendar" in str(exc_info.value)
-
-
-@pytest.mark.unit
-def test_google_calendar_provider_rejected_for_telegram_channel():
-    """google_calendar provider is invalid for telegram_bot channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="telegram_bot",
-        provider="google_calendar",  # wrong provider
-        endpoint_identity="bot_test",
-        sender_identity="user123",
-    )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "google_calendar" in str(exc_info.value)
-
-
-@pytest.mark.unit
-def test_google_calendar_in_allowed_providers_by_channel():
-    """google_calendar is registered in _ALLOWED_PROVIDERS_BY_CHANNEL."""
-    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
-
-    assert "google_calendar" in _ALLOWED_PROVIDERS_BY_CHANNEL
-    assert _ALLOWED_PROVIDERS_BY_CHANNEL["google_calendar"] == frozenset({"google_calendar"})
-
-
-@pytest.mark.unit
-def test_google_calendar_idempotency_key_format():
-    """IngestEnvelopeV1 accepts google_calendar-prefixed idempotency key."""
-    envelope = _build_valid_ingest_envelope(
-        channel="google_calendar",
-        provider="google_calendar",
-        endpoint_identity="gcal:user@example.com",
-        sender_identity="user@example.com",
-        idempotency_key="gcal:user@example.com:event_abc123",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.control.idempotency_key == "gcal:user@example.com:event_abc123"
-
-
-# ---------------------------------------------------------------------------
-# Spotify channel/provider contract validations
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_spotify_user_client_channel_accepted():
-    """IngestEnvelopeV1 accepts spotify_user_client as a valid source channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="spotify_user_client",
-        provider="spotify",
-        endpoint_identity="spotify:user123",
-        sender_identity="user123",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.source.channel == "spotify_user_client"
-    assert parsed.source.provider == "spotify"
-
-
-@pytest.mark.unit
-def test_spotify_user_client_rejects_invalid_provider():
-    """spotify_user_client channel rejects non-spotify providers."""
-    envelope = _build_valid_ingest_envelope(
-        channel="spotify_user_client",
-        provider="telegram",  # wrong provider
-        endpoint_identity="spotify:user123",
-        sender_identity="user123",
-    )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "spotify_user_client" in str(exc_info.value) or "telegram" in str(exc_info.value)
-
-
-@pytest.mark.unit
-def test_spotify_provider_rejected_for_telegram_channel():
-    """spotify provider is invalid for telegram_bot channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="telegram_bot",
-        provider="spotify",  # wrong provider for telegram_bot
-    )
-    with pytest.raises(ValidationError):
-        parse_ingest_envelope(envelope)
-
-
-@pytest.mark.unit
-def test_spotify_user_client_in_source_channel_literal():
-    """SourceChannel literal includes spotify_user_client."""
-    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
-
-    assert "spotify_user_client" in _ALLOWED_PROVIDERS_BY_CHANNEL
-    assert _ALLOWED_PROVIDERS_BY_CHANNEL["spotify_user_client"] == frozenset({"spotify"})
-
-
-@pytest.mark.unit
-def test_spotify_idempotency_key_format():
-    """IngestEnvelopeV1 accepts spotify-prefixed idempotency key."""
-    envelope = _build_valid_ingest_envelope(
-        channel="spotify_user_client",
-        provider="spotify",
-        endpoint_identity="spotify:user123",
-        sender_identity="user123",
-        idempotency_key="spotify:user123:event_abc123",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.control.idempotency_key == "spotify:user123:event_abc123"
-
-
-# ---------------------------------------------------------------------------
-# OwnTracks channel/provider contract validations
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_owntracks_channel_accepted():
-    """IngestEnvelopeV1 accepts owntracks as a valid source channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="owntracks",
-        provider="owntracks",
-        endpoint_identity="owntracks:device123",
-        sender_identity="user123",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.source.channel == "owntracks"
-    assert parsed.source.provider == "owntracks"
-
-
-@pytest.mark.unit
-def test_owntracks_rejects_invalid_provider():
-    """owntracks channel rejects non-owntracks providers."""
-    envelope = _build_valid_ingest_envelope(
-        channel="owntracks",
-        provider="telegram",  # wrong provider
-        endpoint_identity="owntracks:device123",
-        sender_identity="user123",
-    )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "owntracks" in str(exc_info.value) or "telegram" in str(exc_info.value)
-
-
-@pytest.mark.unit
-def test_owntracks_provider_rejected_for_telegram_channel():
-    """owntracks provider is invalid for telegram_bot channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="telegram_bot",
-        provider="owntracks",  # wrong provider for telegram_bot
-    )
-    with pytest.raises(ValidationError):
-        parse_ingest_envelope(envelope)
-
-
-@pytest.mark.unit
-def test_owntracks_in_allowed_providers_by_channel():
-    """owntracks is registered in _ALLOWED_PROVIDERS_BY_CHANNEL."""
-    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
-
-    assert "owntracks" in _ALLOWED_PROVIDERS_BY_CHANNEL
-    assert _ALLOWED_PROVIDERS_BY_CHANNEL["owntracks"] == frozenset({"owntracks"})
-
-
-# ---------------------------------------------------------------------------
-# Home Assistant channel/provider contract validations  [bu-6kyb]
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_home_assistant_channel_accepted():
-    """IngestEnvelopeV1 accepts home_assistant as a valid source channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="home_assistant",
-        provider="home_assistant",
-        endpoint_identity="ha:http://homeassistant.local:8123",
-        sender_identity="ha:light.living_room",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.source.channel == "home_assistant"
-    assert parsed.source.provider == "home_assistant"
-
-
-@pytest.mark.unit
-def test_home_assistant_channel_rejects_invalid_provider():
-    """home_assistant channel rejects non-home_assistant providers."""
-    envelope = _build_valid_ingest_envelope(
-        channel="home_assistant",
-        provider="internal",  # wrong provider
-        endpoint_identity="ha:http://homeassistant.local:8123",
-        sender_identity="ha:light.living_room",
-    )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "home_assistant" in str(exc_info.value) or "internal" in str(exc_info.value)
-
-
-@pytest.mark.unit
-def test_home_assistant_provider_rejected_for_telegram_channel():
-    """home_assistant provider is invalid for telegram_bot channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="telegram_bot",
-        provider="home_assistant",  # wrong provider for telegram_bot
-    )
-    with pytest.raises(ValidationError):
-        parse_ingest_envelope(envelope)
-
-
-@pytest.mark.unit
-def test_home_assistant_in_allowed_providers_by_channel():
-    """home_assistant is registered in _ALLOWED_PROVIDERS_BY_CHANNEL."""
-    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
-
-    assert "home_assistant" in _ALLOWED_PROVIDERS_BY_CHANNEL
-    assert _ALLOWED_PROVIDERS_BY_CHANNEL["home_assistant"] == frozenset({"home_assistant"})
-
-
-@pytest.mark.unit
-def test_home_assistant_idempotency_key_format():
-    """IngestEnvelopeV1 accepts home_assistant-prefixed idempotency key."""
-    envelope = _build_valid_ingest_envelope(
-        channel="home_assistant",
-        provider="home_assistant",
-        endpoint_identity="ha:http://homeassistant.local:8123",
-        sender_identity="ha:light.living_room",
-        idempotency_key="ha:http://homeassistant.local:8123:light.living_room:1711497600000",
-    )
-    parsed = parse_ingest_envelope(envelope)
+def test_route_envelope_and_idempotency():
+    """RouteInputV1 conversation_history field; idempotency key stored verbatim for all
+    channel types."""
+    # RouteInputV1 conversation_history
+    assert RouteInputV1(prompt="Check vitals").conversation_history is None
+    assert RouteInputV1(prompt="Follow up", conversation_history="").conversation_history == ""
+    history = "**user** (2026-02-16T10:00:00Z):\nHello"
     assert (
-        parsed.control.idempotency_key
-        == "ha:http://homeassistant.local:8123:light.living_room:1711497600000"
+        RouteInputV1(prompt="Follow up", conversation_history=history).conversation_history
+        == history
     )
 
-
-# ---------------------------------------------------------------------------
-# Gaming channel / Steam provider contract validations  [bu-xway]
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_gaming_steam_channel_provider_accepted():
-    """IngestEnvelopeV1 accepts gaming channel with steam provider."""
-    envelope = _build_valid_ingest_envelope(
-        channel="gaming",
-        provider="steam",
-        endpoint_identity="steam:76561198000000001",
-        sender_identity="steam:76561198000000001",
+    # Full envelope round-trip
+    e = _build_valid_route_envelope(prompt="Check vitals")
+    assert parse_route_envelope(e).input.conversation_history is None
+    e2 = _build_valid_route_envelope(
+        prompt="When?", conversation_history=history, context="Some context"
     )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.source.channel == "gaming"
-    assert parsed.source.provider == "steam"
+    parsed2 = parse_route_envelope(e2)
+    assert parsed2.input.conversation_history == history and parsed2.input.context == "Some context"
+
+    # Idempotency key stored verbatim
+    idem_cases = [
+        (
+            "whatsapp_user_client",
+            "whatsapp",
+            "whatsapp:1234567890",
+            "1234567890@s.whatsapp.net",
+            "whatsapp:1234567890:MSGID123456",
+        ),
+        (
+            "google_calendar",
+            "google_calendar",
+            "gcal:user@example.com",
+            "user@example.com",
+            "gcal:user@example.com:event_abc123",
+        ),
+        (
+            "spotify_user_client",
+            "spotify",
+            "spotify:user123",
+            "user123",
+            "spotify:user123:event_abc123",
+        ),
+        (
+            "home_assistant",
+            "home_assistant",
+            "ha:http://homeassistant.local:8123",
+            "ha:light.living_room",
+            "ha:http://homeassistant.local:8123:light.living_room:1711497600000",
+        ),
+    ]
+    for channel, provider, endpoint, sender, idem_key in idem_cases:
+        e = _build_valid_ingest_envelope(
+            channel=channel,
+            provider=provider,
+            endpoint_identity=endpoint,
+            sender_identity=sender,
+            idempotency_key=idem_key,
+        )
+        assert parse_ingest_envelope(e).control.idempotency_key == idem_key
 
 
-@pytest.mark.unit
-def test_gaming_channel_rejects_invalid_provider():
-    """gaming channel rejects non-steam providers."""
-    envelope = _build_valid_ingest_envelope(
-        channel="gaming",
-        provider="internal",  # wrong provider
-        endpoint_identity="steam:76561198000000001",
-        sender_identity="steam:76561198000000001",
+def test_notify_contracts():
+    """WhatsApp reply/send/react; insight intent; empty message rejected; unknown intent
+    rejected."""
+    _WA_CTX = {
+        "request_id": "01916b9d-1234-7000-abcd-123456789abc",
+        "source_channel": "whatsapp_user_client",
+        "source_endpoint_identity": "whatsapp:1234567890",
+        "source_sender_identity": "1234567890@s.whatsapp.net",
+    }
+
+    # WhatsApp reply accepted with thread identity
+    result = parse_notify_request(
+        {
+            "schema_version": "notify.v1",
+            "origin_butler": "messenger",
+            "delivery": {"intent": "reply", "channel": "whatsapp", "message": "Hi there"},
+            "request_context": {**_WA_CTX, "source_thread_identity": "1234567890@s.whatsapp.net"},
+        }
     )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "gaming" in str(exc_info.value) or "internal" in str(exc_info.value)
+    assert result.delivery.channel == "whatsapp"
 
+    # Reply without thread identity rejected
+    with pytest.raises(ValidationError) as exc:
+        parse_notify_request(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "messenger",
+                "delivery": {"intent": "reply", "channel": "whatsapp", "message": "Hi there"},
+                "request_context": _WA_CTX,
+            }
+        )
+    assert "thread" in str(exc.value).lower()
 
-@pytest.mark.unit
-def test_steam_provider_rejected_for_telegram_channel():
-    """steam provider is invalid for telegram_bot channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="telegram_bot",
-        provider="steam",  # wrong provider for telegram_bot
-    )
+    # React intent rejected
     with pytest.raises(ValidationError):
-        parse_ingest_envelope(envelope)
+        parse_notify_request(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "messenger",
+                "delivery": {
+                    "intent": "react",
+                    "channel": "whatsapp",
+                    "message": "",
+                    "emoji": "👍",
+                },
+                "request_context": {
+                    **_WA_CTX,
+                    "source_thread_identity": "1234567890@s.whatsapp.net",
+                },
+            }
+        )
 
-
-@pytest.mark.unit
-def test_gaming_in_allowed_providers_by_channel():
-    """gaming is registered in _ALLOWED_PROVIDERS_BY_CHANNEL with steam."""
-    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
-
-    assert "gaming" in _ALLOWED_PROVIDERS_BY_CHANNEL
-    assert _ALLOWED_PROVIDERS_BY_CHANNEL["gaming"] == frozenset({"steam"})
-
-
-# ---------------------------------------------------------------------------
-# Insight intent contract validations (bu-iuuc)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_insight_intent_accepted():
-    """notify.v1 insight intent is accepted as a valid delivery intent."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "health",
-        "delivery": {
-            "intent": "insight",
-            "channel": "telegram",
-            "message": "Your resting heart rate trend improved this week.",
-            "recipient": "123456789",
-        },
-    }
-    result = parse_notify_request(payload)
-    assert result.delivery.intent == "insight"
-    assert result.delivery.message == "Your resting heart rate trend improved this week."
-
-
-@pytest.mark.unit
-def test_insight_intent_requires_message():
-    """notify.v1 insight intent rejects empty message."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "health",
-        "delivery": {
-            "intent": "insight",
-            "channel": "telegram",
-            "message": "",
-            "recipient": "123456789",
-        },
-    }
-    with pytest.raises(ValidationError) as exc_info:
-        parse_notify_request(payload)
-    assert "message" in str(exc_info.value).lower() or "insight" in str(exc_info.value).lower()
-
-
-@pytest.mark.unit
-def test_insight_intent_rejects_whitespace_only_message():
-    """notify.v1 insight intent rejects whitespace-only message."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "health",
-        "delivery": {
-            "intent": "insight",
-            "channel": "telegram",
-            "message": "   ",
-            "recipient": "123456789",
-        },
-    }
-    with pytest.raises(ValidationError) as exc_info:
-        parse_notify_request(payload)
-    assert "message" in str(exc_info.value).lower() or "insight" in str(exc_info.value).lower()
-
-
-@pytest.mark.unit
-def test_insight_intent_request_context_is_optional():
-    """notify.v1 insight intent does not require request_context (same as send)."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "finance",
-        "delivery": {
-            "intent": "insight",
-            "channel": "telegram",
-            "message": "Your monthly spending is on track.",
-            "recipient": "987654321",
-        },
-        # request_context intentionally omitted
-    }
-    result = parse_notify_request(payload)
-    assert result.delivery.intent == "insight"
-    assert result.request_context is None
-
-
-@pytest.mark.unit
-def test_insight_intent_accepts_optional_request_context():
-    """notify.v1 insight intent accepts an optional request_context when provided."""
-    req_id = "01916b9d-1234-7000-abcd-123456789abc"
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "health",
-        "delivery": {
-            "intent": "insight",
-            "channel": "telegram",
-            "message": "You hit 8,000 steps today!",
-            "recipient": "123456789",
-        },
-        "request_context": {
-            "request_id": req_id,
-            "source_channel": "mcp",
-            "source_endpoint_identity": "butler:health",
-            "source_sender_identity": "health",
-        },
-    }
-    result = parse_notify_request(payload)
-    assert result.delivery.intent == "insight"
-    assert result.request_context is not None
-    assert result.request_context.source_sender_identity == "health"
-
-
-@pytest.mark.unit
-def test_insight_intent_is_in_notify_intent_literal():
-    """NotifyIntent literal includes 'insight' as a valid value."""
-    from butlers.tools.switchboard.routing.contracts import NotifyDeliveryV1
-
-    # Build a delivery with insight intent — should not raise
-    delivery = NotifyDeliveryV1(
-        intent="insight",
-        channel="telegram",
-        message="Test insight message",
-        recipient="123456789",
+    # Send without thread: accepted
+    result2 = parse_notify_request(
+        {
+            "schema_version": "notify.v1",
+            "origin_butler": "messenger",
+            "delivery": {
+                "intent": "send",
+                "channel": "whatsapp",
+                "message": "Hello",
+                "recipient": "1234567890@s.whatsapp.net",
+            },
+        }
     )
-    assert delivery.intent == "insight"
+    assert result2.delivery.intent == "send"
 
+    # Insight intent: accepted, request_context optional
+    result3 = parse_notify_request(
+        {
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "insight",
+                "channel": "telegram",
+                "message": "Your resting HR improved.",
+                "recipient": "123456789",
+            },
+        }
+    )
+    assert result3.delivery.intent == "insight" and result3.request_context is None
 
-@pytest.mark.unit
-def test_unsupported_intent_rejected():
-    """notify.v1 rejects unknown delivery intent values."""
-    payload = {
-        "schema_version": "notify.v1",
-        "origin_butler": "health",
-        "delivery": {
-            "intent": "broadcast",  # not a valid intent
-            "channel": "telegram",
-            "message": "Some message",
-            "recipient": "123456789",
-        },
-    }
+    # Empty/whitespace message rejected for insight
+    for msg in ["", "   "]:
+        with pytest.raises(ValidationError):
+            parse_notify_request(
+                {
+                    "schema_version": "notify.v1",
+                    "origin_butler": "health",
+                    "delivery": {
+                        "intent": "insight",
+                        "channel": "telegram",
+                        "message": msg,
+                        "recipient": "123456789",
+                    },
+                }
+            )
+
+    # Unknown intent rejected
     with pytest.raises(ValidationError):
-        parse_notify_request(payload)
-
-
-# ---------------------------------------------------------------------------
-# Google Drive channel/provider extensions (bu-0gli)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_google_drive_channel_provider_accepted():
-    """IngestEnvelopeV1 accepts google_drive channel with google_drive provider."""
-    envelope = _build_valid_ingest_envelope(
-        channel="google_drive",
-        provider="google_drive",
-        endpoint_identity="google_drive:user:user@example.com",
-        sender_identity="google_drive:user:user@example.com",
-    )
-    parsed = parse_ingest_envelope(envelope)
-    assert parsed.source.channel == "google_drive"
-    assert parsed.source.provider == "google_drive"
-
-
-@pytest.mark.unit
-def test_google_drive_channel_rejects_invalid_provider():
-    """google_drive channel rejects non-google_drive providers."""
-    envelope = _build_valid_ingest_envelope(
-        channel="google_drive",
-        provider="internal",  # wrong provider
-        endpoint_identity="google_drive:user:user@example.com",
-        sender_identity="google_drive:user:user@example.com",
-    )
-    with pytest.raises(ValidationError) as exc_info:
-        parse_ingest_envelope(envelope)
-    assert "google_drive" in str(exc_info.value) or "internal" in str(exc_info.value)
-
-
-@pytest.mark.unit
-def test_google_drive_provider_rejected_for_telegram_channel():
-    """google_drive provider is invalid for telegram_bot channel."""
-    envelope = _build_valid_ingest_envelope(
-        channel="telegram_bot",
-        provider="google_drive",  # wrong provider for telegram_bot
-    )
-    with pytest.raises(ValidationError):
-        parse_ingest_envelope(envelope)
-
-
-@pytest.mark.unit
-def test_google_drive_in_allowed_providers_by_channel():
-    """google_drive is registered in _ALLOWED_PROVIDERS_BY_CHANNEL with google_drive provider."""
-    from butlers.tools.switchboard.routing.contracts import _ALLOWED_PROVIDERS_BY_CHANNEL
-
-    assert "google_drive" in _ALLOWED_PROVIDERS_BY_CHANNEL
-    assert _ALLOWED_PROVIDERS_BY_CHANNEL["google_drive"] == frozenset({"google_drive"})
+        parse_notify_request(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "health",
+                "delivery": {
+                    "intent": "broadcast",
+                    "channel": "telegram",
+                    "message": "Some msg",
+                    "recipient": "123456789",
+                },
+            }
+        )

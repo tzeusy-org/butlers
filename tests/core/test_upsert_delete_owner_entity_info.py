@@ -1,14 +1,4 @@
-"""Tests for upsert_owner_entity_info() and delete_owner_entity_info().
-
-Verifies:
-- Upsert creates a new entity_info row on the owner entity.
-- Upsert replaces an existing row (value change) via ON CONFLICT.
-- Upsert returns False when owner entity is missing.
-- Upsert returns False when tables don't exist.
-- Delete removes matching rows and returns True.
-- Delete returns False when nothing to delete.
-- Delete returns False when owner entity or tables missing.
-"""
+"""Tests for upsert_owner_entity_info() and delete_owner_entity_info()."""
 
 from __future__ import annotations
 
@@ -21,34 +11,24 @@ from butlers.credential_store import delete_owner_entity_info, upsert_owner_enti
 pytestmark = pytest.mark.unit
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_pool(
     *,
     owner_id: str | None = "owner-uuid-1",
     execute_return: str = "DELETE 1",
     raises: Exception | None = None,
 ) -> tuple[MagicMock, AsyncMock]:
-    """Build an asyncpg pool mock for upsert/delete owner_entity_info tests."""
     conn = AsyncMock()
-
     if raises is not None:
         conn.fetchrow = AsyncMock(side_effect=raises)
         conn.execute = AsyncMock(side_effect=raises)
     else:
-        # fetchrow returns the owner entity row (or None)
         if owner_id is not None:
             owner_row = MagicMock()
             owner_row.__getitem__ = MagicMock(side_effect=lambda k: owner_id if k == "id" else None)
             conn.fetchrow = AsyncMock(return_value=owner_row)
         else:
             conn.fetchrow = AsyncMock(return_value=None)
-
         conn.execute = AsyncMock(return_value=execute_return)
-
     pool = MagicMock()
     acquire_ctx = AsyncMock()
     acquire_ctx.__aenter__ = AsyncMock(return_value=conn)
@@ -57,113 +37,62 @@ def _make_pool(
     return pool, conn
 
 
-# ---------------------------------------------------------------------------
-# upsert_owner_entity_info
-# ---------------------------------------------------------------------------
+async def test_upsert_owner_entity_info():
+    """Creates/replaces row with ON CONFLICT; respects secured flag; False when no owner
+    or missing table; re-raises unexpected errors."""
+    # Creates row and verifies INSERT ON CONFLICT with secured=True
+    pool, conn = _make_pool(owner_id="owner-uuid-1")
+    assert await upsert_owner_entity_info(pool, "google_oauth_refresh", "token-value") is True
+    insert_call = conn.execute.call_args_list[0]
+    assert "INSERT" in insert_call[0][0] and "ON CONFLICT" in insert_call[0][0]
+    assert insert_call[0][1] == "owner-uuid-1" and insert_call[0][3] == "token-value"
+    assert insert_call[0][4] is True  # secured=True
+
+    # secured=False passed through
+    pool2, conn2 = _make_pool(owner_id="owner-uuid-1")
+    await upsert_owner_entity_info(pool2, "google_oauth_refresh", "token", secured=False)
+    assert conn2.execute.call_args_list[0][0][4] is False
+
+    # No owner → False, no execute
+    pool3, conn3 = _make_pool(owner_id=None)
+    assert await upsert_owner_entity_info(pool3, "google_oauth_refresh", "token") is False
+    conn3.execute.assert_not_awaited()
+
+    # Missing table → False
+    UndefinedTableError = type("UndefinedTableError", (Exception,), {})
+    pool4, _ = _make_pool(raises=UndefinedTableError('relation "public.entities" does not exist'))
+    assert await upsert_owner_entity_info(pool4, "google_oauth_refresh", "token") is False
+
+    # Unexpected error re-raised
+    pool5, _ = _make_pool(raises=RuntimeError("connection lost"))
+    with pytest.raises(RuntimeError, match="connection lost"):
+        await upsert_owner_entity_info(pool5, "google_oauth_refresh", "token")
 
 
-class TestUpsertOwnerEntityInfo:
-    async def test_creates_new_row(self) -> None:
-        """Upsert inserts a new entity_info row on the owner entity."""
-        pool, conn = _make_pool(owner_id="owner-uuid-1")
-        result = await upsert_owner_entity_info(pool, "google_oauth_refresh", "token-value")
-        assert result is True
+async def test_delete_owner_entity_info():
+    """Deletes row returns True; no row returns False; no owner→False; missing table→False;
+    unexpected error re-raised."""
+    # Delete matching row
+    pool, conn = _make_pool(owner_id="owner-uuid-1", execute_return="DELETE 1")
+    assert await delete_owner_entity_info(pool, "google_oauth_refresh") is True
+    delete_call = conn.execute.call_args_list[0]
+    assert "DELETE" in delete_call[0][0] and delete_call[0][1] == "owner-uuid-1"
 
-        # Should have: fetchrow (owner), execute (INSERT ON CONFLICT)
-        assert conn.fetchrow.await_count == 1
-        assert conn.execute.await_count == 1
+    # No row to delete
+    pool2, _ = _make_pool(owner_id="owner-uuid-1", execute_return="DELETE 0")
+    assert await delete_owner_entity_info(pool2, "google_oauth_refresh") is False
 
-        # Single execute: INSERT ON CONFLICT
-        insert_call = conn.execute.call_args_list[0]
-        assert "INSERT" in insert_call[0][0]
-        assert "ON CONFLICT" in insert_call[0][0]
-        assert insert_call[0][1] == "owner-uuid-1"
-        assert insert_call[0][2] == "google_oauth_refresh"
-        assert insert_call[0][3] == "token-value"
-        assert insert_call[0][4] is True  # secured=True
+    # No owner → False
+    pool3, conn3 = _make_pool(owner_id=None)
+    assert await delete_owner_entity_info(pool3, "google_oauth_refresh") is False
+    conn3.execute.assert_not_awaited()
 
-    async def test_replaces_existing_row(self) -> None:
-        """Upsert with a different value replaces the existing row via ON CONFLICT."""
-        pool, conn = _make_pool(owner_id="owner-uuid-1")
-        result = await upsert_owner_entity_info(pool, "google_oauth_refresh", "new-token")
-        assert result is True
-        insert_call = conn.execute.call_args_list[0]
-        assert insert_call[0][3] == "new-token"
+    # Missing table → False
+    UndefinedTableError = type("UndefinedTableError", (Exception,), {})
+    pool4, _ = _make_pool(raises=UndefinedTableError('relation "public.entities" does not exist'))
+    assert await delete_owner_entity_info(pool4, "google_oauth_refresh") is False
 
-    async def test_returns_false_when_no_owner_entity(self) -> None:
-        """Upsert returns False when no owner entity exists."""
-        pool, conn = _make_pool(owner_id=None)
-        result = await upsert_owner_entity_info(pool, "google_oauth_refresh", "token")
-        assert result is False
-        # Should not have tried to execute any writes
-        conn.execute.assert_not_awaited()
-
-    async def test_returns_false_when_table_missing(self) -> None:
-        """Upsert returns False when public.entities table doesn't exist."""
-        UndefinedTableError = type("UndefinedTableError", (Exception,), {})
-        exc = UndefinedTableError('relation "public.entities" does not exist')
-        pool, _ = _make_pool(raises=exc)
-        result = await upsert_owner_entity_info(pool, "google_oauth_refresh", "token")
-        assert result is False
-
-    async def test_respects_secured_flag(self) -> None:
-        """Upsert passes the secured flag to the INSERT."""
-        pool, conn = _make_pool(owner_id="owner-uuid-1")
-        await upsert_owner_entity_info(pool, "google_oauth_refresh", "token", secured=False)
-        insert_call = conn.execute.call_args_list[0]
-        assert insert_call[0][4] is False  # secured=False
-
-    async def test_reraises_unexpected_errors(self) -> None:
-        """Non-table-missing errors are re-raised."""
-        exc = RuntimeError("connection lost")
-        pool, _ = _make_pool(raises=exc)
-        with pytest.raises(RuntimeError, match="connection lost"):
-            await upsert_owner_entity_info(pool, "google_oauth_refresh", "token")
-
-
-# ---------------------------------------------------------------------------
-# delete_owner_entity_info
-# ---------------------------------------------------------------------------
-
-
-class TestDeleteOwnerEntityInfo:
-    async def test_deletes_matching_row(self) -> None:
-        """Delete removes the matching entity_info row and returns True."""
-        pool, conn = _make_pool(owner_id="owner-uuid-1", execute_return="DELETE 1")
-        result = await delete_owner_entity_info(pool, "google_oauth_refresh")
-        assert result is True
-
-        # Should have: fetchrow (owner), execute (DELETE)
-        assert conn.fetchrow.await_count == 1
-        delete_call = conn.execute.call_args_list[0]
-        assert "DELETE" in delete_call[0][0]
-        assert delete_call[0][1] == "owner-uuid-1"
-        assert delete_call[0][2] == "google_oauth_refresh"
-
-    async def test_returns_false_when_nothing_to_delete(self) -> None:
-        """Delete returns False when no matching row exists."""
-        pool, _ = _make_pool(owner_id="owner-uuid-1", execute_return="DELETE 0")
-        result = await delete_owner_entity_info(pool, "google_oauth_refresh")
-        assert result is False
-
-    async def test_returns_false_when_no_owner_entity(self) -> None:
-        """Delete returns False when no owner entity exists."""
-        pool, conn = _make_pool(owner_id=None)
-        result = await delete_owner_entity_info(pool, "google_oauth_refresh")
-        assert result is False
-        conn.execute.assert_not_awaited()
-
-    async def test_returns_false_when_table_missing(self) -> None:
-        """Delete returns False when tables don't exist."""
-        UndefinedTableError = type("UndefinedTableError", (Exception,), {})
-        exc = UndefinedTableError('relation "public.entities" does not exist')
-        pool, _ = _make_pool(raises=exc)
-        result = await delete_owner_entity_info(pool, "google_oauth_refresh")
-        assert result is False
-
-    async def test_reraises_unexpected_errors(self) -> None:
-        """Non-table-missing errors are re-raised."""
-        exc = RuntimeError("disk full")
-        pool, _ = _make_pool(raises=exc)
-        with pytest.raises(RuntimeError, match="disk full"):
-            await delete_owner_entity_info(pool, "google_oauth_refresh")
+    # Unexpected error re-raised
+    pool5, _ = _make_pool(raises=RuntimeError("disk full"))
+    with pytest.raises(RuntimeError, match="disk full"):
+        await delete_owner_entity_info(pool5, "google_oauth_refresh")

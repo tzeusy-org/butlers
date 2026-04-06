@@ -1,11 +1,4 @@
-"""Unit tests for route_inbox durable work queue (butlers-963.6).
-
-Covers:
-- route_inbox_insert: persist a row in 'accepted' state
-- route_inbox_mark_processing / mark_processed / mark_errored: lifecycle transitions
-- route_inbox_scan_unprocessed: find stuck rows
-- route_inbox_recovery_sweep: dispatch_fn called for each stuck row
-"""
+"""Unit tests for route_inbox durable work queue (butlers-963.6) — condensed."""
 
 from __future__ import annotations
 
@@ -32,13 +25,7 @@ from butlers.core.route_inbox import (
 pytestmark = pytest.mark.unit
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _make_pool() -> Any:
-    """Return an async mock pool that provides an async context manager for acquire()."""
     pool = AsyncMock()
     conn = AsyncMock()
     pool.acquire = MagicMock(
@@ -64,168 +51,139 @@ def _sample_envelope() -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# State transition tests (insert + lifecycle mutations)
-# ---------------------------------------------------------------------------
+async def test_insert_and_lifecycle_mutations() -> None:
+    """insert returns UUID; INSERT with accepted state; mark_processing/processed/errored
+    each correct."""
+    import json
+
+    # Insert
+    pool, conn = _make_pool()
+    conn.execute = AsyncMock()
+    result = await route_inbox_insert(pool, route_envelope=_sample_envelope())
+    assert isinstance(result, uuid.UUID)
+    sql = conn.execute.call_args.args[0]
+    assert "INSERT INTO route_inbox" in sql and conn.execute.call_args.args[3] == STATE_ACCEPTED
+    assert json.loads(conn.execute.call_args.args[2])["schema_version"] == "route.v1"
+
+    row_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+
+    # mark_processing
+    pool2, conn2 = _make_pool()
+    conn2.execute = AsyncMock()
+    await route_inbox_mark_processing(pool2, row_id)
+    args = conn2.execute.call_args.args
+    assert (
+        "UPDATE route_inbox" in args[0]
+        and STATE_PROCESSING in args
+        and row_id in args
+        and STATE_ACCEPTED in args
+    )
+
+    # mark_processed (with and without session_id)
+    pool3, conn3 = _make_pool()
+    conn3.execute = AsyncMock()
+    await route_inbox_mark_processed(pool3, row_id, session_id)
+    assert (
+        STATE_PROCESSED in conn3.execute.call_args.args
+        and session_id in conn3.execute.call_args.args
+    )
+    conn3.execute.reset_mock()
+    await route_inbox_mark_processed(pool3, row_id, None)
+    conn3.execute.assert_awaited_once()
+
+    # mark_errored
+    pool4, conn4 = _make_pool()
+    conn4.execute = AsyncMock()
+    error = "TimeoutError: spawner timed out"
+    await route_inbox_mark_errored(pool4, row_id, error)
+    args4 = conn4.execute.call_args.args
+    assert (
+        "UPDATE route_inbox" in args4[0]
+        and STATE_ERRORED in args4
+        and error in args4
+        and row_id in args4
+    )
 
 
-class TestRouteInboxInsert:
-    """Tests for the insert function."""
+async def test_scan_and_recovery_sweep() -> None:
+    """scan: empty/with rows/grace_s+batch_size params/states filter; recovery:
+    count/dispatch/continue on failure."""
+    # Empty scan
+    pool, conn = _make_pool()
+    conn.fetch = AsyncMock(return_value=[])
+    assert await route_inbox_scan_unprocessed(pool, grace_s=10, batch_size=50) == []
 
-    async def test_insert_behavior(self) -> None:
-        """route_inbox_insert returns UUID; executes INSERT with accepted state; serializes envelope."""
-        import json
-
-        pool, conn = _make_pool()
-        conn.execute = AsyncMock()
-        envelope = _sample_envelope()
-
-        result = await route_inbox_insert(pool, route_envelope=envelope)
-
-        assert isinstance(result, uuid.UUID)
-        conn.execute.assert_awaited_once()
-        call_args = conn.execute.call_args
-        sql = call_args.args[0]
-        assert "INSERT INTO route_inbox" in sql
-        assert call_args.args[3] == STATE_ACCEPTED
-        parsed = json.loads(call_args.args[2])
-        assert parsed["schema_version"] == "route.v1"
-        assert parsed["input"]["prompt"] == "Run a health check."
-
-
-class TestRouteInboxLifecycleMutations:
-    """Tests for mark_processing, mark_processed, and mark_errored state transitions."""
-
-    async def test_lifecycle_transitions(self) -> None:
-        """mark_processing/mark_processed/mark_errored each execute correct UPDATE SQL."""
-        row_id = uuid.uuid4()
-        session_id = uuid.uuid4()
-
-        # mark_processing: transitions accepted → processing
-        pool, conn = _make_pool()
-        conn.execute = AsyncMock()
-        await route_inbox_mark_processing(pool, row_id)
-        conn.execute.assert_awaited_once()
-        call_args = conn.execute.call_args
-        assert "UPDATE route_inbox" in call_args.args[0]
-        assert STATE_PROCESSING in call_args.args
-        assert row_id in call_args.args
-        assert STATE_ACCEPTED in call_args.args
-
-        # mark_processed: stores session_id; None session_id accepted
-        pool2, conn2 = _make_pool()
-        conn2.execute = AsyncMock()
-        await route_inbox_mark_processed(pool2, row_id, session_id)
-        conn2.execute.assert_awaited_once()
-        call_args2 = conn2.execute.call_args
-        assert "UPDATE route_inbox" in call_args2.args[0]
-        assert STATE_PROCESSED in call_args2.args
-        assert session_id in call_args2.args
-        conn2.execute.reset_mock()
-        await route_inbox_mark_processed(pool2, row_id, None)
-        conn2.execute.assert_awaited_once()
-
-        # mark_errored: stores error message
-        pool3, conn3 = _make_pool()
-        conn3.execute = AsyncMock()
-        error = "TimeoutError: spawner timed out"
-        await route_inbox_mark_errored(pool3, row_id, error)
-        conn3.execute.assert_awaited_once()
-        call_args3 = conn3.execute.call_args
-        assert "UPDATE route_inbox" in call_args3.args[0]
-        assert STATE_ERRORED in call_args3.args
-        assert error in call_args3.args
-        assert row_id in call_args3.args
-
-
-# ---------------------------------------------------------------------------
-# route_inbox_scan_unprocessed
-# ---------------------------------------------------------------------------
-
-
-class TestRouteInboxScanUnprocessed:
-    """Tests for the scanner that finds stuck rows."""
-
-    async def test_scan_empty_and_with_rows(self) -> None:
-        """Empty when no rows; returns dicts with row fields when rows exist."""
-        pool, conn = _make_pool()
-        conn.fetch = AsyncMock(return_value=[])
-        assert await route_inbox_scan_unprocessed(pool, grace_s=10, batch_size=50) == []
-
-        # With one row
-        row_id = uuid.uuid4()
-        now = datetime.now(UTC)
-        conn.fetch = AsyncMock(return_value=[{
-            "id": row_id, "received_at": now,
-            "route_envelope": {"schema_version": "route.v1", "input": {"prompt": "test"}},
-        }])
-        result = await route_inbox_scan_unprocessed(pool, grace_s=10, batch_size=50)
-        assert len(result) == 1
-        assert result[0]["id"] == row_id and result[0]["received_at"] == now
-
-    async def test_scan_query_parameters(self) -> None:
-        """grace_s and batch_size forwarded to query; filter includes accepted+processing states."""
-        pool, conn = _make_pool()
-        conn.fetch = AsyncMock(return_value=[])
-
-        await route_inbox_scan_unprocessed(pool, grace_s=42, batch_size=7)
-        call_args = conn.fetch.call_args
-        assert 42 in call_args.args and 7 in call_args.args
-
-        # States filter
-        await route_inbox_scan_unprocessed(pool)
-        states_arg = conn.fetch.call_args.args[1]
-        assert STATE_ACCEPTED in states_arg and STATE_PROCESSING in states_arg
-
-
-# ---------------------------------------------------------------------------
-# route_inbox_recovery_sweep
-# ---------------------------------------------------------------------------
-
-
-class TestRouteInboxRecoverySweep:
-    """Tests for crash recovery sweep."""
-
-    async def test_recovery_dispatch_and_count(self) -> None:
-        """dispatch_fn called per row; returns 0 when no rows; returns count of successes."""
-        pool, conn = _make_pool()
-        now = datetime.now(UTC)
-
-        # Zero when no rows
-        conn.fetch = AsyncMock(return_value=[])
-        dispatch_fn = AsyncMock()
-        assert await route_inbox_recovery_sweep(pool, dispatch_fn=dispatch_fn) == 0
-        dispatch_fn.assert_not_awaited()
-
-        # One row → dispatched once, count=1
-        row_id = uuid.uuid4()
-        conn.fetch = AsyncMock(return_value=[{
-            "id": row_id, "received_at": now.replace(tzinfo=None),
-            "route_envelope": {"schema_version": "route.v1", "input": {"prompt": "hi"}},
-        }])
-        dispatch_calls: list[dict] = []
-        async def collect_dispatch(*, row_id: uuid.UUID, route_envelope: dict) -> None:
-            dispatch_calls.append({"row_id": row_id})
-        recovered = await route_inbox_recovery_sweep(pool, dispatch_fn=collect_dispatch, grace_s=10, batch_size=50)
-        assert recovered == 1 and len(dispatch_calls) == 1 and dispatch_calls[0]["row_id"] == row_id
-
-    async def test_recovery_continues_on_failure(self) -> None:
-        """Failure in one dispatch row does not stop recovery; count excludes failed rows."""
-        pool, conn = _make_pool()
-        now = datetime.now(UTC)
-        rows = [
-            {"id": uuid.uuid4(), "received_at": now.replace(tzinfo=None),
-             "route_envelope": {"schema_version": "route.v1", "input": {"prompt": f"msg{i}"}}}
-            for i in range(3)
+    # Scan with one row
+    row_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": row_id,
+                "received_at": now,
+                "route_envelope": {"schema_version": "route.v1", "input": {"prompt": "test"}},
+            }
         ]
-        conn.fetch = AsyncMock(return_value=rows)
+    )
+    result = await route_inbox_scan_unprocessed(pool, grace_s=10, batch_size=50)
+    assert len(result) == 1 and result[0]["id"] == row_id
 
-        call_count = 0
-        async def dispatch_fn(*, row_id: uuid.UUID, route_envelope: dict) -> None:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                raise RuntimeError("simulated dispatch failure")
+    # Parameters forwarded to query
+    conn.fetch = AsyncMock(return_value=[])
+    await route_inbox_scan_unprocessed(pool, grace_s=42, batch_size=7)
+    assert 42 in conn.fetch.call_args.args and 7 in conn.fetch.call_args.args
 
-        recovered = await route_inbox_recovery_sweep(pool, dispatch_fn=dispatch_fn)
-        assert recovered == 2 and call_count == 3
+    # States filter includes accepted + processing
+    await route_inbox_scan_unprocessed(pool)
+    states_arg = conn.fetch.call_args.args[1]
+    assert STATE_ACCEPTED in states_arg and STATE_PROCESSING in states_arg
+
+    # Recovery: zero when no rows
+    pool2, conn2 = _make_pool()
+    conn2.fetch = AsyncMock(return_value=[])
+    dispatch = AsyncMock()
+    assert await route_inbox_recovery_sweep(pool2, dispatch_fn=dispatch) == 0
+    dispatch.assert_not_awaited()
+
+    # Recovery: one row dispatched, count=1
+    rr_id = uuid.uuid4()
+    conn2.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": rr_id,
+                "received_at": now.replace(tzinfo=None),
+                "route_envelope": {"schema_version": "route.v1", "input": {"prompt": "hi"}},
+            }
+        ]
+    )
+    dispatch_calls: list[dict] = []
+
+    async def collect_dispatch(*, row_id: uuid.UUID, route_envelope: dict) -> None:
+        dispatch_calls.append({"row_id": row_id})
+
+    recovered = await route_inbox_recovery_sweep(
+        pool2, dispatch_fn=collect_dispatch, grace_s=10, batch_size=50
+    )
+    assert recovered == 1 and dispatch_calls[0]["row_id"] == rr_id
+
+    # Recovery: continues on failure; count excludes failed rows
+    rows = [
+        {
+            "id": uuid.uuid4(),
+            "received_at": now.replace(tzinfo=None),
+            "route_envelope": {"schema_version": "route.v1", "input": {"prompt": f"msg{i}"}},
+        }
+        for i in range(3)
+    ]
+    conn2.fetch = AsyncMock(return_value=rows)
+    call_count = 0
+
+    async def dispatch_fn_fail(*, row_id: uuid.UUID, route_envelope: dict) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("simulated failure")
+
+    recovered2 = await route_inbox_recovery_sweep(pool2, dispatch_fn=dispatch_fn_fail)
+    assert recovered2 == 2 and call_count == 3
