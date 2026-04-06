@@ -87,7 +87,8 @@ Modules are pluggable units that add domain-specific MCP tools and database tabl
 #### Scenario: Module ABC contract
 - **WHEN** a module is implemented
 - **THEN** it extends the `Module` abstract base class providing: `name` (unique string identifier), `config_schema` (Pydantic model for `[modules.{name}]` TOML section), `dependencies` (list of module names this module depends on)
-- **AND** it implements: `register_tools(mcp, config, db)` to add MCP tools, `migration_revisions()` returning an Alembic branch label or None, `on_startup(config, db, credential_store)` for initialization, `on_shutdown()` for cleanup
+- **AND** it implements: `register_tools(mcp, config, db)` to add MCP tools, `migration_revisions()` returning an Alembic branch label or None, `on_startup(config, db, credential_store, blob_store, *, switchboard_client)` for initialization, `on_shutdown()` for cleanup
+- **AND** `on_startup()` receives an optional `switchboard_client` kwarg — the daemon's Switchboard MCPClient instance (or None when switchboard is not configured). Modules that need inter-butler communication (e.g., self_healing QA relay) use this to relay findings via Switchboard's `route()` tool
 
 #### Scenario: Module tool metadata
 - **WHEN** a module has tools with safety-sensitive arguments

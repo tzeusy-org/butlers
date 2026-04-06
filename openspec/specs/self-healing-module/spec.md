@@ -88,7 +88,7 @@ The module SHALL declare sensitivity metadata for its tools to integrate with th
 The module SHALL run recovery and cleanup on startup.
 
 #### Scenario: Startup recovery
-- **WHEN** `on_startup(config, db)` is called
+- **WHEN** `on_startup(config, db, credential_store, blob_store, *, switchboard_client)` is called
 - **THEN** the module runs `recover_stale_attempts(pool, timeout_minutes)` to clean up investigations left by a prior crash
 - **AND** runs `reap_stale_worktrees(repo_root, pool)` to clean up orphaned worktrees
 
@@ -96,6 +96,25 @@ The module SHALL run recovery and cleanup on startup.
 - **WHEN** `on_shutdown()` is called
 - **THEN** any in-progress timeout watchdog tasks are cancelled (best-effort)
 - **AND** active healing attempts are NOT terminated (they may complete independently)
+
+### Requirement: Switchboard Client Injection for QA Relay
+The module SHALL receive the daemon's Switchboard MCPClient via the `switchboard_client` kwarg of `on_startup()`. When provided, the module uses it to relay findings to the QA staffer via Switchboard's `route()` tool (primary path). When `None`, the module falls back to direct dispatch via `core.healing.dispatch`.
+
+#### Scenario: Switchboard client wired at startup
+- **WHEN** the daemon calls `on_startup()` on the self-healing module
+- **AND** a Switchboard client is connected
+- **THEN** `switchboard_client` is passed as a kwarg to `on_startup()`
+- **AND** the module stores it for use in `_try_qa_relay()`
+
+#### Scenario: No switchboard configured
+- **WHEN** the daemon calls `on_startup()` without a Switchboard client (standalone butler)
+- **THEN** `switchboard_client` is `None`
+- **AND** the module uses direct dispatch exclusively (no relay attempt, no error)
+
+#### Scenario: QA relay is primary dispatch path
+- **WHEN** an error is reported via `report_error` and `switchboard_client` is not None
+- **THEN** the module first attempts `_try_qa_relay()` via Switchboard's `route()` tool to the QA staffer's `report_finding`
+- **AND** only falls back to direct dispatch if the relay fails or QA staffer is unavailable
 
 ### Requirement: Module Delegates to Core Healing Package
 The module SHALL NOT implement fingerprinting, dispatch logic, worktree management, or anonymization directly. It delegates all of these to the shared `src/butlers/core/healing/` package. This ensures the spawner fallback and the module use identical logic.

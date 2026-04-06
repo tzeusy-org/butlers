@@ -43,6 +43,7 @@
 - [ ] 5.1 Refactor `src/butlers/modules/self_healing/__init__.py` — add QA relay path: when QA staffer is registered with Switchboard, relay findings via `switchboard_client.call_tool("route", {"target_butler": "qa", "tool_name": "report_finding", "args": ...})` instead of direct dispatch (preserving non-negotiable rule #3: MCP-only inter-butler communication via Switchboard `route()` tool, not `notify()` which is for external channels)
 - [ ] 5.2 Preserve fallback path: when QA staffer unavailable, use existing direct dispatch via `core.healing.dispatch`
 - [ ] 5.3 Write tests for relay behavior: (1) QA available → Switchboard `route()` call to `report_finding` is made with correct args, (2) QA unavailable → fallback to direct dispatch, (3) Switchboard client not connected → immediate fallback, (4) cached `list_butlers` TTL prevents per-error roundtrip
+- [ ] 5.4 **CRITICAL (bu-i0geq):** Wire switchboard_client into modules via daemon on_startup() — the relay code (5.1-5.3) is implemented and tested in isolation but the daemon never calls wire_runtime() or passes switchboard_client to on_startup(), so self._switchboard_client stays None and the entire relay path is dead code. Extend Module ABC on_startup() signature to accept optional switchboard_client kwarg, and have daemon pass self.switchboard_client when calling on_startup() on each module.
 
 ## 6. QA Staffer Module and Roster
 
