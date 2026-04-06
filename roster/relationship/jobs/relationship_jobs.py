@@ -16,6 +16,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.state import state_get, state_set
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -627,8 +629,11 @@ _INTERACTION_SYNC_CHANNEL_HOUR_OFFSET: dict[str, int] = {
     "email": 2,
 }
 
-# How far back to scan message_inbox for recent interactions (default window).
-_INTERACTION_SYNC_LOOKBACK_HOURS = 25  # slightly over 24h to cover scheduling jitter
+# Checkpoint key for scan window persistence.
+_INTERACTION_SYNC_STATE_KEY = "interaction_sync.last_scan_at"
+
+# Maximum lookback window (prevents unbounded backfill after long outages).
+_INTERACTION_SYNC_MAX_WINDOW_DAYS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +649,15 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     ``email``).  Groups by ``(source_sender_identity, source_channel,
     DATE(received_at))`` so that at most one interaction fact is logged per
     contact per day per channel.
+
+    The scan window is checkpoint-based:
+    - ``scan_window_start``: read from state key ``interaction_sync.last_scan_at``.
+      If absent (first run), defaults to ``now() - 30 days``. Capped to at most
+      30 days ago to prevent unbounded backfill after outages.
+    - ``scan_window_end``: ``now()`` at job start.
+
+    On successful completion the job writes ``scan_window_end`` back to the state
+    store so the next run continues from where this one left off.
 
     Resolution steps:
     1. Map ``source_channel`` → ``contact_info.type`` (see ``_INTERACTION_SYNC_CHANNEL_MAP``).
@@ -661,22 +675,54 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         db_pool: Database connection pool (relationship butler pool).
 
     Returns:
-        Dictionary with keys: processed, logged, skipped_unresolved,
-        skipped_owner, errors.
+        Dictionary with keys: scan_window_start (ISO8601), scan_window_end
+        (ISO8601), processed, logged, skipped_unresolved, skipped_owner, errors.
     """
     from roster.relationship.tools.interactions import interaction_log
 
     logger.info("Running relationship interaction sync job")
 
+    now_utc = datetime.now(UTC)
+    max_lookback = now_utc - timedelta(days=_INTERACTION_SYNC_MAX_WINDOW_DAYS)
+
+    # Load checkpoint from state store.
+    last_scan_at_raw = await state_get(db_pool, _INTERACTION_SYNC_STATE_KEY)
+    if last_scan_at_raw is not None:
+        try:
+            scan_window_start = datetime.fromisoformat(str(last_scan_at_raw))
+            # Ensure timezone-aware.
+            if scan_window_start.tzinfo is None:
+                scan_window_start = scan_window_start.replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            logger.warning(
+                "interaction_sync: invalid checkpoint value %r — using 30-day default",
+                last_scan_at_raw,
+            )
+            scan_window_start = max_lookback
+    else:
+        scan_window_start = max_lookback
+
+    # Cap to at most 30 days ago.
+    if scan_window_start < max_lookback:
+        scan_window_start = max_lookback
+
+    scan_window_end = now_utc
+
+    logger.info(
+        "interaction_sync: window [%s, %s]",
+        scan_window_start.isoformat(),
+        scan_window_end.isoformat(),
+    )
+
     stats: dict[str, Any] = {
+        "scan_window_start": scan_window_start.isoformat(),
+        "scan_window_end": scan_window_end.isoformat(),
         "processed": 0,
         "logged": 0,
         "skipped_unresolved": 0,
         "skipped_owner": 0,
         "errors": 0,
     }
-
-    cutoff = datetime.now(UTC) - timedelta(hours=_INTERACTION_SYNC_LOOKBACK_HOURS)
 
     channels = list(_INTERACTION_SYNC_CHANNEL_MAP.keys())
 
@@ -704,7 +750,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 (received_at AT TIME ZONE 'UTC')::date
             ORDER BY interaction_date DESC
             """,
-            cutoff,
+            scan_window_start,
             channels,
         )
     except Exception:
@@ -714,6 +760,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     if not rows:
         logger.info("interaction_sync: no recent inbound messages found")
+        await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, scan_window_end.isoformat())
         return stats
 
     # -----------------------------------------------------------------------
@@ -857,6 +904,9 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 source_channel,
             )
             stats["errors"] += 1
+
+    # Persist the end of this scan window as the next checkpoint.
+    await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, scan_window_end.isoformat())
 
     logger.info(
         "Interaction sync complete: processed=%d, logged=%d, "

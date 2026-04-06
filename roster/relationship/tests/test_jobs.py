@@ -1130,6 +1130,15 @@ CREATE TABLE IF NOT EXISTS memory_links (
 )
 """
 
+CREATE_STATE_SQL = """
+CREATE TABLE IF NOT EXISTS state (
+    key TEXT PRIMARY KEY,
+    value JSONB NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    version INTEGER NOT NULL DEFAULT 1
+)
+"""
+
 
 async def _setup_interaction_sync_schema(pool) -> None:
     """Create tables needed for interaction sync tests."""
@@ -1146,6 +1155,8 @@ async def _setup_interaction_sync_schema(pool) -> None:
     # store_fact() requires predicate_registry and memory_links
     await pool.execute(CREATE_PREDICATE_REGISTRY_SQL)
     await pool.execute(CREATE_MEMORY_LINKS_SQL)
+    # state table for checkpoint persistence
+    await pool.execute(CREATE_STATE_SQL)
 
 
 async def _insert_public_contact(
@@ -1270,6 +1281,8 @@ async def test_interaction_sync_returns_expected_stats_keys(provisioned_postgres
 
         result = await run_interaction_sync(pool)
 
+        assert "scan_window_start" in result
+        assert "scan_window_end" in result
         assert "processed" in result
         assert "logged" in result
         assert "skipped_unresolved" in result
@@ -1458,7 +1471,7 @@ async def test_interaction_sync_different_channels_logged_separately(
 
 
 async def test_interaction_sync_old_messages_excluded(provisioned_postgres_pool):
-    """Messages older than the lookback window are not processed."""
+    """Messages older than the scan window are not processed."""
     from roster.relationship.jobs.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
@@ -1468,8 +1481,8 @@ async def test_interaction_sync_old_messages_excluded(provisioned_postgres_pool)
         await _insert_contact_info(
             pool, contact_id=contact_id, ci_type="telegram_chat_id", value="old_sender"
         )
-        # Insert a message 3 days old (outside the 25h lookback window)
-        old_ts = datetime.now(UTC) - timedelta(days=3)
+        # Insert a message 35 days old (outside the 30-day default window)
+        old_ts = datetime.now(UTC) - timedelta(days=35)
         await _insert_message_inbox(
             pool,
             sender_identity="old_sender",
@@ -1583,3 +1596,118 @@ async def test_interaction_sync_email_channel_resolved(provisioned_postgres_pool
         result = await run_interaction_sync(pool)
 
         assert result["logged"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_interaction_sync — checkpoint and scan window behavior
+# ---------------------------------------------------------------------------
+
+
+async def test_interaction_sync_no_checkpoint_uses_30_day_default(provisioned_postgres_pool):
+    """Without a checkpoint, scan_window_start defaults to ~30 days ago."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result = await run_interaction_sync(pool)
+
+        assert "scan_window_start" in result
+        assert "scan_window_end" in result
+        start = datetime.fromisoformat(result["scan_window_start"])
+        end = datetime.fromisoformat(result["scan_window_end"])
+        # Start should be roughly 30 days before end (±1 minute tolerance)
+        diff_days = (end - start).total_seconds() / 86400
+        assert 29.9 < diff_days < 30.1
+
+
+async def test_interaction_sync_checkpoint_used_as_start(provisioned_postgres_pool):
+    """When a checkpoint exists, it is used as scan_window_start."""
+    from butlers.core.state import state_set
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        # Store a checkpoint 5 days ago
+        checkpoint = datetime.now(UTC) - timedelta(days=5)
+        await state_set(pool, "interaction_sync.last_scan_at", checkpoint.isoformat())
+
+        result = await run_interaction_sync(pool)
+
+        start = datetime.fromisoformat(result["scan_window_start"])
+        end = datetime.fromisoformat(result["scan_window_end"])
+        diff_days = (end - start).total_seconds() / 86400
+        # Should be ~5 days, not 30
+        assert 4.9 < diff_days < 5.1
+
+
+async def test_interaction_sync_checkpoint_capped_at_30_days(provisioned_postgres_pool):
+    """A checkpoint older than 30 days is capped to 30 days ago."""
+    from butlers.core.state import state_set
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        # Store a checkpoint 60 days ago
+        checkpoint = datetime.now(UTC) - timedelta(days=60)
+        await state_set(pool, "interaction_sync.last_scan_at", checkpoint.isoformat())
+
+        result = await run_interaction_sync(pool)
+
+        start = datetime.fromisoformat(result["scan_window_start"])
+        end = datetime.fromisoformat(result["scan_window_end"])
+        diff_days = (end - start).total_seconds() / 86400
+        # Capped: should be ~30 days, not 60
+        assert diff_days < 30.1
+
+
+async def test_interaction_sync_writes_checkpoint_on_success(provisioned_postgres_pool):
+    """After a successful run, the state store contains scan_window_end as the new checkpoint."""
+    from butlers.core.state import state_get
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result = await run_interaction_sync(pool)
+
+        stored = await state_get(pool, "interaction_sync.last_scan_at")
+        assert stored is not None
+        assert stored == result["scan_window_end"]
+
+
+async def test_interaction_sync_window_end_is_iso8601(provisioned_postgres_pool):
+    """scan_window_start and scan_window_end are valid ISO8601 strings."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result = await run_interaction_sync(pool)
+
+        # Should not raise
+        datetime.fromisoformat(result["scan_window_start"])
+        datetime.fromisoformat(result["scan_window_end"])
+
+
+async def test_interaction_sync_second_run_uses_first_checkpoint(provisioned_postgres_pool):
+    """Second run uses the checkpoint written by the first run."""
+    from butlers.core.state import state_get
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result1 = await run_interaction_sync(pool)
+        checkpoint_after_first = await state_get(pool, "interaction_sync.last_scan_at")
+        assert checkpoint_after_first == result1["scan_window_end"]
+
+        result2 = await run_interaction_sync(pool)
+
+        # Second run's window_start should be very close to first run's window_end
+        end1 = datetime.fromisoformat(result1["scan_window_end"])
+        start2 = datetime.fromisoformat(result2["scan_window_start"])
+        diff_seconds = abs((start2 - end1).total_seconds())
+        assert diff_seconds < 1.0  # Should match within a second
