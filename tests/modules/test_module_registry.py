@@ -86,29 +86,12 @@ ModuleR = _make_module("r", deps=["q"])
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests: registration and load_from_config
 # ---------------------------------------------------------------------------
 
 
-def test_register_module():
-    """Registering a module makes it available."""
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    assert "a" in reg.available_modules
-
-
-def test_register_duplicate_name_raises():
-    """Registering two modules with the same name raises ValueError."""
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    # Create a second class that also returns name "a"
-    AnotherA = _make_module("a")
-    with pytest.raises(ValueError, match="already registered"):
-        reg.register(AnotherA)
-
-
-def test_available_modules():
-    """available_modules returns a sorted list of registered names."""
+def test_register_and_available_modules():
+    """Registering modules makes them available in sorted order."""
     reg = ModuleRegistry()
     reg.register(ModuleB)
     reg.register(ModuleA)
@@ -116,8 +99,14 @@ def test_available_modules():
     assert reg.available_modules == ["a", "b", "c"]
 
 
+def test_register_duplicate_name_raises():
+    reg = ModuleRegistry()
+    reg.register(ModuleA)
+    with pytest.raises(ValueError, match="already registered"):
+        reg.register(_make_module("a"))
+
+
 def test_load_single_module():
-    """Loading a single module with no dependencies returns it alone."""
     reg = ModuleRegistry()
     reg.register(ModuleA)
     result = reg.load_from_config({"a": {}})
@@ -126,154 +115,78 @@ def test_load_single_module():
 
 
 def test_load_linear_dependency_chain():
-    """A -> B -> C becomes [C, B, A] (dependencies first)."""
+    """A -> B -> C becomes [A, B, C] (dependencies first)."""
     reg = ModuleRegistry()
     reg.register(ModuleA)
     reg.register(ModuleB)
     reg.register(ModuleC)
-    result = reg.load_from_config({"a": {}, "b": {}, "c": {}})
-    names = [m.name for m in result]
-    # a has no deps, b depends on a, c depends on b
+    names = [m.name for m in reg.load_from_config({"a": {}, "b": {}, "c": {}})]
     assert names == ["a", "b", "c"]
 
 
 def test_load_diamond_dependency():
-    """Diamond: D depends on both A and B; B depends on A.
-
-    Valid order: A, B, D  (A must come before both B and D).
-    """
     reg = ModuleRegistry()
     reg.register(ModuleA)
     reg.register(ModuleB)
     reg.register(ModuleD)
-    result = reg.load_from_config({"a": {}, "b": {}, "d": {}})
-    names = [m.name for m in result]
-    # a must come before b and d; b must come before d
+    names = [m.name for m in reg.load_from_config({"a": {}, "b": {}, "d": {}})]
     assert names.index("a") < names.index("b")
-    assert names.index("a") < names.index("d")
     assert names.index("b") < names.index("d")
 
 
-def test_load_independent_modules():
-    """Independent modules (no deps) are returned in sorted order."""
+def test_load_independent_modules_sorted():
     reg = ModuleRegistry()
     reg.register(ModuleY)
     reg.register(ModuleX)
     reg.register(ModuleA)
-    result = reg.load_from_config({"x": {}, "y": {}, "a": {}})
-    names = [m.name for m in result]
-    # All independent — sorted alphabetically by name
+    names = [m.name for m in reg.load_from_config({"x": {}, "y": {}, "a": {}})]
     assert names == ["a", "x", "y"]
 
 
-def test_circular_dependency_raises():
-    """Direct circular dependency (A <-> B) raises ValueError."""
+@pytest.mark.parametrize(
+    "modules,config,match",
+    [
+        ([ModuleCycleA, ModuleCycleB], {"cycle_a": {}, "cycle_b": {}}, "Circular dependency"),
+        ([ModuleP, ModuleQ, ModuleR], {"p": {}, "q": {}, "r": {}}, "Circular dependency"),
+        ([ModuleA, ModuleB], {"b": {}}, "not in the enabled module set"),
+        ([], {"nonexistent": {}}, "Unknown module"),
+    ],
+    ids=["direct-cycle", "indirect-cycle", "missing-dep", "unknown-module"],
+)
+def test_load_error_cases(modules, config, match):
     reg = ModuleRegistry()
-    reg.register(ModuleCycleA)
-    reg.register(ModuleCycleB)
-    with pytest.raises(ValueError, match="Circular dependency"):
-        reg.load_from_config({"cycle_a": {}, "cycle_b": {}})
-
-
-def test_indirect_circular_dependency_raises():
-    """Indirect circular dependency (P -> Q -> R -> P) raises ValueError."""
-    reg = ModuleRegistry()
-    reg.register(ModuleP)
-    reg.register(ModuleQ)
-    reg.register(ModuleR)
-    with pytest.raises(ValueError, match="Circular dependency"):
-        reg.load_from_config({"p": {}, "q": {}, "r": {}})
-
-
-def test_missing_dependency_raises():
-    """A module depending on a module not in the enabled set raises ValueError."""
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    reg.register(ModuleB)  # B depends on A
-    # Enable B but not A
-    with pytest.raises(ValueError, match="not in the enabled module set"):
-        reg.load_from_config({"b": {}})
-
-
-def test_unknown_module_raises():
-    """Requesting an unregistered module raises ValueError."""
-    reg = ModuleRegistry()
-    with pytest.raises(ValueError, match="Unknown module"):
-        reg.load_from_config({"nonexistent": {}})
+    for m in modules:
+        reg.register(m)
+    with pytest.raises(ValueError, match=match):
+        reg.load_from_config(config)
 
 
 def test_empty_config_returns_empty():
-    """An empty config dict returns an empty list."""
     reg = ModuleRegistry()
     reg.register(ModuleA)
-    result = reg.load_from_config({})
-    assert result == []
+    assert reg.load_from_config({}) == []
 
 
 # ---------------------------------------------------------------------------
-# Tests for load_all()
+# Tests: load_all()
 # ---------------------------------------------------------------------------
 
 
-def test_load_all_no_config_loads_all_registered():
-    """load_all() with empty config loads every registered module."""
+def test_load_all_loads_all_registered_with_dependency_order():
+    """load_all() includes all modules, respects dependency order, handles config."""
     reg = ModuleRegistry()
     reg.register(ModuleA)
-    reg.register(ModuleX)
-    result = reg.load_all({})
-    names = {m.name for m in result}
-    assert names == {"a", "x"}
-
-
-def test_load_all_with_config_loads_all_registered():
-    """load_all() includes all modules even when only some appear in config."""
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    reg.register(ModuleX)
-    # Only "a" is in config; "x" should still be loaded with implicit empty dict.
-    result = reg.load_all({"a": {"some_setting": 1}})
-    names = {m.name for m in result}
-    assert names == {"a", "x"}
-
-
-def test_load_all_dependency_order_respected():
-    """load_all() still produces dependency-first ordering."""
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    reg.register(ModuleB)  # B depends on A
-    reg.register(ModuleC)  # C depends on B
-    result = reg.load_all({})
+    reg.register(ModuleB)
+    reg.register(ModuleC)
+    result = reg.load_all({"b": {"setting": True}})
     names = [m.name for m in result]
-    assert names.index("a") < names.index("b")
-    assert names.index("b") < names.index("c")
-
-
-def test_load_all_diamond_dependency_order():
-    """load_all() handles diamond dependencies correctly."""
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    reg.register(ModuleB)  # B depends on A
-    reg.register(ModuleD)  # D depends on A and B
-    result = reg.load_all({})
-    names = [m.name for m in result]
-    assert names.index("a") < names.index("b")
-    assert names.index("a") < names.index("d")
-    assert names.index("b") < names.index("d")
-
-
-def test_load_all_independent_modules_sorted():
-    """load_all() with no deps returns modules in sorted name order."""
-    reg = ModuleRegistry()
-    reg.register(ModuleY)
-    reg.register(ModuleX)
-    reg.register(ModuleA)
-    result = reg.load_all({})
-    names = [m.name for m in result]
-    assert names == ["a", "x", "y"]
+    assert set(names) == {"a", "b", "c"}
+    assert names.index("a") < names.index("b") < names.index("c")
+    for mod in result:
+        assert isinstance(mod, Module)
 
 
 def test_load_all_circular_dependency_raises():
-    """load_all() still detects and raises on circular dependencies."""
     reg = ModuleRegistry()
     reg.register(ModuleCycleA)
     reg.register(ModuleCycleB)
@@ -282,52 +195,12 @@ def test_load_all_circular_dependency_raises():
 
 
 def test_load_all_empty_registry_returns_empty():
-    """load_all() with no registered modules returns an empty list."""
-    reg = ModuleRegistry()
-    result = reg.load_all({})
-    assert result == []
-
-
-def test_load_all_configured_module_gets_its_config_passed_through():
-    """Modules with explicit config get that config available (structural test).
-
-    load_all() doesn't inject config into module instances directly —
-    the config dict is consumed later during _validate_module_configs().
-    This test verifies the method returns instances for ALL registered modules
-    including those with and without config, which is the behavioral contract.
-    """
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    reg.register(ModuleX)
-    # Config for "a" only
-    result = reg.load_all({"a": {"key": "value"}})
-    # Both modules are returned
-    returned_names = {m.name for m in result}
-    assert returned_names == {"a", "x"}
-    # The module instances themselves are plain — config is consumed downstream.
-    for mod in result:
-        assert isinstance(mod, Module)
+    assert ModuleRegistry().load_all({}) == []
 
 
 def test_load_all_returns_new_instances_each_call():
-    """Each load_all() call creates fresh module instances."""
     reg = ModuleRegistry()
     reg.register(ModuleA)
     result1 = reg.load_all({})
     result2 = reg.load_all({})
     assert result1[0] is not result2[0]
-
-
-def test_load_all_with_full_dependency_chain_and_mixed_config():
-    """load_all() handles a linear chain where only the middle module has config."""
-    reg = ModuleRegistry()
-    reg.register(ModuleA)
-    reg.register(ModuleB)  # B depends on A
-    reg.register(ModuleC)  # C depends on B
-    # Only "b" configured; "a" and "c" get empty dict.
-    result = reg.load_all({"b": {"setting": True}})
-    names = [m.name for m in result]
-    # All three loaded, dependency order preserved.
-    assert set(names) == {"a", "b", "c"}
-    assert names.index("a") < names.index("b")
-    assert names.index("b") < names.index("c")

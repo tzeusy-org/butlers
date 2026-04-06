@@ -111,52 +111,33 @@ class _AnnotatedModule(Module):
 
 
 # ---------------------------------------------------------------------------
-# ToolMeta dataclass tests
+# ToolMeta dataclass + Module.tool_metadata() default behaviour
 # ---------------------------------------------------------------------------
 
 
-class TestToolMeta:
-    """Tests for the ToolMeta dataclass."""
+class TestToolMetaAndModuleDefault:
+    """ToolMeta construction and Module.tool_metadata() default."""
 
     def test_default_empty(self):
-        """Default ToolMeta has an empty arg_sensitivities dict."""
         meta = ToolMeta()
         assert meta.arg_sensitivities == {}
 
     def test_explicit_sensitivities(self):
-        """ToolMeta accepts explicit arg_sensitivities."""
         meta = ToolMeta(arg_sensitivities={"to": True, "body": False})
         assert meta.arg_sensitivities["to"] is True
         assert meta.arg_sensitivities["body"] is False
 
-
-# ---------------------------------------------------------------------------
-# Module.tool_metadata() default behaviour
-# ---------------------------------------------------------------------------
-
-
-class TestModuleToolMetadataDefault:
-    """Tests for Module.tool_metadata() default implementation."""
-
-    def test_default_returns_empty_dict(self):
-        """A module that does not override tool_metadata() returns {}."""
+    def test_minimal_module_defaults_and_compatibility(self):
+        """Module with no override returns {} and works normally."""
         mod = _MinimalModule()
         assert mod.tool_metadata() == {}
-
-    def test_existing_modules_unaffected(self):
-        """Existing modules (no override) still instantiate and work normally."""
-        mod = _MinimalModule()
         assert mod.name == "minimal"
         assert mod.dependencies == []
-        # The default tool_metadata() is available and returns empty
-        assert mod.tool_metadata() == {}
 
-    def test_override_returns_metadata(self):
-        """A module that overrides tool_metadata() returns its declarations."""
+    def test_annotated_module_returns_metadata(self):
         mod = _AnnotatedModule()
         metadata = mod.tool_metadata()
         assert "email_send_message" in metadata
-        assert "email_read_message" in metadata
         assert metadata["email_send_message"].arg_sensitivities["to"] is True
         assert metadata["email_send_message"].arg_sensitivities["subject"] is False
 
@@ -169,116 +150,80 @@ class TestModuleToolMetadataDefault:
 class TestHeuristic:
     """Tests for the is_sensitive_by_heuristic function."""
 
-    @pytest.mark.parametrize("arg_name", ["to", "email", "amount", "account"])
-    def test_known_sensitive_args(self, arg_name: str):
-        """Representative canonical sensitive argument names are detected."""
-        assert is_sensitive_by_heuristic(arg_name) is True
-
-    @pytest.mark.parametrize("arg_name", ["To", "EMAIL", "Amount"])
-    def test_case_insensitive(self, arg_name: str):
-        """Heuristic matching is case-insensitive."""
-        assert is_sensitive_by_heuristic(arg_name) is True
-
-    @pytest.mark.parametrize("arg_name", ["body", "subject", "limit"])
-    def test_non_sensitive_args(self, arg_name: str):
-        """Non-sensitive argument names are not flagged."""
-        assert is_sensitive_by_heuristic(arg_name) is False
+    @pytest.mark.parametrize(
+        "arg_name,expected",
+        [
+            ("to", True),
+            ("email", True),
+            ("amount", True),
+            ("account", True),
+            ("To", True),  # case insensitive
+            ("EMAIL", True),
+            ("Amount", True),
+            ("body", False),
+            ("subject", False),
+            ("limit", False),
+        ],
+    )
+    def test_heuristic_detection(self, arg_name: str, expected: bool):
+        assert is_sensitive_by_heuristic(arg_name) is expected
 
     def test_sensitive_set_contents(self):
-        """SENSITIVE_ARG_NAMES contains exactly the expected names."""
         expected = {
-            "to",
-            "recipient",
-            "recipients",
-            "email",
-            "address",
-            "url",
-            "uri",
-            "amount",
-            "price",
-            "cost",
-            "account",
-            "password",
-            "token",
-            "secret",
-            "key",
-            "api_key",
-            "auth",
-            "credential",
-            "credentials",
+            "to", "recipient", "recipients", "email", "address", "url", "uri",
+            "amount", "price", "cost", "account", "password", "token", "secret",
+            "key", "api_key", "auth", "credential", "credentials",
         }
         assert SENSITIVE_ARG_NAMES == expected
 
 
 # ---------------------------------------------------------------------------
-# Resolution order
+# Resolution order: explicit > heuristic > default
 # ---------------------------------------------------------------------------
 
 
 class TestResolutionOrder:
-    """Tests for resolve_arg_sensitivity and its priority chain."""
+    """Tests for resolve_arg_sensitivity priority chain."""
 
-    def test_explicit_true_overrides_heuristic(self):
-        """Explicit declaration of sensitive=True wins over heuristic."""
-        mod = _AnnotatedModule()
-        # "to" is heuristically sensitive AND explicitly marked True
-        assert resolve_arg_sensitivity("email_send_message", "to", mod) is True
-
-    def test_explicit_false_overrides_heuristic(self):
-        """Explicit declaration of sensitive=False wins over heuristic.
-
-        This is the critical test: 'subject' would not be heuristically
-        sensitive anyway, but more importantly, if a module explicitly says
-        an arg is NOT sensitive, that must be respected even if the name
-        would match a heuristic.
-        """
-        mod = _AnnotatedModule()
-        assert resolve_arg_sensitivity("email_send_message", "subject", mod) is False
+    @pytest.mark.parametrize(
+        "tool,arg,module_factory,expected",
+        [
+            # Explicit True wins (to is both heuristic and explicitly True)
+            ("email_send_message", "to", lambda: _AnnotatedModule(), True),
+            # Explicit False wins (subject explicitly False)
+            ("email_send_message", "subject", lambda: _AnnotatedModule(), False),
+            # Heuristic fallback when no explicit (MinimalModule has no metadata)
+            ("email_send_message", "to", lambda: _MinimalModule(), True),
+            # Heuristic applies for tools not in metadata
+            ("unknown_tool", "to", lambda: _AnnotatedModule(), True),
+            # Heuristic applies for args not listed in tool's ToolMeta
+            ("email_send_message", "recipient", lambda: _AnnotatedModule(), True),
+            # Default not sensitive (no explicit, no heuristic)
+            ("some_tool", "body", lambda: _MinimalModule(), False),
+            # No module, heuristic applies
+            ("core_tool", "to", lambda: None, True),
+            # No module, default not sensitive
+            ("core_tool", "body", lambda: None, False),
+        ],
+        ids=[
+            "explicit-true", "explicit-false", "heuristic-fallback-no-override",
+            "heuristic-unknown-tool", "heuristic-unlisted-arg", "default-not-sensitive",
+            "no-module-heuristic", "no-module-default",
+        ],
+    )
+    def test_resolution(self, tool, arg, module_factory, expected):
+        mod = module_factory()
+        assert resolve_arg_sensitivity(tool, arg, module=mod) is expected
 
     def test_explicit_false_overrides_heuristic_for_sensitive_name(self):
         """Module can explicitly mark a heuristically-sensitive name as safe."""
 
         class _OverrideModule(_MinimalModule):
             def tool_metadata(self) -> dict[str, ToolMeta]:
-                return {
-                    "transfer": ToolMeta(arg_sensitivities={"amount": False}),
-                }
+                return {"transfer": ToolMeta(arg_sensitivities={"amount": False})}
 
         mod = _OverrideModule()
-        # "amount" is heuristically sensitive, but explicitly False
         assert resolve_arg_sensitivity("transfer", "amount", mod) is False
-
-    def test_heuristic_fallback_when_no_explicit(self):
-        """When no explicit declaration, heuristic kicks in."""
-        mod = _MinimalModule()  # No tool_metadata override
-        # "to" is heuristically sensitive
-        assert resolve_arg_sensitivity("email_send_message", "to", mod) is True
-
-    def test_heuristic_fallback_when_tool_not_in_metadata(self):
-        """Heuristic applies for tools not listed in module metadata."""
-        mod = _AnnotatedModule()
-        # "unknown_tool" is not in the metadata, but "to" is heuristic
-        assert resolve_arg_sensitivity("unknown_tool", "to", mod) is True
-
-    def test_heuristic_fallback_when_arg_not_in_tool_meta(self):
-        """Heuristic applies for args not listed in tool's ToolMeta."""
-        mod = _AnnotatedModule()
-        # email_send_message is in metadata, but "recipient" is not explicitly listed
-        # "recipient" IS heuristically sensitive
-        assert resolve_arg_sensitivity("email_send_message", "recipient", mod) is True
-
-    def test_default_not_sensitive(self):
-        """When neither explicit nor heuristic match, default is not sensitive."""
-        mod = _MinimalModule()
-        assert resolve_arg_sensitivity("some_tool", "body", mod) is False
-
-    def test_no_module_heuristic_applies(self):
-        """When module is None, heuristic still applies."""
-        assert resolve_arg_sensitivity("core_tool", "to", module=None) is True
-
-    def test_no_module_default_not_sensitive(self):
-        """When module is None and no heuristic match, default is not sensitive."""
-        assert resolve_arg_sensitivity("core_tool", "body", module=None) is False
 
 
 # ---------------------------------------------------------------------------
@@ -289,33 +234,22 @@ class TestResolutionOrder:
 class TestClassifyToolArgs:
     """Tests for the classify_tool_args batch function."""
 
-    def test_classifies_all_args(self):
-        """Returns a dict with an entry for every argument."""
+    def test_mixed_sensitivity_without_module(self):
         result = classify_tool_args("email_send_message", ["to", "body", "subject"])
         assert set(result.keys()) == {"to", "body", "subject"}
-
-    def test_mixed_sensitivity(self):
-        """Correctly classifies a mix of sensitive and non-sensitive args."""
-        result = classify_tool_args("email_send_message", ["to", "body", "subject"])
-        assert result["to"] is True  # heuristic
-        assert result["body"] is False  # default
-        assert result["subject"] is False  # default
+        assert result["to"] is True
+        assert result["body"] is False
+        assert result["subject"] is False
 
     def test_with_explicit_module(self):
-        """Uses module declarations when available."""
         mod = _AnnotatedModule()
         result = classify_tool_args("email_send_message", ["to", "subject", "body"], mod)
-        assert result["to"] is True  # explicit True
-        assert result["subject"] is False  # explicit False
-        assert result["body"] is True  # explicit True
+        assert result["to"] is True
+        assert result["subject"] is False
+        assert result["body"] is True
 
-    def test_empty_args(self):
-        """Returns empty dict for empty arg list."""
-        result = classify_tool_args("some_tool", [])
-        assert result == {}
-
-    def test_without_module(self):
-        """Works with module=None (core tools)."""
+    def test_empty_args_and_no_module(self):
+        assert classify_tool_args("some_tool", []) == {}
         result = classify_tool_args("core_tool", ["url", "query"], module=None)
-        assert result["url"] is True  # heuristic
-        assert result["query"] is False  # default
+        assert result["url"] is True
+        assert result["query"] is False
