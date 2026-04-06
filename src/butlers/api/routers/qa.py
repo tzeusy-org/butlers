@@ -17,10 +17,14 @@ Endpoints:
 - GET  /api/qa/trends                               — daily aggregated stats
 - GET  /api/qa/dismissals                           — list active dismissals
 - DELETE /api/qa/dismissals/{fingerprint}           — remove a dismissal
+- GET  /api/qa/settings/allowed-repos               — list allowed repositories for PR creation
+- POST /api/qa/settings/allowed-repos               — add a repository to the whitelist
+- PATCH /api/qa/settings/allowed-repos/{owner}/{repo} — toggle enabled flag
+- DELETE /api/qa/settings/allowed-repos/{owner}/{repo} — remove a repository from the whitelist
 
 All reads/writes query ``public.qa_patrols``, ``public.qa_findings``,
-``public.qa_dismissals``, and ``public.healing_attempts`` via the shared
-credential pool.
+``public.qa_dismissals``, ``public.healing_attempts``, and
+``public.qa_allowed_repositories`` via the shared credential pool.
 """
 
 from __future__ import annotations
@@ -30,11 +34,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.core.qa.repo_whitelist import parse_repo_url
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +232,40 @@ class QaTrendsDay(BaseModel):
     novel_findings: int
     dispatched_count: int
     success_rate: float  # fraction of patrols that were clean, 0.0–1.0
+
+
+class AllowedRepo(BaseModel):
+    """A single entry in the QA repository whitelist."""
+
+    id: uuid.UUID
+    owner: str
+    repo: str
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class AllowedRepoCreate(BaseModel):
+    """Request body for adding a repository to the whitelist.
+
+    Accepts either ``owner/repo`` format or a full GitHub HTTPS/SSH URL.
+    The server normalises to lowercase ``owner`` and ``repo``.
+    """
+
+    owner_repo: str = Field(
+        ...,
+        description=(
+            "Repository in 'owner/repo' format, or a full GitHub URL "
+            "(HTTPS: https://github.com/owner/repo or SSH: git@github.com:owner/repo)."
+        ),
+    )
+    enabled: bool = True
+
+
+class AllowedRepoPatch(BaseModel):
+    """Request body for toggling the enabled flag on a whitelisted repository."""
+
+    enabled: bool
 
 
 class QaSourceBreakdown(BaseModel):
@@ -1238,5 +1278,194 @@ async def delete_dismissal(
 
     return ApiResponse(
         data={"fingerprint": fingerprint, "deleted": True},
+        meta=ApiMeta(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Allowed repositories CRUD
+# /api/qa/settings/allowed-repos
+# ---------------------------------------------------------------------------
+
+
+def _row_to_allowed_repo(row: Any) -> AllowedRepo:
+    """Convert an asyncpg Record to an AllowedRepo model."""
+    return AllowedRepo(
+        id=row["id"],
+        owner=row["owner"],
+        repo=row["repo"],
+        enabled=bool(row["enabled"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+# GET /api/qa/settings/allowed-repos — list all whitelisted repos
+
+
+@router.get(
+    "/settings/allowed-repos",
+    response_model=ApiResponse[list[AllowedRepo]],
+)
+async def list_allowed_repos(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[AllowedRepo]]:
+    """Return all repositories in the QA PR creation whitelist, ordered by owner/repo.
+
+    When the list is empty, ALL QA PR creation is blocked (fail-closed).
+    """
+    pool = _shared_pool(db)
+    rows = await pool.fetch(
+        """
+        SELECT id, owner, repo, enabled, created_at, updated_at
+        FROM public.qa_allowed_repositories
+        ORDER BY owner ASC, repo ASC
+        """
+    )
+    return ApiResponse[list[AllowedRepo]](data=[_row_to_allowed_repo(r) for r in rows])
+
+
+# POST /api/qa/settings/allowed-repos — add a repo to the whitelist
+
+
+@router.post(
+    "/settings/allowed-repos",
+    response_model=ApiResponse[AllowedRepo],
+    status_code=201,
+)
+async def create_allowed_repo(
+    body: AllowedRepoCreate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[AllowedRepo]:
+    """Add a repository to the QA PR creation whitelist.
+
+    The ``owner_repo`` field accepts either ``owner/repo`` format or a full
+    GitHub HTTPS / SSH URL.  Values are stored in lowercase.
+
+    Returns 409 if the repository is already present (regardless of
+    ``enabled`` state).
+
+    Returns 422 if ``owner_repo`` cannot be parsed into ``owner/repo``.
+    """
+    pool = _shared_pool(db)
+
+    parsed = parse_repo_url(body.owner_repo)
+    if parsed is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Cannot parse '{body.owner_repo}' as a repository. "
+                "Expected 'owner/repo', 'https://github.com/owner/repo', "
+                "or 'git@github.com:owner/repo'."
+            ),
+        )
+    owner, repo = parsed
+
+    try:
+        row = await pool.fetchrow(
+            """
+            INSERT INTO public.qa_allowed_repositories (owner, repo, enabled)
+            VALUES ($1, $2, $3)
+            RETURNING id, owner, repo, enabled, created_at, updated_at
+            """,
+            owner,
+            repo,
+            body.enabled,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Repository '{owner}/{repo}' is already in the whitelist",
+        )
+    except Exception:
+        logger.error("Failed to add allowed repo '%s/%s'", owner, repo, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to add repository to whitelist")
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Insert returned no row")
+
+    return ApiResponse[AllowedRepo](data=_row_to_allowed_repo(row), meta=ApiMeta())
+
+
+# PATCH /api/qa/settings/allowed-repos/{owner}/{repo} — toggle enabled flag
+
+
+@router.patch(
+    "/settings/allowed-repos/{owner}/{repo}",
+    response_model=ApiResponse[AllowedRepo],
+)
+async def patch_allowed_repo(
+    owner: str,
+    repo: str,
+    body: AllowedRepoPatch,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[AllowedRepo]:
+    """Toggle the ``enabled`` flag for a whitelisted repository.
+
+    Returns 404 if the ``owner/repo`` combination is not found.
+    """
+    pool = _shared_pool(db)
+
+    row = await pool.fetchrow(
+        """
+        UPDATE public.qa_allowed_repositories
+        SET enabled = $1, updated_at = now()
+        WHERE owner = $2 AND repo = $3
+        RETURNING id, owner, repo, enabled, created_at, updated_at
+        """,
+        body.enabled,
+        owner.lower(),
+        repo.lower(),
+    )
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repository '{owner}/{repo}' not found in whitelist",
+        )
+
+    return ApiResponse[AllowedRepo](data=_row_to_allowed_repo(row), meta=ApiMeta())
+
+
+# DELETE /api/qa/settings/allowed-repos/{owner}/{repo} — remove from whitelist
+
+
+@router.delete(
+    "/settings/allowed-repos/{owner}/{repo}",
+    response_model=ApiResponse[dict],
+    status_code=200,
+)
+async def delete_allowed_repo(
+    owner: str,
+    repo: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Remove a repository from the QA PR creation whitelist.
+
+    Returns 404 if the ``owner/repo`` combination is not found.
+    """
+    pool = _shared_pool(db)
+
+    result = await pool.execute(
+        "DELETE FROM public.qa_allowed_repositories WHERE owner = $1 AND repo = $2",
+        owner.lower(),
+        repo.lower(),
+    )
+
+    deleted_count = 0
+    if isinstance(result, str) and result.startswith("DELETE "):
+        try:
+            deleted_count = int(result.split(" ", 1)[1])
+        except (ValueError, IndexError):
+            pass
+
+    if deleted_count == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Repository '{owner}/{repo}' not found in whitelist",
+        )
+
+    return ApiResponse(
+        data={"owner": owner.lower(), "repo": repo.lower(), "deleted": True},
         meta=ApiMeta(),
     )

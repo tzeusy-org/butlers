@@ -61,6 +61,7 @@ from butlers.core.model_routing import Complexity, resolve_model
 from butlers.core.qa.findings import update_finding_attempt
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.prompts import build_investigation_prompt
+from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
 from butlers.core.qa.triage import TriagedFinding
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,13 @@ class QaDispatchConfig:
     timeout_minutes: int = 30
     pr_labels: list[str] = field(default_factory=lambda: list(_DEFAULT_PR_LABELS))
     dashboard_base_url: str | None = None
+    repo_whitelist: RepoWhitelist | None = None
+    """Repository whitelist instance for PR creation enforcement.
+
+    When ``None``, a new ``RepoWhitelist(db_pool=None)`` is used, which
+    blocks all PR creation (fail-closed with no DB pool).  Callers should
+    supply a pre-loaded ``RepoWhitelist`` backed by the DB pool.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +265,33 @@ def build_sandbox_env(gh_token: str | None) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+async def _get_remote_owner_repo(repo_root: Path, env: dict[str, str]) -> str | None:
+    """Return the ``owner/repo`` string from the ``origin`` remote, or ``None``."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "remote",
+            "get-url",
+            "origin",
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        remote_url = stdout.decode("utf-8", errors="replace").strip()
+        parsed = parse_repo_url(remote_url)
+        if parsed is None:
+            return None
+        owner, repo = parsed
+        return f"{owner}/{repo}"
+    except Exception:  # noqa: BLE001
+        logger.warning("_get_remote_owner_repo: failed to get origin URL", exc_info=True)
+        return None
+
+
 async def _create_qa_pr(
     repo_root: Path,
     branch_name: str,
@@ -265,6 +300,7 @@ async def _create_qa_pr(
     labels: list[str],
     gh_token: str | None,
     dashboard_base_url: str | None = None,
+    whitelist: RepoWhitelist | None = None,
 ) -> tuple[str | None, int | None, str | None]:
     """Push branch and create a QA investigation GitHub PR.
 
@@ -275,12 +311,41 @@ async def _create_qa_pr(
         - ``None`` on success,
         - ``"anonymization_failed"`` when PII validation blocks the PR,
         - ``"no_gh_token"`` when no GitHub token is available,
+        - ``"repo_not_whitelisted:remote_unavailable"`` when the origin
+          remote URL cannot be resolved; PR creation is blocked fail-closed,
+        - ``"repo_not_whitelisted:{reason}:{owner/repo}"`` when whitelist
+          enforcement blocks PR creation for a resolved repository; ``reason``
+          is the whitelist failure code (e.g. ``whitelist_empty`` or
+          ``not_in_whitelist``),
         - Any other string for push/gh failures.
     """
     if not gh_token:
         return None, None, "no_gh_token"
 
     env: dict[str, str] = build_sandbox_env(gh_token)
+
+    # Step 0: Whitelist enforcement — check before git push
+    # Fail-closed: if whitelist is None, create a no-pool instance (blocks all).
+    effective_whitelist = whitelist if whitelist is not None else RepoWhitelist(db_pool=None)
+    # Ensure the whitelist has been loaded at least once (idempotent, guarded by lock).
+    await effective_whitelist.ensure_loaded()
+    owner_repo = await _get_remote_owner_repo(repo_root, env)
+    if owner_repo is None:
+        logger.warning(
+            "_create_qa_pr: could not determine repository from origin remote; "
+            "blocking PR creation (fail-closed)"
+        )
+        return None, None, "repo_not_whitelisted:remote_unavailable"
+
+    allowed, wl_reason = effective_whitelist.is_allowed(owner_repo)
+    if not allowed:
+        logger.info(
+            "_create_qa_pr: PR blocked for repo %r — whitelist reason: %s",
+            owner_repo,
+            wl_reason,
+        )
+        # Return a reason code that the caller can use for owner notification.
+        return None, None, f"repo_not_whitelisted:{wl_reason}:{owner_repo}"
 
     # Step 1: git push
     push_proc = await asyncio.create_subprocess_exec(
@@ -573,6 +638,7 @@ async def _run_investigation_session(
             labels=config.pr_labels,
             gh_token=gh_token,
             dashboard_base_url=config.dashboard_base_url,
+            whitelist=config.repo_whitelist,
         )
 
         if pr_error == "anonymization_failed":
@@ -594,6 +660,32 @@ async def _run_investigation_session(
                 attempt_id,
                 "failed",
                 error_detail="no_gh_token: BUTLERS_QA_GH_TOKEN not found in CredentialStore",
+                healing_session_id=investigation_session_id,
+            )
+            await remove_healing_worktree(
+                repo_root, branch_name, delete_branch=True, delete_remote=False
+            )
+            return
+
+        if pr_error is not None and pr_error.startswith("repo_not_whitelisted"):
+            # Whitelist enforcement: PR blocked for this repository.
+            # Error formats:
+            #   "repo_not_whitelisted:remote_unavailable"  — remote URL could not be resolved
+            #   "repo_not_whitelisted:{reason}:{owner/repo}" — whitelist check failed
+            parts = pr_error.split(":", 2)
+            if len(parts) == 3:
+                wl_detail = (
+                    f"repository '{parts[2]}' is not in the QA whitelist (reason: {parts[1]})"
+                )
+            elif len(parts) == 2 and parts[1] == "remote_unavailable":
+                wl_detail = "could not determine repository from origin remote URL"
+            else:
+                wl_detail = "repository is not in the QA whitelist"
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "failed",
+                error_detail=f"PR blocked: {wl_detail}",
                 healing_session_id=investigation_session_id,
             )
             await remove_healing_worktree(

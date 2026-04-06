@@ -37,6 +37,7 @@ from butlers.core.qa.dispatch import (
     check_open_pr_statuses,
     dispatch_novel_findings,
 )
+from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
 from butlers.core.qa.sources.log_scanner import LogScannerSource
 from butlers.core.qa.sources.session_records import SessionRecordsSource
@@ -291,6 +292,9 @@ class QaModule(Module):
         self._repo_root: Path = Path(".")
         self._credential_store: Any = None
 
+        # Repository whitelist — initialized on startup with the DB pool
+        self._repo_whitelist: RepoWhitelist | None = None
+
         # Discovery sources — registered at startup
         self._butler_reports_source: ButlerReportsSource | None = None
         self._sources: list[Any] = []
@@ -379,6 +383,18 @@ class QaModule(Module):
         pool = getattr(db, "pool", None) if db is not None else None
         self._pool = pool
         self._credential_store = credential_store
+
+        # Initialize repository whitelist (loaded lazily from DB via TTL cache)
+        self._repo_whitelist = RepoWhitelist(db_pool=pool)
+        if pool is not None:
+            try:
+                await self._repo_whitelist.ensure_loaded()
+            except Exception:
+                logger.warning(
+                    "QaModule startup: failed to load repo whitelist; "
+                    "PR creation will be blocked until load succeeds",
+                    exc_info=True,
+                )
 
         # Register discovery sources
         self._sources = []
@@ -852,6 +868,7 @@ class QaModule(Module):
                 severity_threshold=self._config.severity_threshold,
                 max_concurrent=self._config.max_concurrent_investigations,
                 dashboard_base_url=self._config.dashboard_base_url,
+                repo_whitelist=self._repo_whitelist,
             )
 
             # Prune completed watchdog tasks before dispatching
