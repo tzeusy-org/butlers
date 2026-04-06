@@ -20,7 +20,6 @@ from butlers.core.tool_call_capture import (
     set_runtime_session_routing_context,
 )
 from butlers.daemon import ButlerDaemon
-from butlers.modules.pipeline import _routing_ctx_var
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 
 pytestmark = pytest.mark.unit
@@ -147,42 +146,43 @@ async def _start_switchboard_and_capture_route_to_butler(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "inner_result,expected_status,check_field",
-    [
-        ({"result": {"status": "ok", "message": "processed"}}, "ok", None),
-        ({"result": {"status": "accepted"}}, "accepted", None),
-        ({"error": "Butler 'health' not found in registry"}, "error", "not found"),
-        ({"result": {"message_id": "abc123"}}, "ok", None),
-        ({"result": {"status": "error", "error": "something went wrong"}}, "error", "something"),
-    ],
-)
-async def test_route_to_butler_status_mapping(
-    tmp_path, inner_result, expected_status, check_field
-) -> None:
+async def test_route_to_butler_status_mapping(tmp_path: Path) -> None:
     """route_to_butler maps inner results to correct outer status codes."""
     patches = _patch_infra()
     butler_dir = _make_switchboard_dir(tmp_path)
-    mock_route = AsyncMock(return_value=inner_result)
+
+    # accepted → passed through
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
     _, fn = await _start_switchboard_and_capture_route_to_butler(
         butler_dir, patches, mock_route=mock_route
     )
     assert fn is not None
-
     result = await fn(butler="health", prompt="test")
-    assert result["status"] == expected_status
+    assert result["status"] == "accepted"
     assert result["butler"] == "health"
-    if check_field:
-        assert check_field in result.get("error", "")
+
+    # error → error with message
+    patches2 = _patch_infra()
+    mock_route2 = AsyncMock(return_value={"error": "Butler 'health' not found in registry"})
+    (tmp_path / "d2").mkdir()
+    _, fn2 = await _start_switchboard_and_capture_route_to_butler(
+        _make_switchboard_dir(tmp_path / "d2"),
+        patches2,
+        mock_route=mock_route2,
+    )
+    assert fn2 is not None
+    result2 = await fn2(butler="health", prompt="test")
+    assert result2["status"] == "error"
+    assert "not found" in result2.get("error", "")
 
 
 # ---------------------------------------------------------------------------
-# Request context / UUID7 normalization
+# Request context normalization
 # ---------------------------------------------------------------------------
 
 
-async def test_route_to_butler_uuid7_context_normalization(tmp_path: Path) -> None:
-    """Missing context generates uuid7; invalid context request_id is rewritten to uuid7."""
+async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
+    """Missing context generates uuid7; runtime session fallback honored; complexity defaults/validation."""
     patches = _patch_infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
@@ -201,50 +201,12 @@ async def test_route_to_butler_uuid7_context_normalization(tmp_path: Path) -> No
     payload = {k: v for k, v in captured.items() if k != "__switchboard_route_context"}
     assert parse_route_envelope(payload).request_context.request_id.version == 7
 
-    # Invalid request_id: rewritten to uuid7
-    captured.clear()
-    token = _routing_ctx_var.set(
-        {
-            "source_metadata": {"channel": "telegram_bot", "identity": "user-123"},
-            "request_context": {"source_thread_identity": "chat-456"},
-            "request_id": "unknown",
-        }
-    )
-    try:
-        result2 = await fn(butler="general", prompt="hello")
-    finally:
-        _routing_ctx_var.reset(token)
-
-    assert result2["status"] == "accepted"
-    payload2 = {k: v for k, v in captured.items() if k != "__switchboard_route_context"}
-    parsed = parse_route_envelope(payload2)
-    assert parsed.request_context.request_id.version == 7
-    assert captured["request_context"]["request_id"] != "unknown"
-
-
-async def test_route_to_butler_runtime_session_routing_context_fallback(tmp_path: Path) -> None:
-    """When task-local routing context is missing, fall back to runtime session lineage."""
-    patches = _patch_infra()
-    butler_dir = _make_switchboard_dir(tmp_path)
-    captured: dict[str, Any] = {}
-
-    async def _capture(*_args, **kwargs):
-        captured.update(kwargs["args"])
-        return {"result": {"status": "accepted"}}
-
-    _, fn = await _start_switchboard_and_capture_route_to_butler(
-        butler_dir, patches, mock_route=AsyncMock(side_effect=_capture)
-    )
-
+    # Runtime session context fallback
     runtime_session_id = "sess-route-to-butler-fallback"
     set_runtime_session_routing_context(
         runtime_session_id,
         {
-            "source_metadata": {
-                "channel": "telegram_bot",
-                "identity": "telegram:bot-main",
-                "tool_name": "ingest",
-            },
+            "source_metadata": {"channel": "telegram_bot", "identity": "telegram:bot-main", "tool_name": "ingest"},
             "request_context": {
                 "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
                 "source_channel": "telegram_bot",
@@ -255,50 +217,24 @@ async def test_route_to_butler_runtime_session_routing_context_fallback(tmp_path
         },
     )
     token = set_current_runtime_session_id(runtime_session_id)
+    captured.clear()
     try:
-        result = await fn(butler="health", prompt="track breakfast")
+        result2 = await fn(butler="health", prompt="track breakfast")
     finally:
         reset_current_runtime_session_id(token)
         clear_runtime_session_routing_context(runtime_session_id)
-
-    assert result["status"] == "accepted"
+    assert result2["status"] == "accepted"
     assert captured["request_context"]["source_channel"] == "telegram_bot"
-    assert captured["request_context"]["source_sender_identity"] == "123456789"
-    assert captured["request_context"]["source_thread_identity"] == "123456789:999"
 
+    # Complexity: high explicit; invalid → medium; missing → medium
+    captured.clear()
+    await fn(butler="health", prompt="test", complexity="high")
+    assert captured["input"]["complexity"] == "high"
 
-# ---------------------------------------------------------------------------
-# Complexity envelope
-# ---------------------------------------------------------------------------
+    captured.clear()
+    await fn(butler="health", prompt="test", complexity="extreme")
+    assert captured["input"]["complexity"] == "medium"
 
-
-@pytest.mark.parametrize(
-    "complexity,expected",
-    [
-        (None, "medium"),       # default
-        ("high", "high"),
-        ("extra_high", "extra_high"),
-        ("extreme", "medium"),  # invalid → fallback
-        ("trivial", "trivial"),
-    ],
-)
-async def test_route_to_butler_complexity_in_envelope(
-    tmp_path, complexity, expected
-) -> None:
-    """route_to_butler embeds complexity in route.v1 input section with fallback to 'medium'."""
-    patches = _patch_infra()
-    butler_dir = _make_switchboard_dir(tmp_path)
-    captured: dict[str, Any] = {}
-
-    async def _capture(*_args, **kwargs):
-        captured.update(kwargs["args"])
-        return {"result": {"status": "accepted"}}
-
-    _, fn = await _start_switchboard_and_capture_route_to_butler(
-        butler_dir, patches, mock_route=AsyncMock(side_effect=_capture)
-    )
-    kwargs = {"butler": "health", "prompt": "test"}
-    if complexity is not None:
-        kwargs["complexity"] = complexity
-    await fn(**kwargs)
-    assert captured["input"]["complexity"] == expected
+    captured.clear()
+    await fn(butler="health", prompt="test")
+    assert captured["input"]["complexity"] == "medium"

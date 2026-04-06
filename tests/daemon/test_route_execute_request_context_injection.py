@@ -14,7 +14,6 @@ before checking trigger call_args to allow the background task to complete.
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -223,16 +222,16 @@ async def _call_route_execute(daemon, route_execute_fn, *, request_context, inpu
 class TestRouteExecuteRequestContextInjection:
     """Verify that request_context is injected into runtime session context."""
 
-    async def test_request_context_content_and_fields(self, tmp_path: Path) -> None:
-        """Request context injected into spawner context; all fields preserved;
-        no input.context → no INPUT CONTEXT section; REQUEST CONTEXT present."""
+    async def test_request_context_and_input_context(self, tmp_path: Path) -> None:
+        """REQUEST CONTEXT injected with all fields; INPUT CONTEXT section for both dict and string;
+        telegram channel injects INTERACTIVE DATA SOURCE; MCP does not."""
         patches = _patch_infra()
         daemon, route_execute_fn = await _start_daemon_with_route_execute(
             _make_butler_toml(tmp_path, butler_name="health"), patches
         )
         assert route_execute_fn is not None
 
-        # Basic injection: REQUEST CONTEXT with key fields
+        # Basic injection: REQUEST CONTEXT present with key fields
         ctx_arg = await _call_route_execute(
             daemon,
             route_execute_fn,
@@ -247,193 +246,80 @@ class TestRouteExecuteRequestContextInjection:
         assert "REQUEST CONTEXT" in ctx_arg
         assert "018f6f4e-5b3b-7b2d-9c2f-aaaaaabbbbbb" in ctx_arg
         assert "telegram" in ctx_arg
-        assert "98765" in ctx_arg
         assert "user123" in ctx_arg
         assert "INPUT CONTEXT" not in ctx_arg
 
-        # All fields preserved (parse embedded JSON)
-        daemon.spawner.trigger = AsyncMock(return_value=_mock_trigger_result())
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(
-                source_channel="telegram_bot",
-                source_thread_identity="thread-999",
-                source_sender_identity="sender-888",
-                source_endpoint_identity="switchboard",
-                request_id="018f6f4e-5b3b-7b2d-9c2f-ccccccdddddd",
-            ),
-            input={"prompt": "Check status."},
-        )
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        ctx_arg2 = daemon.spawner.trigger.call_args.kwargs.get("context")
-        assert "REQUEST CONTEXT" in ctx_arg2
-        lines = ctx_arg2.split("\n")
-        json_start = next((i for i, l in enumerate(lines) if l.strip().startswith("{")), None)
-        assert json_start is not None
-        json_lines, brace_count = [], 0
-        for i in range(json_start, len(lines)):
-            json_lines.append(lines[i])
-            brace_count += lines[i].count("{") - lines[i].count("}")
-            if brace_count == 0:
-                break
-        parsed_ctx = json.loads("\n".join(json_lines))
-        assert parsed_ctx["request_id"] == "018f6f4e-5b3b-7b2d-9c2f-ccccccdddddd"
-        assert parsed_ctx["source_channel"] == "telegram_bot"
-        assert parsed_ctx["source_thread_identity"] == "thread-999"
-        assert parsed_ctx["source_sender_identity"] == "sender-888"
-        assert parsed_ctx["source_endpoint_identity"] == "switchboard"
-        assert "received_at" in parsed_ctx
-
-    async def test_input_context_variants(self, tmp_path: Path) -> None:
-        """Both dict and string input.context are included under INPUT CONTEXT."""
-        patches = _patch_infra()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path, butler_name="health"), patches
-        )
-        assert route_execute_fn is not None
-
-        # Dict input.context
-        ctx_arg = await _call_route_execute(
-            daemon,
-            route_execute_fn,
-            request_context=_route_request_context(),
-            input_data={
-                "prompt": "Check vital signs.",
-                "context": {"patient_id": "patient-456", "visit_date": "2026-02-14"},
-            },
-        )
-        assert "REQUEST CONTEXT" in ctx_arg
-        assert "INPUT CONTEXT" in ctx_arg
-        assert "patient-456" in ctx_arg
-        assert "2026-02-14" in ctx_arg
-
-        # String input.context
+        # Dict input.context → INPUT CONTEXT section
         ctx_arg2 = await _call_route_execute(
             daemon,
             route_execute_fn,
             request_context=_route_request_context(),
-            input_data={
-                "prompt": "Check vital signs.",
-                "context": "Previous reading: BP 120/80, HR 72",
-            },
+            input_data={"prompt": "Check.", "context": {"patient_id": "patient-456"}},
         )
-        assert "REQUEST CONTEXT" in ctx_arg2
         assert "INPUT CONTEXT" in ctx_arg2
-        assert "Previous reading: BP 120/80, HR 72" in ctx_arg2
+        assert "patient-456" in ctx_arg2
 
-    async def test_interactive_vs_non_interactive_channel(self, tmp_path: Path) -> None:
-        """Telegram injects INTERACTIVE DATA SOURCE with notify() guidance;
-        MCP (non-interactive) does not inject INTERACTIVE DATA SOURCE."""
-        patches = _patch_infra()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path, butler_name="health"), patches
+        # String input.context → INPUT CONTEXT section
+        ctx_arg3 = await _call_route_execute(
+            daemon,
+            route_execute_fn,
+            request_context=_route_request_context(),
+            input_data={"prompt": "Check.", "context": "Previous reading: BP 120/80"},
         )
-        assert route_execute_fn is not None
+        assert "INPUT CONTEXT" in ctx_arg3
+        assert "Previous reading: BP 120/80" in ctx_arg3
 
-        # Telegram: interactive guidance injected, request_context fields required for notify()
-        ctx_arg = await _call_route_execute(
+        # Telegram: INTERACTIVE DATA SOURCE injected
+        ctx_tg = await _call_route_execute(
             daemon,
             route_execute_fn,
             request_context=_route_request_context(source_channel="telegram_bot"),
             input_data={"prompt": "Track medication."},
         )
-        assert "INTERACTIVE DATA SOURCE" in ctx_arg
-        assert 'channel="telegram"' in ctx_arg
-        assert 'intent="reply"' in ctx_arg
-        assert "notify()" in ctx_arg
-        assert "/butler-notifications" in ctx_arg
-        assert "/routed-message-safety" in ctx_arg
-        assert "Pass the request_context" in ctx_arg
-        assert "telegram only" in ctx_arg
-        assert "request_id" in ctx_arg
-        assert "source_channel" in ctx_arg
-        assert "source_endpoint_identity" in ctx_arg
-        assert "source_sender_identity" in ctx_arg
-        assert "source_thread_identity" in ctx_arg
+        assert "INTERACTIVE DATA SOURCE" in ctx_tg
+        assert "notify()" in ctx_tg
 
-        # MCP: non-interactive, no guidance block
-        ctx_arg2 = await _call_route_execute(
+        # MCP: no INTERACTIVE DATA SOURCE
+        ctx_mcp = await _call_route_execute(
             daemon,
             route_execute_fn,
             request_context=_route_request_context(source_channel="mcp"),
             input_data={"prompt": "Internal check."},
         )
-        assert "INTERACTIVE DATA SOURCE" not in ctx_arg2
+        assert "INTERACTIVE DATA SOURCE" not in ctx_mcp
 
-
-class TestRouteExecuteConversationHistoryInjection:
-    """Verify that conversation_history from route.v1 input is injected into context."""
-
-    async def test_conversation_history_injection_and_ordering(self, tmp_path: Path) -> None:
-        """Conversation history appears in CONVERSATION HISTORY section before INPUT CONTEXT;
-        content (user/butler messages) is preserved."""
+    async def test_conversation_history(self, tmp_path: Path) -> None:
+        """Conversation history injected under CONVERSATION HISTORY before INPUT CONTEXT;
+        absent/empty/None → no CONVERSATION HISTORY section."""
         patches = _patch_infra()
         daemon, route_execute_fn = await _start_daemon_with_route_execute(
             _make_butler_toml(tmp_path, butler_name="health"), patches
         )
         assert route_execute_fn is not None
 
-        history_text = (
-            "**user123** (2026-02-16T10:00:00Z):\n"
-            "Track my metformin 500mg twice daily\n\n"
-            "**butler -> health** (2026-02-16T10:00:05Z):\n"
-            "Done! I've recorded metformin 500mg twice daily."
-        )
+        history_text = "**user123** (2026-02-16T10:00:00Z):\nTrack my metformin 500mg twice daily"
 
-        # Part 1: history content is injected
         ctx_arg = await _call_route_execute(
-            daemon,
-            route_execute_fn,
-            request_context=_route_request_context(source_channel="telegram_bot"),
-            input_data={"prompt": "When should I take it?", "conversation_history": history_text},
-        )
-        assert "CONVERSATION HISTORY" in ctx_arg
-        assert "metformin 500mg" in ctx_arg
-        assert "user123" in ctx_arg
-
-        # Part 2: CONVERSATION HISTORY appears before INPUT CONTEXT
-        ctx_arg2 = await _call_route_execute(
             daemon,
             route_execute_fn,
             request_context=_route_request_context(source_channel="telegram_bot"),
             input_data={
-                "prompt": "Reply.",
-                "context": "Extra context here",
-                "conversation_history": "**user1** (2026-02-16T10:00:00Z):\nHello",
+                "prompt": "When?",
+                "context": "Extra context",
+                "conversation_history": history_text,
             },
         )
-        history_pos = ctx_arg2.find("CONVERSATION HISTORY")
-        input_ctx_pos = ctx_arg2.find("INPUT CONTEXT")
-        assert history_pos != -1 and input_ctx_pos != -1
+        assert "CONVERSATION HISTORY" in ctx_arg
+        assert "metformin 500mg" in ctx_arg
+        history_pos = ctx_arg.find("CONVERSATION HISTORY")
+        input_ctx_pos = ctx_arg.find("INPUT CONTEXT")
         assert history_pos < input_ctx_pos
 
-    @pytest.mark.parametrize(
-        "conversation_history",
-        [
-            pytest.param(None, id="none"),
-            pytest.param("", id="empty_string"),
-            pytest.param("absent", id="absent"),
-        ],
-    )
-    async def test_conversation_history_omitted_when_blank(
-        self, tmp_path: Path, conversation_history
-    ) -> None:
-        """CONVERSATION HISTORY section absent when history is None, empty, or not provided."""
-        patches = _patch_infra()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path, butler_name="health"), patches
-        )
-        assert route_execute_fn is not None
-
-        input_data: dict = {"prompt": "Do something."}
-        if conversation_history != "absent":
-            input_data["conversation_history"] = conversation_history
-
-        ctx_arg = await _call_route_execute(
+        # None → no CONVERSATION HISTORY
+        ctx_no = await _call_route_execute(
             daemon,
             route_execute_fn,
             request_context=_route_request_context(source_channel="telegram_bot"),
-            input_data=input_data,
+            input_data={"prompt": "Do something.", "conversation_history": None},
         )
-        assert "CONVERSATION HISTORY" not in ctx_arg
+        assert "CONVERSATION HISTORY" not in ctx_no

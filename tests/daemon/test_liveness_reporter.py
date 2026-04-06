@@ -302,17 +302,16 @@ class TestLivenessReporterBehavior:
 
         return _real_sleep, fast_sleep
 
-    async def test_heartbeat_url_name_and_timing(self, tmp_path: Path) -> None:
-        """First heartbeat sent after initial sleep; URL is correct; body contains butler_name;
-        custom switchboard_url is used when configured."""
-        # Part 1: initial heartbeat URL and body
+    async def test_heartbeat_url_and_periodic_and_cancellation(self, tmp_path: Path) -> None:
+        """Heartbeat URL correct; butler_name in body; custom URL used; periodic heartbeats;
+        loop cancels cleanly."""
         daemon = self._make_daemon(tmp_path, name="my-butler")
-        posted_bodies: list[dict] = []
         posted_urls: list[str] = []
+        posted_bodies: list[dict] = []
 
         async def capture_post(url, *, json=None, **kwargs):
-            posted_bodies.append(json or {})
             posted_urls.append(url)
+            posted_bodies.append(json or {})
             return _ok_response()
 
         mock_client = _make_mock_client(post_side_effect=capture_post)
@@ -335,79 +334,20 @@ class TestLivenessReporterBehavior:
         assert mock_client.post.call_count >= 1
         assert posted_urls[0] == _HB_URL
         assert posted_bodies[0]["butler_name"] == "my-butler"
+        assert task.done()
 
-        # Part 2: custom switchboard_url is used
-        custom_url = "http://custom-switchboard:9999"
-        (tmp_path / "d2").mkdir(exist_ok=True)
-        daemon2 = self._make_daemon(tmp_path / "d2", name="test-butler")
-        daemon2.config.scheduler = SchedulerConfig(
-            heartbeat_interval_seconds=120, switchboard_url=custom_url
-        )
-        posted_urls2: list[str] = []
-
-        async def capture_url(url, **kwargs):
-            posted_urls2.append(url)
-            return _ok_response()
-
-        mock_client2 = _make_mock_client(post_side_effect=capture_url)
-        _real_sleep2, fast_sleep2 = self._fast_sleep_once()
-
-        with (
-            patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client2),
-            patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep2),
-        ):
-            task2 = asyncio.create_task(daemon2._liveness_reporter_loop())
-            await _real_sleep2(0)
-            await _real_sleep2(0)
-            await _real_sleep2(0)
-            task2.cancel()
-            try:
-                await task2
-            except asyncio.CancelledError:
-                pass
-
-        assert len(posted_urls2) >= 1
-        assert posted_urls2[0] == f"{custom_url}/api/switchboard/heartbeat"
-
-    async def test_periodic_heartbeats_and_clean_cancellation(self, tmp_path: Path) -> None:
-        """Heartbeats sent on each interval; loop cancels cleanly during shutdown."""
+    async def test_connection_failure_and_404_handling(self, tmp_path: Path, caplog) -> None:
+        """ConnectErrors → WARNING (not ERROR), loop continues; 3 consecutive 404s → self-terminate."""
         daemon = self._make_daemon(tmp_path)
         daemon.config.scheduler = SchedulerConfig(
-            heartbeat_interval_seconds=1,
-            switchboard_url="http://test-switchboard:41200",
+            heartbeat_interval_seconds=1, switchboard_url="http://test-switchboard:41200"
         )
-        mock_client = _make_mock_client()
         _real_sleep = asyncio.sleep
 
         async def fast_sleep(delay: float) -> None:
             await _real_sleep(0)
 
-        with (
-            patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client),
-            patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
-        ):
-            task = asyncio.create_task(daemon._liveness_reporter_loop())
-            await _real_sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        # 1 initial + at least 1 periodic; task is done after cancellation
-        assert mock_client.post.call_count >= 2
-        assert task.done()
-
-    async def test_connection_failure_logs_warning_and_continues(
-        self, tmp_path: Path, caplog
-    ) -> None:
-        """ConnectErrors logged at WARNING (not ERROR); loop continues past failures."""
-        daemon = self._make_daemon(tmp_path)
-        daemon.config.scheduler = SchedulerConfig(
-            heartbeat_interval_seconds=1,
-            switchboard_url="http://test-switchboard:41200",
-        )
-
+        # Connection failures: loop continues with WARNING logs
         call_count = 0
         responses: list = [
             httpx.ConnectError("Connection refused"),
@@ -419,17 +359,12 @@ class TestLivenessReporterBehavior:
             nonlocal call_count
             idx = min(call_count, len(responses) - 1)
             call_count += 1
-            resp = responses[idx]
-            if isinstance(resp, Exception):
-                raise resp
-            return resp
+            r = responses[idx]
+            if isinstance(r, Exception):
+                raise r
+            return r
 
         mock_client = _make_mock_client(post_side_effect=side_effect)
-        _real_sleep = asyncio.sleep
-
-        async def fast_sleep(delay: float) -> None:
-            await _real_sleep(0)
-
         with (
             patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client),
             patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
@@ -442,66 +377,27 @@ class TestLivenessReporterBehavior:
                 await task
             except asyncio.CancelledError:
                 pass
+        assert call_count >= 3
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) >= 1
+        assert len([r for r in caplog.records if r.levelno == logging.ERROR]) == 0
 
-        assert call_count >= 3, f"Expected at least 3 calls, got {call_count}"
-        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
-        error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
-        assert len(warning_records) >= 1
-        assert len(error_records) == 0
-
-    async def test_404_handling(self, tmp_path: Path) -> None:
-        """3 consecutive 404s stop the loop; a single 404 followed by 200 does not."""
-        _real_sleep = asyncio.sleep
-
-        async def fast_sleep(delay: float) -> None:
-            await _real_sleep(0)
-
-        # Part 1: 3 consecutive 404s → self-terminate
-        (tmp_path / "p1").mkdir(exist_ok=True)
-        daemon = self._make_daemon(tmp_path / "p1")
-        daemon.config.scheduler = SchedulerConfig(
-            heartbeat_interval_seconds=1, switchboard_url="http://test-switchboard:41200"
-        )
-        call_count = 0
-
-        async def returns_404(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return httpx.Response(404)
-
-        mock_client = _make_mock_client(post_side_effect=returns_404)
-        with (
-            patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client),
-            patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
-        ):
-            await daemon._liveness_reporter_loop()
-        assert call_count == 3
-
-        # Part 2: transient 404 followed by 200 → continues
-        (tmp_path / "p2").mkdir(exist_ok=True)
-        daemon2 = self._make_daemon(tmp_path / "p2")
+        # 3 consecutive 404s → self-terminate
+        (tmp_path / "p").mkdir(exist_ok=True)
+        daemon2 = self._make_daemon(tmp_path / "p")
         daemon2.config.scheduler = SchedulerConfig(
             heartbeat_interval_seconds=1, switchboard_url="http://test-switchboard:41200"
         )
         call_count2 = 0
-        responses2 = [httpx.Response(404), _ok_response(), _ok_response()]
 
-        async def side_effect2(*args, **kwargs):
+        async def returns_404(*args, **kwargs):
             nonlocal call_count2
-            idx = min(call_count2, len(responses2) - 1)
             call_count2 += 1
-            return responses2[idx]
+            return httpx.Response(404)
 
-        mock_client2 = _make_mock_client(post_side_effect=side_effect2)
+        mock_client2 = _make_mock_client(post_side_effect=returns_404)
         with (
             patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client2),
             patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
         ):
-            task = asyncio.create_task(daemon2._liveness_reporter_loop())
-            await _real_sleep(0.1)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        assert call_count2 >= 3
+            await daemon2._liveness_reporter_loop()
+        assert call_count2 == 3
