@@ -264,7 +264,8 @@ class TestApprovalsMigration:
         action_id = uuid.uuid4()
         with engine.connect() as conn:
             conn.execute(text(
-                "INSERT INTO pending_actions (id, tool_name, tool_args, agent_summary, status, requested_at)"
+                "INSERT INTO pending_actions"
+                " (id, tool_name, tool_args, agent_summary, status, requested_at)"
                 " VALUES (:id, :tn, :ta, :s, :st, :r)"
             ), {"id": str(action_id), "tn": "email_send",
                 "ta": json.dumps({"to": "alice@example.com"}),

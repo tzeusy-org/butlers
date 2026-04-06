@@ -1373,7 +1373,7 @@ class TestAutoOffTotalDisengagement:
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
 
     async def test_auto_off_triggered_with_and_without_notify(self, insight_pool):
-        """auto-off fires after 14 days zero engagement; uses canonical message; works without notify_fn."""
+        """auto-off fires after 14 days zero engagement; uses canonical message."""
         from butlers.tools.switchboard.insight.broker import (
             _AUTO_OFF_MESSAGE,
             check_total_disengagement_auto_off,
