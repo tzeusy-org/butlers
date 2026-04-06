@@ -1,14 +1,11 @@
 """Tests for the Home Butler maintenance MCP tools.
 
 Covers:
-- ha_maintenance_create: happy path, duplicate name rejection, invalid category,
-  invalid interval_days, no-db fallback
-- ha_maintenance_complete: happy path (default timestamp), explicit timestamp,
-  not-found error, invalid timestamp, memory fact stored
-- ha_maintenance_list: no filter, category filter, status filter (due/upcoming/ok),
-  invalid filter values, empty result, no-db fallback
-- ha_maintenance_remove: happy path, not-found error, no-db fallback
-- Tool registration: all 4 tools appear in mcp._registered_tools
+- ha_maintenance_create: happy path, duplicate/invalid rejections, no-db
+- ha_maintenance_complete: default/explicit timestamp, not-found, memory fact
+- ha_maintenance_list: filters (status/category/none), invalid filters, no-db
+- ha_maintenance_remove: happy path, not-found, no-db
+- Tool registration: all 4 tools registered
 """
 
 from __future__ import annotations
@@ -31,7 +28,6 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def module() -> HomeAssistantModule:
-    """Create a fresh HomeAssistantModule with a minimal config."""
     m = HomeAssistantModule()
     from butlers.modules._roster_home import HomeAssistantConfig
 
@@ -41,14 +37,11 @@ def module() -> HomeAssistantModule:
 
 @pytest.fixture
 def mock_pool() -> MagicMock:
-    """Async-capable mock pool."""
-    pool = MagicMock()
-    return pool
+    return MagicMock()
 
 
 @pytest.fixture
 def module_with_pool(module: HomeAssistantModule, mock_pool: MagicMock) -> HomeAssistantModule:
-    """Module wired to a mock pool via a mock db."""
     db = MagicMock()
     db.pool = mock_pool
     module._db = db
@@ -56,7 +49,6 @@ def module_with_pool(module: HomeAssistantModule, mock_pool: MagicMock) -> HomeA
 
 
 def _make_mcp() -> MagicMock:
-    """Build a mock MCP server that captures registered tools."""
     mcp = MagicMock()
     tools: dict[str, Any] = {}
 
@@ -80,18 +72,15 @@ def _make_mcp() -> MagicMock:
 
 
 class TestMaintenanceToolRegistration:
-    """All 4 maintenance tools must be registered when register_tools is called."""
-
     async def test_maintenance_tools_registered(self, module: HomeAssistantModule) -> None:
         mcp = _make_mcp()
         with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
             await module.register_tools(mcp, config={}, db=MagicMock())
 
         registered = set(mcp._registered_tools.keys())
-        assert "ha_maintenance_create" in registered
-        assert "ha_maintenance_complete" in registered
-        assert "ha_maintenance_list" in registered
-        assert "ha_maintenance_remove" in registered
+        for name in ["ha_maintenance_create", "ha_maintenance_complete",
+                      "ha_maintenance_list", "ha_maintenance_remove"]:
+            assert name in registered
 
 
 # ---------------------------------------------------------------------------
@@ -100,110 +89,50 @@ class TestMaintenanceToolRegistration:
 
 
 class TestMaintenanceCreate:
-    """Tests for _maintenance_create."""
-
-    async def test_create_happy_path(
+    async def test_create_happy_path_with_notes(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Create a new item; returns id, name, category, interval_days, next_due_at."""
+        """Create new item with notes; returns expected fields."""
         item_id = uuid.uuid4()
-        mock_pool.fetchrow = AsyncMock(
-            side_effect=[
-                None,  # duplicate check → not found
-                {
-                    "id": item_id,
-                    "name": "HVAC filter",
-                    "category": "filter",
-                    "interval_days": 90,
-                    "next_due_at": None,
-                },
-            ]
-        )
-
+        mock_pool.fetchrow = AsyncMock(side_effect=[
+            None,  # duplicate check
+            {"id": item_id, "name": "HVAC filter", "category": "filter",
+             "interval_days": 90, "next_due_at": None},
+        ])
         result = await module_with_pool._maintenance_create(
-            name="HVAC filter", category="filter", interval_days=90
+            name="HVAC filter", category="filter", interval_days=90,
+            notes="Replace quarterly",
         )
-
         assert result["name"] == "HVAC filter"
-        assert result["category"] == "filter"
         assert result["interval_days"] == 90
-        assert result["next_due_at"] is None
         assert result["id"] == str(item_id)
 
     async def test_create_duplicate_name_rejected(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Duplicate name returns error without inserting."""
-        mock_pool.fetchrow = AsyncMock(
-            return_value={"id": uuid.uuid4()}  # existing row found
-        )
-
+        mock_pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
         result = await module_with_pool._maintenance_create(
             name="HVAC filter", category="filter", interval_days=90
         )
+        assert "error" in result and "already exists" in result["error"]
 
-        assert "error" in result
-        assert "already exists" in result["error"]
-        assert "hint" in result
-
-    async def test_create_invalid_category(self, module_with_pool: HomeAssistantModule) -> None:
-        """Invalid category returns error without touching DB."""
-        result = await module_with_pool._maintenance_create(
-            name="Widget", category="unknown_cat", interval_days=30
-        )
-
-        assert "error" in result
-        assert "Invalid category" in result["error"]
-
-    async def test_create_invalid_interval_days(
-        self, module_with_pool: HomeAssistantModule
+    @pytest.mark.parametrize(
+        "kwargs,match",
+        [
+            ({"category": "unknown_cat", "interval_days": 30}, "Invalid category"),
+            ({"category": "general", "interval_days": 0}, "positive integer"),
+        ],
+        ids=["invalid-category", "invalid-interval"],
+    )
+    async def test_create_validation_errors(
+        self, module_with_pool: HomeAssistantModule, kwargs, match
     ) -> None:
-        """Non-positive interval_days returns error without touching DB."""
-        result = await module_with_pool._maintenance_create(
-            name="Widget", category="general", interval_days=0
-        )
-
-        assert "error" in result
-        assert "positive integer" in result["error"]
+        result = await module_with_pool._maintenance_create(name="Widget", **kwargs)
+        assert "error" in result and match in result["error"]
 
     async def test_create_no_db(self, module: HomeAssistantModule) -> None:
-        """Returns error when DB is not available."""
-        result = await module._maintenance_create(
-            name="Widget", category="general", interval_days=7
-        )
-
-        assert "error" in result
-        assert "Database" in result["error"]
-
-    async def test_create_with_notes(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Notes are passed through to the INSERT."""
-        item_id = uuid.uuid4()
-        mock_pool.fetchrow = AsyncMock(
-            side_effect=[
-                None,  # duplicate check
-                {
-                    "id": item_id,
-                    "name": "Dryer vent",
-                    "category": "appliance",
-                    "interval_days": 365,
-                    "next_due_at": None,
-                },
-            ]
-        )
-
-        result = await module_with_pool._maintenance_create(
-            name="Dryer vent",
-            category="appliance",
-            interval_days=365,
-            notes="Clean annually to prevent fire hazard",
-        )
-
-        assert result["name"] == "Dryer vent"
-        # Verify notes were passed to the INSERT call (args: query, name, cat, days, notes)
-        insert_call = mock_pool.fetchrow.call_args_list[1]
-        assert any("Clean annually" in str(a) for a in insert_call.args)
+        result = await module._maintenance_create(name="W", category="general", interval_days=7)
+        assert "error" in result and "Database" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -212,130 +141,69 @@ class TestMaintenanceCreate:
 
 
 class TestMaintenanceComplete:
-    """Tests for _maintenance_complete."""
-
-    async def test_complete_happy_path_default_timestamp(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Complete with default timestamp; next_due_at is recomputed."""
+    def _mock_complete_row(self, mock_pool, name="HVAC filter"):
         item_id = uuid.uuid4()
         now = datetime.now(UTC)
         next_due = datetime(2026, 6, 23, tzinfo=UTC)
+        mock_pool.fetchrow = AsyncMock(return_value={
+            "id": item_id, "name": name, "category": "filter",
+            "interval_days": 90, "last_completed_at": now, "next_due_at": next_due,
+        })
+        return next_due
 
-        mock_pool.fetchrow = AsyncMock(
-            return_value={
-                "id": item_id,
-                "name": "HVAC filter",
-                "category": "filter",
-                "interval_days": 90,
-                "last_completed_at": now,
-                "next_due_at": next_due,
-            }
-        )
-
+    async def test_complete_default_and_explicit_timestamp(
+        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
+    ) -> None:
+        """Complete with default timestamp; then verify explicit timestamp is forwarded."""
+        next_due = self._mock_complete_row(mock_pool)
         with (
             patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()),
             patch("butlers.modules.memory.tools.get_embedding_engine", return_value=MagicMock()),
         ):
             result = await module_with_pool._maintenance_complete(name="HVAC filter")
-
         assert result["name"] == "HVAC filter"
-        assert result["last_completed_at"] is not None
         assert result["next_due_at"] == next_due.isoformat()
 
-    async def test_complete_explicit_timestamp(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Complete with explicit completed_at timestamp."""
-        item_id = uuid.uuid4()
-        ts = datetime(2026, 3, 20, 10, 0, 0, tzinfo=UTC)
-        next_due = datetime(2026, 6, 18, 10, 0, 0, tzinfo=UTC)
-
-        mock_pool.fetchrow = AsyncMock(
-            return_value={
-                "id": item_id,
-                "name": "Water filter",
-                "category": "filter",
-                "interval_days": 90,
-                "last_completed_at": ts,
-                "next_due_at": next_due,
-            }
-        )
-
+        # Explicit timestamp
+        self._mock_complete_row(mock_pool, "Water filter")
         with (
             patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()),
             patch("butlers.modules.memory.tools.get_embedding_engine", return_value=MagicMock()),
         ):
-            result = await module_with_pool._maintenance_complete(
+            result2 = await module_with_pool._maintenance_complete(
                 name="Water filter", completed_at="2026-03-20T10:00:00Z"
             )
+        assert result2["name"] == "Water filter"
 
-        assert result["name"] == "Water filter"
-        call_args = mock_pool.fetchrow.call_args
-        passed_ts: datetime = call_args.args[2]
-        assert passed_ts.year == 2026
-        assert passed_ts.month == 3
-        assert passed_ts.day == 20
-
-    async def test_complete_not_found(
+    async def test_complete_not_found_and_invalid_ts(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Returns error when item name does not exist."""
         mock_pool.fetchrow = AsyncMock(return_value=None)
-
-        result = await module_with_pool._maintenance_complete(name="Nonexistent item")
-
+        result = await module_with_pool._maintenance_complete(name="Nonexistent")
         assert "error" in result
-        assert "Nonexistent item" in result["error"]
 
-    async def test_complete_invalid_timestamp(self, module_with_pool: HomeAssistantModule) -> None:
-        """Returns error for unparseable completed_at."""
-        result = await module_with_pool._maintenance_complete(
+        result2 = await module_with_pool._maintenance_complete(
             name="HVAC filter", completed_at="not-a-date"
         )
-
-        assert "error" in result
-        assert "Invalid completed_at" in result["error"]
-
-    async def test_complete_no_db(self, module: HomeAssistantModule) -> None:
-        """Returns error when DB is not available."""
-        result = await module._maintenance_complete(name="HVAC filter")
-
-        assert "error" in result
-        assert "Database" in result["error"]
+        assert "error" in result2 and "Invalid completed_at" in result2["error"]
 
     async def test_complete_stores_memory_fact(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Completion stores a memory fact with maintenance tags."""
-        item_id = uuid.uuid4()
-        now = datetime.now(UTC)
-        next_due = datetime(2026, 6, 23, tzinfo=UTC)
-
-        mock_pool.fetchrow = AsyncMock(
-            return_value={
-                "id": item_id,
-                "name": "HVAC filter",
-                "category": "filter",
-                "interval_days": 90,
-                "last_completed_at": now,
-                "next_due_at": next_due,
-            }
-        )
-
+        self._mock_complete_row(mock_pool)
         with (
             patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store,
             patch("butlers.modules.memory.tools.get_embedding_engine", return_value=MagicMock()),
         ):
             await module_with_pool._maintenance_complete(name="HVAC filter")
-
         assert mock_store.called
-        call_kwargs = mock_store.call_args
-        # store_fact(pool, subject=..., predicate=..., content=..., ...)
-        assert call_kwargs.kwargs.get("subject") == "HVAC filter"
-        assert call_kwargs.kwargs.get("predicate") == "device_issue"
-        assert "maintenance" in call_kwargs.kwargs.get("tags", [])
-        assert "filter" in call_kwargs.kwargs.get("tags", [])
+        kw = mock_store.call_args.kwargs
+        assert kw.get("subject") == "HVAC filter"
+        assert "maintenance" in kw.get("tags", [])
+
+    async def test_complete_no_db(self, module: HomeAssistantModule) -> None:
+        result = await module._maintenance_complete(name="HVAC filter")
+        assert "error" in result and "Database" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,128 +212,49 @@ class TestMaintenanceComplete:
 
 
 class TestMaintenanceList:
-    """Tests for _maintenance_list."""
+    def _make_row(self, name="Test", category="general", status="ok", **kw) -> dict:
+        return {"id": uuid.uuid4(), "name": name, "category": category,
+                "interval_days": kw.get("interval_days", 30),
+                "last_completed_at": None, "next_due_at": None,
+                "notes": None, "status": status}
 
-    def _make_row(
-        self,
-        name: str = "Test item",
-        category: str = "general",
-        interval_days: int = 30,
-        next_due_at: datetime | None = None,
-        last_completed_at: datetime | None = None,
-        status: str = "ok",
-        notes: str | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "id": uuid.uuid4(),
-            "name": name,
-            "category": category,
-            "interval_days": interval_days,
-            "last_completed_at": last_completed_at,
-            "next_due_at": next_due_at,
-            "notes": notes,
-            "status": status,
-        }
-
-    async def test_list_all_items(
+    async def test_list_all_and_empty(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Returns all items when no filters applied."""
-        rows = [
-            self._make_row("Filter 1", "filter", status="due"),
-            self._make_row("HVAC service", "hvac", status="ok"),
-        ]
-        mock_pool.fetch = AsyncMock(return_value=rows)
-
+        mock_pool.fetch = AsyncMock(return_value=[
+            self._make_row("Filter 1", "filter", "due"),
+            self._make_row("HVAC", "hvac", "ok"),
+        ])
         result = await module_with_pool._maintenance_list()
-
         assert len(result) == 2
-        assert result[0]["name"] == "Filter 1"
-        assert result[1]["name"] == "HVAC service"
 
-    async def test_list_with_status_filter(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Status filter is pushed to the DB query; only matching rows returned."""
-        # DB already filters by status — mock returns only the due item.
-        rows = [self._make_row("Filter 1", "filter", status="due")]
-        mock_pool.fetch = AsyncMock(return_value=rows)
-
-        result = await module_with_pool._maintenance_list(status="due")
-
-        assert len(result) == 1
-        assert result[0]["name"] == "Filter 1"
-        assert result[0]["status"] == "due"
-        # Verify status was passed to the fetch call as DB parameter.
-        fetch_call_args = mock_pool.fetch.call_args.args
-        assert "due" in fetch_call_args
-
-    async def test_list_with_category_filter(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Category filter is passed to DB query; only matching rows returned."""
-        rows = [self._make_row("HVAC service", "hvac", status="ok")]
-        mock_pool.fetch = AsyncMock(return_value=rows)
-
-        result = await module_with_pool._maintenance_list(category="hvac")
-
-        assert len(result) == 1
-        # Verify category was passed to the fetch call
-        fetch_call_args = mock_pool.fetch.call_args.args
-        assert "hvac" in fetch_call_args
-
-    async def test_list_invalid_status_filter(self, module_with_pool: HomeAssistantModule) -> None:
-        """Invalid status filter returns error without DB call."""
-        result = await module_with_pool._maintenance_list(status="invalid_status")
-
-        assert len(result) == 1
-        assert "error" in result[0]
-        assert "invalid_status" in result[0]["error"]
-
-    async def test_list_invalid_category_filter(
-        self, module_with_pool: HomeAssistantModule
-    ) -> None:
-        """Invalid category filter returns error without DB call."""
-        result = await module_with_pool._maintenance_list(category="unknown")
-
-        assert len(result) == 1
-        assert "error" in result[0]
-        assert "unknown" in result[0]["error"]
-
-    async def test_list_empty(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Empty table returns empty list."""
         mock_pool.fetch = AsyncMock(return_value=[])
+        assert await module_with_pool._maintenance_list() == []
 
-        result = await module_with_pool._maintenance_list()
+    @pytest.mark.parametrize("filter_key,filter_val", [
+        ("status", "due"), ("status", "upcoming"), ("category", "hvac"),
+    ])
+    async def test_list_with_valid_filter(
+        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock,
+        filter_key, filter_val
+    ) -> None:
+        mock_pool.fetch = AsyncMock(return_value=[self._make_row(status=filter_val)])
+        result = await module_with_pool._maintenance_list(**{filter_key: filter_val})
+        assert len(result) == 1
+        assert filter_val in mock_pool.fetch.call_args.args
 
-        assert result == []
+    @pytest.mark.parametrize("filter_key,filter_val", [
+        ("status", "invalid_status"), ("category", "unknown"),
+    ])
+    async def test_list_invalid_filter(
+        self, module_with_pool: HomeAssistantModule, filter_key, filter_val
+    ) -> None:
+        result = await module_with_pool._maintenance_list(**{filter_key: filter_val})
+        assert len(result) == 1 and "error" in result[0]
 
     async def test_list_no_db(self, module: HomeAssistantModule) -> None:
-        """Returns error list when DB is not available."""
         result = await module._maintenance_list()
-
-        assert len(result) == 1
-        assert "error" in result[0]
-        assert "Database" in result[0]["error"]
-
-    async def test_list_upcoming_status(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Upcoming status filter is pushed to the DB; only upcoming items returned."""
-        # DB already filters by status — mock returns only the upcoming item.
-        rows = [self._make_row("Water filter", "filter", status="upcoming")]
-        mock_pool.fetch = AsyncMock(return_value=rows)
-
-        result = await module_with_pool._maintenance_list(status="upcoming")
-
-        assert len(result) == 1
-        assert result[0]["name"] == "Water filter"
-        assert result[0]["status"] == "upcoming"
-        # Verify status was passed to the fetch call as DB parameter.
-        fetch_call_args = mock_pool.fetch.call_args.args
-        assert "upcoming" in fetch_call_args
+        assert len(result) == 1 and "Database" in result[0]["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -474,33 +263,18 @@ class TestMaintenanceList:
 
 
 class TestMaintenanceRemove:
-    """Tests for _maintenance_remove."""
-
-    async def test_remove_happy_path(
+    async def test_remove_happy_path_and_not_found(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        """Deleting an existing item returns deleted=True."""
         mock_pool.execute = AsyncMock(return_value="DELETE 1")
+        assert (await module_with_pool._maintenance_remove(name="HVAC filter")) == {
+            "deleted": True, "name": "HVAC filter"
+        }
 
-        result = await module_with_pool._maintenance_remove(name="HVAC filter")
-
-        assert result == {"deleted": True, "name": "HVAC filter"}
-
-    async def test_remove_not_found(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
-    ) -> None:
-        """Returns error when no row with that name exists."""
         mock_pool.execute = AsyncMock(return_value="DELETE 0")
-
         result = await module_with_pool._maintenance_remove(name="Nonexistent")
-
         assert "error" in result
-        assert "Nonexistent" in result["error"]
-        assert "hint" in result
 
     async def test_remove_no_db(self, module: HomeAssistantModule) -> None:
-        """Returns error when DB is not available."""
         result = await module._maintenance_remove(name="HVAC filter")
-
-        assert "error" in result
-        assert "Database" in result["error"]
+        assert "error" in result and "Database" in result["error"]

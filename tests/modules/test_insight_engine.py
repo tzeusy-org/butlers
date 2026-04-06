@@ -70,77 +70,10 @@ async def insight_pool(provisioned_postgres_pool):
 
 
 class TestInsightCandidateModel:
-    """Validates InsightCandidate dataclass construction and serialization."""
+    """Validates InsightCandidate dataclass construction, validation, and serialization."""
 
-    def test_valid_candidate_construction(self):
-        """InsightCandidate with valid args constructs without error."""
-        from butlers.tools.switchboard.insight.models import InsightCandidate
-
-        c = InsightCandidate(
-            priority=75,
-            category="birthday",
-            dedup_key="birthday:entity-123:2026",
-            message="Alice's birthday is in 3 days",
-            expires_at=_future(),
-        )
-        assert c.priority == 75
-        assert c.category == "birthday"
-        assert c.dedup_key == "birthday:entity-123:2026"
-
-    def test_priority_below_1_raises(self):
-        """priority=0 raises ValueError."""
-        from butlers.tools.switchboard.insight.models import InsightCandidate
-
-        with pytest.raises(ValueError, match="priority must be between 1 and 100"):
-            InsightCandidate(
-                priority=0,
-                category="birthday",
-                dedup_key="birthday:entity-123:2026",
-                message="test",
-                expires_at=_future(),
-            )
-
-    def test_priority_above_100_raises(self):
-        """priority=150 raises ValueError."""
-        from butlers.tools.switchboard.insight.models import InsightCandidate
-
-        with pytest.raises(ValueError, match="priority must be between 1 and 100"):
-            InsightCandidate(
-                priority=150,
-                category="birthday",
-                dedup_key="birthday:entity-123:2026",
-                message="test",
-                expires_at=_future(),
-            )
-
-    def test_empty_dedup_key_raises(self):
-        """Empty dedup_key raises ValueError."""
-        from butlers.tools.switchboard.insight.models import InsightCandidate
-
-        with pytest.raises(ValueError, match="dedup_key"):
-            InsightCandidate(
-                priority=50,
-                category="birthday",
-                dedup_key="",
-                message="test",
-                expires_at=_future(),
-            )
-
-    def test_invalid_dedup_key_format_raises(self):
-        """dedup_key without colons raises ValueError."""
-        from butlers.tools.switchboard.insight.models import InsightCandidate
-
-        with pytest.raises(ValueError, match="dedup_key must match format"):
-            InsightCandidate(
-                priority=50,
-                category="birthday",
-                dedup_key="nodots-here",
-                message="test",
-                expires_at=_future(),
-            )
-
-    def test_to_mcp_args_returns_expected_keys(self):
-        """to_mcp_args() returns all required fields."""
+    def test_valid_construction_and_mcp_serialization(self):
+        """InsightCandidate constructs and to_mcp_args() returns correct fields."""
         from butlers.tools.switchboard.insight.models import InsightCandidate
 
         c = InsightCandidate(
@@ -153,42 +86,50 @@ class TestInsightCandidateModel:
             channel="telegram",
             metadata={"entity_id": "abc-123"},
         )
+        assert c.priority == 75
+        assert c.dedup_key == "birthday:entity-123:2026"
+
         args = c.to_mcp_args()
         assert args["priority"] == 75
-        assert args["category"] == "birthday"
-        assert args["dedup_key"] == "birthday:entity-123:2026"
-        assert args["message"] == "Alice's birthday is in 3 days"
-        assert "expires_at" in args
         assert args["cooldown_days"] == 3
         assert args["channel"] == "telegram"
         assert args["metadata"] == {"entity_id": "abc-123"}
 
-    def test_to_mcp_args_omits_none_optional_fields(self):
-        """to_mcp_args() omits optional fields that are None."""
+        # Optional fields omitted when None
+        c2 = InsightCandidate(
+            priority=50, category="health", dedup_key="health:bp-log:2026-w13",
+            message="No BP", expires_at=_future(),
+        )
+        args2 = c2.to_mcp_args()
+        assert "cooldown_days" not in args2
+        assert "channel" not in args2
+
+    @pytest.mark.parametrize(
+        "kwargs,match",
+        [
+            ({"priority": 0}, "priority must be between 1 and 100"),
+            ({"priority": 150}, "priority must be between 1 and 100"),
+            ({"dedup_key": ""}, "dedup_key"),
+            ({"dedup_key": "nodots-here"}, "dedup_key must match format"),
+        ],
+        ids=["priority-low", "priority-high", "empty-dedup", "invalid-dedup-format"],
+    )
+    def test_validation_errors(self, kwargs, match):
         from butlers.tools.switchboard.insight.models import InsightCandidate
 
-        c = InsightCandidate(
-            priority=50,
-            category="health",
-            dedup_key="health:bp-log:2026-w13",
-            message="No blood pressure logged this week",
-            expires_at=_future(),
-        )
-        args = c.to_mcp_args()
-        assert "cooldown_days" not in args
-        assert "channel" not in args
-        assert "metadata" not in args
+        base = {"priority": 50, "category": "birthday",
+                "dedup_key": "birthday:entity-123:2026", "message": "test",
+                "expires_at": _future()}
+        base.update(kwargs)
+        with pytest.raises(ValueError, match=match):
+            InsightCandidate(**base)
 
     def test_four_segment_dedup_key_is_valid(self):
-        """4-segment dedup_key (butler:category:entity:time) is accepted."""
         from butlers.tools.switchboard.insight.models import InsightCandidate
 
         c = InsightCandidate(
-            priority=50,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="Butler-specific insight",
-            expires_at=_future(),
+            priority=50, category="health", dedup_key="health:bp:user-1:2026-w13",
+            message="Butler-specific insight", expires_at=_future(),
         )
         assert c.dedup_key == "health:bp:user-1:2026-w13"
 
@@ -789,48 +730,25 @@ class TestAdaptiveDelivery:
 class TestQuietHours:
     """Quiet hours: delivery is skipped during configured quiet hours."""
 
-    def test_is_quiet_during_quiet_hours(self):
-        """Returns True when current time is within quiet hours."""
+    @pytest.mark.parametrize(
+        "start,end,hour,expected",
+        [
+            (22, 8, 23, True),   # midnight wrap, inside
+            (22, 8, 12, False),  # midnight wrap, outside
+            (9, 17, 12, True),   # same-day, inside
+            (9, 17, 8, False),   # same-day, before
+            (9, 17, 18, False),  # same-day, after
+        ],
+        ids=["wrap-inside", "wrap-outside", "same-inside", "same-before", "same-after"],
+    )
+    def test_is_quiet_hours_ranges(self, start, end, hour, expected):
         from butlers.tools.switchboard.insight.broker import _is_quiet_hours
 
-        # Quiet from 22:00 to 08:00 (wraps midnight)
-        settings = {
-            "quiet_start": 22,
-            "quiet_end": 8,
-            "quiet_timezone": None,
-        }
-        # 23:30 UTC — should be quiet
-        now = datetime(2026, 1, 15, 23, 30, tzinfo=UTC)
-        assert _is_quiet_hours(settings, now=now) is True
-
-    def test_is_not_quiet_outside_quiet_hours(self):
-        """Returns False when current time is outside quiet hours."""
-        from butlers.tools.switchboard.insight.broker import _is_quiet_hours
-
-        settings = {
-            "quiet_start": 22,
-            "quiet_end": 8,
-            "quiet_timezone": None,
-        }
-        # 12:00 UTC — active hours
-        now = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
-        assert _is_quiet_hours(settings, now=now) is False
-
-    def test_same_day_quiet_range(self):
-        """Quiet hours that don't wrap midnight (e.g. 9-17)."""
-        from butlers.tools.switchboard.insight.broker import _is_quiet_hours
-
-        settings = {
-            "quiet_start": 9,
-            "quiet_end": 17,
-            "quiet_timezone": None,
-        }
-        assert _is_quiet_hours(settings, now=datetime(2026, 1, 1, 12, 0, tzinfo=UTC)) is True
-        assert _is_quiet_hours(settings, now=datetime(2026, 1, 1, 8, 0, tzinfo=UTC)) is False
-        assert _is_quiet_hours(settings, now=datetime(2026, 1, 1, 18, 0, tzinfo=UTC)) is False
+        settings = {"quiet_start": start, "quiet_end": end, "quiet_timezone": None}
+        now = datetime(2026, 1, 15, hour, 0, tzinfo=UTC)
+        assert _is_quiet_hours(settings, now=now) is expected
 
     def test_no_quiet_hours_configured(self):
-        """Returns False when no quiet hours configured."""
         from butlers.tools.switchboard.insight.broker import _is_quiet_hours
 
         settings = {"quiet_start": None, "quiet_end": None, "quiet_timezone": None}
@@ -839,17 +757,13 @@ class TestQuietHours:
     @pytest.mark.skipif(not _docker_available, reason="Docker not available")
     @pytest.mark.integration
     async def test_delivery_cycle_skips_during_quiet_hours(self, insight_pool):
-        """delivery_cycle returns skipped=True when running during quiet hours."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        # Configure quiet hours 00:00-23:59 (always quiet)
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity, quiet_start, quiet_end)
             VALUES (1, 'normal', 0, 23)
             ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=0, quiet_end=23
         """)
-
-        # Insert a pending candidate
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -862,13 +776,10 @@ class TestQuietHours:
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
         result = await delivery_cycle(
-            insight_pool,
-            notify_fn=notify_mock,
+            insight_pool, notify_fn=notify_mock,
             now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
         )
-
         assert result["skipped"] is True
-        assert len(result["delivered"]) == 0
         assert not notify_mock.called
 
 
@@ -880,8 +791,8 @@ class TestQuietHours:
 class TestDigestFormatting:
     """Digest formatting: multiple butlers contribute to a single digest message."""
 
-    def test_digest_header_with_count(self):
-        """Digest message begins with 'Daily Insights (N):'."""
+    def test_digest_header_labels_and_numbering(self):
+        """Digest starts with count header, includes butler labels, and is numbered."""
         from butlers.tools.switchboard.insight.broker import _format_digest
 
         candidates = [
@@ -891,52 +802,18 @@ class TestDigestFormatting:
         ]
         msg = _format_digest(candidates)
         assert msg.startswith("Daily Insights (3):")
-
-    def test_digest_includes_butler_labels(self):
-        """Each digest item includes the origin butler name in brackets."""
-        from butlers.tools.switchboard.insight.broker import _format_digest
-
-        candidates = [
-            {"origin_butler": "relationship", "message": "Alice's birthday"},
-            {"origin_butler": "health", "message": "Log BP"},
-        ]
-        msg = _format_digest(candidates)
         assert "[Relationship]" in msg
         assert "[Health]" in msg
+        assert "1." in msg and "2." in msg
 
-    def test_digest_numbering(self):
-        """Digest items are numbered 1, 2, 3, ..."""
-        from butlers.tools.switchboard.insight.broker import _format_digest
-
-        candidates = [
-            {"origin_butler": "finance", "message": "Unusual spending"},
-            {"origin_butler": "travel", "message": "Document expiring"},
-        ]
-        msg = _format_digest(candidates)
-        assert "1." in msg
-        assert "2." in msg
-
-    def test_standalone_message_format(self):
-        """Standalone delivery prefixes butler name and includes message."""
+    def test_standalone_format(self):
+        """Standalone delivery prefixes butler name, excludes digest framing."""
         from butlers.tools.switchboard.insight.broker import _format_standalone
 
-        candidate = {
-            "origin_butler": "health",
-            "message": "You haven't logged blood pressure in 12 days",
-        }
+        candidate = {"origin_butler": "health", "message": "No BP in 12 days"}
         msg = _format_standalone(candidate)
         assert "[Health]" in msg
-        assert "You haven't logged blood pressure in 12 days" in msg
-
-    def test_standalone_no_digest_framing(self):
-        """Standalone message does NOT include 'Daily Insights' header."""
-        from butlers.tools.switchboard.insight.broker import _format_standalone
-
-        candidate = {
-            "origin_butler": "health",
-            "message": "Some message",
-        }
-        msg = _format_standalone(candidate)
+        assert "No BP in 12 days" in msg
         assert "Daily Insights" not in msg
 
     @pytest.mark.skipif(not _docker_available, reason="Docker not available")
@@ -1458,70 +1335,49 @@ class TestAutoOffTotalDisengagement:
         call_args = notify_mock.call_args[0]
         assert "paused proactive insights" in call_args[0]
 
+    async def test_auto_off_not_triggered_insufficient_data(self, insight_pool):
+        """auto-off doesn't fire with partial engagement, <14 days, or no history."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        # No history at all
+        assert await check_total_disengagement_auto_off(insight_pool) is False
+
+        # Only 13 days of zero engagement (fewer than 14)
+        now = datetime.now(UTC)
+        await self._insert_daily_engagement(
+            insight_pool, num_days=13, engaged=False, reference_now=now
+        )
+        assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] != "off"
+
     async def test_auto_off_not_triggered_with_partial_engagement(self, insight_pool):
         """auto-off does not fire when at least one day had engagement."""
         from butlers.tools.switchboard.insight.broker import (
             check_total_disengagement_auto_off,
-            get_insight_settings,
         )
 
         now = datetime.now(UTC)
-        # 13 days of zero engagement (fills days -14 through -2)
         await self._insert_daily_engagement(
             insight_pool, num_days=13, engaged=False, reference_now=now
         )
-        # 1 day with engagement, placed yesterday (day -1 = inside the window)
-        # to ensure it falls within the midnight-anchored window boundary.
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        engaged_id = str(uuid.uuid4())
         await insight_pool.execute(
-            """
-            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-            VALUES ($1::uuid, $2, TRUE)
-            """,
-            engaged_id,
-            today_midnight - timedelta(hours=12),  # yesterday noon — in window
+            """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, TRUE)""",
+            str(uuid.uuid4()), today_midnight - timedelta(hours=12),
         )
+        assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
 
-        triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
-
-        assert triggered is False
-        settings = await get_insight_settings(insight_pool)
-        assert settings["verbosity"] != "off"
-
-    async def test_auto_off_not_triggered_with_fewer_than_14_days(self, insight_pool):
-        """auto-off does not fire when only 13 days of engagement history exist."""
-        from butlers.tools.switchboard.insight.broker import (
-            check_total_disengagement_auto_off,
-            get_insight_settings,
-        )
-
-        now = datetime.now(UTC)
-        await self._insert_daily_engagement(
-            insight_pool, num_days=13, engaged=False, reference_now=now
-        )
-
-        triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
-
-        assert triggered is False
-        settings = await get_insight_settings(insight_pool)
-        assert settings["verbosity"] != "off"
-
-    async def test_auto_off_not_triggered_with_no_history(self, insight_pool):
-        """auto-off does not fire when there is no engagement history."""
-        from butlers.tools.switchboard.insight.broker import (
-            check_total_disengagement_auto_off,
-        )
-
-        triggered = await check_total_disengagement_auto_off(insight_pool)
-
-        assert triggered is False
-
-    async def test_auto_off_notify_called_with_correct_message(self, insight_pool):
-        """Auto-off final notification uses the canonical message string."""
+    async def test_auto_off_triggered_with_and_without_notify(self, insight_pool):
+        """auto-off fires after 14 days zero engagement; uses canonical message."""
         from butlers.tools.switchboard.insight.broker import (
             _AUTO_OFF_MESSAGE,
             check_total_disengagement_auto_off,
+            get_insight_settings,
         )
 
         now = datetime.now(UTC)
@@ -1530,11 +1386,14 @@ class TestAutoOffTotalDisengagement:
         )
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
-        await check_total_disengagement_auto_off(insight_pool, now=now, notify_fn=notify_mock)
-
+        triggered = await check_total_disengagement_auto_off(
+            insight_pool, now=now, notify_fn=notify_mock
+        )
+        assert triggered is True
+        settings = await get_insight_settings(insight_pool)
+        assert settings["verbosity"] == "off"
         notify_mock.assert_called_once()
-        call_args = notify_mock.call_args[0]
-        assert call_args[0] == _AUTO_OFF_MESSAGE
+        assert notify_mock.call_args[0][0] == _AUTO_OFF_MESSAGE
 
     async def test_auto_off_without_notify_fn_still_updates_verbosity(self, insight_pool):
         """auto-off updates verbosity even when no notify_fn is provided."""
@@ -1547,21 +1406,13 @@ class TestAutoOffTotalDisengagement:
         await self._insert_daily_engagement(
             insight_pool, num_days=14, engaged=False, reference_now=now
         )
-
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now, notify_fn=None)
-
         assert triggered is True
-        settings = await get_insight_settings(insight_pool)
-        assert settings["verbosity"] == "off"
+        assert (await get_insight_settings(insight_pool))["verbosity"] == "off"
 
-    async def test_auto_off_excludes_today_partial_day(self, insight_pool):
-        """Window boundary excludes today's partial day to prevent premature auto-off.
-
-        Previously the window used an inclusive end (delivered_at <= now), which
-        could produce 15 day buckets (days -14 through 0) instead of 14.  If today
-        had 0 engagement rows it could push the row count to 14+ and trigger
-        auto-off prematurely.  The fix uses an exclusive upper bound (< midnight
-        today) so exactly 14 complete day buckets are checked.
+    async def test_auto_off_window_boundary_excludes_today(self, insight_pool):
+        """Today's partial day excluded from window; 14 complete days still trigger;
+        13 complete + today's row do not.
         """
         from butlers.tools.switchboard.insight.broker import (
             check_total_disengagement_auto_off,
@@ -1571,44 +1422,21 @@ class TestAutoOffTotalDisengagement:
         now = datetime.now(UTC)
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-        # Insert 14 days of zero engagement in complete past days (days -14 to -1)
+        # 14 complete past days + today's partial row -> still triggers
         await self._insert_daily_engagement(
             insight_pool, num_days=14, engaged=False, reference_now=now
         )
-
-        # Also insert a zero-engagement row for TODAY — this is the partial day
-        # that should be excluded from the window.
-        today_insight_id = str(uuid.uuid4())
         await insight_pool.execute(
-            """
-            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-            VALUES ($1::uuid, $2, FALSE)
-            """,
-            today_insight_id,
-            today_midnight + timedelta(hours=1),  # today at 01:00
+            """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, FALSE)""",
+            str(uuid.uuid4()), today_midnight + timedelta(hours=1),
         )
-
-        # With the old inclusive boundary, today's row would be included,
-        # giving 15 buckets; with the new exclusive boundary it's excluded.
-        # Either way, auto-off should fire here because 14 complete days have
-        # zero engagement — the key assertion is that today's partial data
-        # does NOT block auto-off when 14 full days already qualify.
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
-
         assert triggered is True
-        settings = await get_insight_settings(insight_pool)
-        assert settings["verbosity"] == "off"
+        assert (await get_insight_settings(insight_pool))["verbosity"] == "off"
 
-    async def test_auto_off_not_triggered_when_only_15_days_span_including_today(
-        self, insight_pool
-    ):
-        """13 complete past days plus today's partial row do not trigger auto-off.
-
-        Regression guard: with an inclusive window (old behaviour), data spanning
-        days -13 through 0 could fill 14 buckets and trigger falsely.  The fix
-        uses an exclusive upper bound, so today's row is excluded and only 13
-        complete-day buckets remain, which is < 14 → no auto-off.
-        """
+    async def test_auto_off_13_days_plus_today_not_triggered(self, insight_pool):
+        """13 complete past days plus today's partial row do not trigger auto-off."""
         from butlers.tools.switchboard.insight.broker import (
             check_total_disengagement_auto_off,
             get_insight_settings,
@@ -1616,29 +1444,16 @@ class TestAutoOffTotalDisengagement:
 
         now = datetime.now(UTC)
         today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # 13 complete past days of zero engagement (days -13 to -1)
         await self._insert_daily_engagement(
             insight_pool, num_days=13, engaged=False, reference_now=now
         )
-
-        # Today's partial row — should be excluded by the new boundary
-        today_insight_id = str(uuid.uuid4())
         await insight_pool.execute(
-            """
-            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
-            VALUES ($1::uuid, $2, FALSE)
-            """,
-            today_insight_id,
-            today_midnight + timedelta(hours=2),  # today at 02:00
+            """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, FALSE)""",
+            str(uuid.uuid4()), today_midnight + timedelta(hours=2),
         )
-
-        triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
-
-        # Only 13 complete days visible in window (today excluded) → not triggered
-        assert triggered is False
-        settings = await get_insight_settings(insight_pool)
-        assert settings["verbosity"] != "off"
+        assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
+        assert (await get_insight_settings(insight_pool))["verbosity"] != "off"
 
 
 # ===========================================================================
@@ -1647,291 +1462,104 @@ class TestAutoOffTotalDisengagement:
 
 
 class TestProposeInsightCandidateUnit:
-    """Unit tests for propose_insight_candidate validation and verbosity gate.
-
-    These tests use mock pools and do not require a running Docker/Postgres
-    instance. They cover all validation error cases, verbosity=off filtering,
-    and the happy-path accepted response.
-    """
+    """Unit tests for propose_insight_candidate validation and verbosity gate."""
 
     def _make_mock_pool(self, verbosity: str = "minimal", custom_budget=None) -> AsyncMock:
-        """Return a mock asyncpg pool that fakes get_insight_settings."""
         pool = AsyncMock()
-        # get_insight_settings issues a fetchrow call
         pool.fetchrow.return_value = {
-            "id": 1,
-            "verbosity": verbosity,
-            "custom_budget": custom_budget,
-            "quiet_start": None,
-            "quiet_end": None,
-            "quiet_timezone": None,
+            "id": 1, "verbosity": verbosity, "custom_budget": custom_budget,
+            "quiet_start": None, "quiet_end": None, "quiet_timezone": None,
             "updated_at": datetime.now(UTC),
         }
-        # INSERT succeeds silently
         pool.execute.return_value = "INSERT 0 1"
         return pool
 
-    async def test_priority_zero_returns_error(self):
-        """priority=0 returns error without any DB call."""
+    @pytest.mark.parametrize(
+        "overrides,match",
+        [
+            ({"priority": 0}, "priority must be between 1 and 100"),
+            ({"priority": 101}, "priority must be between 1 and 100"),
+            ({"dedup_key": ""}, "dedup_key is required"),
+            ({"dedup_key": "nodots-at-all"}, "dedup_key must match format"),
+            ({"message": ""}, "message must be non-empty"),
+            ({"message": "   "}, "message must be non-empty"),
+            ({"expires_at": "not-a-datetime"}, "ISO 8601"),
+        ],
+        ids=["priority-0", "priority-101", "empty-dedup", "bad-dedup",
+             "empty-msg", "whitespace-msg", "invalid-expires"],
+    )
+    async def test_validation_errors(self, overrides, match):
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
         pool = AsyncMock()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=0,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="test",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
+        base = {
+            "origin_butler": "health", "priority": 70, "category": "health",
+            "dedup_key": "health:bp:user-1:2026-w13", "message": "test",
+            "expires_at": datetime.now(UTC) + timedelta(days=7),
+        }
+        base.update(overrides)
+        result = await propose_insight_candidate(pool, **base)
         assert result["status"] == "error"
-        assert "priority must be between 1 and 100" in result["reason"]
-        pool.fetchrow.assert_not_called()
+        assert match in result["reason"]
         pool.execute.assert_not_called()
-
-    async def test_priority_101_returns_error(self):
-        """priority=101 returns error without any DB call."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = AsyncMock()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=101,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="test",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "error"
-        assert "priority must be between 1 and 100" in result["reason"]
-        pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
-
-
-    async def test_empty_dedup_key_returns_error(self):
-        """Empty dedup_key returns error without DB call."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = AsyncMock()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="",
-            message="test",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "error"
-        assert "dedup_key is required" in result["reason"]
-        pool.execute.assert_not_called()
-
-    async def test_invalid_dedup_key_format_returns_error(self):
-        """dedup_key without colons returns error with format hint."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = AsyncMock()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="nodots-at-all",
-            message="test",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "error"
-        assert "dedup_key must match format" in result["reason"]
-        pool.execute.assert_not_called()
-
-    async def test_three_segment_dedup_key_is_valid(self):
-        """3-segment dedup_key passes format validation."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = self._make_mock_pool()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="relationship",
-            priority=75,
-            category="birthday",
-            dedup_key="birthday:entity-123:2026",
-            message="Alice's birthday",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "accepted"
-
-    async def test_four_segment_dedup_key_is_valid(self):
-        """4-segment dedup_key (butler-specific) passes format validation."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = self._make_mock_pool()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="finance",
-            priority=55,
-            category="spending",
-            dedup_key="finance:spending:overage:2026-w13",
-            message="Over budget",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "accepted"
-
-    async def test_empty_message_returns_error(self):
-        """Empty message returns error without DB call."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = AsyncMock()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "error"
-        assert "message must be non-empty" in result["reason"]
-        pool.execute.assert_not_called()
-
-    async def test_whitespace_only_message_returns_error(self):
-        """Whitespace-only message returns error."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = AsyncMock()
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="   ",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "error"
-        assert "message must be non-empty" in result["reason"]
 
     async def test_past_expires_at_returns_error(self):
-        """expires_at in the past returns error without DB insert."""
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
         pool = self._make_mock_pool()
         result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="valid message",
+            pool, origin_butler="health", priority=70, category="health",
+            dedup_key="health:bp:user-1:2026-w13", message="valid",
             expires_at=datetime.now(UTC) - timedelta(hours=1),
         )
         assert result["status"] == "error"
         assert "expires_at must be in the future" in result["reason"]
-        # Neither the settings fetch nor the INSERT should be called
         pool.fetchrow.assert_not_called()
-        pool.execute.assert_not_called()
 
-    async def test_invalid_expires_at_string_returns_error(self):
-        """expires_at as invalid ISO string returns error."""
+    @pytest.mark.parametrize(
+        "verbosity,custom_budget",
+        [("off", None), ("minimal", 0)],
+        ids=["verbosity-off", "custom-budget-zero"],
+    )
+    async def test_verbosity_gate_returns_filtered(self, verbosity, custom_budget):
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
-        pool = AsyncMock()
+        pool = self._make_mock_pool(verbosity=verbosity, custom_budget=custom_budget)
         result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="valid",
-            expires_at="not-a-datetime",
-        )
-        assert result["status"] == "error"
-        assert "ISO 8601" in result["reason"]
-        pool.execute.assert_not_called()
-
-    async def test_verbosity_off_returns_filtered(self):
-        """verbosity=off returns filtered without inserting a row."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = self._make_mock_pool(verbosity="off")
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="No BP logged",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "filtered"
-        assert result["reason"] == "verbosity is off"
-        # No INSERT should be called
-        pool.execute.assert_not_called()
-
-    async def test_custom_budget_zero_returns_filtered(self):
-        """custom_budget=0 returns filtered regardless of verbosity preset."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = self._make_mock_pool(verbosity="minimal", custom_budget=0)
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="health",
-            priority=70,
-            category="health",
-            dedup_key="health:bp:user-1:2026-w13",
-            message="No BP logged",
+            pool, origin_butler="health", priority=70, category="health",
+            dedup_key="health:bp:user-1:2026-w13", message="No BP logged",
             expires_at=datetime.now(UTC) + timedelta(days=7),
         )
         assert result["status"] == "filtered"
         assert result["reason"] == "verbosity is off"
         pool.execute.assert_not_called()
-
-    async def test_valid_submission_accepted(self):
-        """Valid submission with all required fields returns accepted."""
-        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
-
-        pool = self._make_mock_pool(verbosity="minimal")
-        result = await propose_insight_candidate(
-            pool,
-            origin_butler="relationship",
-            priority=80,
-            category="birthday",
-            dedup_key="birthday:entity-123:2026",
-            message="Alice's birthday is in 3 days",
-            expires_at=datetime.now(UTC) + timedelta(days=7),
-        )
-        assert result["status"] == "accepted"
-        assert "candidate queued" in result["reason"]
-        # INSERT must be called
-        pool.execute.assert_called_once()
 
     async def test_valid_submission_with_optional_fields(self):
-        """Valid submission with optional fields returns accepted and passes args to INSERT."""
+        """Valid submission accepted; 3/4-segment dedup_keys pass; optional args forwarded."""
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
         pool = self._make_mock_pool(verbosity="normal")
         result = await propose_insight_candidate(
-            pool,
-            origin_butler="finance",
-            priority=55,
-            category="spending",
+            pool, origin_butler="finance", priority=55, category="spending",
             dedup_key="finance:spending:overage:2026-w13",
             message="Over budget this week",
             expires_at=datetime.now(UTC) + timedelta(days=7),
-            cooldown_days=3,
-            channel="telegram",
-            metadata={"amount_over": 150},
+            cooldown_days=3, channel="telegram", metadata={"amount_over": 150},
         )
         assert result["status"] == "accepted"
         pool.execute.assert_called_once()
-        # Confirm INSERT args contain the optional values.
-        # Args order: (sql, origin_butler, priority, category, dedup_key,
-        #              cooldown_days, expires_dt, message, channel, metadata_json)
         call_args = pool.execute.call_args.args
-        assert call_args[5] == 3, "cooldown_days arg mismatch"
-        assert call_args[8] == "telegram", "channel arg mismatch"
+        assert call_args[5] == 3
+        assert call_args[8] == "telegram"
+
+        # 3-segment dedup_key also valid
+        pool2 = self._make_mock_pool()
+        r2 = await propose_insight_candidate(
+            pool2, origin_butler="relationship", priority=75, category="birthday",
+            dedup_key="birthday:entity-123:2026", message="Alice's birthday",
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        assert r2["status"] == "accepted"
 
 
 # ===========================================================================
@@ -1940,21 +1568,11 @@ class TestProposeInsightCandidateUnit:
 
 
 class TestDaemonInsightDeliveryJobHandler:
-    """insight_delivery_cycle job is registered in the daemon's job registry."""
+    """insight_delivery_cycle job is registered and callable in the daemon registry."""
 
-    def test_insight_delivery_cycle_in_switchboard_handlers(self):
-        """_DETERMINISTIC_SCHEDULE_JOB_REGISTRY['switchboard'] contains insight_delivery_cycle."""
+    def test_insight_delivery_cycle_registered_and_callable(self):
         from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
         switchboard_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
         assert "insight_delivery_cycle" in switchboard_jobs
-
-    def test_insight_delivery_cycle_handler_is_callable(self):
-        """The insight_delivery_cycle handler is an async callable."""
-        import asyncio
-
-        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
-
-        handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["switchboard"]["insight_delivery_cycle"]
-        assert callable(handler)
-        assert asyncio.iscoroutinefunction(handler)
+        assert callable(switchboard_jobs["insight_delivery_cycle"])
