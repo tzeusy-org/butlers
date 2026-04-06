@@ -11,6 +11,7 @@ ingestion_events_list           — paginated list, newest first, optional chann
 ingestion_events_count          — total row count matching the same filters as ingestion_events_list
 ingestion_event_sessions        — fan-out across butler schemas for sessions linked to a request
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
+ingestion_event_mark_replay_complete — transition replay_pending → ingested on success
 ingestion_event_replay_request  — mark a filtered event as replay_pending
 """
 
@@ -312,8 +313,11 @@ async def ingestion_event_mark_failed(
 ) -> bool:
     """Mark an ingestion event as ``failed`` after routing did not succeed.
 
-    Only transitions rows whose current status is ``'ingested'`` (avoids
-    clobbering a replay-pending or already-failed state).
+    Transitions:
+    - ``ingested``       → ``failed``        (first-time failure)
+    - ``replay_pending`` → ``replay_failed`` (replay attempt failed)
+
+    Skips rows that are already ``failed`` or ``replay_failed``.
 
     Args:
         pool: asyncpg connection pool with access to ``public.ingestion_events``.
@@ -322,7 +326,7 @@ async def ingestion_event_mark_failed(
 
     Returns:
         ``True`` if the row was updated, ``False`` if not found or already
-        in a non-ingested state.
+        in a terminal failure state.
     """
     if isinstance(event_id, str):
         event_id = UUID(event_id)
@@ -330,15 +334,48 @@ async def ingestion_event_mark_failed(
     result = await pool.execute(
         """
         UPDATE public.ingestion_events
-        SET status = 'failed',
+        SET status = CASE
+                WHEN status = 'replay_pending' THEN 'replay_failed'
+                ELSE 'failed'
+            END,
             error_detail = $2
         WHERE id = $1
-          AND status = 'ingested'
+          AND status IN ('ingested', 'replay_pending')
         """,
         event_id,
         error_detail,
     )
     # asyncpg returns e.g. "UPDATE 1" or "UPDATE 0"
+    return result.endswith("1")
+
+
+async def ingestion_event_mark_replay_complete(
+    pool: asyncpg.Pool,
+    event_id: str | UUID,
+) -> bool:
+    """Transition a ``replay_pending`` ingestion event back to ``ingested``.
+
+    Called after the DurableBuffer scanner successfully re-routes a replayed
+    event.  Only matches ``replay_pending`` rows so it is safe to call
+    unconditionally after every successful routing — it is a no-op for events
+    that were not being replayed.
+
+    Returns:
+        ``True`` if the row was updated, ``False`` otherwise.
+    """
+    if isinstance(event_id, str):
+        event_id = UUID(event_id)
+
+    result = await pool.execute(
+        """
+        UPDATE public.ingestion_events
+        SET status = 'ingested',
+            error_detail = NULL
+        WHERE id = $1
+          AND status = 'replay_pending'
+        """,
+        event_id,
+    )
     return result.endswith("1")
 
 
@@ -403,7 +440,7 @@ async def ingestion_event_replay_request(
     # These events were already routed successfully.  To replay, we mark them
     # replay_pending and reset the message_inbox row to 'accepted' so the
     # DurableBuffer scanner re-enqueues them for re-routing.
-    ingestion_replayable = ("ingested",)
+    ingestion_replayable = ("ingested", "replay_failed")
     row = await pool.fetchrow(
         """
         UPDATE public.ingestion_events

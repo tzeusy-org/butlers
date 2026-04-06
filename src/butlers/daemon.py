@@ -1995,8 +1995,8 @@ class ButlerDaemon:
                     ref.request_id,
                 )
 
-            # Mark the ingestion event as failed so it appears in the dashboard
-            # and can be replayed.
+            # Mark the ingestion event as failed/replay_failed, or complete a
+            # pending replay back to ingested.
             if routing_failed:
                 try:
                     from butlers.core.ingestion_events import ingestion_event_mark_failed
@@ -2005,6 +2005,18 @@ class ButlerDaemon:
                 except Exception:
                     logger.warning(
                         "DurableBuffer: failed to mark ingestion event failed for request_id=%s",
+                        ref.request_id,
+                    )
+            else:
+                try:
+                    from butlers.core.ingestion_events import (
+                        ingestion_event_mark_replay_complete,
+                    )
+
+                    await ingestion_event_mark_replay_complete(pool, ref.request_id)
+                except Exception:
+                    logger.warning(
+                        "DurableBuffer: failed to mark replay complete for request_id=%s",
                         ref.request_id,
                     )
 
@@ -3853,8 +3865,8 @@ class ButlerDaemon:
                         request_id,
                     )
 
-                # Mark the ingestion event as failed so it appears in the dashboard
-                # and can be replayed.
+                # Mark the ingestion event as failed/replay_failed, or complete a
+                # pending replay back to ingested.
                 if routing_failed:
                     try:
                         from butlers.core.ingestion_events import ingestion_event_mark_failed
@@ -3863,6 +3875,18 @@ class ButlerDaemon:
                     except Exception:
                         logger.warning(
                             "Ingest: failed to mark ingestion event failed for request_id=%s",
+                            request_id,
+                        )
+                else:
+                    try:
+                        from butlers.core.ingestion_events import (
+                            ingestion_event_mark_replay_complete,
+                        )
+
+                        await ingestion_event_mark_replay_complete(pool, request_id)
+                    except Exception:
+                        logger.warning(
+                            "Ingest: failed to mark replay complete for request_id=%s",
                             request_id,
                         )
 

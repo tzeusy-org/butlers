@@ -73,10 +73,10 @@ async def list_ingestion_events(
     | None = Query(
         None,
         description=(
-            "Filter by event status. 'ingested'/'failed' query public.ingestion_events; "
-            "'filtered'/'error'/'replay_complete'/'replay_failed' query "
-            "connectors.filtered_events; 'replay_pending' queries both tables. "
-            "Omit for unified stream."
+            "Filter by event status. 'ingested'/'failed'/'replay_failed' query "
+            "public.ingestion_events; 'filtered'/'error'/'replay_complete' query "
+            "connectors.filtered_events; 'replay_pending'/'replay_failed' may "
+            "appear in both tables. Omit for unified stream."
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
