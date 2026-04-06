@@ -8,6 +8,8 @@ Covers:
   trailing slash stripped
 - Safety/protocol: UNFIXABLE documented, no PR instruction, PII exclusion present
 - Braces in dynamic fields do not raise
+- build_review_followup_prompt: required fields, feedback included, PII rules present,
+  braces in feedback do not raise, dashboard section optional
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from datetime import UTC, datetime
 import pytest
 
 from butlers.core.qa.models import QaFinding
-from butlers.core.qa.prompts import build_investigation_prompt
+from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 
 pytestmark = pytest.mark.unit
 
@@ -120,3 +122,102 @@ def test_prompt_safety_and_braces():
     ctx = 'Root cause in JSON: {"field": "value {placeholder}"}'
     p2 = build_investigation_prompt(_make_finding(context=ctx), uuid.uuid4())
     assert "Diagnostic Context" in p2 and "field" in p2
+
+
+# ---------------------------------------------------------------------------
+# build_review_followup_prompt tests
+# ---------------------------------------------------------------------------
+
+
+def _make_followup_prompt(**kwargs) -> str:
+    defaults = dict(
+        pr_number=42,
+        pr_url="https://github.com/org/repo/pull/42",
+        fingerprint="deadbeef" * 8,
+        source_butler="finance",
+        attempt_id=uuid.uuid4(),
+        feedback_summary="Please fix the test coverage.",
+    )
+    defaults.update(kwargs)
+    return build_review_followup_prompt(**defaults)
+
+
+def test_review_followup_prompt_required_fields():
+    """All required context fields appear in the follow-up prompt."""
+    attempt_id = uuid.uuid4()
+    fp = "deadbeef" * 8
+    prompt = build_review_followup_prompt(
+        pr_number=99,
+        pr_url="https://github.com/org/repo/pull/99",
+        fingerprint=fp,
+        source_butler="travel",
+        attempt_id=attempt_id,
+        feedback_summary="Reviewer says: fix the edge case.",
+    )
+    assert "99" in prompt
+    assert fp in prompt
+    assert "travel" in prompt
+    assert str(attempt_id) in prompt
+    assert "fix the edge case" in prompt
+
+
+def test_review_followup_prompt_no_dashboard():
+    """No dashboard URL → section absent."""
+    prompt = _make_followup_prompt(dashboard_base_url=None)
+    assert "Investigation Dashboard" not in prompt
+
+
+def test_review_followup_prompt_with_dashboard():
+    """Dashboard URL → section with correct link present."""
+    attempt_id = uuid.uuid4()
+    prompt = build_review_followup_prompt(
+        pr_number=42,
+        pr_url="https://github.com/org/repo/pull/42",
+        fingerprint="a" * 64,
+        source_butler="general",
+        attempt_id=attempt_id,
+        feedback_summary="Add tests.",
+        dashboard_base_url="https://dash.example.com",
+    )
+    assert "Investigation Dashboard" in prompt
+    expected_url = f"https://dash.example.com/qa/investigations/{attempt_id}"
+    assert expected_url in prompt
+
+
+def test_review_followup_prompt_dashboard_trailing_slash():
+    """Trailing slash in base URL is stripped correctly."""
+    attempt_id = uuid.uuid4()
+    prompt = build_review_followup_prompt(
+        pr_number=42,
+        pr_url="https://github.com/org/repo/pull/42",
+        fingerprint="a" * 64,
+        source_butler="general",
+        attempt_id=attempt_id,
+        feedback_summary="Comments.",
+        dashboard_base_url="https://dash.example.com/",
+    )
+    expected_url = f"https://dash.example.com/qa/investigations/{attempt_id}"
+    assert expected_url in prompt
+    assert "//qa" not in prompt  # no double slash
+
+
+def test_review_followup_prompt_pii_rules():
+    """Prompt includes PII exclusion instructions."""
+    prompt = _make_followup_prompt()
+    lower = prompt.lower()
+    assert "pii" in lower or "user data" in lower or "credentials" in lower
+
+
+def test_review_followup_prompt_braces_in_feedback():
+    """Curly braces in feedback_summary do not raise."""
+    curly_feedback = 'Reviewer says: fix {"key": "value {placeholder}"}.'
+    prompt = _make_followup_prompt(feedback_summary=curly_feedback)
+    assert "key" in prompt
+    assert "placeholder" in prompt
+
+
+def test_review_followup_prompt_no_pr_instruction():
+    """Prompt instructs NOT to create a new PR."""
+    prompt = _make_followup_prompt()
+    lower = prompt.lower()
+    assert "not push" in lower or "do not" in lower or "don't" in lower

@@ -264,6 +264,11 @@ class QaInvestigation(BaseModel):
     updated_at: datetime
     closed_at: datetime | None = None
     error_detail: str | None = None
+    # PR review conversation tracking fields (added in core_057)
+    review_state: str | None = None
+    last_review_check_at: datetime | None = None
+    review_feedback_summary: str | None = None
+    follow_up_count: int = 0
 
 
 class QaTrendsDay(BaseModel):
@@ -428,6 +433,10 @@ def _row_to_investigation(row: Any) -> QaInvestigation:
         updated_at=row["updated_at"],
         closed_at=row.get("closed_at"),
         error_detail=row.get("error_detail"),
+        review_state=row.get("review_state"),
+        last_review_check_at=row.get("last_review_check_at"),
+        review_feedback_summary=row.get("review_feedback_summary"),
+        follow_up_count=row.get("follow_up_count") or 0,
     )
 
 
@@ -878,7 +887,8 @@ async def list_investigations(
     rows = await pool.fetch(
         f"SELECT id, fingerprint, butler_name, status, severity, exception_type, call_site,"
         f" sanitized_msg, pr_url, pr_number, healing_session_id, qa_patrol_id,"
-        f" created_at, updated_at, closed_at, error_detail"
+        f" created_at, updated_at, closed_at, error_detail,"
+        f" review_state, last_review_check_at, review_feedback_summary, follow_up_count"
         f" FROM public.healing_attempts{where}"
         f" ORDER BY created_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",

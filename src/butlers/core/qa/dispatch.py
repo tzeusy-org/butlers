@@ -60,7 +60,7 @@ from butlers.core.healing.worktree import (
 from butlers.core.model_routing import Complexity, resolve_model
 from butlers.core.qa.findings import update_finding_attempt
 from butlers.core.qa.models import QaFinding
-from butlers.core.qa.prompts import build_investigation_prompt
+from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
 from butlers.core.qa.triage import TriagedFinding
 
@@ -87,6 +87,18 @@ except ImportError:
 
 #: Branch prefix used by all QA investigations.
 _QA_PREFIX = "qa"
+
+#: Branch prefix used by PR review follow-up agents.
+_QA_REVIEW_PREFIX = "qa-review"
+
+#: Maximum number of follow-up dispatches per PR per patrol cycle (rate-limit).
+_MAX_FOLLOW_UP_PER_CYCLE = 1
+
+#: Maximum characters to store in review_feedback_summary.
+_MAX_FEEDBACK_SUMMARY_LEN = 2000
+
+#: Review states that require a follow-up agent dispatch.
+_ACTIONABLE_REVIEW_STATES = frozenset({"changes_requested"})
 
 #: PR labels applied to QA-originated investigation PRs.
 _DEFAULT_PR_LABELS = ["self-healing", "automated"]
@@ -763,12 +775,20 @@ async def check_open_pr_statuses(
     pool: asyncpg.Pool,
     repo_root: Path,
     gh_token: str | None,
+    spawner: Any = None,
+    config: QaDispatchConfig | None = None,
+    task_registry: list[asyncio.Task[Any]] | None = None,
 ) -> dict[str, int]:
     """Check GitHub status of all pr_open QA healing attempts.
 
     Called on each patrol cycle from the QA staffer daemon context (not inside
     an agent worktree).  Transitions pr_open → pr_merged or pr_open → failed
     based on actual GitHub PR state.
+
+    When ``spawner`` and ``config`` are provided, also checks for unresolved
+    review threads or "changes_requested" state and dispatches a follow-up
+    agent to address reviewer feedback (rate-limited to
+    ``_MAX_FOLLOW_UP_PER_CYCLE`` per PR per patrol cycle).
 
     Parameters
     ----------
@@ -778,13 +798,27 @@ async def check_open_pr_statuses(
         Absolute path to the repository root (for gh CLI invocations).
     gh_token:
         GitHub token from CredentialStore.  If ``None``, tracking is skipped.
+    spawner:
+        Optional QA staffer Spawner.  When provided, enables follow-up agent
+        dispatch for PRs with actionable reviewer feedback.
+    config:
+        Optional ``QaDispatchConfig``.  Required alongside ``spawner`` for
+        follow-up dispatch.
+    task_registry:
+        Optional list to which watchdog tasks will be appended.
 
     Returns
     -------
     dict[str, int]
-        Counts of transitions: ``{"merged": N, "closed": N, "errors": N}``.
+        Counts of transitions: ``{"merged": N, "closed": N, "errors": N,
+        "follow_ups_dispatched": N}``.
     """
-    counts: dict[str, int] = {"merged": 0, "closed": 0, "errors": 0}
+    counts: dict[str, int] = {
+        "merged": 0,
+        "closed": 0,
+        "errors": 0,
+        "follow_ups_dispatched": 0,
+    }
 
     if not gh_token:
         logger.debug("check_open_pr_statuses: no gh_token, skipping PR status check")
@@ -793,7 +827,7 @@ async def check_open_pr_statuses(
     # Fetch all QA pr_open attempts (have qa_patrol_id set)
     rows = await pool.fetch(
         """
-        SELECT id, pr_url, pr_number
+        SELECT id, pr_url, pr_number, fingerprint, butler_name, follow_up_count
         FROM public.healing_attempts
         WHERE status = 'pr_open'
           AND qa_patrol_id IS NOT NULL
@@ -809,20 +843,23 @@ async def check_open_pr_statuses(
     for row in rows:
         attempt_id: uuid.UUID = row["id"]
         pr_number: int | None = row["pr_number"]
+        pr_url: str = row["pr_url"]
+        fingerprint: str = row["fingerprint"]
+        butler_name: str = row["butler_name"]
+        follow_up_count: int = row["follow_up_count"] or 0
 
         if pr_number is None:
             continue
 
         try:
+            # Fetch state + review info in one call
             proc = await asyncio.create_subprocess_exec(
                 "gh",
                 "pr",
                 "view",
                 str(pr_number),
                 "--json",
-                "state",
-                "--jq",
-                ".state",
+                "state,reviews,latestReviews,reviewThreads",
                 cwd=str(repo_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -833,13 +870,23 @@ async def check_open_pr_statuses(
                 counts["errors"] += 1
                 continue
 
-            state = stdout.decode("utf-8", errors="replace").strip().upper()
+            import json as _json
+
+            try:
+                pr_data = _json.loads(stdout.decode("utf-8", errors="replace"))
+            except _json.JSONDecodeError:
+                counts["errors"] += 1
+                continue
+
+            state = pr_data.get("state", "").upper()
 
             if state == "MERGED":
                 await update_attempt_status(pool, attempt_id, "pr_merged")
                 counts["merged"] += 1
                 logger.info("QA PR merged: attempt=%s pr_number=%s", attempt_id, pr_number)
-            elif state == "CLOSED":
+                continue
+
+            if state == "CLOSED":
                 await update_attempt_status(
                     pool,
                     attempt_id,
@@ -852,7 +899,50 @@ async def check_open_pr_statuses(
                     attempt_id,
                     pr_number,
                 )
-            # OPEN state: no transition needed
+                continue
+
+            # OPEN state: check for reviewer feedback
+            review_state, feedback_summary = _extract_review_state(pr_data)
+
+            # Update review tracking columns
+            await pool.execute(
+                """
+                UPDATE public.healing_attempts
+                SET review_state            = $2,
+                    last_review_check_at    = now(),
+                    review_feedback_summary = $3,
+                    updated_at              = now()
+                WHERE id = $1
+                """,
+                attempt_id,
+                review_state,
+                feedback_summary[:_MAX_FEEDBACK_SUMMARY_LEN] if feedback_summary else None,
+            )
+
+            # Dispatch follow-up if actionable and not rate-limited
+            if (
+                spawner is not None
+                and config is not None
+                and review_state in _ACTIONABLE_REVIEW_STATES
+                and follow_up_count < _MAX_FOLLOW_UP_PER_CYCLE
+                and feedback_summary
+            ):
+                dispatched = await _dispatch_pr_review_followup(
+                    pool=pool,
+                    repo_root=repo_root,
+                    attempt_id=attempt_id,
+                    pr_number=pr_number,
+                    pr_url=pr_url,
+                    fingerprint=fingerprint,
+                    butler_name=butler_name,
+                    feedback_summary=feedback_summary,
+                    config=config,
+                    spawner=spawner,
+                    gh_token=gh_token,
+                    task_registry=task_registry,
+                )
+                if dispatched:
+                    counts["follow_ups_dispatched"] += 1
 
         except Exception as exc:
             logger.warning(
@@ -864,6 +954,320 @@ async def check_open_pr_statuses(
             counts["errors"] += 1
 
     return counts
+
+
+def _extract_review_state(
+    pr_data: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Extract review state and feedback summary from gh pr view JSON output.
+
+    Parameters
+    ----------
+    pr_data:
+        Parsed JSON from ``gh pr view --json reviews,latestReviews,reviewThreads``.
+
+    Returns
+    -------
+    tuple[str | None, str | None]
+        ``(review_state, feedback_summary)`` where ``review_state`` is one of
+        ``"approved"``, ``"changes_requested"``, ``"commented"``,
+        ``"dismissed"``, ``"pending"``, or ``None`` (no reviews), and
+        ``feedback_summary`` is a newline-joined summary of unresolved comments
+        (or ``None`` if nothing actionable).
+    """
+    # Determine aggregate review state from latestReviews (one per reviewer)
+    latest_reviews: list[dict[str, Any]] = pr_data.get("latestReviews") or []
+
+    state_priority = {
+        "CHANGES_REQUESTED": 0,
+        "COMMENTED": 1,
+        "DISMISSED": 2,
+        "APPROVED": 3,
+        "PENDING": 4,
+    }
+
+    dominant_state: str | None = None
+    for review in latest_reviews:
+        review_state_raw = (review.get("state") or "").upper()
+        if dominant_state is None:
+            dominant_state = review_state_raw
+        elif state_priority.get(review_state_raw, 99) < state_priority.get(dominant_state, 99):
+            dominant_state = review_state_raw
+
+    # Normalise to lowercase snake_case
+    state_map = {
+        "CHANGES_REQUESTED": "changes_requested",
+        "COMMENTED": "commented",
+        "DISMISSED": "dismissed",
+        "APPROVED": "approved",
+        "PENDING": "pending",
+    }
+    review_state: str | None = state_map.get(dominant_state) if dominant_state else None
+
+    # Build feedback summary from unresolved review threads
+    threads: list[dict[str, Any]] = pr_data.get("reviewThreads") or []
+    unresolved_comments: list[str] = []
+
+    for thread in threads:
+        if thread.get("isResolved") or thread.get("isOutdated"):
+            continue
+        comments_in_thread: list[dict[str, Any]] = thread.get("comments", {}).get("nodes", [])
+        for comment in comments_in_thread:
+            body = (comment.get("body") or "").strip()
+            if body:
+                author = (comment.get("author") or {}).get("login", "reviewer")
+                unresolved_comments.append(f"- [{author}]: {body}")
+
+    # Also include general review comments from reviews with body text
+    reviews: list[dict[str, Any]] = pr_data.get("reviews") or []
+    for review in reviews:
+        if (review.get("state") or "").upper() in ("CHANGES_REQUESTED", "COMMENTED"):
+            body = (review.get("body") or "").strip()
+            if body and "- [" not in "\n".join(unresolved_comments):
+                author = (review.get("author") or {}).get("login", "reviewer")
+                unresolved_comments.append(f"- [{author} review]: {body}")
+
+    feedback_summary = "\n".join(unresolved_comments) if unresolved_comments else None
+    if feedback_summary is None and review_state == "changes_requested":
+        # Changes requested but no specific comment text available
+        feedback_summary = "Reviewer requested changes (no specific comment text available)."
+
+    return review_state, feedback_summary
+
+
+async def _dispatch_pr_review_followup(
+    pool: asyncpg.Pool,
+    repo_root: Path,
+    attempt_id: uuid.UUID,
+    pr_number: int,
+    pr_url: str,
+    fingerprint: str,
+    butler_name: str,
+    feedback_summary: str,
+    config: QaDispatchConfig,
+    spawner: Any,
+    gh_token: str | None,
+    task_registry: list[asyncio.Task[Any]] | None = None,
+) -> bool:
+    """Dispatch a follow-up agent to address PR reviewer feedback.
+
+    Creates a new worktree branched from the PR's head branch, spawns a
+    follow-up agent with the reviewer feedback as context, and pushes the
+    resulting changes to the same PR branch.
+
+    Rate-limited: increments ``follow_up_count`` on the healing_attempts row.
+    Anonymization validation is applied before the agent pushes.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool.
+    repo_root:
+        Absolute path to repository root.
+    attempt_id:
+        UUID of the healing_attempts row.
+    pr_number:
+        GitHub PR number.
+    pr_url:
+        Full GitHub PR URL.
+    fingerprint:
+        Fingerprint from the original healing attempt.
+    butler_name:
+        Butler that originated the investigation.
+    feedback_summary:
+        Summarised reviewer feedback (will be anonymized before use in prompt).
+    config:
+        QA dispatch configuration.
+    spawner:
+        QA staffer's Spawner instance.
+    gh_token:
+        GitHub token.
+    task_registry:
+        Optional list for background task references.
+
+    Returns
+    -------
+    bool
+        ``True`` if a follow-up agent task was dispatched, ``False`` otherwise.
+    """
+    try:
+        # Anonymize reviewer feedback before including in agent prompt
+        safe_feedback = anonymize(feedback_summary, repo_root)
+        feedback_clean, feedback_violations = validate_anonymized(safe_feedback)
+        if not feedback_clean:
+            logger.warning(
+                "PR review follow-up: anonymization validation failed for attempt=%s "
+                "(%d violations) — skipping dispatch",
+                attempt_id,
+                len(feedback_violations),
+            )
+            return False
+
+        # Build follow-up prompt
+        prompt = build_review_followup_prompt(
+            pr_number=pr_number,
+            pr_url=pr_url,
+            fingerprint=fingerprint,
+            source_butler=butler_name,
+            attempt_id=attempt_id,
+            feedback_summary=safe_feedback,
+            dashboard_base_url=config.dashboard_base_url,
+        )
+
+        # Create a worktree from the existing PR branch
+        # Use a unique follow-up branch name derived from the PR branch
+        try:
+            worktree_path, followup_branch = await create_healing_worktree(
+                repo_root,
+                butler_name,
+                fingerprint,
+                prefix=_QA_REVIEW_PREFIX,
+            )
+        except WorktreeCreationError as wt_exc:
+            logger.warning(
+                "PR review follow-up: worktree creation failed (attempt=%s): %s",
+                attempt_id,
+                wt_exc,
+            )
+            return False
+
+        # Increment follow_up_count atomically
+        await pool.execute(
+            """
+            UPDATE public.healing_attempts
+            SET follow_up_count = follow_up_count + 1,
+                updated_at      = now()
+            WHERE id = $1
+            """,
+            attempt_id,
+        )
+
+        sandbox_env = build_sandbox_env(gh_token)
+
+        # Inject trace context if available
+        if _HAS_OTEL:
+            try:
+                sandbox_env.update(get_traceparent_env())
+            except Exception:
+                pass
+
+        followup_task: asyncio.Task[None] = asyncio.create_task(
+            _run_review_followup_session(
+                pool=pool,
+                repo_root=repo_root,
+                attempt_id=attempt_id,
+                pr_number=pr_number,
+                followup_branch=followup_branch,
+                worktree_path=worktree_path,
+                prompt=prompt,
+                config=config,
+                spawner=spawner,
+                sandbox_env=sandbox_env,
+            ),
+            name=f"qa-review-followup-{attempt_id}",
+        )
+
+        if task_registry is not None:
+            task_registry.append(followup_task)
+
+        logger.info(
+            "QA PR review follow-up dispatched: attempt=%s pr_number=%s branch=%s",
+            attempt_id,
+            pr_number,
+            followup_branch,
+        )
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "PR review follow-up dispatch failed (attempt=%s): %s",
+            attempt_id,
+            exc,
+            exc_info=True,
+        )
+        return False
+
+
+async def _run_review_followup_session(
+    pool: asyncpg.Pool,
+    repo_root: Path,
+    attempt_id: uuid.UUID,
+    pr_number: int,
+    followup_branch: str,
+    worktree_path: Path,
+    prompt: str,
+    config: QaDispatchConfig,
+    spawner: Any,
+    sandbox_env: dict[str, str],
+) -> None:
+    """Run the PR review follow-up agent session.
+
+    Spawns the agent in the follow-up worktree, then pushes any new commits
+    to the origin branch (which backs the open PR).
+    Cleans up the local worktree after completion (branch is kept for the PR).
+    """
+    try:
+        result = await spawner.trigger(
+            prompt=prompt,
+            trigger_source="qa",
+            complexity=Complexity.SELF_HEALING,
+            cwd=str(worktree_path),
+            bypass_butler_semaphore=True,
+            env_override=sandbox_env,
+        )
+
+        if not result.success:
+            logger.warning(
+                "QA review follow-up agent failed (attempt=%s): %s",
+                attempt_id,
+                result.error or "non-success result",
+            )
+            await remove_healing_worktree(
+                repo_root, followup_branch, delete_branch=True, delete_remote=False
+            )
+            return
+
+        # Push the follow-up commits to origin
+        push_proc = await asyncio.create_subprocess_exec(
+            "git",
+            "push",
+            "origin",
+            followup_branch,
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=sandbox_env,
+        )
+        _, push_stderr = await push_proc.communicate()
+        if push_proc.returncode != 0:
+            err = push_stderr.decode("utf-8", errors="replace").strip()
+            logger.warning(
+                "QA review follow-up: git push failed (attempt=%s): %s",
+                attempt_id,
+                err,
+            )
+        else:
+            logger.info(
+                "QA review follow-up: pushed to origin/%s (attempt=%s pr_number=%s)",
+                followup_branch,
+                attempt_id,
+                pr_number,
+            )
+
+        # Clean up the local worktree; keep the branch for the PR
+        await remove_healing_worktree(
+            repo_root, followup_branch, delete_branch=False, delete_remote=False
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Unexpected error in QA review follow-up session (attempt=%s): %s",
+            attempt_id,
+            exc,
+        )
+        await remove_healing_worktree(
+            repo_root, followup_branch, delete_branch=True, delete_remote=False
+        )
 
 
 # ---------------------------------------------------------------------------

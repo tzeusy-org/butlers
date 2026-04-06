@@ -1278,9 +1278,31 @@ class QaModule(Module):
 
         Wraps check_open_pr_statuses from core.qa.dispatch with error
         isolation so PR check failures don't abort the patrol cycle.
+
+        When the module's spawner is wired (``wire_runtime`` was called), also
+        enables PR review conversation tracking: detects "changes requested"
+        or unresolved review threads and dispatches follow-up agents.
         """
+        from butlers.core.qa.dispatch import QaDispatchConfig
+
+        # Build dispatch config from module config for follow-up dispatch
+        dispatch_config: QaDispatchConfig | None = None
+        if self._spawner is not None:
+            dispatch_config = QaDispatchConfig(
+                severity_threshold=self._config.severity_threshold,
+                max_concurrent=self._config.max_concurrent_investigations,
+                dashboard_base_url=self._config.dashboard_base_url,
+            )
+
         try:
-            await check_open_pr_statuses(pool, self._repo_root, gh_token)
+            await check_open_pr_statuses(
+                pool,
+                self._repo_root,
+                gh_token,
+                spawner=self._spawner,
+                config=dispatch_config,
+                task_registry=self._watchdog_tasks,
+            )
         except Exception:
             logger.warning("QaModule: check_open_pr_statuses failed (non-fatal)", exc_info=True)
 
