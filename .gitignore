@@ -438,3 +438,6 @@ butlers-ufzc worktree
 # Healing worktrees (created by self-healing dispatcher)
 .healing-worktrees/
 bu-b9xg/
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
