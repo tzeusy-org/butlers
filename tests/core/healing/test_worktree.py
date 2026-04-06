@@ -274,25 +274,17 @@ class TestReapStaleWorktrees:
         pool.fetch = AsyncMock(side_effect=mock_fetch)
         return pool
 
-    async def test_terminal_active_and_orphaned_worktrees(self, tmp_path: Path, caplog) -> None:
-        """Terminal+aged → reaped; active → preserved; orphaned (no DB row) → reaped with WARNING."""
+    async def test_reap_stale_worktrees(self, tmp_path: Path, caplog) -> None:
+        """Terminal+aged → reaped; active → preserved; orphaned worktree (no DB row) → WARNING; orphaned branch (no wt) deleted; mixed prefixes all reaped; custom prefix filter respected."""
         old = datetime.now(UTC) - timedelta(hours=36)
         recent = datetime.now(UTC)
 
-        # Terminal: should be reaped
+        # Terminal → reaped; active → preserved; orphaned worktree → reaped with WARNING
         terminal_branch = "self-healing/email/abc123def456-1710600000"
-        terminal_wt = _worktree_path(tmp_path, terminal_branch)
-        terminal_wt.mkdir(parents=True)
-
-        # Active: should be preserved
         active_branch = "self-healing/email/def456abc123-1710700000"
-        active_wt = _worktree_path(tmp_path, active_branch)
-        active_wt.mkdir(parents=True)
-
-        # Orphaned: no DB row, should be reaped with warning
         orphaned_branch = "self-healing/email/orphan00000-1710500000"
-        orphaned_wt = _worktree_path(tmp_path, orphaned_branch)
-        orphaned_wt.mkdir(parents=True)
+        for b in (terminal_branch, active_branch, orphaned_branch):
+            _worktree_path(tmp_path, b).mkdir(parents=True)
 
         pool = MagicMock()
 
@@ -318,22 +310,14 @@ class TestReapStaleWorktrees:
             caplog.at_level(logging.WARNING, logger="butlers.core.healing.worktree"),
         ):
             count = await reap_stale_worktrees(tmp_path, pool)
-
-        assert terminal_branch in remove_calls
-        assert active_branch not in remove_calls
-        assert orphaned_branch in remove_calls
-        assert count == 2
+        assert terminal_branch in remove_calls and active_branch not in remove_calls
+        assert orphaned_branch in remove_calls and count == 2
         assert any("orphaned" in r.message.lower() for r in caplog.records)
 
-    async def test_orphaned_branch_count_and_custom_prefixes(self, tmp_path: Path) -> None:
-        """Orphaned branch (no worktree) deleted; count returned; custom prefixes respected."""
-        old = datetime.now(UTC) - timedelta(hours=48)
-
-        # Orphaned branch with no worktree
-        orphan_branch = "self-healing/calendar/orphan000000-1710400000"
+        # Orphaned branch (no worktree) → git branch -D called
         orphan_tmp = tmp_path / "orphan_test"
         orphan_tmp.mkdir()
-
+        orphan_branch = "self-healing/calendar/orphan000000-1710400000"
         pool_orphan = MagicMock()
 
         async def mock_fetch_orphan(*args, **kwargs):
@@ -349,19 +333,15 @@ class TestReapStaleWorktrees:
             git_calls.append(args)
             if args[0] == "branch" and args[1] == "--list":
                 pattern = args[2] if len(args) > 2 else ""
-                if pattern.startswith("self-healing"):
-                    return 0, orphan_branch, ""
-                return 0, "", ""
-            if args[0] == "worktree" and args[1] == "list":
-                return 0, "", ""
+                return (0, orphan_branch, "") if pattern.startswith("self-healing") else (0, "", "")
             return 0, "", ""
 
         with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
             await reap_stale_worktrees(orphan_tmp, pool_orphan)
-
         assert any(c[0] == "branch" and c[1] == "-D" for c in git_calls)
 
-        # Mixed prefixes count
+        # Mixed prefixes (self-healing + qa) → all terminal+aged reaped; custom prefix filters
+        old2 = datetime.now(UTC) - timedelta(hours=48)
         mixed_tmp = tmp_path / "mixed_test"
         mixed_tmp.mkdir()
         branches = [
@@ -370,44 +350,39 @@ class TestReapStaleWorktrees:
             "qa/email/ccc222222222-1710600002",
         ]
         for b in branches:
-            wt_dir = _worktree_path(mixed_tmp, b)
-            wt_dir.mkdir(parents=True)
-
+            _worktree_path(mixed_tmp, b).mkdir(parents=True)
         pool_mixed = MagicMock()
 
         async def mock_fetch_mixed(*args, **kwargs):
             sql = args[0]
             if "branch_name = ANY" in sql:
-                return [{"branch_name": b, "status": "failed", "closed_at": old, "updated_at": old, "healing_session_id": None} for b in branches]
+                return [{"branch_name": b, "status": "failed", "closed_at": old2, "updated_at": old2, "healing_session_id": None} for b in branches]
             return []
 
         pool_mixed.fetch = AsyncMock(side_effect=mock_fetch_mixed)
-        remove_calls: list[str] = []
+        remove_mixed: list[str] = []
 
-        async def mock_remove(repo_root, branch_name, **kwargs):
-            remove_calls.append(branch_name)
+        async def mock_remove_mixed(repo_root, branch_name, **kwargs):
+            remove_mixed.append(branch_name)
 
         with (
             patch("butlers.core.healing.worktree._list_healing_branches", return_value=[]),
-            patch("butlers.core.healing.worktree.remove_healing_worktree", side_effect=mock_remove),
+            patch("butlers.core.healing.worktree.remove_healing_worktree", side_effect=mock_remove_mixed),
         ):
-            count = await reap_stale_worktrees(mixed_tmp, pool_mixed)
+            count_mixed = await reap_stale_worktrees(mixed_tmp, pool_mixed)
+        assert count_mixed == 3 and all(b in remove_mixed for b in branches)
 
-        assert count == 3
-        assert all(b in remove_calls for b in branches)
-
-        # Custom prefixes: only qa
+        # Custom prefix: only qa reaped
         qa_tmp = tmp_path / "qa_test"
         qa_tmp.mkdir()
         qa_branch = "qa/email/bbb111111111-1710600001"
-        qa_wt = _worktree_path(qa_tmp, qa_branch)
-        qa_wt.mkdir(parents=True)
+        _worktree_path(qa_tmp, qa_branch).mkdir(parents=True)
         pool_qa = MagicMock()
 
         async def mock_fetch_qa(*args, **kwargs):
             sql = args[0]
             if "branch_name = ANY" in sql:
-                return [{"branch_name": qa_branch, "status": "failed", "closed_at": old, "updated_at": old, "healing_session_id": None}]
+                return [{"branch_name": qa_branch, "status": "failed", "closed_at": old2, "updated_at": old2, "healing_session_id": None}]
             return []
 
         pool_qa.fetch = AsyncMock(side_effect=mock_fetch_qa)
@@ -421,9 +396,7 @@ class TestReapStaleWorktrees:
             patch("butlers.core.healing.worktree.remove_healing_worktree", side_effect=mock_remove_qa),
         ):
             count_qa = await reap_stale_worktrees(qa_tmp, pool_qa, prefixes=("qa",))
-
-        assert count_qa == 1
-        assert qa_branch in remove_qa
+        assert count_qa == 1 and qa_branch in remove_qa
 
 
 # ---------------------------------------------------------------------------

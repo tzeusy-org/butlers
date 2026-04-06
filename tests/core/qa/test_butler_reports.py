@@ -127,31 +127,20 @@ async def test_overflow_drops_oldest_with_warning_and_successive(caplog):
     await _accept(source2, i=3)  # drops 1
     findings2 = await source2.discover(lookback_minutes=15)
     fps2 = {f.fingerprint for f in findings2}
-    assert _fp(0) not in fps2
-    assert _fp(1) not in fps2
-    assert _fp(2) in fps2
-    assert _fp(3) in fps2
+    assert _fp(0) not in fps2 and _fp(1) not in fps2
+    assert _fp(2) in fps2 and _fp(3) in fps2
 
-
-@pytest.mark.asyncio
-async def test_context_field():
-    """Context parameter is stored in finding; None when not provided."""
-    source = ButlerReportsSource()
-
-    await source.accept(
-        fingerprint=_fp(0),
-        exception_type="ValueError",
-        call_site="mod:func",
-        severity=2,
-        event_summary="some error",
-        source_butler="finance",
+    # Context field: stored when provided; None when not
+    source3 = ButlerReportsSource()
+    await source3.accept(
+        fingerprint=_fp(0), exception_type="ValueError", call_site="mod:func",
+        severity=2, event_summary="some error", source_butler="finance",
         context="agent reasoning context here",
     )
-    findings = await source.discover(lookback_minutes=15)
-    assert len(findings) == 1
-    assert findings[0].context == "agent reasoning context here"
+    ctx_findings = await source3.discover(lookback_minutes=15)
+    assert ctx_findings[0].context == "agent reasoning context here"
+    await _accept(source3, i=1)
+    ctx_findings2 = await source3.discover(lookback_minutes=15)
+    assert ctx_findings2[0].context is None
 
-    # Without context
-    await _accept(source, i=1)
-    findings2 = await source.discover(lookback_minutes=15)
-    assert findings2[0].context is None
+

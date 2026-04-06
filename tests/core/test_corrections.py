@@ -93,8 +93,8 @@ def _make_pool(
 
 
 @corrections_required
-async def test_create_correction_returns_id():
-    """create_correction returns a non-None ID for both applied and failed statuses."""
+async def test_create_correction_and_audit_queries():
+    """create_correction returns non-None ID; corrections_by_session and corrections_for_session return lists."""
     for status in ("applied", "failed"):
         pool = _make_pool(session_row={"id": uuid.uuid4()})
         result = await create_correction(
@@ -109,6 +109,12 @@ async def test_create_correction_returns_id():
             correction_details=None,
         )
         assert result is not None
+
+    pool2 = _make_pool()
+    session_id = uuid.uuid4()
+    by_target = await corrections_by_session(pool2, target_session_id=session_id)
+    by_corrector = await corrections_for_session(pool2, correcting_session_id=session_id)
+    assert isinstance(by_target, list) and isinstance(by_corrector, list)
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +154,8 @@ async def test_handler_returns_status_applied_on_success(correction_fn, kwargs):
 
 
 @corrections_required
-async def test_data_correction_fails_when_session_not_found():
-    """handle_data_correction returns status='failed' when target session is missing."""
+async def test_handler_failure_cases():
+    """handle_data_correction fails when session missing; handle_misroute fails when butler unregistered."""
     pool = _make_pool(session_row=None)
     result = await handle_data_correction(
         pool,
@@ -161,42 +167,18 @@ async def test_data_correction_fails_when_session_not_found():
     )
     assert result["status"] == "failed"
 
-
-@corrections_required
-async def test_misroute_handler_fails_unregistered_butler():
-    """handle_misroute returns failed when the correct_butler is not registered."""
     from unittest.mock import AsyncMock as AsyncMockLocal
-
-    pool = _make_pool(session_row={"id": uuid.uuid4(), "ingestion_event_id": str(uuid.uuid4())})
-    mock_switchboard = AsyncMockLocal()
-    result = await handle_misroute(
-        pool,
+    pool2 = _make_pool(session_row={"id": uuid.uuid4(), "ingestion_event_id": str(uuid.uuid4())})
+    result2 = await handle_misroute(
+        pool2,
         target_session_id=uuid.uuid4(),
         correcting_session_id=uuid.uuid4(),
         description="Wrong butler",
         correct_butler="nonexistent_butler",
         registered_butlers=["finance", "general"],
-        switchboard_client=mock_switchboard,
+        switchboard_client=AsyncMockLocal(),
     )
-    assert result["status"] == "failed"
-
-
-# ---------------------------------------------------------------------------
-# Audit queries
-# ---------------------------------------------------------------------------
-
-
-@corrections_required
-async def test_corrections_audit_queries_return_lists():
-    """corrections_by_session and corrections_for_session return lists."""
-    pool = _make_pool()
-    session_id = uuid.uuid4()
-
-    by_target = await corrections_by_session(pool, target_session_id=session_id)
-    by_corrector = await corrections_for_session(pool, correcting_session_id=session_id)
-
-    assert isinstance(by_target, list)
-    assert isinstance(by_corrector, list)
+    assert result2["status"] == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -267,30 +249,18 @@ def test_decision_tree_maps_situations_to_types(kwargs, expected_type):
 
 
 @corrections_required
-def test_tool_description_contract():
-    """CORRECT_TOOL_DESCRIPTION mentions all four correction types and key params."""
+def test_static_contracts():
+    """CORRECT_TOOL_DESCRIPTION mentions all four correction types and key params; FAILURE_MESSAGES has all 12 keys."""
     desc = CORRECT_TOOL_DESCRIPTION
     for correction_type in ("data_correction", "memory_deletion", "misroute", "action_reversal"):
         assert correction_type in desc
     for param in ("correction_type", "target_session_id", "description"):
         assert param in desc
 
-
-@corrections_required
-def test_failure_messages_complete():
-    """FAILURE_MESSAGES contains entries for all 12 expected failure keys."""
     expected_keys = {
-        "session_not_found",
-        "state_key_not_found",
-        "memory_already_retracted",
-        "memory_superseded",
-        "butler_not_registered",
-        "ingestion_event_expired",
-        "action_not_reversible",
-        "unknown_correction_type",
-        "missing_required_parameter",
-        "session_no_ingestion_event",
-        "memory_not_found",
-        "switchboard_unreachable",
+        "session_not_found", "state_key_not_found", "memory_already_retracted",
+        "memory_superseded", "butler_not_registered", "ingestion_event_expired",
+        "action_not_reversible", "unknown_correction_type", "missing_required_parameter",
+        "session_no_ingestion_event", "memory_not_found", "switchboard_unreachable",
     }
     assert set(FAILURE_MESSAGES.keys()) >= expected_keys
