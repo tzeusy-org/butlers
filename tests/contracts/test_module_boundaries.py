@@ -78,7 +78,6 @@ class TestConcreteModuleBoundaries:
         """Modules are async, return str|None for migrations, don't expose infra."""
         import asyncio
 
-        from butlers.modules.base import Module
 
         mod = _make_minimal_module()
         assert asyncio.iscoroutinefunction(mod.on_shutdown)

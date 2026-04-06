@@ -14,14 +14,13 @@ class TestTopologicalSort:
     """RFC 0002: Modules resolved in dependency order."""
 
     def test_dependency_order_and_diamond(self):
+        from butlers.modules.registry import ModuleRegistry
         from tests.modules.test_module_registry import (
             ModuleA,
             ModuleB,
             ModuleC,
             ModuleD,
         )
-
-        from butlers.modules.registry import ModuleRegistry
 
         reg = ModuleRegistry()
         reg.register(ModuleA)
@@ -45,9 +44,8 @@ class TestCycleDetection:
     """RFC 0002: Circular dependencies detected and rejected."""
 
     def test_cycles_detected(self):
-        from tests.modules.test_module_registry import _make_module
-
         from butlers.modules.registry import ModuleRegistry
+        from tests.modules.test_module_registry import _make_module
 
         for deps_pairs in [
             [("ca", ["cb"]), ("cb", ["ca"])],
@@ -65,9 +63,8 @@ class TestRegistryContracts:
     """RFC 0002: Registry enforces uniqueness and discovers built-in modules."""
 
     def test_registry_error_cases_and_load_all(self):
-        from tests.modules.test_module_registry import ModuleA, ModuleB, _make_module
-
         from butlers.modules.registry import ModuleRegistry
+        from tests.modules.test_module_registry import ModuleA, ModuleB, _make_module
 
         reg = ModuleRegistry()
         reg.register(ModuleA)

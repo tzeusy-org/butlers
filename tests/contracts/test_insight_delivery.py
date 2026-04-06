@@ -107,7 +107,11 @@ class TestAdaptiveRatchet:
         assert 14 == 14
 
         # Auto-off at 0.0 engagement for 14 days
-        auto_off = {"engagement_rate": 0.0, "consecutive_days": 14, "action": "set verbosity to off"}
+        auto_off = {
+            "engagement_rate": 0.0,
+            "consecutive_days": 14,
+            "action": "set verbosity to off",
+        }
         assert auto_off["engagement_rate"] == 0.0
 
         # 60-minute engagement detection window

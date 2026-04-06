@@ -183,7 +183,7 @@ class TestResolveSteamAccount:
         conn = _FakeConn()
         conn.fetchrow = AsyncMock(return_value=_make_account_row(steam_id=_STEAM_ID))
         pool = _make_pool(conn)
-        account = await resolve_steam_account(pool, steam_id=_STEAM_ID, account=_ACCOUNT_ID)
+        await resolve_steam_account(pool, steam_id=_STEAM_ID, account=_ACCOUNT_ID)
         sql = conn.fetchrow.call_args[0][0]
         assert "steam_id = $1" in sql
 

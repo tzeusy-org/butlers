@@ -134,7 +134,9 @@ async def pool(postgres_container):
     """)
     await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_status ON mailbox (status)")
     await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_sender ON mailbox (sender)")
-    await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_created_at ON mailbox (created_at DESC)")
+    await p.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mailbox_created_at ON mailbox (created_at DESC)"
+    )
 
     yield p
     await db.close()
@@ -187,9 +189,12 @@ class TestMailboxPostAndRead:
 
     async def test_read_marks_as_read_and_nonexistent_errors(self, mailbox: MailboxModule):
         """Reading marks unread→read; re-read stays read; nonexistent returns error."""
-        post = await mailbox._post(sender="alice", sender_channel="mcp", body="Hello", subject="Greet")
+        post = await mailbox._post(
+            sender="alice", sender_channel="mcp", body="Hello", subject="Greet"
+        )
         result = await mailbox._read(post["id"])
-        assert result["status"] == "read" and result["read_at"] is not None and result["subject"] == "Greet"
+        assert result["status"] == "read" and result["read_at"] is not None
+        assert result["subject"] == "Greet"
 
         # Re-read stays read
         result2 = await mailbox._read(post["id"])

@@ -84,7 +84,7 @@ class TestResolveContactFunction:
     """RFC 0004: resolve_contact_by_channel() is the single resolution entry point."""
 
     def test_function_signature_and_source_structure(self):
-        """Async, accepts pool/channel_type/channel_value, uses 3-table JOIN, returns None on error."""
+        """Async; accepts pool/channel_type/channel_value; uses 3-table JOIN; None on error."""
         import asyncio
         import inspect
 

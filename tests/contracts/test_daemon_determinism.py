@@ -43,7 +43,6 @@ class TestFailureSemantics:
 
     def test_dependency_cycle_is_fatal(self):
         from butlers.modules.registry import ModuleRegistry
-
         from tests.modules.test_module_registry import _make_module
 
         CycA = _make_module("cycle_a", deps=["cycle_b"])
