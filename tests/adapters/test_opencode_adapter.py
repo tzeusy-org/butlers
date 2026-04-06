@@ -35,30 +35,29 @@ _EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
 
 
 # ---------------------------------------------------------------------------
-# parse_system_prompt_file — unique behaviors
+# parse_system_prompt_file — OPENCODE.md priority, AGENTS.md fallback
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "files, expected",
-    [
-        ({"OPENCODE.md": "OpenCode instructions."}, "OpenCode instructions."),
-        ({"AGENTS.md": "Agent instructions."}, "Agent instructions."),
-        (
-            {"OPENCODE.md": "OpenCode instructions.", "AGENTS.md": "Agent fallback."},
-            "OpenCode instructions.",
-        ),
-        ({"OPENCODE.md": "   \n  ", "AGENTS.md": "Agent fallback."}, "Agent fallback."),
-        ({}, ""),
-        ({"CLAUDE.md": "Claude instructions."}, ""),  # CLAUDE.md is ignored
-    ],
-)
-def test_parse_system_prompt(tmp_path: Path, files: dict, expected: str):
-    """parse_system_prompt_file resolves OPENCODE.md → AGENTS.md → empty."""
+def test_parse_system_prompt(tmp_path: Path):
+    """parse_system_prompt_file: OPENCODE.md > AGENTS.md; empty OPENCODE.md falls to AGENTS.md."""
     adapter = OpenCodeAdapter()
-    for name, content in files.items():
-        (tmp_path / name).write_text(content)
-    assert adapter.parse_system_prompt_file(config_dir=tmp_path) == expected
+    # OPENCODE.md takes priority
+    (tmp_path / "OPENCODE.md").write_text("OpenCode instructions.")
+    (tmp_path / "AGENTS.md").write_text("Agent fallback.")
+    assert adapter.parse_system_prompt_file(config_dir=tmp_path) == "OpenCode instructions."
+    # blank OPENCODE.md falls back to AGENTS.md
+    (tmp_path / "OPENCODE.md").write_text("   \n  ")
+    assert adapter.parse_system_prompt_file(config_dir=tmp_path) == "Agent fallback."
+    # AGENTS.md only
+    (tmp_path / "OPENCODE.md").unlink()
+    assert adapter.parse_system_prompt_file(config_dir=tmp_path) == "Agent fallback."
+    # nothing → empty
+    (tmp_path / "AGENTS.md").unlink()
+    assert adapter.parse_system_prompt_file(config_dir=tmp_path) == ""
+    # CLAUDE.md ignored
+    (tmp_path / "CLAUDE.md").write_text("Claude only.")
+    assert adapter.parse_system_prompt_file(config_dir=tmp_path) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -66,82 +65,110 @@ def test_parse_system_prompt(tmp_path: Path, files: dict, expected: str):
 # ---------------------------------------------------------------------------
 
 
-def test_build_config_file_structure(tmp_path: Path):
-    """build_config_file() writes opencode.jsonc with mcp and permission keys."""
+def test_build_config_file(tmp_path: Path, caplog):
+    """build_config_file(): valid server written; invalid/missing-url servers skipped."""
     adapter = OpenCodeAdapter()
+    bad_servers = [
+        {"bad": "not-a-dict"},
+        {"no-url": {"transport": "remote"}},
+        {"empty-url": {"url": "   "}},
+    ]
+    for bad in bad_servers:
+        mcp_servers = {"valid": {"url": "http://localhost:9100/mcp"}, **bad}
+        with caplog.at_level(logging.WARNING):
+            config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
+        data = json.loads(config_path.read_text())
+        assert "valid" in data["mcp"]
+        for bad_name in bad:
+            assert bad_name not in data["mcp"]
+    # Check structure for a valid server
     mcp_servers = {"my-butler": {"url": "http://localhost:9100/mcp"}}
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
     assert config_path == tmp_path / "opencode.jsonc"
     data = json.loads(config_path.read_text())
     assert data["permission"] == {}
     entry = data["mcp"]["my-butler"]
-    assert entry["type"] == "remote"
-    assert entry["url"] == "http://localhost:9100/mcp"
+    assert entry["type"] == "remote" and entry["url"] == "http://localhost:9100/mcp"
     assert entry["enabled"] is True
 
 
-@pytest.mark.parametrize(
-    "bad_server",
-    [
-        {"bad": "not-a-dict"},
-        {"no-url": {"transport": "remote"}},
-        {"empty-url": {"url": "   "}},
-    ],
-)
-def test_build_config_file_skips_invalid_servers(tmp_path: Path, bad_server: dict, caplog):
-    """build_config_file() skips servers with invalid config and logs warning."""
-    adapter = OpenCodeAdapter()
-    mcp_servers = {"valid": {"url": "http://localhost:9100/mcp"}, **bad_server}
-    with caplog.at_level(logging.WARNING):
-        config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
-    data = json.loads(config_path.read_text())
-    assert "valid" in data["mcp"]
-    for bad_name in bad_server:
-        assert bad_name not in data["mcp"]
-
-
 # ---------------------------------------------------------------------------
-# _parse_opencode_output — unique OpenCode event types
+# _parse_opencode_output — unique event types and tool call formats
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "event, expected_text",
-    [
-        # text event: various field names
+def test_parse_opencode_unique_events():
+    """OpenCode-specific event types: text variants, result, item.completed, tool call types."""
+    # text event variants
+    for event, expected in [
         ({"type": "text", "text": "Hello"}, "Hello"),
         ({"type": "text", "content": "Content"}, "Content"),
         ({"type": "text", "delta": "Delta"}, "Delta"),
-        # result event
         ({"type": "result", "result": "Task complete"}, "Task complete"),
-        # nested item types
         ({"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}}, "hi"),
         ({"type": "assistant", "content": "Direct content"}, "Direct content"),
-    ],
-)
-def test_parse_event_text(event: dict, expected_text: str):
-    """Various event types yield correct result_text."""
-    result_text, tool_calls, usage = _parse_opencode_output(json.dumps(event), "", 0)
-    assert result_text == expected_text
+    ]:
+        text, _, _ = _parse_opencode_output(json.dumps(event), "", 0)
+        assert text == expected, f"Failed for event {event}"
 
-
-@pytest.mark.parametrize("event_type", ["tool_use", "tool_call", "function_call", "mcp_tool_call"])
-def test_parse_tool_call_event_types(event_type: str):
-    """Common tool call event types all produce tool_calls."""
-    event = {"type": event_type, "id": "t1", "name": "do_thing", "input": {"k": "v"}}
-    _, tool_calls, _ = _parse_opencode_output(json.dumps(event), "", 0)
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "do_thing"
+    # tool call event types
+    for event_type in ["tool_use", "tool_call", "function_call", "mcp_tool_call"]:
+        event = {"type": event_type, "id": "t1", "name": "do_thing", "input": {"k": "v"}}
+        _, tool_calls, _ = _parse_opencode_output(json.dumps(event), "", 0)
+        assert len(tool_calls) == 1 and tool_calls[0]["name"] == "do_thing"
 
 
 # ---------------------------------------------------------------------------
-# _extract_usage — token format normalization
+# _looks_like_tool_call_event and _extract_opencode_tool_call
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "event, expected",
-    [
+def test_looks_like_tool_call_event():
+    """_looks_like_tool_call_event correctly identifies tool call objects."""
+    positives = [
+        {"type": "tool_use"},
+        {"type": "function_call"},
+        {"type": "mcp_tool_call"},
+        {"name": "my_tool", "input": {"a": 1}},
+        {"name": "my_tool", "arguments": {"a": 1}},
+        {"function": {"name": "my_fn", "arguments": {"x": 1}}},
+    ]
+    negatives = [{"type": "text", "text": "hello"}, {"name": "", "input": {"a": 1}}]
+    for obj in positives:
+        assert _looks_like_tool_call_event(obj) is True, f"Expected True for {obj}"
+    for obj in negatives:
+        assert _looks_like_tool_call_event(obj) is False, f"Expected False for {obj}"
+
+
+def test_extract_opencode_tool_call_formats():
+    """_extract_opencode_tool_call normalizes standard, function, call, and string-arg formats."""
+    cases = [
+        ({"id": "t1", "name": "do_thing", "input": {"k": "v"}}, "do_thing", {"k": "v"}),
+        (
+            {"id": "fc1", "function": {"name": "my_tool", "arguments": {"x": 1}}},
+            "my_tool",
+            {"x": 1},
+        ),
+        (
+            {"id": "mcp_1", "call": {"name": "router", "arguments": {"b": "g"}}},
+            "router",
+            {"b": "g"},
+        ),
+        ({"id": "t3", "name": "fn", "arguments": '{"k":"v"}'}, "fn", {"k": "v"}),
+    ]
+    for event, expected_name, expected_input in cases:
+        tc = _extract_opencode_tool_call(event)
+        assert tc["name"] == expected_name and tc["input"] == expected_input
+
+
+# ---------------------------------------------------------------------------
+# _extract_usage, _find_opencode_binary, invoke()
+# ---------------------------------------------------------------------------
+
+
+def test_extract_usage_and_find_binary():
+    """_extract_usage handles all token formats and non-dict input; binary raises when missing."""
+    cases = [
         ({"input_tokens": 100, "output_tokens": 50}, {"input_tokens": 100, "output_tokens": 50}),
         (
             {"usage": {"input_tokens": 200, "output_tokens": 80}},
@@ -153,70 +180,12 @@ def test_parse_tool_call_event_types(event_type: str):
         ),
         ({"type": "text", "text": "hello"}, None),
         ({"input_tokens": "many", "output_tokens": None}, None),
-        (None, None),  # non-dict returns None
-        ("string", None),  # non-dict returns None
-    ],
-)
-def test_extract_usage(event: dict | None, expected):
-    """_extract_usage handles all token formats, invalid cases, and non-dict input."""
-    assert _extract_usage(event) == expected  # type: ignore[arg-type]
+        (None, None),
+        ("string", None),
+    ]
+    for event, expected in cases:
+        assert _extract_usage(event) == expected, f"Failed for {event}"  # type: ignore[arg-type]
 
-
-# ---------------------------------------------------------------------------
-# _looks_like_tool_call_event
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "obj, expected",
-    [
-        ({"type": "tool_use"}, True),
-        ({"type": "function_call"}, True),
-        ({"type": "mcp_tool_call"}, True),
-        ({"name": "my_tool", "input": {"a": 1}}, True),
-        ({"name": "my_tool", "arguments": {"a": 1}}, True),
-        ({"function": {"name": "my_fn", "arguments": {"x": 1}}}, True),
-        ({"type": "text", "text": "hello"}, False),
-        ({"name": "", "input": {"a": 1}}, False),
-    ],
-)
-def test_looks_like_tool_call_event(obj: dict, expected: bool):
-    """_looks_like_tool_call_event correctly identifies tool call objects."""
-    assert _looks_like_tool_call_event(obj) is expected
-
-
-# ---------------------------------------------------------------------------
-# _extract_opencode_tool_call — format normalization
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "event, expected_name, expected_input",
-    [
-        # Standard tool_use
-        ({"id": "t1", "name": "do_thing", "input": {"k": "v"}}, "do_thing", {"k": "v"}),
-        # function container
-        ({"id": "fc1", "function": {"name": "my_tool", "arguments": {"x": 1}}}, "my_tool", {"x": 1}),  # noqa: E501
-        # call container (MCP style)
-        ({"id": "mcp_1", "call": {"name": "router", "arguments": {"b": "g"}}}, "router", {"b": "g"}),  # noqa: E501
-        # stringified JSON arguments
-        ({"id": "t3", "name": "fn", "arguments": '{"k":"v"}'}, "fn", {"k": "v"}),
-    ],
-)
-def test_extract_tool_call_formats(event, expected_name, expected_input):
-    """_extract_opencode_tool_call normalizes all container formats."""
-    tc = _extract_opencode_tool_call(event)
-    assert tc["name"] == expected_name
-    assert tc["input"] == expected_input
-
-
-# ---------------------------------------------------------------------------
-# _find_opencode_binary
-# ---------------------------------------------------------------------------
-
-
-def test_find_opencode_binary():
-    """_find_opencode_binary returns path when found, raises FileNotFoundError when missing."""
     with patch("butlers.core.runtimes.opencode.shutil.which", return_value="/usr/bin/opencode"):
         assert _find_opencode_binary() == "/usr/bin/opencode"
     with patch("butlers.core.runtimes.opencode.shutil.which", return_value=None):
@@ -224,58 +193,41 @@ def test_find_opencode_binary():
             _find_opencode_binary()
 
 
-# ---------------------------------------------------------------------------
-# invoke() — key behavioral contracts
-# ---------------------------------------------------------------------------
-
-
-async def test_invoke_success():
-    """invoke() calls subprocess with run subcommand and parses output."""
+async def test_invoke_success_and_config():
+    """invoke() calls subprocess with run subcommand; injects OPENCODE_CONFIG; forwards --model."""
     adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-    output_lines = "\n".join([
-        json.dumps({"type": "text", "text": "Task done."}),
-        json.dumps({"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 20}}),
-    ])
+    output_lines = "\n".join(
+        [
+            json.dumps({"type": "text", "text": "Task done."}),
+            json.dumps(
+                {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 20}}
+            ),
+        ]
+    )
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
     mock_proc.returncode = 0
 
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        result_text, tool_calls, usage = await adapter.invoke(
+        result_text, _, usage = await adapter.invoke(
             prompt="do something",
             system_prompt="you are helpful",
             mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
             env={"ANTHROPIC_API_KEY": "sk-test"},
         )
-
-    assert result_text == "Task done."
-    assert usage == {"input_tokens": 10, "output_tokens": 20}
+    assert result_text == "Task done." and usage == {"input_tokens": 10, "output_tokens": 20}
     cmd = mock_sub.call_args[0]
-    assert cmd[0] == "/usr/bin/opencode"
-    assert cmd[1] == "run"
-    assert "--format" in cmd
-
-
-async def test_invoke_config_injection_and_model_flag():
-    """invoke() injects OPENCODE_CONFIG when MCP servers provided; forwards --model flag."""
-    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-    mock_proc.returncode = 0
-
-    # OPENCODE_CONFIG injection
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="test", system_prompt="", mcp_servers={"s": {"url": "http://localhost:9100/mcp"}},
-            env={},
-        )
+    assert cmd[0] == "/usr/bin/opencode" and cmd[1] == "run" and "--format" in cmd
     env = mock_sub.call_args[1]["env"]
     assert "OPENCODE_CONFIG" in env and env["OPENCODE_CONFIG"].endswith("opencode.jsonc")
 
-    # --model flag
+    # --model flag present/absent
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(
-            prompt="run", system_prompt="", mcp_servers={}, env={},
+            prompt="run",
+            system_prompt="",
+            mcp_servers={},
+            env={},
             model="anthropic/claude-sonnet-4-5",
         )
     cmd = mock_sub.call_args[0]

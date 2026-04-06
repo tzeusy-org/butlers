@@ -40,50 +40,21 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "adapter_name, adapter_class",
-    [
-        ("codex", CodexAdapter),
-        ("gemini", GeminiAdapter),
-        ("opencode", OpenCodeAdapter),
-        ("claude", ClaudeCodeAdapter),
-    ],
-)
-def test_adapter_registered(adapter_name: str, adapter_class: type) -> None:
-    """get_adapter() returns the correct registered adapter class."""
-    assert get_adapter(adapter_name) is adapter_class
-
-
-@pytest.mark.parametrize(
-    "adapter_class", [CodexAdapter, GeminiAdapter, OpenCodeAdapter, ClaudeCodeAdapter]
-)
-def test_adapter_is_runtime_adapter(adapter_class: type) -> None:
-    """All adapters are subclasses of RuntimeAdapter."""
-    assert issubclass(adapter_class, RuntimeAdapter)
-
-
-@pytest.mark.parametrize(
-    "adapter_class", [CodexAdapter, GeminiAdapter, OpenCodeAdapter, ClaudeCodeAdapter]
-)
-def test_adapter_instantiates(adapter_class: type) -> None:
-    """All adapters can be instantiated without arguments."""
-    assert adapter_class() is not None
-
-
-@pytest.mark.parametrize(
-    "adapter_class, import_name",
-    [
-        (CodexAdapter, "CodexAdapter"),
-        (GeminiAdapter, "GeminiAdapter"),
-        (OpenCodeAdapter, "OpenCodeAdapter"),
-        (ClaudeCodeAdapter, "ClaudeCodeAdapter"),
-    ],
-)
-def test_adapter_importable_from_runtimes(adapter_class: type, import_name: str) -> None:
-    """All adapters are importable from butlers.core.runtimes."""
+def test_adapter_registry_and_base_class() -> None:
+    """All adapters register correctly, are RuntimeAdapter subclasses, and instantiate."""
+    expected = {
+        "codex": CodexAdapter,
+        "gemini": GeminiAdapter,
+        "opencode": OpenCodeAdapter,
+        "claude": ClaudeCodeAdapter,
+    }
     import butlers.core.runtimes as runtimes_module
 
-    assert getattr(runtimes_module, import_name) is adapter_class
+    for name, cls in expected.items():
+        assert get_adapter(name) is cls
+        assert issubclass(cls, RuntimeAdapter)
+        assert cls() is not None
+        assert getattr(runtimes_module, cls.__name__) is cls
 
 
 # ---------------------------------------------------------------------------
@@ -92,59 +63,39 @@ def test_adapter_importable_from_runtimes(adapter_class: type, import_name: str)
 
 
 @pytest.mark.parametrize("adapter_class", [GeminiAdapter, ClaudeCodeAdapter])
-def test_build_config_file_empty_servers(adapter_class: type, tmp_path: Path) -> None:
-    """build_config_file() writes a config with an empty mcpServers dict (JSON adapters)."""
+def test_build_config_file_json_adapters(adapter_class: type, tmp_path: Path) -> None:
+    """JSON adapters write mcpServers with empty and multi-server configs."""
     adapter = adapter_class()
-    config_path = adapter.build_config_file(mcp_servers={}, tmp_dir=tmp_path)
-    data = json.loads(config_path.read_text())
-    assert data["mcpServers"] == {}
-
-
-@pytest.mark.parametrize("adapter_class", [GeminiAdapter, ClaudeCodeAdapter])
-def test_build_config_file_multiple_servers(adapter_class: type, tmp_path: Path) -> None:
-    """build_config_file() writes all provided MCP servers (JSON adapters)."""
-    adapter = adapter_class()
-    mcp_servers = {
+    # empty servers
+    empty_path = adapter.build_config_file(mcp_servers={}, tmp_dir=tmp_path)
+    assert json.loads(empty_path.read_text())["mcpServers"] == {}
+    # multi-server
+    servers = {
         "butler-a": {"url": "http://localhost:9100/mcp"},
         "butler-b": {"url": "http://localhost:9200/mcp"},
     }
-    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
-    data = json.loads(config_path.read_text())
+    multi_path = adapter.build_config_file(mcp_servers=servers, tmp_dir=tmp_path)
+    data = json.loads(multi_path.read_text())
     assert len(data["mcpServers"]) == 2
-    assert "butler-a" in data["mcpServers"]
-    assert "butler-b" in data["mcpServers"]
+    assert "butler-a" in data["mcpServers"] and "butler-b" in data["mcpServers"]
 
 
-def test_codex_build_config_file_writes_toml(tmp_path: Path) -> None:
-    """CodexAdapter.build_config_file() writes TOML with MCP server entries."""
-    adapter = CodexAdapter()
-    mcp_servers = {
+def test_codex_and_opencode_build_config_file(tmp_path: Path) -> None:
+    """CodexAdapter writes TOML; OpenCodeAdapter writes JSONC mcp section."""
+    servers = {
         "butler-a": {"url": "http://localhost:9100/mcp"},
         "butler-b": {"url": "http://localhost:9200/mcp"},
     }
-    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
-    assert config_path.name == "config.toml"
-    content = config_path.read_text()
-    assert "[mcp_servers.butler-a]" in content
-    assert "[mcp_servers.butler-b]" in content
-
-
-def test_opencode_build_config_file_writes_mcp_servers(tmp_path: Path) -> None:
-    """OpenCodeAdapter.build_config_file() includes all provided MCP servers in mcp section."""
-    adapter = OpenCodeAdapter()
-    mcp_servers = {
-        "butler-a": {"url": "http://localhost:9100/mcp"},
-        "butler-b": {"url": "http://localhost:9200/mcp"},
-    }
-    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
-    # OpenCode uses JSONC format with 'mcp' section, not 'mcpServers'
-    # Strip comments before parsing
-    content = config_path.read_text()
-    lines = [line for line in content.splitlines() if not line.strip().startswith("//")]
+    # Codex: TOML
+    codex_path = CodexAdapter().build_config_file(mcp_servers=servers, tmp_dir=tmp_path)
+    assert codex_path.name == "config.toml"
+    content = codex_path.read_text()
+    assert "[mcp_servers.butler-a]" in content and "[mcp_servers.butler-b]" in content
+    # OpenCode: JSONC with mcp section
+    oc_path = OpenCodeAdapter().build_config_file(mcp_servers=servers, tmp_dir=tmp_path)
+    lines = [ln for ln in oc_path.read_text().splitlines() if not ln.strip().startswith("//")]
     data = json.loads("\n".join(lines))
-    mcp_section = data.get("mcp", {})
-    assert "butler-a" in mcp_section, f"butler-a not in mcp section: {mcp_section}"
-    assert "butler-b" in mcp_section, f"butler-b not in mcp section: {mcp_section}"
+    assert "butler-a" in data.get("mcp", {}) and "butler-b" in data.get("mcp", {})
 
 
 # ---------------------------------------------------------------------------
@@ -155,18 +106,12 @@ def test_opencode_build_config_file_writes_mcp_servers(tmp_path: Path) -> None:
 @pytest.mark.parametrize("adapter_class", [CodexAdapter, GeminiAdapter, OpenCodeAdapter])
 def test_parse_system_prompt_ignores_claude_md(adapter_class: type, tmp_path: Path) -> None:
     """Non-Claude adapters do not read CLAUDE.md for their system prompt."""
-    adapter = adapter_class()
     (tmp_path / "CLAUDE.md").write_text("This is Claude instructions.")
-    assert adapter.parse_system_prompt_file(config_dir=tmp_path) == ""
+    assert adapter_class().parse_system_prompt_file(config_dir=tmp_path) == ""
 
 
 # ---------------------------------------------------------------------------
 # Helpers: normalize parser output to (result_text, tool_calls)
-#
-# _parse_codex_output returns (result_text, tool_calls, usage)
-# _parse_opencode_output returns (result_text, tool_calls, usage)
-# _parse_gemini_output returns (result_text, tool_calls)
-# The shared contract only asserts on result_text and tool_calls.
 # ---------------------------------------------------------------------------
 
 
@@ -189,182 +134,107 @@ def _claude_parse(stdout: str, stderr: str, returncode: int) -> tuple[str | None
     return result_text, tool_calls
 
 
-_PARSE_PARAMS = [
-    pytest.param(_codex_parse, id="codex"),
-    pytest.param(_gemini_parse, id="gemini"),
-    pytest.param(_opencode_parse, id="opencode"),
-    pytest.param(_claude_parse, id="claude"),
-]
+_ALL_PARSERS = [_codex_parse, _gemini_parse, _opencode_parse, _claude_parse]
 
 # ---------------------------------------------------------------------------
-# Shared parser contract — plain text, empty, exit codes
+# Shared parser contract — plain text, empty, exit codes, JSON message types
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_plain_text_output(parse) -> None:
-    """Plain text stdout is returned as result_text."""
-    result_text, tool_calls = parse("Hello, world!", "", 0)
-    assert result_text == "Hello, world!"
-    assert tool_calls == []
+def test_shared_parser_contract_text_and_error() -> None:
+    """All parsers: plain text, empty output, and non-zero exit code handling."""
+    for parse in _ALL_PARSERS:
+        # plain text
+        text, calls = parse("Hello, world!", "", 0)
+        assert text == "Hello, world!" and calls == []
+        # empty
+        text, calls = parse("", "", 0)
+        assert text is None and calls == []
+        # nonzero exit with stderr
+        text, calls = parse("", "Something went wrong", 1)
+        assert text is not None and "Something went wrong" in text and calls == []
+        # nonzero with stdout
+        text, calls = parse("stdout error", "", 1)
+        assert text is not None and "stdout error" in text
 
 
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_empty_output(parse) -> None:
-    """Empty stdout returns None result_text."""
-    result_text, tool_calls = parse("", "", 0)
-    assert result_text is None
-    assert tool_calls == []
+def test_shared_parser_contract_json_messages() -> None:
+    """All parsers: JSON message, content blocks, tool_use, result, mixed lines."""
+    for parse in _ALL_PARSERS:
+        # JSON message string
+        line = json.dumps({"type": "message", "content": "Hello from adapter"})
+        text, calls = parse(line, "", 0)
+        assert text == "Hello from adapter" and calls == []
 
+        # message with content blocks
+        line = json.dumps(
+            {
+                "type": "message",
+                "content": [{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}],
+            }
+        )
+        text, calls = parse(line, "", 0)
+        assert "Part 1" in text and "Part 2" in text
 
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_nonzero_exit_code(parse) -> None:
-    """Non-zero exit code returns an error message containing stderr."""
-    result_text, tool_calls = parse("", "Something went wrong", 1)
-    assert result_text is not None
-    assert "Something went wrong" in result_text
-    assert tool_calls == []
+        # tool_use extraction
+        line = json.dumps(
+            {"type": "tool_use", "id": "t1", "name": "state_get", "input": {"key": "foo"}}
+        )
+        text, calls = parse(line, "", 0)
+        assert len(calls) == 1
+        assert calls[0]["id"] == "t1" and calls[0]["name"] == "state_get"
+        assert calls[0]["input"] == {"key": "foo"}
 
+        # result type
+        line = json.dumps({"type": "result", "result": "Task completed."})
+        text, calls = parse(line, "", 0)
+        assert text == "Task completed."
 
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_nonzero_exit_code_with_stdout(parse) -> None:
-    """Non-zero exit code with stdout includes that text in the error detail."""
-    result_text, tool_calls = parse("stdout error", "", 1)
-    assert result_text is not None
-    assert "stdout error" in result_text
+        # mixed lines
+        lines = "\n".join(
+            [
+                json.dumps({"type": "tool_use", "id": "t1", "name": "state_get", "input": {}}),
+                json.dumps({"type": "message", "content": "Done!"}),
+            ]
+        )
+        text, calls = parse(lines, "", 0)
+        assert text == "Done!" and len(calls) == 1 and calls[0]["name"] == "state_get"
 
+        # tool_use in content blocks
+        line = json.dumps(
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t2",
+                        "name": "kv_set",
+                        "input": {"key": "x", "value": 1},
+                    }
+                ],
+            }
+        )
+        text, calls = parse(line, "", 0)
+        assert len(calls) == 1 and calls[0]["name"] == "kv_set"
 
-# ---------------------------------------------------------------------------
-# Shared parser contract — JSON message types
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_json_message(parse) -> None:
-    """JSON message objects are parsed for text content."""
-    line = json.dumps({"type": "message", "content": "Hello from adapter"})
-    result_text, tool_calls = parse(line, "", 0)
-    assert result_text == "Hello from adapter"
-    assert tool_calls == []
-
-
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_json_message_with_content_blocks(parse) -> None:
-    """JSON message with list content blocks extracts all text parts."""
-    line = json.dumps(
-        {
-            "type": "message",
-            "content": [
-                {"type": "text", "text": "Part 1"},
-                {"type": "text", "text": "Part 2"},
-            ],
-        }
-    )
-    result_text, tool_calls = parse(line, "", 0)
-    assert "Part 1" in result_text
-    assert "Part 2" in result_text
-
-
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_json_tool_use(parse) -> None:
-    """JSON tool_use objects are extracted as tool calls."""
-    line = json.dumps(
-        {
-            "type": "tool_use",
-            "id": "t1",
-            "name": "state_get",
-            "input": {"key": "foo"},
-        }
-    )
-    result_text, tool_calls = parse(line, "", 0)
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["id"] == "t1"
-    assert tool_calls[0]["name"] == "state_get"
-    assert tool_calls[0]["input"] == {"key": "foo"}
-
-
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_json_result(parse) -> None:
-    """JSON result objects extract the result field as result_text."""
-    line = json.dumps({"type": "result", "result": "Task completed."})
-    result_text, tool_calls = parse(line, "", 0)
-    assert result_text == "Task completed."
-
-
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_mixed_json_lines(parse) -> None:
-    """Multiple JSONL lines with tool calls and a message are all parsed."""
-    lines = "\n".join(
-        [
-            json.dumps({"type": "tool_use", "id": "t1", "name": "state_get", "input": {}}),
-            json.dumps({"type": "message", "content": "Done!"}),
-        ]
-    )
-    result_text, tool_calls = parse(lines, "", 0)
-    assert result_text == "Done!"
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "state_get"
-
-
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_tool_call_in_content_block(parse) -> None:
-    """Tool calls embedded in message content blocks are extracted."""
-    line = json.dumps(
-        {
-            "type": "message",
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": "t2",
-                    "name": "kv_set",
-                    "input": {"key": "x", "value": 1},
-                },
-            ],
-        }
-    )
-    result_text, tool_calls = parse(line, "", 0)
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "kv_set"
-
-
-@pytest.mark.parametrize("parse", _PARSE_PARAMS)
-def test_parse_unknown_json_with_text_field(parse) -> None:
-    """Unknown JSON types with a 'text' field still yield result_text."""
-    line = json.dumps({"type": "unknown", "text": "some text"})
-    result_text, tool_calls = parse(line, "", 0)
-    assert result_text == "some text"
+        # unknown type with text field
+        line = json.dumps({"type": "unknown", "text": "some text"})
+        text, calls = parse(line, "", 0)
+        assert text == "some text"
 
 
 # ---------------------------------------------------------------------------
-# _extract_tool_call shared contract — both adapters share this helper
+# _extract_tool_call shared contract — codex and gemini share this helper
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "extract_tool_call",
-    [
-        pytest.param(codex_extract_tool_call, id="codex"),
-        pytest.param(gemini_extract_tool_call, id="gemini"),
-    ],
-)
-def test_extract_tool_call_standard(extract_tool_call) -> None:
-    """Standard tool_use format is extracted correctly by both adapters."""
-    tc = extract_tool_call({"id": "t1", "name": "my_tool", "input": {"key": "val"}})
-    assert tc == {"id": "t1", "name": "my_tool", "input": {"key": "val"}}
-
-
-@pytest.mark.parametrize(
-    "extract_tool_call",
-    [
-        pytest.param(codex_extract_tool_call, id="codex"),
-        pytest.param(gemini_extract_tool_call, id="gemini"),
-    ],
-)
-def test_extract_tool_call_missing_fields(extract_tool_call) -> None:
-    """Missing fields default to empty string/dict for both adapters."""
-    tc = extract_tool_call({})
-    assert tc["id"] == ""
-    assert tc["name"] == ""
+def test_extract_tool_call_shared_contract() -> None:
+    """Both codex and gemini _extract_tool_call handle standard and missing fields."""
+    for extract in [codex_extract_tool_call, gemini_extract_tool_call]:
+        tc = extract({"id": "t1", "name": "my_tool", "input": {"key": "val"}})
+        assert tc == {"id": "t1", "name": "my_tool", "input": {"key": "val"}}
+        tc_empty = extract({})
+        assert tc_empty["id"] == "" and tc_empty["name"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -377,62 +247,50 @@ _GEMINI_EXEC = "butlers.core.runtimes.gemini.asyncio.create_subprocess_exec"
 _OPENCODE_EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
 
 _INVOKE_PARAMS = [
+    pytest.param(ClaudeCodeAdapter, "/usr/bin/claude", "claude_binary", _CLAUDE_EXEC, id="claude"),
+    pytest.param(CodexAdapter, "/usr/bin/codex", "codex_binary", _CODEX_EXEC, id="codex"),
+    pytest.param(GeminiAdapter, "/usr/bin/gemini", "gemini_binary", _GEMINI_EXEC, id="gemini"),
     pytest.param(
-        ClaudeCodeAdapter,
-        "/usr/bin/claude",
-        "claude_binary",
-        _CLAUDE_EXEC,
-        id="claude",
-    ),
-    pytest.param(
-        CodexAdapter,
-        "/usr/bin/codex",
-        "codex_binary",
-        _CODEX_EXEC,
-        id="codex",
-    ),
-    pytest.param(
-        GeminiAdapter,
-        "/usr/bin/gemini",
-        "gemini_binary",
-        _GEMINI_EXEC,
-        id="gemini",
-    ),
-    pytest.param(
-        OpenCodeAdapter,
-        "/usr/bin/opencode",
-        "opencode_binary",
-        _OPENCODE_EXEC,
-        id="opencode",
+        OpenCodeAdapter, "/usr/bin/opencode", "opencode_binary", _OPENCODE_EXEC, id="opencode"
     ),
 ]
 
 
 @pytest.mark.parametrize("adapter_class, binary, binary_kwarg, exec_patch", _INVOKE_PARAMS)
-async def test_invoke_passes_cwd(
+async def test_invoke_cwd_and_tool_calls(
     adapter_class: type,
     binary: str,
     binary_kwarg: str,
     exec_patch: str,
 ) -> None:
-    """invoke() passes working directory to the subprocess."""
+    """invoke() passes cwd to subprocess and captures tool_use tool calls."""
     adapter = adapter_class(**{binary_kwarg: binary})
-
+    output_lines = "\n".join(
+        [
+            json.dumps(
+                {"type": "tool_use", "id": "t1", "name": "state_get", "input": {"key": "foo"}}
+            ),
+            json.dumps({"type": "result", "result": "Done"}),
+        ]
+    )
     mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
     mock_proc.returncode = 0
 
     with patch(exec_patch, return_value=mock_proc) as mock_sub:
-        await adapter.invoke(
-            prompt="test",
-            system_prompt="",
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="use tools",
+            system_prompt="helpful",
             mcp_servers={},
             env={},
             cwd=Path("/tmp/workdir"),
         )
 
-    call_kwargs = mock_sub.call_args[1]
-    assert call_kwargs["cwd"] == "/tmp/workdir"
+    assert mock_sub.call_args[1]["cwd"] == "/tmp/workdir"
+    assert result_text == "Done"
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "state_get" and tool_calls[0]["input"] == {"key": "foo"}
+    assert usage is None
 
 
 @pytest.mark.parametrize("adapter_class, binary, binary_kwarg, exec_patch", _INVOKE_PARAMS)
@@ -444,7 +302,6 @@ async def test_invoke_timeout(
 ) -> None:
     """invoke() raises TimeoutError when the subprocess times out."""
     adapter = adapter_class(**{binary_kwarg: binary})
-
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
     mock_proc.kill = AsyncMock()
@@ -452,51 +309,7 @@ async def test_invoke_timeout(
 
     with patch(exec_patch, return_value=mock_proc):
         with pytest.raises(TimeoutError, match="timed out"):
-            await adapter.invoke(
-                prompt="slow task",
-                system_prompt="",
-                mcp_servers={},
-                env={},
-                timeout=1,
-            )
-
-
-@pytest.mark.parametrize("adapter_class, binary, binary_kwarg, exec_patch", _INVOKE_PARAMS)
-async def test_invoke_with_tool_calls(
-    adapter_class: type,
-    binary: str,
-    binary_kwarg: str,
-    exec_patch: str,
-) -> None:
-    """invoke() captures tool_use tool calls from adapter output."""
-    adapter = adapter_class(**{binary_kwarg: binary})
-
-    output_lines = "\n".join(
-        [
-            json.dumps(
-                {"type": "tool_use", "id": "t1", "name": "state_get", "input": {"key": "foo"}}
-            ),
-            json.dumps({"type": "result", "result": "Done"}),
-        ]
-    )
-
-    mock_proc = AsyncMock()
-    mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
-    mock_proc.returncode = 0
-
-    with patch(exec_patch, return_value=mock_proc):
-        result_text, tool_calls, usage = await adapter.invoke(
-            prompt="use tools",
-            system_prompt="helpful",
-            mcp_servers={},
-            env={},
-        )
-
-    assert result_text == "Done"
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "state_get"
-    assert tool_calls[0]["input"] == {"key": "foo"}
-    assert usage is None
+            await adapter.invoke(prompt="slow", system_prompt="", mcp_servers={}, env={}, timeout=1)
 
 
 # ---------------------------------------------------------------------------
@@ -505,11 +318,6 @@ async def test_invoke_with_tool_calls(
 
 
 def _usage_satisfies_contract(usage: dict | None) -> bool:
-    """Return True when the usage value satisfies the adapter token reporting contract.
-
-    Contract: usage is either None (adapter cannot report) or a dict
-    with ``input_tokens: int`` and ``output_tokens: int``.
-    """
     if usage is None:
         return True
     if not isinstance(usage, dict):
@@ -519,135 +327,79 @@ def _usage_satisfies_contract(usage: dict | None) -> bool:
     )
 
 
-def test_codex_usage_contract_int_tokens():
-    """Codex parser returns int-typed usage fields when turn.completed provides ints."""
+def test_codex_usage_contract() -> None:
+    """Codex parser usage contract: int tokens, None without event, partial/non-int."""
+    # int tokens
     line = json.dumps(
         {"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 50}}
     )
     _, _, usage = _parse_codex_output(line, "", 0)
-    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
+    assert _usage_satisfies_contract(usage)
     assert usage == {"input_tokens": 100, "output_tokens": 50}
-
-
-def test_codex_usage_contract_none_when_no_token_event():
-    """Codex parser returns usage=None when no turn.completed event is present."""
-    line = json.dumps({"type": "message", "content": "hello"})
-    _, _, usage = _parse_codex_output(line, "", 0)
+    # none without event
+    no_event = json.dumps({"type": "message", "content": "hello"})
+    _, _, usage = _parse_codex_output(no_event, "", 0)
     assert usage is None
-
-
-def test_codex_usage_contract_partial_tokens_defaults_to_zero():
-    """Codex parser normalises partial token data: missing field defaults to 0."""
-    line = json.dumps(
-        {"type": "turn.completed", "usage": {"input_tokens": 42}}  # no output_tokens
-    )
+    # partial defaults to 0
+    line = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 42}})
     _, _, usage = _parse_codex_output(line, "", 0)
-    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
-    assert usage is not None
-    assert isinstance(usage["input_tokens"], int)
-    assert isinstance(usage["output_tokens"], int)
-
-
-def test_codex_usage_contract_non_int_tokens_returns_none():
-    """Codex parser returns usage=None when token fields are non-int strings."""
+    assert _usage_satisfies_contract(usage) and isinstance(usage["output_tokens"], int)
+    # non-int → None
     line = json.dumps(
         {"type": "turn.completed", "usage": {"input_tokens": "nan", "output_tokens": "nan"}}
     )
-    _, _, usage = _parse_codex_output(line, "", 0)
-    assert usage is None, f"Expected None usage for non-int tokens, got: {usage}"
+    assert _parse_codex_output(line, "", 0)[2] is None
 
 
-def test_opencode_usage_contract_int_tokens():
-    """OpenCode parser returns int-typed usage fields from step_finish events."""
-    lines = "\n".join(
-        [
-            json.dumps(
-                {
-                    "type": "step_finish",
-                    "sessionID": "s1",
-                    "part": {"tokens": {"input": 200, "output": 80}},
-                }
-            ),
-        ]
+def test_opencode_usage_contract() -> None:
+    """OpenCode parser usage contract: int tokens, None without event, partial/non-int."""
+    # int tokens from step_finish
+    lines = json.dumps(
+        {"type": "step_finish", "sessionID": "s1", "part": {"tokens": {"input": 200, "output": 80}}}
     )
     _, _, usage = _parse_opencode_output(lines, "", 0)
-    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
+    assert _usage_satisfies_contract(usage)
     assert usage == {
         "input_tokens": 200,
         "output_tokens": 80,
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
     }
+    # none without event
+    assert (
+        _parse_opencode_output(json.dumps({"type": "message", "content": "hello"}), "", 0)[2]
+        is None
+    )
+    # non-int → None
+    assert opencode_extract_usage({"input_tokens": "nan", "output_tokens": "nan"}) is None
+    # partial defaults to 0
+    result = opencode_extract_usage({"input_tokens": 42})
+    assert (
+        _usage_satisfies_contract(result)
+        and result["input_tokens"] == 42
+        and result["output_tokens"] == 0
+    )
 
 
-def test_opencode_usage_contract_none_when_no_usage_event():
-    """OpenCode parser returns usage=None when no usage event is present."""
-    line = json.dumps({"type": "message", "content": "hello"})
-    _, _, usage = _parse_opencode_output(line, "", 0)
-    assert usage is None
-
-
-def test_opencode_usage_contract_non_int_tokens_returns_none():
-    """OpenCode _extract_usage returns None when both token fields are non-int."""
-    result = opencode_extract_usage({"input_tokens": "nan", "output_tokens": "nan"})
-    assert result is None, f"Expected None for non-int tokens, got: {result}"
-
-
-def test_opencode_usage_contract_partial_tokens_defaults_to_zero():
-    """OpenCode _extract_usage normalises partial token data: missing field defaults to 0."""
-    result = opencode_extract_usage({"input_tokens": 42})  # no output_tokens
-    assert _usage_satisfies_contract(result), f"Usage violates contract: {result}"
-    assert result is not None
-    assert isinstance(result["input_tokens"], int)
-    assert result["input_tokens"] == 42
-    assert isinstance(result["output_tokens"], int)
-    assert result["output_tokens"] == 0
-
-
-async def test_claude_usage_contract_int_tokens():
-    """ClaudeCodeAdapter.invoke() returns int-typed usage fields from stream-json result event."""
-    import json as _json
-    from unittest.mock import AsyncMock, patch
-
-    output = _json.dumps(
-        {
-            "type": "result",
-            "result": "Done",
-            "usage": {"input_tokens": 150, "output_tokens": 60},
-        }
+async def test_claude_usage_contract() -> None:
+    """ClaudeCodeAdapter.invoke() returns int-typed usage from stream-json result event."""
+    output = json.dumps(
+        {"type": "result", "result": "Done", "usage": {"input_tokens": 150, "output_tokens": 60}}
     )
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(return_value=(output.encode(), b""))
     mock_proc.returncode = 0
     mock_proc.pid = 1
-
-    _CLAUDE_EXEC = "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec"
     with patch(_CLAUDE_EXEC, return_value=mock_proc):
-        adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
-        result_text, tool_calls, usage = await adapter.invoke(
-            prompt="hello",
-            system_prompt="",
-            mcp_servers={},
-            env={},
+        _, _, usage = await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+            prompt="hello", system_prompt="", mcp_servers={}, env={}
         )
-
-    assert _usage_satisfies_contract(usage), f"Usage violates contract: {usage}"
-    assert usage is not None
-    assert isinstance(usage["input_tokens"], int)
-    assert isinstance(usage["output_tokens"], int)
+    assert _usage_satisfies_contract(usage) and isinstance(usage["input_tokens"], int)
 
 
-def test_gemini_usage_is_none():
-    """GeminiAdapter.invoke() returns usage=None (Gemini CLI does not expose token counts).
-
-    _parse_gemini_output returns a 2-tuple (result_text, tool_calls) without a
-    usage field because the Gemini CLI does not emit token counts. GeminiAdapter.invoke()
-    always passes None as the third tuple element to satisfy the adapter contract.
-    """
+def test_gemini_usage_is_none() -> None:
+    """_parse_gemini_output returns 2-tuple; GeminiAdapter.invoke() reports usage=None."""
     result = _parse_gemini_output("hello world", "", 0)
-    # _parse_gemini_output returns (result_text, tool_calls) — a 2-tuple.
-    # Usage=None is returned by GeminiAdapter.invoke() itself, not by the parser.
-    assert len(result) == 2, f"_parse_gemini_output should return a 2-tuple, got: {result}"
+    assert len(result) == 2
     result_text, tool_calls = result
-    assert result_text == "hello world"
-    assert tool_calls == []
+    assert result_text == "hello world" and tool_calls == []

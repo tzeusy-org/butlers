@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from butlers.core.runtimes import RuntimeAdapter, get_adapter, register_adapter
+from butlers.core.runtimes.base import _ADAPTER_REGISTRY
 
 pytestmark = pytest.mark.unit
 
@@ -32,70 +33,42 @@ class FullAdapter(RuntimeAdapter):
         return "system prompt"
 
 
-# ---------------------------------------------------------------------------
-# ABC enforcement
-# ---------------------------------------------------------------------------
-
-
-def test_cannot_instantiate_runtime_adapter_abc():
-    """RuntimeAdapter is abstract and cannot be instantiated directly."""
+def test_abc_enforcement():
+    """RuntimeAdapter is abstract; subclasses missing any abstract method cannot instantiate."""
     with pytest.raises(TypeError):
         RuntimeAdapter()  # type: ignore[abstract]
 
-
-@pytest.mark.parametrize(
-    "missing_method",
-    ["invoke", "build_config_file", "parse_system_prompt_file", "binary_name"],
-)
-def test_missing_abstract_method_raises(missing_method: str):
-    """A subclass missing any abstract method cannot be instantiated."""
-    attrs: dict[str, Any] = {
-        "binary_name": property(lambda self: "test"),
-        "invoke": lambda self, *a, **kw: ("ok", [], None),
-        "build_config_file": lambda self, mcp_servers, tmp_dir: tmp_dir / "config.json",
-        "parse_system_prompt_file": lambda self, config_dir: "",
-    }
-    del attrs[missing_method]
-    cls = type("PartialAdapter", (RuntimeAdapter,), attrs)
-    with pytest.raises(TypeError):
-        cls()  # type: ignore[abstract]
-
-
-# ---------------------------------------------------------------------------
-# Default implementations
-# ---------------------------------------------------------------------------
+    for missing_method in [
+        "invoke",
+        "build_config_file",
+        "parse_system_prompt_file",
+        "binary_name",
+    ]:
+        attrs: dict[str, Any] = {
+            "binary_name": property(lambda self: "test"),
+            "invoke": lambda self, *a, **kw: ("ok", [], None),
+            "build_config_file": lambda self, mcp_servers, tmp_dir: tmp_dir / "config.json",
+            "parse_system_prompt_file": lambda self, config_dir: "",
+        }
+        del attrs[missing_method]
+        cls = type("PartialAdapter", (RuntimeAdapter,), attrs)
+        with pytest.raises(TypeError):
+            cls()  # type: ignore[abstract]
 
 
-def test_runtime_adapter_default_create_worker_returns_self():
-    """A fully concrete subclass instantiates; create_worker() defaults to returning self."""
+async def test_defaults_and_registry():
+    """create_worker() defaults to self; reset() is a no-op; registry raises and registers."""
     adapter = FullAdapter()
-    assert isinstance(adapter, RuntimeAdapter)
-    assert adapter.create_worker() is adapter
+    assert isinstance(adapter, RuntimeAdapter) and adapter.create_worker() is adapter
+    await adapter.reset()  # should not raise
 
-
-async def test_runtime_adapter_default_reset_is_noop():
-    """RuntimeAdapter.reset() default implementation is a no-op."""
-    await FullAdapter().reset()
-
-
-# ---------------------------------------------------------------------------
-# Registry operations
-# ---------------------------------------------------------------------------
-
-
-def test_get_adapter_unknown_raises_with_available_list():
-    """get_adapter() raises ValueError listing available adapters."""
     with pytest.raises(ValueError, match="claude") as exc_info:
         get_adapter("nope")
     msg = str(exc_info.value)
-    assert "codex" in msg
-    assert "gemini" in msg
-    assert "opencode" in msg
+    assert "codex" in msg and "gemini" in msg and "opencode" in msg
 
-
-def test_register_custom_adapter():
-    """register_adapter() allows adding new runtime types at runtime."""
     register_adapter("custom-test", FullAdapter)
-    assert get_adapter("custom-test") is FullAdapter
-
-
+    try:
+        assert get_adapter("custom-test") is FullAdapter
+    finally:
+        _ADAPTER_REGISTRY.pop("custom-test", None)

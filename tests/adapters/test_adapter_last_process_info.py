@@ -22,9 +22,7 @@ _SUBPROCESS_ADAPTERS = [
     pytest.param(
         ClaudeCodeAdapter, "claude_binary", "/usr/bin/claude", _CLAUDE_EXEC, "claude", id="claude"
     ),
-    pytest.param(
-        CodexAdapter, "codex_binary", "/usr/bin/codex", _CODEX_EXEC, "codex", id="codex"
-    ),
+    pytest.param(CodexAdapter, "codex_binary", "/usr/bin/codex", _CODEX_EXEC, "codex", id="codex"),
     pytest.param(
         GeminiAdapter, "gemini_binary", "/usr/bin/gemini", _GEMINI_EXEC, "gemini", id="gemini"
     ),
@@ -51,12 +49,13 @@ def test_base_adapter_last_process_info_is_none():
     assert _MinimalAdapter().last_process_info is None
 
 
-@pytest.mark.parametrize("adapter_class, binary_kwarg, binary, exec_patch, runtime_type",
-                         _SUBPROCESS_ADAPTERS)
-async def test_last_process_info_populated_after_successful_invoke(
+@pytest.mark.parametrize(
+    "adapter_class, binary_kwarg, binary, exec_patch, runtime_type", _SUBPROCESS_ADAPTERS
+)
+async def test_last_process_info_populated(
     adapter_class, binary_kwarg, binary, exec_patch, runtime_type
 ):
-    """last_process_info is populated with pid, exit_code, command, stderr, runtime_type."""
+    """last_process_info is populated after success and after timeout."""
     adapter = adapter_class(**{binary_kwarg: binary})
     mock_proc = AsyncMock()
     mock_proc.pid = 12345
@@ -68,31 +67,21 @@ async def test_last_process_info_populated_after_successful_invoke(
 
     info = adapter.last_process_info
     assert info is not None
-    assert info["pid"] == 12345
-    assert info["exit_code"] == 0
-    assert "warn" in info["stderr"]
-    assert info["runtime_type"] == runtime_type
+    assert info["pid"] == 12345 and info["exit_code"] == 0
+    assert "warn" in info["stderr"] and info["runtime_type"] == runtime_type
 
+    # Timeout populates last_process_info with exit_code=-1
+    mock_proc2 = AsyncMock()
+    mock_proc2.pid = 5678
+    mock_proc2.communicate = AsyncMock(side_effect=TimeoutError())
+    mock_proc2.kill = AsyncMock()
+    mock_proc2.wait = AsyncMock()
 
-@pytest.mark.parametrize("adapter_class, binary_kwarg, binary, exec_patch, runtime_type",
-                         _SUBPROCESS_ADAPTERS)
-async def test_last_process_info_populated_after_timeout(
-    adapter_class, binary_kwarg, binary, exec_patch, runtime_type
-):
-    """last_process_info is populated even when invoke() raises TimeoutError."""
-    adapter = adapter_class(**{binary_kwarg: binary})
-    mock_proc = AsyncMock()
-    mock_proc.pid = 5678
-    mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
-    mock_proc.kill = AsyncMock()
-    mock_proc.wait = AsyncMock()
-
-    with patch(exec_patch, return_value=mock_proc):
+    with patch(exec_patch, return_value=mock_proc2):
         with pytest.raises(TimeoutError):
             await adapter.invoke(prompt="slow", system_prompt="", mcp_servers={}, env={}, timeout=1)
 
-    info = adapter.last_process_info
-    assert info is not None
-    assert info["pid"] == 5678
-    assert info["exit_code"] == -1
-    assert "timeout" in info["stderr"].lower()
+    info2 = adapter.last_process_info
+    assert info2 is not None
+    assert info2["pid"] == 5678 and info2["exit_code"] == -1
+    assert "timeout" in info2["stderr"].lower()
