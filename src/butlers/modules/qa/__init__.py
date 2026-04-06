@@ -319,6 +319,10 @@ class QaModule(Module):
         # Signature: async (channel, message, priority) -> dict
         self._notify_fn: Callable[..., Coroutine[Any, Any, Any]] | None = None
 
+        # Switchboard client — injected via wire_runtime() from the daemon.
+        # Enables inter-butler communication via Switchboard route() calls.
+        self._switchboard_client: Any | None = None
+
         # Rate-limit missing-token notifications to once per patrol cycle.
         # Stores the patrol_id of the last patrol where we sent the alert.
         self._last_missing_token_notified_patrol_id: uuid.UUID | None = None
@@ -1370,6 +1374,7 @@ class QaModule(Module):
         spawner: Any,
         repo_root: Path | str,
         notify_fn: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+        switchboard_client: Any = None,
     ) -> None:
         """Wire the module to the spawner and butler identity.
 
@@ -1390,8 +1395,13 @@ class QaModule(Module):
             Signature matches the daemon's ``notify()`` MCP tool:
             ``notify_fn(channel, message, priority) -> dict``.
             When ``None``, missing-token alerts are only logged.
+        switchboard_client:
+            Optional Switchboard MCP client for inter-butler communication.
+            When provided, enables future QA-to-butler routing via Switchboard.
+            When ``None``, the module operates without Switchboard connectivity.
         """
         self._butler_name = butler_name
         self._spawner = spawner
         self._repo_root = Path(repo_root)
         self._notify_fn = notify_fn
+        self._switchboard_client = switchboard_client
