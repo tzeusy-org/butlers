@@ -1617,8 +1617,8 @@ async def test_interaction_sync_no_checkpoint_uses_30_day_default(provisioned_po
         start = datetime.fromisoformat(result["scan_window_start"])
         end = datetime.fromisoformat(result["scan_window_end"])
         # Start should be roughly 30 days before end (±1 minute tolerance)
-        diff_days = (end - start).total_seconds() / 86400
-        assert 29.9 < diff_days < 30.1
+        window = end - start
+        assert abs(window - timedelta(days=30)) <= timedelta(minutes=1)
 
 
 async def test_interaction_sync_checkpoint_used_as_start(provisioned_postgres_pool):
@@ -1659,8 +1659,8 @@ async def test_interaction_sync_checkpoint_capped_at_30_days(provisioned_postgre
         start = datetime.fromisoformat(result["scan_window_start"])
         end = datetime.fromisoformat(result["scan_window_end"])
         diff_days = (end - start).total_seconds() / 86400
-        # Capped: should be ~30 days, not 60
-        assert diff_days < 30.1
+        # Capped: should be ~30 days, not 60 or a much smaller window
+        assert 29.9 < diff_days < 30.1
 
 
 async def test_interaction_sync_writes_checkpoint_on_success(provisioned_postgres_pool):

@@ -708,6 +708,15 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     scan_window_end = now_utc
 
+    # Clamp checkpoints in the future so the scan window remains ordered.
+    if scan_window_start > now_utc:
+        logger.warning(
+            "interaction_sync: checkpoint %s is in the future relative to now %s — clamping to now",
+            scan_window_start.isoformat(),
+            now_utc.isoformat(),
+        )
+        scan_window_start = now_utc
+
     logger.info(
         "interaction_sync: window [%s, %s]",
         scan_window_start.isoformat(),
