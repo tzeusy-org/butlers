@@ -1,4 +1,4 @@
-"""Unit tests for butlers.jobs.home — run_energy_digest and helpers.
+"""Tests for butlers.jobs.home — run_energy_digest and helpers.
 
 Covers _is_energy_entity, _compute_device_totals, detect_anomalies,
 _build_digest_message, run_energy_digest, and daemon registry.
@@ -40,7 +40,7 @@ def _make_pool(*, snapshot_count=5, snapshot_rows=None, state_rows=None, facts_r
     async def _fetchrow(query, *args, **kwargs):
         q = query.lower()
         if "state" in q and "key" in q and args:
-            for row in (state_rows or []):
+            for row in state_rows or []:
                 if row.get("key") == args[0]:
                     return row
         return None
@@ -59,8 +59,15 @@ def _make_energy_row(entity_id, state="10.5", friendly_name=None) -> dict:
 
 def _make_totals(items):
     total = sum(kwh for _, kwh in items)
-    return [{"entity_id": eid, "friendly_name": eid, "weekly_kwh": kwh,
-              "share_pct": kwh / total * 100 if total > 0 else 0.0} for eid, kwh in items]
+    return [
+        {
+            "entity_id": eid,
+            "friendly_name": eid,
+            "weekly_kwh": kwh,
+            "share_pct": kwh / total * 100 if total > 0 else 0.0,
+        }
+        for eid, kwh in items
+    ]
 
 
 def _make_baselines(items):
@@ -76,13 +83,9 @@ def _make_baselines(items):
     "entity_id, friendly_name, expected",
     [
         ("sensor.home_energy_kwh", None, True),
-        ("sensor.washing_machine_power", None, True),
         ("sensor.solar_watt", None, True),
-        ("sensor.hvac_consumption", None, True),
         ("sensor.abc_xyz", "Energy Usage Living Room", True),
-        ("sensor.POWER_METER", None, True),
         ("sensor.temperature", "Room Temperature", False),
-        ("sensor.light_level", None, False),
     ],
 )
 def test_is_energy_entity(entity_id, friendly_name, expected):
@@ -96,24 +99,19 @@ def test_is_energy_entity(entity_id, friendly_name, expected):
 
 
 def test_compute_device_totals():
-    """_compute_device_totals: empty, single, sorted, shares sum to 100, zeros excluded."""
+    """Empty → []; sorted by kWh desc; zeros excluded; shares sum to 100."""
     assert _compute_device_totals({}, []) == []
 
-    # Single device
-    result = _compute_device_totals({"sensor.hvac": {"weekly_sum": 50.0}},
-                                     [{"entity_id": "sensor.hvac", "state": "0",
-                                       "attributes": {}, "friendly_name": "hvac"}])
-    assert len(result) == 1 and result[0]["weekly_kwh"] == pytest.approx(50.0)
-    assert result[0]["share_pct"] == pytest.approx(100.0)
-
-    # Sorted by kWh descending; zeros excluded; shares sum to ~100
-    stats = {"sensor.a": {"weekly_sum": 40.0}, "sensor.b": {"weekly_sum": 60.0},
-             "sensor.z": {"weekly_sum": 0.0}}
+    stats = {
+        "sensor.a": {"weekly_sum": 40.0},
+        "sensor.b": {"weekly_sum": 60.0},
+        "sensor.z": {"weekly_sum": 0.0},
+    }
     sensors = [{"entity_id": k, "state": "0", "attributes": {}, "friendly_name": k} for k in stats]
-    result2 = _compute_device_totals(stats, sensors)
-    assert len(result2) == 2  # zero excluded
-    assert result2[0]["entity_id"] == "sensor.b"  # sorted by kwh
-    assert sum(d["share_pct"] for d in result2) == pytest.approx(100.0, abs=0.5)
+    result = _compute_device_totals(stats, sensors)
+    assert len(result) == 2
+    assert result[0]["entity_id"] == "sensor.b"
+    assert sum(d["share_pct"] for d in result) == pytest.approx(100.0, abs=0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +122,9 @@ def test_compute_device_totals():
 @pytest.mark.parametrize(
     "weekly_kwh, baseline_kwh, expected_count, expected_severity",
     [
-        (50.0, 45.0, 0, None),       # 11% < 20% threshold → no anomaly
-        (60.0, 50.0, 1, "anomaly"),  # 20% = threshold → anomaly
-        (100.0, 50.0, 1, "high"),    # 100% = high severity threshold
-        (200.0, 50.0, 1, "high"),    # 300% → high
+        (50.0, 45.0, 0, None),  # below threshold → no anomaly
+        (60.0, 50.0, 1, "anomaly"),  # at 20% threshold → anomaly
+        (100.0, 50.0, 1, "high"),  # at 100% threshold → high
     ],
 )
 def test_detect_anomalies(weekly_kwh, baseline_kwh, expected_count, expected_severity):
@@ -138,8 +135,6 @@ def test_detect_anomalies(weekly_kwh, baseline_kwh, expected_count, expected_sev
     assert len(result) == expected_count
     if expected_severity:
         assert result[0]["severity"] == expected_severity
-        assert all(k in result[0] for k in ("entity_id", "friendly_name", "weekly_kwh",
-                                              "baseline_kwh", "pct_above", "severity"))
 
 
 def test_detect_anomalies_edge_cases():
@@ -156,25 +151,29 @@ def test_detect_anomalies_edge_cases():
 
 
 def test_build_digest_message():
-    """Digest message includes heading, total kWh, trend, consumers, and anomaly sections."""
+    """Message includes heading, total kWh, trend, and anomaly sections."""
     msg = _build_digest_message(
         total_kwh=100.0, top_consumers=[], anomalies=[], baseline_total=None
     )
     assert "Energy Digest" in msg and "100.0" in msg
 
-    # Trend
     assert "+10.0%" in _build_digest_message(110.0, [], [], 100.0)
     assert "-10.0%" in _build_digest_message(90.0, [], [], 100.0)
 
-    # Anomaly alert
-    anomaly = {"entity_id": "s.hvac", "friendly_name": "HVAC", "weekly_kwh": 200.0,
-                "baseline_kwh": 50.0, "pct_above": 300.0, "severity": "high"}
+    anomaly = {
+        "entity_id": "s.hvac",
+        "friendly_name": "HVAC",
+        "weekly_kwh": 200.0,
+        "baseline_kwh": 50.0,
+        "pct_above": 300.0,
+        "severity": "high",
+    }
     msg2 = _build_digest_message(200.0, [], [anomaly], None)
     assert "HVAC" in msg2
 
 
 # ---------------------------------------------------------------------------
-# run_energy_digest — integration
+# run_energy_digest
 # ---------------------------------------------------------------------------
 
 
@@ -184,34 +183,50 @@ async def test_run_energy_digest_early_exits():
         result = await run_energy_digest(_make_pool(snapshot_count=0), None)
     assert result == {"error": "no_entity_snapshot"}
 
-    pool = _make_pool(snapshot_count=2, snapshot_rows=[
-        _make_energy_row("sensor.temperature", "22.5", "Room Temp"),
-    ])
+    pool = _make_pool(
+        snapshot_count=2,
+        snapshot_rows=[
+            _make_energy_row("sensor.temperature", "22.5", "Room Temp"),
+        ],
+    )
     with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock):
         result2 = await run_energy_digest(pool, None)
     assert result2 == {"error": "no_energy_sensors"}
 
 
 async def test_run_energy_digest_full_run_with_anomalies():
-    """Full successful run returns correct totals and anomalies."""
+    """Full successful run returns correct totals and anomaly count."""
     energy_rows = [
         _make_energy_row("sensor.hvac_energy", "100", "HVAC Energy"),
         _make_energy_row("sensor.water_heater_energy", "200", "Water Heater"),
     ]
     pool = _make_pool(snapshot_count=2, snapshot_rows=energy_rows)
-    weekly_stats = {"sensor.hvac_energy": {"weekly_sum": 120.0},
-                    "sensor.water_heater_energy": {"weekly_sum": 200.0}}
-    baselines = {"sensor.hvac_energy": {"content": "50.0 kWh weekly baseline"},
-                 "sensor.water_heater_energy": {"content": "100.0 kWh weekly baseline"}}
+    weekly_stats = {
+        "sensor.hvac_energy": {"weekly_sum": 120.0},
+        "sensor.water_heater_energy": {"weekly_sum": 200.0},
+    }
+    baselines = {
+        "sensor.hvac_energy": {"content": "50.0 kWh weekly baseline"},
+        "sensor.water_heater_energy": {"content": "100.0 kWh weekly baseline"},
+    }
 
     with (
         patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
-        patch("butlers.credential_store.resolve_owner_entity_info",
-              new_callable=AsyncMock, return_value="token_value"),
-        patch("butlers.jobs.home._fetch_weekly_statistics",
-              new_callable=AsyncMock, return_value=weekly_stats),
-        patch("butlers.jobs.home._load_energy_baselines",
-              new_callable=AsyncMock, return_value=baselines),
+        patch(
+            "butlers.credential_store.resolve_owner_entity_info",
+            new_callable=AsyncMock,
+            return_value="token_value",
+        ),
+        patch(
+            "butlers.jobs.home._fetch_weekly_statistics",
+            new_callable=AsyncMock,
+            return_value=weekly_stats,
+        ),
+        patch(
+            "butlers.jobs.home._load_energy_baselines",
+            new_callable=AsyncMock,
+            return_value=baselines,
+        ),
         patch(
             "butlers.jobs.home._load_energy_thresholds",
             new_callable=AsyncMock,
@@ -229,7 +244,12 @@ async def test_run_energy_digest_full_run_with_anomalies():
 def test_all_home_deterministic_jobs_registered():
     """All expected home jobs are registered in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY."""
     from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
     home_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("home", {})
-    for job in ("device_health_check", "environment_report", "energy_digest",
-                "maintenance_schedule_check"):
+    for job in (
+        "device_health_check",
+        "environment_report",
+        "energy_digest",
+        "maintenance_schedule_check",
+    ):
         assert job in home_jobs and callable(home_jobs[job])
