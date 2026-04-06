@@ -49,6 +49,16 @@ pgdata/
 # Temp files from CC spawner
 /tmp/butler_*/
 
+# Gastown
+.repo.git/
+crew/
+mayor/
+metadata.json
+polecats/
+refinery/
+settings/
+witness/
+
 # bv (beads viewer) local config and caches
 .beads/locks
 .beads/audit.log
