@@ -98,7 +98,9 @@ _MAX_FOLLOW_UP_PER_CYCLE = 1
 _MAX_FEEDBACK_SUMMARY_LEN = 2000
 
 #: Review states that require a follow-up agent dispatch.
-_ACTIONABLE_REVIEW_STATES = frozenset({"changes_requested"})
+#: ``commented`` is included so unresolved review threads (even without an
+#: explicit CHANGES_REQUESTED decision) also trigger follow-up dispatch.
+_ACTIONABLE_REVIEW_STATES = frozenset({"changes_requested", "commented"})
 
 #: PR labels applied to QA-originated investigation PRs.
 _DEFAULT_PR_LABELS = ["self-healing", "automated"]
@@ -827,7 +829,7 @@ async def check_open_pr_statuses(
     # Fetch all QA pr_open attempts (have qa_patrol_id set)
     rows = await pool.fetch(
         """
-        SELECT id, pr_url, pr_number, fingerprint, butler_name, follow_up_count
+        SELECT id, pr_url, pr_number, fingerprint, butler_name, follow_up_count, branch_name
         FROM public.healing_attempts
         WHERE status = 'pr_open'
           AND qa_patrol_id IS NOT NULL
@@ -847,6 +849,7 @@ async def check_open_pr_statuses(
         fingerprint: str = row["fingerprint"]
         butler_name: str = row["butler_name"]
         follow_up_count: int = row["follow_up_count"] or 0
+        pr_branch_name: str | None = row["branch_name"]
 
         if pr_number is None:
             continue
@@ -904,6 +907,16 @@ async def check_open_pr_statuses(
             # OPEN state: check for reviewer feedback
             review_state, feedback_summary = _extract_review_state(pr_data)
 
+            # Anonymize feedback before persisting: review comments may contain
+            # PII or credentials and must not be stored or served unredacted.
+            safe_feedback_for_storage: str | None = None
+            if feedback_summary:
+                _safe = anonymize(feedback_summary, repo_root)
+                _clean, _ = validate_anonymized(_safe)
+                safe_feedback_for_storage = (
+                    _safe[:_MAX_FEEDBACK_SUMMARY_LEN] if _clean else None
+                )
+
             # Update review tracking columns
             await pool.execute(
                 """
@@ -916,14 +929,21 @@ async def check_open_pr_statuses(
                 """,
                 attempt_id,
                 review_state,
-                feedback_summary[:_MAX_FEEDBACK_SUMMARY_LEN] if feedback_summary else None,
+                safe_feedback_for_storage,
             )
 
-            # Dispatch follow-up if actionable and not rate-limited
+            # Dispatch follow-up if actionable and not rate-limited.
+            # Trigger when review_state is explicitly actionable OR when there
+            # is any feedback_summary (e.g. unresolved threads exist but
+            # latestReviews is empty, so review_state is None).
+            _needs_followup = (
+                review_state in _ACTIONABLE_REVIEW_STATES
+                or (review_state is None and bool(feedback_summary))
+            )
             if (
                 spawner is not None
                 and config is not None
-                and review_state in _ACTIONABLE_REVIEW_STATES
+                and _needs_followup
                 and follow_up_count < _MAX_FOLLOW_UP_PER_CYCLE
                 and feedback_summary
             ):
@@ -935,6 +955,7 @@ async def check_open_pr_statuses(
                     pr_url=pr_url,
                     fingerprint=fingerprint,
                     butler_name=butler_name,
+                    pr_branch_name=pr_branch_name,
                     feedback_summary=feedback_summary,
                     config=config,
                     spawner=spawner,
@@ -1007,6 +1028,7 @@ def _extract_review_state(
     # Build feedback summary from unresolved review threads
     threads: list[dict[str, Any]] = pr_data.get("reviewThreads") or []
     unresolved_comments: list[str] = []
+    seen_bodies: set[str] = set()
 
     for thread in threads:
         if thread.get("isResolved") or thread.get("isOutdated"):
@@ -1014,18 +1036,20 @@ def _extract_review_state(
         comments_in_thread: list[dict[str, Any]] = thread.get("comments", {}).get("nodes", [])
         for comment in comments_in_thread:
             body = (comment.get("body") or "").strip()
-            if body:
+            if body and body not in seen_bodies:
                 author = (comment.get("author") or {}).get("login", "reviewer")
                 unresolved_comments.append(f"- [{author}]: {body}")
+                seen_bodies.add(body)
 
     # Also include general review comments from reviews with body text
     reviews: list[dict[str, Any]] = pr_data.get("reviews") or []
     for review in reviews:
         if (review.get("state") or "").upper() in ("CHANGES_REQUESTED", "COMMENTED"):
             body = (review.get("body") or "").strip()
-            if body and "- [" not in "\n".join(unresolved_comments):
+            if body and body not in seen_bodies:
                 author = (review.get("author") or {}).get("login", "reviewer")
                 unresolved_comments.append(f"- [{author} review]: {body}")
+                seen_bodies.add(body)
 
     feedback_summary = "\n".join(unresolved_comments) if unresolved_comments else None
     if feedback_summary is None and review_state == "changes_requested":
@@ -1043,6 +1067,7 @@ async def _dispatch_pr_review_followup(
     pr_url: str,
     fingerprint: str,
     butler_name: str,
+    pr_branch_name: str | None,
     feedback_summary: str,
     config: QaDispatchConfig,
     spawner: Any,
@@ -1051,12 +1076,12 @@ async def _dispatch_pr_review_followup(
 ) -> bool:
     """Dispatch a follow-up agent to address PR reviewer feedback.
 
-    Creates a new worktree branched from the PR's head branch, spawns a
+    Checks out the existing PR head branch into a dedicated worktree, spawns a
     follow-up agent with the reviewer feedback as context, and pushes the
-    resulting changes to the same PR branch.
+    resulting changes to the same PR branch so the open PR is updated.
 
     Rate-limited: increments ``follow_up_count`` on the healing_attempts row.
-    Anonymization validation is applied before the agent pushes.
+    Anonymization validation is applied before the agent runs.
 
     Parameters
     ----------
@@ -1074,6 +1099,9 @@ async def _dispatch_pr_review_followup(
         Fingerprint from the original healing attempt.
     butler_name:
         Butler that originated the investigation.
+    pr_branch_name:
+        Existing PR head branch name recorded on the healing_attempts row.
+        If ``None`` the dispatch is skipped (branch info missing).
     feedback_summary:
         Summarised reviewer feedback (will be anonymized before use in prompt).
     config:
@@ -1090,6 +1118,13 @@ async def _dispatch_pr_review_followup(
     bool
         ``True`` if a follow-up agent task was dispatched, ``False`` otherwise.
     """
+    if not pr_branch_name:
+        logger.warning(
+            "PR review follow-up: no existing branch recorded for attempt=%s — skipping",
+            attempt_id,
+        )
+        return False
+
     try:
         # Anonymize reviewer feedback before including in agent prompt
         safe_feedback = anonymize(feedback_summary, repo_root)
@@ -1114,22 +1149,71 @@ async def _dispatch_pr_review_followup(
             dashboard_base_url=config.dashboard_base_url,
         )
 
-        # Create a worktree from the existing PR branch
-        # Use a unique follow-up branch name derived from the PR branch
-        try:
-            worktree_path, followup_branch = await create_healing_worktree(
-                repo_root,
-                butler_name,
-                fingerprint,
-                prefix=_QA_REVIEW_PREFIX,
+        # Create a worktree on the existing PR branch so that the follow-up
+        # agent's commits continue to update the open PR head branch.
+        followup_branch = pr_branch_name
+        branch_slug = pr_branch_name.replace("/", "-")
+        worktree_path = (
+            repo_root
+            / ".healing-worktrees"
+            / _QA_REVIEW_PREFIX
+            / f"{branch_slug}-{uuid.uuid4().hex[:8]}"
+        )
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+
+        async def _run_git_here(*args: str) -> tuple[int, str]:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                cwd=str(repo_root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
             )
-        except WorktreeCreationError as wt_exc:
+            stdout, _ = await proc.communicate()
+            return proc.returncode, stdout.decode("utf-8", errors="replace")
+
+        # Ensure the remote branch is available locally
+        fetch_rc, fetch_out = await _run_git_here("fetch", "origin", followup_branch)
+        if fetch_rc != 0:
             logger.warning(
-                "PR review follow-up: worktree creation failed (attempt=%s): %s",
+                "PR review follow-up: git fetch failed for branch %s (attempt=%s): %s",
+                followup_branch,
                 attempt_id,
-                wt_exc,
+                fetch_out.strip(),
             )
-            return False
+            raise WorktreeCreationError(
+                f"git fetch failed for branch {followup_branch}: {fetch_out.strip()}"
+            )
+
+        # Check if a local tracking branch already exists
+        branch_check_rc, _ = await _run_git_here(
+            "show-ref", "--verify", "--quiet", f"refs/heads/{followup_branch}"
+        )
+
+        if branch_check_rc == 0:
+            add_rc, add_out = await _run_git_here(
+                "worktree", "add", str(worktree_path), followup_branch
+            )
+        else:
+            add_rc, add_out = await _run_git_here(
+                "worktree",
+                "add",
+                "-b",
+                followup_branch,
+                "--track",
+                str(worktree_path),
+                f"origin/{followup_branch}",
+            )
+
+        if add_rc != 0:
+            raise WorktreeCreationError(
+                f"git worktree add failed for branch {followup_branch}: {add_out.strip()}"
+            )
+
+        if not worktree_path.is_dir():
+            raise WorktreeCreationError(
+                f"Worktree directory not created at {worktree_path}"
+            )
 
         # Increment follow_up_count atomically
         await pool.execute(
@@ -1178,6 +1262,13 @@ async def _dispatch_pr_review_followup(
         )
         return True
 
+    except WorktreeCreationError as wt_exc:
+        logger.warning(
+            "PR review follow-up: worktree creation failed (attempt=%s): %s",
+            attempt_id,
+            wt_exc,
+        )
+        return False
     except Exception as exc:
         logger.warning(
             "PR review follow-up dispatch failed (attempt=%s): %s",

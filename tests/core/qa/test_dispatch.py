@@ -263,6 +263,7 @@ def _make_pr_row(
     fingerprint: str = "a" * 64,
     butler_name: str = "general",
     follow_up_count: int = 0,
+    branch_name: str | None = "qa/general/abcdef",
 ) -> dict:
     return {
         "id": attempt_id or uuid.uuid4(),
@@ -271,6 +272,7 @@ def _make_pr_row(
         "fingerprint": fingerprint,
         "butler_name": butler_name,
         "follow_up_count": follow_up_count,
+        "branch_name": branch_name,
     }
 
 
@@ -591,6 +593,7 @@ async def test_dispatch_pr_review_followup_anonymization_failure():
             pr_url="https://github.com/org/repo/pull/42",
             fingerprint="a" * 64,
             butler_name="general",
+            pr_branch_name="qa/general/abcdef",
             feedback_summary="reviewer comment",
             config=QaDispatchConfig(),
             spawner=MagicMock(),
@@ -600,21 +603,49 @@ async def test_dispatch_pr_review_followup_anonymization_failure():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_pr_review_followup_success():
-    """Successful anonymization + worktree → returns True, follow_up_count incremented."""
+async def test_dispatch_pr_review_followup_missing_branch():
+    """Missing pr_branch_name → returns False immediately."""
     pool = _make_pool()
     attempt_id = uuid.uuid4()
-    worktree_path = Path("/tmp/qa-review-worktree")
-    branch_name = "qa-review/general/abcdef"
+
+    result = await _dispatch_pr_review_followup(
+        pool=pool,
+        repo_root=Path("/tmp/repo"),
+        attempt_id=attempt_id,
+        pr_number=42,
+        pr_url="https://github.com/org/repo/pull/42",
+        fingerprint="a" * 64,
+        butler_name="general",
+        pr_branch_name=None,
+        feedback_summary="reviewer comment",
+        config=QaDispatchConfig(),
+        spawner=MagicMock(),
+        gh_token="token",
+    )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_success():
+    """Successful anonymization + existing-branch worktree → True, follow_up_count incremented."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    branch_name = "qa/general/abcdef-1234"
+
+    # Mock git subprocess (fetch + show-ref + worktree add all succeed)
+    mock_proc_ok = MagicMock()
+    mock_proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc_ok.returncode = 0
 
     with (
         patch("butlers.core.qa.dispatch.anonymize", return_value="safe feedback"),
         patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
         patch(
-            "butlers.core.qa.dispatch.create_healing_worktree",
-            new_callable=AsyncMock,
-            return_value=(worktree_path, branch_name),
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_proc_ok,
         ),
+        patch("pathlib.Path.mkdir"),
+        patch("pathlib.Path.is_dir", return_value=True),
         patch("butlers.core.qa.dispatch._run_review_followup_session", new_callable=AsyncMock),
     ):
         result = await _dispatch_pr_review_followup(
@@ -625,6 +656,7 @@ async def test_dispatch_pr_review_followup_success():
             pr_url="https://github.com/org/repo/pull/42",
             fingerprint="a" * 64,
             butler_name="general",
+            pr_branch_name=branch_name,
             feedback_summary="reviewer comment",
             config=QaDispatchConfig(),
             spawner=MagicMock(),
@@ -639,20 +671,23 @@ async def test_dispatch_pr_review_followup_success():
 
 @pytest.mark.asyncio
 async def test_dispatch_pr_review_followup_worktree_failure():
-    """Worktree creation failure → returns False."""
-    from butlers.core.healing.worktree import WorktreeCreationError
-
+    """Worktree creation failure (git fetch error) → returns False."""
     pool = _make_pool()
     attempt_id = uuid.uuid4()
+
+    # Mock git subprocess: fetch fails
+    mock_proc_fail = MagicMock()
+    mock_proc_fail.communicate = AsyncMock(return_value=(b"error: branch not found", b""))
+    mock_proc_fail.returncode = 128
 
     with (
         patch("butlers.core.qa.dispatch.anonymize", return_value="safe"),
         patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
         patch(
-            "butlers.core.qa.dispatch.create_healing_worktree",
-            new_callable=AsyncMock,
-            side_effect=WorktreeCreationError("worktree failed"),
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_proc_fail,
         ),
+        patch("pathlib.Path.mkdir"),
     ):
         result = await _dispatch_pr_review_followup(
             pool=pool,
@@ -662,6 +697,7 @@ async def test_dispatch_pr_review_followup_worktree_failure():
             pr_url="https://github.com/org/repo/pull/42",
             fingerprint="a" * 64,
             butler_name="general",
+            pr_branch_name="qa/general/abcdef",
             feedback_summary="reviewer comment",
             config=QaDispatchConfig(),
             spawner=MagicMock(),

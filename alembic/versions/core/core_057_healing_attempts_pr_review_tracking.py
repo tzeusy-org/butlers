@@ -31,10 +31,11 @@ New columns
 
 Strategy
 --------
-All columns are added with DEFAULT NULL / DEFAULT 0 — no row rewrites, no
-table locks.  The new FK constraint on ``review_state`` is enforced by the
-application layer (not a check constraint) to remain flexible as the set of
-valid states may evolve.
+All columns are added with DEFAULT NULL / DEFAULT 0 to avoid a full table
+rewrite; brief locks are still expected for ALTER TABLE and index creation.
+The new FK constraint on ``review_state`` is enforced by the application
+layer (not a check constraint) to remain flexible as the set of valid states
+may evolve.
 """
 
 from __future__ import annotations
