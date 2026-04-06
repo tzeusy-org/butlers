@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json as _test_json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -252,9 +253,6 @@ async def test_dispatch_novel_findings():
         )
     assert call_count == 1 and len(results3) == 4
     assert all(r.reason == "concurrency_cap" for r in results3)
-
-
-import json as _test_json
 
 
 def _make_pr_row(
