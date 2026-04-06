@@ -18,7 +18,7 @@ Usage::
     whitelist = RepoWhitelist(db_pool=pool)
     await whitelist.ensure_loaded()
 
-    allowed, reason = await whitelist.is_allowed("owner/repo")
+    allowed, reason = whitelist.is_allowed("owner/repo")
     if not allowed:
         # block PR creation and notify owner
         ...
@@ -168,8 +168,10 @@ class RepoWhitelist:
                     "repo_whitelist: whitelist is empty — ALL QA PR creation blocked (fail-closed)"
                 )
 
-        except Exception as exc:
-            logger.warning("repo_whitelist: failed to load from DB (retaining cache): %s", exc)
+        except Exception:
+            logger.warning(
+                "repo_whitelist: failed to load from DB (retaining cache)", exc_info=True
+            )
             # Still mark as loaded / update timestamp to avoid hammering the DB.
             self._loaded = True
             self._last_loaded_at = time.monotonic()

@@ -219,15 +219,11 @@ async def test_create_allowed_repo_invalid_format():
 @pytest.mark.asyncio
 async def test_create_allowed_repo_duplicate_409():
     """Returns 409 when the repo is already in the whitelist."""
+    import asyncpg
 
-    class _FakeUniqueViolation(Exception):
-        """Simulates asyncpg.UniqueViolationError."""
-
-        pass
-
-    _FakeUniqueViolation.__name__ = "UniqueViolationError"
-
-    app, mock_pool = _build_app(fetchrow_side_effect=_FakeUniqueViolation("duplicate key value"))
+    app, mock_pool = _build_app(
+        fetchrow_side_effect=asyncpg.UniqueViolationError("duplicate key value")
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

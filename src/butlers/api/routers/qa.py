@@ -34,6 +34,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -1371,13 +1372,13 @@ async def create_allowed_repo(
             repo,
             body.enabled,
         )
-    except Exception as exc:
-        if "UniqueViolation" in type(exc).__name__ or "unique" in str(exc).lower():
-            raise HTTPException(
-                status_code=409,
-                detail=f"Repository '{owner}/{repo}' is already in the whitelist",
-            )
-        logger.error("Failed to add allowed repo '%s/%s': %s", owner, repo, exc)
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Repository '{owner}/{repo}' is already in the whitelist",
+        )
+    except Exception:
+        logger.error("Failed to add allowed repo '%s/%s'", owner, repo, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to add repository to whitelist")
 
     if row is None:

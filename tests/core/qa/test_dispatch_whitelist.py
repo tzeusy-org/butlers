@@ -175,7 +175,7 @@ async def test_create_qa_pr_git_remote_fails_blocks():
             whitelist=whitelist,
         )
 
-    assert error == "repo_not_whitelisted"
+    assert error == "repo_not_whitelisted:remote_unavailable"
 
 
 @pytest.mark.asyncio

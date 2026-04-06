@@ -287,8 +287,8 @@ async def _get_remote_owner_repo(repo_root: Path, env: dict[str, str]) -> str | 
             return None
         owner, repo = parsed
         return f"{owner}/{repo}"
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("_get_remote_owner_repo: failed to get origin URL: %s", exc)
+    except Exception:  # noqa: BLE001
+        logger.warning("_get_remote_owner_repo: failed to get origin URL", exc_info=True)
         return None
 
 
@@ -311,8 +311,12 @@ async def _create_qa_pr(
         - ``None`` on success,
         - ``"anonymization_failed"`` when PII validation blocks the PR,
         - ``"no_gh_token"`` when no GitHub token is available,
-        - ``"repo_not_whitelisted"`` when PR creation is blocked by whitelist,
-        - ``"whitelist_empty"`` when the whitelist is configured but empty,
+        - ``"repo_not_whitelisted:remote_unavailable"`` when the origin
+          remote URL cannot be resolved; PR creation is blocked fail-closed,
+        - ``"repo_not_whitelisted:{reason}:{owner/repo}"`` when whitelist
+          enforcement blocks PR creation for a resolved repository; ``reason``
+          is the whitelist failure code (e.g. ``whitelist_empty`` or
+          ``not_in_whitelist``),
         - Any other string for push/gh failures.
     """
     if not gh_token:
@@ -323,13 +327,15 @@ async def _create_qa_pr(
     # Step 0: Whitelist enforcement — check before git push
     # Fail-closed: if whitelist is None, create a no-pool instance (blocks all).
     effective_whitelist = whitelist if whitelist is not None else RepoWhitelist(db_pool=None)
+    # Ensure the whitelist has been loaded at least once (idempotent, guarded by lock).
+    await effective_whitelist.ensure_loaded()
     owner_repo = await _get_remote_owner_repo(repo_root, env)
     if owner_repo is None:
         logger.warning(
             "_create_qa_pr: could not determine repository from origin remote; "
             "blocking PR creation (fail-closed)"
         )
-        return None, None, "repo_not_whitelisted"
+        return None, None, "repo_not_whitelisted:remote_unavailable"
 
     allowed, wl_reason = effective_whitelist.is_allowed(owner_repo)
     if not allowed:
@@ -663,14 +669,23 @@ async def _run_investigation_session(
 
         if pr_error is not None and pr_error.startswith("repo_not_whitelisted"):
             # Whitelist enforcement: PR blocked for this repository.
-            # Error format: "repo_not_whitelisted:reason:owner/repo"
+            # Error formats:
+            #   "repo_not_whitelisted:remote_unavailable"  — remote URL could not be resolved
+            #   "repo_not_whitelisted:{reason}:{owner/repo}" — whitelist check failed
             parts = pr_error.split(":", 2)
-            wl_detail = parts[2] if len(parts) == 3 else "unknown"
+            if len(parts) == 3:
+                wl_detail = (
+                    f"repository '{parts[2]}' is not in the QA whitelist (reason: {parts[1]})"
+                )
+            elif len(parts) == 2 and parts[1] == "remote_unavailable":
+                wl_detail = "could not determine repository from origin remote URL"
+            else:
+                wl_detail = "repository is not in the QA whitelist"
             await update_attempt_status(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail=(f"PR blocked: repository '{wl_detail}' is not in the QA whitelist"),
+                error_detail=f"PR blocked: {wl_detail}",
                 healing_session_id=investigation_session_id,
             )
             await remove_healing_worktree(
