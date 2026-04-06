@@ -50,6 +50,9 @@ pgdata/
 /tmp/butler_*/
 
 # bv (beads viewer) local config and caches
+.beads/locks
+.beads/audit.log
+.beads/metadata.json
 .beads/.doctor-test-write
 .beads/interaction.jsonl
 .beads/interactions.jsonl
