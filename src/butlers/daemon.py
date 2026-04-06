@@ -615,6 +615,17 @@ async def _run_relationship_insight_scan_job(
     return await run_insight_scan(pool)
 
 
+async def _run_relationship_interaction_sync_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler interaction sync job."""
+    del job_args
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    return await run_interaction_sync(pool)
+
+
 async def _run_education_briefing_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -746,6 +757,7 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
         "daily_briefing_contribution": _run_relationship_briefing_contribution_job,
         "insight_scan": _run_relationship_insight_scan_job,
+        "interaction_sync": _run_relationship_interaction_sync_job,
     },
     "travel": {
         "daily_briefing_contribution": _run_travel_briefing_contribution_job,

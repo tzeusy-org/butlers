@@ -85,6 +85,12 @@ cron = "0 7 * * *"
 dispatch_mode = "job"
 job_name = "insight_scan"
 
+[[butler.schedule]]
+name = "interaction-sync"
+cron = "30 6 * * *"
+dispatch_mode = "job"
+job_name = "interaction_sync"
+
 [modules.calendar]
 provider = "google"
 

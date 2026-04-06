@@ -10,6 +10,7 @@ Each job handler:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -600,5 +601,270 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["candidates_filtered"],
         stats["candidates_errored"],
         stats["early_exit"],
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Interaction sync constants
+# ---------------------------------------------------------------------------
+
+# Channels to monitor; maps source_channel → contact_info.type used for lookup.
+_INTERACTION_SYNC_CHANNEL_MAP: dict[str, str] = {
+    "telegram_user_client": "telegram_chat_id",
+    "whatsapp_user_client": "whatsapp_jid",
+    "email": "email",
+}
+
+# Per-channel hour offset within a day to ensure unique occurred_at timestamps.
+# store_fact() derives its idempotency key from (entity_id, scope, predicate, valid_at).
+# Two channels for the same contact on the same day would collide on that key unless
+# occurred_at differs.  Using stable hour offsets ensures each (contact, channel, day)
+# triple maps to a distinct timestamp.
+_INTERACTION_SYNC_CHANNEL_HOUR_OFFSET: dict[str, int] = {
+    "telegram_user_client": 0,
+    "whatsapp_user_client": 1,
+    "email": 2,
+}
+
+# How far back to scan message_inbox for recent interactions (default window).
+_INTERACTION_SYNC_LOOKBACK_HOURS = 25  # slightly over 24h to cover scheduling jitter
+
+
+# ---------------------------------------------------------------------------
+# Interaction sync job
+# ---------------------------------------------------------------------------
+
+
+async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Sync message-based interactions from switchboard.message_inbox to interaction facts.
+
+    Queries ``switchboard.message_inbox`` for recent inbound messages on
+    user-to-person channels (``telegram_user_client``, ``whatsapp_user_client``,
+    ``email``).  Groups by ``(source_sender_identity, source_channel,
+    DATE(received_at))`` so that at most one interaction fact is logged per
+    contact per day per channel.
+
+    Resolution steps:
+    1. Map ``source_channel`` → ``contact_info.type`` (see ``_INTERACTION_SYNC_CHANNEL_MAP``).
+    2. Resolve ``source_sender_identity`` to ``contact_id`` via
+       ``public.contact_info(type, value)``.
+    3. Skip senders that cannot be resolved to a contact (unresolved).
+    4. Skip owner contacts (entity has ``'owner'`` in roles).
+    5. Call ``interaction_log()`` with ``type=source_channel``,
+       ``direction='incoming'``, and ``occurred_at`` set to the grouped
+       message date in UTC plus a channel-specific hour offset, so facts from
+       different channels on the same day do not collide under
+       ``store_fact()`` temporal idempotency.
+
+    Args:
+        db_pool: Database connection pool (relationship butler pool).
+
+    Returns:
+        Dictionary with keys: processed, logged, skipped_unresolved,
+        skipped_owner, errors.
+    """
+    from roster.relationship.tools.interactions import interaction_log
+
+    logger.info("Running relationship interaction sync job")
+
+    stats: dict[str, Any] = {
+        "processed": 0,
+        "logged": 0,
+        "skipped_unresolved": 0,
+        "skipped_owner": 0,
+        "errors": 0,
+    }
+
+    cutoff = datetime.now(UTC) - timedelta(hours=_INTERACTION_SYNC_LOOKBACK_HOURS)
+
+    channels = list(_INTERACTION_SYNC_CHANNEL_MAP.keys())
+
+    # -----------------------------------------------------------------------
+    # Step 1: Query switchboard.message_inbox for recent inbound messages,
+    # grouped to one row per (sender_identity, channel, date).
+    # -----------------------------------------------------------------------
+    try:
+        rows = await db_pool.fetch(
+            """
+            SELECT
+                request_context ->> 'source_sender_identity' AS sender_identity,
+                request_context ->> 'source_channel'          AS source_channel,
+                (received_at AT TIME ZONE 'UTC')::date        AS interaction_date,
+                COUNT(*)                                       AS message_count
+            FROM switchboard.message_inbox
+            WHERE direction = 'inbound'
+              AND received_at >= $1
+              AND request_context ->> 'source_channel' = ANY($2::text[])
+              AND request_context ->> 'source_sender_identity' IS NOT NULL
+              AND request_context ->> 'source_sender_identity' != 'unknown'
+            GROUP BY
+                request_context ->> 'source_sender_identity',
+                request_context ->> 'source_channel',
+                (received_at AT TIME ZONE 'UTC')::date
+            ORDER BY interaction_date DESC
+            """,
+            cutoff,
+            channels,
+        )
+    except Exception:
+        logger.exception("interaction_sync: failed to query switchboard.message_inbox")
+        stats["errors"] += 1
+        return stats
+
+    if not rows:
+        logger.info("interaction_sync: no recent inbound messages found")
+        return stats
+
+    # -----------------------------------------------------------------------
+    # Step 2: Batch-resolve sender identities to contact_ids via
+    # public.contact_info, filtering out owner contacts.
+    # -----------------------------------------------------------------------
+    # Build (type, value) pairs for lookup
+    lookup_pairs: list[tuple[str, str]] = []
+    for row in rows:
+        source_channel = row["source_channel"]
+        sender_identity = row["sender_identity"]
+        ci_type = _INTERACTION_SYNC_CHANNEL_MAP.get(source_channel)
+        if ci_type and sender_identity:
+            lookup_pairs.append((ci_type, sender_identity))
+
+    # Resolve all at once with a single query using UNNEST
+    resolved: dict[tuple[str, str], uuid.UUID] = {}  # (ci_type, value) -> contact_id
+    owner_contact_ids: set[uuid.UUID] = set()
+
+    if lookup_pairs:
+        type_values = [(t, v) for t, v in lookup_pairs]
+        ci_types = [tv[0] for tv in type_values]
+        ci_values = [tv[1] for tv in type_values]
+
+        try:
+            contact_rows = await db_pool.fetch(
+                """
+                SELECT
+                    ci.type        AS ci_type,
+                    ci.value       AS ci_value,
+                    ci.contact_id  AS contact_id,
+                    COALESCE(e.roles, '{}') AS roles
+                FROM public.contact_info ci
+                JOIN public.contacts c ON c.id = ci.contact_id
+                LEFT JOIN public.entities e ON e.id = c.entity_id
+                JOIN (
+                    SELECT DISTINCT pairs.ci_type, pairs.ci_value
+                    FROM UNNEST($1::text[], $2::text[]) AS pairs(ci_type, ci_value)
+                ) pairs ON ci.type = pairs.ci_type AND ci.value = pairs.ci_value
+                """,
+                ci_types,
+                ci_values,
+            )
+        except Exception:
+            logger.exception("interaction_sync: failed to resolve contact identities")
+            stats["errors"] += 1
+            return stats
+
+        for cr in contact_rows:
+            contact_id = cr["contact_id"]
+            if not isinstance(contact_id, uuid.UUID):
+                try:
+                    contact_id = uuid.UUID(str(contact_id))
+                except (ValueError, AttributeError):
+                    continue
+            key = (cr["ci_type"], cr["ci_value"])
+            resolved[key] = contact_id
+            roles: list[str] = list(cr["roles"] or [])
+            if "owner" in roles:
+                owner_contact_ids.add(contact_id)
+
+    # -----------------------------------------------------------------------
+    # Step 3: Log interactions for resolved non-owner contacts.
+    # -----------------------------------------------------------------------
+    for row in rows:
+        stats["processed"] += 1
+
+        source_channel: str = row["source_channel"]
+        sender_identity: str = row["sender_identity"]
+        interaction_date: date = row["interaction_date"]
+
+        ci_type = _INTERACTION_SYNC_CHANNEL_MAP.get(source_channel)
+        if not ci_type or not sender_identity:
+            stats["skipped_unresolved"] += 1
+            continue
+
+        key = (ci_type, sender_identity)
+        contact_id = resolved.get(key)
+
+        if contact_id is None:
+            logger.debug(
+                "interaction_sync: unresolved sender %s (%s=%s)",
+                sender_identity,
+                ci_type,
+                sender_identity,
+            )
+            stats["skipped_unresolved"] += 1
+            continue
+
+        if contact_id in owner_contact_ids:
+            logger.debug(
+                "interaction_sync: skipping owner contact %s (channel=%s)",
+                contact_id,
+                source_channel,
+            )
+            stats["skipped_owner"] += 1
+            continue
+
+        # Use a per-channel hour offset within the day so that two different channels
+        # (e.g., telegram + email) for the same contact on the same date produce
+        # distinct occurred_at values and thus distinct store_fact() idempotency keys.
+        hour_offset = _INTERACTION_SYNC_CHANNEL_HOUR_OFFSET.get(source_channel, 0)
+        occurred_at = datetime(
+            interaction_date.year,
+            interaction_date.month,
+            interaction_date.day,
+            hour_offset,
+            0,
+            0,
+            tzinfo=UTC,
+        )
+
+        try:
+            result = await interaction_log(
+                db_pool,
+                contact_id=contact_id,
+                type=source_channel,
+                direction="incoming",
+                occurred_at=occurred_at,
+                summary=None,
+            )
+            if result.get("skipped") == "duplicate":
+                logger.debug(
+                    "interaction_sync: duplicate skipped for contact=%s channel=%s date=%s",
+                    contact_id,
+                    source_channel,
+                    interaction_date,
+                )
+            else:
+                stats["logged"] += 1
+                logger.debug(
+                    "interaction_sync: logged interaction contact=%s channel=%s date=%s",
+                    contact_id,
+                    source_channel,
+                    interaction_date,
+                )
+        except Exception:
+            logger.exception(
+                "interaction_sync: error logging interaction for contact=%s channel=%s",
+                contact_id,
+                source_channel,
+            )
+            stats["errors"] += 1
+
+    logger.info(
+        "Interaction sync complete: processed=%d, logged=%d, "
+        "skipped_unresolved=%d, skipped_owner=%d, errors=%d",
+        stats["processed"],
+        stats["logged"],
+        stats["skipped_unresolved"],
+        stats["skipped_owner"],
+        stats["errors"],
     )
     return stats

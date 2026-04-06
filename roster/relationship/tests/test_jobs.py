@@ -983,3 +983,603 @@ async def test_insight_scan_origin_butler_is_relationship(provisioned_postgres_p
         assert len(rows) >= 1
         for row in rows:
             assert row["origin_butler"] == "relationship"
+
+
+# ---------------------------------------------------------------------------
+# Schema setup helpers for interaction sync
+# ---------------------------------------------------------------------------
+
+CREATE_PUBLIC_CONTACTS_SQL = """
+CREATE TABLE IF NOT EXISTS public.contacts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    first_name TEXT,
+    last_name TEXT,
+    nickname TEXT,
+    name TEXT,
+    company TEXT,
+    entity_id UUID,
+    stay_in_touch_days INT,
+    listed BOOLEAN NOT NULL DEFAULT true,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+)
+"""
+
+CREATE_PUBLIC_CONTACT_INFO_SQL = """
+CREATE TABLE IF NOT EXISTS public.contact_info (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    contact_id UUID NOT NULL REFERENCES public.contacts(id) ON DELETE CASCADE,
+    type VARCHAR NOT NULL,
+    value TEXT NOT NULL,
+    label VARCHAR,
+    is_primary BOOLEAN DEFAULT false,
+    secured BOOLEAN NOT NULL DEFAULT false,
+    parent_id UUID,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    CONSTRAINT uq_test_contact_info_type_value UNIQUE (type, value)
+)
+"""
+
+CREATE_PUBLIC_ENTITIES_SQL = """
+CREATE TABLE IF NOT EXISTS public.entities (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id TEXT NOT NULL DEFAULT '',
+    canonical_name VARCHAR NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    entity_type VARCHAR NOT NULL DEFAULT 'other',
+    aliases TEXT[] NOT NULL DEFAULT '{}',
+    metadata JSONB DEFAULT '{}'::jsonb,
+    roles TEXT[] NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+"""
+
+CREATE_SWITCHBOARD_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS switchboard"
+
+CREATE_MESSAGE_INBOX_SQL = """
+CREATE TABLE IF NOT EXISTS switchboard.message_inbox (
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    normalized_text TEXT NOT NULL DEFAULT '',
+    lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
+    schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
+    direction TEXT NOT NULL DEFAULT 'inbound',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (received_at, id)
+)
+"""
+
+# We also need facts and activity_feed for interaction_log
+# Full facts schema for interaction sync tests — includes object_entity_id
+# which store_fact() requires (not present in the legacy CREATE_FACTS_SQL above).
+CREATE_FACTS_FULL_SQL = """
+CREATE TABLE IF NOT EXISTS facts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    embedding TEXT,
+    search_vector tsvector,
+    importance FLOAT NOT NULL DEFAULT 5.0,
+    confidence FLOAT NOT NULL DEFAULT 1.0,
+    decay_rate FLOAT NOT NULL DEFAULT 0.008,
+    permanence TEXT NOT NULL DEFAULT 'standard',
+    source_butler TEXT,
+    source_episode_id UUID,
+    supersedes_id UUID,
+    validity TEXT NOT NULL DEFAULT 'active',
+    scope TEXT NOT NULL DEFAULT 'global',
+    entity_id UUID,
+    object_entity_id UUID,
+    valid_at TIMESTAMPTZ,
+    reference_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_referenced_at TIMESTAMPTZ,
+    last_confirmed_at TIMESTAMPTZ,
+    tags JSONB DEFAULT '[]'::jsonb,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    tenant_id TEXT NOT NULL DEFAULT 'owner',
+    request_id TEXT,
+    idempotency_key TEXT,
+    observed_at TIMESTAMPTZ DEFAULT now(),
+    invalid_at TIMESTAMPTZ,
+    retention_class TEXT NOT NULL DEFAULT 'operational',
+    sensitivity TEXT NOT NULL DEFAULT 'normal'
+)
+"""
+
+CREATE_PREDICATE_REGISTRY_SQL = """
+CREATE TABLE IF NOT EXISTS predicate_registry (
+    name TEXT PRIMARY KEY,
+    expected_subject_type TEXT,
+    expected_object_type TEXT,
+    is_edge BOOLEAN NOT NULL DEFAULT false,
+    is_temporal BOOLEAN NOT NULL DEFAULT false,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    status TEXT NOT NULL DEFAULT 'active',
+    superseded_by TEXT,
+    deprecated_at TIMESTAMPTZ,
+    inverse_of TEXT,
+    is_symmetric BOOLEAN NOT NULL DEFAULT false,
+    aliases TEXT[] NOT NULL DEFAULT '{}',
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TIMESTAMPTZ
+)
+"""
+
+CREATE_MEMORY_LINKS_SQL = """
+CREATE TABLE IF NOT EXISTS memory_links (
+    source_type TEXT NOT NULL,
+    source_id UUID NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id UUID NOT NULL,
+    relation TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_type, source_id, target_type, target_id),
+    CONSTRAINT chk_memory_links_relation CHECK (
+        relation IN (
+            'derived_from', 'supports', 'contradicts',
+            'supersedes', 'related_to'
+        )
+    )
+)
+"""
+
+
+async def _setup_interaction_sync_schema(pool) -> None:
+    """Create tables needed for interaction sync tests."""
+    await pool.execute(CREATE_PUBLIC_ENTITIES_SQL)
+    await pool.execute(CREATE_PUBLIC_CONTACTS_SQL)
+    await pool.execute(CREATE_PUBLIC_CONTACT_INFO_SQL)
+    await pool.execute(CREATE_SWITCHBOARD_SCHEMA_SQL)
+    await pool.execute(CREATE_MESSAGE_INBOX_SQL)
+    # Use the full facts schema (includes object_entity_id required by store_fact)
+    await pool.execute(CREATE_FACTS_FULL_SQL)
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_sync ON facts (subject, predicate)"
+    )
+    # store_fact() requires predicate_registry and memory_links
+    await pool.execute(CREATE_PREDICATE_REGISTRY_SQL)
+    await pool.execute(CREATE_MEMORY_LINKS_SQL)
+
+
+async def _insert_public_contact(
+    pool,
+    *,
+    first_name: str = "Alice",
+    last_name: str = "Smith",
+    entity_id: str | None = None,
+) -> str:
+    """Insert a public.contacts row (with auto-created entity) and return its UUID string.
+
+    Each contact must have a linked entity_id since interaction_log requires it.
+    If no entity_id is provided, a new entity is created and linked automatically.
+    """
+    if entity_id is None:
+        entity_id = await _insert_public_entity(pool)
+    contact_id = str(uuid.uuid4())
+    await pool.execute(
+        """
+        INSERT INTO public.contacts (id, first_name, last_name, entity_id)
+        VALUES ($1::uuid, $2, $3, $4)
+        """,
+        contact_id,
+        first_name,
+        last_name,
+        uuid.UUID(entity_id),
+    )
+    return contact_id
+
+
+async def _insert_public_entity(pool, *, roles: list[str] | None = None) -> str:
+    """Insert a public.entities row and return its UUID string."""
+    entity_id = str(uuid.uuid4())
+    await pool.execute(
+        """
+        INSERT INTO public.entities (id, roles)
+        VALUES ($1::uuid, $2::text[])
+        """,
+        entity_id,
+        roles or [],
+    )
+    return entity_id
+
+
+async def _insert_contact_info(
+    pool,
+    *,
+    contact_id: str,
+    ci_type: str,
+    value: str,
+    is_primary: bool = True,
+) -> str:
+    """Insert a public.contact_info row and return its UUID string."""
+    ci_id = str(uuid.uuid4())
+    await pool.execute(
+        """
+        INSERT INTO public.contact_info (id, contact_id, type, value, is_primary)
+        VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+        """,
+        ci_id,
+        contact_id,
+        ci_type,
+        value,
+        is_primary,
+    )
+    return ci_id
+
+
+async def _insert_message_inbox(
+    pool,
+    *,
+    sender_identity: str,
+    source_channel: str,
+    received_at: datetime | None = None,
+    direction: str = "inbound",
+) -> None:
+    """Insert a message_inbox row for testing."""
+    if received_at is None:
+        received_at = datetime.now(UTC) - timedelta(hours=1)
+    request_context = {
+        "source_sender_identity": sender_identity,
+        "source_channel": source_channel,
+    }
+    await pool.execute(
+        """
+        INSERT INTO switchboard.message_inbox (received_at, request_context, direction)
+        VALUES ($1, $2::jsonb, $3)
+        """,
+        received_at,
+        json.dumps(request_context),
+        direction,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_interaction_sync
+# ---------------------------------------------------------------------------
+
+
+async def test_interaction_sync_no_messages_returns_zeros(provisioned_postgres_pool):
+    """No-op: returns zeros when message_inbox is empty."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result = await run_interaction_sync(pool)
+
+        assert result["processed"] == 0
+        assert result["logged"] == 0
+        assert result["skipped_unresolved"] == 0
+        assert result["skipped_owner"] == 0
+        assert result["errors"] == 0
+
+
+async def test_interaction_sync_returns_expected_stats_keys(provisioned_postgres_pool):
+    """Result dict always contains all expected statistics keys."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result = await run_interaction_sync(pool)
+
+        assert "processed" in result
+        assert "logged" in result
+        assert "skipped_unresolved" in result
+        assert "skipped_owner" in result
+        assert "errors" in result
+
+
+async def test_interaction_sync_unresolved_sender_skipped(provisioned_postgres_pool):
+    """Senders with no matching contact_info entry are counted as skipped_unresolved."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        # Insert message with no matching contact_info
+        await _insert_message_inbox(
+            pool,
+            sender_identity="999999999",
+            source_channel="telegram_user_client",
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["processed"] == 1
+        assert result["skipped_unresolved"] == 1
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_outbound_messages_ignored(provisioned_postgres_pool):
+    """Outbound messages are not processed (only inbound are synced)."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Bob")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="12345"
+        )
+        # Insert outbound message — should be ignored
+        await _insert_message_inbox(
+            pool,
+            sender_identity="12345",
+            source_channel="telegram_user_client",
+            direction="outbound",
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["processed"] == 0
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_owner_contact_skipped(provisioned_postgres_pool):
+    """Owner contacts are skipped even when their sender identity is resolved."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        # Create an owner entity and link it to the contact
+        entity_id = await _insert_public_entity(pool, roles=["owner"])
+        contact_id = await _insert_public_contact(pool, first_name="Owner", entity_id=entity_id)
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="owner123"
+        )
+        await _insert_message_inbox(
+            pool,
+            sender_identity="owner123",
+            source_channel="telegram_user_client",
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["processed"] == 1
+        assert result["skipped_owner"] == 1
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_pool):
+    """A resolved telegram_user_client message is logged as an interaction fact."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Carol")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="777001"
+        )
+        await _insert_message_inbox(
+            pool,
+            sender_identity="777001",
+            source_channel="telegram_user_client",
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1
+        assert result["errors"] == 0
+        # Verify a fact was created
+        rows = await pool.fetch(
+            """
+            SELECT id, metadata FROM facts
+            WHERE subject = $1
+              AND predicate = 'interaction'
+              AND scope = 'relationship'
+            """,
+            f"contact:{contact_id}",
+        )
+        assert len(rows) == 1
+        import json as _json
+
+        meta = rows[0]["metadata"]
+        if isinstance(meta, str):
+            meta = _json.loads(meta)
+        assert meta.get("type") == "telegram_user_client"
+        assert meta.get("direction") == "incoming"
+
+
+async def test_interaction_sync_deduplicates_same_sender_same_day(provisioned_postgres_pool):
+    """Multiple messages from the same sender on the same day → one interaction fact."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Dave")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="888001"
+        )
+
+        today = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0)
+        # Insert three messages today from the same sender
+        for hour_offset in [0, 2, 4]:
+            await _insert_message_inbox(
+                pool,
+                sender_identity="888001",
+                source_channel="telegram_user_client",
+                received_at=today + timedelta(hours=hour_offset),
+            )
+
+        result = await run_interaction_sync(pool)
+
+        # Should be grouped to one row by (sender, channel, date)
+        assert result["processed"] == 1
+        assert result["logged"] == 1
+
+
+async def test_interaction_sync_different_channels_logged_separately(
+    provisioned_postgres_pool,
+):
+    """Same contact via different channels (telegram + email) → two separate facts."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Eve")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="tg_eve"
+        )
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="eve@example.com"
+        )
+
+        await _insert_message_inbox(
+            pool,
+            sender_identity="tg_eve",
+            source_channel="telegram_user_client",
+        )
+        await _insert_message_inbox(
+            pool,
+            sender_identity="eve@example.com",
+            source_channel="email",
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 2
+        rows = await pool.fetch(
+            "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+            f"contact:{contact_id}",
+        )
+        assert len(rows) == 2
+
+
+async def test_interaction_sync_old_messages_excluded(provisioned_postgres_pool):
+    """Messages older than the lookback window are not processed."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Frank")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="old_sender"
+        )
+        # Insert a message 3 days old (outside the 25h lookback window)
+        old_ts = datetime.now(UTC) - timedelta(days=3)
+        await _insert_message_inbox(
+            pool,
+            sender_identity="old_sender",
+            source_channel="telegram_user_client",
+            received_at=old_ts,
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["processed"] == 0
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_unknown_channel_ignored(provisioned_postgres_pool):
+    """Messages from unsupported channels (e.g. telegram_bot) are not processed."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Grace")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="bot_sender"
+        )
+        await _insert_message_inbox(
+            pool,
+            sender_identity="bot_sender",
+            source_channel="telegram_bot",  # NOT in supported channels
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["processed"] == 0
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool):
+    """Running interaction sync twice for the same messages does not create duplicate facts."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Henry")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="idem_tg"
+        )
+        await _insert_message_inbox(
+            pool,
+            sender_identity="idem_tg",
+            source_channel="telegram_user_client",
+        )
+
+        # First run
+        result1 = await run_interaction_sync(pool)
+        assert result1["logged"] == 1
+
+        # Second run — same messages still in inbox
+        result2 = await run_interaction_sync(pool)
+        # Should be skipped as duplicate (interaction_log idempotency guard)
+        assert result2["logged"] == 0
+
+        # Only one fact should exist
+        rows = await pool.fetch(
+            "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+            f"contact:{contact_id}",
+        )
+        assert len(rows) == 1
+
+
+async def test_interaction_sync_whatsapp_channel_resolved(provisioned_postgres_pool):
+    """A resolved whatsapp_user_client message is logged via whatsapp_jid contact_info."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Ivan")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="whatsapp_jid", value="5591999@s.whatsapp.net"
+        )
+        await _insert_message_inbox(
+            pool,
+            sender_identity="5591999@s.whatsapp.net",
+            source_channel="whatsapp_user_client",
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1
+        assert result["errors"] == 0
+
+
+async def test_interaction_sync_email_channel_resolved(provisioned_postgres_pool):
+    """A resolved email message is logged via email contact_info."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Jane")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="jane@example.com"
+        )
+        await _insert_message_inbox(
+            pool,
+            sender_identity="jane@example.com",
+            source_channel="email",
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1
