@@ -6651,15 +6651,23 @@ class ButlerDaemon:
         Failures are non-fatal: a warning is logged and startup continues so
         that one misconfigured module cannot prevent the butler from serving.
 
-        The repo root is derived from ``config_dir``.  Since ``config_dir`` is
-        ``roster/<butler-name>/``, its resolved grandparent is the repository
-        root used for worktree creation by self-healing and QA modules.
+        The repo root is located by walking up from ``config_dir`` until a
+        ``pyproject.toml`` marker is found.  This handles both the standard
+        ``roster/<butler-name>/`` layout and arbitrary config directories passed
+        in tests or custom deployments.  Falls back to ``config_dir.parent``
+        if no marker is found.
         """
         if self.spawner is None:
             logger.debug("_wire_module_runtime: spawner not yet set — skipping")
             return
 
-        repo_root = self.config_dir.resolve().parent.parent
+        # Walk up from config_dir to find the repo root (marked by pyproject.toml).
+        _candidate = self.config_dir.resolve()
+        repo_root = _candidate.parent  # fallback: one level up
+        for _parent in [_candidate, *_candidate.parents]:
+            if (_parent / "pyproject.toml").exists():
+                repo_root = _parent
+                break
 
         for mod in self._active_modules:
             wire_fn = getattr(mod, "wire_runtime", None)
@@ -6677,10 +6685,8 @@ class ButlerDaemon:
                     mod.name,
                     "connected" if self.switchboard_client is not None else "None",
                 )
-            except Exception as exc:
-                logger.warning(
-                    "Module '%s' wire_runtime() failed: %s", mod.name, exc, exc_info=True
-                )
+            except Exception:
+                logger.warning("Module '%s' wire_runtime() failed", mod.name, exc_info=True)
 
     async def shutdown(self) -> None:
         """Graceful shutdown.

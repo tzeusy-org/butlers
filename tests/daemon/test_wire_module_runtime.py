@@ -59,11 +59,8 @@ def _make_butler_toml(tmp_path: Path, modules: dict | None = None) -> Path:
     return tmp_path
 
 
-def _patch_infra(switchboard_url: str | None = "http://sb:9000"):
-    """Return patches dict for all infrastructure dependencies.
-
-    Sets switchboard_url in the config so that _connect_switchboard fires.
-    """
+def _patch_infra():
+    """Return patches dict for all infrastructure dependencies."""
     mock_pool = AsyncMock()
     mock_pool.fetchval = AsyncMock(return_value=None)
 
@@ -99,9 +96,7 @@ def _patch_infra(switchboard_url: str | None = "http://sb:9000"):
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.daemon.FastMCP"),
         "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(
-            ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock
-        ),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "create_audit_pool": patch.object(
             ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
         ),

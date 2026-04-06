@@ -321,7 +321,7 @@ class QaModule(Module):
 
         # Switchboard client — injected via wire_runtime() from the daemon.
         # Enables inter-butler communication via Switchboard route() calls.
-        self._switchboard_client: Any = None
+        self._switchboard_client: Any | None = None
 
         # Rate-limit missing-token notifications to once per patrol cycle.
         # Stores the patrol_id of the last patrol where we sent the alert.
