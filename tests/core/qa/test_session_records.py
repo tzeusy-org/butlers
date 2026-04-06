@@ -66,20 +66,16 @@ def _make_source(pool: AsyncMock | None = None) -> SessionRecordsSource:
 # ---------------------------------------------------------------------------
 
 
-def test_session_records_protocol_and_discover_is_async():
-    """SessionRecordsSource implements DiscoverySource; discover() is async."""
-    import inspect
-
-    mock_pool = MagicMock()
-    source = SessionRecordsSource(pool=mock_pool)
-    assert isinstance(source, DiscoverySource)
-    assert source.name == "session_records"
-    assert inspect.iscoroutinefunction(source.discover)
-
-
 @pytest.mark.asyncio
 async def test_health_check_and_query_behavior():
-    """Health check runs before main query; failure propagates; lookback passed correctly; empty view returns []."""
+    """Protocol compliance; health check runs before main query; failure propagates; lookback passed correctly; empty view returns []."""
+    import inspect
+    mock_pool = MagicMock()
+    source0 = SessionRecordsSource(pool=mock_pool)
+    assert isinstance(source0, DiscoverySource)
+    assert source0.name == "session_records"
+    assert inspect.iscoroutinefunction(source0.discover)
+
     # Health check called first; fetch called after
     pool = AsyncMock(spec=asyncpg.Pool)
     pool.execute = AsyncMock(return_value=None)
@@ -176,25 +172,13 @@ async def test_finding_construction_fingerprint_and_aggregation():
     findings5 = await SessionRecordsSource(pool=pool5).discover(lookback_minutes=15)
     assert len(findings5) == 2
 
-
-@pytest.mark.parametrize(
-    "status,expected_type",
-    [
-        ("timeout", "SessionTimeoutError"),
-        ("crash", "SessionCrashError"),
-    ],
-)
-@pytest.mark.asyncio
-async def test_status_maps_to_exception_type(status, expected_type):
-    """Session status is mapped to the correct synthetic exception_type."""
-    pool = AsyncMock(spec=asyncpg.Pool)
-    pool.execute = AsyncMock(return_value=None)
-    row = _make_asyncpg_record(status=status, error=None, healing_fingerprint=None)
-    pool.fetch = AsyncMock(return_value=[row])
-
-    source = SessionRecordsSource(pool=pool)
-    findings = await source.discover(lookback_minutes=15)
-    assert findings[0].exception_type == expected_type
+    # Status maps to synthetic exception_type
+    for status, expected_type in [("timeout", "SessionTimeoutError"), ("crash", "SessionCrashError")]:
+        pool6 = AsyncMock(spec=asyncpg.Pool)
+        pool6.execute = AsyncMock(return_value=None)
+        pool6.fetch = AsyncMock(return_value=[_make_asyncpg_record(status=status, error=None, healing_fingerprint=None)])
+        findings6 = await SessionRecordsSource(pool=pool6).discover(lookback_minutes=15)
+        assert findings6[0].exception_type == expected_type
 
 
 @pytest.mark.asyncio

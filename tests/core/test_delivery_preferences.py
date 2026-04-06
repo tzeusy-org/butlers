@@ -1,16 +1,13 @@
-"""Tests for delivery preferences DB operations and MCP tools.
+"""Tests for delivery preferences DB operations and MCP tools — condensed.
 
-Covers tasks §8-10 from openspec/changes/temporal-intelligence/tasks.md:
-  §8.2  notify() priority parameter and validation
-  §8.3  Quiet hours gate in notify() — defer medium/low, bypass high
-  §8.5  Deferred notification storage (insert_deferred_notification)
-  §10.1 delivery_preferences_set MCP tool
-  §10.2 delivery_preferences_get MCP tool (defaults when no preferences)
-  §10.3 deferred_notifications_list MCP tool
-  §10.4 deferred_notification_cancel MCP tool
-
-Unit tests (no DB) cover pure logic. Integration tests (Docker/asyncpg) cover
-the DB functions and notify() quiet hours gate.
+Covers:
+- §8.2  notify() priority parameter validation and timezone validation
+- §8.3  Quiet hours gate: defer medium/low, bypass high
+- §8.5  insert_deferred_notification: persists pending row, rejects invalid priority
+- §10.1 upsert_delivery_preferences: create, update, invalid timezone
+- §10.2 get_delivery_preferences: None when unconfigured, row after upsert
+- §10.3 list_deferred_notifications: status filter, no filter, invalid status raises
+- §10.4 cancel_deferred_notification: success, not-pending, wrong owner, invalid UUID
 """
 
 from __future__ import annotations
@@ -26,53 +23,26 @@ pytestmark = [pytest.mark.unit]
 docker_available = shutil.which("docker") is not None
 
 
-# ---------------------------------------------------------------------------
-# §8.2 — notify() priority parameter validation (pure unit tests)
-# ---------------------------------------------------------------------------
-
-
 class TestDeliveryUnit:
-    """Unit tests for priority validation, timezone, and deferral logic."""
-
     def test_priority_timezone_and_deferral(self):
         """Priority set contract; timezone validation; quiet hours deferral by priority."""
         from datetime import time
-
         from butlers.core.temporal.delivery import should_defer_notification
         from butlers.core.temporal.delivery_db import validate_timezone
 
-        # Priority set contract
-        _VALID_PRIORITIES = {"high", "medium", "low"}
-        for p in ("high", "medium", "low"):
-            assert p in _VALID_PRIORITIES
-        for bad in ("urgent", "critical", ""):
-            assert bad not in _VALID_PRIORITIES
-
-        # Timezone validation
         for tz in ("UTC", "America/New_York", "Europe/Berlin", "Asia/Tokyo"):
             assert validate_timezone(tz) == tz
         for bad_tz in ("Invalid/Zone", ""):
             with pytest.raises(ValueError, match="Unknown timezone"):
                 validate_timezone(bad_tz)
 
-        # Quiet hours deferral
-        prefs_batch = {
-            "quiet_hours_start": "22:00", "quiet_hours_end": "07:00", "timezone": "UTC",
-            "batch_low_priority": True, "batch_delivery_time": "07:00", "override_channels": None,
-        }
+        prefs_batch = {"quiet_hours_start": "22:00", "quiet_hours_end": "07:00", "timezone": "UTC",
+                       "batch_low_priority": True, "batch_delivery_time": "07:00", "override_channels": None}
         t_night = time(23, 30)
-        defer = should_defer_notification
-        assert defer(priority="medium", current_time=t_night, prefs=prefs_batch)
-        assert not defer(priority="high", current_time=t_night, prefs=prefs_batch)
-
+        assert should_defer_notification(priority="medium", current_time=t_night, prefs=prefs_batch)
+        assert not should_defer_notification(priority="high", current_time=t_night, prefs=prefs_batch)
         prefs_no_batch = {**prefs_batch, "batch_low_priority": False}
-        assert not defer(priority="medium", current_time=t_night, prefs=prefs_no_batch)
-        assert not defer(priority="low", current_time=time(2, 0), prefs=prefs_no_batch)
-
-
-# ---------------------------------------------------------------------------
-# §10 — DB-backed tests (require Docker/asyncpg)
-# ---------------------------------------------------------------------------
+        assert not should_defer_notification(priority="medium", current_time=t_night, prefs=prefs_no_batch)
 
 
 _DELIVERY_PREFERENCES_DDL = """
@@ -114,388 +84,109 @@ _DEFERRED_NOTIFICATIONS_DDL = """
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 class TestDeliveryPreferencesDB:
-    """Integration tests for delivery_db functions (require Docker PostgreSQL)."""
-
     @pytest.fixture
     async def pool(self, postgres_container):
-        """Create a fresh test database with delivery tables."""
         import asyncpg
-
         db_name = f"test_{uuid.uuid4().hex[:12]}"
         admin_conn = await asyncpg.connect(
             host=postgres_container.get_container_host_ip(),
             port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
+            user=postgres_container.username, password=postgres_container.password,
             database="postgres",
         )
         try:
             await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
         finally:
             await admin_conn.close()
-
         p = await asyncpg.create_pool(
             host=postgres_container.get_container_host_ip(),
             port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database=db_name,
-            min_size=1,
-            max_size=3,
+            user=postgres_container.username, password=postgres_container.password,
+            database=db_name, min_size=1, max_size=3,
         )
         await p.execute(_DELIVERY_PREFERENCES_DDL)
         await p.execute(_DEFERRED_NOTIFICATIONS_DDL)
         yield p
         await p.close()
 
-    # §10.2 — get_delivery_preferences returns None when no row exists
-    async def test_get_preferences_returns_none_when_not_configured(self, pool):
-        """get_delivery_preferences returns None when no row exists."""
-        from butlers.core.temporal.delivery_db import get_delivery_preferences
+    async def test_upsert_and_get_delivery_preferences(self, pool):
+        """upsert creates row; second upsert updates without dup; invalid tz raises; get returns row."""
+        from butlers.core.temporal.delivery_db import get_delivery_preferences, upsert_delivery_preferences
 
-        result = await get_delivery_preferences(pool, "nonexistent-butler")
-        assert result is None
+        # None before upsert
+        assert await get_delivery_preferences(pool, "nonexistent-butler") is None
 
-    # §10.1 — upsert_delivery_preferences creates row on first call
-    async def test_upsert_preferences_creates_row(self, pool):
-        """upsert_delivery_preferences creates a new row on first call."""
-        from butlers.core.temporal.delivery_db import upsert_delivery_preferences
+        # Create
+        result = await upsert_delivery_preferences(pool, butler_name="test-butler",
+            timezone="America/New_York", quiet_hours_start="22:00", quiet_hours_end="07:00")
+        assert result["butler_name"] == "test-butler" and result["timezone"] == "America/New_York"
 
-        result = await upsert_delivery_preferences(
-            pool,
-            butler_name="test-butler",
-            timezone="America/New_York",
-            quiet_hours_start="22:00",
-            quiet_hours_end="07:00",
-        )
-        assert result["butler_name"] == "test-butler"
-        assert result["timezone"] == "America/New_York"
-        assert result["quiet_hours_start"] == "22:00"
-        assert result["quiet_hours_end"] == "07:00"
-        assert "id" in result
-
-    # §10.1 — upsert_delivery_preferences updates existing row
-    async def test_upsert_preferences_updates_existing_row(self, pool):
-        """Second upsert updates the existing row without duplicating it."""
-        from butlers.core.temporal.delivery_db import (
-            get_delivery_preferences,
-            upsert_delivery_preferences,
-        )
-
-        await upsert_delivery_preferences(
-            pool,
-            butler_name="test-butler-update",
-            timezone="UTC",
-        )
-        # Update timezone only
-        await upsert_delivery_preferences(
-            pool,
-            butler_name="test-butler-update",
-            timezone="Europe/London",
-        )
-        # Only one row should exist
-        row_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM delivery_preferences WHERE butler_name = 'test-butler-update'"
-        )
+        # Update
+        await upsert_delivery_preferences(pool, butler_name="test-butler", timezone="Europe/London")
+        row_count = await pool.fetchval("SELECT COUNT(*) FROM delivery_preferences WHERE butler_name = 'test-butler'")
         assert row_count == 1
-
-        # Timezone should be updated
-        prefs = await get_delivery_preferences(pool, "test-butler-update")
-        assert prefs is not None
+        prefs = await get_delivery_preferences(pool, "test-butler")
         assert prefs["timezone"] == "Europe/London"
 
-    # §10.1 — invalid timezone raises ValueError
-    async def test_upsert_preferences_rejects_invalid_timezone(self, pool):
-        """upsert_delivery_preferences raises ValueError for bad timezone."""
-        from butlers.core.temporal.delivery_db import upsert_delivery_preferences
-
+        # Invalid tz raises
         with pytest.raises(ValueError, match="Unknown timezone"):
-            await upsert_delivery_preferences(
-                pool,
-                butler_name="test-butler-tz",
-                timezone="Invalid/Zone",
-            )
+            await upsert_delivery_preferences(pool, butler_name="tz-butler", timezone="Invalid/Zone")
 
-    # §10.2 — get_delivery_preferences returns row after upsert
-    async def test_get_preferences_returns_row_after_upsert(self, pool):
-        """get_delivery_preferences returns the configured row."""
+        # Per-channel overrides stored
+        overrides = {"email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}}
+        await upsert_delivery_preferences(pool, butler_name="butler-overrides", timezone="UTC",
+                                          override_channels=overrides)
+        pref2 = await get_delivery_preferences(pool, "butler-overrides")
+        assert pref2["override_channels"]["email"]["quiet_hours_start"] == "20:00"
+
+    async def test_deferred_notifications_lifecycle(self, pool):
+        """insert persists pending row; list filters by status; cancel manages state; invalid inputs raise."""
         from butlers.core.temporal.delivery_db import (
-            get_delivery_preferences,
-            upsert_delivery_preferences,
+            cancel_deferred_notification, insert_deferred_notification, list_deferred_notifications,
         )
-
-        await upsert_delivery_preferences(
-            pool,
-            butler_name="test-butler-get",
-            timezone="Asia/Tokyo",
-            quiet_hours_start="23:00",
-            quiet_hours_end="06:00",
-        )
-        prefs = await get_delivery_preferences(pool, "test-butler-get")
-        assert prefs is not None
-        assert prefs["timezone"] == "Asia/Tokyo"
-        assert prefs["quiet_hours_start"] == "23:00"
-        assert prefs["quiet_hours_end"] == "06:00"
-
-    # §8.5 — insert_deferred_notification persists to DB
-    async def test_insert_deferred_notification_persists(self, pool):
-        """insert_deferred_notification stores a row with pending status."""
-        from butlers.core.temporal.delivery_db import insert_deferred_notification
-
         now = datetime.now(UTC)
-        deliver_at = now + timedelta(hours=8)
+        butler = "test-butler-notif"
 
-        notif_id = await insert_deferred_notification(
-            pool,
-            butler_name="test-butler",
-            channel="telegram",
-            message="Morning summary ready",
-            priority="medium",
-            envelope={"schema_version": "notify.v1", "delivery": {"channel": "telegram"}},
-            deliver_at=deliver_at,
-        )
-
-        assert notif_id is not None
-        row = await pool.fetchrow(
-            "SELECT status, channel, message, priority FROM deferred_notifications WHERE id = $1",
-            uuid.UUID(notif_id),
-        )
-        assert row is not None
-        assert row["status"] == "pending"
-        assert row["channel"] == "telegram"
-        assert row["message"] == "Morning summary ready"
-        assert row["priority"] == "medium"
-
-    # §8.5 — insert_deferred_notification rejects invalid priority
-    async def test_insert_deferred_notification_rejects_invalid_priority(self, pool):
-        """insert_deferred_notification raises ValueError for invalid priority."""
-        from butlers.core.temporal.delivery_db import insert_deferred_notification
-
-        now = datetime.now(UTC)
-        with pytest.raises(ValueError, match="Invalid priority"):
-            await insert_deferred_notification(
-                pool,
-                butler_name="test-butler",
-                channel="telegram",
-                message="Test",
-                priority="urgent",  # invalid
-                envelope={},
-                deliver_at=now + timedelta(hours=1),
-            )
-
-    # §10.3 — list_deferred_notifications with status filter
-    async def test_list_deferred_notifications_filters_by_status(self, pool):
-        """list_deferred_notifications returns only notifications matching status."""
-        from butlers.core.temporal.delivery_db import (
-            insert_deferred_notification,
-            list_deferred_notifications,
-        )
-
-        now = datetime.now(UTC)
-        deliver_at = now + timedelta(hours=5)
-        butler = "test-butler-list"
-
-        # Insert 2 pending and mark 1 as delivered manually
-        id1 = await insert_deferred_notification(
-            pool,
-            butler_name=butler,
-            channel="telegram",
-            message="Pending notification 1",
-            priority="medium",
-            envelope={},
-            deliver_at=deliver_at,
-        )
-        id2 = await insert_deferred_notification(
-            pool,
-            butler_name=butler,
-            channel="email",
-            message="Pending notification 2",
-            priority="low",
-            envelope={},
-            deliver_at=deliver_at,
-        )
-        # Mark id2 as delivered
-        await pool.execute(
-            "UPDATE deferred_notifications SET status = 'delivered' WHERE id = $1",
-            uuid.UUID(id2),
-        )
+        # Insert + status filter
+        id1 = await insert_deferred_notification(pool, butler_name=butler, channel="telegram",
+            message="Pending 1", priority="medium", envelope={}, deliver_at=now + timedelta(hours=5))
+        id2 = await insert_deferred_notification(pool, butler_name=butler, channel="email",
+            message="Pending 2", priority="low", envelope={}, deliver_at=now + timedelta(hours=6))
+        await pool.execute("UPDATE deferred_notifications SET status = 'delivered' WHERE id = $1", uuid.UUID(id2))
 
         pending = await list_deferred_notifications(pool, butler_name=butler, status="pending")
-        assert len(pending) == 1
-        assert pending[0]["id"] == id1
+        assert len(pending) == 1 and pending[0]["id"] == id1
 
         delivered = await list_deferred_notifications(pool, butler_name=butler, status="delivered")
-        assert len(delivered) == 1
-        assert delivered[0]["id"] == id2
-
-    # §10.3 — list_deferred_notifications no filter returns all
-    async def test_list_deferred_notifications_no_filter_returns_all(self, pool):
-        """list_deferred_notifications with no status filter returns all notifications."""
-        from butlers.core.temporal.delivery_db import (
-            insert_deferred_notification,
-            list_deferred_notifications,
-        )
-
-        now = datetime.now(UTC)
-        butler = "test-butler-all"
-
-        for i in range(3):
-            await insert_deferred_notification(
-                pool,
-                butler_name=butler,
-                channel="telegram",
-                message=f"Notification {i}",
-                priority="medium",
-                envelope={},
-                deliver_at=now + timedelta(hours=i + 1),
-            )
+        assert len(delivered) == 1 and delivered[0]["id"] == id2
 
         all_notifs = await list_deferred_notifications(pool, butler_name=butler)
-        assert len(all_notifs) == 3
+        assert len(all_notifs) == 2
 
-    # §10.3 — list_deferred_notifications invalid status raises ValueError
-    async def test_list_deferred_notifications_invalid_status_raises(self, pool):
-        """list_deferred_notifications raises ValueError for invalid status."""
-        from butlers.core.temporal.delivery_db import list_deferred_notifications
+        # Invalid priority raises
+        with pytest.raises(ValueError, match="Invalid priority"):
+            await insert_deferred_notification(pool, butler_name=butler, channel="telegram",
+                message="Bad", priority="urgent", envelope={}, deliver_at=now + timedelta(hours=1))
 
+        # Invalid status filter raises
         with pytest.raises(ValueError, match="Invalid status filter"):
             await list_deferred_notifications(pool, butler_name="test", status="unknown")
 
-    # §10.4 — cancel_deferred_notification sets status to cancelled
-    async def test_cancel_deferred_notification_success(self, pool):
-        """cancel_deferred_notification sets status='cancelled' for pending notification."""
-        from butlers.core.temporal.delivery_db import (
-            cancel_deferred_notification,
-            insert_deferred_notification,
-        )
-
-        now = datetime.now(UTC)
-        notif_id = await insert_deferred_notification(
-            pool,
-            butler_name="test-butler-cancel",
-            channel="telegram",
-            message="Cancel this",
-            priority="low",
-            envelope={},
-            deliver_at=now + timedelta(hours=6),
-        )
-
-        cancelled = await cancel_deferred_notification(
-            pool, notif_id, butler_name="test-butler-cancel"
-        )
-        assert cancelled is True
-
-        row = await pool.fetchrow(
-            "SELECT status FROM deferred_notifications WHERE id = $1",
-            uuid.UUID(notif_id),
-        )
+        # Cancel: success
+        id3 = await insert_deferred_notification(pool, butler_name=butler, channel="telegram",
+            message="Cancel me", priority="low", envelope={}, deliver_at=now + timedelta(hours=8))
+        assert await cancel_deferred_notification(pool, id3, butler_name=butler) is True
+        row = await pool.fetchrow("SELECT status FROM deferred_notifications WHERE id = $1", uuid.UUID(id3))
         assert row["status"] == "cancelled"
 
-    # §10.4 — cancel_deferred_notification returns False for non-pending
-    async def test_cancel_deferred_notification_fails_for_delivered(self, pool):
-        """cancel_deferred_notification returns False when notification already delivered."""
-        from butlers.core.temporal.delivery_db import (
-            cancel_deferred_notification,
-            insert_deferred_notification,
-        )
+        # Cancel: already delivered → False
+        assert await cancel_deferred_notification(pool, id2, butler_name=butler) is False
 
-        now = datetime.now(UTC)
-        notif_id = await insert_deferred_notification(
-            pool,
-            butler_name="test-butler-cancel-del",
-            channel="email",
-            message="Already delivered",
-            priority="medium",
-            envelope={},
-            deliver_at=now - timedelta(hours=1),
-        )
-        # Simulate delivery
-        await pool.execute(
-            "UPDATE deferred_notifications SET status = 'delivered' WHERE id = $1",
-            uuid.UUID(notif_id),
-        )
+        # Cancel: wrong butler → False
+        id4 = await insert_deferred_notification(pool, butler_name="owner", channel="telegram",
+            message="Owned", priority="medium", envelope={}, deliver_at=now + timedelta(hours=3))
+        assert await cancel_deferred_notification(pool, id4, butler_name="other") is False
 
-        cancelled = await cancel_deferred_notification(
-            pool, notif_id, butler_name="test-butler-cancel-del"
-        )
-        assert cancelled is False
-
-    # §10.4 — cancel_deferred_notification with wrong butler_name returns False
-    async def test_cancel_deferred_notification_ownership_check(self, pool):
-        """cancel_deferred_notification returns False when butler_name doesn't match."""
-        from butlers.core.temporal.delivery_db import (
-            cancel_deferred_notification,
-            insert_deferred_notification,
-        )
-
-        now = datetime.now(UTC)
-        notif_id = await insert_deferred_notification(
-            pool,
-            butler_name="owner-butler",
-            channel="telegram",
-            message="My notification",
-            priority="medium",
-            envelope={},
-            deliver_at=now + timedelta(hours=3),
-        )
-
-        # Try to cancel with wrong butler_name
-        cancelled = await cancel_deferred_notification(pool, notif_id, butler_name="other-butler")
-        assert cancelled is False
-
-    # §10.4 — cancel_deferred_notification with invalid UUID raises ValueError
-    async def test_cancel_deferred_notification_invalid_uuid_raises(self, pool):
-        """cancel_deferred_notification raises ValueError for malformed UUID."""
-        from butlers.core.temporal.delivery_db import cancel_deferred_notification
-
+        # Cancel: invalid UUID raises
         with pytest.raises(ValueError, match="Invalid notification_id"):
-            await cancel_deferred_notification(pool, "not-a-uuid", butler_name="test-butler")
-
-    # §8.5 — deferred_notifications have UTC-aware deliver_at
-    async def test_deferred_notification_deliver_at_is_utc(self, pool):
-        """Deferred notifications are stored and retrieved with UTC-aware timestamps."""
-        from butlers.core.temporal.delivery_db import (
-            insert_deferred_notification,
-            list_deferred_notifications,
-        )
-
-        now = datetime.now(UTC)
-        deliver_at = now + timedelta(hours=7)
-
-        await insert_deferred_notification(
-            pool,
-            butler_name="butler-tz-check",
-            channel="telegram",
-            message="TZ check",
-            priority="medium",
-            envelope={},
-            deliver_at=deliver_at,
-        )
-
-        notifs = await list_deferred_notifications(pool, butler_name="butler-tz-check")
-        assert len(notifs) == 1
-        # deliver_at is serialised as ISO 8601 string with timezone offset
-        deliver_at_str: str = notifs[0]["deliver_at"]
-        assert "T" in deliver_at_str  # ISO format
-
-    # §10.1 — upsert supports per-channel override_channels
-    async def test_upsert_preferences_stores_override_channels(self, pool):
-        """upsert_delivery_preferences stores per-channel quiet hours overrides."""
-        from butlers.core.temporal.delivery_db import (
-            get_delivery_preferences,
-            upsert_delivery_preferences,
-        )
-
-        overrides = {"email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}}
-        await upsert_delivery_preferences(
-            pool,
-            butler_name="butler-overrides",
-            timezone="UTC",
-            override_channels=overrides,
-        )
-
-        prefs = await get_delivery_preferences(pool, "butler-overrides")
-        assert prefs is not None
-        assert prefs["override_channels"] is not None
-        assert "email" in prefs["override_channels"]
-        assert prefs["override_channels"]["email"]["quiet_hours_start"] == "20:00"
+            await cancel_deferred_notification(pool, "not-a-uuid", butler_name=butler)

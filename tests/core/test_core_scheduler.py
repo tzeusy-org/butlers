@@ -7,6 +7,8 @@ Covers:
 - schedule_list: field presence contract
 - until_at: auto-disable when exceeded
 - deadline task type: create with required fields
+- cron staggering: determinism, cap, cadence preservation
+- notify() validation: _check_notify_reference, sync_schedules warning behavior
 """
 
 from __future__ import annotations
@@ -200,107 +202,64 @@ async def test_sync_updates_changed_fields_and_disables_removed(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_tick_dispatches_due_prompt_task(pool):
-    """tick() dispatches overdue prompt tasks with correct trigger_source."""
+async def test_tick_dispatch_prompt_and_job(pool):
+    """tick() dispatches prompt tasks with trigger_source; job tasks via job_name/job_args without prompt/complexity."""
     from butlers.core.scheduler import schedule_create, tick
 
-    task_id = await schedule_create(pool, "due-task", "*/1 * * * *", "run this")
-    await pool.execute(
-        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
-    )
-
+    # Prompt task
+    t1 = await schedule_create(pool, "due-task", "*/1 * * * *", "run this")
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t1, _past())
     dispatch = _Dispatch()
     count = await tick(pool, dispatch)
-
     assert count == 1
     assert dispatch.calls[0]["prompt"] == "run this"
     assert dispatch.calls[0]["trigger_source"] == "schedule:due-task"
 
+    # Job task
+    t2 = await schedule_create(
+        pool, "due-job", "*/1 * * * *",
+        dispatch_mode="job", job_name="eligibility_sweep", job_args={"batch_size": 25},
+    )
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t2, _past())
+    dispatch2 = _Dispatch()
+    await tick(pool, dispatch2)
+    call = dispatch2.calls[0]
+    assert call["job_name"] == "eligibility_sweep" and call["job_args"] == {"batch_size": 25}
+    assert "prompt" not in call and "complexity" not in call
 
-async def test_tick_dispatches_job_mode_task(pool):
-    """tick() dispatches job-mode tasks via job_name/job_args without complexity."""
+
+async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
+    """tick() skips disabled tasks; continues when dispatch raises; sets last_run_at; advances next_run_at; disables when until_at exceeded."""
     from butlers.core.scheduler import schedule_create, tick
 
-    task_id = await schedule_create(
-        pool,
-        "due-job",
-        "*/1 * * * *",
-        dispatch_mode="job",
-        job_name="eligibility_sweep",
-        job_args={"batch_size": 25},
-    )
-    await pool.execute(
-        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
-    )
-
-    dispatch = _Dispatch()
-    await tick(pool, dispatch)
-
-    assert dispatch.calls[0]["job_name"] == "eligibility_sweep"
-    assert dispatch.calls[0]["job_args"] == {"batch_size": 25}
-    assert "prompt" not in dispatch.calls[0]
-    assert "complexity" not in dispatch.calls[0]
-
-
-async def test_tick_skips_disabled_and_continues_on_failure(pool):
-    """tick() skips disabled tasks and continues when dispatch raises."""
-    from butlers.core.scheduler import schedule_create, tick
-
-    # Disabled task
-    t1 = await schedule_create(pool, "disabled-task", "*/1 * * * *", "skip me")
+    # Disabled task — skipped
+    t1 = await schedule_create(pool, "disabled-task2", "*/1 * * * *", "skip me")
     await pool.execute(
         "UPDATE scheduled_tasks SET next_run_at = $2, enabled = false WHERE id = $1", t1, _past()
     )
-    # Task that fails
-    t2 = await schedule_create(pool, "fail-task", "*/1 * * * *", "I will fail")
+    # Task that fails — attempted but not counted
+    t2 = await schedule_create(pool, "fail-task2", "*/1 * * * *", "I will fail")
     await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t2, _past())
-
     dispatch = _Dispatch(fail_on={"I will fail"})
     count = await tick(pool, dispatch)
-
-    # disabled task not dispatched, failing task attempted but doesn't count as success
     assert count == 0
     assert len(dispatch.calls) == 1  # only the fail-task was attempted
 
-
-async def test_tick_updates_timestamps_and_advances_next_run_at(pool):
-    """tick() sets last_run_at and advances next_run_at into the future."""
-    from butlers.core.scheduler import schedule_create, tick
-
-    task_id = await schedule_create(pool, "advance-task", "*/5 * * * *", "advance")
-    await pool.execute(
-        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past(10)
-    )
-
+    # Timestamps advance after success
+    t3 = await schedule_create(pool, "advance-task2", "*/5 * * * *", "advance")
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t3, _past(10))
     await tick(pool, _Dispatch())
-
-    row = await pool.fetchrow(
-        "SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1", task_id
-    )
+    row = await pool.fetchrow("SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1", t3)
     assert row["next_run_at"] > datetime.now(UTC) - timedelta(seconds=5)
     assert row["last_run_at"] is not None
 
-
-async def test_tick_auto_disables_when_until_at_exceeded(pool):
-    """tick() disables a task when next_run_at would exceed until_at."""
-    from butlers.core.scheduler import schedule_create, tick
-
+    # until_at exceeded → task disabled
     past_until = datetime.now(UTC) - timedelta(hours=1)
-    task_id = await schedule_create(
-        pool,
-        "until-task",
-        "*/1 * * * *",
-        "expiring",
-        until_at=past_until,
-    )
-    await pool.execute(
-        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", task_id, _past()
-    )
-
+    t4 = await schedule_create(pool, "until-task2", "*/1 * * * *", "expiring", until_at=past_until)
+    await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t4, _past())
     await tick(pool, _Dispatch())
-
-    row = await pool.fetchrow("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id)
-    assert row["enabled"] is False
+    row2 = await pool.fetchrow("SELECT enabled FROM scheduled_tasks WHERE id = $1", t4)
+    assert row2["enabled"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -309,61 +268,33 @@ async def test_tick_auto_disables_when_until_at_exceeded(pool):
 
 
 async def test_schedule_create_and_list(pool):
-    """schedule_create persists task; schedule_list returns it with required fields."""
+    """schedule_create persists prompt and job tasks; schedule_list returns fields; invalid cron and dup name raise."""
     from butlers.core.scheduler import schedule_create, schedule_list
 
+    # Prompt task with optional fields
     task_id = await schedule_create(
-        pool,
-        "list-task",
-        "0 9 * * *",
-        "list me",
-        complexity="high",
-        timezone="America/New_York",
-        display_title="List Task",
+        pool, "list-task", "0 9 * * *", "list me",
+        complexity="high", timezone="America/New_York", display_title="List Task",
     )
     assert task_id is not None
-
     tasks = await schedule_list(pool)
     task = next((t for t in tasks if t["name"] == "list-task"), None)
-    assert task is not None
-    assert task["complexity"] == "high"
-    assert task["timezone"] == "America/New_York"
-    assert task["dispatch_mode"] == "prompt"
+    assert task is not None and task["complexity"] == "high"
+    assert task["timezone"] == "America/New_York" and task["dispatch_mode"] == "prompt"
     assert task["last_result"] is None
 
+    # Job task
+    await schedule_create(pool, "job-list-task", "*/10 * * * *",
+                          dispatch_mode="job", job_name="my_job", job_args={"dry_run": True})
+    tasks2 = await schedule_list(pool)
+    jt = next(t for t in tasks2 if t["name"] == "job-list-task")
+    assert jt["dispatch_mode"] == "job" and jt["job_name"] == "my_job" and jt["prompt"] is None
 
-async def test_schedule_create_job_mode_and_list(pool):
-    """schedule_create with job mode; schedule_list returns job fields."""
-    from butlers.core.scheduler import schedule_create, schedule_list
-
-    await schedule_create(
-        pool,
-        "job-list-task",
-        "*/10 * * * *",
-        dispatch_mode="job",
-        job_name="my_job",
-        job_args={"dry_run": True},
-    )
-
-    tasks = await schedule_list(pool)
-    task = next(t for t in tasks if t["name"] == "job-list-task")
-    assert task["dispatch_mode"] == "job"
-    assert task["job_name"] == "my_job"
-    assert task["prompt"] is None
-
-
-async def test_schedule_create_invalid_cron_raises(pool):
-    """schedule_create raises ValueError for invalid cron expressions."""
-    from butlers.core.scheduler import schedule_create
-
+    # Invalid cron raises
     with pytest.raises((ValueError, Exception)):
         await schedule_create(pool, "bad-cron", "not-a-cron", "test")
 
-
-async def test_schedule_create_duplicate_name_raises(pool):
-    """schedule_create raises when task name already exists."""
-    from butlers.core.scheduler import schedule_create
-
+    # Duplicate name raises
     await schedule_create(pool, "dup-name", "0 9 * * *", "first")
     with pytest.raises(Exception):
         await schedule_create(pool, "dup-name", "0 10 * * *", "second")
@@ -384,36 +315,31 @@ async def test_schedule_update_and_delete(pool):
     assert await pool.fetchrow("SELECT id FROM scheduled_tasks WHERE id = $1", task_id) is None
 
 
-async def test_schedule_update_invalid_cron_raises(pool):
-    """schedule_update raises for invalid cron; nonexistent ID raises."""
+async def test_schedule_validation(pool):
+    """schedule_update raises for invalid cron and nonexistent ID; complexity enforced on create and update."""
     from butlers.core.scheduler import schedule_create, schedule_update
 
+    # Invalid cron on update
     task_id = await schedule_create(pool, "cron-update-bad", "0 9 * * *", "prompt")
     with pytest.raises((ValueError, Exception)):
         await schedule_update(pool, task_id, cron="bad-cron")
 
+    # Nonexistent ID raises
     with pytest.raises((ValueError, Exception)):
         await schedule_update(pool, uuid.uuid4(), prompt="does not exist")
 
-
-async def test_schedule_complexity_validation(pool):
-    """schedule_create/update enforce valid complexity values."""
-    from butlers.core.scheduler import schedule_create, schedule_update
-
-    # Invalid on create
+    # Complexity: invalid on create
     with pytest.raises(ValueError, match="complexity"):
         await schedule_create(pool, "bad-complexity", "0 9 * * *", "work", complexity="ultra")
 
-    # Valid values accepted
-    task_id = await schedule_create(
-        pool, "good-complexity", "0 9 * * *", "work", complexity="extra_high"
-    )
-    row = await pool.fetchrow("SELECT complexity FROM scheduled_tasks WHERE id = $1", task_id)
+    # Complexity: valid accepted
+    t2 = await schedule_create(pool, "good-complexity", "0 9 * * *", "work", complexity="extra_high")
+    row = await pool.fetchrow("SELECT complexity FROM scheduled_tasks WHERE id = $1", t2)
     assert row["complexity"] == "extra_high"
 
-    # Invalid on update
+    # Complexity: invalid on update
     with pytest.raises(ValueError, match="complexity"):
-        await schedule_update(pool, task_id, complexity="super_high")
+        await schedule_update(pool, t2, complexity="super_high")
 
 
 # ---------------------------------------------------------------------------
@@ -454,3 +380,106 @@ async def test_deadline_task_create(pool):
             "missing",
             task_type="deadline",
         )
+
+
+# ---------------------------------------------------------------------------
+# Cron staggering (unit tests — no DB required)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_stagger_determinism_cap_and_cadence() -> None:
+    """Same key/cron always same offset; every-minute capped; cadences preserved."""
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.core.scheduler import _next_run, _stagger_offset_seconds
+
+    now = datetime(2026, 2, 20, 12, 0, tzinfo=UTC)
+
+    # Determinism
+    first = _stagger_offset_seconds("0 * * * *", stagger_key="health", now=now)
+    assert first == _stagger_offset_seconds("0 * * * *", stagger_key="health", now=now)
+
+    # Per-minute cron capped within 60s
+    offset = _stagger_offset_seconds("* * * * *", stagger_key="switchboard", now=now)
+    assert 0 <= offset <= 59
+
+    # No stagger key same as None
+    base = _next_run("0 * * * *", now=now)
+    assert _next_run("0 * * * *", stagger_key=None, now=now) == base
+
+    # 5-minute cadence preserved
+    first_5 = _next_run("*/5 * * * *", stagger_key="general", now=now)
+    second_5 = _next_run("*/5 * * * *", stagger_key="general", now=first_5)
+    assert second_5 - first_5 == timedelta(minutes=5)
+
+    # 1-minute cadence preserved
+    first_1 = _next_run("* * * * *", stagger_key="messenger", now=now)
+    second_1 = _next_run("* * * * *", stagger_key="messenger", now=first_1)
+    assert second_1 - first_1 == timedelta(minutes=1)
+
+
+# ---------------------------------------------------------------------------
+# notify() validation in _check_notify_reference and sync_schedules
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_check_notify_reference(tmp_path, caplog) -> None:
+    """Warns when notify absent; silent when present or in skill; safe on missing dir."""
+    import logging
+
+    from butlers.core.scheduler import _check_notify_reference
+
+    # Present: no warning
+    with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
+        _check_notify_reference(task_name="report", prompt="Call notify() to send.", skills_dir=None)
+    assert "does not reference notify" not in caplog.text
+
+    # Case-insensitive: no warning
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
+        _check_notify_reference(task_name="task", prompt="Call NOTIFY() when done.", skills_dir=None)
+    assert "does not reference notify" not in caplog.text
+
+    # Absent: warning with task name
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
+        _check_notify_reference(task_name="cleanup-task", prompt="Delete old temp files.", skills_dir=None)
+    assert "does not reference notify" in caplog.text and "cleanup-task" in caplog.text
+
+    # Skill with notify suppresses warning
+    skill1 = tmp_path / "skills" / "daily-digest"
+    skill1.mkdir(parents=True)
+    (skill1 / "SKILL.md").write_text("# Daily Digest\nCall notify() to send it.", encoding="utf-8")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
+        _check_notify_reference(task_name="digest", prompt="Run the daily-digest skill.", skills_dir=tmp_path / "skills")
+    assert "does not reference notify" not in caplog.text
+
+    # Missing dir: safe
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
+        _check_notify_reference(task_name="task", prompt="Run some-skill.", skills_dir=tmp_path / "nonexistent")
+    assert "does not reference notify" in caplog.text
+
+
+async def test_sync_schedules_notify_validation(pool, caplog) -> None:
+    """sync_schedules warns only for prompt tasks missing notify(); job tasks and notify-present tasks silenced."""
+    import logging
+
+    from butlers.core.scheduler import sync_schedules
+
+    schedules = [
+        {"name": "good-prompt", "cron": "0 8 * * *", "dispatch_mode": "prompt",
+         "prompt": "Do something and notify(channel='telegram')."},
+        {"name": "bad-prompt", "cron": "0 9 * * *", "dispatch_mode": "prompt",
+         "prompt": "Do something quietly without alerting anyone."},
+        {"name": "job-task", "cron": "0 10 * * *", "dispatch_mode": "job", "job_name": "some-job"},
+    ]
+    with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
+        await sync_schedules(pool, schedules)
+
+    warning_records = [r for r in caplog.records if "does not reference notify" in r.message]
+    assert len(warning_records) == 1
+    assert "bad-prompt" in warning_records[0].message

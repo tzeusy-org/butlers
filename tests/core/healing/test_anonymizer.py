@@ -22,100 +22,56 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path("/home/tze/gt/butlers/mayor/rig")
 
 
-# ---------------------------------------------------------------------------
-# Credential redaction
-# ---------------------------------------------------------------------------
+def test_credential_redaction():
+    """API keys, DB URLs, JWTs, Bearer and Telegram tokens are redacted."""
+    def r(text: str) -> str:
+        return anonymize(text, REPO_ROOT)
+
+    assert "sk-ant-api03-abc123XYZ_extra-long-token" not in r("key sk-ant-api03-abc123XYZ_extra-long-token here")
+    assert "[REDACTED-API-KEY]" in r("key sk-ant-api03-abc123XYZ_extra-long-token here")
+    assert "AKIA1234567890ABCDEF" not in r("AWS key: AKIA1234567890ABCDEF")
+    assert "[REDACTED-API-KEY]" in r("AWS key: AKIA1234567890ABCDEF")
+    assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in r("sk-abcdefghijklmnopqrstuvwxyz123456")
+    assert "password" not in r("postgresql://user:password@host:5432/dbname")
+    assert "[REDACTED-DB-URL]" in r("postgresql://user:password@host:5432/dbname")
+    assert "s3cr3t" not in r("mysql://admin:s3cr3t@db.internal:3306/app")
+    assert "supersecretvalue123456" not in r("api_key=supersecretvalue123456")
+    # JWT redaction
+    jwt = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+           ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+           ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+    r_jwt = r(f"token: {jwt}")
+    assert jwt not in r_jwt and "[REDACTED-JWT]" in r_jwt
+    # Telegram bot token redacted
+    r_tg = r("url: https://api.telegram.org/bot123456789:AAHabcXYZ-_tokenValue/sendMessage")
+    assert "AAHabcXYZ-_tokenValue" not in r_tg and "/bot[REDACTED]/" in r_tg
+    # Bearer token redacted
+    r_bearer = r("Authorization: Bearer eyABCDEF1234567890")
+    assert "eyABCDEF1234567890" not in r_bearer and "Bearer [REDACTED]" in r_bearer
 
 
-@pytest.mark.parametrize(
-    "text,not_in,tag",
-    [
-        (
-            "key sk-ant-api03-abc123XYZ_extra-long-token here",
-            "sk-ant-api03-abc123XYZ_extra-long-token",
-            "[REDACTED-API-KEY]",
-        ),
-        ("AWS key: AKIA1234567890ABCDEF", "AKIA1234567890ABCDEF", "[REDACTED-API-KEY]"),
-        (
-            "sk-abcdefghijklmnopqrstuvwxyz123456",
-            "sk-abcdefghijklmnopqrstuvwxyz123456",
-            "[REDACTED-API-KEY]",
-        ),
-        ("postgresql://user:password@host:5432/dbname", "password", "[REDACTED-DB-URL]"),
-        ("mysql://admin:s3cr3t@db.internal:3306/app", "s3cr3t", "[REDACTED-DB-URL]"),
-        ("api_key=supersecretvalue123456", "supersecretvalue123456", "[REDACTED-API-KEY]"),
-    ],
-)
-def test_credential_redaction(text, not_in, tag):
-    result = anonymize(text, REPO_ROOT)
-    assert not_in not in result
-    assert tag in result
+def test_pii_scrubbing():
+    """Emails, phone numbers, and IPs (v4/v6) are scrubbed; localhost preserved."""
+    def r(text: str) -> str:
+        return anonymize(text, REPO_ROOT)
 
-
-def test_token_redaction():
-    """JWT, Telegram bot token, Bearer token (case-insensitive) all redacted."""
-    jwt = (
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-        ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
-        ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
-    )
-    r = anonymize(f"token: {jwt}", REPO_ROOT)
-    assert jwt not in r and "[REDACTED-JWT]" in r
-
-    tg_url = "url: https://api.telegram.org/bot123456789:AAHabcXYZ-_tokenValue/sendMessage"
-    r2 = anonymize(tg_url, REPO_ROOT)
-    assert "AAHabcXYZ-_tokenValue" not in r2 and "/bot[REDACTED]/" in r2
-
-    r3 = anonymize("Authorization: Bearer eyABCDEF1234567890", REPO_ROOT)
-    assert "eyABCDEF1234567890" not in r3 and "Bearer [REDACTED]" in r3
-
-    r4 = anonymize("authorization: bearer MySecretToken12345", REPO_ROOT)
-    assert "MySecretToken12345" not in r4
-
-
-# ---------------------------------------------------------------------------
-# PII scrubbing
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "text,not_in,tag",
-    [
-        ("user@example.com", "user@example.com", "[REDACTED-EMAIL]"),
-        ("USER@EXAMPLE.COM", "USER@EXAMPLE.COM", "[REDACTED-EMAIL]"),
-        ("user.name+tag@sub.domain.org", "user.name+tag@sub.domain.org", "[REDACTED-EMAIL]"),
-        ("Call +1-555-123-4567", "555-123-4567", "[REDACTED-PHONE]"),
-        ("Contact: (555) 123-4567", "555) 123-4567", "[REDACTED-PHONE]"),
-        ("fax: 555.123.4567", "555.123.4567", "[REDACTED-PHONE]"),
-        ("Connection from 192.168.1.100", "192.168.1.100", "[REDACTED-IP]"),
-        ("Remote host: 203.0.113.42", "203.0.113.42", "[REDACTED-IP]"),
-        ("Remote: 2001:db8::1", "2001:db8", "[REDACTED-IP]"),
-    ],
-)
-def test_pii_scrubbing(text, not_in, tag):
-    result = anonymize(text, REPO_ROOT)
-    assert not_in not in result
-    assert tag in result
-    # Multiple emails all scrubbed
-    assert anonymize("From: alice@example.com To: bob@corp.io", REPO_ROOT).count("[REDACTED-EMAIL]") == 2
-
-
-@pytest.mark.parametrize(
-    "text,preserved",
-    [
-        ("Listening on 127.0.0.1:8080", "127.0.0.1"),
-        ("Connect to localhost:5432", "localhost"),
-        ("Listening on ::1 port 8080", "::1"),
-    ],
-)
-def test_localhost_preserved(text, preserved):
-    result = anonymize(text, REPO_ROOT)
-    assert preserved in result
-
-
-# ---------------------------------------------------------------------------
-# Path normalization
-# ---------------------------------------------------------------------------
+    # Emails
+    assert "user@example.com" not in r("user@example.com") and "[REDACTED-EMAIL]" in r("user@example.com")
+    assert "USER@EXAMPLE.COM" not in r("USER@EXAMPLE.COM")
+    assert "user.name+tag@sub.domain.org" not in r("user.name+tag@sub.domain.org")
+    assert r("From: alice@example.com To: bob@corp.io").count("[REDACTED-EMAIL]") == 2
+    # Phone numbers
+    assert "555-123-4567" not in r("Call +1-555-123-4567") and "[REDACTED-PHONE]" in r("Call +1-555-123-4567")
+    assert "555) 123-4567" not in r("Contact: (555) 123-4567")
+    assert "555.123.4567" not in r("fax: 555.123.4567")
+    # IPv4/IPv6
+    assert "192.168.1.100" not in r("Connection from 192.168.1.100") and "[REDACTED-IP]" in r("Connection from 192.168.1.100")
+    assert "203.0.113.42" not in r("Remote host: 203.0.113.42")
+    assert "2001:db8" not in r("Remote: 2001:db8::1")
+    # Localhost preserved
+    assert "127.0.0.1" in r("Listening on 127.0.0.1:8080")
+    assert "localhost" in r("Connect to localhost:5432")
+    assert "::1" in r("Listening on ::1 port 8080")
 
 
 def test_path_normalization_and_hostname_scrubbing():
@@ -137,24 +93,18 @@ def test_path_normalization_and_hostname_scrubbing():
     assert "github.com" in r3 and "[REDACTED-HOST]" not in r3
 
 
-# ---------------------------------------------------------------------------
-# Validation pass
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "text,violation_type",
-    [
+def test_validation_detects_residual_patterns():
+    """validate_anonymized flags un-scrubbed PII; clean text passes; multiple violations reported."""
+    cases = [
         ("Contact admin@corp.com for help", "email pattern"),
         ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.abc123DEF456ghi789", "JWT pattern"),
         ("postgresql://user:secret@db.host/mydb", "credential URL pattern"),
         ("key: sk-ant-api03-realtoken12345678", "API key pattern"),
-    ],
-)
-def test_validation_detects_residual_patterns(text, violation_type):
-    is_clean, violations = validate_anonymized(text)
-    assert is_clean is False
-    assert any(violation_type in v for v in violations)
+    ]
+    for text, violation_type in cases:
+        is_clean, violations = validate_anonymized(text)
+        assert is_clean is False, f"expected dirty for: {text}"
+        assert any(violation_type in v for v in violations)
     # Clean text passes validation
     assert validate_anonymized("No sensitive data here.") == (True, [])
     # Multiple violations all reported

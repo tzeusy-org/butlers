@@ -65,16 +65,28 @@ def test_merge_tool_call_records():
         {"name": "route_to_butler", "input": {"butler": "health"}},
     ]
 
-    # Failed-then-retried sequence preserved
-    parsed2 = [{"id": "tool_1", "name": "route_to_butler", "input": {"butler": "relationship"}}]
+    # Failed-then-retried sequence preserved (different ids or anonymous)
+    parsed2 = [{"name": "route_to_butler", "input": {"butler": "relationship"}}]
     executed2 = [
         {"name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "error", "error": "TimeoutError: target unavailable"},
         {"name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "success", "result": {"status": "accepted", "butler": "relationship"}},
     ]
     assert _merge_tool_call_records(parsed2, executed2) == [
-        {"id": "tool_1", "name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "error", "error": "TimeoutError: target unavailable"},
+        {"name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "error", "error": "TimeoutError: target unavailable"},
         {"name": "route_to_butler", "input": {"butler": "relationship"}, "outcome": "success", "result": {"status": "accepted", "butler": "relationship"}},
     ]
+
+
+def test_merge_tool_call_records_dedup_by_id():
+    """Duplicate parsed records with the same id are collapsed (last wins)."""
+    # Simulates item.started + item.completed both parsed as tool calls
+    parsed = [
+        {"id": "cmd1", "name": "command_execution", "input": {"command": "ls", "status": "in_progress", "exit_code": None, "aggregated_output": ""}},
+        {"id": "cmd1", "name": "command_execution", "input": {"command": "ls", "status": "completed", "exit_code": 0, "aggregated_output": "file.txt\n"}},
+    ]
+    merged = _merge_tool_call_records(parsed, [])
+    assert len(merged) == 1
+    assert merged[0]["input"]["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
