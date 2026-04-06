@@ -1814,12 +1814,18 @@ class ButlerDaemon:
         # 13c. Wire calendar overlap-approval enqueuer when both modules are loaded
         self._wire_calendar_approval_enqueuer()
 
+        # 13d. Wire spawner + switchboard_client into modules that define wire_runtime().
+        # Must run after _connect_switchboard() (step 11b) so that switchboard_client
+        # is already set, and after register_tools() (step 13) so that module state
+        # is fully initialised before the runtime references are injected.
+        self._wire_module_runtime()
+
         # Mark remaining modules as active
         for mod in self._modules:
             if mod.name not in self._module_statuses:
                 self._module_statuses[mod.name] = ModuleStartupStatus(status="active")
 
-        # 13d. Initialize module runtime states (enabled/disabled) from state store
+        # 13e. Initialize module runtime states (enabled/disabled) from state store
         await self._init_module_runtime_states(pool)
 
         # 14. Start FastMCP SSE server on configured port
@@ -6632,6 +6638,49 @@ class ButlerDaemon:
 
         set_enqueuer(_enqueue_overlap_action)
         logger.info("Wired calendar overlap-approval enqueuer via approvals module")
+
+    def _wire_module_runtime(self) -> None:
+        """Wire spawner and switchboard_client into modules that define wire_runtime().
+
+        Called after ``_connect_switchboard()`` (step 11b) and
+        ``_register_module_tools()`` (step 13) so that both the spawner and the
+        switchboard client are already set when the modules receive their
+        runtime references.
+
+        Modules that do not define ``wire_runtime`` are silently skipped.
+        Failures are non-fatal: a warning is logged and startup continues so
+        that one misconfigured module cannot prevent the butler from serving.
+
+        The repo root is derived from ``config_dir``.  Since ``config_dir`` is
+        ``roster/<butler-name>/``, its resolved grandparent is the repository
+        root used for worktree creation by self-healing and QA modules.
+        """
+        if self.spawner is None:
+            logger.debug("_wire_module_runtime: spawner not yet set — skipping")
+            return
+
+        repo_root = self.config_dir.resolve().parent.parent
+
+        for mod in self._active_modules:
+            wire_fn = getattr(mod, "wire_runtime", None)
+            if wire_fn is None or not callable(wire_fn):
+                continue
+            try:
+                wire_fn(
+                    self.config.name,
+                    self.spawner,
+                    repo_root,
+                    switchboard_client=self.switchboard_client,
+                )
+                logger.debug(
+                    "Wired runtime into module '%s' (switchboard_client=%s)",
+                    mod.name,
+                    "connected" if self.switchboard_client is not None else "None",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Module '%s' wire_runtime() failed: %s", mod.name, exc, exc_info=True
+                )
 
     async def shutdown(self) -> None:
         """Graceful shutdown.

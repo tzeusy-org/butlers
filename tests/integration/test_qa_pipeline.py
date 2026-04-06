@@ -1021,3 +1021,120 @@ class TestConcurrencyModel:
 
         findings = await source.discover(lookback_minutes=15)
         assert len(findings) == 10
+
+
+# ---------------------------------------------------------------------------
+# AC 6 (bu-i0geq): SelfHealingModule.report_error → Switchboard route() →
+#                   QaModule.report_finding end-to-end relay integration
+# ---------------------------------------------------------------------------
+#
+# Scenario: a butler's SelfHealingModule has been wired with a real
+# switchboard_client (as daemon._wire_module_runtime() now does). When
+# report_error is called, the finding travels from SelfHealingModule through
+# Switchboard's route() tool to QaModule's report_finding handler, where it
+# is enqueued in the ButlerReportsSource buffer.
+
+
+class TestSelfHealingToQaRelayIntegration:
+    """Integration: report_error → Switchboard route() → QA report_finding (AC 6)."""
+
+    async def test_report_error_relays_finding_to_qa_module(self):
+        """Full relay: SelfHealingModule.report_error calls route(), which lands in QaModule.
+
+        Simulates the Switchboard forwarding mechanism: when the Switchboard
+        receives a route() call for target_butler="qa" and tool_name="report_finding",
+        it invokes QaModule's _handle_report_finding() directly.
+        """
+        from butlers.core.qa.sources.butler_reports import ButlerReportsSource
+        from butlers.modules.qa import QaModule
+        from butlers.modules.self_healing import SelfHealingModule
+
+        # Set up QA module with a real ButlerReportsSource buffer
+        qa_mod = QaModule()
+        qa_mod._butler_reports_source = ButlerReportsSource()
+
+        # Build a mock Switchboard client that forwards route() calls to QA module
+        async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
+            args = args or {}
+            if tool_name == "list_butlers":
+                # QA staffer is registered
+                return [{"name": "qa"}]
+            if tool_name == "route":
+                # Switchboard forwards to QA module's report_finding handler
+                target = args.get("target_butler")
+                routed_tool = args.get("tool_name")
+                routed_args = args.get("args", {})
+                if target == "qa" and routed_tool == "report_finding":
+                    return await qa_mod._handle_report_finding(**routed_args)
+                return {"error": f"Unknown route target={target} tool={routed_tool}"}
+            return {}
+
+        client = MagicMock()
+        client.call_tool = mock_call_tool
+
+        # Wire the SelfHealingModule with the mock client (as daemon does after bu-i0geq fix)
+        sh_mod = SelfHealingModule()
+        sh_mod.wire_runtime("general", MagicMock(), "/repo", switchboard_client=client)
+        sh_mod._pool = None  # No DB required for this relay path
+
+        # Invoke report_error — triggers the full relay chain
+        result = await sh_mod._handle_report_error(
+            error_type="ValueError",
+            error_message="payment processor timeout",
+            traceback_str="Traceback (most recent call last):\n  File ...",
+            call_site="payments.py:charge",
+            context="Agent was processing a payment when the error occurred",
+            tool_name="process_payment",
+            severity_hint="high",
+        )
+
+        # Relay succeeded
+        assert result["accepted"] is True, f"Expected accepted=True, got: {result}"
+        assert "fingerprint" in result
+
+        # QA module received the finding in its buffer
+        assert qa_mod._butler_reports_source.buffer_size == 1
+
+        # The buffered finding has correct metadata
+        buffered_findings = await qa_mod._butler_reports_source.discover(lookback_minutes=15)
+        assert len(buffered_findings) == 1
+        bf = buffered_findings[0]
+        assert bf.source_butler == "general"
+        assert bf.exception_type == "ValueError"
+        assert bf.fingerprint == result["fingerprint"]
+
+    async def test_relay_falls_back_when_qa_not_registered(self):
+        """Falls back to direct dispatch when QA staffer not in Switchboard registry.
+
+        Confirms graceful degradation: missing QA registration → direct
+        dispatch path, not an error.
+        """
+        from butlers.modules.self_healing import SelfHealingModule
+
+        async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
+            if tool_name == "list_butlers":
+                # QA not registered
+                return [{"name": "finance"}, {"name": "health"}]
+            return {}
+
+        client = MagicMock()
+        client.call_tool = mock_call_tool
+
+        sh_mod = SelfHealingModule()
+        sh_mod.wire_runtime("general", MagicMock(), "/repo", switchboard_client=client)
+        sh_mod._pool = None
+        sh_mod._spawner = None  # Forces not_configured on direct dispatch path
+
+        result = await sh_mod._handle_report_error(
+            error_type="RuntimeError",
+            error_message="something broke",
+            traceback_str=None,
+            call_site="mod.py:fn",
+            context=None,
+            tool_name=None,
+            severity_hint=None,
+        )
+
+        # Falls back to direct dispatch (no pool/spawner → not_configured)
+        assert result["accepted"] is False
+        assert result["reason"] == "not_configured"
