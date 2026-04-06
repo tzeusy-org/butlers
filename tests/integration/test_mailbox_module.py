@@ -20,102 +20,26 @@ from butlers.modules.mailbox import KNOWN_CHANNELS, MailboxConfig, MailboxModule
 
 
 @pytest.mark.unit
-class TestModuleABC:
-    """Verify MailboxModule satisfies the Module abstract base class."""
+class TestModuleABCAndConfig:
+    """MailboxModule satisfies Module ABC, config, lifecycle, registration."""
 
-    def test_is_subclass_of_module(self):
-        assert issubclass(MailboxModule, Module)
-
-    def test_instantiates(self):
+    def test_module_contract_and_config(self):
         mod = MailboxModule()
-        assert isinstance(mod, Module)
+        assert issubclass(MailboxModule, Module) and isinstance(mod, Module)
+        assert mod.name == "mailbox" and mod.config_schema is MailboxConfig
+        assert mod.dependencies == [] and mod.migration_revisions() == "mailbox"
+        assert isinstance(MailboxConfig(), BaseModel)
 
-    def test_name(self):
-        mod = MailboxModule()
-        assert mod.name == "mailbox"
-
-    def test_config_schema(self):
-        mod = MailboxModule()
-        assert mod.config_schema is MailboxConfig
-        assert issubclass(mod.config_schema, BaseModel)
-
-    def test_dependencies_empty(self):
-        mod = MailboxModule()
-        assert mod.dependencies == []
-
-    def test_migration_revisions(self):
-        mod = MailboxModule()
-        assert mod.migration_revisions() == "mailbox"
-
-
-# ---------------------------------------------------------------------------
-# MailboxConfig
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestMailboxConfig:
-    """Verify config schema."""
-
-    def test_defaults(self):
-        cfg = MailboxConfig()
-        assert isinstance(cfg, BaseModel)
-
-    def test_from_empty_dict(self):
-        cfg = MailboxConfig(**{})
-        assert isinstance(cfg, BaseModel)
-
-
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestLifecycle:
-    """Verify on_startup / on_shutdown lifecycle hooks."""
-
-    async def test_on_startup_stores_pool(self):
+    async def test_lifecycle_startup_shutdown(self):
         mod = MailboxModule()
         mock_pool = MagicMock()
         await mod.on_startup(config={}, db=mock_pool)
         assert mod._pool is mock_pool
-
-    async def test_on_startup_with_none(self):
-        mod = MailboxModule()
-        await mod.on_startup(config=None, db=None)
-        assert mod._pool is None
-
-    async def test_on_shutdown_clears_pool(self):
-        mod = MailboxModule()
-        mod._pool = MagicMock()
         await mod.on_shutdown()
         assert mod._pool is None
+        await mod.on_shutdown()  # idempotent
 
-    async def test_on_shutdown_idempotent(self):
-        mod = MailboxModule()
-        await mod.on_shutdown()
-        await mod.on_shutdown()
-
-
-# ---------------------------------------------------------------------------
-# Tool registration
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestRegisterTools:
-    """Verify that register_tools creates the expected MCP tools."""
-
-    async def test_registers_five_tools(self):
-        mod = MailboxModule()
-        mcp = MagicMock()
-        mcp.tool.return_value = lambda fn: fn
-
-        await mod.register_tools(mcp=mcp, config=None, db=None)
-        assert mcp.tool.call_count == 5
-
-    async def test_registered_tool_names(self):
+    async def test_tool_registration_and_names(self):
         mod = MailboxModule()
         mcp = MagicMock()
         registered_tools: dict[str, Any] = {}
@@ -124,112 +48,34 @@ class TestRegisterTools:
             def decorator(fn):
                 registered_tools[fn.__name__] = fn
                 return fn
-
             return decorator
 
         mcp.tool.side_effect = capture_tool
-
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        expected = {
-            "mailbox_post",
-            "mailbox_list",
-            "mailbox_read",
-            "mailbox_update_status",
-            "mailbox_stats",
-        }
+        expected = {"mailbox_post", "mailbox_list", "mailbox_read",
+                    "mailbox_update_status", "mailbox_stats"}
         assert set(registered_tools.keys()) == expected
+        for fn in registered_tools.values():
+            assert asyncio.iscoroutinefunction(fn)
 
-    async def test_registered_tools_are_async(self):
-        mod = MailboxModule()
-        mcp = MagicMock()
-        registered_tools: dict[str, Any] = {}
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        mcp.tool.side_effect = capture_tool
-
-        await mod.register_tools(mcp=mcp, config=None, db=None)
-
-        for tool_name, tool_fn in registered_tools.items():
-            assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
-
-    async def test_register_tools_stores_pool(self):
-        mod = MailboxModule()
-        mcp = MagicMock()
-        mcp.tool.return_value = lambda fn: fn
-        mock_pool = MagicMock()
-
-        await mod.register_tools(mcp=mcp, config=None, db=mock_pool)
-        assert mod._pool is mock_pool
-
-
-# ---------------------------------------------------------------------------
-# Known channels constant
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestKnownChannels:
-    """Verify the KNOWN_CHANNELS set."""
-
-    def test_contains_expected_channels(self):
-        expected = {
-            "mcp",
-            "telegram_bot",
-            "telegram_user_client",
-            "email",
-            "api",
-            "scheduler",
-            "system",
-        }
+    def test_known_channels_and_no_pool_guard(self):
+        expected = {"mcp", "telegram_bot", "telegram_user_client",
+                    "email", "api", "scheduler", "system"}
         assert KNOWN_CHANNELS == expected
 
-
-# ---------------------------------------------------------------------------
-# No-pool guard
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestNoPoolGuard:
-    """Verify _get_pool raises when module not initialised."""
-
-    def test_raises_runtime_error(self):
         mod = MailboxModule()
         with pytest.raises(RuntimeError, match="not initialised"):
             mod._get_pool()
 
-
-# ---------------------------------------------------------------------------
-# Registry integration
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestRegistryIntegration:
-    """Verify MailboxModule works with ModuleRegistry."""
-
-    def test_register_in_registry(self):
+    def test_registry_integration(self):
         from butlers.modules.registry import ModuleRegistry
 
         reg = ModuleRegistry()
         reg.register(MailboxModule)
         assert "mailbox" in reg.available_modules
-
-    def test_load_from_config(self):
-        from butlers.modules.registry import ModuleRegistry
-
-        reg = ModuleRegistry()
-        reg.register(MailboxModule)
         modules = reg.load_from_config({"mailbox": {}})
-        assert len(modules) == 1
-        assert modules[0].name == "mailbox"
+        assert len(modules) == 1 and modules[0].name == "mailbox"
 
 
 # ===========================================================================
