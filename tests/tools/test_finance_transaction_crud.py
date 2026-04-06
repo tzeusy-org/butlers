@@ -1,9 +1,4 @@
-"""Tests for finance transaction CRUD operations.
-
-Covers key behavioral contracts for record_transaction, list_transactions,
-spending_summary, update_transaction, delete_transaction, merge_duplicates,
-split_transaction, and bulk_recategorize.
-"""
+"""Tests for finance transaction CRUD operations."""
 
 from __future__ import annotations
 
@@ -30,7 +25,6 @@ pytestmark = pytest.mark.unit
 
 _ACCOUNT_ID = str(uuid4())
 _TXN_ID = str(uuid4())
-_TXN_ID2 = str(uuid4())
 _NOW = datetime(2024, 3, 15, 10, 30, 0, tzinfo=UTC)
 
 
@@ -55,19 +49,33 @@ def _make_txn_row(
     is_duplicate: bool = False,
 ) -> MagicMock:
     data = {
-        "id": id, "posted_at": posted_at, "merchant": merchant,
-        "amount": amount, "currency": currency, "direction": direction,
-        "category": category, "description": None, "payment_method": None,
-        "account_id": _ACCOUNT_ID, "source_message_id": None,
-        "external_ref": None, "external_id": None, "receipt_url": None,
-        "metadata": json.dumps({}), "deleted_at": deleted_at,
-        "version": version, "updated_at": _NOW,
-        "category_source": "manual", "is_category_locked": False,
-        "is_duplicate": is_duplicate, "duplicate_of": None,
+        "id": id,
+        "posted_at": posted_at,
+        "merchant": merchant,
+        "amount": amount,
+        "currency": currency,
+        "direction": direction,
+        "category": category,
+        "description": None,
+        "payment_method": None,
+        "account_id": _ACCOUNT_ID,
+        "source_message_id": None,
+        "external_ref": None,
+        "external_id": None,
+        "receipt_url": None,
+        "metadata": json.dumps({}),
+        "deleted_at": deleted_at,
+        "version": version,
+        "updated_at": _NOW,
+        "category_source": "manual",
+        "is_category_locked": False,
+        "is_duplicate": is_duplicate,
+        "duplicate_of": None,
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
     row.get = MagicMock(side_effect=lambda k, default=None: data.get(k, default))
+    row.keys = MagicMock(return_value=data.keys())
     row._data = data
     return row
 
@@ -95,8 +103,8 @@ def _make_pool(*, fetchrow_return=None, fetchval_return=None, fetch_return=None)
     return pool
 
 
-async def test_record_transaction_dedup_returns_existing():
-    """When dedup finds an existing transaction, returns existing row without INSERT."""
+async def test_record_and_list_transactions():
+    """Dedup returns existing without INSERT; list excludes soft-deleted rows."""
     existing_row = _make_txn_row(id=_TXN_ID, merchant="Netflix")
     pool = _make_pool()
     pool.fetchval = AsyncMock(return_value=0)
@@ -106,33 +114,31 @@ async def test_record_transaction_dedup_returns_existing():
 
     with patch("butlers.tools.finance.transactions._mirror_to_spo"):
         result = await record_transaction(
-            pool=pool, posted_at=_NOW, merchant="Netflix",
-            amount=Decimal("15.99"), currency="USD", category="subscriptions",
+            pool=pool,
+            posted_at=_NOW,
+            merchant="Netflix",
+            amount=Decimal("15.99"),
+            currency="USD",
+            category="subscriptions",
             source_message_id="msg-abc-123",
         )
-
     pool.execute.assert_not_called()
     assert result["id"] == _TXN_ID
 
-
-async def test_list_transactions_shape_and_soft_delete_filter():
-    """list_transactions returns paginated shape and excludes soft-deleted rows."""
     count_row = MagicMock()
     count_row.__getitem__ = MagicMock(side_effect=lambda k: 1 if k == "total" else None)
-    pool = _make_pool()
-    pool.fetchval = AsyncMock(return_value=1)  # deleted_at column exists
-    pool.fetchrow = AsyncMock(return_value=count_row)
-    pool.fetch = AsyncMock(return_value=[_make_txn_row()])
-
-    result = await list_transactions(pool)
-
-    assert all(k in result for k in ("items", "total", "limit", "offset"))
-    query = pool.fetchrow.call_args.args[0]
-    assert "deleted_at IS NULL" in query
+    pool2 = _make_pool()
+    pool2.fetchval = AsyncMock(return_value=1)
+    pool2.fetchrow = AsyncMock(return_value=count_row)
+    pool2.fetch = AsyncMock(return_value=[_make_txn_row()])
+    result2 = await list_transactions(pool2)
+    assert all(k in result2 for k in ("items", "total", "limit", "offset"))
+    assert "deleted_at IS NULL" in pool2.fetchrow.call_args.args[0]
 
 
-async def test_spending_summary_shape_debit_filter_and_invalid_group_by():
-    """spending_summary returns required fields, filters debit-only, rejects invalid group_by."""
+async def test_spending_summary_update_and_edge_cases():
+    """spending_summary: debit filter, invalid group_by; update errors; no DELETE FROM; dry run."""
+
     def _mock_row(**kwargs):
         r = MagicMock()
         r.__getitem__ = MagicMock(side_effect=lambda k: kwargs.get(k))
@@ -140,78 +146,64 @@ async def test_spending_summary_shape_debit_filter_and_invalid_group_by():
 
     pool = _make_pool()
     pool.fetchval = AsyncMock(return_value=0)
-    pool.fetchrow = AsyncMock(side_effect=[
-        _mock_row(total=Decimal("100.00")),
-        _mock_row(currency="USD", cnt=1),
-        _mock_row(cnt=3),
-    ])
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            _mock_row(total=Decimal("100.00")),
+            _mock_row(currency="USD", cnt=1),
+            _mock_row(cnt=3),
+        ]
+    )
     pool.fetch = AsyncMock(return_value=[])
 
-    result = await spending_summary(pool, start_date=date(2024, 1, 1), end_date=date(2024, 1, 31))
-    assert all(k in result for k in ("start_date", "end_date", "currency", "total_spend", "groups"))
-    query = pool.fetchrow.call_args_list[0].args[0]
-    assert "direction = 'debit'" in query
+    summary = await spending_summary(pool, start_date=date(2024, 1, 1), end_date=date(2024, 1, 31))
+    assert all(
+        k in summary for k in ("start_date", "end_date", "currency", "total_spend", "groups")
+    )
+    assert "direction = 'debit'" in pool.fetchrow.call_args_list[0].args[0]
 
     with pytest.raises(ValueError, match="Unsupported group_by"):
         await spending_summary(pool, group_by="invalid_group")
 
+    # update_transaction: not_found and version_conflict
+    pool2 = _make_pool()
+    pool2.fetchval = AsyncMock(return_value=0)
+    pool2.fetchrow = AsyncMock(side_effect=[None])
+    assert (await update_transaction(pool2, _TXN_ID, category="dining"))[
+        "error"
+    ] == "transaction_not_found"
 
-@pytest.mark.parametrize(
-    "fetchrow_side_effect, extra_kwargs, expected_error",
-    [
-        ([None], {}, "transaction_not_found"),
-        ([_make_txn_row(version=5)], {"expected_version": 3}, "version_conflict"),
-    ],
-)
-async def test_update_transaction_error_paths(fetchrow_side_effect, extra_kwargs, expected_error):
-    """update_transaction returns structured errors for not_found and version_conflict."""
-    pool = _make_pool()
-    pool.fetchval = AsyncMock(return_value=0 if fetchrow_side_effect == [None] else 1)
-    pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect if fetchrow_side_effect[0] is None
-                              else fetchrow_side_effect + [None])
+    pool3 = _make_pool()
+    pool3.fetchval = AsyncMock(return_value=1)
+    pool3.fetchrow = AsyncMock(side_effect=[_make_txn_row(version=5), None])
+    assert (await update_transaction(pool3, _TXN_ID, category="dining", expected_version=3))[
+        "error"
+    ] == "version_conflict"
 
-    result = await update_transaction(pool, _TXN_ID, category="dining", **extra_kwargs)
-    assert result["error"] == expected_error
-
-
-def test_no_delete_from_in_transactions_module():
-    """The finance transactions module must not use DELETE FROM (soft-delete only)."""
+    # No DELETE FROM in module
     import inspect
-    source = inspect.getsource(_txn_module)
-    assert "DELETE FROM" not in source.upper()
 
+    assert "DELETE FROM" not in inspect.getsource(_txn_module).upper()
 
-async def test_merge_duplicates_empty_input_returns_error():
-    """merge_duplicates requires duplicate_ids list, rejects empty input."""
-    pool = _make_pool()
-    result = await merge_duplicates(pool, keep_id=_TXN_ID, duplicate_ids=[])
-    assert "error" in result
+    # merge requires duplicate_ids; split rejects mismatch; dry_run
+    pool4 = _make_pool()
+    assert "error" in await merge_duplicates(pool4, keep_id=_TXN_ID, duplicate_ids=[])
 
-
-async def test_split_transaction_amount_mismatch_returns_error():
-    """split_transaction returns error when split amounts don't sum to original."""
-    original = _make_txn_row(id=_TXN_ID, amount=Decimal("100.00"))
-    pool = _make_pool()
-    pool.fetchval = AsyncMock(return_value=0)
-    pool.fetchrow = AsyncMock(return_value=original)
-
-    result = await split_transaction(
-        pool, _TXN_ID,
+    pool5 = _make_pool()
+    pool5.fetchval = AsyncMock(return_value=0)
+    pool5.fetchrow = AsyncMock(return_value=_make_txn_row(id=_TXN_ID, amount=Decimal("100.00")))
+    assert "error" in await split_transaction(
+        pool5,
+        _TXN_ID,
         splits=[
             {"amount": Decimal("40.00"), "category": "dining"},
             {"amount": Decimal("50.00"), "category": "groceries"},
         ],
     )
-    assert "error" in result
 
-
-async def test_bulk_recategorize_dry_run_returns_matched_count_without_update():
-    """Dry run returns matched count without executing updates."""
-    pool = _make_pool()
-    pool.fetchval = AsyncMock(return_value=3)
-
+    pool6 = _make_pool()
+    pool6.fetchval = AsyncMock(return_value=3)
     result = await bulk_recategorize(
-        pool, merchant_pattern="netflix", new_category="subscriptions", dry_run=True
+        pool6, merchant_pattern="netflix", new_category="subscriptions", dry_run=True
     )
-    assert "matched_count" in result
-    pool.execute.assert_not_called()
+    assert "matched" in result and result["dry_run"] is True
+    pool6.execute.assert_not_called()

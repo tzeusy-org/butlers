@@ -101,7 +101,7 @@ async def extraction_queue_list(
             """
             SELECT * FROM extraction_queue
             WHERE status = $1
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $2
             """,
             status,
@@ -111,7 +111,7 @@ async def extraction_queue_list(
         rows = await pool.fetch(
             """
             SELECT * FROM extraction_queue
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $1
             """,
             limit,

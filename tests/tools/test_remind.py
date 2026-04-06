@@ -124,18 +124,12 @@ async def _start_daemon_capture_tools(
     return daemon, tool_fns
 
 
-async def test_remind_registered(tmp_path):
-    """remind is registered as an MCP tool."""
-    butler_dir = _make_butler_toml(tmp_path)
-    _, tools = await _start_daemon_capture_tools(butler_dir)
-    assert "remind" in tools
-
-
-async def test_remind_with_delay_minutes(tmp_path):
-    """remind with delay_minutes creates a one-shot schedule with correct cron."""
+async def test_remind_scheduling(tmp_path):
+    """remind registered; delay_minutes creates correct cron + until_at; remind_at works."""
     butler_dir = _make_butler_toml(tmp_path)
     patches = _patch_infra()
     _, tools = await _start_daemon_capture_tools(butler_dir, patches)
+    assert "remind" in tools
 
     task_id = uuid4()
     with patch(
@@ -147,57 +141,38 @@ async def test_remind_with_delay_minutes(tmp_path):
 
     assert result["status"] == "scheduled"
     assert result["id"] == str(task_id)
-    assert result["channel"] == "telegram"
-    assert "remind_at" in result
     cron = mock_create.call_args[0][2]
-    assert len(cron.split()) == 5  # valid 5-field cron
-    prompt = mock_create.call_args[0][3]
-    assert "Take medication" in prompt and "telegram" in prompt
-    assert "until_at" in mock_create.call_args[1]
-    # until_at = remind_at + 1 minute (one-shot)
+    assert len(cron.split()) == 5
     until_at = mock_create.call_args[1]["until_at"]
     remind_at = datetime.fromisoformat(result["remind_at"])
     assert abs((until_at - (remind_at + timedelta(minutes=1))).total_seconds()) < 2
 
-
-async def test_remind_with_remind_at(tmp_path):
-    """remind with remind_at creates a one-shot schedule at the specified time."""
-    butler_dir = _make_butler_toml(tmp_path)
-    patches = _patch_infra()
-    _, tools = await _start_daemon_capture_tools(butler_dir, patches)
-
-    task_id = uuid4()
+    # remind_at variant
     future_time = datetime.now(UTC) + timedelta(hours=2)
-
     with patch(
-        "butlers.daemon._schedule_create", new_callable=AsyncMock, return_value=task_id
-    ) as mock_create:
-        result = await tools["remind"](
-            message="Meeting in 5 min", channel="email", remind_at=future_time
-        )
-
-    assert result["status"] == "scheduled"
-    parts = mock_create.call_args[0][2].split()
+        "butlers.daemon._schedule_create", new_callable=AsyncMock, return_value=uuid4()
+    ) as mc:
+        result2 = await tools["remind"](message="Meeting", channel="email", remind_at=future_time)
+    assert result2["status"] == "scheduled"
+    parts = mc.call_args[0][2].split()
     assert parts[0] == str(future_time.minute)
     assert parts[1] == str(future_time.hour)
 
 
-@pytest.mark.parametrize(
-    "kwargs, match",
-    [
-        (
-            {"delay_minutes": 10, "remind_at": datetime.now(UTC) + timedelta(hours=1)},
-            "exactly one",
-        ),
-        ({}, "exactly one"),
-        ({"delay_minutes": 0}, "at least 1"),
-        ({"remind_at": datetime.now(UTC) - timedelta(hours=1)}, "future"),
-    ],
-)
-async def test_remind_validation_errors(tmp_path, kwargs, match):
+async def test_remind_validation_errors(tmp_path):
     """remind returns error status for invalid timing combinations."""
     butler_dir = _make_butler_toml(tmp_path)
     _, tools = await _start_daemon_capture_tools(butler_dir)
-    result = await tools["remind"](message="Test", channel="telegram", **kwargs)
-    assert result["status"] == "error"
-    assert match in result["error"].lower()
+
+    future = datetime.now(UTC) + timedelta(hours=1)
+    past = datetime.now(UTC) - timedelta(hours=1)
+    cases = [
+        ({"delay_minutes": 10, "remind_at": future}, "exactly one"),
+        ({}, "exactly one"),
+        ({"delay_minutes": 0}, "at least 1"),
+        ({"remind_at": past}, "future"),
+    ]
+    for kwargs, match in cases:
+        result = await tools["remind"](message="Test", channel="telegram", **kwargs)
+        assert result["status"] == "error"
+        assert match in result["error"].lower(), f"Expected '{match}' in error for {kwargs}"

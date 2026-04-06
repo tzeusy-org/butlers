@@ -1,12 +1,4 @@
-"""Unit tests for contact-entity lifecycle bridge.
-
-Covers key behavioral contracts:
-- Helper functions: _build_canonical_name, _infer_entity_type
-- contact_create: entity always resolved-or-created, failure raises
-- contact_update: name change syncs entity, null entity_id handled
-- contact_merge: entity_merge called when both have entity_ids
-- entity_merge: same ID raises, missing entity raises
-"""
+"""Unit tests for contact-entity lifecycle bridge."""
 
 from __future__ import annotations
 
@@ -57,21 +49,42 @@ CONTACT_UUID2 = uuid.UUID("aaaa1111-bbbb-cccc-dddd-eeeeeeeeeeee")
 ENTITY_UUID = uuid.UUID("eeee1111-2222-3333-4444-555555555555")
 ENTITY_UUID2 = uuid.UUID("eeee2222-3333-4444-5555-666666666666")
 
-_FULL_COLS = frozenset({
-    "id", "first_name", "last_name", "nickname", "name", "company",
-    "job_title", "details", "metadata", "entity_id", "archived_at", "listed", "updated_at",
-})
+_FULL_COLS = frozenset(
+    {
+        "id",
+        "first_name",
+        "last_name",
+        "nickname",
+        "name",
+        "company",
+        "job_title",
+        "details",
+        "metadata",
+        "entity_id",
+        "archived_at",
+        "listed",
+        "updated_at",
+    }
+)
 
 
 def _make_contact_row(
-    contact_id=CONTACT_UUID, first_name="Alice", last_name="Smith",
-    nickname="Ali", entity_id=None,
+    contact_id=CONTACT_UUID, first_name="Alice", last_name="Smith", nickname="Ali", entity_id=None
 ):
     return {
-        "id": contact_id, "first_name": first_name, "last_name": last_name,
-        "nickname": nickname, "name": f"{first_name} {last_name}",
-        "company": None, "job_title": None, "details": {}, "metadata": {},
-        "entity_id": entity_id, "archived_at": None, "listed": True, "updated_at": None,
+        "id": contact_id,
+        "first_name": first_name,
+        "last_name": last_name,
+        "nickname": nickname,
+        "name": f"{first_name} {last_name}",
+        "company": None,
+        "job_title": None,
+        "details": {},
+        "metadata": {},
+        "entity_id": entity_id,
+        "archived_at": None,
+        "listed": True,
+        "updated_at": None,
     }
 
 
@@ -84,24 +97,18 @@ def _asyncpg_record(d: dict):
     return rec
 
 
-@pytest.mark.parametrize(
-    "first, last, company, expected",
-    [
-        ("Alice", "Smith", None, ("Alice Smith", "person")),
-        ("Alice", None, None, ("Alice", "person")),
-        (None, None, "Acme Corp", ("Unknown", "organization")),
-        (None, None, None, ("Unknown", "person")),
-    ],
-)
-def test_name_and_type_helpers(first, last, company, expected):
+def test_name_and_type_helpers():
     """_build_canonical_name and _infer_entity_type return correct values."""
-    expected_name, expected_type = expected
-    assert _build_canonical_name(first, last) == expected_name
-    assert _infer_entity_type(first, last, company) == expected_type
+    assert _build_canonical_name("Alice", "Smith") == "Alice Smith"
+    assert _build_canonical_name("Alice", None) == "Alice"
+    assert _build_canonical_name(None, None) == "Unknown"
+    assert _infer_entity_type("Alice", "Smith", None) == "person"
+    assert _infer_entity_type(None, None, "Acme Corp") == "organization"
+    assert _infer_entity_type(None, None, None) == "person"
 
 
-async def test_contact_create_always_resolves_entity_and_failure_raises():
-    """contact_create calls _ensure_entity; raises if entity creation fails."""
+async def test_contact_create_and_update_entity_sync():
+    """contact_create calls _ensure_entity; contact_update syncs entity on name change."""
     contact_row = _make_contact_row(entity_id=ENTITY_UUID)
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
@@ -117,7 +124,7 @@ async def test_contact_create_always_resolves_entity_and_failure_raises():
         mock_ensure.assert_awaited_once()
         assert result["entity_id"] == ENTITY_UUID
 
-    # Failure path: entity error propagates
+    # Failure path
     pool2 = AsyncMock()
     with (
         patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
@@ -129,37 +136,38 @@ async def test_contact_create_always_resolves_entity_and_failure_raises():
         with pytest.raises(RuntimeError, match="failed"):
             await contact_create(pool2, first_name="Alice", last_name="Smith")
 
-
-@pytest.mark.parametrize("entity_id, should_sync", [(ENTITY_UUID, True), (None, False)])
-async def test_contact_update_entity_sync(entity_id, should_sync):
-    """contact_update syncs entity on name change; skips if entity_id is NULL."""
-    old_row = _make_contact_row(entity_id=entity_id)
-    updated_row = _make_contact_row(first_name="Alicia", entity_id=entity_id)
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(side_effect=[
-        _asyncpg_record(old_row), _asyncpg_record(updated_row),
-    ])
-
-    with (
-        patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
-        patch.object(_contacts_mod, "_log_activity", AsyncMock()),
-        patch.object(_contacts_mod, "_update_entity", AsyncMock()) as mock_update_entity,
-    ):
-        await contact_update(pool, CONTACT_UUID, first_name="Alicia")
-        if should_sync:
-            mock_update_entity.assert_awaited_once()
-        else:
-            mock_update_entity.assert_not_awaited()
+    # Update: syncs entity when entity_id present, skips when NULL
+    for entity_id, should_sync in [(ENTITY_UUID, True), (None, False)]:
+        old_row = _make_contact_row(entity_id=entity_id)
+        updated_row = _make_contact_row(first_name="Alicia", entity_id=entity_id)
+        pool3 = AsyncMock()
+        pool3.fetchrow = AsyncMock(
+            side_effect=[_asyncpg_record(old_row), _asyncpg_record(updated_row)]
+        )
+        with (
+            patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
+            patch.object(_contacts_mod, "_log_activity", AsyncMock()),
+            patch.object(_contacts_mod, "_sync_entity_update", AsyncMock()) as mock_sync,
+        ):
+            await contact_update(pool3, CONTACT_UUID, first_name="Alicia")
+            if should_sync:
+                mock_sync.assert_awaited_once()
+            else:
+                mock_sync.assert_not_awaited()
 
 
-async def test_contact_merge_calls_entity_merge_when_both_have_ids():
-    """contact_merge calls entity_merge when source and target both have entity_ids."""
+async def test_contact_merge_and_entity_merge_validation():
+    """contact_merge calls entity_merge when both have entity_ids; entity_merge validates."""
     src = _make_contact_row(contact_id=CONTACT_UUID, entity_id=ENTITY_UUID)
     tgt = _make_contact_row(contact_id=CONTACT_UUID2, entity_id=ENTITY_UUID2)
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(side_effect=[
-        _asyncpg_record(src), _asyncpg_record(tgt), _asyncpg_record(dict(tgt)),
-    ])
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            _asyncpg_record(src),
+            _asyncpg_record(tgt),
+            _asyncpg_record(dict(tgt)),
+        ]
+    )
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock()
     mock_conn.transaction = MagicMock()
@@ -173,34 +181,38 @@ async def test_contact_merge_calls_entity_merge_when_both_have_ids():
     with (
         patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
         patch.object(_contacts_mod, "_log_activity", AsyncMock()),
-        patch("butlers.modules.memory.tools.entities.entity_merge",
-              AsyncMock(return_value={"entity_id": str(ENTITY_UUID2)})) as mock_entity_merge,
+        patch(
+            "butlers.modules.memory.tools.entities.entity_merge",
+            AsyncMock(return_value={"entity_id": str(ENTITY_UUID2)}),
+        ) as mock_entity_merge,
     ):
-        await contact_merge(pool, source_id=CONTACT_UUID, target_id=CONTACT_UUID2,
-                            memory_pool=memory_pool)
+        await contact_merge(
+            pool, source_id=CONTACT_UUID, target_id=CONTACT_UUID2, memory_pool=memory_pool
+        )
         mock_entity_merge.assert_awaited_once_with(
             memory_pool, str(ENTITY_UUID), str(ENTITY_UUID2), tenant_id="relationship"
         )
 
-
-async def test_entity_merge_validation():
-    """entity_merge raises ValueError for same ID or missing entity."""
+    # entity_merge validation: same ID raises
     with pytest.raises(ValueError, match="different"):
-        await entity_merge(AsyncMock(), str(ENTITY_UUID), str(ENTITY_UUID), tenant_id="rel")
+        await entity_merge(
+            AsyncMock(), str(ENTITY_UUID), str(ENTITY_UUID), tenant_id="relationship"
+        )
 
+    # Missing entity raises
     def _mock_missing_src():
-        pool = AsyncMock()
-        mock_conn = AsyncMock()
-        mock_conn.fetchrow = AsyncMock(return_value=None)
-        mock_conn.transaction = MagicMock()
-        mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
-        mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
-        pool.acquire = MagicMock()
-        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-        return pool
+        p = AsyncMock()
+        mc = AsyncMock()
+        mc.fetchrow = AsyncMock(return_value=None)
+        mc.transaction = MagicMock()
+        mc.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
+        mc.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+        p.acquire = MagicMock()
+        p.acquire.return_value.__aenter__ = AsyncMock(return_value=mc)
+        p.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        return p
 
     with pytest.raises(ValueError):
         await entity_merge(
-            _mock_missing_src(), str(ENTITY_UUID), str(ENTITY_UUID2), tenant_id="rel"
+            _mock_missing_src(), str(ENTITY_UUID), str(ENTITY_UUID2), tenant_id="relationship"
         )

@@ -20,8 +20,11 @@ def moto_s3_server():
     server.start()
     endpoint = f"http://localhost:{server._server.server_address[1]}"
     client = boto3.client(
-        "s3", endpoint_url=endpoint,
-        aws_access_key_id="testing", aws_secret_access_key="testing", region_name="us-east-1",
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+        region_name="us-east-1",
     )
     client.create_bucket(Bucket=TEST_BUCKET)
     yield endpoint
@@ -31,13 +34,17 @@ def moto_s3_server():
 @pytest.fixture
 def blob_store(moto_s3_server):
     return S3BlobStore(
-        bucket=TEST_BUCKET, butler_name=TEST_BUTLER, endpoint_url=moto_s3_server,
-        access_key_id="testing", secret_access_key="testing", region="us-east-1",
+        bucket=TEST_BUCKET,
+        butler_name=TEST_BUTLER,
+        endpoint_url=moto_s3_server,
+        access_key_id="testing",
+        secret_access_key="testing",
+        region="us-east-1",
     )
 
 
-async def test_retrieve_existing_attachment(blob_store):
-    """Successfully retrieve an existing attachment with correct fields."""
+async def test_get_attachment_success_and_binary_integrity(blob_store):
+    """Successfully retrieve attachment; binary data round-trips correctly."""
     data = b"\x89PNG\r\n\x1a\n" + b"x" * 100
     storage_ref = await blob_store.put(data, content_type="image/png", filename="test.png")
     result = await get_attachment(blob_store, storage_ref)
@@ -47,35 +54,28 @@ async def test_retrieve_existing_attachment(blob_store):
     assert result["size_bytes"] == len(data)
     assert base64.b64decode(result["data_base64"]) == data
 
+    # Full byte range round-trip
+    binary_data = bytes(range(256))
+    ref2 = await blob_store.put(binary_data, content_type="application/octet-stream")
+    result2 = await get_attachment(blob_store, ref2)
+    assert base64.b64decode(result2["data_base64"]) == binary_data
 
-async def test_size_limit_enforcement(blob_store):
-    """Blobs exceeding limit are rejected; blobs exactly at limit are allowed."""
+
+async def test_get_attachment_error_cases(blob_store):
+    """Size limit enforced; missing blob raises BlobNotFoundError; bad ref raises ValueError."""
     large_data = b"x" * (MAX_ATTACHMENT_SIZE_BYTES + 1)
     storage_ref = await blob_store.put(large_data, content_type="application/octet-stream")
     with pytest.raises(ValueError, match="size limit"):
         await get_attachment(blob_store, storage_ref)
 
-    at_limit_data = b"x" * MAX_ATTACHMENT_SIZE_BYTES
-    storage_ref2 = await blob_store.put(at_limit_data, content_type="application/octet-stream")
-    result = await get_attachment(blob_store, storage_ref2)
+    # At limit is allowed
+    at_limit = b"x" * MAX_ATTACHMENT_SIZE_BYTES
+    ref2 = await blob_store.put(at_limit, content_type="application/octet-stream")
+    result = await get_attachment(blob_store, ref2)
     assert result["size_bytes"] == MAX_ATTACHMENT_SIZE_BYTES
 
-
-async def test_blob_not_found_raises(blob_store):
-    """Missing blob raises BlobNotFoundError."""
     with pytest.raises(BlobNotFoundError):
         await get_attachment(blob_store, f"s3://{TEST_BUCKET}/{TEST_BUTLER}/2026/01/01/nope.jpg")
 
-
-async def test_invalid_storage_ref_raises(blob_store):
-    """Invalid storage_ref format raises ValueError."""
     with pytest.raises(ValueError, match="Invalid storage_ref format"):
         await get_attachment(blob_store, "not-a-valid-ref-format")
-
-
-async def test_binary_data_integrity(blob_store):
-    """Binary data with full byte range is correctly base64-encoded and decoded."""
-    binary_data = bytes(range(256))
-    storage_ref = await blob_store.put(binary_data, content_type="application/octet-stream")
-    result = await get_attachment(blob_store, storage_ref)
-    assert base64.b64decode(result["data_base64"]) == binary_data

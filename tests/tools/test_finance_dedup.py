@@ -45,61 +45,61 @@ def _make_row(txn_id: str) -> MagicMock:
     return row
 
 
-@pytest.mark.parametrize(
-    "txn_kwargs, fetchrow_return, expected",
-    [
-        # P1 match
-        ({"external_id": "ext-123", "account_id": _ACCOUNT_ID}, _make_row(_TXN_ID), _TXN_ID),
-        # P1 no match
-        ({"external_id": "ext-new", "account_id": _ACCOUNT_ID}, None, None),
-        # P1 skipped when external_id is None (fetchval must not be called)
-        ({"external_id": None, "account_id": _ACCOUNT_ID}, None, None),
-    ],
-)
-async def test_p1_dedup(txn_kwargs, fetchrow_return, expected):
-    """P1 (external_id + account_id) matches, misses, and is skipped when external_id is None."""
-    pool = _mock_pool(fetchval_return=1, fetchrow_return=fetchrow_return)
-    result = await _deduplicate(pool, txn_kwargs)
-    assert result == expected
-    if txn_kwargs.get("external_id") is None:
-        pool.fetchval.assert_not_called()
-
-
-async def test_p1_no_fall_through_when_matched():
-    """Once P1 returns a match, P2 and P3 are NOT queried."""
+async def test_p1_dedup_match_and_skip():
+    """P1 matches on external_id+account_id; skipped when external_id=None; no P2/P3 on match."""
+    # Match
     pool = _mock_pool(fetchval_return=1, fetchrow_return=_make_row(_TXN_ID))
-    result = await _deduplicate(pool, {
-        "external_id": "ext-123", "account_id": _ACCOUNT_ID,
-        "source_message_id": "msg-111", "posted_at": _NOW,
-        "amount": Decimal("42.00"), "merchant": "Acme",
-    })
-    assert result == _TXN_ID
-    assert pool.fetchrow.call_count == 1  # only P1 SELECT called
+    assert (
+        await _deduplicate(pool, {"external_id": "ext-123", "account_id": _ACCOUNT_ID}) == _TXN_ID
+    )
+
+    # No match
+    pool2 = _mock_pool(fetchval_return=1, fetchrow_return=None)
+    assert await _deduplicate(pool2, {"external_id": "new", "account_id": _ACCOUNT_ID}) is None
+
+    # external_id=None → P1 skipped (fetchval not called); P2/P3 also not run (no required fields)
+    pool3 = _mock_pool(fetchval_return=1, fetchrow_return=None)
+    await _deduplicate(pool3, {"external_id": None, "account_id": _ACCOUNT_ID})
+    pool3.fetchval.assert_not_called()
+
+    # P1 match → no P2/P3 queries
+    pool4 = _mock_pool(fetchval_return=1, fetchrow_return=_make_row(_TXN_ID))
+    await _deduplicate(
+        pool4,
+        {
+            "external_id": "ext-123",
+            "account_id": _ACCOUNT_ID,
+            "source_message_id": "msg-111",
+            "posted_at": _NOW,
+            "amount": Decimal("42.00"),
+            "merchant": "Acme",
+        },
+    )
+    assert pool4.fetchrow.call_count == 1
 
 
-async def test_p2_match_and_skip():
-    """P2 returns existing ID when source_message_id matches; skipped when None."""
+async def test_p2_and_p3_dedup():
+    """P2 matches source_message_id; P3 matches composite key and normalizes negative amounts."""
+    # P2 match
     pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
     result = await _deduplicate(
         pool, {"external_id": None, "account_id": None, "source_message_id": "email-123@ex.com"}
     )
     assert result == _TXN_ID
 
+    # P2 skipped when source_message_id=None
     pool2 = _mock_pool(fetchrow_return=None)
-    result2 = await _deduplicate(
-        pool2, {"external_id": None, "account_id": None, "source_message_id": None}
-    )
+    await _deduplicate(pool2, {"external_id": None, "account_id": None, "source_message_id": None})
     pool2.fetchrow.assert_not_called()
-    assert result2 is None
 
-
-async def test_p3_match_and_normalizes_amount():
-    """P3 matches on composite key and normalizes negative amounts via ABS."""
+    # P3 matches with positive and negative amounts
     base_txn = {
-        "external_id": None, "account_id": _ACCOUNT_ID, "source_message_id": None,
-        "posted_at": _NOW, "merchant": "Acme",
+        "external_id": None,
+        "account_id": _ACCOUNT_ID,
+        "source_message_id": None,
+        "posted_at": _NOW,
+        "merchant": "Acme",
     }
     for amount in (Decimal("42.00"), Decimal("-42.00")):
-        pool = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
-        result = await _deduplicate(pool, {**base_txn, "amount": amount})
-        assert result == _TXN_ID
+        pool3 = _mock_pool(fetchrow_return=_make_row(_TXN_ID))
+        assert await _deduplicate(pool3, {**base_txn, "amount": amount}) == _TXN_ID

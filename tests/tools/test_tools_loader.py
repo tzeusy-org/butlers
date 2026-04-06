@@ -13,8 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ROSTER_ROOT = REPO_ROOT / "roster"
 
 
-def test_butler_tools_importable():
-    """Core butler tools from each domain are importable after registration."""
+def test_butler_tools_importable_and_discovery():
+    """Core tools importable; imports register modules; discovered butler modules are present."""
+    from butlers.tools._loader import _discover_butler_names, register_all_butler_tools
     from butlers.tools.general import collection_create
     from butlers.tools.health import measurement_log
     from butlers.tools.relationship import contact_create
@@ -24,60 +25,39 @@ def test_butler_tools_importable():
         callable(f) for f in [register_butler, collection_create, measurement_log, contact_create]
     )
 
-
-def test_discovered_modules_in_sys_modules():
-    """All discovered butler tool modules should be registered in sys.modules."""
-    from butlers.tools._loader import _discover_butler_names
-
     discovered = _discover_butler_names(ROSTER_ROOT)
-    assert len(discovered) > 0, "Should discover at least one butler"
+    assert len(discovered) > 0
     for name in discovered:
         module_name = f"butlers.tools.{name}"
-        assert module_name in sys.modules, f"{module_name} not in sys.modules"
-
-
-def test_tools_loaded_from_roster_dirs():
-    """Tool modules should have __file__ pointing to butler config dirs."""
-    from butlers.tools._loader import _discover_butler_names
-
-    discovered = _discover_butler_names(ROSTER_ROOT)
-    for name in discovered:
-        mod = sys.modules[f"butlers.tools.{name}"]
+        assert module_name in sys.modules
+        mod = sys.modules[module_name]
         expected_single = ROSTER_ROOT / name / "tools.py"
         expected_package = ROSTER_ROOT / name / "tools" / "__init__.py"
-        mod_path = Path(mod.__file__).resolve()
-        assert mod_path in (expected_single.resolve(), expected_package.resolve())
+        assert Path(mod.__file__).resolve() in (
+            expected_single.resolve(),
+            expected_package.resolve(),
+        )
 
-
-def test_idempotent_registration():
-    """Calling register_all_butler_tools multiple times should not error."""
-    from butlers.tools._loader import register_all_butler_tools
-
-    register_all_butler_tools()
+    register_all_butler_tools()  # idempotent
     register_all_butler_tools()
 
 
-def test_missing_tools_file_raises():
-    """Butlers without tools.py raise FileNotFoundError."""
+def test_missing_tools_file_raises_and_shared_tools():
+    """Missing tools.py raises FileNotFoundError; shared tools importable from src/."""
     import tempfile
 
+    import butlers.tools.extraction as ext_mod
+    import butlers.tools.extraction_queue as queue_mod
     from butlers.tools._loader import register_butler_tools
+    from butlers.tools.extraction import ExtractorSchema, route
+    from butlers.tools.extraction_queue import extraction_queue_add
+
+    assert callable(route) and callable(extraction_queue_add) and ExtractorSchema is not None
+    assert "src/butlers/tools/extraction.py" in ext_mod.__file__
+    assert "src/butlers/tools/extraction_queue.py" in queue_mod.__file__
+
     with tempfile.TemporaryDirectory() as tmp:
         empty_dir = Path(tmp) / "empty_butler"
         empty_dir.mkdir()
         with pytest.raises(FileNotFoundError):
             register_butler_tools("empty_butler", empty_dir)
-
-
-def test_shared_tools_importable():
-    """Shared tools (extraction, extraction_queue) are importable from src/."""
-    import butlers.tools.extraction as ext_mod
-    import butlers.tools.extraction_queue as queue_mod
-    from butlers.tools.extraction import ExtractorSchema, route
-    from butlers.tools.extraction_queue import extraction_queue_add
-
-    assert ExtractorSchema is not None
-    assert callable(route)
-    assert callable(extraction_queue_add)
-    assert "src/butlers/tools/extraction.py" in ext_mod.__file__
-    assert "src/butlers/tools/extraction_queue.py" in queue_mod.__file__
