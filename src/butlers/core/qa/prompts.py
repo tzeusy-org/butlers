@@ -4,6 +4,9 @@ Composes the prompt from normalized finding context (fingerprint, exception type
 sanitized summary, source type, occurrence count) without including any raw log
 content or user data.
 
+Also provides ``build_review_followup_prompt`` for follow-up agents dispatched
+when a QA PR receives reviewer feedback (changes requested or unresolved threads).
+
 Spec reference
 --------------
 openspec/changes/qa-staffer/specs/qa-investigation-dispatch/spec.md
@@ -128,6 +131,7 @@ def build_investigation_prompt(
     str
         Formatted investigation prompt string.
     """
+
     def _escape(s: str) -> str:
         """Escape curly braces in user-controlled strings to prevent str.format() errors.
 
@@ -141,9 +145,7 @@ def build_investigation_prompt(
     # Build optional context section (diagnostic reasoning from butler_reports source)
     context_section = ""
     if finding.context and finding.context.strip():
-        context_section = _CONTEXT_SECTION_TEMPLATE.format(
-            context=_escape(finding.context.strip())
-        )
+        context_section = _CONTEXT_SECTION_TEMPLATE.format(context=_escape(finding.context.strip()))
 
     # Build optional dashboard link section
     dashboard_section = ""
@@ -163,5 +165,124 @@ def build_investigation_prompt(
         first_seen=finding.first_seen.isoformat(),
         last_seen=finding.last_seen.isoformat(),
         context_section=context_section,
+        dashboard_section=dashboard_section,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PR review follow-up prompt
+# ---------------------------------------------------------------------------
+
+_PR_REVIEW_FOLLOWUP_PROMPT_TEMPLATE = """\
+You are a QA review follow-up agent. A QA investigation PR for the \
+{source_butler} butler has received reviewer feedback that must be addressed \
+before merging.
+
+## PR Context
+
+**PR Number:** {pr_number}
+**PR URL:** {pr_url}
+**Fingerprint:** {fingerprint}
+**Attempt ID:** {attempt_id}
+
+## Reviewer Feedback
+
+{feedback_summary}
+
+## Your Task
+
+1. Fetch the latest PR state and full review thread details::
+
+       gh pr view {pr_number} --json reviews,reviewThreads,files
+
+2. Read each reviewer comment carefully.
+3. Address all outstanding review comments by making the requested code changes.
+4. Run tests and lint after making changes::
+
+       uv run pytest
+       uv run ruff check src/ tests/
+
+5. Commit your changes with a clear message referencing the reviewer feedback::
+
+       git commit -m "fix(qa-review): address reviewer feedback [<fingerprint[:12]>]"
+
+6. Do NOT push or create a new PR — the QA dispatcher will handle that.
+
+## Important Rules
+
+- Respond to reviewer feedback accurately and completely.
+- Do NOT include any PII, user data, credentials, or environment-specific \
+information in commit messages or code changes.
+- Keep changes focused on the specific reviewer feedback — do not refactor \
+unrelated code.
+- If a reviewer request is unclear, make a conservative interpretation that \
+satisfies the spirit of the feedback.
+- This follow-up was triggered automatically by the QA review tracker; \
+the feedback summary above is the primary context available.
+{dashboard_section}"""
+
+_PR_REVIEW_DASHBOARD_SECTION_TEMPLATE = """\
+
+## Investigation Dashboard
+
+View investigation details at: {dashboard_url}
+"""
+
+
+def build_review_followup_prompt(
+    pr_number: int,
+    pr_url: str,
+    fingerprint: str,
+    source_butler: str,
+    attempt_id: uuid.UUID,
+    feedback_summary: str,
+    dashboard_base_url: str | None = None,
+) -> str:
+    """Build the follow-up prompt for a PR review response agent.
+
+    Called when ``check_open_pr_statuses`` detects unresolved review threads
+    or "changes requested" state on a QA investigation PR.
+
+    Parameters
+    ----------
+    pr_number:
+        GitHub PR number.
+    pr_url:
+        Full GitHub PR URL.
+    fingerprint:
+        Fingerprint from the original healing attempt.
+    source_butler:
+        Butler that originated the investigation.
+    attempt_id:
+        UUID of the healing_attempts row.
+    feedback_summary:
+        Concise summary of the outstanding reviewer feedback (already anonymized
+        by the caller).
+    dashboard_base_url:
+        Optional base URL for the dashboard investigation detail page.
+
+    Returns
+    -------
+    str
+        Formatted follow-up prompt string.
+    """
+
+    def _escape(s: str) -> str:
+        return s.replace("{", "{{").replace("}", "}}")
+
+    dashboard_section = ""
+    if dashboard_base_url:
+        dashboard_url = f"{dashboard_base_url.rstrip('/')}/qa/investigations/{attempt_id}"
+        dashboard_section = _PR_REVIEW_DASHBOARD_SECTION_TEMPLATE.format(
+            dashboard_url=dashboard_url
+        )
+
+    return _PR_REVIEW_FOLLOWUP_PROMPT_TEMPLATE.format(
+        source_butler=_escape(source_butler),
+        pr_number=pr_number,
+        pr_url=_escape(pr_url),
+        fingerprint=fingerprint,
+        attempt_id=attempt_id,
+        feedback_summary=_escape(feedback_summary),
         dashboard_section=dashboard_section,
     )

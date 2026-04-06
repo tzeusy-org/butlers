@@ -140,6 +140,10 @@ def _make_investigation_row(
     updated_at: datetime | None = None,
     closed_at: datetime | None = None,
     error_detail: str | None = None,
+    review_state: str | None = None,
+    last_review_check_at: datetime | None = None,
+    review_feedback_summary: str | None = None,
+    follow_up_count: int = 0,
 ) -> dict[str, Any]:
     """Build a fake healing_attempts row dict."""
     return {
@@ -159,6 +163,10 @@ def _make_investigation_row(
         "updated_at": updated_at or _NOW,
         "closed_at": closed_at,
         "error_detail": error_detail,
+        "review_state": review_state,
+        "last_review_check_at": last_review_check_at,
+        "review_feedback_summary": review_feedback_summary,
+        "follow_up_count": follow_up_count,
     }
 
 
@@ -769,6 +777,54 @@ class TestListInvestigations:
             response = await client.get("/api/qa/investigations")
 
         assert response.status_code == 503
+
+    async def test_returns_review_tracking_fields(self) -> None:
+        """Investigation rows include review_state, follow_up_count, and related fields."""
+        row = _make_investigation_row(
+            status="pr_open",
+            pr_url="https://github.com/foo/bar/pull/7",
+            pr_number=7,
+            review_state="changes_requested",
+            last_review_check_at=_NOW,
+            review_feedback_summary="Please add tests for edge cases.",
+            follow_up_count=1,
+        )
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        inv = response.json()["data"][0]
+        assert inv["review_state"] == "changes_requested"
+        assert inv["follow_up_count"] == 1
+        assert inv["review_feedback_summary"] == "Please add tests for edge cases."
+        assert inv["last_review_check_at"] is not None
+
+    async def test_review_fields_default_to_null_and_zero(self) -> None:
+        """Investigation rows without review data return null/0 for review fields."""
+        row = _make_investigation_row(
+            status="investigating",
+            review_state=None,
+            last_review_check_at=None,
+            review_feedback_summary=None,
+            follow_up_count=0,
+        )
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        inv = response.json()["data"][0]
+        assert inv["review_state"] is None
+        assert inv["follow_up_count"] == 0
+        assert inv["review_feedback_summary"] is None
+        assert inv["last_review_check_at"] is None
 
 
 # ---------------------------------------------------------------------------

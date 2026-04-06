@@ -7,12 +7,15 @@ Covers:
 - dispatch_qa_investigation: Gates (severity, already_investigating, cooldown,
   concurrency, circuit breaker, no model, worktree failure), success, never raises
 - dispatch_novel_findings: returns all results, empty list, stops at concurrency cap
-- check_open_pr_statuses: no token → empty counts, MERGED state → pr_merged
+- check_open_pr_statuses: no token → empty counts, MERGED/CLOSED states, review tracking
+- _extract_review_state: state extraction from gh pr view JSON
+- _dispatch_pr_review_followup: anonymization failure, dispatch success
 """
 
 from __future__ import annotations
 
 import asyncio
+import json as _test_json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +26,8 @@ import pytest
 from butlers.core.qa.dispatch import (
     QaDispatchConfig,
     QaDispatchResult,
+    _dispatch_pr_review_followup,
+    _extract_review_state,
     build_sandbox_env,
     check_open_pr_statuses,
     dispatch_novel_findings,
@@ -250,26 +255,452 @@ async def test_dispatch_novel_findings():
     assert all(r.reason == "concurrency_cap" for r in results3)
 
 
+def _make_pr_row(
+    *,
+    attempt_id: uuid.UUID | None = None,
+    pr_url: str = "https://github.com/org/repo/pull/42",
+    pr_number: int = 42,
+    fingerprint: str = "a" * 64,
+    butler_name: str = "general",
+    follow_up_count: int = 0,
+    branch_name: str | None = "qa/general/abcdef",
+) -> dict:
+    return {
+        "id": attempt_id or uuid.uuid4(),
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "fingerprint": fingerprint,
+        "butler_name": butler_name,
+        "follow_up_count": follow_up_count,
+        "branch_name": branch_name,
+    }
+
+
 @pytest.mark.asyncio
-async def test_check_open_pr_statuses():
-    """No token → empty counts; MERGED → pr_merged transition."""
+async def test_check_open_pr_statuses_no_token():
+    """No token → empty counts, fetch not called."""
     pool = _make_pool()
     counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token=None)
-    assert counts == {"merged": 0, "closed": 0, "errors": 0}
+    assert counts == {"merged": 0, "closed": 0, "errors": 0, "follow_ups_dispatched": 0}
     pool.fetch.assert_not_called()
 
-    # MERGED state
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_merged():
+    """MERGED state → pr_merged transition."""
     attempt_id = uuid.uuid4()
-    pool2 = _make_pool()
-    pool2.fetch = AsyncMock(return_value=[
-        {"id": attempt_id, "pr_url": "https://github.com/org/repo/pull/42", "pr_number": 42}
-    ])
+    pool = _make_pool()
+    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
+    pr_data = {"state": "MERGED", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"MERGED\n", b""))
+    mock_proc.communicate = AsyncMock(return_value=(
+        _test_json.dumps(pr_data).encode(), b""
+    ))
+    mock_proc.returncode = 0
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as mock_update,
+    ):
+        counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+    assert counts["merged"] == 1
+    assert counts["closed"] == 0
+    assert counts["errors"] == 0
+    mock_update.assert_awaited_once()
+    call_args = mock_update.call_args
+    assert call_args[0][2] == "pr_merged"
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_closed():
+    """CLOSED state → failed transition."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
+    pr_data = {"state": "CLOSED", "reviews": [], "latestReviews": [], "reviewThreads": []}
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        _test_json.dumps(pr_data).encode(), b""
+    ))
+    mock_proc.returncode = 0
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as mock_update,
+    ):
+        counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+    assert counts["closed"] == 1
+    call_args = mock_update.call_args
+    assert call_args[0][2] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_open_no_review():
+    """OPEN with no reviews → review tracking columns updated, no follow-up."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
+    pr_data = {"state": "OPEN", "reviews": [], "latestReviews": [], "reviewThreads": []}
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        _test_json.dumps(pr_data).encode(), b""
+    ))
     mock_proc.returncode = 0
     with (
         patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
     ):
-        counts2 = await check_open_pr_statuses(pool2, Path("/tmp/repo"), gh_token="ghtoken")
-    assert counts2["merged"] == 1
+        counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+    assert counts["merged"] == 0
+    assert counts["closed"] == 0
+    assert counts["follow_ups_dispatched"] == 0
+    # Review update executed
+    pool.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_changes_requested_dispatches_followup():
+    """OPEN with changes_requested + spawner → follow-up dispatched."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id, follow_up_count=0)])
+    pr_data = {
+        "state": "OPEN",
+        "reviews": [
+            {"state": "CHANGES_REQUESTED", "body": "Please fix the tests.", "author": {"login": "alice"}}
+        ],
+        "latestReviews": [
+            {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}
+        ],
+        "reviewThreads": [],
+    }
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        _test_json.dumps(pr_data).encode(), b""
+    ))
+    mock_proc.returncode = 0
+    spawner = MagicMock()
+    config = QaDispatchConfig()
+
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._dispatch_pr_review_followup",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_followup,
+    ):
+        counts = await check_open_pr_statuses(
+            pool, Path("/tmp/repo"), gh_token="ghtoken",
+            spawner=spawner, config=config,
+        )
+    assert counts["follow_ups_dispatched"] == 1
+    mock_followup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_rate_limit_respected():
+    """follow_up_count >= _MAX_FOLLOW_UP_PER_CYCLE → no follow-up dispatched."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    # follow_up_count=1 equals the limit (_MAX_FOLLOW_UP_PER_CYCLE=1)
+    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id, follow_up_count=1)])
+    pr_data = {
+        "state": "OPEN",
+        "reviews": [],
+        "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "bob"}}],
+        "reviewThreads": [],
+    }
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        _test_json.dumps(pr_data).encode(), b""
+    ))
+    mock_proc.returncode = 0
+    spawner = MagicMock()
+    config = QaDispatchConfig()
+
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._dispatch_pr_review_followup",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_followup,
+    ):
+        counts = await check_open_pr_statuses(
+            pool, Path("/tmp/repo"), gh_token="ghtoken",
+            spawner=spawner, config=config,
+        )
+    assert counts["follow_ups_dispatched"] == 0
+    mock_followup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_no_spawner_no_followup():
+    """OPEN with changes_requested but no spawner → no follow-up dispatched."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id, follow_up_count=0)])
+    pr_data = {
+        "state": "OPEN",
+        "reviews": [],
+        "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}],
+        "reviewThreads": [],
+    }
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        _test_json.dumps(pr_data).encode(), b""
+    ))
+    mock_proc.returncode = 0
+
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+    ):
+        # No spawner or config → review tracking only
+        counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+    assert counts["follow_ups_dispatched"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _extract_review_state tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_extract_review_state_no_reviews():
+    """No reviews → (None, None)."""
+    pr_data = {"reviews": [], "latestReviews": [], "reviewThreads": []}
+    state, summary = _extract_review_state(pr_data)
+    assert state is None
+    assert summary is None
+
+
+@pytest.mark.unit
+def test_extract_review_state_approved():
+    """Single APPROVED review → (approved, None)."""
+    pr_data = {
+        "reviews": [],
+        "latestReviews": [{"state": "APPROVED", "author": {"login": "alice"}}],
+        "reviewThreads": [],
+    }
+    state, summary = _extract_review_state(pr_data)
+    assert state == "approved"
+    assert summary is None
+
+
+@pytest.mark.unit
+def test_extract_review_state_changes_requested_dominant():
+    """CHANGES_REQUESTED dominates APPROVED in priority."""
+    pr_data = {
+        "reviews": [
+            {"state": "CHANGES_REQUESTED", "body": "Fix the tests", "author": {"login": "alice"}}
+        ],
+        "latestReviews": [
+            {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
+            {"state": "APPROVED", "author": {"login": "bob"}},
+        ],
+        "reviewThreads": [],
+    }
+    state, summary = _extract_review_state(pr_data)
+    assert state == "changes_requested"
+    assert summary is not None and "Fix the tests" in summary
+
+
+@pytest.mark.unit
+def test_extract_review_state_unresolved_threads():
+    """Unresolved review threads produce feedback summary."""
+    pr_data = {
+        "reviews": [],
+        "latestReviews": [],
+        "reviewThreads": [
+            {
+                "isResolved": False,
+                "isOutdated": False,
+                "comments": {
+                    "nodes": [
+                        {"body": "Please add a test for this case.", "author": {"login": "reviewer"}}
+                    ]
+                },
+            }
+        ],
+    }
+    state, summary = _extract_review_state(pr_data)
+    assert state is None  # No latestReviews → no dominant state
+    assert summary is not None
+    assert "Please add a test" in summary
+
+
+@pytest.mark.unit
+def test_extract_review_state_resolved_threads_ignored():
+    """Resolved threads are excluded from feedback summary."""
+    pr_data = {
+        "reviews": [],
+        "latestReviews": [],
+        "reviewThreads": [
+            {
+                "isResolved": True,
+                "isOutdated": False,
+                "comments": {
+                    "nodes": [
+                        {"body": "Already resolved comment.", "author": {"login": "reviewer"}}
+                    ]
+                },
+            }
+        ],
+    }
+    state, summary = _extract_review_state(pr_data)
+    assert state is None
+    assert summary is None
+
+
+@pytest.mark.unit
+def test_extract_review_state_changes_requested_no_body():
+    """CHANGES_REQUESTED with no body text still produces a fallback summary."""
+    pr_data = {
+        "reviews": [{"state": "CHANGES_REQUESTED", "body": "", "author": {"login": "alice"}}],
+        "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}],
+        "reviewThreads": [],
+    }
+    state, summary = _extract_review_state(pr_data)
+    assert state == "changes_requested"
+    assert summary is not None  # Fallback message applied
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_pr_review_followup tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_anonymization_failure():
+    """Anonymization validation failure → returns False, no task created."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+
+    with (
+        patch("butlers.core.qa.dispatch.anonymize", return_value="safe text"),
+        patch(
+            "butlers.core.qa.dispatch.validate_anonymized",
+            return_value=(False, ["violation"]),
+        ),
+    ):
+        result = await _dispatch_pr_review_followup(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name="qa/general/abcdef",
+            feedback_summary="reviewer comment",
+            config=QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token="token",
+        )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_missing_branch():
+    """Missing pr_branch_name → returns False immediately."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+
+    result = await _dispatch_pr_review_followup(
+        pool=pool,
+        repo_root=Path("/tmp/repo"),
+        attempt_id=attempt_id,
+        pr_number=42,
+        pr_url="https://github.com/org/repo/pull/42",
+        fingerprint="a" * 64,
+        butler_name="general",
+        pr_branch_name=None,
+        feedback_summary="reviewer comment",
+        config=QaDispatchConfig(),
+        spawner=MagicMock(),
+        gh_token="token",
+    )
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_success():
+    """Successful anonymization + existing-branch worktree → True, follow_up_count incremented."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    branch_name = "qa/general/abcdef-1234"
+
+    # Mock git subprocess (fetch + show-ref + worktree add all succeed)
+    mock_proc_ok = MagicMock()
+    mock_proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc_ok.returncode = 0
+
+    with (
+        patch("butlers.core.qa.dispatch.anonymize", return_value="safe feedback"),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_proc_ok,
+        ),
+        patch("pathlib.Path.mkdir"),
+        patch("pathlib.Path.is_dir", return_value=True),
+        patch("butlers.core.qa.dispatch._run_review_followup_session", new_callable=AsyncMock),
+    ):
+        result = await _dispatch_pr_review_followup(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name=branch_name,
+            feedback_summary="reviewer comment",
+            config=QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token="token",
+        )
+    assert result is True
+    # follow_up_count increment executed
+    pool.execute.assert_awaited_once()
+    call_sql = pool.execute.call_args[0][0]
+    assert "follow_up_count" in call_sql
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_worktree_failure():
+    """Worktree creation failure (git fetch error) → returns False."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+
+    # Mock git subprocess: fetch fails
+    mock_proc_fail = MagicMock()
+    mock_proc_fail.communicate = AsyncMock(return_value=(b"error: branch not found", b""))
+    mock_proc_fail.returncode = 128
+
+    with (
+        patch("butlers.core.qa.dispatch.anonymize", return_value="safe"),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_proc_fail,
+        ),
+        patch("pathlib.Path.mkdir"),
+    ):
+        result = await _dispatch_pr_review_followup(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name="qa/general/abcdef",
+            feedback_summary="reviewer comment",
+            config=QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token="token",
+        )
+    assert result is False
