@@ -28,6 +28,7 @@ _BUTLER_SCHEMAS = (
     "home",
     "lifestyle",
     "messenger",
+    "qa",
     "relationship",
     "switchboard",
     "travel",
