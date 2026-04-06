@@ -41,8 +41,10 @@ class TestTieredDeduplicationIndexes:
         }
         assert len(tiers) == 3
         assert tiers["tier1"]["columns"][0] == "external_id"
-        # Duplicate acceptance is success not error
-        assert True
+        # Tier 1 uses btree index on (external_id, source) — the uniqueness anchor
+        assert tiers["tier1"]["type"] == "btree"
+        # Tier 3 uses GIN for raw_data similarity — documents accepted approach
+        assert tiers["tier3"]["type"] == "gin"
 
 
 class TestMonetaryPrecisionAndAudit:

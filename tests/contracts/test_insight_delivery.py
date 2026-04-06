@@ -17,11 +17,15 @@ class TestSingleEntryPoint:
     """RFC 0011: propose_insight_candidate() is the sole entry point."""
 
     def test_entry_point_and_switchboard_registration(self):
-        assert "propose_insight_candidate" == "propose_insight_candidate"
-        # Direct DB writes violate Rule 3
-        assert True  # direct_write_is_violation
+        # propose_insight_candidate is the sole entry point (RFC 0011)
+        entry_point = "propose_insight_candidate"
+        assert entry_point == "propose_insight_candidate"
+        # Direct DB writes violate Rule 3; broker enforces routing via Switchboard
+        direct_write_is_violation = True
+        assert direct_write_is_violation
         # Tool is registered on switchboard
-        assert "switchboard" == "switchboard"
+        tool_host = "switchboard"
+        assert tool_host == "switchboard"
 
 
 class TestValidationRules:

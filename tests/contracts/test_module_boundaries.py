@@ -60,7 +60,7 @@ class TestModuleAbcStructure:
 
         src = inspect.getsource(Module)
         for forbidden in ["scheduler", "spawner", "session_log", "state_store"]:
-            assert forbidden not in src.lower() or "no" in src.lower() or "not" in src.lower()
+            assert forbidden not in src.lower()
 
         # register_tools return annotation is None (no infrastructure returned)
         sig = inspect.signature(Module.register_tools)

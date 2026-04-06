@@ -29,15 +29,22 @@ class TestApprovalGateContracts:
         src = inspect.getsource(ButlerDaemon)
         assert "approval" in src.lower()
 
-        # Timeout results in denial
-        assert True  # denial_on_timeout
+        # Timeout results in expiry/denial: expire_stale_actions must exist
+        from butlers.modules.approvals import ApprovalsModule
+
+        assert hasattr(ApprovalsModule, "_expire_stale_actions"), (
+            "ApprovalsModule must implement _expire_stale_actions for timeout-denial (security.md)"
+        )
 
         # Sensitive use cases documented
         sensitive = {"send email", "financial transaction", "smart home action"}
         assert len(sensitive) >= 3
 
-        # Works across notification channels and uses owner role
-        assert True
+        # Approval module supports cross-channel notifications via roles
+        mod_src = inspect.getsource(ApprovalsModule)
+        assert "role" in mod_src.lower() or "owner" in mod_src.lower() or "actor" in mod_src.lower(), (
+            "ApprovalsModule must use role/owner/actor for notification targeting"
+        )
 
     def test_tool_sensitivity_metadata_informs_gate(self):
         """ToolMeta.arg_sensitivities informs approval gate behavior."""

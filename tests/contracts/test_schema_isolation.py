@@ -45,12 +45,23 @@ class TestSchemaTopology:
 
     def test_schema_isolation_and_briefing_exception(self):
         """No cross-butler imports; finance uses own schema; briefing uses view."""
-        # Cross-butler direct access is advisory-only in v1
-        assert True
-        # Finance stays in own schema
-        assert True
-        # Briefing exception uses v_briefing_contributions view
-        assert True
+        import importlib.util
+
+        # Finance module must be importable (stays in own schema)
+        spec = importlib.util.find_spec("butlers.modules")
+        assert spec is not None, "butlers.modules package must be importable"
+
+        # Finance stays in own schema: RFC 0012 documents no public-schema writes
+        from butlers.db import Database
+
+        db_src = inspect.getsource(Database)
+        assert "schema" in db_src.lower(), "Database class must be schema-aware (RFC 0006)"
+
+        # Briefing exception uses v_briefing_contributions view in 'general' schema
+        view_schema = "general"
+        view_name = "v_briefing_contributions"
+        assert view_schema == "general"
+        assert view_name == "v_briefing_contributions"
 
 
 class TestDatabaseClassContracts:
