@@ -237,6 +237,76 @@ Source: `src/butlers/core/healing/`
 
 ---
 
+## 8. Relationship Interaction Flow (Dunbar Tier Computation)
+
+The relationship butler computes Dunbar social tiers (5/15/50/150/500/1500)
+dynamically from interaction facts using exponential decay scoring. Tiers are
+**not** manually assigned — they emerge from communication frequency.
+
+### Scoring engine
+
+```
+score(contact) = Σ exp(-λ × days_since_interaction_i)
+λ = ln(2) / 30   (30-day half-life)
+```
+
+Contacts are ranked by score. Top 5 → tier 5, ranks 6-15 → tier 15, etc.
+Contacts with score = 0.0 are hard-assigned to tier 1500. Downward hysteresis
+prevents thrashing near tier boundaries.
+
+Source: `roster/relationship/tools/dunbar.py`
+
+### Interaction facts
+
+The scoring engine queries only facts matching:
+- `subject = 'contact:{contact_uuid}'`
+- `predicate = 'interaction'`
+- `scope = 'relationship'`
+- `validity = 'active'`
+
+These facts are created by `interaction_log()` in
+`roster/relationship/tools/interactions.py`, which deduplicates by
+(contact_id, type, date) when `occurred_at` is explicitly provided.
+
+### Current gap: no passive interaction detection
+
+```mermaid
+graph LR
+    A["User chats with<br/>Chloe on Telegram"] -->|"messages stored in"| B["switchboard.message_inbox"]
+    B -.-x|"❌ NO pipeline exists"| C["interaction_log()"]
+    C -->|"creates"| D["facts table<br/>(predicate=interaction)"]
+    D -->|"feeds"| E["Dunbar score<br/>computation"]
+
+    F["User tells butler<br/>'I met Chloe today'"] -->|"fact-extraction skill"| C
+
+    G["Calendar event<br/>'Dinner with Chloe'"] -.-x|"❌ NO pipeline exists"| C
+```
+
+**Today, interactions are only logged when the user explicitly narrates them**
+via the fact-extraction pipeline ("I had coffee with Chloe"). Passive
+communication (Telegram messages, WhatsApp chats, emails) and calendar events
+(dinners with friends) are NOT detected.
+
+This means a contact like a user's partner can have zero interaction facts
+despite constant daily communication, leaving them stranded at tier 1500.
+
+### Planned: passive interaction sync job
+
+A background job (`interaction_sync`) owned by the relationship butler will:
+
+1. **Scan `switchboard.message_inbox`** for recent messages on user-to-person
+   channels (`telegram_user_client`, `whatsapp_user_client`, `email`)
+2. **Scan `calendar_events`** for past social events with attendees
+3. **Resolve identifiers → contact_id** via `public.contact_info` reverse-lookup
+   (email, telegram_user_id, phone number)
+4. **Call `interaction_log()`** with `occurred_at` set (enabling date-based dedup)
+   to create the facts that feed Dunbar scoring
+
+This closes the loop between communication data already in the system and the
+relationship butler's tier computation.
+
+---
+
 ## Data Path Summary
 
 | Flow | Entry Point | Exit Point | Protocol | Durable? |
