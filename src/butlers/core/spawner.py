@@ -184,15 +184,37 @@ def _append_runtime_session_query(url: str, runtime_session_id: str | None) -> s
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
 
 
+def _dedup_tool_calls_by_id(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse records sharing the same non-empty id, keeping the last occurrence.
+
+    This handles lifecycle duplicates (e.g. in_progress + completed events for
+    the same tool call) — the last occurrence carries the most complete data.
+    Records with no id are always kept.
+    """
+    seen_ids: dict[str, int] = {}
+    for i, call in enumerate(calls):
+        call_id = call.get("id")
+        if isinstance(call_id, str) and call_id:
+            seen_ids[call_id] = i  # last occurrence wins
+    if not seen_ids:
+        return calls
+    keep_indexes = set(seen_ids.values())
+    return [
+        call
+        for i, call in enumerate(calls)
+        if i in keep_indexes or not (isinstance(call.get("id"), str) and call.get("id"))
+    ]
+
+
 def _merge_tool_call_records(
     parsed_calls: list[dict[str, Any]],
     executed_calls: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Merge parser + executed call records while preserving retry attempts."""
     if not executed_calls:
-        return list(parsed_calls)
+        return _dedup_tool_calls_by_id(list(parsed_calls))
     if not parsed_calls:
-        return list(executed_calls)
+        return _dedup_tool_calls_by_id(list(executed_calls))
 
     def _payload_for_signature(call: dict[str, Any]) -> Any:
         payload = call.get("input")
@@ -245,7 +267,7 @@ def _merge_tool_call_records(
             continue
         merged.append(parsed_call)
 
-    return merged
+    return _dedup_tool_calls_by_id(merged)
 
 
 def _compose_system_prompt(

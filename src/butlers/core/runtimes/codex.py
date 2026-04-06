@@ -299,6 +299,11 @@ def _parse_codex_output(
                 if isinstance(text, str) and text:
                     text_parts.append(text)
             elif _looks_like_tool_call_event(item):
+                # Skip in-progress / started events — they carry no useful
+                # data (empty output, null exit_code) and would duplicate the
+                # completed record for the same tool call id.
+                if obj_type in ("item.started", "response.output_item.added"):
+                    continue
                 tool_calls.append(_extract_tool_call(item))
 
         elif obj_type in ("turn.completed", "response.completed"):
