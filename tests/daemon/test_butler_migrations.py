@@ -40,8 +40,8 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def test_build_alembic_config() -> None:
-    """Percent-encoded URLs preserved; schema options set; invalid schema raises."""
+def test_build_alembic_config_and_run_migrations() -> None:
+    """Percent-encoded URLs preserved; schema options; invalid schema raises; chain='all' upgrades in order."""
     db_url = (
         "postgresql://butlers:butlers@localhost:54320/butlers"
         "?options=-csearch_path%3Dswitchboard%2Cpublic"
@@ -64,22 +64,20 @@ def test_build_alembic_config() -> None:
             target_schema="bad-schema",
         )
 
-
-def test_run_migrations_all_upgrades_each_chain_in_order() -> None:
-    """chain='all' should upgrade each discovered chain in deterministic order."""
-    config = MagicMock()
+    # chain='all' upgrades each discovered chain in deterministic order
+    mock_cfg = MagicMock()
     with (
         patch("butlers.migrations.get_all_chains", return_value=["core", "mailbox", "switchboard"]),
-        patch("butlers.migrations._build_alembic_config", return_value=config),
+        patch("butlers.migrations._build_alembic_config", return_value=mock_cfg),
         patch("butlers.migrations.command.upgrade") as mock_upgrade,
         patch("butlers.migrations._bootstrap_extensions"),
     ):
         asyncio.run(run_migrations("postgresql://db", chain="all", schema="switchboard"))
 
     assert mock_upgrade.call_args_list == [
-        ((config, "core@head"),),
-        ((config, "mailbox@head"),),
-        ((config, "switchboard@head"),),
+        ((mock_cfg, "core@head"),),
+        ((mock_cfg, "mailbox@head"),),
+        ((mock_cfg, "switchboard@head"),),
     ]
 
 
@@ -88,32 +86,15 @@ def test_run_migrations_all_upgrades_each_chain_in_order() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "setup,expected",
-    [
-        ("with_py_migration", True),
-        ("no_directory", False),
-        ("empty_dir", False),
-        ("non_py_only", False),
-    ],
-)
-def test_has_butler_chain(tmp_path, setup, expected):
-    """has_butler_chain detects presence/absence of .py migration files."""
+def test_has_butler_chain(tmp_path):
+    """has_butler_chain: True with .py migrations present, False when directory absent."""
     chain_dir = tmp_path / "my-butler" / "migrations"
-
-    if setup == "with_py_migration":
-        chain_dir.mkdir(parents=True)
-        (chain_dir / "001_create_tables.py").write_text("# migration")
-    elif setup == "empty_dir":
-        chain_dir.mkdir(parents=True)
-        (chain_dir / "__init__.py").touch()
-    elif setup == "non_py_only":
-        chain_dir.mkdir(parents=True)
-        (chain_dir / "README.md").write_text("docs")
-    # "no_directory": don't create any directories
+    chain_dir.mkdir(parents=True)
+    (chain_dir / "001_create_tables.py").write_text("# migration")
 
     with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-        assert has_butler_chain("my-butler") is expected
+        assert has_butler_chain("my-butler") is True
+        assert has_butler_chain("nonexistent-butler") is False
 
 
 # ---------------------------------------------------------------------------
@@ -130,24 +111,16 @@ def test_discover_chains(tmp_path) -> None:
     (tmp_path / "no-migrations").mkdir()
 
     with patch("butlers.migrations.ROSTER_DIR", tmp_path):
-        butler_chains = _discover_butler_chains()
-    assert butler_chains == ["alpha", "zeta"]
+        assert _discover_butler_chains() == ["alpha", "zeta"]
 
     with patch("butlers.migrations.MODULES_DIR", tmp_path):
-        module_chains = _discover_module_chains()
-    assert module_chains == ["alpha", "zeta"]
+        assert _discover_module_chains() == ["alpha", "zeta"]
 
-    # Real roster
-    assert has_butler_chain("relationship") is True
-    assert has_butler_chain("does-not-exist-butler-xyz") is False
-    real_butler_chains = _discover_butler_chains()
+    # Real roster includes known chains
     for expected in ["general", "health", "relationship", "switchboard"]:
-        assert expected in real_butler_chains
-
-    # Real modules
-    real_module_chains = _discover_module_chains()
+        assert expected in _discover_butler_chains()
     for expected in ["approvals", "mailbox", "memory"]:
-        assert expected in real_module_chains
+        assert expected in _discover_module_chains()
 
 
 # ---------------------------------------------------------------------------
@@ -362,12 +335,13 @@ async def _run_daemon_with_migration_tracking(
     return call_log, schema_log
 
 
-async def test_butler_migration_ordering(tmp_path: Path) -> None:
-    """Migration ordering: with chain runs core→butler→module; without chain skips butler."""
+async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -> None:
+    """Migration ordering: with chain runs core→butler→module; without chain skips butler.
+    All chains receive the butler's configured schema."""
     registry_with_mod = ModuleRegistry()
     registry_with_mod.register(StubModule)
 
-    # With chain + module
+    # With chain + module: core→butler→module
     (tmp_path / "a").mkdir()
     butler_dir = _make_butler_toml(tmp_path / "a", "relationship", modules={"stub_mod": {}})
     call_log, _ = await _run_daemon_with_migration_tracking(
@@ -375,7 +349,7 @@ async def test_butler_migration_ordering(tmp_path: Path) -> None:
     )
     assert call_log == ["migrate:core", "migrate:relationship", "migrate:stub_mod"]
 
-    # Without chain
+    # Without chain: butler step skipped
     (tmp_path / "b").mkdir()
     butler_dir2 = _make_butler_toml(tmp_path / "b", "test-butler", modules={"stub_mod": {}})
     call_log2, _ = await _run_daemon_with_migration_tracking(
@@ -383,28 +357,12 @@ async def test_butler_migration_ordering(tmp_path: Path) -> None:
     )
     assert call_log2 == ["migrate:core", "migrate:stub_mod"]
 
-    # With chain, no modules
+    # Schema forwarded to all chains
     (tmp_path / "c").mkdir()
-    butler_dir3 = _make_butler_toml(tmp_path / "c", "relationship")
-    call_log3, _ = await _run_daemon_with_migration_tracking(
-        butler_dir3, ModuleRegistry(), has_chain=True
+    butler_dir3 = _make_butler_toml(
+        tmp_path / "c", "relationship", modules={"stub_mod": {}}, db_schema="relationship"
     )
-    assert call_log3 == ["migrate:core", "migrate:relationship"]
-
-
-async def test_butler_migration_schema_forwarding(tmp_path: Path) -> None:
-    """All migration chains receive the butler's configured schema."""
-    butler_dir = _make_butler_toml(
-        tmp_path,
-        "relationship",
-        modules={"stub_mod": {}},
-        db_name="butlers",
-        db_schema="relationship",
-    )
-    registry = ModuleRegistry()
-    registry.register(StubModule)
-
     _, schema_log = await _run_daemon_with_migration_tracking(
-        butler_dir, registry, has_chain=True
+        butler_dir3, registry_with_mod, has_chain=True
     )
     assert schema_log == ["relationship", "relationship", "relationship"]

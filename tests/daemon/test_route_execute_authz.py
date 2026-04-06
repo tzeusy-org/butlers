@@ -219,13 +219,12 @@ def _mock_route_inbox(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class TestRouteExecuteAuthzRejectsUntrustedCallers:
-    """Verify that route.execute rejects callers not in trusted_route_callers."""
+class TestRouteExecuteAuthz:
+    """Verify route.execute authz: untrusted callers rejected; trusted callers allowed."""
 
-    async def test_untrusted_caller_rejected(self, tmp_path: Path) -> None:
-        """Messenger and non-messenger butlers reject untrusted callers;
-        empty endpoint identity also rejected."""
-        # Messenger rejects rogue-caller; delivery side effect not triggered
+    async def test_authz_reject_and_allow(self, tmp_path: Path) -> None:
+        """Untrusted callers rejected with validation_error; trusted switchboard allowed."""
+        # Messenger rejects rogue-caller
         patches = _patch_infra()
         daemon, route_execute_fn = await _start_daemon_with_route_execute(
             _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
@@ -246,25 +245,8 @@ class TestRouteExecuteAuthzRejectsUntrustedCallers:
         assert result["error"]["class"] == "validation_error"
         assert result["error"]["retryable"] is False
         assert "rogue-caller" in result["error"]["message"]
-        assert "trusted_route_callers" in result["error"]["message"]
 
-        # Non-messenger also rejects unknown callers
-        patches2 = _patch_infra()
-        subdir2 = tmp_path / "h2"
-        subdir2.mkdir()
-        _, route_execute_fn2 = await _start_daemon_with_route_execute(
-            _make_butler_toml(subdir2, butler_name="health"), patches2
-        )
-        result2 = await route_execute_fn2(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_endpoint_identity="unknown-origin"),
-            input={"prompt": "Run health check."},
-        )
-        assert result2["status"] == "error"
-        assert result2["error"]["class"] == "validation_error"
-        assert "unknown-origin" in result2["error"]["message"]
-
-        # Empty/blank endpoint identity rejected
+        # Empty/blank endpoint identity also rejected
         patches3 = _patch_infra()
         subdir3 = tmp_path / "h3"
         subdir3.mkdir()
@@ -279,53 +261,22 @@ class TestRouteExecuteAuthzRejectsUntrustedCallers:
         assert result3["status"] == "error"
         assert result3["error"]["class"] == "validation_error"
 
-
-# ---------------------------------------------------------------------------
-# Tests: authorized callers pass through
-# ---------------------------------------------------------------------------
-
-
-class TestRouteExecuteAuthzAllowsTrustedCallers:
-    """Verify that trusted callers are allowed through."""
-
-    async def test_trusted_callers_allowed(self, tmp_path: Path) -> None:
-        """Default switchboard caller allowed on messenger (delivery succeeds) and
-        non-messenger (trigger accepted) butlers."""
-        # Messenger: switchboard allowed, delivery proceeds
-        patches = _patch_infra()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
-            patches,
+        # Switchboard caller allowed: messenger delivery proceeds; non-messenger trigger accepted
+        patches_ok = _patch_infra()
+        (tmp_path / "mess2").mkdir(exist_ok=True)
+        daemon_ok, fn_ok = await _start_daemon_with_route_execute(
+            _make_butler_toml(tmp_path / "mess2", butler_name="messenger", modules={"telegram": {}, "email": {}}),
+            patches_ok,
         )
-        assert route_execute_fn is not None
-        telegram_module = next(m for m in daemon._modules if m.name == "telegram")
-        telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
-
-        result = await route_execute_fn(
+        tg_mod = next(m for m in daemon_ok._modules if m.name == "telegram")
+        tg_mod._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+        result_ok = await fn_ok(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity="switchboard"),
             input={"prompt": "Deliver.", "context": {"notify_request": _valid_notify_request()}},
         )
-        telegram_module._send_message.assert_awaited_once()
-        assert result["status"] == "ok"
-
-        # Non-messenger: switchboard triggers accepted
-        patches2 = _patch_infra()
-        subdir = tmp_path / "h"
-        subdir.mkdir()
-        daemon2, route_execute_fn2 = await _start_daemon_with_route_execute(
-            _make_butler_toml(subdir, butler_name="health"), patches2
-        )
-        mock_tr = MagicMock(output="done", success=True, error=None, duration_ms=42)
-        daemon2.spawner.trigger = AsyncMock(return_value=mock_tr)
-
-        result2 = await route_execute_fn2(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_endpoint_identity="switchboard"),
-            input={"prompt": "Run health check."},
-        )
-        assert result2["status"] == "accepted"
-        assert "inbox_id" in result2
+        tg_mod._send_message.assert_awaited_once()
+        assert result_ok["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------

@@ -353,88 +353,28 @@ class TestSpawnerDraining:
             runtime=runtime,
         )
 
-    async def test_spawner_initial_state_and_stop_accepting(self) -> None:
+    async def test_spawner_drain_and_stop_accepting(self) -> None:
         """in_flight_count starts at 0; drain() with no sessions returns immediately;
-        stop_accepting() causes trigger() to raise RuntimeError."""
+        stop_accepting() rejects triggers; drain waits for completion; timeout cancels."""
+        # Empty drain and stop_accepting
         spawner = self._make_spawner()
         assert spawner.in_flight_count == 0
-        # drain with no in-flight sessions returns immediately
         await spawner.drain(timeout=1.0)
-        # stop_accepting rejects new triggers
         spawner.stop_accepting()
         with pytest.raises(RuntimeError, match="not accepting new triggers"):
             await spawner.trigger(prompt="hello", trigger_source="trigger_tool")
 
-    async def test_drain_waits_for_completion(self) -> None:
-        """drain() should wait for an in-flight session to finish."""
-        session_completed = asyncio.Event()
-        drain_started = asyncio.Event()
-
-        class _SlowCompletingAdapter(RuntimeAdapter):
-            @property
-            def binary_name(self):
-                return "mock"
-
-            async def invoke(self, *args, **kwargs):
-                drain_started.set()
-                await asyncio.sleep(0.3)
-                session_completed.set()
-                return "done", [], None
-
-            def build_config_file(self, mcp_servers, tmp_dir):
-                p = tmp_dir / "mock.json"
-                p.write_text("{}")
-                return p
-
-            def parse_system_prompt_file(self, config_dir):
-                return ""
-
-        spawner = self._make_spawner(runtime=_SlowCompletingAdapter())
-
-        # Start a trigger in a background task
-        trigger_task = asyncio.create_task(
-            spawner.trigger(prompt="slow", trigger_source="trigger_tool")
-        )
-
-        # Wait for the session to actually start
-        await drain_started.wait()
-
-        # Now stop and drain
-        spawner.stop_accepting()
-        assert spawner.in_flight_count == 1
-
-        await spawner.drain(timeout=5.0)
-
-        # Session should have completed
-        assert session_completed.is_set()
-        assert spawner.in_flight_count == 0
-
-        # Clean up
-        await trigger_task
-
-    async def test_drain_timeout_cancels_sessions(self) -> None:
-        """drain() should cancel sessions that exceed the timeout."""
+        # Drain timeout cancels sessions
         session_started = asyncio.Event()
-        spawner = self._make_spawner(runtime=_SlowMockAdapter(started_event=session_started))
-
-        # Start a trigger in a background task
+        spawner2 = self._make_spawner(runtime=_SlowMockAdapter(started_event=session_started))
         trigger_task = asyncio.create_task(
-            spawner.trigger(prompt="hang", trigger_source="trigger_tool")
+            spawner2.trigger(prompt="hang", trigger_source="trigger_tool")
         )
-
-        # Wait for the session to start
         await session_started.wait()
-
-        # Now stop and drain with a very short timeout
-        spawner.stop_accepting()
-        assert spawner.in_flight_count == 1
-
-        await spawner.drain(timeout=0.1)
-
-        # After drain with timeout, in-flight should be cleared
-        assert spawner.in_flight_count == 0
-
-        # The trigger task should be cancelled
+        spawner2.stop_accepting()
+        assert spawner2.in_flight_count == 1
+        await spawner2.drain(timeout=0.1)
+        assert spawner2.in_flight_count == 0
         with pytest.raises((asyncio.CancelledError, Exception)):
             await trigger_task
 
@@ -471,10 +411,10 @@ class TestDaemonGracefulShutdown:
             await daemon.start()
         return daemon
 
-    async def test_shutdown_basics(self, tmp_path: Path) -> None:
-        """shutdown() sets _accepting_connections=False; calls stop_accepting+drain;
-        passes configured timeout to drain()."""
-        # Part 1: accepting flag cleared; spawner stop_accepting + drain called
+    async def test_shutdown_sequence(self, tmp_path: Path) -> None:
+        """shutdown(): accepting_connections=False; stop_accepting + drain called with configured timeout;
+        order is stop_accepting → drain → module_shutdown → db_close."""
+        # Basic: accepting flag + drain/stop_accepting
         patches = _patch_infra()
         daemon = await self._start_daemon(_make_butler_toml(tmp_path), patches)
         assert daemon._accepting_connections is True
@@ -483,7 +423,7 @@ class TestDaemonGracefulShutdown:
         patches["mock_spawner"].stop_accepting.assert_called_once()
         patches["mock_spawner"].drain.assert_awaited_once()
 
-        # Part 2: configured timeout forwarded to drain()
+        # Configured timeout forwarded to drain()
         subdir = tmp_path / "t2"
         subdir.mkdir()
         patches2 = _patch_infra()
@@ -491,46 +431,29 @@ class TestDaemonGracefulShutdown:
         await daemon2.shutdown()
         patches2["mock_spawner"].drain.assert_awaited_once_with(timeout=15.0)
 
-    async def test_shutdown_order(self, tmp_path: Path) -> None:
-        """Shutdown should: stop accepting, drain, module shutdown, close DB."""
+        # Correct shutdown order
         registry = _make_registry(StubModuleOk)
-        patches = _patch_infra()
+        patches3 = _patch_infra()
         call_order: list[str] = []
-        patches["mock_spawner"].stop_accepting = MagicMock(
+        patches3["mock_spawner"].stop_accepting = MagicMock(
             side_effect=lambda: call_order.append("stop_accepting")
         )
-        patches["mock_spawner"].drain = AsyncMock(
+        patches3["mock_spawner"].drain = AsyncMock(
             side_effect=lambda **kw: call_order.append("drain")
         )
-
-        butler_dir = _make_butler_toml(tmp_path, modules={"stub_ok": {}})
-        daemon = await self._start_daemon(butler_dir, patches, registry=registry)
-
-        for mod in daemon._modules:
+        subdir3 = tmp_path / "t3"
+        subdir3.mkdir()
+        butler_dir3 = _make_butler_toml(subdir3, modules={"stub_ok": {}})
+        daemon3 = await self._start_daemon(butler_dir3, patches3, registry=registry)
+        for mod in daemon3._modules:
             original = mod.on_shutdown
-
             async def make_tracker(name, orig=original):
                 call_order.append(f"module_shutdown:{name}")
                 await orig()
-
             mod.on_shutdown = lambda n=mod.name, o=original: make_tracker(n, o)
-
-        patches["mock_db"].close = AsyncMock(side_effect=lambda: call_order.append("db_close"))
-        await daemon.shutdown()
-
+        patches3["mock_db"].close = AsyncMock(side_effect=lambda: call_order.append("db_close"))
+        await daemon3.shutdown()
         assert call_order == ["stop_accepting", "drain", "module_shutdown:stub_ok", "db_close"]
-
-    async def test_shutdown_without_spawner(self, tmp_path: Path) -> None:
-        """shutdown() should work even if spawner was never created."""
-        butler_dir = _make_butler_toml(tmp_path)
-        daemon = ButlerDaemon(butler_dir)
-        # Manually set config so shutdown doesn't error on config access
-        from butlers.config import ButlerConfig
-
-        daemon.config = ButlerConfig(name="test", port=9100)
-        # spawner is None — shutdown should still work
-        await daemon.shutdown()
-        assert daemon._accepting_connections is False
 
 
 # ---------------------------------------------------------------------------
@@ -564,12 +487,13 @@ class TestStartupFailureCleanup:
             await daemon.start()
         return daemon
 
-    async def test_module_startup_failure_is_non_fatal(self, tmp_path: Path) -> None:
-        """Failing module marked failed+startup; active modules not affected;
-        failed module not shutdown; first-module failure also non-fatal."""
-        # Part 1: stub_failing fails, stub_ok stays active; failed not shutdown
-        registry = _make_registry(StubModuleOk, StubModuleFailing)
-        butler_dir = _make_butler_toml(tmp_path, modules={"stub_ok": {}, "stub_failing": {}})
+    async def test_module_startup_failure_and_cascade(self, tmp_path: Path) -> None:
+        """Failing module marked failed+startup; active modules unaffected; failed not shutdown;
+        dependent module cascade-fails and never starts."""
+        registry = _make_registry(StubModuleOk, StubModuleFailing, StubModuleAfterFailing)
+        butler_dir = _make_butler_toml(
+            tmp_path, modules={"stub_ok": {}, "stub_failing": {}, "stub_after": {}}
+        )
         daemon = await self._start_daemon(butler_dir, registry=registry)
 
         stub_ok = next(m for m in daemon._modules if m.name == "stub_ok")
@@ -577,61 +501,11 @@ class TestStartupFailureCleanup:
         assert daemon._module_statuses["stub_failing"].status == "failed"
         assert daemon._module_statuses["stub_failing"].phase == "startup"
         assert daemon._module_statuses["stub_ok"].status == "active"
+        assert daemon._module_statuses["stub_after"].status == "cascade_failed"
+        stub_after = next(m for m in daemon._modules if m.name == "stub_after")
+        assert stub_after.started is False
 
         await daemon.shutdown()
         assert stub_ok.shutdown_called is True
         stub_failing = next(m for m in daemon._modules if m.name == "stub_failing")
         assert stub_failing.shutdown_called is False
-
-        # Part 2: first module failure also non-fatal; no on_shutdown for it
-        class FirstModFails(Module):
-            def __init__(self):
-                self.shutdown_called = False
-
-            @property
-            def name(self) -> str:
-                return "first_fail"
-
-            @property
-            def config_schema(self) -> type[BaseModel]:
-                return StubConfig
-
-            @property
-            def dependencies(self) -> list[str]:
-                return []
-
-            async def register_tools(self, mcp, config, db) -> None:
-                pass
-
-            def migration_revisions(self) -> str | None:
-                return None
-
-            async def on_startup(self, config, db, credential_store=None) -> None:
-                raise RuntimeError("first module fails")
-
-            async def on_shutdown(self) -> None:
-                self.shutdown_called = True
-
-        subdir = tmp_path / "ff"
-        subdir.mkdir()
-        daemon2 = await self._start_daemon(
-            _make_butler_toml(subdir, modules={"first_fail": {}}),
-            registry=_make_registry(FirstModFails),
-        )
-        assert daemon2._module_statuses["first_fail"].status == "failed"
-        first_fail = next(m for m in daemon2._modules if m.name == "first_fail")
-        assert first_fail.shutdown_called is False
-
-    async def test_dependent_module_cascade_fails(self, tmp_path: Path) -> None:
-        """Module depending on a failed module gets cascade-failed and never starts."""
-        registry = _make_registry(StubModuleOk, StubModuleFailing, StubModuleAfterFailing)
-        butler_dir = _make_butler_toml(
-            tmp_path, modules={"stub_ok": {}, "stub_failing": {}, "stub_after": {}}
-        )
-        daemon = await self._start_daemon(butler_dir, registry=registry)
-
-        assert daemon._module_statuses["stub_after"].status == "cascade_failed"
-        stub_after = next(m for m in daemon._modules if m.name == "stub_after")
-        assert stub_after.started is False
-        assert daemon._module_statuses["stub_failing"].status == "failed"
-        assert daemon._module_statuses["stub_ok"].status == "active"

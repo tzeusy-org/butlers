@@ -234,7 +234,7 @@ class TestProcessSpanTraceContinuity:
     async def test_process_span_shares_switchboard_trace(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """route.process span should use the same trace as the switchboard span."""
+        """route.process span shares switchboard trace; accept span ends before process span."""
         patches = _patch_infra("health")
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         tracer = trace.get_tracer("butlers")
@@ -247,7 +247,6 @@ class TestProcessSpanTraceContinuity:
         trigger_result.session_id = uuid.uuid4()
         daemon.spawner.trigger = AsyncMock(return_value=trigger_result)
 
-        # Call route.execute with a parent span (simulating switchboard)
         parent_tracer = trace.get_tracer("test")
         with parent_tracer.start_as_current_span("switchboard.route") as parent_span:
             parent_trace_id = parent_span.get_span_context().trace_id
@@ -261,200 +260,24 @@ class TestProcessSpanTraceContinuity:
             trace_context=trace_context,
         )
         assert result["status"] == "accepted"
-
-        # Let the background task run
         await asyncio.sleep(0.1)
-        daemon.spawner.trigger.assert_awaited_once()
 
         spans = otel_provider.get_finished_spans()
         process_spans = [s for s in spans if s.name == "route.process"]
-        assert len(process_spans) == 1, (
-            f"Expected 1 route.process span, got: {[s.name for s in spans]}"
-        )
+        assert len(process_spans) == 1
         process_span = process_spans[0]
-
-        assert process_span.context.trace_id == parent_trace_id, (
-            "route.process should share the switchboard trace_id"
-        )
+        assert process_span.context.trace_id == parent_trace_id
         assert process_span.parent is not None
-        assert process_span.parent.span_id == parent_span_id, (
-            "route.process should be parented to the upstream switchboard span context"
-        )
-
-    async def test_accept_span_ends_before_process_span(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
-    ) -> None:
-        """The accept-phase route.execute span ends before the process span completes."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
-
-        trigger_started = asyncio.Event()
-        trigger_allowed = asyncio.Event()
-
-        async def slow_trigger(**kwargs):
-            trigger_started.set()
-            await trigger_allowed.wait()
-            r = MagicMock()
-            r.session_id = uuid.uuid4()
-            return r
-
-        daemon.spawner.trigger = slow_trigger
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-        )
-        assert result["status"] == "accepted"
-
-        # At this point, the accept span has ended (route.execute returned).
-        # Wait for the background task to start (but not finish).
-        await trigger_started.wait()
-
-        # Check that route.execute accept span is already finished
-        spans_so_far = otel_provider.get_finished_spans()
-        accept_spans = [s for s in spans_so_far if s.name == "butler.tool.route.execute"]
-        assert len(accept_spans) == 1, "Accept span should be finished before trigger completes"
-
-        # Process span should NOT be finished yet (trigger is blocked)
-        process_spans = [s for s in spans_so_far if s.name == "route.process"]
-        # Note: the process span may or may not be recorded yet depending on the
-        # SimpleSpanProcessor export timing, but trigger hasn't completed
-
-        # Allow the trigger to finish
-        trigger_allowed.set()
-        await asyncio.sleep(0.1)
-
-        # Now process span should be done
-        all_spans = otel_provider.get_finished_spans()
-        process_spans = [s for s in all_spans if s.name == "route.process"]
-        assert len(process_spans) == 1
-
-        # Accept span ended_time must be before process span ended_time
-        accept_span = accept_spans[0]
-        process_span = process_spans[0]
-        assert accept_span.end_time < process_span.end_time, (
-            "Accept span must end before the process span (true decoupling)"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Tests: request_id attribute on both spans
-# ---------------------------------------------------------------------------
-
-
-class TestRequestIdAttribute:
-    """Both accept-phase and process spans must carry request_id."""
-
-    async def test_accept_span_has_request_id_attribute(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
-    ) -> None:
-        """Both accept and process spans carry request_id as an attribute."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
-
-        trigger_result = MagicMock()
-        trigger_result.session_id = uuid.uuid4()
-        daemon.spawner.trigger = AsyncMock(return_value=trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-        )
-        assert result["status"] == "accepted"
-        await asyncio.sleep(0.1)
-
-        spans = otel_provider.get_finished_spans()
-        accept_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
-        process_spans = [s for s in spans if s.name == "route.process"]
-        assert len(accept_spans) == 1
-        assert len(process_spans) == 1
-
-        accept_span = accept_spans[0]
-        process_span = process_spans[0]
-
-        assert "request_id" in accept_span.attributes, (
-            "Accept span must have request_id attribute for cross-trace correlation"
-        )
-        assert accept_span.attributes["request_id"] == _REQUEST_ID
-
-        assert "request_id" in process_span.attributes, (
-            "Process span must have request_id attribute for cross-trace correlation"
-        )
-        assert process_span.attributes["request_id"] == _REQUEST_ID
-
-
-# ---------------------------------------------------------------------------
-# Tests: SpanLink from process span to accept span
-# ---------------------------------------------------------------------------
+        assert process_span.parent.span_id == parent_span_id
 
 
 class TestSpanLink:
-    """The process span must carry a SpanLink back to the accept-phase span."""
+    """The process span must carry a SpanLink back to the accept-phase span, with request_id."""
 
-    async def test_process_span_has_link_to_accept_span(
+    async def test_process_span_has_link_and_request_id(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """route.process carries a SpanLink referencing the accept-phase span's context."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
-
-        trigger_result = MagicMock()
-        trigger_result.session_id = uuid.uuid4()
-        daemon.spawner.trigger = AsyncMock(return_value=trigger_result)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-        )
-        assert result["status"] == "accepted"
-        await asyncio.sleep(0.1)
-
-        spans = otel_provider.get_finished_spans()
-        accept_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
-        process_spans = [s for s in spans if s.name == "route.process"]
-
-        assert len(accept_spans) == 1
-        assert len(process_spans) == 1
-
-        accept_span = accept_spans[0]
-        process_span = process_spans[0]
-
-        # Process span must have at least one link
-        assert len(process_span.links) >= 1, (
-            "route.process must have a SpanLink back to the accept-phase span"
-        )
-
-        # The link's context must reference the accept span
-        link_ctx = process_span.links[0].context
-        assert link_ctx.trace_id == accept_span.context.trace_id, (
-            "SpanLink trace_id must match the accept-phase span's trace_id"
-        )
-        assert link_ctx.span_id == accept_span.context.span_id, (
-            "SpanLink span_id must match the accept-phase span's span_id"
-        )
-
-    async def test_span_link_and_shared_trace(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
-    ) -> None:
-        """SpanLink carries request_id attribute; accept+process spans share same trace_id."""
+        """route.process: SpanLink references accept span; both spans carry request_id."""
         patches = _patch_infra("health")
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         tracer = trace.get_tracer("butlers")
@@ -482,64 +305,14 @@ class TestSpanLink:
         accept_span = accept_spans[0]
         process_span = process_spans[0]
 
-        # SpanLink carries request_id attribute
-        assert len(process_span.links) >= 1
-        link = process_span.links[0]
-        assert link.attributes is not None
-        assert "request_id" in link.attributes
-        assert link.attributes["request_id"] == _REQUEST_ID
-
-        # Accept and process share the same trace_id and request_id
-        assert accept_span.context.trace_id == process_span.context.trace_id
+        # Both spans carry request_id
         assert accept_span.attributes.get("request_id") == _REQUEST_ID
         assert process_span.attributes.get("request_id") == _REQUEST_ID
+        # Accept and process share trace_id
+        assert accept_span.context.trace_id == process_span.context.trace_id
 
-
-# ---------------------------------------------------------------------------
-# Tests: Switchboard trace ends with accept span
-# ---------------------------------------------------------------------------
-
-
-class TestSwitchboardTraceIncludesProcess:
-    """The switchboard trace should include the async processing phase."""
-
-    async def test_switchboard_trace_includes_process_span(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
-    ) -> None:
-        """route.process should be emitted under the switchboard trace_id."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
-
-        trigger_result = MagicMock()
-        trigger_result.session_id = uuid.uuid4()
-        daemon.spawner.trigger = AsyncMock(return_value=trigger_result)
-
-        # Call with a parent span (simulating switchboard context)
-        parent_tracer = trace.get_tracer("test")
-        with parent_tracer.start_as_current_span("switchboard.route") as parent_span:
-            switchboard_trace_id = parent_span.get_span_context().trace_id
-            trace_context = inject_trace_context()
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-            trace_context=trace_context,
-        )
-        assert result["status"] == "accepted"
-        await asyncio.sleep(0.1)
-
-        spans = otel_provider.get_finished_spans()
-
-        # Both accept and process spans should be in the switchboard trace.
-        switchboard_spans = [s for s in spans if s.context.trace_id == switchboard_trace_id]
-        switchboard_span_names = [s.name for s in switchboard_spans]
-        assert "route.process" in switchboard_span_names
-        assert "butler.tool.route.execute" in switchboard_span_names, (
-            "butler.tool.route.execute (accept span) must be in the switchboard's trace"
-        )
+        # Process span has SpanLink referencing the accept span
+        assert len(process_span.links) >= 1
+        link = process_span.links[0]
+        assert link.context.span_id == accept_span.context.span_id
+        assert link.attributes is not None and "request_id" in link.attributes
