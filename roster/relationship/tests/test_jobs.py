@@ -60,33 +60,34 @@ CREATE TABLE IF NOT EXISTS facts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subject TEXT NOT NULL,
     predicate TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    embedding TEXT,
-    validity TEXT NOT NULL DEFAULT 'active',
-    scope TEXT NOT NULL DEFAULT 'global',
-    entity_id UUID,
-    valid_at TIMESTAMPTZ,
-    metadata JSONB DEFAULT '{}'::jsonb,
-    permanence TEXT NOT NULL DEFAULT 'standard',
+    content TEXT NOT NULL,
+    embedding vector(384),
+    search_vector tsvector,
     importance FLOAT NOT NULL DEFAULT 5.0,
     confidence FLOAT NOT NULL DEFAULT 1.0,
     decay_rate FLOAT NOT NULL DEFAULT 0.008,
+    permanence TEXT NOT NULL DEFAULT 'standard',
     source_butler TEXT,
     source_episode_id UUID,
     supersedes_id UUID,
+    validity TEXT NOT NULL DEFAULT 'active',
+    scope TEXT NOT NULL DEFAULT 'global',
     reference_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_referenced_at TIMESTAMPTZ,
     last_confirmed_at TIMESTAMPTZ,
     tags JSONB DEFAULT '[]'::jsonb,
-    tenant_id TEXT NOT NULL DEFAULT 'owner',
+    metadata JSONB DEFAULT '{}'::jsonb,
+    entity_id UUID,
+    object_entity_id UUID,
+    valid_at TIMESTAMPTZ,
+    tenant_id TEXT NOT NULL DEFAULT 'shared',
     request_id TEXT,
-    idempotency_key TEXT,
-    observed_at TIMESTAMPTZ DEFAULT now(),
-    invalid_at TIMESTAMPTZ,
     retention_class TEXT NOT NULL DEFAULT 'operational',
     sensitivity TEXT NOT NULL DEFAULT 'normal',
-    search_vector tsvector
+    idempotency_key TEXT,
+    observed_at TIMESTAMPTZ DEFAULT now(),
+    invalid_at TIMESTAMPTZ
 )
 """
 
@@ -108,6 +109,10 @@ CREATE TABLE IF NOT EXISTS public.entities (
 
 async def _setup_relationship_schema(pool) -> None:
     """Create the relationship-related tables needed for insight scan tests."""
+    # Install required extensions for vector embeddings and full-text search
+    await pool.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
+    await pool.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
+
     await pool.execute(CREATE_ENTITIES_SQL)
     await pool.execute(CREATE_CONTACTS_SQL)
     await pool.execute(CREATE_IMPORTANT_DATES_SQL)
