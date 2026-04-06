@@ -241,6 +241,7 @@ class TestSchedulerLoopBehavior:
 
         assert len(tick_calls) >= 1
         assert all(key == "health" for key, _ in tick_calls)
+        assert all(name == "health" for _, name in tick_calls)
 
     async def test_exception_tolerance_and_db_guard_and_custom_interval(
         self, tmp_path: Path
