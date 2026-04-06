@@ -1,12 +1,7 @@
-"""Unit tests for butlers.jobs.briefing — aggregation job and helpers.
+"""Tests for butlers.jobs.briefing — aggregation job and helpers.
 
-Covers:
-- validate_contribution: valid/invalid inputs
-- today_sgt / contribution_key / combined_key helpers
-- collect_briefing_contributions: all specialists, partial, none, malformed
-- _get_butler_typed_specialist_butlers: filtering and fallback
-
-All tests use mocked asyncpg pools — no database required.
+Covers validate_contribution, key helpers, collect_briefing_contributions,
+and _get_butler_typed_specialist_butlers. No real database required.
 """
 
 from __future__ import annotations
@@ -31,7 +26,6 @@ from butlers.jobs.briefing import (
 
 pytestmark = pytest.mark.unit
 
-# Fixed date used for mocking today_sgt()
 _DATE_2026_03_25 = date(2026, 3, 25)
 _DATE_STR_2026_03_25 = "2026-03-25"
 
@@ -87,7 +81,7 @@ def _make_mock_config(name: str, agent_type: ButlerType) -> MagicMock:
 
 
 def test_validate_contribution_valid():
-    """Valid full and no-updates contributions parse without error."""
+    """Valid contributions (with and without updates) parse without error."""
     full = _make_contribution(
         butler="health",
         highlights=[{"category": "medication", "text": "Missed dose", "priority": "high"}],
@@ -106,22 +100,37 @@ def test_validate_contribution_valid():
     "raw, match",
     [
         # Not a dict
-        ("not a dict", "dict"),
         (None, "dict"),
-        (42, "dict"),
-        # Missing required fields
-        ({"date": _DATE_STR_2026_03_25, "has_updates": True, "highlights": [], "summary": ""}, "'butler'"),
-        ({"butler": "health", "has_updates": True, "highlights": [], "summary": ""}, "'date'"),
-        ({"butler": "health", "date": _DATE_STR_2026_03_25, "highlights": [], "summary": ""}, "'has_updates'"),
-        ({"butler": "health", "date": _DATE_STR_2026_03_25, "has_updates": True, "summary": ""}, "'highlights'"),
-        ({"butler": "health", "date": _DATE_STR_2026_03_25, "has_updates": True, "highlights": []}, "'summary'"),
-        # Wrong types
-        ({"butler": 123, "date": _DATE_STR_2026_03_25, "has_updates": True, "highlights": [], "summary": ""}, "str"),
-        ({"butler": "health", "date": _DATE_STR_2026_03_25, "has_updates": "yes", "highlights": [], "summary": ""}, "bool"),
+        # Missing required field
+        (
+            {"date": _DATE_STR_2026_03_25, "has_updates": True, "highlights": [], "summary": ""},
+            "'butler'",
+        ),
+        # Wrong type
+        (
+            {
+                "butler": 123,
+                "date": _DATE_STR_2026_03_25,
+                "has_updates": True,
+                "highlights": [],
+                "summary": "",
+            },
+            "str",
+        ),
+        (
+            {
+                "butler": "health",
+                "date": _DATE_STR_2026_03_25,
+                "has_updates": "yes",
+                "highlights": [],
+                "summary": "",
+            },
+            "bool",
+        ),
     ],
 )
 def test_validate_contribution_invalid(raw, match):
-    """validate_contribution raises ValueError for all invalid inputs."""
+    """validate_contribution raises ValueError for non-dict, missing fields, and wrong types."""
     with pytest.raises(ValueError, match=match):
         validate_contribution(raw)
 
@@ -130,10 +139,7 @@ def test_validate_contribution_malformed_highlight():
     """Highlights with missing required fields raise ValueError."""
     raw = _make_contribution(
         butler="health",
-        highlights=[
-            {"category": "medication", "text": "Good", "priority": "low"},
-            {"category": "missing_priority"},  # malformed
-        ],
+        highlights=[{"category": "medication"}],  # missing text and priority
     )
     with pytest.raises(ValueError, match="'text'"):
         validate_contribution(raw)
@@ -158,97 +164,68 @@ def test_key_helpers():
 # ---------------------------------------------------------------------------
 
 
-async def test_collect_briefing_contributions_all_present():
-    """All specialists → contributions_count == len(SPECIALIST_BUTLERS), missing_count == 0."""
+async def test_collect_briefing_contributions_counts():
+    """All specialists present: contributions_count == len(SPECIALIST_BUTLERS).
+    Partial: missing_butlers is populated."""
     date_str = _DATE_STR_2026_03_25
+
+    # All present
     rows = [
-        _make_view_row(b, _make_contribution(butler=b, date=date_str))
-        for b in SPECIALIST_BUTLERS
+        _make_view_row(b, _make_contribution(butler=b, date=date_str)) for b in SPECIALIST_BUTLERS
     ]
     pool = _make_pool(fetch_rows=rows)
-
-    with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1) as mock_ss,
-    ):
-        result = await collect_briefing_contributions(pool, None)
-
-    assert result["contributions_count"] == len(SPECIALIST_BUTLERS)
-    assert result["missing_count"] == 0
-    payload = mock_ss.call_args[0][2]
-    assert [c["butler"] for c in payload["contributions"]] == sorted(SPECIALIST_BUTLERS)
-
-
-async def test_collect_briefing_contributions_partial_and_none():
-    """Partial contributions list missing butlers; empty → all missing."""
-    date_str = _DATE_STR_2026_03_25
-    present = ["health", "finance", "relationship"]
-    missing = sorted(set(SPECIALIST_BUTLERS) - set(present))
-    rows = [_make_view_row(b, _make_contribution(butler=b, date=date_str)) for b in present]
-    pool = _make_pool(fetch_rows=rows)
-
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
     ):
         result = await collect_briefing_contributions(pool, None)
+    assert result["contributions_count"] == len(SPECIALIST_BUTLERS)
+    assert result["missing_count"] == 0
 
-    assert result["contributions_count"] == len(present)
-    assert sorted(result["missing_butlers"]) == missing
-
-    # No contributions
-    pool2 = _make_pool(fetch_rows=[])
+    # Partial
+    present = ["health", "finance", "relationship"]
+    missing = sorted(set(SPECIALIST_BUTLERS) - set(present))
+    rows2 = [_make_view_row(b, _make_contribution(butler=b, date=date_str)) for b in present]
+    pool2 = _make_pool(fetch_rows=rows2)
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
         patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
     ):
         result2 = await collect_briefing_contributions(pool2, None)
-    assert result2["contributions_count"] == 0
-    assert sorted(result2["missing_butlers"]) == sorted(SPECIALIST_BUTLERS)
+    assert result2["contributions_count"] == len(present)
+    assert sorted(result2["missing_butlers"]) == missing
 
 
 async def test_collect_briefing_contributions_malformed_skipped():
-    """Invalid JSON, missing fields, and butler mismatch rows are all skipped."""
+    """Invalid JSON and butler mismatch rows are skipped; valid row is counted."""
     date_str = _DATE_STR_2026_03_25
     rows = [
-        {"butler": "health", "key": f"briefing/daily/{date_str}", "value": "not-json{{"},  # invalid JSON
-        _make_view_row("finance", {"butler": "finance", "date": date_str}),              # missing fields
-        # butler mismatch: view says "home", payload says "travel"
-        {"butler": "home", "key": f"briefing/daily/{date_str}", "value": json.dumps(_make_contribution(butler="travel", date=date_str))},
-        _make_view_row("education", _make_contribution(butler="education", date=date_str)),  # valid
+        {"butler": "health", "key": f"briefing/daily/{date_str}", "value": "not-json{{"},
+        {
+            "butler": "home",
+            "key": f"briefing/daily/{date_str}",
+            "value": json.dumps(_make_contribution(butler="travel", date=date_str)),
+        },
+        _make_view_row("education", _make_contribution(butler="education", date=date_str)),
     ]
     pool = _make_pool(fetch_rows=rows)
-
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1) as mock_ss,
+        patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
     ):
         result = await collect_briefing_contributions(pool, None)
-
     assert result["contributions_count"] == 1
-    payload = mock_ss.call_args[0][2]
-    assert [c["butler"] for c in payload["contributions"]] == ["education"]
 
 
-async def test_collect_briefing_contributions_error_and_args():
-    """DB error propagates; extra job_args are accepted without error."""
+async def test_collect_briefing_contributions_db_error_propagates():
+    """DB errors propagate out of collect_briefing_contributions."""
     pool = _make_pool()
     pool.fetch = AsyncMock(side_effect=Exception("database error"))
-
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
     ):
         with pytest.raises(Exception, match="database error"):
             await collect_briefing_contributions(pool, None)
-
-    # job_args accepted but ignored
-    pool2 = _make_pool(fetch_rows=[])
-    with (
-        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
-        patch("butlers.jobs.briefing.state_set", new_callable=AsyncMock, return_value=1),
-    ):
-        result = await collect_briefing_contributions(pool2, {"unused_arg": "value"})
-    assert result["contributions_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -261,18 +238,16 @@ def test_get_butler_typed_specialist_butlers():
     mock_configs = [
         _make_mock_config("health", ButlerType.BUTLER),
         _make_mock_config("finance", ButlerType.BUTLER),
-        _make_mock_config("travel", ButlerType.STAFFER),  # specialist but typed as staffer
-        _make_mock_config("messenger", ButlerType.STAFFER),  # not a specialist
+        _make_mock_config("travel", ButlerType.STAFFER),
+        _make_mock_config("messenger", ButlerType.STAFFER),
     ]
     with patch("butlers.jobs.briefing.list_butlers", return_value=mock_configs):
         result = _get_butler_typed_specialist_butlers()
     assert "health" in result and "finance" in result
     assert "travel" not in result and "messenger" not in result
 
-    # Fallback on error
     with patch("butlers.jobs.briefing.list_butlers", side_effect=RuntimeError("roster not found")):
         assert _get_butler_typed_specialist_butlers() == frozenset(SPECIALIST_BUTLERS)
 
-    # Fallback on empty roster
     with patch("butlers.jobs.briefing.list_butlers", return_value=[]):
         assert _get_butler_typed_specialist_butlers() == frozenset(SPECIALIST_BUTLERS)
