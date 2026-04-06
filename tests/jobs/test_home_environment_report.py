@@ -60,10 +60,11 @@ def _make_snapshot_row(entity_id, state="72.0", attributes=None) -> MagicMock:
 
 
 def test_classify_sensor_type():
-    """_classify_sensor_type identifies sensor types by entity_id patterns; unknown returns None."""
+    """_classify_sensor_type identifies types by entity_id or friendly_name keywords."""
     assert _classify_sensor_type("sensor.living_room_temperature", None) == "temperature"
     assert _classify_sensor_type("sensor.bathroom_humidity", None) == "humidity"
     assert _classify_sensor_type("sensor.office_co2", None) == "co2"
+    assert _classify_sensor_type("sensor.sensor_001", "Bedroom Temp") == "temperature"
     assert _classify_sensor_type("light.living_room", "Living Room Light") is None
 
 

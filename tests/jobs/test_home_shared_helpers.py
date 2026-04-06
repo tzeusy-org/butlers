@@ -21,6 +21,7 @@ import pytest
 from butlers.jobs.home import (
     _DEFAULT_BATTERY_THRESHOLDS,
     _DEFAULT_ENERGY_THRESHOLDS,
+    _DEFAULT_OFFLINE_HOURS_THRESHOLDS,
     EmptyEntitySnapshotError,
     HomeJobContext,
     _load_thresholds,
@@ -166,6 +167,17 @@ async def test_load_thresholds_per_key_fallback_and_type_casting():
         result2 = await _load_thresholds(pool, "energy", _DEFAULT_ENERGY_THRESHOLDS)
     assert result2["anomaly_pct"] == 30.0 and isinstance(result2["anomaly_pct"], float)
 
+    # Int casting (offline_hours defaults are int)
+    with patch(
+        "butlers.jobs.home.state_get",
+        new_callable=AsyncMock,
+        return_value={"critical": 5.9, "warning": 1.1},
+    ):
+        result_int = await _load_thresholds(
+            pool, "offline_hours", _DEFAULT_OFFLINE_HOURS_THRESHOLDS
+        )
+    assert result_int["critical"] == 5 and isinstance(result_int["critical"], int)
+
     # Extra keys ignored
     with patch(
         "butlers.jobs.home.state_get",
@@ -198,6 +210,8 @@ async def test_read_entity_snapshot():
     pool2 = _make_pool(fetch_return=rows[:1])
     result2 = await _read_entity_snapshot(pool2, domain_filter="sensor")
     assert len(result2) == 1
+    assert "LIKE" in pool2.fetch.call_args[0][0]
+    assert pool2.fetch.call_args[0][1] == "sensor.%"
 
     pool3 = _make_pool(fetch_return=[])
     with pytest.raises(EmptyEntitySnapshotError):
@@ -221,4 +235,4 @@ async def test_send_notify():
     with patch("butlers.jobs.home._notify_owner_telegram", mock_notify):
         await _send_notify(pool, "Hello, owner!")
 
-    mock_notify.assert_awaited_once()
+    mock_notify.assert_awaited_once_with(pool, "Hello, owner!")

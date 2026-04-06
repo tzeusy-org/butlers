@@ -166,7 +166,7 @@ def test_key_helpers():
 
 async def test_collect_briefing_contributions_counts():
     """All specialists present: contributions_count == len(SPECIALIST_BUTLERS).
-    Partial: missing_butlers is populated. Empty: all missing."""
+    Partial: missing_butlers is populated."""
     date_str = _DATE_STR_2026_03_25
 
     # All present

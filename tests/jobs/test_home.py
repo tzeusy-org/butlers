@@ -382,8 +382,7 @@ async def test_run_device_health_check_empty_and_healthy():
 
 
 async def test_run_device_health_check_battery_and_non_battery():
-    """Critical battery sensor raises critical_count; non-battery entity with low state not flagged;
-    JSON string attributes are decoded."""
+    """Critical battery sensor raises critical_count; non-battery with low state not flagged."""
     rows = [
         _make_entity_row(
             "sensor.basement_battery", state="8", attributes={"friendly_name": "Basement Battery"}
