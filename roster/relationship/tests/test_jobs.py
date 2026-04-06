@@ -1139,6 +1139,29 @@ CREATE TABLE IF NOT EXISTS state (
 )
 """
 
+# calendar_events table for calendar interaction sync tests.
+# Simplified version of the real schema — omits FK to calendar_sources
+# since tests don't need the full calendar projection.
+CREATE_CALENDAR_EVENTS_SQL = """
+CREATE TABLE IF NOT EXISTS public.calendar_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title TEXT NOT NULL,
+    description TEXT,
+    location TEXT,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    starts_at TIMESTAMPTZ NOT NULL,
+    ends_at TIMESTAMPTZ NOT NULL,
+    all_day BOOLEAN NOT NULL DEFAULT false,
+    status TEXT NOT NULL DEFAULT 'confirmed',
+    visibility TEXT NOT NULL DEFAULT 'default',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT test_cal_events_status_check
+        CHECK (status IN ('confirmed', 'tentative', 'cancelled'))
+)
+"""
+
 
 async def _setup_interaction_sync_schema(pool) -> None:
     """Create tables needed for interaction sync tests."""
@@ -1147,6 +1170,7 @@ async def _setup_interaction_sync_schema(pool) -> None:
     await pool.execute(CREATE_PUBLIC_CONTACT_INFO_SQL)
     await pool.execute(CREATE_SWITCHBOARD_SCHEMA_SQL)
     await pool.execute(CREATE_MESSAGE_INBOX_SQL)
+    await pool.execute(CREATE_CALENDAR_EVENTS_SQL)
     # Use the full facts schema (includes object_entity_id required by store_fact)
     await pool.execute(CREATE_FACTS_FULL_SQL)
     await pool.execute(
@@ -1249,6 +1273,40 @@ async def _insert_message_inbox(
         json.dumps(request_context),
         direction,
     )
+
+
+async def _insert_calendar_event(
+    pool,
+    *,
+    title: str = "Team Sync",
+    starts_at: datetime | None = None,
+    ends_at: datetime | None = None,
+    status: str = "confirmed",
+    attendees: list[dict] | None = None,
+) -> str:
+    """Insert a public.calendar_events row and return its UUID string."""
+    if starts_at is None:
+        starts_at = datetime.now(UTC) - timedelta(hours=2)
+    if ends_at is None:
+        ends_at = starts_at + timedelta(hours=1)
+    metadata: dict = {}
+    if attendees is not None:
+        metadata["attendees"] = attendees
+    event_id = str(uuid.uuid4())
+    await pool.execute(
+        """
+        INSERT INTO public.calendar_events
+            (id, title, timezone, starts_at, ends_at, status, metadata)
+        VALUES ($1::uuid, $2, 'UTC', $3, $4, $5, $6::jsonb)
+        """,
+        event_id,
+        title,
+        starts_at,
+        ends_at,
+        status,
+        json.dumps(metadata),
+    )
+    return event_id
 
 
 # ---------------------------------------------------------------------------
@@ -1711,3 +1769,430 @@ async def test_interaction_sync_second_run_uses_first_checkpoint(provisioned_pos
         start2 = datetime.fromisoformat(result2["scan_window_start"])
         diff_seconds = abs((start2 - end1).total_seconds())
         assert diff_seconds < 1.0  # Should match within a second
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_interaction_sync — calendar event detection
+# ---------------------------------------------------------------------------
+
+
+async def test_interaction_sync_calendar_stats_key_present(provisioned_postgres_pool):
+    """calendar_events_scanned is always present in the return stats."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result = await run_interaction_sync(pool)
+
+        assert "calendar_events_scanned" in result
+        assert result["calendar_events_scanned"] == 0
+
+
+async def test_interaction_sync_calendar_no_events_returns_zero(provisioned_postgres_pool):
+    """No calendar events → calendar_events_scanned remains 0."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 0
+        assert result["logged"] == 0
+        assert result["errors"] == 0
+
+
+async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_postgres_pool):
+    """A calendar event with a resolved attendee email logs an interaction fact."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Alice")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="alice@example.com"
+        )
+
+        await _insert_calendar_event(
+            pool,
+            title="Coffee Chat",
+            attendees=[
+                {"email": "alice@example.com", "responseStatus": "accepted"},
+                {"email": "me@owner.com", "responseStatus": "accepted", "self": True},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 1
+        assert result["logged"] == 1
+        assert result["errors"] == 0
+
+        # Verify the fact was written correctly
+        rows = await pool.fetch(
+            """
+            SELECT id, metadata FROM facts
+            WHERE subject = $1
+              AND predicate = 'interaction'
+              AND scope = 'relationship'
+            """,
+            f"contact:{contact_id}",
+        )
+        assert len(rows) == 1
+        meta = rows[0]["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        assert meta.get("type") == "calendar_event"
+        assert meta.get("direction") == "mutual"
+        extra = meta.get("extra_metadata") or {}
+        assert extra.get("source") == "interaction_sync"
+        assert "event_id" in extra
+
+
+async def test_interaction_sync_calendar_unresolved_attendee_skipped(
+    provisioned_postgres_pool,
+):
+    """Attendee email not in contact_info increments skipped_unresolved."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        await _insert_calendar_event(
+            pool,
+            title="Mystery Meeting",
+            attendees=[
+                {"email": "unknown@nobody.com", "responseStatus": "accepted"},
+                {"email": "me@owner.com", "responseStatus": "accepted", "self": True},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 1
+        assert result["skipped_unresolved"] == 1
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_calendar_declined_event_excluded(provisioned_postgres_pool):
+    """Events where the owner RSVP is declined are excluded (not counted)."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Bob")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="bob@example.com"
+        )
+
+        # Owner declined this event
+        await _insert_calendar_event(
+            pool,
+            title="Declined Event",
+            attendees=[
+                {"email": "bob@example.com", "responseStatus": "accepted"},
+                {
+                    "email": "me@owner.com",
+                    "responseStatus": "declined",
+                    "self": True,
+                },
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        # Declined events are skipped and not counted
+        assert result["calendar_events_scanned"] == 0
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_calendar_cancelled_event_excluded(provisioned_postgres_pool):
+    """Events with status='cancelled' are excluded by the query filter."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Carol")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="carol@example.com"
+        )
+
+        await _insert_calendar_event(
+            pool,
+            title="Cancelled Meeting",
+            status="cancelled",
+            attendees=[
+                {"email": "carol@example.com", "responseStatus": "accepted"},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 0
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_calendar_owner_attendee_excluded(provisioned_postgres_pool):
+    """The owner's own attendee entry (self=True) is excluded from interaction logging."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        entity_id = await _insert_public_entity(pool, roles=["owner"])
+        owner_contact_id = await _insert_public_contact(
+            pool, first_name="Owner", entity_id=entity_id
+        )
+        await _insert_contact_info(
+            pool, contact_id=owner_contact_id, ci_type="email", value="me@owner.com"
+        )
+
+        # Event where the only attendee is the owner themselves (self=True)
+        await _insert_calendar_event(
+            pool,
+            title="Solo Block",
+            attendees=[
+                {"email": "me@owner.com", "responseStatus": "accepted", "self": True},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 1
+        assert result["logged"] == 0
+        assert result["skipped_owner"] == 0  # excluded before owner check (self=True filter)
+
+
+async def test_interaction_sync_calendar_owner_contact_skipped(provisioned_postgres_pool):
+    """Owner contact resolved via non-self email entry is counted as skipped_owner."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        entity_id = await _insert_public_entity(pool, roles=["owner"])
+        owner_contact_id = await _insert_public_contact(
+            pool, first_name="Owner", entity_id=entity_id
+        )
+        # Register owner's email in contact_info (resolves as owner contact)
+        await _insert_contact_info(
+            pool, contact_id=owner_contact_id, ci_type="email", value="owner@company.com"
+        )
+
+        # Event where owner appears as a regular attendee (no self=True)
+        await _insert_calendar_event(
+            pool,
+            title="Work Meeting",
+            attendees=[
+                {"email": "owner@company.com", "responseStatus": "accepted"},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 1
+        assert result["skipped_owner"] == 1
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_calendar_case_insensitive_email_match(
+    provisioned_postgres_pool,
+):
+    """Attendee email matching against contact_info is case-insensitive."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Dave")
+        # Stored as lowercase in contact_info
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="dave@example.com"
+        )
+
+        # Event attendee email is mixed case
+        await _insert_calendar_event(
+            pool,
+            title="Strategy Session",
+            attendees=[
+                {"email": "Dave@Example.COM", "responseStatus": "accepted"},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["logged"] == 1
+
+
+async def test_interaction_sync_calendar_multiple_attendees_same_event(
+    provisioned_postgres_pool,
+):
+    """A single event with multiple resolved attendees creates one fact per contact."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_a = await _insert_public_contact(pool, first_name="Eve")
+        await _insert_contact_info(
+            pool, contact_id=contact_a, ci_type="email", value="eve@example.com"
+        )
+
+        contact_b = await _insert_public_contact(pool, first_name="Frank")
+        await _insert_contact_info(
+            pool, contact_id=contact_b, ci_type="email", value="frank@example.com"
+        )
+
+        await _insert_calendar_event(
+            pool,
+            title="Team Lunch",
+            attendees=[
+                {"email": "eve@example.com", "responseStatus": "accepted"},
+                {"email": "frank@example.com", "responseStatus": "accepted"},
+                {"email": "me@owner.com", "responseStatus": "accepted", "self": True},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 1
+        assert result["logged"] == 2
+
+        for cid in (contact_a, contact_b):
+            rows = await pool.fetch(
+                "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+                f"contact:{cid}",
+            )
+            assert len(rows) == 1
+
+
+async def test_interaction_sync_calendar_event_outside_window_excluded(
+    provisioned_postgres_pool,
+):
+    """Calendar events older than the lookback window are not processed."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Grace")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="grace@example.com"
+        )
+
+        # Default scan window is 30 days; use 35 days to be clearly outside it.
+        old_ts = datetime.now(UTC) - timedelta(days=35)
+        await _insert_calendar_event(
+            pool,
+            title="Old Event",
+            starts_at=old_ts,
+            ends_at=old_ts + timedelta(hours=1),
+            attendees=[
+                {"email": "grace@example.com", "responseStatus": "accepted"},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 0
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postgres_pool):
+    """Running interaction sync twice for the same event does not create duplicate facts."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        contact_id = await _insert_public_contact(pool, first_name="Henry")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="henry@example.com"
+        )
+
+        await _insert_calendar_event(
+            pool,
+            title="Recurring Sync",
+            attendees=[
+                {"email": "henry@example.com", "responseStatus": "accepted"},
+            ],
+        )
+
+        result1 = await run_interaction_sync(pool)
+        assert result1["logged"] == 1
+
+        result2 = await run_interaction_sync(pool)
+        assert result2["logged"] == 0  # duplicate skipped
+
+        rows = await pool.fetch(
+            "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+            f"contact:{contact_id}",
+        )
+        assert len(rows) == 1
+
+
+async def test_interaction_sync_calendar_no_attendees_field_skipped(
+    provisioned_postgres_pool,
+):
+    """Events with no attendees field in metadata are silently skipped."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        # No attendees key in metadata
+        await _insert_calendar_event(
+            pool,
+            title="Solo Event",
+            attendees=None,  # _insert_calendar_event omits the key when None
+        )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 0
+        assert result["logged"] == 0
+
+
+async def test_interaction_sync_combined_messages_and_calendar(provisioned_postgres_pool):
+    """Messages and calendar events are both processed in a single run."""
+    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+
+        # Contact with telegram + email
+        contact_id = await _insert_public_contact(pool, first_name="Iris")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="tg_iris"
+        )
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="email", value="iris@example.com"
+        )
+
+        # Message interaction
+        await _insert_message_inbox(
+            pool,
+            sender_identity="tg_iris",
+            source_channel="telegram_user_client",
+        )
+
+        # Calendar interaction (different time so occurred_at differs)
+        await _insert_calendar_event(
+            pool,
+            title="Weekly Check-in",
+            starts_at=datetime.now(UTC) - timedelta(hours=3),
+            attendees=[
+                {"email": "iris@example.com", "responseStatus": "accepted"},
+            ],
+        )
+
+        result = await run_interaction_sync(pool)
+
+        # Both a message interaction and a calendar interaction should be logged
+        assert result["logged"] == 2
+        assert result["calendar_events_scanned"] == 1
+        assert result["errors"] == 0

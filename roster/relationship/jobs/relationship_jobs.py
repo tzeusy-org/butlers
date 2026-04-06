@@ -9,6 +9,7 @@ Each job handler:
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -642,13 +643,13 @@ _INTERACTION_SYNC_MAX_WINDOW_DAYS = 30
 
 
 async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
-    """Sync message-based interactions from switchboard.message_inbox to interaction facts.
+    """Sync interactions from messages and calendar events to interaction facts.
 
-    Queries ``switchboard.message_inbox`` for recent inbound messages on
-    user-to-person channels (``telegram_user_client``, ``whatsapp_user_client``,
-    ``email``).  Groups by ``(source_sender_identity, source_channel,
-    DATE(received_at))`` so that at most one interaction fact is logged per
-    contact per day per channel.
+    **Message-based sync:** Queries ``switchboard.message_inbox`` for recent
+    inbound messages on user-to-person channels (``telegram_user_client``,
+    ``whatsapp_user_client``, ``email``).  Groups by
+    ``(source_sender_identity, source_channel, DATE(received_at))`` so that at
+    most one interaction fact is logged per contact per day per channel.
 
     The scan window is checkpoint-based:
     - ``scan_window_start``: read from state key ``interaction_sync.last_scan_at``.
@@ -659,7 +660,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     On successful completion the job writes ``scan_window_end`` back to the state
     store so the next run continues from where this one left off.
 
-    Resolution steps:
+    Message resolution steps:
     1. Map ``source_channel`` → ``contact_info.type`` (see ``_INTERACTION_SYNC_CHANNEL_MAP``).
     2. Resolve ``source_sender_identity`` to ``contact_id`` via
        ``public.contact_info(type, value)``.
@@ -671,12 +672,21 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
        different channels on the same day do not collide under
        ``store_fact()`` temporal idempotency.
 
+    **Calendar-based sync:** Queries ``public.calendar_events`` for confirmed
+    events within the scan window.  For each event, extracts the
+    ``metadata->'attendees'`` JSONB array, resolves attendee emails to
+    contact_ids via ``public.contact_info(type='email')``, and calls
+    ``interaction_log()`` with ``type='calendar_event'``.  Events where the
+    owner's RSVP is ``declined`` are skipped entirely.  The owner's own
+    attendee entry (``self=true``) is excluded from attendee resolution.
+
     Args:
         db_pool: Database connection pool (relationship butler pool).
 
     Returns:
         Dictionary with keys: scan_window_start (ISO8601), scan_window_end
-        (ISO8601), processed, logged, skipped_unresolved, skipped_owner, errors.
+        (ISO8601), processed, logged, skipped_unresolved, skipped_owner,
+        calendar_events_scanned, errors.
     """
     from roster.relationship.tools.interactions import interaction_log
 
@@ -730,6 +740,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "logged": 0,
         "skipped_unresolved": 0,
         "skipped_owner": 0,
+        "calendar_events_scanned": 0,
         "errors": 0,
     }
 
@@ -769,8 +780,6 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     if not rows:
         logger.info("interaction_sync: no recent inbound messages found")
-        await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, scan_window_end.isoformat())
-        return stats
 
     # -----------------------------------------------------------------------
     # Step 2: Batch-resolve sender identities to contact_ids via
@@ -914,16 +923,213 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             )
             stats["errors"] += 1
 
+    # -----------------------------------------------------------------------
+    # Step 4: Scan public.calendar_events for confirmed events within the
+    # scan window, extract attendees, and log interactions.
+    # -----------------------------------------------------------------------
+    try:
+        cal_rows = await db_pool.fetch(
+            """
+            SELECT
+                id,
+                title,
+                starts_at,
+                metadata
+            FROM public.calendar_events
+            WHERE status = 'confirmed'
+              AND starts_at >= $1
+              AND starts_at <= now()
+              AND metadata->'attendees' IS NOT NULL
+            ORDER BY starts_at DESC
+            """,
+            scan_window_start,
+        )
+    except Exception:
+        logger.exception("interaction_sync: failed to query public.calendar_events")
+        stats["errors"] += 1
+        cal_rows = []
+
+    # -----------------------------------------------------------------------
+    # Pre-process all calendar rows: parse metadata, skip declined/no-attendee
+    # events, collect attendee emails, and batch-resolve all emails at once.
+    # -----------------------------------------------------------------------
+
+    # event_tasks: list of (event_id, event_title, event_starts_at, attendee_emails)
+    # for events that pass the owner-declined and attendee checks.
+    event_tasks: list[tuple[str, str, datetime, list[str]]] = []
+    all_attendee_emails: set[str] = set()
+
+    for cal_row in cal_rows:
+        event_id = str(cal_row["id"])
+        event_title: str = cal_row["title"] or ""
+        event_starts_at: datetime = cal_row["starts_at"]
+
+        raw_meta = cal_row["metadata"]
+        if isinstance(raw_meta, str):
+            try:
+                meta = json.loads(raw_meta)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "interaction_sync: failed to parse metadata JSON for event %s",
+                    event_id,
+                )
+                meta = {}
+        elif isinstance(raw_meta, dict):
+            meta = raw_meta
+        else:
+            meta = {}
+
+        attendees_raw = meta.get("attendees")
+        if not isinstance(attendees_raw, list) or not attendees_raw:
+            continue
+
+        # Check if the owner declined this event via their self=true attendee entry.
+        owner_declined = False
+        for att in attendees_raw:
+            if not isinstance(att, dict):
+                continue
+            if att.get("self") is True and att.get("responseStatus") == "declined":
+                owner_declined = True
+                break
+
+        if owner_declined:
+            logger.debug(
+                "interaction_sync: skipping calendar event %s — owner declined",
+                event_id,
+            )
+            continue
+
+        # Count all confirmed, non-declined events as scanned.
+        stats["calendar_events_scanned"] += 1
+
+        # Collect attendee emails (exclude self/owner's own entry).
+        # Use a dict keyed by normalised email to deduplicate within the event.
+        seen_emails: dict[str, None] = {}
+        for att in attendees_raw:
+            if not isinstance(att, dict):
+                continue
+            if att.get("self") is True:
+                continue  # owner's own entry
+            email = att.get("email")
+            if isinstance(email, str):
+                email = email.strip().lower()
+                if email:
+                    seen_emails[email] = None
+
+        attendee_emails = list(seen_emails)
+        if not attendee_emails:
+            continue
+
+        # Stage for batch resolution.
+        event_tasks.append((event_id, event_title, event_starts_at, attendee_emails))
+        all_attendee_emails.update(attendee_emails)
+
+    # Batch-resolve all attendee emails across all events in a single query.
+    email_to_contact: dict[str, uuid.UUID] = {}
+    calendar_owner_contact_ids: set[uuid.UUID] = set()
+
+    if all_attendee_emails:
+        try:
+            resolved_rows = await db_pool.fetch(
+                """
+                SELECT
+                    ci.contact_id,
+                    LOWER(ci.value) AS email,
+                    COALESCE(e.roles, '{}') AS roles
+                FROM public.contact_info ci
+                JOIN public.contacts c ON c.id = ci.contact_id
+                LEFT JOIN public.entities e ON e.id = c.entity_id
+                WHERE ci.type = 'email'
+                  AND LOWER(ci.value) = ANY($1::text[])
+                """,
+                list(all_attendee_emails),
+            )
+        except Exception:
+            logger.exception("interaction_sync: failed to resolve calendar attendee emails")
+            stats["errors"] += 1
+            resolved_rows = []
+
+        for rr in resolved_rows:
+            cid = rr["contact_id"]
+            if not isinstance(cid, uuid.UUID):
+                try:
+                    cid = uuid.UUID(str(cid))
+                except (ValueError, AttributeError):
+                    continue
+            email_key = rr["email"]
+            email_to_contact[email_key] = cid
+            roles: list[str] = list(rr["roles"] or [])
+            if "owner" in roles:
+                calendar_owner_contact_ids.add(cid)
+
+    for event_id, event_title, event_starts_at, attendee_emails in event_tasks:
+        for email in attendee_emails:
+            contact_id = email_to_contact.get(email)
+            if contact_id is None:
+                stats["skipped_unresolved"] += 1
+                logger.debug(
+                    "interaction_sync: unresolved calendar attendee email=%s event=%s",
+                    email,
+                    event_id,
+                )
+                continue
+
+            if contact_id in calendar_owner_contact_ids:
+                stats["skipped_owner"] += 1
+                logger.debug(
+                    "interaction_sync: skipping owner attendee contact=%s event=%s",
+                    contact_id,
+                    event_id,
+                )
+                continue
+
+            try:
+                result = await interaction_log(
+                    db_pool,
+                    contact_id=contact_id,
+                    type="calendar_event",
+                    direction="mutual",
+                    occurred_at=event_starts_at,
+                    summary=event_title,
+                    metadata={
+                        "source": "interaction_sync",
+                        "event_id": event_id,
+                        "event_title": event_title,
+                    },
+                )
+                if result.get("skipped") == "duplicate":
+                    logger.debug(
+                        "interaction_sync: duplicate calendar event skipped contact=%s event=%s",
+                        contact_id,
+                        event_id,
+                    )
+                else:
+                    stats["logged"] += 1
+                    logger.debug(
+                        "interaction_sync: logged calendar_event interaction contact=%s event=%s",
+                        contact_id,
+                        event_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "interaction_sync: error logging calendar interaction contact=%s event=%s",
+                    contact_id,
+                    event_id,
+                )
+                stats["errors"] += 1
+
     # Persist the end of this scan window as the next checkpoint.
     await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, scan_window_end.isoformat())
 
     logger.info(
         "Interaction sync complete: processed=%d, logged=%d, "
-        "skipped_unresolved=%d, skipped_owner=%d, errors=%d",
+        "skipped_unresolved=%d, skipped_owner=%d, "
+        "calendar_events_scanned=%d, errors=%d",
         stats["processed"],
         stats["logged"],
         stats["skipped_unresolved"],
         stats["skipped_owner"],
+        stats["calendar_events_scanned"],
         stats["errors"],
     )
     return stats
