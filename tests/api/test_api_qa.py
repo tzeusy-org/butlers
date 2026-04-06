@@ -27,7 +27,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.qa import _get_db_manager, _get_force_patrol_fn
+from butlers.api.routers.qa import _get_credentials_status_fn, _get_db_manager, _get_force_patrol_fn
 
 pytestmark = pytest.mark.unit
 
@@ -1461,3 +1461,83 @@ class TestDeleteDismissal:
             response = await client.delete("/api/qa/dismissals/abc")
 
         assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/summary — credentials_status field
+# ---------------------------------------------------------------------------
+
+
+class TestGetQaSummaryCredentialsStatus:
+    async def test_credentials_status_defaults_unknown_when_fn_not_wired(self) -> None:
+        """When no credentials_status_fn is wired, gh_token_present is None (unknown)."""
+        app, _ = _build_summary_app()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        creds = response.json()["data"]["credentials_status"]
+        assert creds["gh_token_present"] is None
+        assert creds["provisioning_hint"] is None
+
+    async def test_credentials_status_present_when_token_is_set(self) -> None:
+        """When token is present, gh_token_present=True and no provisioning hint."""
+        app, _ = _build_summary_app()
+
+        async def _creds_fn():
+            return {"gh_token_present": True}
+
+        app.dependency_overrides[_get_credentials_status_fn] = lambda: _creds_fn
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        creds = response.json()["data"]["credentials_status"]
+        assert creds["gh_token_present"] is True
+        assert creds["provisioning_hint"] is None
+
+    async def test_credentials_status_missing_includes_provisioning_hint(self) -> None:
+        """When token is missing, provisioning_hint contains actionable instructions."""
+        app, _ = _build_summary_app()
+
+        async def _creds_fn():
+            return {"gh_token_present": False}
+
+        app.dependency_overrides[_get_credentials_status_fn] = lambda: _creds_fn
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        creds = response.json()["data"]["credentials_status"]
+        assert creds["gh_token_present"] is False
+        assert creds["provisioning_hint"] is not None
+        assert "BUTLERS_QA_GH_TOKEN" in creds["provisioning_hint"]
+        assert "butler secrets set" in creds["provisioning_hint"]
+
+    async def test_credentials_status_fn_exception_is_non_fatal(self) -> None:
+        """If credentials_status_fn raises, the endpoint still returns 200 with defaults."""
+        app, _ = _build_summary_app()
+
+        async def _failing_creds_fn():
+            raise RuntimeError("credential store unavailable")
+
+        app.dependency_overrides[_get_credentials_status_fn] = lambda: _failing_creds_fn
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        # Defaults to unknown (None) on error
+        creds = response.json()["data"]["credentials_status"]
+        assert creds["gh_token_present"] is None

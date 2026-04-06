@@ -24,6 +24,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -313,6 +314,14 @@ class QaModule(Module):
 
         # Mini-patrol task (triggered by severity-0 reactive findings)
         self._mini_patrol_task: asyncio.Task[Any] | None = None
+
+        # Notify function — injected via wire_runtime() from the daemon.
+        # Signature: async (channel, message, priority) -> dict
+        self._notify_fn: Callable[..., Coroutine[Any, Any, Any]] | None = None
+
+        # Rate-limit missing-token notifications to once per patrol cycle.
+        # Stores the patrol_id of the last patrol where we sent the alert.
+        self._last_missing_token_notified_patrol_id: uuid.UUID | None = None
 
     # ------------------------------------------------------------------
     # Module ABC
@@ -864,6 +873,8 @@ class QaModule(Module):
 
             # Phase 3: Dispatch
             gh_token = await self._resolve_gh_token()
+            if not gh_token:  # None or empty string
+                await self._notify_missing_gh_token(patrol_id)
             dispatch_config = QaDispatchConfig(
                 severity_threshold=self._config.severity_threshold,
                 max_concurrent=self._config.max_concurrent_investigations,
@@ -1274,6 +1285,60 @@ class QaModule(Module):
             logger.warning("QaModule: check_open_pr_statuses failed (non-fatal)", exc_info=True)
 
     # ------------------------------------------------------------------
+    # Missing-token notification
+    # ------------------------------------------------------------------
+
+    async def _notify_missing_gh_token(self, patrol_id: uuid.UUID) -> None:
+        """Send a one-per-patrol-cycle alert when the GH token is missing.
+
+        Rate-limited: only one notification is sent per patrol cycle
+        (identified by ``patrol_id``).  This method always logs a
+        ``WARNING`` when first called for a given patrol cycle; the external
+        notification step (via ``notify_fn``) is skipped only when
+        ``notify_fn`` is ``None``.
+
+        Parameters
+        ----------
+        patrol_id:
+            The UUID of the current patrol cycle.  Used to deduplicate
+            notifications so we do not send more than one alert per patrol
+            cycle.
+        """
+        if self._last_missing_token_notified_patrol_id == patrol_id:
+            logger.debug(
+                "QaModule: missing GH token already notified for patrol %s — skipping", patrol_id
+            )
+            return
+
+        self._last_missing_token_notified_patrol_id = patrol_id
+
+        logger.warning(
+            "QaModule: BUTLERS_QA_GH_TOKEN is missing — investigations cannot open PRs. "
+            "Provision the credential via: butler secrets set BUTLERS_QA_GH_TOKEN <token>"
+        )
+
+        if self._notify_fn is None:
+            return
+
+        message = (
+            "QA Staffer alert: GitHub token is missing.\n\n"
+            "Investigations cannot open pull requests until the credential is provisioned.\n\n"
+            "To fix, provision the secret via the butler CLI or dashboard:\n"
+            "  butler secrets set BUTLERS_QA_GH_TOKEN <your-github-token>\n\n"
+            "The token requires at least 'repo' scope to create pull requests."
+        )
+        try:
+            await self._notify_fn(
+                channel="telegram",
+                message=message,
+                priority="high",
+            )
+        except Exception:
+            logger.warning(
+                "QaModule: failed to send missing-token notification (non-fatal)", exc_info=True
+            )
+
+    # ------------------------------------------------------------------
     # Runtime wiring (called by daemon after register_tools)
     # ------------------------------------------------------------------
 
@@ -1282,13 +1347,29 @@ class QaModule(Module):
         butler_name: str,
         spawner: Any,
         repo_root: Path | str,
+        notify_fn: Callable[..., Coroutine[Any, Any, Any]] | None = None,
     ) -> None:
         """Wire the module to the spawner and butler identity.
 
         Called by the QA staffer daemon after ``register_tools()`` to give the
         module access to the spawner (for investigation dispatch) and the
         repo root (for worktree creation).
+
+        Parameters
+        ----------
+        butler_name:
+            Name of the butler that owns this module instance.
+        spawner:
+            Spawner instance for dispatching investigations.
+        repo_root:
+            Absolute path to the repository root.
+        notify_fn:
+            Optional async callable used to send operator notifications.
+            Signature matches the daemon's ``notify()`` MCP tool:
+            ``notify_fn(channel, message, priority) -> dict``.
+            When ``None``, missing-token alerts are only logged.
         """
         self._butler_name = butler_name
         self._spawner = spawner
         self._repo_root = Path(repo_root)
+        self._notify_fn = notify_fn
