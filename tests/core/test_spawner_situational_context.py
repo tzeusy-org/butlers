@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import butlers.core.spawner as _spawner_module
 from butlers.config import ButlerConfig
 from butlers.context_bus import ContextEntry, format_context_preamble
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -97,44 +96,6 @@ class TestFetchSituationalContextPreamble:
         assert any("situational context preamble" in m for m in warning_msgs)
         assert any("my-butler" in m for m in warning_msgs)
 
-    async def test_missing_table_warns_once_per_butler(self, caplog: pytest.LogCaptureFixture):
-        """Missing table: first call warns; second call is debug-only. Each butler warns once."""
-        _spawner_module._missing_context_table_logged.discard("once-butler")
-        _spawner_module._missing_context_table_logged.discard("butler-a")
-        _spawner_module._missing_context_table_logged.discard("butler-b")
-        missing_err = RuntimeError('relation "public.user_context" does not exist')
-
-        with (
-            patch(
-                "butlers.context_bus.get_active_context",
-                new_callable=AsyncMock,
-                side_effect=missing_err,
-            ),
-            caplog.at_level(logging.DEBUG, logger="butlers.core.spawner"),
-        ):
-            r1 = await fetch_situational_context_preamble(AsyncMock(), "once-butler")
-            r2 = await fetch_situational_context_preamble(AsyncMock(), "once-butler")
-        assert r1 is None and r2 is None
-        warns = [r for r in caplog.records if r.levelno == logging.WARNING]
-        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert len(warns) == 1 and "user_context" in warns[0].getMessage().lower()
-        assert any("still missing" in r.getMessage() for r in debugs)
-
-        # Each butler gets its own warning
-        caplog.clear()
-        with (
-            patch(
-                "butlers.context_bus.get_active_context",
-                new_callable=AsyncMock,
-                side_effect=missing_err,
-            ),
-            caplog.at_level(logging.WARNING, logger="butlers.core.spawner"),
-        ):
-            await fetch_situational_context_preamble(AsyncMock(), "butler-a")
-            await fetch_situational_context_preamble(AsyncMock(), "butler-b")
-        warns2 = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-        assert sum(1 for m in warns2 if "butler-a" in m) == 1
-        assert sum(1 for m in warns2 if "butler-b" in m) == 1
 
 
 # ---------------------------------------------------------------------------

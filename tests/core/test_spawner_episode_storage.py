@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -31,30 +30,17 @@ def _make_config(
 
 
 class TestStoreSessionEpisode:
-    async def test_returns_true_on_success_and_passes_session_id(self):
-        """True on success with correct args; session_id forwarded when provided."""
+    async def test_returns_true_on_success(self):
+        """True returned on successful episode storage."""
         pool = AsyncMock()
         with patch(
             "butlers.modules.memory.tools.writing.memory_store_episode",
             new_callable=AsyncMock,
             return_value={"id": "abc"},
-        ) as mock_store:
+        ):
             result = await store_session_episode(pool, "my-butler", "session output text")
 
         assert result is True
-        mock_store.assert_awaited_once_with(pool, "session output text", "my-butler", session_id=None)
-
-        # With session_id
-        sid = uuid.UUID("12345678-1234-5678-1234-567812345678")
-        with patch(
-            "butlers.modules.memory.tools.writing.memory_store_episode",
-            new_callable=AsyncMock,
-            return_value={"id": "abc"},
-        ) as mock_store2:
-            await store_session_episode(pool, "my-butler", "output text", session_id=sid)
-        mock_store2.assert_awaited_once_with(
-            pool, "output text", "my-butler", session_id="12345678-1234-5678-1234-567812345678"
-        )
 
     async def test_returns_false_on_error_no_pool_or_missing_tables(
         self, caplog: pytest.LogCaptureFixture

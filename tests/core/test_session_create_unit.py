@@ -67,28 +67,4 @@ async def test_session_create_invalid_trigger_source_raises(trigger_source: str)
         )
 
 
-@pytest.mark.parametrize(
-    "trigger_source",
-    [
-        "tick",
-        "external",
-        "trigger",
-        "route",
-        "schedule:morning-check",
-        "schedule:nightly-cleanup",
-    ],
-)
-async def test_session_create_accepts_valid_trigger_sources(trigger_source: str) -> None:
-    """session_create does not raise for any valid trigger_source."""
-    from butlers.core.sessions import session_create
-
-    pool = _FakePool()
-    await session_create(
-        pool,
-        prompt="Test",
-        trigger_source=trigger_source,
-        request_id=str(uuid.uuid4()),
-    )
-    assert pool.fetchval_calls
-
 

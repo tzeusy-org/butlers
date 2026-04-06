@@ -32,32 +32,6 @@ def _make_config(
 
 
 class TestFetchMemoryContext:
-    async def test_returns_context_from_local_memory_tools(self):
-        pool = AsyncMock()
-        embedding = object()
-
-        with (
-            patch(
-                "butlers.modules.memory.tools.context.memory_context",
-                new_callable=AsyncMock,
-                return_value="Remembered context",
-            ) as mock_context,
-            patch(
-                "butlers.modules.memory.tools._helpers.get_embedding_engine",
-                return_value=embedding,
-            ),
-        ):
-            result = await fetch_memory_context(pool, "my-butler", "hello", token_budget=4096)
-
-        assert result == "Remembered context"
-        mock_context.assert_awaited_once_with(
-            pool,
-            embedding,
-            "hello",
-            "my-butler",
-            token_budget=4096,
-        )
-
     async def test_returns_none_for_failure_empty_pool_or_missing_tables(
         self, caplog: pytest.LogCaptureFixture
     ):

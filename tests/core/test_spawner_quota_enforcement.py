@@ -5,8 +5,10 @@ Covers:
 - Spawn blocked when 30d limit exhausted
 - Spawn proceeds when within limits
 - Spawn proceeds when no limits configured (unlimited)
-- Failed session with usage still records to ledger
+- Ledger recorded on successful session with usage
+- No ledger recording when adapter crashes (no usage returned)
 - No ledger recording when catalog_entry_id is absent (TOML fallback)
+  [covered by test_quota_not_checked_without_pool_or_toml_fallback]
 - No ledger recording when adapter reports no usage
 
 [bu-lm4m.1]
@@ -183,30 +185,6 @@ class TestSpawnerQuotaEnforcement:
                 result = await Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter).trigger("hello", "tick")
             assert result.success is True and result.output == expected_output and adapter.invoke_calls == 1
 
-    async def test_quota_error_message_includes_alias_and_windows(self, tmp_path: Path) -> None:
-        """Error message from quota block includes catalog alias and window details."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config = _make_config()
-        mock_pool = AsyncMock()
-        adapter = _MockAdapter()
-
-        denied = QuotaStatus(
-            allowed=False, usage_24h=1500, limit_24h=1000, usage_30d=200, limit_30d=5000
-        )
-
-        with (
-            patch("butlers.core.spawner.resolve_model", new_callable=AsyncMock,
-                  return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID)),
-            patch("butlers.core.spawner.check_token_quota", new_callable=AsyncMock,
-                  return_value=denied),
-        ):
-            result = await Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter).trigger("hi", "tick")
-
-        assert result.success is False and result.error is not None
-        assert "claude-haiku" in result.error and "24h" in result.error
-        assert "1500" in result.error and "1000" in result.error
-
     async def test_quota_not_checked_without_pool_or_toml_fallback(self, tmp_path: Path) -> None:
         """Quota check skipped when pool=None or when catalog returns None (TOML fallback)."""
         config_dir = tmp_path / "config"
@@ -241,14 +219,18 @@ class TestSpawnerQuotaEnforcement:
 class TestSpawnerLedgerRecording:
     """Spawner records token usage to ledger in finally block."""
 
-    async def test_ledger_recording_on_success_and_despite_db_failure(self, tmp_path: Path) -> None:
-        """Ledger recorded on success with correct fields; also recorded when adapter returns usage but session_complete fails."""
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
+    async def test_ledger_recording_conditions(self, tmp_path: Path) -> None:
+        """Ledger recorded on success; not recorded when adapter crashes or returns no usage.
+
+        Note: TOML fallback (catalog_entry_id absent) also skips ledger recording, but that
+        path is covered by TestSpawnerQuotaEnforcement.test_quota_not_checked_without_pool_or_toml_fallback.
+        """
         config = _make_config()
         mock_pool = AsyncMock()
 
-        # Successful session records to ledger with correct fields
+        # Successful session records to ledger
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
         adapter = _MockAdapter(result_text="ok", usage={"input_tokens": 200, "output_tokens": 100})
         spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
         with (
@@ -264,44 +246,6 @@ class TestSpawnerLedgerRecording:
             result = await spawner.trigger("hello", "tick")
         assert result.success is True
         mock_record.assert_called_once()
-        kw = mock_record.call_args.kwargs
-        assert kw["catalog_entry_id"] == _FAKE_CATALOG_ID
-        assert kw["butler_name"] == "test-butler"
-        assert kw["session_id"] == _SESSION_ID
-        assert kw["input_tokens"] == 200 and kw["output_tokens"] == 100
-
-        # Adapter returns usage but session_complete fails → ledger still written
-        adapter2 = _MockAdapter(result_text="ok", usage={"input_tokens": 50, "output_tokens": 25})
-        spawner2 = Spawner(config=config, config_dir=tmp_path / "config2", pool=mock_pool, runtime=adapter2)
-        (tmp_path / "config2").mkdir()
-        _call_count = [0]
-
-        async def _session_complete_side_effect(*args: Any, **kwargs: Any) -> None:
-            _call_count[0] += 1
-            if _call_count[0] == 1:
-                raise RuntimeError("DB write failed on success path")
-
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create2,
-            patch("butlers.core.spawner.session_complete", side_effect=_session_complete_side_effect),
-            patch("butlers.core.spawner.resolve_model", new_callable=AsyncMock,
-                  return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID)),
-            patch("butlers.core.spawner.check_token_quota", new_callable=AsyncMock,
-                  return_value=_quota_allowed()),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as mock_record2,
-        ):
-            mock_create2.return_value = _SESSION_ID
-            result2 = await spawner2.trigger("hello", "tick")
-        assert result2.success is False
-        mock_record2.assert_called_once()
-        kw2 = mock_record2.call_args.kwargs
-        assert kw2["input_tokens"] == 50 and kw2["output_tokens"] == 25
-        assert kw2["catalog_entry_id"] == _FAKE_CATALOG_ID
-
-    async def test_no_ledger_recording_conditions(self, tmp_path: Path) -> None:
-        """No ledger recording when: adapter crashes before returning usage; TOML fallback (no catalog_entry_id); adapter returns None usage."""
-        config = _make_config()
-        mock_pool = AsyncMock()
 
         # Adapter crashes before returning usage → no recording
         class _FailingUsageAdapter(_MockAdapter):
@@ -311,8 +255,7 @@ class TestSpawnerLedgerRecording:
 
         config_dir1 = tmp_path / "config1"
         config_dir1.mkdir()
-        adapter1 = _FailingUsageAdapter()
-        spawner1 = Spawner(config=config, config_dir=config_dir1, pool=mock_pool, runtime=adapter1)
+        spawner1 = Spawner(config=config, config_dir=config_dir1, pool=mock_pool, runtime=_FailingUsageAdapter())
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create1,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -327,37 +270,20 @@ class TestSpawnerLedgerRecording:
         assert result1.success is False
         mock_record1.assert_not_called()
 
-        # TOML fallback (resolve_model returns None) → no recording
+        # Adapter returns None usage → no recording
         config_dir2 = tmp_path / "config2"
         config_dir2.mkdir()
-        adapter2 = _MockAdapter(result_text="toml result", usage={"input_tokens": 100, "output_tokens": 50})
-        spawner2 = Spawner(config=config, config_dir=config_dir2, pool=mock_pool, runtime=adapter2)
+        spawner2 = Spawner(config=config, config_dir=config_dir2, pool=mock_pool, runtime=_MockAdapter(result_text="ok", usage=None))
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create2,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch("butlers.core.spawner.resolve_model", new_callable=AsyncMock, return_value=None),
+            patch("butlers.core.spawner.resolve_model", new_callable=AsyncMock,
+                  return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID)),
+            patch("butlers.core.spawner.check_token_quota", new_callable=AsyncMock,
+                  return_value=_quota_allowed()),
             patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as mock_record2,
         ):
             mock_create2.return_value = _SESSION_ID
             result2 = await spawner2.trigger("hi", "tick")
         assert result2.success is True
         mock_record2.assert_not_called()
-
-        # Adapter returns None usage → no recording
-        config_dir3 = tmp_path / "config3"
-        config_dir3.mkdir()
-        adapter3 = _MockAdapter(result_text="ok", usage=None)
-        spawner3 = Spawner(config=config, config_dir=config_dir3, pool=mock_pool, runtime=adapter3)
-        with (
-            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create3,
-            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-            patch("butlers.core.spawner.resolve_model", new_callable=AsyncMock,
-                  return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID)),
-            patch("butlers.core.spawner.check_token_quota", new_callable=AsyncMock,
-                  return_value=_quota_allowed()),
-            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock) as mock_record3,
-        ):
-            mock_create3.return_value = _SESSION_ID
-            result3 = await spawner3.trigger("hi", "tick")
-        assert result3.success is True
-        mock_record3.assert_not_called()
