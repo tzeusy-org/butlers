@@ -155,6 +155,40 @@ def test_extract_tool_call_command_execution():
     assert tc["input"]["exit_code"] == 0
 
 
+def test_parse_item_started_does_not_duplicate_tool_calls():
+    """item.started events for tool calls are skipped to avoid duplicating item.completed."""
+    lines = "\n".join([
+        # item.started — in_progress, empty output
+        json.dumps({
+            "type": "item.started",
+            "item": {
+                "id": "cmd1",
+                "type": "command_execution",
+                "command": "ls -1",
+                "status": "in_progress",
+                "exit_code": None,
+                "aggregated_output": "",
+            },
+        }),
+        # item.completed — final result
+        json.dumps({
+            "type": "item.completed",
+            "item": {
+                "id": "cmd1",
+                "type": "command_execution",
+                "command": "ls -1",
+                "status": "completed",
+                "exit_code": 0,
+                "aggregated_output": "file.txt\n",
+            },
+        }),
+    ])
+    _, tool_calls, _ = _parse_codex_output(lines, "", 0)
+    assert len(tool_calls) == 1, f"Expected 1 tool call, got {len(tool_calls)}"
+    assert tool_calls[0]["input"]["exit_code"] == 0
+    assert tool_calls[0]["input"]["aggregated_output"] == "file.txt\n"
+
+
 # ---------------------------------------------------------------------------
 # invoke() — key behaviors
 # ---------------------------------------------------------------------------
