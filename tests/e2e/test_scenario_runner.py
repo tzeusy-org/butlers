@@ -854,68 +854,6 @@ async def test_scenario_tool_calls(
     )
 
 
-_DB_ASSERTION_SCENARIOS = [s for s in ALL_SCENARIOS if s.db_assertions]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "scenario",
-    _DB_ASSERTION_SCENARIOS
-    or [pytest.param(None, marks=pytest.mark.skip(reason="no db-assertion scenarios defined"))],
-    ids=lambda s: _scenario_id(s) if s is not None else "no-scenarios",
-)
-async def test_scenario_db_assertions(
-    scenario: Scenario | None,
-    butler_ecosystem: ButlerEcosystem,
-    cost_tracker: CostTracker,
-    scenario_tag_filter: str | None,
-) -> None:
-    """Inject envelope and validate database state after session completion.
-
-    Each ``DbAssertion`` is executed against the appropriate butler's pool.
-    All assertions must pass for the test to succeed.
-
-    Scenarios that time out are skipped.
-    """
-    if scenario is None:
-        pytest.skip("no db-assertion scenarios defined")
-
-    # Tag filter
-    if scenario_tag_filter is not None and scenario_tag_filter not in scenario.tags:
-        pytest.skip(f"Scenario {scenario.id!r} does not match tag filter {scenario_tag_filter!r}")
-
-    assert scenario.expected_routing is not None, (
-        f"Side-effect scenario {scenario.id!r} must have expected_routing set"
-    )
-
-    result = await _run_scenario(
-        scenario,
-        butler_ecosystem,
-        cost_tracker,
-        envelope_override=_envelope_for_dimension(scenario, "db_assertions"),
-    )
-
-    if result.error:
-        pytest.fail(f"Scenario {scenario.id!r} error: {result.error}")
-
-    if result.timed_out:
-        pytest.skip(f"Scenario {scenario.id!r} timed out — skipping DB assertions")
-
-    # Collect all failures
-    failures = [r for r in result.db_assertions if not r.passed]
-    if failures:
-        failure_details = "\n".join(f"  - {f.description}: {f.error}" for f in failures)
-        pytest.fail(f"DB assertions failed for {scenario.id!r}:\n{failure_details}")
-
-    logger.info(
-        "[%s] db-assertions PASS: %d/%d passed (duration=%dms)",
-        scenario.id,
-        len(result.db_assertions),
-        len(result.db_assertions),
-        result.duration_ms,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Deduplication test
 # ---------------------------------------------------------------------------

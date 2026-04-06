@@ -2,13 +2,15 @@
 
 Tests multi-butler scenarios covering:
 1. Switchboard routing to correct target butler
-2. Multi-step cross-butler workflows via spawner chaining
-3. notify.v1 envelope delivery through the Switchboard → Messenger pipeline
+2. notify.v1 envelope delivery through the Switchboard → Messenger pipeline
 
 These tests require the full butler ecosystem (API key + claude binary).
-Tests that depend on live MCP routing between running daemons are marked
-with ``pytest.mark.skip`` when the infrastructure is not yet available,
-preserving the test definitions for future activation.
+
+Note: Pure schema validation tests for notify.v1 (parsing intents, schema
+version checks) have been removed — these are unit-level tests that don't
+require e2e infrastructure. They are covered by tests/contracts/.
+Skipped tests for infrastructure-not-yet-available scenarios have also
+been removed to reduce collection overhead.
 """
 
 from __future__ import annotations
@@ -19,11 +21,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
-from pydantic import ValidationError
 
-from butlers.tools.switchboard.routing.contracts import (
-    parse_notify_request,
-)
 from butlers.tools.switchboard.routing.route import route
 
 if TYPE_CHECKING:
@@ -77,34 +75,6 @@ def _build_notify_v1_payload(
     if request_context is not None:
         payload["request_context"] = request_context
     return payload
-
-
-def _build_route_v1_payload(
-    *,
-    butler: str,
-    prompt: str,
-    request_id: str | None = None,
-    source_channel: str = "mcp",
-    source_endpoint_identity: str = "test-endpoint",
-    source_sender_identity: str = "test-user",
-) -> dict:
-    """Build a well-formed route.v1 payload dict."""
-    if request_id is None:
-        request_id = _uuid7()
-    return {
-        "schema_version": "route.v1",
-        "request_context": {
-            "request_id": request_id,
-            "received_at": datetime.now(UTC).isoformat(),
-            "source_channel": source_channel,
-            "source_endpoint_identity": source_endpoint_identity,
-            "source_sender_identity": source_sender_identity,
-        },
-        "target": {"butler": butler, "tool": "route.execute"},
-        "input": {
-            "prompt": prompt,
-        },
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -385,248 +355,8 @@ async def test_routing_log_persists_on_failed_route(
 
 
 # ---------------------------------------------------------------------------
-# Scenario 2: Multi-step cross-butler workflow via spawner
+# Scenario 2: notify.v1 envelope delivery
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.skip(
-    reason="Requires live cross-butler spawner dispatch via SSE MCP clients; "
-    "infrastructure not yet stable for cross-butler spawner chaining in CI. "
-    "Test shape preserved for future activation."
-)
-async def test_multi_butler_session_chaining_health_to_relationship(
-    butler_ecosystem: ButlerEcosystem,
-    health_pool: Pool,
-    relationship_pool: Pool,
-) -> None:
-    """Multi-step workflow: health butler triggers and then notifies relationship butler.
-
-    Scenario:
-    1. Trigger health butler spawner with a prompt that includes social context
-    2. Health butler logs measurement AND dispatches cross-butler notification
-    3. Relationship butler receives the notification via mailbox
-    4. Verify both butlers have session records
-
-    This test validates end-to-end cross-butler session chaining.
-    """
-    health_daemon = butler_ecosystem.butlers["health"]
-    assert health_daemon.spawner is not None
-
-    # Trigger health butler with cross-domain prompt
-    result = await health_daemon.spawner.trigger(
-        prompt=(
-            "Log weight 80kg. Also notify relationship butler that I had a checkup today "
-            "with Dr. Smith."
-        ),
-        trigger_source="external",
-    )
-
-    assert result.success is True, f"Health spawner should succeed: {result.error}"
-    assert result.session_id is not None
-
-    # Verify session in health DB
-    session_row = await health_pool.fetchrow(
-        "SELECT id, success FROM sessions WHERE id = $1",
-        result.session_id,
-    )
-    assert session_row is not None, "Session should exist in health DB"
-    assert session_row["success"] is True
-
-
-@pytest.mark.skip(
-    reason="Requires live cross-butler spawner dispatch via SSE MCP clients; "
-    "infrastructure not yet stable for cross-butler spawner chaining in CI. "
-    "Test shape preserved for future activation."
-)
-async def test_cross_butler_post_mail_workflow(
-    butler_ecosystem: ButlerEcosystem,
-    switchboard_pool: Pool,
-) -> None:
-    """Cross-butler post_mail delivers message to target butler's mailbox.
-
-    Scenario:
-    1. Switchboard post_mail() call to relationship butler
-    2. Verify routing_log records the mailbox_post delivery
-    3. Verify relationship butler received the mail (mailbox_inbox table)
-
-    This validates the inter-butler communication channel via post_mail().
-    """
-    from butlers.tools.switchboard.routing.route import post_mail
-
-    result = await post_mail(
-        switchboard_pool,
-        target_butler="relationship",
-        sender="health",
-        sender_channel="mcp",
-        body="Patient had checkup with Dr. Smith today.",
-        subject="Checkup notification",
-    )
-
-    # post_mail returns error dict if relationship butler not in registry or
-    # mailbox module not enabled. Accept either outcome gracefully.
-    assert isinstance(result, dict), "post_mail should return a dict"
-
-    if "error" not in result:
-        assert "message_id" in result or "result" in result, (
-            "Successful post_mail should have message_id or result"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Scenario 3: notify.v1 envelope delivery
-# ---------------------------------------------------------------------------
-
-
-def test_notify_v1_parse_send_intent() -> None:
-    """notify.v1 send intent parses successfully with all required fields.
-
-    Validates the schema model for a basic outbound notification.
-    """
-    payload = _build_notify_v1_payload(
-        origin_butler="health",
-        channel="telegram",
-        intent="send",
-        message="Your health summary is ready.",
-        recipient="user-chat-456",
-    )
-
-    parsed = parse_notify_request(payload)
-
-    assert parsed.schema_version == "notify.v1"
-    assert parsed.origin_butler == "health"
-    assert parsed.delivery.intent == "send"
-    assert parsed.delivery.channel == "telegram"
-    assert parsed.delivery.message == "Your health summary is ready."
-    assert parsed.delivery.recipient == "user-chat-456"
-
-
-def test_notify_v1_parse_reply_intent_requires_context() -> None:
-    """notify.v1 reply intent requires request_context with source identity.
-
-    The reply intent cannot be sent without tracing back to the original
-    inbound message via request_context.
-    """
-    payload = _build_notify_v1_payload(
-        origin_butler="health",
-        channel="telegram",
-        intent="reply",
-        message="Reply to your message",
-        recipient="user-chat-789",
-        # Missing request_context — should fail
-    )
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_notify_request(payload)
-
-    errors = exc_info.value.errors()
-    assert any(e["type"] == "reply_context_required" for e in errors), (
-        f"Expected reply_context_required error, got: {[e['type'] for e in errors]}"
-    )
-
-
-def test_notify_v1_parse_reply_intent_with_context() -> None:
-    """notify.v1 reply intent with valid request_context parses successfully."""
-    request_id = _uuid7()
-    payload = _build_notify_v1_payload(
-        origin_butler="health",
-        channel="telegram",
-        intent="reply",
-        message="Here is your update",
-        recipient="user-chat-789",
-        request_context={
-            "request_id": request_id,
-            "source_channel": "telegram_bot",
-            "source_endpoint_identity": "bot-123",
-            "source_sender_identity": "user-789",
-            "source_thread_identity": "thread-456",
-        },
-    )
-
-    parsed = parse_notify_request(payload)
-
-    assert parsed.delivery.intent == "reply"
-    assert parsed.request_context is not None
-    assert str(parsed.request_context.request_id) == request_id
-    assert parsed.request_context.source_thread_identity == "thread-456"
-
-
-def test_notify_v1_parse_react_intent_requires_emoji() -> None:
-    """notify.v1 react intent requires delivery.emoji field."""
-    request_id = _uuid7()
-    payload: dict = {
-        "schema_version": "notify.v1",
-        "origin_butler": "health",
-        "delivery": {
-            "intent": "react",
-            "channel": "telegram",
-            "message": "",
-            # Missing emoji
-        },
-        "request_context": {
-            "request_id": request_id,
-            "source_channel": "telegram_bot",
-            "source_endpoint_identity": "bot-123",
-            "source_sender_identity": "user-789",
-            "source_thread_identity": "thread-456",
-        },
-    }
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_notify_request(payload)
-
-    errors = exc_info.value.errors()
-    assert any(e["type"] == "react_emoji_required" for e in errors), (
-        f"Expected react_emoji_required, got: {[e['type'] for e in errors]}"
-    )
-
-
-def test_notify_v1_parse_react_intent_with_emoji() -> None:
-    """notify.v1 react intent with emoji and context parses successfully."""
-    request_id = _uuid7()
-    payload: dict = {
-        "schema_version": "notify.v1",
-        "origin_butler": "health",
-        "delivery": {
-            "intent": "react",
-            "channel": "telegram",
-            "message": "",
-            "emoji": "👍",
-        },
-        "request_context": {
-            "request_id": request_id,
-            "source_channel": "telegram_bot",
-            "source_endpoint_identity": "bot-123",
-            "source_sender_identity": "user-789",
-            "source_thread_identity": "thread-456",
-        },
-    }
-
-    parsed = parse_notify_request(payload)
-
-    assert parsed.delivery.intent == "react"
-    assert parsed.delivery.emoji == "👍"
-    assert parsed.request_context is not None
-
-
-def test_notify_v1_wrong_schema_version_rejected() -> None:
-    """notify.v1 with wrong schema_version should raise ValidationError."""
-    payload = _build_notify_v1_payload(origin_butler="health")
-    payload["schema_version"] = "notify.v2"
-
-    with pytest.raises(ValidationError) as exc_info:
-        parse_notify_request(payload)
-
-    errors = exc_info.value.errors()
-    assert any(e["type"] == "unsupported_schema_version" for e in errors)
-
-
-def test_notify_v1_origin_butler_required() -> None:
-    """notify.v1 with empty origin_butler should raise ValidationError."""
-    payload = _build_notify_v1_payload(origin_butler="health")
-    payload["origin_butler"] = ""
-
-    with pytest.raises(ValidationError):
-        parse_notify_request(payload)
 
 
 async def test_notify_v1_delivery_logged_on_failed_route(
@@ -706,83 +436,3 @@ async def test_notify_v1_origin_butler_mismatch_rejected(
         assert "origin_butler" in result["error"] or "source_butler" in result["error"], (
             f"Error should mention identity mismatch: {result['error']}"
         )
-
-
-@pytest.mark.skip(
-    reason="Requires live Messenger butler with Telegram/email connector running. "
-    "Infrastructure not yet available in CI. Test preserved for future activation."
-)
-async def test_notify_v1_full_delivery_via_messenger(
-    butler_ecosystem: ButlerEcosystem,
-    switchboard_pool: Pool,
-) -> None:
-    """Full notify.v1 delivery: Switchboard → Messenger → Telegram channel.
-
-    Scenario:
-    1. Health butler calls deliver() with notify.v1 envelope
-    2. Switchboard routes to Messenger butler via route.execute
-    3. Messenger dispatches to Telegram
-    4. Verify notification logged in switchboard notifications table
-
-    Requires a running Messenger butler with Telegram credentials.
-    """
-    from butlers.tools.switchboard.notification.deliver import deliver
-
-    request_id = _uuid7()
-    notify_payload = _build_notify_v1_payload(
-        origin_butler="health",
-        channel="telegram",
-        intent="send",
-        message="Your daily health summary is ready.",
-        recipient="test-telegram-user",
-        request_context={
-            "request_id": request_id,
-            "source_channel": "telegram_bot",
-            "source_endpoint_identity": "bot-health",
-            "source_sender_identity": "health-butler",
-        },
-    )
-
-    # Register messenger butler in registry
-    messenger_daemon = butler_ecosystem.butlers.get("messenger")
-    assert messenger_daemon is not None, "Messenger butler required for this test"
-    messenger_port = messenger_daemon.config.port
-    messenger_endpoint = f"http://localhost:{messenger_port}/sse"
-
-    await switchboard_pool.execute(
-        """
-        INSERT INTO butler_registry (
-            name, endpoint_url, description, modules,
-            eligibility_state, last_seen_at,
-            route_contract_min, route_contract_max
-        )
-        VALUES (
-            'messenger', $1, 'Messenger butler', '["telegram"]'::jsonb,
-            'active', NOW(), 1, 1
-        )
-        ON CONFLICT (name) DO UPDATE SET
-            endpoint_url = EXCLUDED.endpoint_url,
-            eligibility_state = 'active',
-            last_seen_at = NOW()
-        """,
-        messenger_endpoint,
-    )
-
-    result = await deliver(
-        switchboard_pool,
-        source_butler="health",
-        notify_request=notify_payload,
-    )
-
-    assert result.get("status") == "sent", f"Delivery should succeed, got: {result}"
-    assert "notification_id" in result, "Should return notification_id"
-
-    # Verify logged in notifications table
-    notif_row = await switchboard_pool.fetchrow(
-        "SELECT source_butler, channel, status FROM notifications WHERE id = $1::uuid",
-        result["notification_id"],
-    )
-    assert notif_row is not None, "Notification should be logged"
-    assert notif_row["source_butler"] == "health"
-    assert notif_row["channel"] == "telegram"
-    assert notif_row["status"] == "sent"

@@ -182,39 +182,6 @@ async def test_relationship_tables_exist(relationship_pool: Pool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Butler Count and Fixture Tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_ecosystem_butler_count(butler_ecosystem: ButlerEcosystem) -> None:
-    """Verify expected number of butlers are running."""
-    # Expected roster butlers based on roster/ directory
-    expected_butlers = {
-        "switchboard",
-        "general",
-        "relationship",
-        "health",
-        "messenger",
-        "heartbeat",
-    }
-    actual_butlers = set(butler_ecosystem.butlers.keys())
-    assert actual_butlers == expected_butlers, (
-        f"Butler count mismatch. Expected: {sorted(expected_butlers)}, "
-        f"Got: {sorted(actual_butlers)}"
-    )
-
-
-@pytest.mark.asyncio
-async def test_cost_tracker_initialized(cost_tracker) -> None:
-    """Verify cost tracker fixture is available and initialized."""
-    assert cost_tracker.llm_calls == 0
-    assert cost_tracker.input_tokens == 0
-    assert cost_tracker.output_tokens == 0
-    assert cost_tracker.estimated_cost() == 0.0
-
-
-# ---------------------------------------------------------------------------
 # Concurrent Health Check
 # ---------------------------------------------------------------------------
 

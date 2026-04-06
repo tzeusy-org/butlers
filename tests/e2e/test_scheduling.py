@@ -3,11 +3,15 @@
 Validates timer-driven flows, cron lifecycle, and tick behavior per
 docs/tests/e2e/scheduling.md:
 
-1. Tick idempotency (double-tick does not duplicate sessions)
-2. TOML schedule sync (schedules synced to scheduled_tasks table)
-3. Schedule CRUD via MCP tools
-4. Timer + external trigger interleaving
-5. Disabled schedule skipped
+1. TOML schedule sync (schedules synced to scheduled_tasks table)
+2. Schedule CRUD via MCP tools
+3. Timer + external trigger interleaving
+
+Note: Tests for tick idempotency, TOML sync idempotency, schedule create
+idempotency, disabled schedule skipping, and session metadata have been
+removed — these call core scheduler functions directly (tick, sync_schedules,
+schedule_create) and are already covered by tests/core/test_core_scheduler.py.
+Only tests requiring the full butler ecosystem or MCP interface are retained.
 """
 
 from __future__ import annotations
@@ -29,77 +33,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.e2e
-
-
-@pytest.mark.asyncio
-async def test_tick_idempotency(health_pool: Pool) -> None:
-    """Running tick() twice in quick succession should not duplicate sessions.
-
-    Validates that tick() is idempotent within a scheduling period: if a task
-    has already been dispatched, calling tick() again immediately should not
-    dispatch it again because next_run_at has been advanced.
-    """
-    # Create a test scheduled task with next_run_at in the past
-    now = datetime.now(UTC)
-    past = now - timedelta(hours=1)
-
-    task_name = f"test-idempotency-{uuid.uuid4()}"
-    async with health_pool.acquire() as conn:
-        task_id = await conn.fetchval(
-            """
-            INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
-            VALUES ($1, '0 * * * *', 'Test idempotency tick', 'db', true, $2)
-            RETURNING id
-            """,
-            task_name,
-            past,
-        )
-
-    # Get initial session count
-    initial_count = await health_pool.fetchval("SELECT COUNT(*) FROM sessions")
-
-    # Get health butler's spawner for tick dispatch
-    health_daemon = None
-    # Import ecosystem dynamically to access spawner
-    import inspect
-
-    from tests.e2e.conftest import butler_ecosystem  # noqa: F401
-
-    frame = inspect.currentframe()
-    while frame:
-        if "butler_ecosystem" in frame.f_locals:
-            ecosystem = frame.f_locals["butler_ecosystem"]
-            health_daemon = ecosystem.butlers.get("health")
-            break
-        frame = frame.f_back
-
-    if health_daemon is None:
-        pytest.skip("Could not access health butler daemon for tick test")
-
-    spawner = health_daemon.spawner
-
-    # First tick: should dispatch the due task
-    dispatched_1 = await _tick(health_pool, spawner.trigger)
-    assert dispatched_1 >= 1, "First tick should dispatch at least one task"
-
-    # Give spawner time to complete
-    await asyncio.sleep(1)
-
-    # Second tick immediately after: should NOT dispatch again
-    dispatched_2 = await _tick(health_pool, spawner.trigger)
-    assert dispatched_2 == 0, "Second tick should not dispatch any tasks (next_run_at advanced)"
-
-    # Verify only one new session was created (from first tick)
-    final_count = await health_pool.fetchval("SELECT COUNT(*) FROM sessions")
-    # Allow for exactly one new session (the first tick)
-    # Note: there might be other sessions from other tests, so check delta
-    assert final_count == initial_count + 1, (
-        f"Expected exactly one new session, got {final_count - initial_count}"
-    )
-
-    # Cleanup
-    async with health_pool.acquire() as conn:
-        await conn.execute("DELETE FROM scheduled_tasks WHERE id = $1", task_id)
 
 
 # ---------------------------------------------------------------------------
@@ -151,46 +84,6 @@ async def test_toml_schedule_sync(butler_ecosystem: ButlerEcosystem) -> None:
             assert db_row["cron"] == toml_sched["cron"]
             assert db_row["prompt"] == toml_sched["prompt"]
             assert db_row["enabled"] is True
-
-
-@pytest.mark.asyncio
-async def test_toml_sync_idempotency(health_pool: Pool) -> None:
-    """Restarting daemon (re-syncing TOML) should not duplicate schedule rows.
-
-    Validates that sync_schedules() is idempotent and updates existing rows
-    rather than creating duplicates.
-    """
-    from butlers.core.scheduler import sync_schedules
-
-    # Create a test schedule as if from TOML
-    schedules = [{"name": "test-sync-idempotent", "cron": "0 9 * * *", "prompt": "Daily summary"}]
-
-    # First sync
-    await sync_schedules(health_pool, schedules)
-
-    # Count rows
-    count_1 = await health_pool.fetchval(
-        """
-        SELECT COUNT(*) FROM scheduled_tasks
-        WHERE name = 'test-sync-idempotent'
-        """
-    )
-    assert count_1 == 1, "First sync should create one row"
-
-    # Second sync (simulates daemon restart)
-    await sync_schedules(health_pool, schedules)
-
-    # Count rows again
-    count_2 = await health_pool.fetchval(
-        """
-        SELECT COUNT(*) FROM scheduled_tasks
-        WHERE name = 'test-sync-idempotent'
-        """
-    )
-    assert count_2 == 1, "Second sync should not duplicate rows"
-
-    # Cleanup
-    await health_pool.execute("DELETE FROM scheduled_tasks WHERE name = 'test-sync-idempotent'")
 
 
 # ---------------------------------------------------------------------------
@@ -272,29 +165,6 @@ async def test_schedule_crud_via_mcp(butler_ecosystem: ButlerEcosystem, health_p
             assert not exists, "Schedule should be deleted from DB"
 
 
-@pytest.mark.asyncio
-async def test_schedule_create_idempotency(health_pool: Pool) -> None:
-    """Creating a schedule with duplicate name should fail.
-
-    Validates that scheduled_tasks.name has a unique constraint and duplicate
-    creation attempts are rejected.
-    """
-    from butlers.core.scheduler import schedule_create
-
-    test_name = f"test-create-duplicate-{uuid.uuid4()}"
-
-    # First creation should succeed
-    task_id_1 = await schedule_create(health_pool, test_name, "0 * * * *", "First creation")
-    assert task_id_1 is not None
-
-    # Second creation with same name should raise ValueError
-    with pytest.raises(ValueError, match="already exists"):
-        await schedule_create(health_pool, test_name, "0 * * * *", "Second creation")
-
-    # Cleanup
-    await health_pool.execute("DELETE FROM scheduled_tasks WHERE id = $1", task_id_1)
-
-
 # ---------------------------------------------------------------------------
 # Timer + External Trigger Interleaving
 # ---------------------------------------------------------------------------
@@ -348,155 +218,11 @@ async def test_timer_external_interleaving(
     # Give spawner time to complete sessions
     await asyncio.sleep(2)
 
-    # Verify both sessions were created
+    # Verify at least 2 new sessions exist (one from external, one from tick)
     final_count = await health_pool.fetchval("SELECT COUNT(*) FROM sessions")
-    # Should have at least 2 new sessions (external + scheduled)
     assert final_count >= initial_count + 2, (
-        f"Expected at least 2 new sessions, got {final_count - initial_count}"
+        f"Expected at least 2 new sessions (external + scheduled), got {final_count - initial_count}"  # noqa: E501
     )
 
     # Cleanup
     await health_pool.execute("DELETE FROM scheduled_tasks WHERE name = $1", task_name)
-
-
-# ---------------------------------------------------------------------------
-# Disabled Schedule Tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_disabled_schedule_skipped(health_pool: Pool) -> None:
-    """Schedule with enabled=false should not be triggered by tick.
-
-    Validates that disabled schedules are skipped during tick evaluation.
-    """
-    # Create a disabled scheduled task with next_run_at in the past
-    now = datetime.now(UTC)
-    past = now - timedelta(hours=1)
-    task_name = f"test-disabled-{uuid.uuid4()}"
-
-    async with health_pool.acquire() as conn:
-        task_id = await conn.fetchval(
-            """
-            INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
-            VALUES ($1, '0 * * * *', 'Disabled task should not run', 'db', false, $2)
-            RETURNING id
-            """,
-            task_name,
-            past,
-        )
-
-    # Get initial session count
-    initial_count = await health_pool.fetchval("SELECT COUNT(*) FROM sessions")
-
-    # Access health daemon spawner
-    import inspect
-
-    frame = inspect.currentframe()
-    health_daemon = None
-    while frame:
-        if "butler_ecosystem" in frame.f_locals:
-            ecosystem = frame.f_locals["butler_ecosystem"]
-            health_daemon = ecosystem.butlers.get("health")
-            break
-        frame = frame.f_back
-
-    if health_daemon is None:
-        pytest.skip("Could not access health butler daemon for disabled schedule test")
-
-    spawner = health_daemon.spawner
-
-    # Run tick
-    dispatched = await _tick(health_pool, spawner.trigger)
-
-    # Give spawner time to complete any sessions
-    await asyncio.sleep(1)
-
-    # Verify the disabled task was NOT dispatched
-    # Check that the task's last_run_at is still NULL
-    async with health_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT last_run_at FROM scheduled_tasks WHERE id = $1", task_id)
-        assert row is not None
-        assert row["last_run_at"] is None, "Disabled task should not have been dispatched"
-
-    # Verify session count did not increase (or if it did, it was from other tasks)
-    final_count = await health_pool.fetchval("SELECT COUNT(*) FROM sessions")
-    # If dispatched is 0, no new sessions should exist
-    if dispatched == 0:
-        assert final_count == initial_count, "No new sessions should be created for disabled tasks"
-
-    # Cleanup
-    await health_pool.execute("DELETE FROM scheduled_tasks WHERE id = $1", task_id)
-
-
-# ---------------------------------------------------------------------------
-# Session Metadata Validation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_scheduled_task_session_metadata(health_pool: Pool) -> None:
-    """Scheduled task sessions should have correct trigger_source metadata.
-
-    Validates that sessions created by scheduled tasks have trigger_source
-    in the format "schedule:<task-name>".
-    """
-    # Create a scheduled task with next_run_at in the past
-    now = datetime.now(UTC)
-    past = now - timedelta(minutes=1)
-    task_name = f"test-metadata-{uuid.uuid4()}"
-
-    async with health_pool.acquire() as conn:
-        task_id = await conn.fetchval(
-            """
-            INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
-            VALUES ($1, '* * * * *', 'Test session metadata', 'db', true, $2)
-            RETURNING id
-            """,
-            task_name,
-            past,
-        )
-
-    # Access health daemon spawner
-    import inspect
-
-    frame = inspect.currentframe()
-    health_daemon = None
-    while frame:
-        if "butler_ecosystem" in frame.f_locals:
-            ecosystem = frame.f_locals["butler_ecosystem"]
-            health_daemon = ecosystem.butlers.get("health")
-            break
-        frame = frame.f_back
-
-    if health_daemon is None:
-        pytest.skip("Could not access health butler daemon for metadata test")
-
-    spawner = health_daemon.spawner
-
-    # Run tick to dispatch the task
-    dispatched = await _tick(health_pool, spawner.trigger)
-    assert dispatched >= 1, "Task should have been dispatched"
-
-    # Give spawner time to complete
-    await asyncio.sleep(2)
-
-    # Query the most recent session
-    async with health_pool.acquire() as conn:
-        session = await conn.fetchrow(
-            """
-            SELECT trigger_source, duration_ms, model
-            FROM sessions
-            ORDER BY created_at DESC LIMIT 1
-            """
-        )
-
-    assert session is not None, "Session should have been created"
-    assert session["trigger_source"] == f"schedule:{task_name}", (
-        f"Expected trigger_source='schedule:{task_name}', got '{session['trigger_source']}'"
-    )
-    assert session["duration_ms"] is not None, "Session should have duration_ms"
-    assert session["duration_ms"] >= 0, "Duration should be non-negative"
-
-    # Cleanup
-    await health_pool.execute("DELETE FROM scheduled_tasks WHERE id = $1", task_id)
