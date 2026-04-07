@@ -133,6 +133,56 @@ During phase 13b, the daemon applies approval gates to configured tools. The `ap
 
 Tool sensitivity metadata from `tool_metadata()` informs which arguments are safety-critical for approval rule matching.
 
+### Tool Budget Discipline
+
+Every registered tool costs tokens at discovery time. At high tool counts
+(90-157), this token overhead degrades model performance --- especially on
+smaller or cheaper models --- by consuming context window and reducing tool
+selection accuracy. The target is **30-50 tools per butler**.
+
+#### Core Tool Gating
+
+Core tools MUST NOT be registered unconditionally. Registration SHOULD be gated
+on `butler.name` or `butler.type` from `butler.toml`:
+
+- Session analytics tools (`sessions_list`, `sessions_get`, `sessions_summary`,
+  `sessions_daily`, `top_sessions`, `schedule_costs`) MAY be omitted from
+  butlers that do not surface cost data.
+- `route.execute` SHOULD only register on butlers that accept Switchboard
+  routing.
+- Ingest-related tools SHOULD only register on the Switchboard.
+
+The gating pattern already exists for `ingest` and messenger tools; this section
+codifies it as the default expectation for all core tools.
+
+#### Module Tool Groups
+
+Modules MAY define **tool groups** --- named subsets of the tools they provide.
+When a butler enables a module, it MAY specify which groups to register:
+
+```toml
+[modules.memory]
+groups = ["core", "entity"]
+```
+
+Behavior:
+
+- When `groups` is absent or empty, `register_tools()` registers **all** tools
+  (backwards compatible).
+- When `groups` is present, `register_tools()` registers only tools belonging to
+  at least one listed group.
+- Each module defines its own group taxonomy and documents it in the module's
+  docstring or dedicated docs. Group names are module-scoped; `"core"` in the
+  memory module is independent of `"core"` in the calendar module.
+
+The `config_schema` Pydantic model for a module SHOULD include an optional
+`groups: list[str] | None` field. The default is `None` (register all).
+
+#### Auditing
+
+Daemon startup logging (RFC 0005) SHOULD emit the total registered tool count
+per butler. A warning SHOULD fire when the count exceeds 50.
+
 ## Integration
 
 - **RFC 0001:** Tool registration occurs during daemon startup phases 12-13.

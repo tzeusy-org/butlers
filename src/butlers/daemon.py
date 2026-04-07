@@ -2919,6 +2919,9 @@ class ButlerDaemon:
         spawner = self.spawner
         daemon = self
         butler_name = self.config.name
+        butler_type = self.config.type
+        is_switchboard = butler_name == "switchboard"
+        is_messenger = butler_name == "messenger"
         mcp = _ToolCallLoggingMCP(self.mcp, butler_name, module_name="core")
         _route_metrics = ButlerMetrics(butler_name=butler_name)
 
@@ -6472,6 +6475,84 @@ class ButlerDaemon:
                         type=correction_type
                     ),
                 }
+
+        # --- Prune core tools irrelevant to this butler's role. ---------------
+        # All tools are registered unconditionally above so the function bodies
+        # stay at a consistent indentation level.  We remove the tools that add
+        # noise for this butler type/name *after* registration so the model sees
+        # a leaner, more relevant tool surface.
+
+        _tools_to_remove: list[str] = []
+
+        # route.execute: only switchboard receives forwarded requests.
+        if not is_switchboard:
+            _tools_to_remove.append("route.execute")
+
+        # Delivery preferences & deferred notifications: only messenger.
+        if not is_messenger:
+            _tools_to_remove.extend(
+                [
+                    "delivery_preferences_set",
+                    "delivery_preferences_get",
+                    "deferred_notifications_list",
+                    "deferred_notification_cancel",
+                ]
+            )
+
+        # Event chains: only domain butlers with automation needs.
+        if is_switchboard or butler_name == "qa":
+            _tools_to_remove.extend(
+                [
+                    "event_chain_create",
+                    "event_chain_update",
+                    "event_chain_list",
+                    "event_chain_delete",
+                ]
+            )
+
+        # Seasonal periods: only domain butlers that use seasons.
+        if butler_type == ButlerType.STAFFER:
+            _tools_to_remove.extend(
+                [
+                    "seasonal_period_create",
+                    "seasonal_period_update",
+                    "seasonal_period_list",
+                    "seasonal_period_delete",
+                    "seasonal_period_create_preset",
+                ]
+            )
+
+        # Session introspection tools: admin/debug only — keep list/get,
+        # remove advanced ones that LLM sessions almost never call.
+        _tools_to_remove.extend(
+            [
+                "sessions_abandon",
+                "sessions_resume",
+                "sessions_retrigger",
+                "sessions_load_context",
+                "sessions_get_trace",
+            ]
+        )
+
+        # Attachment retrieval: only switchboard/messenger handle media.
+        if not is_switchboard and not is_messenger:
+            _tools_to_remove.append("get_attachment")
+
+        # Module admin: operational debugging, not normal LLM use.
+        _tools_to_remove.extend(["module.states", "module.set_enabled"])
+
+        for tool_name in _tools_to_remove:
+            try:
+                self.mcp.remove_tool(tool_name)
+            except Exception:
+                pass  # Tool may not exist (already conditional or renamed)
+
+        logger.info(
+            "Pruned %d irrelevant core tools for butler=%s type=%s",
+            len(_tools_to_remove),
+            butler_name,
+            butler_type.value,
+        )
 
     def _validate_module_configs(self) -> dict[str, Any]:
         """Validate each module's raw config dict against its config_schema.

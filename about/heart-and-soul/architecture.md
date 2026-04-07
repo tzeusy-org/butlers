@@ -160,6 +160,37 @@ brokering, and anti-spam enforcement as MCP tools. It follows the same Module
 ABC contract --- `register_tools()`, `migrations()`, lifecycle hooks --- but
 its scope is cross-butler coordination, not domain specialization.
 
+## Why Tool Surface Discipline Matters
+
+Every tool registered on a butler's MCP server costs tokens when the LLM
+discovers available tools at session start. At 90-157 tools, this overhead is
+substantial: it consumes context window, increases latency, and measurably
+degrades tool selection accuracy --- especially on smaller or cheaper models.
+
+The target is 30-50 tools per butler. This is not arbitrary. It is the range
+where LLM tool selection remains reliable across model tiers without burning a
+significant fraction of the context window on tool definitions alone.
+
+**How to stay within budget:**
+
+- **Core tools are not unconditional.** The daemon registers core tools based on
+  butler type and name. Session analytics tools belong on the dashboard butler,
+  not on every butler. Ingest tools belong on the Switchboard, not on domain
+  butlers. The pattern already exists for `ingest` and messenger tools; it should
+  be the default, not the exception.
+- **Modules expose tool groups, not monoliths.** A module with 15 tools should
+  define logical groups (e.g., "core", "entity", "admin") so butlers can import
+  the subset they need. When no groups are specified, all tools register for
+  backwards compatibility.
+- **Manifesto alignment is a filter.** If a tool does not serve the butler's
+  manifesto, it should not be registered --- even if the module that provides it
+  is enabled. Tool groups make this granular.
+
+**The constraint:** Adding a tool to a butler's surface is not free. Every
+registration must be justified by the butler's role. The question is not "could
+this butler use this tool?" but "does this butler need this tool in most
+sessions?"
+
 ## Why Connectors Are Separate from Butlers
 
 Connectors are standalone processes that bridge external transport systems
@@ -263,5 +294,7 @@ Two cross-cutting pipelines augment the core loop without modifying it:
 - Allowing butlers to import each other's code or share database connections.
 - Adding a new protocol alongside MCP for "special" communication needs.
 - Making the core loop conditional on module presence.
+- Registering all module tools on every butler instead of gating by role and
+  group.
 - Adding cross-schema access without an RFC, explicit guardrails, and reuse
   criteria.
