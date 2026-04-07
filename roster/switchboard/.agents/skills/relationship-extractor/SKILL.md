@@ -436,6 +436,57 @@ with little context.
 
 ---
 
+## Third-Party Sender Attribution
+
+Not every message originates from the owner. When the `[Source: ...]` preamble
+identifies a **non-owner contact** as the sender, signals extracted from the
+message must be attributed to the correct person:
+
+| Scenario | `contact_hint` should be |
+|----------|--------------------------|
+| Sender shares their own interest/preference | **The sender's name** (from preamble) |
+| Sender mentions a third person's info | **The third person's name** |
+| Sender recommends something to the owner | **The sender's name** (it reveals their taste, not the owner's) |
+
+**Never attribute a non-owner sender's preferences to the owner.** The owner
+is the *recipient*, not the subject of the fact.
+
+### Example — Third-Party Sender
+
+**Source preamble:** `[Source: Chloe Wong (contact_id: <uuid>, entity_id: <uuid>), via telegram]`
+
+**Message:** "https://reddit.com/r/SingaporeEats/... Good list of places to eat at :P"
+
+**Expected extraction:**
+
+```json
+{
+  "extractions": [
+    {
+      "signal_type": "fact",
+      "confidence": "MEDIUM",
+      "contact_hint": "Chloe Wong",
+      "data": {
+        "key": "interest",
+        "value": "food and restaurant recommendation lists; SingaporeEats-style roundups"
+      },
+      "tool_mapping": {
+        "tool": "fact_set",
+        "args": {
+          "contact_id": null,
+          "key": "interest",
+          "value": "food and restaurant recommendation lists; SingaporeEats-style roundups"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Wrong:** `"contact_hint": "Owner"` — Chloe shared the link; the interest is hers.
+
+---
+
 ## Deduplication Hints
 
 Before creating a new contact or adding data, the Switchboard should search
