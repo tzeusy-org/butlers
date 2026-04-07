@@ -238,6 +238,7 @@ class ListeningSession:
     last_activity_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     drain_started_at: datetime | None = None
     last_digest_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    last_digest_track_index: int = 0
 
     @property
     def track_count(self) -> int:
@@ -368,6 +369,7 @@ class ListeningSessionTracker:
         """Record that a digest was just emitted, resetting the timer."""
         if self._session is not None:
             self._session.last_digest_at = now or datetime.now(UTC)
+            self._session.last_digest_track_index = self._session.track_count
 
     def process_no_playback(self, now: datetime | None = None) -> list[ListeningSession]:
         """Process a poll result with no active playback.
@@ -491,21 +493,20 @@ def build_listening_digest_envelope(
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for a spotify.listening_digest event.
 
-    Emitted periodically (default every 60 min) during active listening with
-    all tracks accumulated since the last digest or context_start.
+    Emitted periodically (default every 60 min) during active listening.
+    Shows only tracks played since the last digest (or session start).
     """
-    track_count = session.track_count
     context_label = session.context_uri.split(":")[-1] if session.context_uri else None
-    track_list = ", ".join(session.track_names[:5])
-    if track_count > 5:
-        track_list += f" (+{track_count - 5} more)"
+    period_tracks = session.track_names[session.last_digest_track_index:]
+    period_count = len(period_tracks)
+    track_list = ", ".join(period_tracks)
 
     if context_label:
         normalized_text = (
-            f"Listening digest: {track_count} tracks on {context_label} — {track_list}"
+            f"Listening digest: {period_count} tracks on {context_label} — {track_list}"
         )
     else:
-        normalized_text = f"Listening digest: {track_count} tracks — {track_list}"
+        normalized_text = f"Listening digest: {period_count} tracks — {track_list}"
 
     digest_start_ms = int(session.last_digest_at.timestamp() * 1000)
     idempotency_key = f"spotify:{endpoint_identity}:digest:{digest_start_ms}"
@@ -529,8 +530,10 @@ def build_listening_digest_envelope(
         "payload": {
             "raw": {
                 "digest_start": session.last_digest_at.isoformat(),
-                "track_count": track_count,
+                "period_track_count": period_count,
+                "total_track_count": session.track_count,
                 "context_uri": session.context_uri,
+                "period_tracks": period_tracks,
                 "tracks": session.track_names,
             },
             "normalized_text": normalized_text,
@@ -1475,9 +1478,7 @@ class SpotifyConnector:
         if gap_tracks:
             track_names = [t["name"] for t in gap_tracks]
             track_count = len(gap_tracks)
-            track_list = ", ".join(track_names[:5])
-            if track_count > 5:
-                track_list += f" (+{track_count - 5} more)"
+            track_list = ", ".join(track_names)
 
             normalized_text = f"Gap-fill digest: {track_count} recently played — {track_list}"
 
