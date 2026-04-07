@@ -14,8 +14,8 @@ Usage::
 
 Design notes
 ------------
-- Adapter instances are cached per ``runtime_type`` (same pattern as
-  ``Spawner._get_or_create_adapter``).
+- Adapter instances are cached per ``runtime_type``; instantiation is
+  handled by :func:`~butlers.core.runtimes.base.create_adapter`.
 - Model resolution is performed on every call so catalog updates take effect
   without restarting the dispatcher.
 - ``asyncio.wait_for`` enforces the per-call wall-clock timeout; the inner
