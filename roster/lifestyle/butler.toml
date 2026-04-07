@@ -62,9 +62,11 @@ If there are no notable highlights this week, exit silently without sending.
 """
 
 [modules.memory]
+groups = ["core", "preferences"]
 
 [modules.calendar]
 provider = "google"
+groups = ["core"]
 
 [modules.calendar.conflicts]
 policy = "suggest"

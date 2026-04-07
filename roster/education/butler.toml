@@ -82,6 +82,7 @@ job_name = "daily_briefing_contribution"
 [modules.education]
 
 [modules.memory]
+groups = ["core", "entity"]
 
 [modules.contacts]
 provider = "google"

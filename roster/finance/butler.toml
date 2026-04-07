@@ -24,11 +24,13 @@ route_contract_max = 1
 
 [modules.calendar]
 provider = "google"
+groups = ["core", "butler_events"]
 
 [modules.calendar.conflicts]
 policy = "suggest"
 
 [modules.memory]
+groups = ["core", "preferences"]
 
 [modules.finance]
 

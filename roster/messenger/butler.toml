@@ -26,6 +26,7 @@ schema = "messenger"
 
 [modules.calendar]
 provider = "google"
+groups = ["core"]
 
 [modules.calendar.conflicts]
 policy = "suggest"

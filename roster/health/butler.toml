@@ -65,6 +65,7 @@ job_name = "insight_scan"
 
 [modules.calendar]
 provider = "google"
+groups = ["core", "butler_events"]
 
 [modules.calendar.conflicts]
 policy = "suggest"
@@ -85,6 +86,7 @@ full_sync_interval_days = 6
 read_only = true
 
 [modules.memory]
+groups = ["core", "entity", "preferences"]
 
 [modules.google_drive]
 

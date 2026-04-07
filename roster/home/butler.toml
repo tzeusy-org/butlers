@@ -23,6 +23,7 @@ route_contract_max = 1
 [modules.home_assistant]
 
 [modules.memory]
+groups = ["core", "preferences"]
 
 [modules.contacts]
 provider = "google"
