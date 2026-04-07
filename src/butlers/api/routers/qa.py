@@ -1715,14 +1715,21 @@ async def reset_circuit_breaker(
             meta=ApiMeta(),
         )
 
-    # Insert a synthetic manual_reset record with qa_patrol_id set so that:
-    # 1. The row is visible to circuit breaker queries (qa_patrol_id IS NOT NULL)
+    # Insert a synthetic patrol + manual_reset healing attempt so that:
+    # 1. The healing_attempts row has qa_patrol_id set (visible to CB queries)
     # 2. The status breaks the all-failures chain (manual_reset ∉ failure statuses)
-    # 3. The fingerprint + error_detail identify it as a manual reset
+    # 3. The FK constraint on qa_patrol_id → qa_patrols(id) is satisfied
     # Note: manual_reset is not in VALID_STATUSES so it bypasses the state machine
     # (direct INSERT, not via update_attempt_status). This is intentional — it's a
     # synthetic record that only exists to break the failure chain.
     synthetic_patrol_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO public.qa_patrols (id, status, completed_at)
+        VALUES ($1, 'clean', now())
+        """,
+        synthetic_patrol_id,
+    )
     await pool.execute(
         """
         INSERT INTO public.healing_attempts (
