@@ -47,7 +47,7 @@ For each module with >=10 tools, dispatch a subagent to read the tool definition
 - **LLM guidance**: Helps an LLM decide WHEN to use this tool vs alternatives
 - **Examples**: Complex params have usage examples
 
-Rate each: `GOOD` / `NEEDS_WORK` / `MISSING`
+Rate each: `GOOD` / `NEEDS_WORK` / `MISSING`. See [references/quality-patterns.md](references/quality-patterns.md) for before/after fix examples.
 
 **Output format:**
 ```
@@ -74,7 +74,27 @@ For each module with >=10 tools, dispatch a subagent to find all error return pa
 | memory | memory_store_fact | predicate validation | BAD | Generic str(exc), no hint |
 ```
 
-### Phase 4: Group Configuration Review
+### Phase 4: Tool Overlap Detection
+
+Flag tools on the same butler that have overlapping functionality (confuses the model into picking the wrong one). Common patterns:
+
+- Module-specific fact tools vs `memory_store_fact` (e.g., finance SPO tools)
+- Multiple "list" tools with similar signatures across modules
+- `route` vs `route_to_butler` vs `route.execute` on switchboard
+
+For each overlap found, report which tools conflict and recommend consolidation or clearer disambiguation in docstrings.
+
+### Phase 5: Token Cost Estimation
+
+Estimate per-butler token overhead from tool descriptions. Tool schemas get serialized into the model context at discovery time.
+
+- Rule of thumb: 1 tool ≈ 100-400 tokens depending on docstring length and parameter count
+- Sum estimated tokens per butler; flag butlers exceeding ~15k tool tokens
+- Identify the most expensive individual tools (verbose docstrings, many params)
+
+This matters more than raw tool count — 40 terse tools may cost less than 30 verbose ones.
+
+### Phase 6: Group Configuration Review
 
 For each butler, verify:
 
@@ -85,7 +105,22 @@ For each butler, verify:
 
 See [references/tool-budget.md](references/tool-budget.md) for group taxonomy.
 
-### Phase 5: Report
+### Phase 7: MCP Connection Reliability
+
+Query recent session records for MCP connection failures (Codex CLI intermittently fails to discover tools):
+
+```sql
+-- via dashboard API: GET /api/butlers/{name}/sessions?limit=50
+-- then check process_log for mcp_connection_failed
+```
+
+For each butler, report:
+- Total sessions sampled
+- Sessions with `mcp_connection_failed: true`
+- Retry success rate (`retry_succeeded: true` / `retry_attempted: true`)
+- Flag butlers with >10% MCP failure rate
+
+### Phase 8: Report
 
 Synthesize into a single structured report:
 
