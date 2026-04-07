@@ -1,0 +1,4 @@
+interface:
+  display_name: "Butler Tool Review"
+  short_description: "Audit butler MCP tools and docstrings"
+  default_prompt: "Review all butler tool configurations"
