@@ -101,6 +101,79 @@ The `load_all()` method instantiates ALL registered modules regardless of `butle
 - **WHEN** `load_all(modules_config)` is called and a registered module is not in `modules_config`
 - **THEN** the module is instantiated with an empty dict `{}` as its config
 
+### Requirement: Tool Group Filtering
+
+Modules MAY partition their tools into named groups. When a butler's `butler.toml` specifies `groups = [...]` under a module section, only tools belonging to listed groups are registered. When `groups` is absent or empty, all groups are enabled (backwards compatible — existing configs are unaffected).
+
+#### Contract: ToolGroupMixin
+
+`ToolGroupMixin` is a Pydantic `BaseModel` mixin that adds a `groups: list[str] | None = None` field. Module config classes that support group filtering inherit from it:
+
+```python
+class MyModuleConfig(ToolGroupMixin, BaseModel):
+    some_setting: str = "default"
+```
+
+#### Contract: group_enabled utility
+
+`group_enabled(config, group) -> bool` returns `True` when `config` has no `groups` attribute, or `groups` is `None` or empty. Otherwise it returns `True` only if `group` is in the list. The function accepts any object — configs without the mixin always pass.
+
+#### Contract: _tool(group) decorator pattern
+
+Inside `register_tools()`, modules define a local `_tool(group)` helper that returns `mcp.tool()` when the group is enabled, or a no-op passthrough (`lambda fn: fn`) when disabled. Tools are then decorated with `@_tool("group_name")` instead of `@mcp.tool()`:
+
+```python
+def _tool(group: str):
+    if group_enabled(config, group):
+        return mcp.tool()
+    return lambda fn: fn
+
+@_tool("core")
+async def my_tool(...): ...
+```
+
+#### Contract: Group taxonomy documentation
+
+Each module config class that uses `ToolGroupMixin` MUST document its group taxonomy in the class docstring under a `Tool groups` section listing each group name and its member tools.
+
+#### Scenario: Groups absent — all tools registered
+- **WHEN** `butler.toml` does not specify `groups` for a module (or specifies `groups = []`)
+- **THEN** all tool groups are enabled and every tool is registered
+
+#### Scenario: Groups restrict tool registration
+- **WHEN** `butler.toml` specifies `groups = ["core", "entity"]` for the memory module
+- **THEN** only tools in the `core` and `entity` groups are registered
+- **AND** tools in `feedback`, `preferences`, `admin` groups are skipped
+
+#### Scenario: Config without mixin passes unconditionally
+- **WHEN** `group_enabled()` is called with a config object that does not have a `groups` attribute
+- **THEN** it returns `True` (all groups enabled)
+
+#### Modules with group support
+
+The following modules implement `ToolGroupMixin` on their config class:
+
+| Module | Config class | Example groups |
+|---|---|---|
+| memory | `MemoryModuleConfig` | core, feedback, entity, preferences, admin |
+| calendar | `CalendarConfig` | core, butler_events, attendees |
+| relationship | `RelationshipModuleConfig` | (see config docstring) |
+| finance | `FinanceModuleConfig` | (see config docstring) |
+| education | `EducationModuleConfig` | (see config docstring) |
+| health | `HealthModuleConfig` | (see config docstring) |
+| home_assistant | `HomeAssistantConfig` | (see config docstring) |
+| approvals | `ApprovalsConfig` | (see config docstring) |
+
+#### butler.toml syntax
+
+```toml
+[modules.memory]
+groups = ["core", "entity"]
+
+[modules.calendar]
+groups = ["core"]
+```
+
 ### Requirement: Channel Egress Ownership Enforcement
 Non-messenger butlers are prohibited from registering channel egress tools (matching `<channel>_(send_message|reply_to_message|send_email|reply_to_thread)`). A `ChannelEgressOwnershipError` is raised if a non-messenger butler attempts this.
 

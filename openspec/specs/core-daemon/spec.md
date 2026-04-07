@@ -28,8 +28,39 @@ The daemon SHALL read the `type` field from `butler.toml` config and apply type-
 ## MODIFIED Requirements
 
 ### Requirement: Core Tool Surface
-Every butler daemon registers a fixed set of core MCP tools as defined in `CORE_TOOL_NAMES`.
+Every butler daemon registers core MCP tools conditionally based on `butler_type` (from `butler.toml`) and `butler_name`. The goal is 30-50 tools per butler to stay within agent context budgets.
 
-#### Scenario: Core tools are registered
-- **WHEN** the daemon completes startup
+#### Contract: Tool tiers
+
+Core tools are partitioned into four tiers:
+
+| Tier | Constant | Gating rule |
+|---|---|---|
+| Universal | `UNIVERSAL_CORE_TOOL_NAMES` | Registered for ALL butlers regardless of type or name |
+| Domain | `DOMAIN_CORE_TOOL_NAMES` | Registered only when `butler_type != ButlerType.STAFFER` (i.e., domain butlers) |
+| Messenger | `MESSENGER_CORE_TOOL_NAMES` | Registered only when `butler_name == "messenger"` |
+| Switchboard | (inline in `_register_core_tools`) | Registered only when `butler_name == "switchboard"` |
+
+The backwards-compatible union `CORE_TOOL_NAMES = UNIVERSAL | MESSENGER | DOMAIN` exists for test assertions but is not used for registration.
+
+#### Scenario: Universal tools are always registered
+- **WHEN** any butler daemon completes startup
 - **THEN** the following tools are available: `status`, `trigger`, `route.execute`, `tick`, `state_get`, `state_set`, `state_delete`, `state_list`, `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions`, `schedule_costs`, `notify`, `remind`, `get_attachment`, `module.states`, `module.set_enabled`, `correct`
+
+#### Scenario: route.execute is universal
+- **WHEN** any butler (including staffers) completes startup
+- **THEN** `route.execute` is registered — all butlers can receive routed requests from the Switchboard
+
+#### Scenario: Domain tools excluded from staffers
+- **WHEN** the daemon starts with `config.type == ButlerType.STAFFER`
+- **THEN** the following tools are NOT registered: `deadline_create`, `deadline_update`, `deadline_list`, `deadline_delete`, `event_chain_create`, `event_chain_list`, `event_chain_delete`, `seasonal_period_list`, `seasonal_period_create`, `seasonal_period_create_preset`
+
+#### Scenario: Messenger-only tools
+- **WHEN** the daemon starts with `butler_name == "messenger"`
+- **THEN** the following additional tools are registered: `delivery_preferences_set`, `delivery_preferences_get`, `deferred_notifications_list`, `deferred_notification_cancel`
+- **AND** these tools are NOT registered for any other butler
+
+#### Scenario: Switchboard-only tools
+- **WHEN** the daemon starts with `butler_name == "switchboard"`
+- **THEN** the following additional tools are registered: `ingest`, `route_to_butler`, `connector.heartbeat`, `backfill.poll`, `backfill.progress`
+- **AND** these tools are NOT registered for any other butler

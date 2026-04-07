@@ -186,6 +186,44 @@ significant fraction of the context window on tool definitions alone.
   manifesto, it should not be registered --- even if the module that provides it
   is enabled. Tool groups make this granular.
 
+**The two-layer gating model:**
+
+Tool registration is gated at two independent layers, each with its own
+mechanism. Both must pass for a tool to appear on a butler's MCP surface.
+
+1. **Core daemon tools** are conditionally registered inside
+   `_register_core_tools()` based on `butler_type` (STAFFER vs BUTLER) and
+   `butler_name` (switchboard, messenger). Deadline, event-chain, and
+   seasonal-period tools register only for domain butlers, not staffers. Ingest
+   pipeline tools register only for the Switchboard. Notify delivery tools
+   register only for the Messenger. This is imperative gating --- `if` guards
+   inside the daemon, evaluated once at startup.
+
+2. **Module tools** are filtered declaratively via `groups` config in
+   `butler.toml`. Each module defines named tool groups (e.g., "measurements",
+   "conditions", "reports" in the health module; "core", "climate", "scenes" in
+   home assistant). A butler enables only the groups it needs. The gating is
+   resolved at tool registration time through a `_tool(group)` helper inside each
+   module's `register_tools()` function: when the group is enabled, `_tool()`
+   returns `@mcp.tool()`; when disabled, it returns a no-op passthrough that
+   defines the function but never registers it. This means zero re-indentation of
+   existing tool functions --- the decorator swap is the only change.
+   `ToolGroupMixin` adds an optional `groups` field to module configs, and
+   `group_enabled()` resolves whether a group should register.
+
+**The backwards-compatibility contract:** Omitting `groups` from a module's
+config in `butler.toml` registers ALL of that module's tools. This preserves
+existing behavior for every butler that has not yet opted into group filtering.
+Group support can be adopted incrementally, one module at a time, without
+touching butlers that do not need it.
+
+**The ownership principle:** Domain modules used by their own specialist butler
+--- health tools on the health butler, finance tools on the finance butler ---
+keep all groups enabled. There is no reason to prune a domain module on its home
+butler. Cross-cutting modules are where pruning matters: memory, calendar,
+approvals, and similar modules that appear on multiple butlers. Each butler
+enables only the groups relevant to its role, and the rest stay silent.
+
 **The constraint:** Adding a tool to a butler's surface is not free. Every
 registration must be justified by the butler's role. The question is not "could
 this butler use this tool?" but "does this butler need this tool in most

@@ -155,6 +155,32 @@ on `butler.name` or `butler.type` from `butler.toml`:
 The gating pattern already exists for `ingest` and messenger tools; this section
 codifies it as the default expectation for all core tools.
 
+**Implementation.** The daemon resolves three gating variables at the start of
+`_register_core_tools()`:
+
+```python
+butler_type = self.config.type   # ButlerType enum (DOMAIN, STAFFER)
+is_switchboard = butler_name == "switchboard"
+is_messenger = butler_name == "messenger"
+```
+
+All core tools are registered unconditionally first (for uniform indentation),
+then a post-registration prune pass removes tools irrelevant to the butler's
+role. The implemented gating rules are:
+
+| Guard | Tools gated |
+|-------|-------------|
+| `if butler_type != ButlerType.STAFFER:` | `deadline_*`, `event_chain_*`, `seasonal_period_*` (domain butlers only) |
+| `if is_messenger:` | `delivery_preferences_*`, `deferred_notification_*` (messenger only) |
+| `if is_switchboard:` | `ingest`, `route_to_butler`, `backfill_*` (switchboard only; these are guarded by a conditional `mcp.tool()` registration block, not by post-registration pruning) |
+
+**`route.execute` is UNIVERSAL.** All butlers register `route.execute` because
+the Switchboard calls it server-to-server via MCP to deliver routed requests.
+The post-registration prune removes it from the LLM-visible tool list on
+non-switchboard butlers, but the underlying MCP handler remains callable by the
+Switchboard. This is by design: `route.execute` is an infrastructure endpoint,
+not an LLM-facing tool.
+
 #### Module Tool Groups
 
 Modules MAY define **tool groups** --- named subsets of the tools they provide.
@@ -178,10 +204,69 @@ Behavior:
 The `config_schema` Pydantic model for a module SHOULD include an optional
 `groups: list[str] | None` field. The default is `None` (register all).
 
+**Implementation.** `ToolGroupMixin` (`src/butlers/modules/base.py`) is a
+Pydantic mixin that provides the `groups: list[str] | None` field. Module config
+schemas inherit from it:
+
+```python
+class MyModuleConfig(ToolGroupMixin, BaseModel):
+    some_setting: str = "default"
+```
+
+The companion utility `group_enabled(config, group) -> bool` returns `True` when
+`config.groups` is `None` or empty (backwards-compatible all-enabled), or when
+`group` appears in the list. Inside `register_tools()`, modules use the
+`_tool(group)` decorator pattern:
+
+```python
+def _tool(group: str):
+    if group_enabled(config, group):
+        return mcp.tool()
+    return lambda fn: fn   # no-op — function defined but not registered
+```
+
+Modules currently implementing tool groups:
+
+| Module | Groups | Location |
+|--------|--------|----------|
+| memory | 5 (`core`, `entity`, `feedback`, `admin`, `preferences`) | `src/butlers/modules/memory/` |
+| calendar | 3 (`core`, `butler_events`, `attendees`) | `src/butlers/modules/calendar.py` |
+| relationship | 8 (`contacts`, `entity`, `interactions`, `management`, `notes`, `relationships`, `social`, `tracking`) | `roster/relationship/modules/` |
+| finance | 8 (`analytics`, `bills`, `budgets`, `bulk`, `core`, `facts`, `intelligence`, `subscriptions`) | `roster/finance/modules/` |
+| education | 7 (`analytics`, `curriculum`, `diagnostics`, `mastery`, `mind_maps`, `spaced_repetition`, `teaching`) | `roster/education/modules/` |
+| health | 7 (`conditions`, `measurements`, `medications`, `nutrition`, `reports`, `research`, `symptoms`) | `roster/health/modules/` |
+| home_assistant | 3 (`core`, `history`, `maintenance`) | `roster/home/modules/` |
+| approvals | 3 (`actions`, `rules`, `promotions`) | `src/butlers/modules/approvals/` |
+
+**Ownership principle.** A specialist butler keeps all groups of its own domain
+module enabled (or omits `groups` entirely). Pruning applies to cross-cutting
+modules shared across butlers --- e.g., a finance butler enabling the memory
+module with only `groups = ["core"]` to avoid registering entity or admin tools
+it will never use.
+
 #### Auditing
 
 Daemon startup logging (RFC 0005) SHOULD emit the total registered tool count
 per butler. A warning SHOULD fire when the count exceeds 50.
+
+**Codex adapter retry mechanism.** The Codex runtime adapter
+(`src/butlers/core/runtimes/codex.py`) detects MCP connection failures
+post-invocation: when a session returns 0 MCP tool calls despite configured MCP
+servers, the adapter retries the invocation once after a 1.5-second delay
+(`_MCP_RETRY_DELAY_SECONDS`). This guards against transient SSE connection
+races where the Codex CLI exits before discovering the butler's tool surface.
+
+The adapter records the following diagnostics in the session `process_log`:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `mcp_connection_failed` | `bool` | `True` when MCP servers were configured but no MCP tool calls were observed (or when no servers were configured). |
+| `retry_attempted` | `bool` | `True` when the adapter performed the 1.5s retry. |
+| `retry_succeeded` | `bool` | `True` when the retry invocation produced MCP tool calls. |
+
+These fields are present only when `mcp_connection_failed` is `True`. Session
+monitoring dashboards and alerting rules SHOULD key on `retry_attempted = True
+AND retry_succeeded = False` to surface persistent MCP connectivity issues.
 
 ## Integration
 
