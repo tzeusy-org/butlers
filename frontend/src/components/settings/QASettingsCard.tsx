@@ -278,7 +278,7 @@ export function QASettingsCard() {
                   type={showToken ? "text" : "password"}
                   value={ghToken}
                   onChange={(e) => setGhToken(e.target.value)}
-                  placeholder={tokenIsSet ? "********** (saved)" : "ghp_..."}
+                  placeholder={tokenIsSet ? "********** (saved)" : "github_pat_..."}
                   autoComplete="off"
                   disabled={saveTokenMutation.isPending}
                 />
