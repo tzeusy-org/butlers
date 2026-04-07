@@ -646,6 +646,8 @@ export {
   addQaAllowedRepo,
   patchQaAllowedRepo,
   deleteQaAllowedRepo,
+  getRuntimeConfig,
+  patchRuntimeConfig,
 } from "./client.ts";
 
 export type {
@@ -677,4 +679,7 @@ export type {
   QaTrendsDay,
   HealingAttempt,
   HealingAttemptsParams,
+  RuntimeConfigResponse,
+  RuntimeConfigPatch,
+  RuntimeConfigPatchResponse,
 } from "./types.ts";

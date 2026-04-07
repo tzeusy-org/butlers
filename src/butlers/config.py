@@ -116,6 +116,31 @@ class RuntimeConfig:
 
 
 @dataclass
+class RuntimeSeedConfig:
+    """Seed configuration from [butler.runtime_seed] section.
+
+    Used only on first boot to seed the per-schema ``runtime_config`` DB table.
+    After first boot, the DB table is the runtime source of truth.
+
+    Fields map to columns in the ``runtime_config`` table plus additional
+    fields used for switchboard butler registration (liveness_ttl_seconds,
+    route_contract_min, route_contract_max) which are NOT stored in
+    runtime_config but passed to the switchboard's butler_registry.
+    """
+
+    core_groups: tuple[str, ...] | None = None
+    model: str | None = None
+    runtime_type: str = "codex"
+    args: tuple[str, ...] = ()
+    max_concurrent_sessions: int = 3
+    max_queued_sessions: int = 10
+    session_timeout_s: int = 900
+    liveness_ttl_seconds: int = 300
+    route_contract_min: int = 1
+    route_contract_max: int = 1
+
+
+@dataclass
 class GatedToolConfig:
     """Configuration for a single gated tool in the approvals module.
 
@@ -250,6 +275,7 @@ class ButlerConfig:
     db_schema: str | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    runtime_seed: RuntimeSeedConfig = field(default_factory=RuntimeSeedConfig)
     schedules: list[ScheduleConfig] = field(default_factory=list)
     modules: dict[str, dict] = field(default_factory=dict)
     env_required: list[str] = field(default_factory=list)
@@ -324,82 +350,90 @@ def _resolve_string(s: str) -> str:
     return result
 
 
-def _parse_runtime(butler_section: dict) -> RuntimeConfig:
-    """Parse the optional [butler.runtime] sub-section.
+def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
+    """Parse the optional [butler.runtime_seed] sub-section.
 
-    Returns a RuntimeConfig using the dataclass default model (Haiku) if the
-    section or field is absent. Empty-string model values fall through to the
-    default.
-
-    max_concurrent_sessions defaults to 1 when absent — preserves serial
-    (lock-like) behaviour for existing butler configs.
-    max_queued_sessions defaults to 100 when absent.
+    Returns a RuntimeSeedConfig using dataclass defaults for any absent fields.
+    This section replaces the old [butler.runtime] and [butler.seed_configs]
+    sections, which are now rejected with clear error messages.
     """
-    runtime_section = butler_section.get("runtime", {})
-    model = runtime_section.get("model")
-    max_concurrent_sessions = int(runtime_section.get("max_concurrent_sessions", 1))
-    max_queued_sessions = int(runtime_section.get("max_queued_sessions", 100))
-    session_timeout_s = int(runtime_section.get("session_timeout_s", 1800))
-    raw_runtime_args = runtime_section.get("args", [])
+    seed_section = butler_section.get("runtime_seed", {})
 
-    if not isinstance(raw_runtime_args, list):
-        raise ConfigError("Invalid butler.runtime.args: expected an array of strings")
-
-    runtime_args: list[str] = []
-    for i, arg in enumerate(raw_runtime_args):
-        if not isinstance(arg, str) or not arg.strip():
-            raise ConfigError(f"Invalid butler.runtime.args[{i}]: expected a non-empty string")
-        runtime_args.append(arg)
-
-    if max_concurrent_sessions <= 0:
-        raise ConfigError(
-            f"Invalid butler.runtime.max_concurrent_sessions: {max_concurrent_sessions!r}. "
-            "Must be a positive integer."
-        )
-    if max_queued_sessions <= 0:
-        raise ConfigError(
-            f"Invalid butler.runtime.max_queued_sessions: {max_queued_sessions!r}. "
-            "Must be a positive integer."
-        )
-    if session_timeout_s <= 0:
-        raise ConfigError(
-            f"Invalid butler.runtime.session_timeout_s: {session_timeout_s!r}. "
-            "Must be a positive integer."
-        )
-
-    # Normalise empty/whitespace string → use default
-    if isinstance(model, str) and not model.strip():
-        model = None
-
-    # --- core_groups: optional allowlist of core tool groups to register ---
-    # When absent (None), ALL core groups are registered (backward compat).
-    # Mirrors the module groups pattern: positive selection, not exclusion.
-    raw_core_groups = runtime_section.get("core_groups")
+    # --- core_groups ---
+    raw_core_groups = seed_section.get("core_groups")
     core_groups: tuple[str, ...] | None = None
     if raw_core_groups is not None:
         if not isinstance(raw_core_groups, list):
             raise ConfigError(
-                "Invalid butler.runtime.core_groups: expected an array of strings"
+                "Invalid butler.runtime_seed.core_groups: expected an array of strings"
             )
-        validated: list[str] = []
+        validated_groups: list[str] = []
         for i, entry in enumerate(raw_core_groups):
             if not isinstance(entry, str) or not entry.strip():
                 raise ConfigError(
-                    f"Invalid butler.runtime.core_groups[{i}]: expected a non-empty string"
+                    f"Invalid butler.runtime_seed.core_groups[{i}]: expected a non-empty string"
                 )
-            validated.append(entry.strip())
-        core_groups = tuple(validated)
+            validated_groups.append(entry.strip())
+        core_groups = tuple(validated_groups)
 
-    common_kwargs = dict(
+    # --- model ---
+    model = seed_section.get("model")
+    if isinstance(model, str) and not model.strip():
+        model = None
+
+    # --- runtime_type ---
+    runtime_type = str(seed_section.get("runtime_type", "codex")).strip()
+    if not runtime_type:
+        runtime_type = "codex"
+
+    # --- args ---
+    raw_args = seed_section.get("args", [])
+    if not isinstance(raw_args, list):
+        raise ConfigError("Invalid butler.runtime_seed.args: expected an array of strings")
+    args: list[str] = []
+    for i, arg in enumerate(raw_args):
+        if not isinstance(arg, str) or not arg.strip():
+            raise ConfigError(f"Invalid butler.runtime_seed.args[{i}]: expected a non-empty string")
+        args.append(arg)
+
+    # --- numeric fields with validation ---
+    max_concurrent_sessions = int(seed_section.get("max_concurrent_sessions", 3))
+    if max_concurrent_sessions <= 0:
+        raise ConfigError(
+            f"Invalid butler.runtime_seed.max_concurrent_sessions: {max_concurrent_sessions!r}. "
+            "Must be a positive integer."
+        )
+
+    max_queued_sessions = int(seed_section.get("max_queued_sessions", 10))
+    if max_queued_sessions <= 0:
+        raise ConfigError(
+            f"Invalid butler.runtime_seed.max_queued_sessions: {max_queued_sessions!r}. "
+            "Must be a positive integer."
+        )
+
+    session_timeout_s = int(seed_section.get("session_timeout_s", 900))
+    if session_timeout_s <= 0:
+        raise ConfigError(
+            f"Invalid butler.runtime_seed.session_timeout_s: {session_timeout_s!r}. "
+            "Must be a positive integer."
+        )
+
+    liveness_ttl_seconds = int(seed_section.get("liveness_ttl_seconds", 300))
+    route_contract_min = int(seed_section.get("route_contract_min", 1))
+    route_contract_max = int(seed_section.get("route_contract_max", 1))
+
+    return RuntimeSeedConfig(
+        core_groups=core_groups,
+        model=model,
+        runtime_type=runtime_type,
+        args=tuple(args),
         max_concurrent_sessions=max_concurrent_sessions,
         max_queued_sessions=max_queued_sessions,
         session_timeout_s=session_timeout_s,
-        args=tuple(runtime_args),
-        core_groups=core_groups,
+        liveness_ttl_seconds=liveness_ttl_seconds,
+        route_contract_min=route_contract_min,
+        route_contract_max=route_contract_max,
     )
-    if model is not None:
-        return RuntimeConfig(model=model, **common_kwargs)
-    return RuntimeConfig(**common_kwargs)
 
 
 def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
@@ -845,7 +879,24 @@ def load_config(config_dir: Path) -> ButlerConfig:
         modules[mod_name] = dict(mod_cfg) if isinstance(mod_cfg, dict) else {}
     _validate_messenger_requirements(name, modules)
 
-    # --- [runtime] section ---
+    # --- Reject old section names with clear error messages ---
+    if "runtime" in butler_section and "runtime_seed" not in butler_section:
+        raise ConfigError(
+            "[butler.runtime] has been renamed to [butler.runtime_seed]. "
+            "Please rename the section in your butler.toml and merge any "
+            "[butler.seed_configs] fields into it."
+        )
+    if "seed_configs" in butler_section:
+        raise ConfigError(
+            "[butler.seed_configs] has been merged into [butler.runtime_seed]. "
+            "Please move its fields into [butler.runtime_seed] and remove "
+            "the [butler.seed_configs] section."
+        )
+
+    # --- [butler.runtime_seed] sub-section (new canonical name) ---
+    runtime_seed = _parse_runtime_seed(butler_section)
+
+    # --- [runtime] top-level section (runtime adapter type) ---
     runtime_section = data.get("runtime", {})
     runtime_type = runtime_section.get("type", "claude")
 
@@ -855,16 +906,18 @@ def load_config(config_dir: Path) -> ButlerConfig:
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 
-    # Parse model and concurrency limit from [butler.runtime] sub-section
-    butler_runtime = _parse_runtime(butler_section)
+    # Build RuntimeConfig from runtime_seed for backward compatibility.
+    # The runtime_seed feeds the DB on first boot; the RuntimeConfig on
+    # ButlerConfig is still populated so that existing code paths that
+    # haven't migrated to the accessor yet continue to work.
     runtime = RuntimeConfig(
         type=runtime_type,
-        model=butler_runtime.model,
-        max_concurrent_sessions=butler_runtime.max_concurrent_sessions,
-        max_queued_sessions=butler_runtime.max_queued_sessions,
-        session_timeout_s=butler_runtime.session_timeout_s,
-        args=butler_runtime.args,
-        core_groups=butler_runtime.core_groups,
+        model=runtime_seed.model if runtime_seed.model else DEFAULT_MODEL,
+        max_concurrent_sessions=runtime_seed.max_concurrent_sessions,
+        max_queued_sessions=runtime_seed.max_queued_sessions,
+        session_timeout_s=runtime_seed.session_timeout_s,
+        args=runtime_seed.args,
+        core_groups=runtime_seed.core_groups,
     )
 
     return ButlerConfig(
@@ -877,6 +930,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         db_schema=db_schema,
         logging=logging_config,
         runtime=runtime,
+        runtime_seed=runtime_seed,
         schedules=schedules,
         modules=modules,
         env_required=env_required,

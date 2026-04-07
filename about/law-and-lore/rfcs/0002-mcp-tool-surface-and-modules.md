@@ -140,46 +140,49 @@ Every registered tool costs tokens at discovery time. At high tool counts
 smaller or cheaper models --- by consuming context window and reducing tool
 selection accuracy. The target is **30-50 tools per butler**.
 
-#### Core Tool Gating
+#### Core Tool Gating via `core_groups`
 
-Core tools MUST NOT be registered unconditionally. Registration SHOULD be gated
-on `butler.name` or `butler.type` from `butler.toml`:
+Core tools are organized into named **groups** and gated at registration time
+by the `core_groups` allowlist from the per-schema `runtime_config` table. When
+`core_groups` is NULL, all groups are registered (backward compatibility). When
+set, only tools belonging to the listed groups are registered on the MCP server.
 
-- Session analytics tools (`sessions_list`, `sessions_get`, `sessions_summary`,
-  `sessions_daily`, `top_sessions`, `schedule_costs`) MAY be omitted from
-  butlers that do not surface cost data.
-- `route.execute` SHOULD only register on butlers that accept Switchboard
-  routing.
-- Ingest-related tools SHOULD only register on the Switchboard.
+The known core groups are:
 
-The gating pattern already exists for `ingest` and messenger tools; this section
-codifies it as the default expectation for all core tools.
+| Group | Tools |
+|-------|-------|
+| `infra` | `status`, `trigger`, `tick`, `correct` |
+| `state` | `state_get`, `state_set`, `state_delete`, `state_list` |
+| `scheduling` | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`, `schedule_trigger`, `schedule_costs` |
+| `sessions` | `sessions_list`, `sessions_get`, `sessions_summary`, `sessions_daily`, `top_sessions` |
+| `notifications` | `notify`, `remind` |
+| `media` | `get_attachment` |
+| `temporal` | `deadline_*`, `event_chain_*`, `seasonal_period_*` |
+| `module_mgmt` | `module.states`, `module.set_enabled` |
+| `switchboard_routing` | `ingest`, `route_to_butler`, `connector.heartbeat` (name-gated: switchboard only) |
+| `switchboard_backfill` | `backfill.poll`, `backfill.progress` (name-gated: switchboard only) |
 
-**Implementation.** The daemon resolves three gating variables at the start of
-`_register_core_tools()`:
+**Name-gated groups.** Some groups are additionally gated by butler name:
+`switchboard_routing` and `switchboard_backfill` tools are ONLY registered when
+`butler_name == "switchboard"`, regardless of `core_groups`. Similarly,
+`delivery_preferences_*` and `deferred_notification_*` tools are ONLY registered
+when `butler_name == "messenger"`. This prevents a domain butler from
+accidentally gaining switchboard routing powers.
 
-```python
-butler_type = self.config.type   # ButlerType enum (DOMAIN, STAFFER)
-is_switchboard = butler_name == "switchboard"
-is_messenger = butler_name == "messenger"
-```
+**`route.execute` is ALWAYS registered** regardless of `core_groups`. All
+butlers need it because the Switchboard calls it server-to-server via MCP to
+deliver routed requests. `route.execute` is an infrastructure endpoint, not an
+LLM-facing tool. LLM-visibility filtering (hiding `route.execute` from the
+LLM's tool list while keeping the MCP handler callable) is deferred to a
+future change.
 
-All core tools are registered unconditionally first (for uniform indentation),
-then a post-registration prune pass removes tools irrelevant to the butler's
-role. The implemented gating rules are:
-
-| Guard | Tools gated |
-|-------|-------------|
-| `if butler_type != ButlerType.STAFFER:` | `deadline_*`, `event_chain_*`, `seasonal_period_*` (domain butlers only) |
-| `if is_messenger:` | `delivery_preferences_*`, `deferred_notification_*` (messenger only) |
-| `if is_switchboard:` | `ingest`, `route_to_butler`, `backfill_*` (switchboard only; these are guarded by a conditional `mcp.tool()` registration block, not by post-registration pruning) |
-
-**`route.execute` is UNIVERSAL.** All butlers register `route.execute` because
-the Switchboard calls it server-to-server via MCP to deliver routed requests.
-The post-registration prune removes it from the LLM-visible tool list on
-non-switchboard butlers, but the underlying MCP handler remains callable by the
-Switchboard. This is by design: `route.execute` is an infrastructure endpoint,
-not an LLM-facing tool.
+**Implementation.** The daemon reads `core_groups` from the effective
+`RuntimeConfig` (resolved from the `runtime_config` DB table via
+`RuntimeConfigAccessor`) and passes it to `_register_core_tools()`. A
+group-aware decorator `_core_tool(group)` replaces the prior post-registration
+prune pass. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`,
+`DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) and the
+`_tools_to_remove` pruning section are removed.
 
 #### Module Tool Groups
 

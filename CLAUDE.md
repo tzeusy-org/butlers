@@ -68,6 +68,17 @@ The `public` schema contains cross-butler identity tables:
 
 These tables power identity resolution for all ingress routing (Switchboard reverse-lookup) and outbound targeting (`notify()` with `contact_id`). The owner contact is bootstrapped automatically on daemon startup.
 
+### Runtime Config Architecture
+
+Butler operational config (model, concurrency, core_groups, session timeout) follows a seed-and-manage pattern:
+
+- **`[butler.runtime_seed]`** in `butler.toml` provides initial defaults (seed). This section replaces the old `[butler.runtime]` and `[butler.seed_configs]`.
+- **`{schema}.runtime_config`** DB table is the runtime source of truth, seeded from toml on first boot.
+- **`RuntimeConfigAccessor`** (`src/butlers/core/runtime_config.py`) provides TTL-cached access (30s) to the DB table.
+- **Hot fields** (model, runtime_type, args, session_timeout_s) take effect within 30s without restart.
+- **Cold fields** (core_groups, max_concurrent, max_queued) require daemon restart.
+- **Dashboard API** at `GET/PATCH /api/butlers/{name}/runtime-config` reads/writes the DB table.
+
 ### Butler Config Directory (git-based, `roster/`)
 
 ```

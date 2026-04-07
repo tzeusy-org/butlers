@@ -108,7 +108,8 @@ def up(only: tuple[str, ...], butlers_dir: Path) -> None:
             click.echo(f"  Port {port}: {names_str}")
         sys.exit(1)
 
-    click.echo(f"Starting {len(configs)} butler(s): {', '.join(sorted(configs.keys()))}")
+    ordered_names = [n for n, _ in _ordered_configs(configs)]
+    click.echo(f"Starting {len(configs)} butler(s): {', '.join(ordered_names)}")
     asyncio.run(_start_all(configs))
 
 
@@ -460,6 +461,11 @@ def _check_port_conflicts(configs: dict[str, Path]) -> dict[int, list[str]]:
 
 _PORT_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
 _PORT_RETRY_MAX_DELAY = 300.0  # cap at 5 minutes
+_PORT_RETRY_MAX_ATTEMPTS = 5  # skip butler after this many retries
+
+# Butlers that must start before the alphabetical bulk.  Order matters:
+# switchboard is the routing backbone — every other butler needs it for notify().
+_PRIORITY_BUTLERS = ("switchboard",)
 
 
 def _is_port_conflict(exc: Exception) -> bool:
@@ -467,6 +473,13 @@ def _is_port_conflict(exc: Exception) -> bool:
     import errno
 
     return isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EADDRINUSE
+
+
+def _ordered_configs(configs: dict[str, Path]) -> list[tuple[str, Path]]:
+    """Return configs ordered by priority: _PRIORITY_BUTLERS first, then alphabetical."""
+    priority = [(n, configs[n]) for n in _PRIORITY_BUTLERS if n in configs]
+    rest = sorted((n, p) for n, p in configs.items() if n not in _PRIORITY_BUTLERS)
+    return priority + rest
 
 
 async def _start_all(configs: dict[str, Path]) -> None:
@@ -486,8 +499,9 @@ async def _start_all(configs: dict[str, Path]) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Start all daemons, retrying indefinitely on port conflicts
-    for name, config_dir in sorted(configs.items()):
+    # Start daemons: priority butlers first, then alphabetical.
+    # Port conflicts retry up to _PORT_RETRY_MAX_ATTEMPTS before skipping.
+    for name, config_dir in _ordered_configs(configs):
         started = False
         attempt = 0
         while not started:
@@ -498,13 +512,20 @@ async def _start_all(configs: dict[str, Path]) -> None:
                 click.echo(f"  started: {name}")
                 started = True
             except Exception as exc:
-                if _is_port_conflict(exc):
+                if _is_port_conflict(exc) and attempt < _PORT_RETRY_MAX_ATTEMPTS:
                     delay = min(_PORT_RETRY_BASE_DELAY * (2**attempt), _PORT_RETRY_MAX_DELAY)
                     attempt += 1
                     click.echo(
-                        f"  {name}: port in use, retrying in {delay:.0f}s (attempt {attempt})..."
+                        f"  {name}: port in use, retrying in {delay:.0f}s"
+                        f" (attempt {attempt}/{_PORT_RETRY_MAX_ATTEMPTS})..."
                     )
                     await asyncio.sleep(delay)
+                elif _is_port_conflict(exc):
+                    click.echo(
+                        f"  skipped: {name}: port still in use after"
+                        f" {_PORT_RETRY_MAX_ATTEMPTS} attempts"
+                    )
+                    break
                 else:
                     click.echo(f"  failed: {name}: {exc}")
                     break

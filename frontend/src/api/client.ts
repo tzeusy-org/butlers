@@ -210,6 +210,9 @@ import type {
   QaAllowedRepo,
   QaAllowedRepoCreate,
   QaAllowedRepoPatch,
+  RuntimeConfigResponse,
+  RuntimeConfigPatch,
+  RuntimeConfigPatchResponse,
   HealingAttempt,
   HealingAttemptsParams,
 } from "./types.ts";
@@ -3275,5 +3278,33 @@ export function deleteQaAllowedRepo(
   return apiFetch<ApiResponse<Record<string, unknown>>>(
     `/qa/settings/allowed-repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
     { method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Runtime Config
+// ---------------------------------------------------------------------------
+
+/** Fetch runtime config for a specific butler. */
+export function getRuntimeConfig(
+  name: string,
+): Promise<RuntimeConfigResponse> {
+  return apiFetch<RuntimeConfigResponse>(
+    `/butlers/${encodeURIComponent(name)}/runtime-config`,
+  );
+}
+
+/** Partially update runtime config for a butler. */
+export function patchRuntimeConfig(
+  name: string,
+  body: RuntimeConfigPatch,
+): Promise<RuntimeConfigPatchResponse> {
+  return apiFetch<RuntimeConfigPatchResponse>(
+    `/butlers/${encodeURIComponent(name)}/runtime-config`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
   );
 }

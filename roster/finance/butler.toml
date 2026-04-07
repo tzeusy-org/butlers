@@ -3,8 +3,13 @@ name = "finance"
 port = 41105
 description = "Personal finance specialist for receipts, bills, subscriptions, and transaction alerts."
 
-[butler.runtime]
+[butler.runtime_seed]
 max_concurrent_sessions = 3
+runtime_type = "codex"
+model = "gpt-5.1"
+liveness_ttl_seconds = 300
+route_contract_min = 1
+route_contract_max = 1
 core_groups = [
     "infra",          # status, trigger, route.execute, tick, correct
     "state",          # state_get/set/delete/list — KV persistence
@@ -21,13 +26,6 @@ schema = "finance"
 
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
-
-[butler.seed_configs]
-runtime_type = "codex"
-model = "gpt-5.1"
-liveness_ttl_seconds = 300
-route_contract_min = 1
-route_contract_max = 1
 
 [modules.calendar]
 provider = "google"

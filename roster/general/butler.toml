@@ -3,8 +3,13 @@ name = "general"
 port = 41101
 description = "Flexible catch-all assistant for freeform data"
 
-[butler.runtime]
+[butler.runtime_seed]
 max_concurrent_sessions = 3
+runtime_type = "codex"
+model = "gpt-5.1"
+liveness_ttl_seconds = 300
+route_contract_min = 1
+route_contract_max = 1
 
 [butler.db]
 name = "butlers"
@@ -12,13 +17,6 @@ schema = "general"
 
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
-
-[butler.seed_configs]
-runtime_type = "codex"
-model = "gpt-5.1"
-liveness_ttl_seconds = 300
-route_contract_min = 1
-route_contract_max = 1
 
 [modules.calendar]
 provider = "google"

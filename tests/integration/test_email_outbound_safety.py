@@ -261,6 +261,16 @@ def _make_daemon_patches() -> dict[str, Any]:
     mock_adapter.binary_name = "claude"
     mock_adapter_cls = MagicMock(return_value=mock_adapter)
 
+    # Mock RuntimeConfigAccessor so phase 9b doesn't hit the real DB.
+    from butlers.core.runtime_config import RuntimeConfig as DBRuntimeConfig
+
+    _mock_effective_runtime = DBRuntimeConfig(butler_name="test")
+    _mock_accessor = MagicMock()
+    _mock_accessor.seed_if_empty = AsyncMock(return_value=_mock_effective_runtime)
+    _mock_accessor.get = AsyncMock(return_value=_mock_effective_runtime)
+    _mock_accessor._cache = _mock_effective_runtime
+    _mock_accessor_cls = MagicMock(return_value=_mock_accessor)
+
     return {
         "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
@@ -287,6 +297,10 @@ def _make_daemon_patches() -> dict[str, Any]:
         ),
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
+        "RuntimeConfigAccessor": patch(
+            "butlers.core.runtime_config.RuntimeConfigAccessor",
+            _mock_accessor_cls,
+        ),
     }
 
 
@@ -323,6 +337,7 @@ async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
         patches["recover_route_inbox"],
         patches["get_adapter"],
         patches["shutil_which"],
+        patches["RuntimeConfigAccessor"],
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
@@ -971,6 +986,7 @@ async def _boot_messenger_with_route_execute(
         patches["recover_route_inbox"],
         patches["get_adapter"],
         patches["shutil_which"],
+        patches["RuntimeConfigAccessor"],
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()

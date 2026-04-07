@@ -29,6 +29,7 @@ The daemon executes these phases in strict order. A failure at a fatal phase abo
 | 8 | Run module Alembic migrations | Fatal |
 | 8b | Create CredentialStore; validate module credentials via DB-first resolution | Non-fatal -- logs warnings |
 | 9 | Module `on_startup()` in topological order | Non-fatal (degraded -- failed module + dependents marked unavailable) |
+| 9b | Resolve runtime config from DB (seed from `[butler.runtime_seed]` on first boot) | Fatal -- cannot operate without runtime config |
 | 10 | Create Spawner with runtime adapter; verify LLM binary on PATH | Fatal if binary missing |
 | 10b | Wire message classification pipeline (switchboard only) | Fatal for switchboard |
 | 11 | Sync TOML schedules to DB | Non-fatal -- logs errors |

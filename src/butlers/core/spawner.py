@@ -677,6 +677,7 @@ class Spawner:
         runtime: RuntimeAdapter | None = None,
         audit_pool: asyncpg.Pool | None = None,
         credential_store: CredentialStore | None = None,
+        runtime_config_accessor: Any | None = None,
     ) -> None:
         self._config = config
         self._config_dir = config_dir
@@ -684,8 +685,17 @@ class Spawner:
         self._module_credentials_env = module_credentials_env
         self._audit_pool = audit_pool
         self._credential_store = credential_store
-        self._session_semaphore = asyncio.Semaphore(config.runtime.max_concurrent_sessions)
-        self._max_queued_sessions = config.runtime.max_queued_sessions
+        self._runtime_config_accessor = runtime_config_accessor
+
+        # Cold fields: read from accessor (DB) if available, else fall back to static config.
+        if runtime_config_accessor is not None and runtime_config_accessor._cache is not None:
+            _max_concurrent = runtime_config_accessor._cache.max_concurrent
+            _max_queued = runtime_config_accessor._cache.max_queued
+        else:
+            _max_concurrent = config.runtime.max_concurrent_sessions
+            _max_queued = config.runtime.max_queued_sessions
+        self._session_semaphore = asyncio.Semaphore(_max_concurrent)
+        self._max_queued_sessions = _max_queued
         self._accepting = True
         self._in_flight: set[asyncio.Task] = set()
         self._in_flight_event = asyncio.Event()
@@ -1066,9 +1076,35 @@ class Spawner:
         if context:
             final_prompt = f"{context}\n\n{prompt}"
 
-        # Resolve model from catalog; fall back to TOML config when unavailable.
-        toml_runtime_type = self._config.runtime.type
-        toml_model = self._config.runtime.model
+        # Resolve model from catalog; fall back to DB-backed runtime config
+        # (via RuntimeConfigAccessor) when catalog is unavailable. The accessor
+        # reads hot fields per-trigger with a 30s TTL cache, so dashboard changes
+        # take effect within 30s without restart.
+        _accessor = self._runtime_config_accessor
+        if _accessor is not None:
+            try:
+                _rt_cfg = await _accessor.get()
+                accessor_runtime_type = _rt_cfg.runtime_type
+                accessor_model = _rt_cfg.model
+                accessor_args = _rt_cfg.args
+                accessor_timeout = _rt_cfg.session_timeout_s
+            except Exception:
+                logger.debug(
+                    "RuntimeConfigAccessor.get() failed; using static config",
+                    exc_info=True,
+                )
+                accessor_runtime_type = None
+                accessor_model = None
+                accessor_args = None
+                accessor_timeout = None
+        else:
+            accessor_runtime_type = None
+            accessor_model = None
+            accessor_args = None
+            accessor_timeout = None
+
+        toml_runtime_type = accessor_runtime_type or self._config.runtime.type
+        toml_model = accessor_model or self._config.runtime.model
         catalog_result = None
         if self._pool is not None:
             try:
@@ -1167,8 +1203,8 @@ class Spawner:
             runtime = self._get_or_create_adapter(toml_runtime_type).create_worker()
 
         # Merge args: TOML args first, then catalog extra_args appended
-        toml_args = list(self._config.runtime.args)
-        merged_args = toml_args + catalog_extra_args
+        base_args = list(accessor_args) if accessor_args else list(self._config.runtime.args)
+        merged_args = base_args + catalog_extra_args
 
         # Get tracer and start butler.llm_session span with parent context
         tracer = trace.get_tracer("butlers")
@@ -1310,7 +1346,7 @@ class Spawner:
             }
             if merged_args:
                 invoke_kwargs["runtime_args"] = merged_args
-            timeout_s = self._config.runtime.session_timeout_s
+            timeout_s = accessor_timeout or self._config.runtime.session_timeout_s
             try:
                 result_text, tool_calls, usage = await asyncio.wait_for(
                     runtime.invoke(**invoke_kwargs),

@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { CardSkeleton } from "@/components/skeletons";
+import RuntimeConfigCard from "@/components/butler-detail/RuntimeConfigCard";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -180,6 +181,7 @@ export default function ButlerConfigTab({ butlerName }: ButlerConfigTabProps) {
 
   return (
     <div className="space-y-6">
+      <RuntimeConfigCard butlerName={butlerName} />
       <TomlSection data={config.butler_toml} />
       <MarkdownSection title="CLAUDE.md" content={config.claude_md} />
       <MarkdownSection title="AGENTS.md" content={config.agents_md} />

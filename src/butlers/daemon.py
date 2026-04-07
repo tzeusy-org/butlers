@@ -140,7 +140,10 @@ logger = logging.getLogger(__name__)
 
 _SWITCHBOARD_HEARTBEAT_INTERVAL_S = 30
 
-# Tools registered for ALL butlers regardless of type.
+# Tool surface is now controlled by the core_groups mechanism in the
+# runtime_config table (see RFC 0002 §Core Tool Gating via core_groups).
+# These constants are retained for backward compatibility with contract tests
+# that verify the complete tool surface. They are NOT used for gating logic.
 UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "status",
@@ -171,7 +174,6 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# Tools only registered for messenger butler.
 MESSENGER_CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "delivery_preferences_set",
@@ -181,7 +183,6 @@ MESSENGER_CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# Tools only registered for domain butlers (not staffers).
 DOMAIN_CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "deadline_create",
@@ -1808,6 +1809,27 @@ class ButlerDaemon:
         #     Ensures owner entity exists in public.entities.
         await _ensure_owner_entity(pool)
 
+        # 9b. Resolve runtime config from DB (seed from toml on first boot).
+        # Creates the RuntimeConfigAccessor and seeds the runtime_config table
+        # if this is the first boot. The effective RuntimeConfig from DB is used
+        # for tool registration and spawner construction.
+        from butlers.core.runtime_config import RuntimeConfigAccessor
+
+        schema = self.config.db_schema or self.config.name
+        self._runtime_config_accessor = RuntimeConfigAccessor(pool, schema)
+        effective_runtime = await self._runtime_config_accessor.seed_if_empty(
+            self.config.runtime_seed, self.config.name
+        )
+        if effective_runtime.seeded_at == effective_runtime.updated_at:
+            logger.info("Seeded runtime config from butler.toml for %s", self.config.name)
+        else:
+            logger.info(
+                "Using runtime config from DB for %s (seeded %s, updated %s)",
+                self.config.name,
+                effective_runtime.seeded_at,
+                effective_runtime.updated_at,
+            )
+
         # 9. Call module on_startup (non-fatal per-module)
         started_modules: list[Module] = []
         for mod in self._modules:
@@ -1853,6 +1875,7 @@ class ButlerDaemon:
             runtime=runtime,
             audit_pool=audit_pool,
             credential_store=credential_store,
+            runtime_config_accessor=self._runtime_config_accessor,
         )
 
         # 10b. Wire message classification pipeline for switchboard modules
@@ -2946,7 +2969,31 @@ class ButlerDaemon:
         # Group-aware core tool decorator — mirrors the module _tool(group) pattern.
         # When core_groups is None (default), all groups are enabled (backward compat).
         # When set, only tools in the listed groups are registered on the MCP server.
-        _core_groups = self.config.runtime.core_groups
+        # Read from the RuntimeConfigAccessor (DB-backed, seeded from toml on first boot).
+        _accessor = getattr(self, "_runtime_config_accessor", None)
+        if _accessor is not None and _accessor._cache is not None:
+            _core_groups = _accessor._cache.core_groups
+        else:
+            _core_groups = self.config.runtime.core_groups
+
+        # Name-gated groups: only effective for specific butlers.
+        _name_gated_groups = {
+            "switchboard_routing": "switchboard",
+            "switchboard_backfill": "switchboard",
+        }
+
+        # Log warnings for ineffective group inclusions
+        if _core_groups is not None:
+            for group in _core_groups:
+                required_name = _name_gated_groups.get(group)
+                if required_name and butler_name != required_name:
+                    logger.warning(
+                        "core_groups includes '%s' but butler_name='%s' (only effective "
+                        "for '%s'); group will have no effect",
+                        group,
+                        butler_name,
+                        required_name,
+                    )
 
         def _core_tool(group: str, **tool_kwargs):
             if _core_groups is None or group in _core_groups:
@@ -2999,7 +3046,10 @@ class ButlerDaemon:
                 "duration_ms": result.duration_ms,
             }
 
-        @_core_tool("infra", name="route.execute")
+        # route.execute is ALWAYS registered regardless of core_groups.
+        # The Switchboard calls it server-to-server via MCP to deliver routed
+        # requests. It is an infrastructure endpoint, not an LLM-facing tool.
+        @mcp.tool(name="route.execute")
         async def route_execute(
             schema_version: str,
             request_context: dict[str, Any],
@@ -6549,85 +6599,9 @@ class ButlerDaemon:
                     ),
                 }
 
-        # --- Prune core tools irrelevant to this butler's role. ---------------
-        # All tools are registered unconditionally above so the function bodies
-        # stay at a consistent indentation level.  We remove the tools that add
-        # noise for this butler type/name *after* registration so the model sees
-        # a leaner, more relevant tool surface.
-
-        _tools_to_remove: list[str] = []
-
-        # route.execute: ALL butlers need this to receive routed messages
-        # from the switchboard.  The switchboard calls target_butler's
-        # route.execute via MCP — removing it silently breaks all routing.
-        # (Do NOT remove route.execute from non-switchboard butlers.)
-
-        # Delivery preferences & deferred notifications: only messenger.
-        if not is_messenger:
-            _tools_to_remove.extend(
-                [
-                    "delivery_preferences_set",
-                    "delivery_preferences_get",
-                    "deferred_notifications_list",
-                    "deferred_notification_cancel",
-                ]
-            )
-
-        # Event chains: only domain butlers with automation needs.
-        if is_switchboard or butler_name == "qa":
-            _tools_to_remove.extend(
-                [
-                    "event_chain_create",
-                    "event_chain_update",
-                    "event_chain_list",
-                    "event_chain_delete",
-                ]
-            )
-
-        # Seasonal periods: only domain butlers that use seasons.
-        if butler_type == ButlerType.STAFFER:
-            _tools_to_remove.extend(
-                [
-                    "seasonal_period_create",
-                    "seasonal_period_update",
-                    "seasonal_period_list",
-                    "seasonal_period_delete",
-                    "seasonal_period_create_preset",
-                ]
-            )
-
-        # Session introspection tools: admin/debug only — keep list/get,
-        # remove advanced ones that LLM sessions almost never call.
-        _tools_to_remove.extend(
-            [
-                "sessions_abandon",
-                "sessions_resume",
-                "sessions_retrigger",
-                "sessions_load_context",
-                "sessions_get_trace",
-            ]
-        )
-
-        # Attachment retrieval: domain butlers receive routed messages with
-        # attachment refs and need get_attachment to fetch them.  Only remove
-        # from butlers that genuinely never handle media (none currently).
-        # (Do NOT remove get_attachment from domain butlers.)
-
-        # Module admin: operational debugging, not normal LLM use.
-        _tools_to_remove.extend(["module.states", "module.set_enabled"])
-
-        for tool_name in _tools_to_remove:
-            try:
-                self.mcp.remove_tool(tool_name)
-            except Exception:
-                pass  # Tool may not exist (already conditional or renamed)
-
-        logger.info(
-            "Pruned %d irrelevant core tools for butler=%s type=%s",
-            len(_tools_to_remove),
-            butler_name,
-            butler_type.value,
-        )
+        # NOTE: The post-registration _tools_to_remove pruning section has been
+        # removed. Tool surface is now controlled entirely by core_groups gating
+        # via the _core_tool(group) decorator above. See RFC 0002 §Core Tool Gating.
 
     def _validate_module_configs(self) -> dict[str, Any]:
         """Validate each module's raw config dict against its config_schema.

@@ -33,7 +33,7 @@ description = "Personal assistant butler"
 [butler.db]
 name = "jarvis_db"
 
-[butler.runtime]
+[butler.runtime_seed]
 model = "claude-sonnet-4-20250514"
 
 [butler.env]
@@ -78,6 +78,7 @@ def test_load_config_full_and_minimal(tmp_path: Path):
     """Full config parses all sections; minimal config applies defaults."""
     cfg = load_config(_write_toml(tmp_path, FULL_TOML))
     assert cfg.name == "jarvis" and cfg.port == 41100 and cfg.db_name == "jarvis_db"
+    assert cfg.runtime_seed.model == "claude-sonnet-4-20250514"
     assert cfg.runtime.model == "claude-sonnet-4-20250514"
     assert len(cfg.schedules) == 2
     assert cfg.schedules[0] == ScheduleConfig(
@@ -89,6 +90,7 @@ def test_load_config_full_and_minimal(tmp_path: Path):
     cfg2 = load_config(_write_toml(tmp_path, MINIMAL_TOML))
     assert cfg2.name == "alfred" and cfg2.port == 9000
     assert cfg2.runtime.model == "claude-haiku-4-5-20251001"
+    assert cfg2.runtime_seed.model is None  # no model set in seed -> None
     assert cfg2.schedules == [] and cfg2.modules == {}
     assert cfg2.db_name == "butlers" and cfg2.db_schema == "alfred"
 
@@ -145,7 +147,10 @@ def test_schedule_parsing(tmp_path: Path):
     assert sched2.dispatch_mode == ScheduleDispatchMode.JOB and sched2.job_name == "sweep"
 
     for extra, match in [
-        ('dispatch_mode = "native"\nprompt = "run"\n', r"Invalid butler\.schedule\[0\]\.dispatch_mode"),  # noqa: E501
+        (
+            'dispatch_mode = "native"\nprompt = "run"\n',
+            r"Invalid butler\.schedule\[0\]\.dispatch_mode",
+        ),  # noqa: E501
         ('dispatch_mode = "job"\n', r"dispatch_mode='job' requires non-empty job_name"),
     ]:
         with pytest.raises(ConfigError, match=match):
@@ -165,23 +170,57 @@ def test_runtime_config(tmp_path: Path):
 
     runtime_toml = (
         '[butler]\nname = "m"\nport = 7010\n'
-        '[butler.runtime]\nmodel = "claude-opus-4-20250514"\nmax_concurrent_sessions = 4\n'
+        '[butler.runtime_seed]\nmodel = "claude-opus-4-20250514"\nmax_concurrent_sessions = 4\n'
     )
     cfg = load_config(_write_toml(tmp_path, runtime_toml))
     assert cfg.runtime.model == "claude-opus-4-20250514"
     assert cfg.runtime.max_concurrent_sessions == 4
+    assert cfg.runtime_seed.model == "claude-opus-4-20250514"
+    assert cfg.runtime_seed.max_concurrent_sessions == 4
 
     with pytest.raises(ConfigError, match="max_queued_sessions"):
-        mqs_toml = '[butler]\nname = "m"\nport = 7011\n[butler.runtime]\nmax_queued_sessions = 0\n'
+        mqs_toml = (
+            '[butler]\nname = "m"\nport = 7011\n[butler.runtime_seed]\nmax_queued_sessions = 0\n'
+        )
         load_config(_write_toml(tmp_path, mqs_toml))
 
     with pytest.raises(ConfigError, match="expected an array of strings"):
-        args_toml = '[butler]\nname = "m"\nport = 7012\n[butler.runtime]\nargs = "flat"\n'
+        args_toml = '[butler]\nname = "m"\nport = 7012\n[butler.runtime_seed]\nargs = "flat"\n'
         load_config(_write_toml(tmp_path, args_toml))
 
     repo_root = Path(__file__).resolve().parents[2]
     for butler in ("switchboard", "general", "relationship", "health", "messenger"):
         assert load_config(repo_root / "roster" / butler).runtime.max_concurrent_sessions >= 3
+
+
+def test_old_runtime_section_rejected(tmp_path: Path):
+    """Old [butler.runtime] section is rejected with clear error."""
+    old_toml = '[butler]\nname = "m"\nport = 7013\n[butler.runtime]\nmodel = "x"\n'
+    with pytest.raises(ConfigError, match=r"\[butler\.runtime\] has been renamed"):
+        load_config(_write_toml(tmp_path, old_toml))
+
+
+def test_old_seed_configs_section_rejected(tmp_path: Path):
+    """Old [butler.seed_configs] section is rejected with clear error."""
+    old_toml = '[butler]\nname = "m"\nport = 7014\n[butler.seed_configs]\nmodel = "x"\n'
+    with pytest.raises(ConfigError, match=r"\[butler\.seed_configs\] has been merged"):
+        load_config(_write_toml(tmp_path, old_toml))
+
+
+def test_missing_runtime_seed_section_defaults(tmp_path: Path):
+    """Missing [butler.runtime_seed] section returns defaults."""
+    minimal_toml = '[butler]\nname = "m"\nport = 7015\n'
+    cfg = load_config(_write_toml(tmp_path, minimal_toml))
+    assert cfg.runtime_seed.model is None
+    assert cfg.runtime_seed.runtime_type == "codex"
+    assert cfg.runtime_seed.max_concurrent_sessions == 3
+    assert cfg.runtime_seed.max_queued_sessions == 10
+    assert cfg.runtime_seed.session_timeout_s == 900
+    assert cfg.runtime_seed.core_groups is None
+    assert cfg.runtime_seed.args == ()
+    assert cfg.runtime_seed.liveness_ttl_seconds == 300
+    assert cfg.runtime_seed.route_contract_min == 1
+    assert cfg.runtime_seed.route_contract_max == 1
 
 
 def test_buffer_and_logging_config(tmp_path: Path):

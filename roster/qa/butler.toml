@@ -7,15 +7,13 @@ type = "staffer"
 [butler.permissions]
 cross_butler_access = ["*"]
 
-[butler.runtime]
+[butler.runtime_seed]
 max_concurrent_sessions = 3
+runtime_type = "codex"
+model = "claude-opus-4-5"
 
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
-
-[butler.seed_configs]
-runtime_type = "codex"
-model = "claude-opus-4-5"
 
 [butler.db]
 name = "butlers"

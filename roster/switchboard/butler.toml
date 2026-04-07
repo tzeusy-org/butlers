@@ -7,8 +7,10 @@ type = "staffer"
 [butler.permissions]
 cross_butler_access = ["*"]
 
-[butler.runtime]
+[butler.runtime_seed]
 max_concurrent_sessions = 3
+runtime_type = "codex"
+model = "gpt-5.1"
 # Only register core tool groups the switchboard actually uses.
 # Omitted groups (state, scheduling, sessions, media) had 0 LLM calls
 # over 30 days per session tool_calls audit (2026-04-07).
@@ -19,10 +21,6 @@ core_groups = [
     "switchboard_routing",  # ingest, route_to_butler, connector.heartbeat
     "switchboard_backfill", # backfill.poll, backfill.progress
 ]
-
-[butler.seed_configs]
-runtime_type = "codex"
-model = "gpt-5.1"
 
 [buffer]
 queue_capacity = 100

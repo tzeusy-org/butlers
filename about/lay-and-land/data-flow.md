@@ -307,6 +307,38 @@ relationship butler's tier computation.
 
 ---
 
+## 6. Runtime Config Flow (Dashboard to Spawner)
+
+Operational tuning (model, core_groups, concurrency, session timeout) follows a
+seed-and-manage pattern. The toml is the seed source; the DB table is the
+runtime source of truth; the dashboard is the mutation interface.
+
+```
+butler.toml [runtime_seed]
+    |
+    | seed_if_empty() on first boot
+    v
+{schema}.runtime_config (DB table)
+    |
+    |--- GET/PATCH /api/butlers/{name}/runtime-config (dashboard)
+    |
+    v
+RuntimeConfigAccessor (TTL=30s cache)
+    |
+    +---> Spawner (per-trigger): model, runtime_type, args, session_timeout_s  [HOT]
+    +---> _register_core_tools (startup): core_groups                          [COLD]
+    +---> Spawner constructor: max_concurrent, max_queued                      [COLD]
+```
+
+**Write path:** Dashboard PATCH -> DB UPDATE -> accessor cache expires (30s) ->
+next trigger reads updated values.
+
+**Read path:** Spawner.trigger() -> accessor.get() -> cached or DB query ->
+RuntimeConfig dataclass.
+
+**Seed path:** Daemon start() -> accessor.seed_if_empty(toml_seed) ->
+INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
+
 ## Data Path Summary
 
 | Flow | Entry Point | Exit Point | Protocol | Durable? |

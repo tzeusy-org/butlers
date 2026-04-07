@@ -3090,3 +3090,39 @@ export interface QaAllowedRepoCreate {
 export interface QaAllowedRepoPatch {
   enabled: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime Config
+// ---------------------------------------------------------------------------
+
+/** Response from GET /api/butlers/{name}/runtime-config. */
+export interface RuntimeConfigResponse {
+  butler_name: string;
+  core_groups: string[] | null;
+  model: string | null;
+  runtime_type: string;
+  args: string[];
+  max_concurrent: number;
+  max_queued: number;
+  session_timeout_s: number;
+  seeded_at: string | null;
+  updated_at: string | null;
+  field_tiers: Record<string, "hot" | "cold">;
+}
+
+/** Request body for PATCH /api/butlers/{name}/runtime-config. */
+export interface RuntimeConfigPatch {
+  core_groups?: string[] | null;
+  model?: string | null;
+  runtime_type?: string;
+  args?: string[];
+  max_concurrent?: number;
+  max_queued?: number;
+  session_timeout_s?: number;
+}
+
+/** Response from PATCH /api/butlers/{name}/runtime-config. */
+export interface RuntimeConfigPatchResponse {
+  config: RuntimeConfigResponse;
+  restart_required: string[];
+}
