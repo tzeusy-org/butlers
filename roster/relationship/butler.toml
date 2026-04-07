@@ -5,6 +5,7 @@ description = "Personal CRM. Manages contacts, relationships, important dates, i
 
 [butler.runtime]
 max_concurrent_sessions = 3
+core_groups = ["infra", "scheduling", "notifications"]
 
 [butler.db]
 name = "butlers"
@@ -93,7 +94,7 @@ job_name = "interaction_sync"
 
 [modules.calendar]
 provider = "google"
-groups = ["core", "butler_events"]
+groups = ["core"]
 
 [modules.calendar.conflicts]
 policy = "suggest"
@@ -109,9 +110,10 @@ interval_minutes = 15
 full_sync_interval_days = 6
 
 [modules.memory]
-groups = ["core", "feedback", "entity", "preferences"]
+groups = ["core", "feedback", "entity", "admin"]
 
 [modules.relationship]
+groups = ["contacts", "interactions", "management", "tracking"]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true

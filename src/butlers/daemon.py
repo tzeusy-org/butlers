@@ -202,9 +202,7 @@ DOMAIN_CORE_TOOL_NAMES: frozenset[str] = frozenset(
 
 # Backwards-compatible alias: all core tools across all butler types.
 CORE_TOOL_NAMES: frozenset[str] = (
-    UNIVERSAL_CORE_TOOL_NAMES
-    | MESSENGER_CORE_TOOL_NAMES
-    | DOMAIN_CORE_TOOL_NAMES
+    UNIVERSAL_CORE_TOOL_NAMES | MESSENGER_CORE_TOOL_NAMES | DOMAIN_CORE_TOOL_NAMES
 )
 
 _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram_chat_id"
@@ -4758,7 +4756,7 @@ class ButlerDaemon:
         # Staffers (switchboard, messenger, qa) don't use these.
         if butler_type != ButlerType.STAFFER:
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def deadline_create(
                 name: Annotated[str, Field(description="Unique deadline name.")],
                 prompt: Annotated[
@@ -4843,7 +4841,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def deadline_update(
                 task_id: Annotated[str, Field(description="UUID of the deadline task to update.")],
                 name: Annotated[str | None, Field(description="New name (optional).")] = None,
@@ -4948,7 +4946,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def deadline_list(
                 status_filter: Annotated[
                     str | None,
@@ -4968,7 +4966,7 @@ class ButlerDaemon:
                 deadlines = await _deadline_list(pool, status=status_filter)
                 return deadlines
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def deadline_delete(
                 task_id: Annotated[str, Field(description="UUID of the deadline task to delete.")],
             ) -> dict:
@@ -5121,8 +5119,7 @@ class ButlerDaemon:
                     Literal["send", "reply", "react", "insight"],
                     Field(
                         description=(
-                            "Delivery intent. Allowed values:"
-                            " send | reply | react | insight."
+                            "Delivery intent. Allowed values: send | reply | react | insight."
                         )
                     ),
                 ] = "send",
@@ -5854,7 +5851,7 @@ class ButlerDaemon:
                         return {"status": "error", "error": str(exc)}
 
             # Event chain tools
-            @mcp.tool()
+            @_core_tool("temporal")
             async def event_chain_create(
                 name: str,
                 trigger_type: str,
@@ -5903,7 +5900,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def event_chain_update(
                 chain_id: str,
                 name: str | None = None,
@@ -5951,7 +5948,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def event_chain_list(
                 trigger_type: str | None = None,
                 status: str | None = None,
@@ -5987,7 +5984,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def event_chain_delete(chain_id: str) -> dict:
                 """Delete an event chain.
 
@@ -6019,7 +6016,7 @@ class ButlerDaemon:
                     return {"status": "error", "error": str(exc)}
 
             # Seasonal tools (temporal-intelligence spec §4)
-            @mcp.tool()
+            @_core_tool("temporal")
             async def seasonal_period_create(
                 name: str,
                 period_type: str = "annual",
@@ -6073,7 +6070,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def seasonal_period_update(
                 period_id: str,
                 name: str | None = None,
@@ -6130,7 +6127,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def seasonal_period_list(
                 include_disabled: bool = True,
             ) -> dict[str, Any]:
@@ -6159,7 +6156,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def seasonal_period_delete(
                 period_id: str,
             ) -> dict[str, Any]:
@@ -6182,7 +6179,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("temporal")
             async def seasonal_period_create_preset(
                 preset: str,
                 timezone: str = "UTC",

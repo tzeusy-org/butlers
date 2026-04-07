@@ -46,10 +46,10 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import vcard as _vcard
 
     # =================================================================
-    # Address tools (group: contacts)
+    # Address tools (group: contacts_extended)
     # =================================================================
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def address_add(
         contact_id: uuid.UUID,
         line_1: str,
@@ -79,14 +79,14 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             is_current=is_current,
         )
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def address_list(
         contact_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
         """List all addresses for a contact, current address first."""
         return await _addr.address_list(module._get_pool(), contact_id)
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def address_update(
         address_id: uuid.UUID,
         label: str | None = None,
@@ -120,13 +120,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         }
         return await _addr.address_update(module._get_pool(), address_id, **fields)
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def address_remove(address_id: uuid.UUID) -> None:
         """Remove an address by ID."""
         await _addr.address_remove(module._get_pool(), address_id)
 
     # =================================================================
-    # Contact Info tools (group: contacts)
+    # Contact Info tools (group: contacts / contacts_extended)
     # =================================================================
 
     @_tool("contacts")
@@ -148,7 +148,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             is_primary=is_primary,
         )
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def contact_info_list(
         contact_id: uuid.UUID,
         type: str | None = None,
@@ -157,7 +157,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         by type."""
         return await _ci.contact_info_list(module._get_pool(), contact_id, type=type)
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def contact_info_remove(
         contact_info_id: uuid.UUID,
     ) -> None:
@@ -272,14 +272,14 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """Search contacts by legacy and spec fields."""
         return await _contacts.contact_search(module._get_pool(), query, limit, offset)
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def contact_archive(
         contact_id: uuid.UUID,
     ) -> dict[str, Any]:
         """Archive a contact across legacy/spec schemas."""
         return await _contacts.contact_archive(module._get_pool(), contact_id)
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def contact_merge(
         source_id: uuid.UUID,
         target_id: uuid.UUID,
@@ -315,7 +315,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """List all important dates for a contact."""
         return await _dates.date_list(module._get_pool(), contact_id)
 
-    @_tool("social")
+    @_tool("management")
     async def upcoming_dates(
         days_ahead: int = 30,
     ) -> list[dict[str, Any]]:
@@ -866,10 +866,10 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         await _tasks.task_delete(module._get_pool(), task_id)
 
     # =================================================================
-    # vCard tools (group: contacts)
+    # vCard tools (group: contacts_extended)
     # =================================================================
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def contact_export_vcard(
         contact_id: uuid.UUID | None = None,
     ) -> str:
@@ -885,7 +885,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         return await _vcard.contact_export_vcard(module._get_pool(), contact_id)
 
-    @_tool("contacts")
+    @_tool("contacts_extended")
     async def contact_import_vcard(
         vcf_content: str,
     ) -> list[dict[str, Any]]:
