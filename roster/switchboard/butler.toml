@@ -9,6 +9,16 @@ cross_butler_access = ["*"]
 
 [butler.runtime]
 max_concurrent_sessions = 3
+# Only register core tool groups the switchboard actually uses.
+# Omitted groups (state, scheduling, sessions, media) had 0 LLM calls
+# over 30 days per session tool_calls audit (2026-04-07).
+core_groups = [
+    "infra",                # status, trigger, route.execute, tick, correct
+    "notifications",        # notify, remind
+    "module_mgmt",          # module.states, module.set_enabled
+    "switchboard_routing",  # ingest, route_to_butler, connector.heartbeat
+    "switchboard_backfill", # backfill.poll, backfill.progress
+]
 
 [butler.seed_configs]
 runtime_type = "codex"
@@ -25,13 +35,6 @@ scanner_batch_size = 50
 name = "butlers"
 schema = "switchboard"
 
-[modules.calendar]
-provider = "google"
-groups = ["core"]
-
-[modules.calendar.conflicts]
-policy = "suggest"
-
 [modules.telegram]
 
 [modules.telegram.user]
@@ -40,23 +43,11 @@ enabled = false
 [modules.telegram.bot]
 token_env = "BUTLER_TELEGRAM_TOKEN"
 
-[modules.memory]
-groups = ["core"]
-
-[modules.email]
-
-[modules.email.user]
-enabled = false
-
-[modules.email.bot]
-address_env = "BUTLER_EMAIL_ADDRESS"
-password_env = "BUTLER_EMAIL_PASSWORD"
-
 [modules.pipeline]
 enable_ingress_dedupe = true
 
 [modules.switchboard]
-groups = ["routing", "extraction"]
+groups = ["routing"]
 
 [modules.insight_broker]
 
@@ -66,18 +57,6 @@ groups = ["routing", "extraction"]
 # account = ""              # Google account email (default: primary account)
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
-
-[[butler.schedule]]
-name = "memory_consolidation"
-cron = "0 */6 * * *"
-dispatch_mode = "job"
-job_name = "memory_consolidation"
-
-[[butler.schedule]]
-name = "memory_episode_cleanup"
-cron = "0 4 * * *"
-dispatch_mode = "job"
-job_name = "memory_episode_cleanup"
 
 # Butler registry liveness sweep
 [[butler.schedule]]
@@ -92,4 +71,3 @@ name = "insight-delivery-cycle"
 cron = "0 8 * * *"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
-

@@ -2945,7 +2945,17 @@ class ButlerDaemon:
         mcp = _ToolCallLoggingMCP(self.mcp, butler_name, module_name="core")
         _route_metrics = ButlerMetrics(butler_name=butler_name)
 
-        @mcp.tool()
+        # Group-aware core tool decorator — mirrors the module _tool(group) pattern.
+        # When core_groups is None (default), all groups are enabled (backward compat).
+        # When set, only tools in the listed groups are registered on the MCP server.
+        _core_groups = self.config.runtime.core_groups
+
+        def _core_tool(group: str, **tool_kwargs):
+            if _core_groups is None or group in _core_groups:
+                return mcp.tool(**tool_kwargs)
+            return lambda fn: fn
+
+        @_core_tool("infra")
         @tool_span("status", butler_name=butler_name)
         async def status() -> dict:
             """Return butler identity, health, loaded modules, and uptime."""
@@ -2972,7 +2982,7 @@ class ButlerDaemon:
                 "uptime_seconds": round(uptime_seconds, 1),
             }
 
-        @mcp.tool()
+        @_core_tool("infra")
         async def trigger(prompt: str, context: str | None = None) -> dict:
             """Trigger the spawner with a prompt.
 
@@ -2991,7 +3001,7 @@ class ButlerDaemon:
                 "duration_ms": result.duration_ms,
             }
 
-        @mcp.tool(name="route.execute")
+        @_core_tool("infra", name="route.execute")
         async def route_execute(
             schema_version: str,
             request_context: dict[str, Any],
@@ -4002,7 +4012,7 @@ class ButlerDaemon:
                                 request_id,
                             )
 
-            @mcp.tool()
+            @_core_tool("switchboard_routing")
             @tool_span("ingest", butler_name=butler_name)
             async def ingest(
                 schema_version: str,
@@ -4082,7 +4092,7 @@ class ButlerDaemon:
 
                 return result.model_dump(mode="json")
 
-            @mcp.tool()
+            @_core_tool("switchboard_routing")
             @tool_span("route_to_butler", butler_name=butler_name)
             async def route_to_butler(
                 butler: str,
@@ -4262,7 +4272,7 @@ class ButlerDaemon:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
 
-            @mcp.tool(name="connector.heartbeat")
+            @_core_tool("switchboard_routing", name="connector.heartbeat")
             @tool_span("connector.heartbeat", butler_name=butler_name)
             async def connector_heartbeat(
                 schema_version: str,
@@ -4288,7 +4298,7 @@ class ButlerDaemon:
                 result = await _connector_heartbeat(pool, payload)
                 return result.model_dump()
 
-            @mcp.tool(name="backfill.poll")
+            @_core_tool("switchboard_backfill", name="backfill.poll")
             @tool_span("backfill.poll", butler_name=butler_name)
             async def backfill_poll_tool(
                 connector_type: str,
@@ -4316,7 +4326,7 @@ class ButlerDaemon:
                     endpoint_identity=endpoint_identity,
                 )
 
-            @mcp.tool(name="backfill.progress")
+            @_core_tool("switchboard_backfill", name="backfill.progress")
             @tool_span("backfill.progress", butler_name=butler_name)
             async def backfill_progress_tool(
                 job_id: str,
@@ -4364,7 +4374,7 @@ class ButlerDaemon:
                     error=error,
                 )
 
-        @mcp.tool()
+        @_core_tool("infra")
         async def tick() -> dict:
             """Evaluate due scheduled tasks and dispatch them now.
 
@@ -4380,7 +4390,7 @@ class ButlerDaemon:
             return {"dispatched": count}
 
         # State tools
-        @mcp.tool()
+        @_core_tool("state")
         async def state_get(key: str, _trace_context: dict | None = None) -> dict:
             """Get a value from the state store."""
             parent_ctx = extract_trace_context(_trace_context) if _trace_context else None
@@ -4390,7 +4400,7 @@ class ButlerDaemon:
                 value = await _state_get(pool, key)
                 return {"key": key, "value": value}
 
-        @mcp.tool()
+        @_core_tool("state")
         async def state_set(key: str, value: Any, _trace_context: dict | None = None) -> dict:
             """Set a value in the state store."""
             parent_ctx = extract_trace_context(_trace_context) if _trace_context else None
@@ -4400,7 +4410,7 @@ class ButlerDaemon:
                 await _state_set(pool, key, value)
                 return {"key": key, "status": "ok"}
 
-        @mcp.tool()
+        @_core_tool("state")
         async def state_delete(key: str, _trace_context: dict | None = None) -> dict:
             """Delete a key from the state store."""
             parent_ctx = extract_trace_context(_trace_context) if _trace_context else None
@@ -4412,7 +4422,7 @@ class ButlerDaemon:
                 await _state_delete(pool, key)
                 return {"key": key, "status": "deleted"}
 
-        @mcp.tool()
+        @_core_tool("state")
         async def state_list(
             prefix: str | None = None, keys_only: bool = True, _trace_context: dict | None = None
         ) -> list[str] | list[dict]:
@@ -4430,7 +4440,7 @@ class ButlerDaemon:
                 return await _state_list(pool, prefix, keys_only)
 
         # Schedule tools
-        @mcp.tool()
+        @_core_tool("scheduling")
         async def schedule_list() -> list[dict]:
             """List all scheduled tasks."""
             tasks = await _schedule_list(pool)
@@ -4440,7 +4450,7 @@ class ButlerDaemon:
                     t["calendar_event_id"] = str(t["calendar_event_id"])
             return tasks
 
-        @mcp.tool()
+        @_core_tool("scheduling")
         async def schedule_create(
             name: str,
             cron: str | None = None,
@@ -4535,7 +4545,7 @@ class ButlerDaemon:
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
 
-        @mcp.tool()
+        @_core_tool("notifications")
         async def remind(
             message: Annotated[
                 str,
@@ -4678,7 +4688,7 @@ class ButlerDaemon:
                 raise ValueError(f"{tool_name} requires task_id or id")
             return resolved
 
-        @mcp.tool()
+        @_core_tool("scheduling")
         async def schedule_update(
             task_id: str | None = None,
             id: str | None = None,
@@ -4735,7 +4745,7 @@ class ButlerDaemon:
                 "calendar_event_id": calendar_event_id,
             }
 
-        @mcp.tool()
+        @_core_tool("scheduling")
         async def schedule_delete(task_id: str | None = None, id: str | None = None) -> dict:
             """Delete a runtime scheduled task."""
             resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_delete")
@@ -4973,7 +4983,7 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-            @mcp.tool()
+            @_core_tool("scheduling")
             async def schedule_trigger(task_id: str | None = None, id: str | None = None) -> dict:
                 """Trigger a scheduled task immediately (one-off dispatch).
 
@@ -5049,7 +5059,7 @@ class ButlerDaemon:
                     return {"id": resolved_id, "status": "error", "error": str(exc)}
 
             # Session tools
-            @mcp.tool()
+            @_core_tool("sessions")
             async def sessions_list(limit: int = 20, offset: int = 0) -> list[dict]:
                 """List sessions ordered by most recent first."""
                 sessions = await _sessions_list(pool, limit, offset)
@@ -5057,7 +5067,7 @@ class ButlerDaemon:
                     s["id"] = str(s["id"])
                 return sessions
 
-            @mcp.tool()
+            @_core_tool("sessions")
             async def sessions_get(session_id: str) -> dict | None:
                 """Get a session by ID."""
                 session = await _sessions_get(pool, uuid.UUID(session_id))
@@ -5065,28 +5075,28 @@ class ButlerDaemon:
                     session["id"] = str(session["id"])
                 return session
 
-            @mcp.tool()
+            @_core_tool("sessions")
             async def sessions_summary(period: str = "today") -> dict:
                 """Return aggregate session/token stats for a period."""
                 return await _sessions_summary(pool, period)
 
-            @mcp.tool()
+            @_core_tool("sessions")
             async def sessions_daily(from_date: str, to_date: str) -> dict:
                 """Return daily session/token aggregates for a date range."""
                 return await _sessions_daily(pool, from_date, to_date)
 
-            @mcp.tool()
+            @_core_tool("sessions")
             async def top_sessions(limit: int = 10) -> dict:
                 """Return the highest-token completed sessions."""
                 return await _top_sessions(pool, limit)
 
-            @mcp.tool()
+            @_core_tool("scheduling")
             async def schedule_costs() -> dict:
                 """Return per-schedule token usage aggregates."""
                 return await _schedule_costs(pool)
 
             # Notification tool
-            @mcp.tool()
+            @_core_tool("notifications")
             @tool_span("notify", butler_name=butler_name)
             async def notify(
                 channel: Annotated[
@@ -6277,7 +6287,7 @@ class ButlerDaemon:
                 return await messenger_delivery_trace(pool, request_id)
 
         # Attachment retrieval tool
-        @mcp.tool()
+        @_core_tool("media")
         @tool_span("get_attachment", butler_name=butler_name)
         async def get_attachment(storage_ref: str) -> dict:
             """Retrieve a media attachment for analysis.
@@ -6328,7 +6338,7 @@ class ButlerDaemon:
                 }
 
         # Module state management tools
-        @mcp.tool(name="module.states")
+        @_core_tool("module_mgmt", name="module.states")
         async def module_states() -> dict:
             """Return runtime state (health + enabled flag) for all modules.
 
@@ -6349,7 +6359,7 @@ class ButlerDaemon:
                 for name, state in states.items()
             }
 
-        @mcp.tool(name="module.set_enabled")
+        @_core_tool("module_mgmt", name="module.set_enabled")
         async def module_set_enabled(name: str, enabled: bool) -> dict:
             """Toggle the runtime enabled flag for a module.
 
@@ -6389,7 +6399,7 @@ class ButlerDaemon:
             handle_misroute,
         )
 
-        @mcp.tool()
+        @_core_tool("infra")
         async def correct(
             correction_type: str,
             target_session_id: str,

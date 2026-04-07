@@ -1,6 +1,6 @@
 ---
 name: butler-tool-review
-description: Deep audit of every butler's MCP tool surface — tool count per module, docstring quality for LLM explainability, failure mode documentation with actionable error messages, and tool group configuration. Use when asked to review butler tools, audit tool counts, check docstring quality, review error messages, or optimize the tool surface. Also use when onboarding a new module to ensure its tools meet quality standards.
+description: Deep audit of every butler's MCP tool surface — tool count per module, historical usage analysis from session data, docstring quality for LLM explainability, failure mode documentation with actionable error messages, and tool group configuration. Use when asked to review butler tools, audit tool counts, check docstring quality, review error messages, find unused tools, or optimize the tool surface. Also use when onboarding a new module to ensure its tools meet quality standards.
 ---
 
 # Butler Tool Review
@@ -105,7 +105,94 @@ For each butler, verify:
 
 See [references/tool-budget.md](references/tool-budget.md) for group taxonomy.
 
-### Phase 7: MCP Connection Reliability
+### Phase 7: Historical Usage Audit
+
+**This phase is critical for removal decisions.** Query the butler's `sessions` table to see which tools the runtime LLM has actually called. Every MCP tool invocation is captured in the JSONB `tool_calls` column via `_ToolCallLoggingMCP` (daemon.py) and persisted by `sessions.complete()`.
+
+**Important distinction:** Some tools (e.g. `ingest`, `tick`, `route.execute`, `connector.heartbeat`, `backfill.poll`, `backfill.progress`) are called by the daemon directly, not through the LLM's MCP session. They will NOT appear in session tool_calls but are still required. Tools that are exclusively LLM-facing (memory, calendar, email, state, sessions, schedule, extraction, etc.) MUST show usage here to justify their existence.
+
+#### Database connection
+
+Read `.env.dev` (or `.env.prod` for production) for connection credentials:
+
+```
+POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_SSLMODE
+```
+
+Connect via `psql` with `PGPASSWORD` env var. Sessions live in `{butler_schema}.sessions`.
+
+#### Queries to run
+
+**Tool call frequency (last 30 days):**
+
+```sql
+SELECT
+    tc->>'name' AS tool_name,
+    tc->>'module' AS module,
+    COUNT(*) AS call_count
+FROM {schema}.sessions,
+     jsonb_array_elements(tool_calls) AS tc
+WHERE completed_at > now() - interval '30 days'
+GROUP BY 1, 2
+ORDER BY call_count DESC;
+```
+
+**Last-used date per tool (all time):**
+
+```sql
+SELECT
+    tc->>'name' AS tool_name,
+    tc->>'module' AS module,
+    COUNT(*) AS total_calls,
+    MAX(completed_at) AS last_used
+FROM {schema}.sessions,
+     jsonb_array_elements(tool_calls) AS tc
+GROUP BY 1, 2
+ORDER BY last_used ASC;
+```
+
+**Session volume (for sample size context):**
+
+```sql
+SELECT COUNT(*) AS total_sessions,
+       COUNT(*) FILTER (WHERE completed_at > now() - interval '30 days') AS last_30d
+FROM {schema}.sessions;
+```
+
+Replace `{schema}` with the butler's schema name from `butler.toml` (e.g. `switchboard`, `finance`).
+
+#### Interpreting results
+
+- **Ignore** `command_execution` and `skill` rows — these are runtime internals, not MCP tools.
+- **Ignore** tool name variants with `mcp__` or `{butler}_` prefixes — these are the same tools under different naming conventions. Consolidate counts.
+- **Daemon-called tools** (never appear in session data but still required):
+  - `ingest`, `tick`, `route.execute` — daemon dispatches these directly
+  - `connector.heartbeat`, `backfill.poll`, `backfill.progress` — connector-facing, called by external connectors
+  - `trigger` — called by the scheduler loop
+- **Safe to remove** if a tool has:
+  - Zero calls over 30+ days AND
+  - Is NOT in the daemon-called list above AND
+  - Is NOT newly added (check git log for when the tool was introduced — `git log --all -1 --format=%ai -- {tool_source_file}`)
+
+#### Output format
+
+```
+## Historical Usage (last 30 days, N sessions sampled)
+
+| Tool | Module | Calls | Last Used | Verdict |
+|---|---|---:|---|---|
+| route_to_butler | core | 1292 | 2026-04-07 | KEEP — primary function |
+| memory_store_fact | memory | 0 | never | REMOVE — never called, not daemon-internal |
+| ingest | core | 0 | n/a | KEEP — daemon-called, not LLM-facing |
+
+### Dead tools (0 calls, safe to remove)
+- email_send_message, email_reply_to_thread, ...
+
+### Removal savings
+- N tools removable → estimated ~X token savings
+```
+
+### Phase 8: MCP Connection Reliability
 
 Query recent session records for MCP connection failures (Codex CLI intermittently fails to discover tools):
 
@@ -120,24 +207,33 @@ For each butler, report:
 - Retry success rate (`retry_succeeded: true` / `retry_attempted: true`)
 - Flag butlers with >10% MCP failure rate
 
-### Phase 8: Report
+### Phase 9: Report
 
-Synthesize into a single structured report:
+Synthesize into a single structured report. **Historical usage data (Phase 7) should be the primary driver of removal recommendations** — code-level analysis alone cannot tell you whether a tool is actually used.
 
 ```markdown
 ## Tool Surface Audit Report
 
 ### Summary
-| Butler | Type | Tools | Docstring Issues | Error Issues | Groups Configured? |
+| Butler | Type | Registered Tools | Actually Used (30d) | Dead Tools | Est. Token Overhead |
 
-### Top Issues (ranked by impact)
-1. ...
+### Dead Tool Removal (highest impact)
+Tools with 0 calls that are safe to remove. Group by module for clean removal:
+| Module | Dead Tools | Action |
+| email | email_send_message, ... (4) | Remove module from butler.toml |
+| memory | memory_confirm, ... (3) | Prune to used groups only |
+
+### Docstring / Error Issues
+(only for tools that are actually used — no point fixing dead tools)
 
 ### Recommendations
-- ...
+1. Module removals (entire modules with 0 usage)
+2. Group pruning (modules with partial usage)
+3. Core tool excludes (universal tools never called by this butler's LLM)
+4. Docstring/error fixes (for surviving tools only)
 
 ### Per-Butler Details
-(full tool listings per butler)
+(full tool listings with usage counts per butler)
 ```
 
 ## Subagent Prompt Templates
@@ -173,4 +269,25 @@ Read {module_file}. For each tool function, find all error return paths
 4. Does it avoid bare str(exc) without context?
 Rate each GOOD/BAD. Report as a markdown table with the error path
 description and specific issues.
+```
+
+**Historical usage audit agent (per butler):**
+```
+Connect to the butler's database using credentials from .env.dev
+(POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD).
+Run the following queries against the {schema}.sessions table:
+
+1. Tool call frequency (last 30 days):
+   SELECT tc->>'name', tc->>'module', COUNT(*)
+   FROM {schema}.sessions, jsonb_array_elements(tool_calls) AS tc
+   WHERE completed_at > now() - interval '30 days'
+   GROUP BY 1, 2 ORDER BY 3 DESC;
+
+2. Session volume:
+   SELECT COUNT(*), COUNT(*) FILTER (WHERE completed_at > now() - interval '30 days')
+   FROM {schema}.sessions;
+
+Report the raw results. Ignore 'command_execution' and 'skill' rows
+(runtime internals). Consolidate mcp__{butler}__ and {butler}_ prefixed
+tool names with their bare equivalents.
 ```

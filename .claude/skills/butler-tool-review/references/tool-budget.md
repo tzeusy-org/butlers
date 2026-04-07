@@ -17,12 +17,38 @@ Core tools are registered in `src/butlers/daemon.py::_register_core_tools()`. Th
 | Messenger | `MESSENGER_CORE_TOOL_NAMES` | `butler_name == "messenger"` | 4 | delivery_preferences_*, deferred_notification_* |
 | Switchboard | *(in switchboard if-block)* | `butler_name == "switchboard"` | 5 | ingest, route_to_butler, connector.heartbeat, backfill.poll/progress |
 
-### Core tools per butler type
+### Core tools per butler type (without core_groups pruning)
 
 - **Domain butler**: 25 universal + 13 domain = **38**
 - **Staffer (switchboard)**: 25 universal + 5 switchboard-specific = **30**
 - **Staffer (messenger)**: 25 universal + 4 messenger-specific = **29**
 - **Staffer (qa)**: 25 universal = **25**
+
+### Core Tool Groups
+
+Universal core tools support the `core_groups` config in `[butler.runtime]`:
+
+```toml
+[butler.runtime]
+core_groups = ["infra", "notifications", "module_mgmt"]
+# omit core_groups = register ALL (backward compatible)
+```
+
+| Group | Tools | Count |
+|---|---|---:|
+| infra | status, trigger, route.execute, tick, correct | 5 |
+| state | state_get, state_set, state_delete, state_list | 4 |
+| scheduling | schedule_list, schedule_create, schedule_update, schedule_delete, schedule_trigger, schedule_costs | 6 |
+| sessions | sessions_list, sessions_get, sessions_summary, sessions_daily, top_sessions | 5 |
+| notifications | notify, remind | 2 |
+| media | get_attachment | 1 |
+| module_mgmt | module.states, module.set_enabled | 2 |
+| switchboard_routing | ingest, route_to_butler, connector.heartbeat | 3 |
+| switchboard_backfill | backfill.poll, backfill.progress | 2 |
+
+Domain tools (deadline_*, event_chain_*, seasonal_period_*) and messenger tools
+(delivery_preferences_*, deferred_notification_*) remain gated by butler type,
+not core_groups.
 
 ## Module Tool Groups
 

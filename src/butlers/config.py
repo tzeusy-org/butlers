@@ -112,6 +112,7 @@ class RuntimeConfig:
     max_queued_sessions: int = 100
     session_timeout_s: int = 1800
     args: tuple[str, ...] = ()
+    core_groups: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -370,20 +371,35 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
     if isinstance(model, str) and not model.strip():
         model = None
 
-    if model is not None:
-        return RuntimeConfig(
-            model=model,
-            max_concurrent_sessions=max_concurrent_sessions,
-            max_queued_sessions=max_queued_sessions,
-            session_timeout_s=session_timeout_s,
-            args=tuple(runtime_args),
-        )
-    return RuntimeConfig(
+    # --- core_groups: optional allowlist of core tool groups to register ---
+    # When absent (None), ALL core groups are registered (backward compat).
+    # Mirrors the module groups pattern: positive selection, not exclusion.
+    raw_core_groups = runtime_section.get("core_groups")
+    core_groups: tuple[str, ...] | None = None
+    if raw_core_groups is not None:
+        if not isinstance(raw_core_groups, list):
+            raise ConfigError(
+                "Invalid butler.runtime.core_groups: expected an array of strings"
+            )
+        validated: list[str] = []
+        for i, entry in enumerate(raw_core_groups):
+            if not isinstance(entry, str) or not entry.strip():
+                raise ConfigError(
+                    f"Invalid butler.runtime.core_groups[{i}]: expected a non-empty string"
+                )
+            validated.append(entry.strip())
+        core_groups = tuple(validated)
+
+    common_kwargs = dict(
         max_concurrent_sessions=max_concurrent_sessions,
         max_queued_sessions=max_queued_sessions,
         session_timeout_s=session_timeout_s,
         args=tuple(runtime_args),
+        core_groups=core_groups,
     )
+    if model is not None:
+        return RuntimeConfig(model=model, **common_kwargs)
+    return RuntimeConfig(**common_kwargs)
 
 
 def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
