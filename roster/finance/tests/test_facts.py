@@ -277,6 +277,51 @@ class TestRecordTransactionFact:
         )
         assert count == 1
 
+    async def test_cross_predicate_dedup_opposite_signs(self, pool_with_owner):
+        """Calling with opposite signs for the same source_message_id returns
+        the first fact without creating a second (cross-predicate dedup)."""
+        with patch(
+            "butlers.tools.finance.facts._get_embedding_engine",
+            return_value=_mock_embedding_engine(),
+        ):
+            from butlers.tools.finance.facts import record_transaction_fact
+
+            now = _utcnow()
+            # First call: debit (negative amount)
+            first = await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="IRAS",
+                amount=-3132.35,
+                currency="SGD",
+                category="taxes",
+                source_message_id="email-cross-pred-001",
+            )
+            # Second call: same data but positive amount (would infer credit)
+            second = await record_transaction_fact(
+                pool=pool_with_owner,
+                posted_at=now,
+                merchant="IRAS",
+                amount=3132.35,
+                currency="SGD",
+                category="taxes",
+                source_message_id="email-cross-pred-001",
+            )
+
+        assert first["id"] == second["id"]
+        assert first["direction"] == "debit"
+        # Second call returns the existing fact's direction, not the caller's
+        assert second["direction"] == "debit"
+
+        # Only one active transaction fact in the DB for this source
+        count = await pool_with_owner.fetchval(
+            "SELECT COUNT(*) FROM facts"
+            " WHERE predicate IN ('transaction_debit', 'transaction_credit')"
+            " AND validity = 'active'"
+            " AND metadata->>'source_message_id' = 'email-cross-pred-001'"
+        )
+        assert count == 1
+
     async def test_different_source_ids_not_deduped(self, pool_with_owner):
         with patch(
             "butlers.tools.finance.facts._get_embedding_engine",

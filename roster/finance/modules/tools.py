@@ -323,11 +323,6 @@ def register_tools(mcp: Any, module: Any) -> None:
     # SPO fact-layer tools (bu-ddb.4)
     # =================================================================
 
-    # record_transaction_fact is intentionally NOT exposed as an MCP tool.
-    # record_transaction() auto-mirrors to the fact layer via _mirror_to_spo();
-    # exposing both tools caused the LLM agent to double-write every transaction
-    # (one debit fact + one credit fact for the same event).
-
     @mcp.tool()
     async def list_transaction_facts(
         start_date: str | None = None,
