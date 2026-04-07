@@ -72,7 +72,24 @@ def register_tools(mcp: Any, module: Any) -> None:
         source_message_id: str | None = None,
         metadata: str | None = None,
     ) -> dict[str, Any]:
-        """Record a transaction in the finance ledger."""
+        """Record a transaction in the finance ledger.
+
+        posted_at: ISO 8601 datetime with timezone (e.g. "2024-03-15T10:30:00-07:00").
+        merchant: Payee or merchant name.
+        amount: Transaction amount as a decimal number.
+        currency: ISO-4217 code (e.g. "USD", "EUR"). Never assume USD without clear signal.
+        category: Spending category (e.g. "dining", "groceries", "subscriptions", "transport").
+        description: Optional transaction description or memo.
+        payment_method: Card or payment method label (e.g. "Amex", "Chase Sapphire").
+        account_id: Account identifier (e.g. "chase-checking").
+        receipt_url: URL to a receipt image or document.
+        external_ref: External reference number from the source system.
+        source_message_id: Email message ID or source provenance — always pass when ingesting
+          from email. Used for deduplication (duplicate inserts are silently skipped).
+        metadata: JSON string — dict of additional context for future enrichment.
+
+        Returns: {id, posted_at, merchant, amount, currency, category, direction, ...}
+        """
         return await _transactions.record_transaction(
             module._get_pool(),
             posted_at=datetime.fromisoformat(posted_at),
@@ -105,10 +122,22 @@ def register_tools(mcp: Any, module: Any) -> None:
     ) -> dict[str, Any]:
         """Return a paginated, filtered list of transactions.
 
-        direction: 'debit' (money out) or 'credit' (money in / refund), or None for both.
+        start_date: ISO 8601 datetime — filter to transactions on or after this date.
+        end_date: ISO 8601 datetime — filter to transactions on or before this date.
+        category: Filter by spending category (exact match).
+        merchant: Filter by merchant name (substring match).
+        account_id: Filter by account identifier.
+        min_amount: Minimum transaction amount.
+        max_amount: Maximum transaction amount.
+        direction: "debit" (money out) or "credit" (money in / refund), or omit for both.
         tags: JSON string — array of tag strings; returns only transactions containing
-          ALL provided tags (requires finance_002 migration for tags column).
+          ALL provided tags.
+        limit: Max records to return (default 50).
+        offset: Pagination offset (default 0).
+
         Soft-deleted transactions are always excluded.
+
+        Returns: {transactions: [{id, posted_at, merchant, amount, ...}], total, limit, offset}
         """
         parsed_tags: list[str] | None = None
         if tags is not None:
@@ -148,7 +177,25 @@ def register_tools(mcp: Any, module: Any) -> None:
         source_message_id: str | None = None,
         metadata: str | None = None,
     ) -> dict[str, Any]:
-        """Create or update a subscription lifecycle record."""
+        """Create or update a subscription lifecycle record.
+
+        Upsert on service name: if a subscription with the same service exists,
+        its fields are updated with the provided values.
+
+        service: Service name (e.g. "Netflix", "Spotify"). Used as the unique key.
+        amount: Recurring charge amount as a decimal number.
+        currency: ISO-4217 code (e.g. "USD").
+        frequency: Billing frequency — "weekly", "monthly", "quarterly", "yearly".
+        next_renewal: ISO-8601 date string (YYYY-MM-DD) for next renewal date.
+        status: "active" (default), "cancelled", or "paused".
+        auto_renew: Whether the service auto-renews (default true).
+        payment_method: Card or payment method label.
+        account_id: Account identifier.
+        source_message_id: Source provenance for deduplication.
+        metadata: JSON string — dict of additional context (e.g. plan tier, promo pricing).
+
+        Returns: {id, service, amount, currency, frequency, next_renewal, status, ...}
+        """
         return await _subscriptions.track_subscription(
             module._get_pool(),
             service=service,
@@ -184,7 +231,24 @@ def register_tools(mcp: Any, module: Any) -> None:
         source_message_id: str | None = None,
         metadata: str | None = None,
     ) -> dict[str, Any]:
-        """Create or update a bill obligation."""
+        """Create or update a bill obligation.
+
+        payee: Who the bill is owed to.
+        amount: Amount owed as a decimal number.
+        currency: ISO-4217 code (e.g. "USD").
+        due_date: ISO-8601 date string (YYYY-MM-DD) for payment due date.
+        frequency: "one_time" (default), "monthly", "weekly", "quarterly", "yearly".
+        status: "pending" (default), "paid", or "overdue".
+        payment_method: Card or payment method label.
+        account_id: Account identifier.
+        statement_period_start: ISO-8601 date for statement period start.
+        statement_period_end: ISO-8601 date for statement period end.
+        paid_at: ISO 8601 datetime when payment was made. Required when status="paid".
+        source_message_id: Source provenance for deduplication.
+        metadata: JSON string — dict of additional context.
+
+        Returns: {id, payee, amount, currency, due_date, frequency, status, ...}
+        """
         return await _bills.track_bill(
             module._get_pool(),
             payee=payee,
@@ -207,7 +271,14 @@ def register_tools(mcp: Any, module: Any) -> None:
         days_ahead: int = 14,
         include_overdue: bool = False,
     ) -> dict[str, Any]:
-        """Query bills due within the requested horizon with urgency classification."""
+        """Query bills due within the requested horizon with urgency classification.
+
+        days_ahead: Number of days to look ahead (default 14).
+        include_overdue: Include past-due bills in results (default false).
+
+        Returns: {bills: [{id, payee, amount, due_date, status, urgency}], total}
+        Urgency values: "overdue", "due_today", "due_soon", "due_upcoming".
+        """
         return await _bills.upcoming_bills(
             module._get_pool(),
             days_ahead=days_ahead,
@@ -226,7 +297,19 @@ def register_tools(mcp: Any, module: Any) -> None:
         category_filter: str | None = None,
         account_id: str | None = None,
     ) -> dict[str, Any]:
-        """Aggregate outflow spending over a date range."""
+        """Aggregate outflow spending over a date range.
+
+        Defaults to the current calendar month when dates are omitted.
+
+        start_date: ISO-8601 date string, period start (inclusive). Optional.
+        end_date: ISO-8601 date string, period end (inclusive). Optional.
+        group_by: Aggregation dimension — "category" (default), "merchant", "week",
+          "month", "day". None returns a single bucket.
+        category_filter: Filter to a specific spending category. Optional.
+        account_id: Filter to a specific account. Optional.
+
+        Returns: {groups: [{label, total, count}], grand_total, period}
+        """
         return await _spending.spending_summary(
             module._get_pool(),
             start_date=start_date,
