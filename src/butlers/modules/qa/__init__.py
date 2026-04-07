@@ -272,6 +272,20 @@ class QaConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Active instance singleton — deterministic job handlers in daemon.py use this
+# to reach the QaModule instance (which holds config, sources, locks, etc.).
+# Set during on_startup(), cleared during on_shutdown().
+# ---------------------------------------------------------------------------
+
+_active_instance: QaModule | None = None
+
+
+def get_active_instance() -> QaModule | None:
+    """Return the active QaModule instance, or None if not started."""
+    return _active_instance
+
+
 class QaModule(Module):
     """QA Staffer module — patrol loop, triage, and investigation dispatch.
 
@@ -391,11 +405,15 @@ class QaModule(Module):
         blob_store:
             Unused by this module.
         """
+        global _active_instance
+
         self._config = config if isinstance(config, QaConfig) else QaConfig(**(config or {}))
 
         pool = getattr(db, "pool", None) if db is not None else None
         self._pool = pool
         self._credential_store = credential_store
+
+        _active_instance = self
 
         # Initialize repository whitelist (loaded lazily from DB via TTL cache)
         self._repo_whitelist = RepoWhitelist(db_pool=pool)
@@ -514,6 +532,10 @@ class QaModule(Module):
                 except (asyncio.CancelledError, Exception):
                     pass
         self._watchdog_tasks.clear()
+
+        global _active_instance
+        _active_instance = None
+
         logger.debug("QaModule shut down; watchdog tasks cancelled")
 
     # ------------------------------------------------------------------

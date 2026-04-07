@@ -740,6 +740,49 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
 }
 
 
+async def _run_qa_patrol_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the QA patrol cycle via the active QaModule instance."""
+    del pool, job_args
+    from butlers.modules.qa import get_active_instance
+
+    qa = get_active_instance()
+    if qa is None:
+        logger.warning("qa_patrol job: QaModule not active — skipping")
+        return {"skipped": True, "reason": "qa_module_not_active"}
+    await qa.run_patrol_tick()
+    return {"status": "completed"}
+
+
+async def _run_qa_pr_status_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the QA PR status check via the active QaModule instance."""
+    del job_args
+    from butlers.modules.qa import get_active_instance
+
+    qa = get_active_instance()
+    if qa is None:
+        logger.warning("qa_pr_status_check job: QaModule not active — skipping")
+        return {"skipped": True, "reason": "qa_module_not_active"}
+
+    # Resolve GH token from credential store
+    gh_token: str | None = None
+    if qa._credential_store is not None:
+        try:
+            from butlers.core.qa.dispatch import QA_GH_TOKEN_KEY
+
+            gh_token = await qa._credential_store.get(QA_GH_TOKEN_KEY)
+        except Exception:
+            pass
+
+    await qa._check_pr_statuses(pool, gh_token)
+    return {"status": "completed"}
+
+
 _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
     "general": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -780,6 +823,10 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
         "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
         "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+    },
+    "qa": {
+        "qa_patrol": _run_qa_patrol_job,
+        "qa_pr_status_check": _run_qa_pr_status_check_job,
     },
 }
 
