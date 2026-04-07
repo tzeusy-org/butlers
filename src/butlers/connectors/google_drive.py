@@ -1549,6 +1549,16 @@ class GDriveAccountLoop:
         if change_type == _CHANGE_TYPE_MODIFIED:
             return None
 
+        # Skip changes to files not owned by this account ("Shared with me").
+        # These are high-volume and largely irrelevant for ingestion.
+        # Cache is already updated above so state stays current.
+        if owner_email and owner_email.lower() != self.email.lower():
+            gdrive_event_type_total.labels(
+                endpoint_identity=self.endpoint_identity,
+                event_type="shared_with_me_skipped",
+            ).inc()
+            return None
+
         # Determine parent context for normalized_text
         old_parent = old_parents[0] if old_parents else None
         new_parent = list(parents)[0] if parents else None
