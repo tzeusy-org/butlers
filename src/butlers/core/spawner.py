@@ -172,14 +172,21 @@ class SpawnerResult:
     output_tokens: int | None = None
 
 
-def _append_runtime_session_query(url: str, runtime_session_id: str | None) -> str:
-    """Append runtime_session_id query param to MCP URL when available."""
-    if not runtime_session_id:
+def _append_runtime_session_query(
+    url: str,
+    runtime_session_id: str | None,
+    trigger_source: str | None = None,
+) -> str:
+    """Append runtime_session_id and trigger_source query params to MCP URL."""
+    if not runtime_session_id and not trigger_source:
         return url
 
     parsed = urlsplit(url)
     query_items = parse_qsl(parsed.query, keep_blank_values=True)
-    query_items.append(("runtime_session_id", runtime_session_id))
+    if runtime_session_id:
+        query_items.append(("runtime_session_id", runtime_session_id))
+    if trigger_source:
+        query_items.append(("trigger_source", trigger_source))
     new_query = urlencode(query_items)
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
 

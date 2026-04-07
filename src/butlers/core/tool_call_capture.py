@@ -16,6 +16,9 @@ from typing import Any
 _runtime_session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_runtime_session_id_var", default=None
 )
+_runtime_trigger_source_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_runtime_trigger_source_var", default=None
+)
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
@@ -34,6 +37,23 @@ def reset_current_runtime_session_id(token: contextvars.Token[str | None]) -> No
 def get_current_runtime_session_id() -> str | None:
     """Return runtime session id bound to the current request/task context."""
     return _runtime_session_id_var.get()
+
+
+def set_current_runtime_trigger_source(
+    trigger_source: str | None,
+) -> contextvars.Token[str | None]:
+    """Set trigger_source for the current MCP request context."""
+    return _runtime_trigger_source_var.set(trigger_source)
+
+
+def reset_current_runtime_trigger_source(token: contextvars.Token[str | None]) -> None:
+    """Restore trigger_source for the current MCP request context."""
+    _runtime_trigger_source_var.reset(token)
+
+
+def get_current_runtime_trigger_source() -> str | None:
+    """Return trigger_source bound to the current MCP request context."""
+    return _runtime_trigger_source_var.get()
 
 
 def ensure_runtime_session_capture(session_id: str) -> None:

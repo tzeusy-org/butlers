@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 300
 _SAFE_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# Delay before retrying a Codex invocation when MCP tools were not discovered.
+_MCP_RETRY_DELAY_SECONDS = 1.5
+
 
 def _infer_mcp_transport_from_url(url: str) -> str | None:
     """Infer MCP transport from URL path conventions.
@@ -120,6 +123,11 @@ def _augment_transport_error_detail(error_detail: str, mcp_servers: dict[str, An
 
     unique_hints = list(dict.fromkeys(hints))
     return f"{error_detail} | MCP transport diagnostics: {'; '.join(unique_hints)}"
+
+
+def _has_mcp_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
+    """Return True when at least one non-bash MCP tool call is present."""
+    return any(tc.get("name") != "command_execution" for tc in tool_calls)
 
 
 def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
@@ -633,8 +641,72 @@ class CodexAdapter(RuntimeAdapter):
 
         # Sanitise command for logging — drop the final prompt arg which can be huge
         cmd_for_log = " ".join(cmd[:-1]) + " --  ..."
-        proc = None
 
+        try:
+            result_text, tool_calls, usage = await self._run_codex_subprocess(
+                cmd,
+                env,
+                cwd,
+                effective_timeout,
+                cmd_for_log,
+                mcp_servers,
+            )
+
+            # Retry once when MCP tools were configured but the CLI failed
+            # to discover them (intermittent MCP connection failure).
+            mcp_failed = mcp_servers and not _has_mcp_tool_calls(tool_calls)
+            if mcp_failed:
+                diag = (self._last_process_info or {}).get("stderr", "")
+                diag_short = diag.strip()[:500] if diag else "(no stderr)"
+                logger.warning(
+                    "Codex CLI returned 0 MCP tool calls (%d command_execution "
+                    "events) despite %d MCP server(s) configured — retrying "
+                    "after %.1fs. stderr: %s",
+                    len(tool_calls),
+                    len(mcp_servers),
+                    _MCP_RETRY_DELAY_SECONDS,
+                    diag_short,
+                )
+                await asyncio.sleep(_MCP_RETRY_DELAY_SECONDS)
+                retry_text, retry_calls, retry_usage = await self._run_codex_subprocess(
+                    cmd,
+                    env,
+                    cwd,
+                    effective_timeout,
+                    cmd_for_log,
+                    mcp_servers,
+                )
+                retry_has_mcp = _has_mcp_tool_calls(retry_calls)
+                if retry_has_mcp:
+                    logger.info("MCP retry succeeded — MCP tools discovered on second attempt")
+                    result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
+                else:
+                    logger.warning("MCP retry also produced 0 MCP tool calls — using first result")
+
+                # Record diagnostics for session monitoring
+                if self._last_process_info:
+                    self._last_process_info["mcp_connection_failed"] = True
+                    self._last_process_info["retry_attempted"] = True
+                    self._last_process_info["retry_succeeded"] = retry_has_mcp
+            else:
+                if self._last_process_info:
+                    self._last_process_info["mcp_connection_failed"] = not mcp_servers
+
+            return result_text, tool_calls, usage
+        finally:
+            tmp_dir_obj.cleanup()
+
+    async def _run_codex_subprocess(
+        self,
+        cmd: list[str],
+        env: dict[str, str],
+        cwd: Path | None,
+        timeout: int,
+        cmd_for_log: str,
+        mcp_servers: dict[str, Any],
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        """Run the Codex CLI subprocess and parse its output."""
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -646,7 +718,7 @@ class CodexAdapter(RuntimeAdapter):
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(),
-                timeout=effective_timeout,
+                timeout=timeout,
             )
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
@@ -657,7 +729,6 @@ class CodexAdapter(RuntimeAdapter):
 
             returncode = proc.returncode or 0
 
-            # Capture process info for session diagnostics
             self._last_process_info = {
                 "pid": proc.pid,
                 "exit_code": returncode,
@@ -672,30 +743,10 @@ class CodexAdapter(RuntimeAdapter):
                 logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
 
-            result_text, tool_calls, usage = _parse_codex_output(stdout, stderr, returncode)
-
-            # Warn when MCP servers were configured but no MCP tool calls were
-            # made.  command_execution entries (shell commands) do NOT count —
-            # the model falling back to shell is the exact failure mode we want
-            # to detect.
-            if mcp_servers:
-                mcp_tool_calls = [tc for tc in tool_calls if tc.get("name") != "command_execution"]
-                if not mcp_tool_calls:
-                    diag = stderr.strip()[:500] if stderr.strip() else "(no stderr)"
-                    logger.warning(
-                        "Codex CLI returned 0 MCP tool calls (%d command_execution "
-                        "events) despite %d MCP server(s) configured. "
-                        "MCP connection may have failed silently. stderr: %s",
-                        len(tool_calls),
-                        len(mcp_servers),
-                        diag,
-                    )
-
-            return result_text, tool_calls, usage
+            return _parse_codex_output(stdout, stderr, returncode)
 
         except TimeoutError:
-            logger.error("Codex CLI timed out after %ds", effective_timeout)
-            # Capture process info even on timeout
+            logger.error("Codex CLI timed out after %ds", timeout)
             self._last_process_info = {
                 "pid": proc.pid if proc else None,
                 "exit_code": -1,
@@ -706,9 +757,7 @@ class CodexAdapter(RuntimeAdapter):
             if proc:
                 proc.kill()
                 await proc.wait()
-            raise TimeoutError(f"Codex CLI timed out after {effective_timeout} seconds") from None
-        finally:
-            tmp_dir_obj.cleanup()
+            raise TimeoutError(f"Codex CLI timed out after {timeout} seconds") from None
 
     @staticmethod
     def _write_mcp_config_toml(

@@ -22,6 +22,7 @@ from butlers.core.runtimes import CodexAdapter
 from butlers.core.runtimes.codex import (
     _extract_tool_call,
     _find_codex_binary,
+    _has_mcp_tool_calls,
     _infer_mcp_transport_from_url,
     _parse_codex_output,
 )
@@ -211,3 +212,163 @@ async def test_invoke_behaviors():
                 env={},
             )
     assert "MCP transport diagnostics" in str(exc_info.value)
+
+
+def test_has_mcp_tool_calls():
+    """_has_mcp_tool_calls distinguishes MCP tools from bash-only sessions."""
+    assert not _has_mcp_tool_calls([])
+    assert not _has_mcp_tool_calls([{"name": "command_execution"}])
+    assert _has_mcp_tool_calls([{"name": "mcp__switchboard__route_to_butler"}])
+    assert _has_mcp_tool_calls([{"name": "command_execution"}, {"name": "route_to_butler"}])
+
+
+def _make_mcp_stdout() -> bytes:
+    """Build Codex JSON-lines output containing an MCP tool call."""
+    return (
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "mcp_1",
+                    "type": "mcp_tool_call",
+                    "call": {"name": "route_to_butler", "arguments": {"butler": "finance"}},
+                },
+            }
+        )
+        + "\n"
+        + json.dumps({"type": "result", "result": "Routed to finance"})
+    ).encode()
+
+
+def _make_bash_only_stdout() -> bytes:
+    """Build Codex JSON-lines output with only bash command_execution events."""
+    return (
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "cmd1",
+                    "type": "command_execution",
+                    "command": "/bin/bash -lc true",
+                    "status": "completed",
+                    "exit_code": 0,
+                    "aggregated_output": "",
+                },
+            }
+        )
+        + "\n"
+        + json.dumps({"type": "result", "result": "MCP tools called: none."})
+    ).encode()
+
+
+_MCP_SERVERS = {"switchboard": {"url": "http://localhost:41100/mcp"}}
+
+
+async def test_retry_on_mcp_connection_failure():
+    """invoke() retries once when MCP tools not discovered, succeeds on second attempt."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 100 + call_count
+        # First call: bash only (MCP failure). Second call: MCP tools present.
+        if call_count == 1:
+            proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+        else:
+            proc.communicate = AsyncMock(return_value=(_make_mcp_stdout(), b""))
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+    ):
+        result_text, tool_calls, _ = await adapter.invoke(
+            prompt="route this",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    assert call_count == 2, "Should have retried once"
+    assert any(tc.get("name") == "route_to_butler" for tc in tool_calls)
+    info = adapter.last_process_info
+    assert info["mcp_connection_failed"] is True
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is True
+
+
+async def test_retry_both_fail_returns_first_result():
+    """When retry also fails, returns first result for text-based fallback."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+    ):
+        result_text, tool_calls, _ = await adapter.invoke(
+            prompt="route this",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    # Should return result (for text fallback), not raise
+    assert result_text is not None
+    info = adapter.last_process_info
+    assert info["mcp_connection_failed"] is True
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is False
+
+
+async def test_no_retry_without_mcp_servers():
+    """No retry when mcp_servers is empty (no MCP configured)."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    assert call_count == 1, "Should NOT retry when no MCP servers configured"
+
+
+async def test_no_retry_on_nonzero_exit():
+    """No retry when CLI exits with non-zero code (real error, not MCP flake)."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 1
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(b"", b"Auth error"))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        with pytest.raises(RuntimeError, match="Codex CLI exited with code 1"):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers=_MCP_SERVERS,
+                env={},
+            )

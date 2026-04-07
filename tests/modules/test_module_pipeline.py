@@ -28,6 +28,7 @@ from butlers.modules.pipeline import (
     RoutingResult,
     _build_routing_prompt,
     _extract_routed_butlers,
+    _infer_fallback_target_from_cc_output,
 )
 
 pytestmark = pytest.mark.unit
@@ -207,6 +208,57 @@ class TestPipelineModule:
 # ---------------------------------------------------------------------------
 # PipelineConfig
 # ---------------------------------------------------------------------------
+
+
+class TestInferFallbackTarget:
+    _BUTLERS = [
+        {"name": "finance", "description": "Finance"},
+        {"name": "health", "description": "Health"},
+        {"name": "general", "description": "General"},
+    ]
+
+    def test_direct_route_to(self):
+        out = _infer_fallback_target_from_cc_output("Routed to finance.", self._BUTLERS)
+        assert out == "finance"
+
+    def test_intervening_words(self):
+        """'Routed this to finance' — word between verb and preposition."""
+        assert (
+            _infer_fallback_target_from_cc_output("Routed this to `finance` only.", self._BUTLERS)
+            == "finance"
+        )
+
+    def test_backtick_wrapped(self):
+        assert (
+            _infer_fallback_target_from_cc_output("Route to `health`.", self._BUTLERS) == "health"
+        )
+
+    def test_route_for(self):
+        assert (
+            _infer_fallback_target_from_cc_output("Routed for finance.", self._BUTLERS) == "finance"
+        )
+
+    def test_no_match_returns_none(self):
+        assert _infer_fallback_target_from_cc_output("Nothing relevant.", self._BUTLERS) is None
+
+    def test_empty_string_returns_none(self):
+        assert _infer_fallback_target_from_cc_output("", self._BUTLERS) is None
+
+    def test_multiple_targets_returns_none(self):
+        assert (
+            _infer_fallback_target_from_cc_output(
+                "Routed to finance and routed to health.", self._BUTLERS
+            )
+            is None
+        )
+
+    def test_real_switchboard_output(self):
+        """Actual output from the gpt-5.4-mini session that triggered the bug."""
+        text = (
+            "Routed this to `finance` only.\n\n"
+            "Reason: the message is an order cancellation with payment/refund details."
+        )
+        assert _infer_fallback_target_from_cc_output(text, self._BUTLERS) == "finance"
 
 
 class TestPipelineConfig:

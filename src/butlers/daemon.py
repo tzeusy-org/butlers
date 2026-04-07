@@ -111,7 +111,9 @@ from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
     get_current_runtime_session_routing_context,
     reset_current_runtime_session_id,
+    reset_current_runtime_trigger_source,
     set_current_runtime_session_id,
+    set_current_runtime_trigger_source,
 )
 from butlers.credential_store import (
     CredentialStore,
@@ -922,10 +924,11 @@ class _McpRuntimeSessionGuard:
         """Proxy unknown attributes to wrapped ASGI app for compatibility."""
         return getattr(self._app, name)
 
-    def _resolve_runtime_session_id(self, scope: dict[str, Any]) -> str | None:
+    def _resolve_session_params(self, scope: dict[str, Any]) -> tuple[str | None, str | None]:
+        """Extract runtime_session_id and trigger_source from query params."""
         query_string = scope.get("query_string")
         if not isinstance(query_string, (bytes, bytearray)):
-            return None
+            return None, None
 
         parsed = parse_qs(query_string.decode("utf-8", errors="replace"))
         runtime_values = parsed.get("runtime_session_id")
@@ -933,25 +936,29 @@ class _McpRuntimeSessionGuard:
         mcp_values = parsed.get("session_id")
         mcp_session_id = mcp_values[0].strip() if mcp_values else None
 
+        trigger_values = parsed.get("trigger_source")
+        trigger_source = trigger_values[0].strip() if trigger_values else None
+
         if runtime_session_id and mcp_session_id:
             self._mcp_session_to_runtime_session[mcp_session_id] = runtime_session_id
             if len(self._mcp_session_to_runtime_session) > self._MAX_SESSION_MAP_SIZE:
                 oldest = next(iter(self._mcp_session_to_runtime_session))
                 self._mcp_session_to_runtime_session.pop(oldest, None)
 
-        if runtime_session_id:
-            return runtime_session_id
-        if mcp_session_id:
-            return self._mcp_session_to_runtime_session.get(mcp_session_id)
-        return None
+        resolved_session_id = runtime_session_id
+        if not resolved_session_id and mcp_session_id:
+            resolved_session_id = self._mcp_session_to_runtime_session.get(mcp_session_id)
+        return resolved_session_id, trigger_source
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        runtime_session_id = self._resolve_runtime_session_id(scope)
-        token = set_current_runtime_session_id(runtime_session_id)
+        runtime_session_id, trigger_source = self._resolve_session_params(scope)
+        session_token = set_current_runtime_session_id(runtime_session_id)
+        trigger_token = set_current_runtime_trigger_source(trigger_source)
         try:
             await self._app(scope, receive, send)
         finally:
-            reset_current_runtime_session_id(token)
+            reset_current_runtime_trigger_source(trigger_token)
+            reset_current_runtime_session_id(session_token)
 
 
 class ModuleConfigError(Exception):

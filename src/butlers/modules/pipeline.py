@@ -579,7 +579,10 @@ def _infer_fallback_target_from_cc_output(
         if not name:
             continue
         escaped_name = re.escape(name.lower())
-        if re.search(rf"\brouted?\s+(?:to|for)\s+`?{escaped_name}`?\b", output):
+        if re.search(
+            rf"\brouted?\s+(?:\w+\s+)*(?:to|for)\s+`?{escaped_name}`?(?:\b|(?=\s|$|[.,;!]))",
+            output,
+        ):
             candidates.append(name)
 
     unique_candidates = list(dict.fromkeys(candidates))
