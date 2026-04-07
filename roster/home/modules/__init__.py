@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -137,13 +137,11 @@ class HomeAssistantConfig(ToolGroupMixin, BaseModel):
 
     Tool groups
     -----------
-    core        : ha_get_entity_state, ha_list_entities, ha_list_areas,
-                  ha_list_services, ha_call_service, ha_activate_scene
+    core        : ha_get_entity_state, ha_list_entities, ha_call_service,
+                  ha_list_areas, ha_list_services, ha_activate_scene
     history     : ha_get_history, ha_get_statistics, ha_render_template
-    maintenance : ha_maintenance_list, ha_maintenance_create,
-                  ha_maintenance_complete, ha_maintenance_remove
-
-    When ``groups`` is absent or empty, all groups are registered (default).
+    maintenance : ha_maintenance_create, ha_maintenance_complete,
+                  ha_maintenance_list, ha_maintenance_remove
 
     Attributes
     ----------
@@ -421,8 +419,6 @@ class HomeAssistantModule(Module):
         Tools are registered as closures that capture the module instance
         so they can access the HTTP client at call time.
         """
-        from butlers.modules.base import group_enabled
-
         self._config = (
             config
             if isinstance(config, HomeAssistantConfig)
@@ -431,6 +427,8 @@ class HomeAssistantModule(Module):
         self._db = db
         module = self  # capture for closures
 
+        # Build a group-aware tool decorator: returns @mcp.tool() when the
+        # group is enabled, or a no-op passthrough when disabled.
         def _tool(group: str):
             if group_enabled(self._config, group):
                 return mcp.tool()

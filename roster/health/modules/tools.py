@@ -8,19 +8,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from butlers.modules.base import group_enabled
+
 
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
-    """Register all health MCP tools on *mcp*, using *module* for pool access.
-
-    Each tool is decorated with ``@_tool("group")`` instead of ``@mcp.tool()``
-    so that butler.toml can opt-in to specific tool groups via ``groups = [...]``.
-    """
-    from butlers.modules.base import group_enabled
-
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn  # no-op — function defined but not registered
+    """Register all health MCP tools on *mcp*, using *module* for pool access."""
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.health import conditions as _cond
@@ -29,6 +21,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.health import medications as _meds
     from butlers.tools.health import reports as _reports
     from butlers.tools.health import research as _research
+
+    # Build a group-aware tool decorator: returns @mcp.tool() when the
+    # group is enabled, or a no-op passthrough when disabled.
+    def _tool(group: str):
+        if group_enabled(config, group):
+            return mcp.tool()
+        return lambda fn: fn  # no-op — function defined but not registered
 
     # =================================================================
     # Measurement tools

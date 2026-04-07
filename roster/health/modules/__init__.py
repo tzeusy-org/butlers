@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module, ToolGroupMixin
+from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,6 @@ class HealthModuleConfig(ToolGroupMixin, BaseModel):
     nutrition    : meal_log, meal_history, nutrition_summary
     reports      : health_summary, trend_report
     research     : research_save, research_search, research_summarize
-
-    When ``groups`` is absent or empty, all groups are registered (default).
     """
 
 
@@ -100,4 +98,9 @@ class HealthModule(Module):
 
         from .tools import register_tools
 
-        register_tools(mcp, self, config)
+        parsed_config = (
+            config
+            if isinstance(config, HealthModuleConfig)
+            else HealthModuleConfig(**(config or {}))
+        )
+        register_tools(mcp, self, parsed_config)

@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.qa.repo_whitelist import parse_repo_url
 
 logger = logging.getLogger(__name__)
@@ -505,6 +506,15 @@ def _row_to_investigation(row: Any) -> QaInvestigation:
 
 
 # ---------------------------------------------------------------------------
+# Circuit breaker constants — shared by /summary and /circuit-breaker endpoints.
+# CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.dispatch
+# (the canonical definition). Threshold matches QaDispatchConfig default.
+# ---------------------------------------------------------------------------
+
+_CIRCUIT_BREAKER_THRESHOLD = 5
+
+
+# ---------------------------------------------------------------------------
 # GET /api/qa/summary
 # ---------------------------------------------------------------------------
 
@@ -616,32 +626,30 @@ async def get_qa_summary(
         success_rate=round(success_rate, 4),
     )
 
-    # Circuit breaker — count consecutive failures at tail of healing_attempts.
-    # Uses the same status sets as CIRCUIT_BREAKER_FAILURE_STATUSES and
-    # TERMINAL_STATUSES in butlers.core.healing.dispatch/tracking so dashboard
-    # reporting matches actual dispatcher semantics:
-    #   failure: 'failed', 'timeout', 'anonymization_failed'  (matches dispatch.py)
-    #   success: 'pr_merged'
-    #   excluded from circuit: 'unfixable' — indicates "no fix possible" by design
+    # Circuit breaker — mirrors the exact query used by the QA dispatch gate
+    # in butlers.core.qa.dispatch._is_circuit_breaker_tripped so dashboard
+    # reporting matches actual dispatcher semantics.
     cb_rows = await pool.fetch(
         """
         SELECT status
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
-          AND status IN ('pr_merged', 'failed', 'timeout', 'anonymization_failed')
-        ORDER BY updated_at DESC
-        LIMIT 20
-        """
+          AND closed_at IS NOT NULL
+        ORDER BY closed_at DESC
+        LIMIT $1
+        """,
+        _CIRCUIT_BREAKER_THRESHOLD,
     )
+    cb_statuses = [row["status"] for row in cb_rows]
     consecutive_failures = 0
-    for cb_row in cb_rows:
-        if cb_row["status"] == "pr_merged":
+    for s in cb_statuses:
+        if s in CIRCUIT_BREAKER_FAILURE_STATUSES:
+            consecutive_failures += 1
+        else:
             break
-        consecutive_failures += 1
-
-    # Threshold of 5 consecutive failures triggers circuit breaker
-    _CB_THRESHOLD = 5
-    cb_tripped = consecutive_failures >= _CB_THRESHOLD
+    cb_tripped = len(cb_statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
+        s in CIRCUIT_BREAKER_FAILURE_STATUSES for s in cb_statuses
+    )
     circuit_breaker = QaCircuitBreaker(
         tripped=cb_tripped,
         consecutive_failures=consecutive_failures,
@@ -1628,9 +1636,6 @@ async def delete_allowed_repo(
 # Circuit breaker
 # ---------------------------------------------------------------------------
 
-_CIRCUIT_BREAKER_THRESHOLD = 5
-_CIRCUIT_BREAKER_FAILURE_STATUSES = frozenset({"failed", "timeout", "anonymization_failed"})
-
 
 @router.get("/circuit-breaker", response_model=ApiResponse[CircuitBreakerStatus])
 async def get_circuit_breaker_status(
@@ -1653,7 +1658,7 @@ async def get_circuit_breaker_status(
 
     statuses = [row["status"] for row in rows]
     tripped = len(statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
-        s in _CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
+        s in CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
     )
 
     return ApiResponse(
@@ -1698,7 +1703,7 @@ async def reset_circuit_breaker(
     )
     statuses = [row["status"] for row in rows]
     tripped = len(statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
-        s in _CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
+        s in CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
     )
 
     if not tripped:
@@ -1710,25 +1715,34 @@ async def reset_circuit_breaker(
             meta=ApiMeta(),
         )
 
-    # Insert a synthetic success to break the failure streak
+    # Insert a synthetic manual_reset record with qa_patrol_id set so that:
+    # 1. The row is visible to circuit breaker queries (qa_patrol_id IS NOT NULL)
+    # 2. The status breaks the all-failures chain (manual_reset ∉ failure statuses)
+    # 3. The fingerprint + error_detail identify it as a manual reset
+    # Note: manual_reset is not in VALID_STATUSES so it bypasses the state machine
+    # (direct INSERT, not via update_attempt_status). This is intentional — it's a
+    # synthetic record that only exists to break the failure chain.
+    synthetic_patrol_id = uuid.uuid4()
     await pool.execute(
         """
         INSERT INTO public.healing_attempts (
             id, fingerprint, butler_name, status, severity,
             exception_type, call_site, created_at, updated_at, closed_at,
-            error_detail
+            error_detail, qa_patrol_id
         ) VALUES (
             gen_random_uuid(),
-            'circuit-breaker-reset',
+            'circuit-breaker-reset-' || gen_random_uuid()::text,
             'dashboard',
             'manual_reset',
             4,
             'CircuitBreakerReset',
             'dashboard.circuit_breaker.reset',
             now(), now(), now(),
-            'Manual reset via QA dashboard'
+            'Manual reset via QA dashboard',
+            $1
         )
         """,
+        synthetic_patrol_id,
     )
 
     logger.info("QA circuit breaker reset via dashboard")
