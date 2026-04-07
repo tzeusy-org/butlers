@@ -41,7 +41,6 @@ except (ImportError, AttributeError):
 try:
     from butlers.tools.finance.facts import (  # type: ignore[attr-defined]
         list_transaction_facts,
-        record_transaction_fact,
         spending_summary_facts,
         track_account_fact,
         track_bill_fact,
@@ -49,7 +48,6 @@ try:
     )
 except (ImportError, AttributeError):
     list_transaction_facts = None  # type: ignore[assignment]
-    record_transaction_fact = None  # type: ignore[assignment]
     spending_summary_facts = None  # type: ignore[assignment]
     track_account_fact = None  # type: ignore[assignment]
     track_bill_fact = None  # type: ignore[assignment]
@@ -189,7 +187,6 @@ __all__ = [
     "track_bill",
     "upcoming_bills",
     # SPO fact-layer (bu-ddb.4)
-    "record_transaction_fact",
     "list_transaction_facts",
     "track_account_fact",
     "track_subscription_fact",

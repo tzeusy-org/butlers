@@ -323,45 +323,10 @@ def register_tools(mcp: Any, module: Any) -> None:
     # SPO fact-layer tools (bu-ddb.4)
     # =================================================================
 
-    @mcp.tool()
-    async def record_transaction_fact(
-        posted_at: str,
-        merchant: str,
-        amount: float,
-        currency: str,
-        category: str,
-        description: str | None = None,
-        payment_method: str | None = None,
-        account_id: str | None = None,
-        receipt_url: str | None = None,
-        external_ref: str | None = None,
-        source_message_id: str | None = None,
-        metadata: str | None = None,
-    ) -> dict[str, Any]:
-        """Record a transaction as a bitemporal SPO fact anchored to the owner entity.
-
-        Direction is inferred from amount sign: negative = debit (money out),
-        positive = credit (money in / refund). Amount precision is preserved as
-        a string-encoded NUMERIC in the fact metadata.
-
-        When source_message_id is provided, duplicate inserts return the existing
-        fact ID without creating a new record.
-        """
-        return await _facts.record_transaction_fact(
-            module._get_pool(),
-            posted_at=datetime.fromisoformat(posted_at),
-            merchant=merchant,
-            amount=amount,
-            currency=currency,
-            category=category,
-            description=description,
-            payment_method=payment_method,
-            account_id=account_id,
-            receipt_url=receipt_url,
-            external_ref=external_ref,
-            source_message_id=source_message_id,
-            metadata=_parse_metadata(metadata),
-        )
+    # record_transaction_fact is intentionally NOT exposed as an MCP tool.
+    # record_transaction() auto-mirrors to the fact layer via _mirror_to_spo();
+    # exposing both tools caused the LLM agent to double-write every transaction
+    # (one debit fact + one credit fact for the same event).
 
     @mcp.tool()
     async def list_transaction_facts(

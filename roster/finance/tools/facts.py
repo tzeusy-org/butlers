@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 _PREDICATE_TRANSACTION_DEBIT = "transaction_debit"
 _PREDICATE_TRANSACTION_CREDIT = "transaction_credit"
+_TRANSACTION_PREDICATES = (_PREDICATE_TRANSACTION_DEBIT, _PREDICATE_TRANSACTION_CREDIT)
 _PREDICATE_ACCOUNT = "account"
 _PREDICATE_SUBSCRIPTION = "subscription"
 _PREDICATE_BILL = "bill"
@@ -215,28 +216,35 @@ async def record_transaction_fact(
 
     content = f"{merchant} {_str_amount(stored_amount)} {currency.upper()}"
 
-    # Deduplication check: same source_message_id + predicate + valid_at
+    # Deduplication check: same source_message_id + valid_at, any transaction predicate.
+    # Cross-predicate so that a debit mirror doesn't duplicate as a credit (or vice versa).
     if source_message_id is not None and owner_entity_id is not None:
         try:
             existing = await pool.fetchrow(
                 """
-                SELECT id FROM facts
+                SELECT id, predicate FROM facts
                 WHERE entity_id = $1
-                  AND predicate = $2
+                  AND predicate = ANY($2::text[])
                   AND valid_at = $3
                   AND validity = 'active'
                   AND metadata->>'source_message_id' = $4
                 LIMIT 1
                 """,
                 owner_entity_id,
-                predicate,
+                list(_TRANSACTION_PREDICATES),
                 posted_at,
                 source_message_id,
             )
             if existing is not None:
+                # Use the direction from the already-stored fact, not the caller's.
+                existing_direction = (
+                    "debit"
+                    if existing["predicate"] == _PREDICATE_TRANSACTION_DEBIT
+                    else "credit"
+                )
                 return _transaction_fact_to_dict(
                     fact_id=str(existing["id"]),
-                    direction=direction,
+                    direction=existing_direction,
                     merchant=merchant,
                     amount=stored_amount,
                     currency=currency.upper(),
@@ -276,12 +284,13 @@ async def record_transaction_fact(
     if metadata:
         fact_metadata.update(metadata)
 
-    # Build a transaction-specific idempotency key that distinguishes
-    # different transactions sharing the same timestamp and predicate.
+    # Build a direction-agnostic idempotency key so that the same real-world
+    # transaction produces the same key regardless of sign/predicate.  This
+    # prevents a debit mirror + an accidental credit call from creating two facts.
     idem_parts = "|".join(
         [
             str(owner_entity_id) if owner_entity_id else "",
-            predicate,
+            "transaction",
             posted_at.isoformat(),
             merchant,
             _str_amount(stored_amount),
