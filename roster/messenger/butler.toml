@@ -64,6 +64,7 @@ enabled = true
 session_env = "WHATSAPP_USER_SESSION"
 
 [modules.approvals]
+groups = ["actions", "rules"]
 enabled = true
 default_expiry_hours = 48
 default_risk_tier = "medium"
