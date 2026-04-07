@@ -29,7 +29,6 @@ Design notes
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 
@@ -41,12 +40,23 @@ from butlers.core.model_routing import (
     record_token_usage,
     resolve_model,
 )
-from butlers.core.runtimes.base import RuntimeAdapter, get_adapter
+from butlers.core.runtimes.base import RuntimeAdapter, create_adapter
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CONCURRENT: int = 4
-_DEFAULT_TIMEOUT_S: float = 5.0
+_DEFAULT_TIMEOUT_S: float = 30.0
+
+# Ollama model families that default to thinking mode and need /no_think
+# prepended to the prompt for single-turn classification tasks.
+_THINKING_MODEL_PREFIXES: tuple[str, ...] = ("qwen3",)
+
+
+def _needs_no_think(model_id: str) -> bool:
+    """Return True if *model_id* is a thinking model that needs /no_think."""
+    # model_id format: "ollama/qwen3.5:9b", "ollama/qwen3:4b", etc.
+    bare = model_id.split("/", 1)[-1] if "/" in model_id else model_id
+    return any(bare.startswith(prefix) for prefix in _THINKING_MODEL_PREFIXES)
 
 
 def _minimal_env() -> dict[str, str]:
@@ -97,7 +107,6 @@ class DiscretionDispatcher:
         self._butler_name = butler_name
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._timeout_s = timeout_s
-        # Adapter instance cache keyed by runtime_type string.
         self._adapter_cache: dict[str, RuntimeAdapter] = {}
         self._adapter_cache_key: dict[str, str] = {}
 
@@ -106,42 +115,19 @@ class DiscretionDispatcher:
         runtime_type: str,
         provider_config: dict[str, dict] | None = None,
     ) -> RuntimeAdapter:
-        """Return a cached adapter instance for *runtime_type*, creating lazily.
-
-        Follows the same best-effort constructor pattern as
-        ``Spawner._get_or_create_adapter``: tries with ``butler_name`` kwarg
-        first, falls back to bare instantiation for adapters that don't
-        accept it.
-
-        Parameters
-        ----------
-        provider_config:
-            Optional provider configuration forwarded to adapters that accept
-            it (e.g. OpenCodeAdapter uses it to set the Ollama base URL).
-
-        Raises
-        ------
-        ValueError
-            If no adapter is registered for the given runtime type string.
+        """Return a cached adapter for *runtime_type*, creating via
+        :func:`~butlers.core.runtimes.base.create_adapter` on cache miss.
         """
-        # Return cached adapter if provider_config hasn't changed
         cfg_str = str(provider_config) if provider_config else ""
         if runtime_type in self._adapter_cache:
             if self._adapter_cache_key.get(runtime_type, "") == cfg_str:
                 return self._adapter_cache[runtime_type]
 
-        adapter_cls = get_adapter(runtime_type)
-        kwargs: dict[str, object] = {}
-        if provider_config:
-            kwargs["provider_config"] = provider_config
-        try:
-            adapter: RuntimeAdapter = adapter_cls(butler_name=self._butler_name, **kwargs)  # type: ignore[call-arg]
-        except TypeError:
-            try:
-                adapter = adapter_cls(**kwargs)  # type: ignore[call-arg]
-            except TypeError:
-                adapter = adapter_cls()
-
+        adapter = create_adapter(
+            runtime_type,
+            provider_config=provider_config,
+            butler_name=self._butler_name,
+        )
         self._adapter_cache[runtime_type] = adapter
         self._adapter_cache_key[runtime_type] = cfg_str
         logger.debug(
@@ -153,34 +139,15 @@ class DiscretionDispatcher:
         """Look up provider base URL from ``public.provider_config``.
 
         When *model_id* starts with ``ollama/``, queries the DB for the
-        Ollama provider's base URL and returns the OpenCode-compatible
-        provider config dict.  Returns ``None`` if no provider is configured
-        or the model doesn't use a provider prefix.
+        Ollama provider's base URL and returns an OpenCode-compatible
+        provider config dict including ``npm`` adapter, ``/v1``-suffixed
+        base URL, and explicit model registration.
+
+        Delegates to :func:`butlers.core.spawner.resolve_provider_config`.
         """
-        provider_type = model_id.split("/", 1)[0] if "/" in model_id else None
-        if provider_type != "ollama":
-            return None
+        from butlers.core.spawner import resolve_provider_config
 
-        try:
-            row = await self._pool.fetchrow(
-                "SELECT config FROM public.provider_config "
-                "WHERE provider_type = $1 AND enabled = true",
-                provider_type,
-            )
-        except Exception:
-            logger.debug("DiscretionDispatcher: failed to query provider_config", exc_info=True)
-            return None
-
-        if row is None:
-            return None
-
-        raw = row["config"]
-        config = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        base_url = config.get("base_url", "")
-        if not base_url:
-            return None
-
-        return {provider_type: {"options": {"baseURL": base_url}}}
+        return await resolve_provider_config(self._pool, model_id)
 
     async def call(
         self,
@@ -243,12 +210,18 @@ class DiscretionDispatcher:
         provider_config = await self._resolve_provider_config(model_id)
         adapter = self._get_or_create_adapter(runtime_type, provider_config)
 
+        # Thinking models (qwen3 family) default to chain-of-thought mode
+        # which produces <think> tokens that get stripped, leaving empty
+        # output.  Prepend /no_think to disable thinking for single-turn
+        # classification tasks like discretion.
+        effective_prompt = f"/no_think\n{prompt}" if _needs_no_think(model_id) else prompt
+
         _usage_dict: dict | None = None
 
         async def _invoke() -> str:
             nonlocal _usage_dict
             result_text, _tool_calls, _usage_dict = await adapter.invoke(
-                prompt=prompt,
+                prompt=effective_prompt,
                 system_prompt=system_prompt,
                 mcp_servers={},
                 env=_minimal_env(),
@@ -276,4 +249,20 @@ class DiscretionDispatcher:
                             input_tokens=input_tokens,
                             output_tokens=output_tokens or 0,
                         )
+                        logger.debug(
+                            "Discretion token usage recorded: in=%d out=%d model=%s",
+                            input_tokens,
+                            output_tokens or 0,
+                            model_id,
+                        )
+                    else:
+                        logger.debug(
+                            "Discretion adapter returned usage without input_tokens: %s",
+                            _usage_dict,
+                        )
+                else:
+                    logger.debug(
+                        "Discretion adapter returned no usage data for model=%s",
+                        model_id,
+                    )
             return result

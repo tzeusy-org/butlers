@@ -6,6 +6,7 @@ adapter classes by runtime type string.
 
 from butlers.core.runtimes.base import (
     RuntimeAdapter,
+    create_adapter,
     get_adapter,
     register_adapter,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "GeminiAdapter",
     "OpenCodeAdapter",
     "RuntimeAdapter",
+    "create_adapter",
     "get_adapter",
     "register_adapter",
 ]

@@ -8,8 +8,11 @@ plus a registry/factory function that maps runtime type strings
 from __future__ import annotations
 
 import abc
+import logging
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeAdapter(abc.ABC):
@@ -178,3 +181,59 @@ def get_adapter(type_str: str) -> type[RuntimeAdapter]:
         available = ", ".join(sorted(_ADAPTER_REGISTRY)) or "(none)"
         raise ValueError(f"Unknown runtime type {type_str!r}. Available adapters: {available}")
     return _ADAPTER_REGISTRY[type_str]
+
+
+def create_adapter(
+    runtime_type: str,
+    *,
+    provider_config: dict[str, dict[str, Any]] | None = None,
+    **constructor_kwargs: Any,
+) -> RuntimeAdapter:
+    """Instantiate a runtime adapter with best-effort constructor kwargs.
+
+    Resolves the adapter class via :func:`get_adapter`, then attempts
+    instantiation with progressively fewer keyword arguments:
+
+    1. All *constructor_kwargs* plus *provider_config* (if given).
+    2. Only *provider_config* (if given).
+    3. Bare instantiation (no arguments).
+
+    This handles the fact that different adapter classes accept different
+    constructor signatures (e.g. ``butler_name``, ``log_root``,
+    ``credential_store``, ``provider_config``).
+
+    Parameters
+    ----------
+    runtime_type:
+        Registered runtime type string (e.g. ``"claude"``, ``"opencode"``).
+    provider_config:
+        Optional provider configuration forwarded to adapters that accept
+        it (e.g. OpenCodeAdapter uses it to set the Ollama base URL).
+    **constructor_kwargs:
+        Additional keyword arguments forwarded to the adapter constructor
+        (e.g. ``butler_name``, ``log_root``, ``credential_store``).
+
+    Returns
+    -------
+    RuntimeAdapter
+        A newly created adapter instance.
+
+    Raises
+    ------
+    ValueError
+        If no adapter is registered for the given runtime type string.
+    """
+    adapter_cls = get_adapter(runtime_type)
+    full_kwargs: dict[str, Any] = dict(constructor_kwargs)
+    if provider_config:
+        full_kwargs["provider_config"] = provider_config
+    try:
+        return adapter_cls(**full_kwargs)  # type: ignore[call-arg]
+    except TypeError:
+        minimal: dict[str, Any] = {}
+        if provider_config:
+            minimal["provider_config"] = provider_config
+        try:
+            return adapter_cls(**minimal)  # type: ignore[call-arg]
+        except TypeError:
+            return adapter_cls()  # type: ignore[call-arg]

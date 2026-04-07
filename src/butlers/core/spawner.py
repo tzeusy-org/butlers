@@ -53,7 +53,7 @@ from butlers.core.model_routing import (
     record_token_usage,
     resolve_model,
 )
-from butlers.core.runtimes.base import RuntimeAdapter, get_adapter
+from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
@@ -753,56 +753,25 @@ class Spawner:
 
         The TOML-configured adapter is seeded at construction time.  When the
         catalog resolves a *different* runtime type, this method instantiates a
-        new parent adapter via ``get_adapter(runtime_type)`` and caches it.
-        The caller is responsible for calling ``.create_worker()`` on the result.
-
-        Parameters
-        ----------
-        runtime_type:
-            The runtime type string (e.g. ``"claude"``, ``"codex"``).
-        provider_config:
-            Optional provider configuration forwarded to adapters that accept
-            it (e.g. OpenCodeAdapter uses it to set the Ollama base URL).
-
-        Returns
-        -------
-        RuntimeAdapter
-            A parent adapter instance for the given runtime type.
-
-        Raises
-        ------
-        ValueError
-            If no adapter is registered for the given runtime type string.
+        new adapter via :func:`~butlers.core.runtimes.base.create_adapter` and
+        caches it.  The caller is responsible for calling ``.create_worker()``
+        on the result.
         """
-        # Return cached adapter if provider_config hasn't changed
         cfg_str = str(provider_config) if provider_config else ""
         if runtime_type in self._adapter_pool:
             if self._adapter_pool_cfg.get(runtime_type, "") == cfg_str:
                 return self._adapter_pool[runtime_type]
 
+        from butlers.core.runtimes.base import create_adapter
+
         log_root = resolve_log_root(self._config.logging.log_root)
-        adapter_cls = get_adapter(runtime_type)
-        # Adapters may require butler-specific constructor kwargs (e.g. log_root).
-        # We use a best-effort approach: try with known kwargs, fall back to bare
-        # instantiation when the adapter class does not accept them.
-        kwargs: dict[str, Any] = {
-            "butler_name": self._config.name,
-            "log_root": log_root,
-            "credential_store": self._credential_store,
-        }
-        if provider_config:
-            kwargs["provider_config"] = provider_config
-        try:
-            adapter = adapter_cls(**kwargs)  # type: ignore[call-arg]
-        except TypeError:
-            # Retry without butler-specific kwargs for simple adapters
-            kwargs2: dict[str, Any] = {}
-            if provider_config:
-                kwargs2["provider_config"] = provider_config
-            try:
-                adapter = adapter_cls(**kwargs2)  # type: ignore[call-arg]
-            except TypeError:
-                adapter = adapter_cls()
+        adapter = create_adapter(
+            runtime_type,
+            provider_config=provider_config,
+            butler_name=self._config.name,
+            log_root=log_root,
+            credential_store=self._credential_store,
+        )
         self._adapter_pool[runtime_type] = adapter
         self._adapter_pool_cfg[runtime_type] = cfg_str
         logger.debug("Lazily instantiated adapter for runtime_type=%s", runtime_type)
@@ -1305,7 +1274,11 @@ class Spawner:
                 mcp_servers: dict[str, Any] = {}
             else:
                 mcp_url = runtime_mcp_url(self._config.port)
-                mcp_url = _append_runtime_session_query(mcp_url, runtime_session_id)
+                mcp_url = _append_runtime_session_query(
+                    mcp_url,
+                    runtime_session_id,
+                    trigger_source=trigger_source,
+                )
                 mcp_servers = {
                     self._config.name: {
                         "url": mcp_url,
