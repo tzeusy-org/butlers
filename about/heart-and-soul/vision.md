@@ -83,10 +83,19 @@ does not ship.
    sessions spawned by the daemon are where reasoning and judgment happen. Mixing
    LLM logic into the daemon is a defect.
 
-5. **Git-based config is the source of truth for butler identity.** A butler's
-   personality, schedule, module selection, and manifesto live in git-tracked
-   files under `roster/`. Runtime state is in the database. Identity is in git.
-   If it is not in git, it is not part of who the butler is.
+5. **Git-based config is the source of truth for butler identity; operational
+   tuning lives in the database.** A butler's personality, schedule, module
+   selection, and manifesto live in git-tracked files under `roster/`. These
+   define *who the butler is* --- its name, purpose, domain, and governing
+   document. Operational tuning --- model selection, concurrency limits, tool
+   surface configuration (`core_groups`), session timeouts --- lives in a
+   per-schema `runtime_config` database table, seeded from git on first boot
+   and managed via the dashboard thereafter. The distinction: identity answers
+   "what is this butler?"; operational tuning answers "how should it behave
+   right now?" If someone changes a butler's name, manifesto, or module list,
+   that is an identity change and belongs in git. If someone changes which
+   model it uses or how many concurrent sessions it runs, that is operational
+   tuning and belongs in the database.
 
 6. **Every agent has a governing document that controls its scope.** For
    butlers, this is a manifesto: it defines what the butler cares about, what
