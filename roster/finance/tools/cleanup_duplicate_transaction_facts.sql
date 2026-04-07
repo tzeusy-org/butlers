@@ -19,8 +19,8 @@ SELECT
     d.metadata->>'merchant' AS merchant,
     d.metadata->>'amount'   AS amount,
     d.metadata->>'currency' AS currency
-FROM facts d
-JOIN facts c
+FROM finance.facts d
+JOIN finance.facts c
   ON  c.entity_id = d.entity_id
   AND c.valid_at  = d.valid_at
   AND c.validity  = 'active'
@@ -36,13 +36,13 @@ ORDER BY d.valid_at DESC;
 -- Supersede the credit duplicates (keeps the debit as the canonical record).
 -- Uses validity='superseded' + invalid_at rather than DELETE so the audit
 -- trail is preserved and the change is reversible.
-UPDATE facts
+UPDATE finance.facts
 SET validity   = 'superseded',
     invalid_at = now()
 WHERE id IN (
     SELECT c.id
-    FROM facts d
-    JOIN facts c
+    FROM finance.facts d
+    JOIN finance.facts c
       ON  c.entity_id = d.entity_id
       AND c.valid_at  = d.valid_at
       AND c.validity  = 'active'
