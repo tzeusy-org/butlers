@@ -299,7 +299,6 @@ async def entity_resolve(
     name_stripped = lookup.strip()
     name_lower = name_stripped.lower()
     hints = context_hints or {}
-    use_identifier = identifier is not None
 
     # Build type filter clause
     type_params: list[Any] = [tenant_id, name_lower]
@@ -317,22 +316,21 @@ async def entity_resolve(
     # Tier numbering: 0=role, 1=exact_canonical, 2=exact_alias, 3=prefix, 4=fuzzy
     # Lower tier number = higher priority.
 
-    # Tier 0: role-based match (only when identifier mode is active)
-    role_tier = ""
-    if use_identifier:
-        role_tier = f"""
-            -- Tier 0: role-based match (case-insensitive against roles array)
-            SELECT id, canonical_name, entity_type, aliases, 0 AS tier, 'role' AS match_type
-            FROM public.entities
-            WHERE tenant_id = $1
-              AND LOWER($2) = ANY(SELECT LOWER(r) FROM UNNEST(roles) AS r)
-              AND (metadata->>'merged_into') IS NULL
-              AND (metadata->>'deleted_at') IS NULL
-              AND NOT ('google_account' = ANY(roles))
-              {type_filter}
+    # Tier 0: role-based match (always included — resolves "owner", "admin", etc.
+    # regardless of whether the caller used `name` or `identifier`).
+    role_tier = f"""
+        -- Tier 0: role-based match (case-insensitive against roles array)
+        SELECT id, canonical_name, entity_type, aliases, 0 AS tier, 'role' AS match_type
+        FROM public.entities
+        WHERE tenant_id = $1
+          AND LOWER($2) = ANY(SELECT LOWER(r) FROM UNNEST(roles) AS r)
+          AND (metadata->>'merged_into') IS NULL
+          AND (metadata->>'deleted_at') IS NULL
+          AND NOT ('google_account' = ANY(roles))
+          {type_filter}
 
-            UNION ALL
-        """
+        UNION ALL
+    """
 
     discovery_sql = f"""
         SELECT DISTINCT ON (id)

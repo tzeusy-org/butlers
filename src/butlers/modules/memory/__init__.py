@@ -474,11 +474,21 @@ class MemoryModule(Module):
                     "error": "entity_id is required",
                     "message": (
                         f"Cannot store fact with subject={subject!r} without an entity_id. "
-                        "Every fact must be anchored to a resolved entity. "
-                        "To fix: call memory_entity_resolve(identifier=<subject>) first. "
-                        "If zero candidates are returned, call memory_entity_create() to "
-                        "create a transitory entity. Then retry memory_store_fact() with "
-                        "the resolved entity_id."
+                        "Every fact must be anchored to a resolved entity.\n"
+                        "BEFORE creating any entity, follow these steps:\n"
+                        "1. Check: is the subject a generic/improper noun (e.g. 'user', "
+                        "'owner', 'the person', 'me') rather than a proper noun or UUID? "
+                        "If so, determine the actual name or role of the entity you mean "
+                        "(e.g. the owner's real name, a contact name, an organization "
+                        "name) and use that as the identifier instead.\n"
+                        "2. Call memory_entity_resolve(identifier=<proper_identifier>) "
+                        "with the specific name or role. For facts about the message "
+                        "sender or the butler's owner, try identifier='owner' first.\n"
+                        "3. Only if resolve returns zero candidates AND the identifier "
+                        "is a proper noun (a real person, organization, or place name), "
+                        "call memory_entity_create() to create the entity.\n"
+                        "NEVER create entities with generic names like 'user', 'owner', "
+                        "'person', or 'me' — these are not real entity identifiers."
                     ),
                     "subject": subject,
                     "predicate": predicate,
