@@ -1,7 +1,7 @@
 """healing_attempts_pr_review_tracking: add PR review conversation fields.
 
-Revision ID: core_057
-Revises: core_056
+Revision ID: core_058
+Revises: core_057
 Create Date: 2026-04-06 00:00:00.000000
 
 Adds PR review conversation tracking columns to ``public.healing_attempts``.
@@ -43,8 +43,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_057"
-down_revision = "core_056"
+revision = "core_058"
+down_revision = "core_057"
 branch_labels = None
 depends_on = None
 

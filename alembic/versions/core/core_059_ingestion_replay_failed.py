@@ -1,7 +1,7 @@
 """ingestion_replay_failed: allow replay_failed status on ingestion_events.
 
-Revision ID: core_057
-Revises: core_056
+Revision ID: core_059
+Revises: core_058
 Create Date: 2026-04-06 00:00:00.000000
 
 Widens the CHECK constraint on ``public.ingestion_events.status`` to include
@@ -14,8 +14,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_057"
-down_revision = "core_056"
+revision = "core_059"
+down_revision = "core_058"
 branch_labels = None
 depends_on = None
 
