@@ -5,6 +5,13 @@ description = "Personal finance specialist for receipts, bills, subscriptions, a
 
 [butler.runtime]
 max_concurrent_sessions = 3
+core_groups = [
+    "infra",          # status, trigger, route.execute, tick, correct
+    "scheduling",     # schedule CRUD — dynamic reminders
+    "notifications",  # notify, remind
+    "media",          # get_attachment
+    "temporal",       # deadlines, event_chains, seasonal_periods
+]
 
 [butler.db]
 name = "butlers"
@@ -20,19 +27,18 @@ liveness_ttl_seconds = 300
 route_contract_min = 1
 route_contract_max = 1
 
-[modules.email]
-
 [modules.calendar]
 provider = "google"
-groups = ["core", "butler_events"]
+groups = ["butler_events"]
 
 [modules.calendar.conflicts]
 policy = "suggest"
 
 [modules.memory]
-groups = ["core", "preferences"]
+groups = ["core"]
 
 [modules.finance]
+groups = ["core", "subscriptions", "bills", "analytics", "bulk", "intelligence", "budgets"]
 
 [[butler.schedule]]
 name = "upcoming-bills-check"
@@ -156,4 +162,3 @@ cron = "55 6 * * *"
 dispatch_mode = "job"
 job_name = "daily_briefing_contribution"
 
-[modules.google_drive]
