@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
 
 def _coerce_json_list(v: Any) -> Any:
@@ -129,8 +129,19 @@ def _infer_recovery_steps(exc: ValueError) -> str:
     )
 
 
-class MemoryModuleConfig(BaseModel):
-    """Configuration for the Memory module."""
+class MemoryModuleConfig(ToolGroupMixin, BaseModel):
+    """Configuration for the Memory module.
+
+    Tool groups
+    -----------
+    core : store_episode, store_fact, store_rule, search, recall, get, confirm, context
+    feedback : mark_helpful, mark_harmful, forget
+    entity : entity_create, entity_get, entity_update, entity_neighbors,
+             entity_resolve, entity_merge, catalog_search
+    preferences : set_preference, get_preferences
+    admin : stats, predicate_list, predicate_search, run_consolidation,
+            run_episode_cleanup
+    """
 
     class RetrievalConfig(BaseModel):
         """Config for memory retrieval and context assembly defaults."""
@@ -230,9 +241,16 @@ class MemoryModule(Module):
         from butlers.modules.memory.tools import reading as _reading
         from butlers.modules.memory.tools import writing as _writing
 
+        # Build a group-aware tool decorator: returns @mcp.tool() when the
+        # group is enabled, or a no-op passthrough when disabled.
+        def _tool(group: str):
+            if group_enabled(config, group):
+                return mcp.tool()
+            return lambda fn: fn  # no-op — function defined but not registered
+
         # --- Writing tools ---
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_store_episode(
             content: str,
             butler: str,
@@ -259,7 +277,7 @@ class MemoryModule(Module):
                 request_context=request_context,
             )
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_store_fact(
             subject: Annotated[str, Field(description="Required subject entity key.")],
             predicate: Annotated[str, Field(description="Required predicate key.")],
@@ -494,7 +512,7 @@ class MemoryModule(Module):
                     "recovery": _infer_recovery_steps(exc),
                 }
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_store_rule(
             content: str,
             scope: str = "global",
@@ -534,7 +552,7 @@ class MemoryModule(Module):
 
         # --- Reading tools ---
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_search(
             query: Annotated[str, Field(description="Search query text.")],
             types: Annotated[
@@ -608,7 +626,7 @@ class MemoryModule(Module):
                 filters=filters,
             )
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_recall(
             topic: str,
             scope: str | None = None,
@@ -646,7 +664,7 @@ class MemoryModule(Module):
                 request_context=request_context,
             )
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_get(
             memory_type: str,
             memory_id: str,
@@ -660,7 +678,7 @@ class MemoryModule(Module):
 
         # --- Feedback tools ---
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_confirm(
             memory_type: str,
             memory_id: str,
@@ -672,7 +690,7 @@ class MemoryModule(Module):
                 memory_id,
             )
 
-        @mcp.tool()
+        @_tool("feedback")
         async def memory_mark_helpful(
             rule_id: str,
         ) -> dict[str, Any]:
@@ -682,7 +700,7 @@ class MemoryModule(Module):
                 rule_id,
             )
 
-        @mcp.tool()
+        @_tool("feedback")
         async def memory_mark_harmful(
             rule_id: str,
             reason: str | None = None,
@@ -696,7 +714,7 @@ class MemoryModule(Module):
 
         # --- Management tools ---
 
-        @mcp.tool()
+        @_tool("feedback")
         async def memory_forget(
             memory_type: str,
             memory_id: str,
@@ -708,7 +726,7 @@ class MemoryModule(Module):
                 memory_id,
             )
 
-        @mcp.tool()
+        @_tool("admin")
         async def memory_stats(
             scope: str | None = None,
         ) -> dict[str, Any]:
@@ -720,7 +738,7 @@ class MemoryModule(Module):
 
         # --- Predicate registry tool ---
 
-        @mcp.tool()
+        @_tool("admin")
         async def memory_predicate_list(
             edges_only: Annotated[
                 bool,
@@ -738,7 +756,7 @@ class MemoryModule(Module):
                 edges_only=edges_only,
             )
 
-        @mcp.tool()
+        @_tool("admin")
         async def memory_predicate_search(
             query: Annotated[
                 str,
@@ -795,7 +813,7 @@ class MemoryModule(Module):
 
         # --- Context tool ---
 
-        @mcp.tool()
+        @_tool("core")
         async def memory_context(
             trigger_prompt: str,
             butler: str,
@@ -842,7 +860,7 @@ class MemoryModule(Module):
 
         # --- Entity tools ---
 
-        @mcp.tool()
+        @_tool("entity")
         async def memory_entity_create(
             canonical_name: Annotated[str, Field(description="The canonical name of the entity.")],
             entity_type: Annotated[
@@ -886,7 +904,7 @@ class MemoryModule(Module):
                 metadata=metadata,
             )
 
-        @mcp.tool()
+        @_tool("entity")
         async def memory_entity_get(
             entity_id: Annotated[str, Field(description="UUID string of the entity.")],
             tenant_id: Annotated[
@@ -911,7 +929,7 @@ class MemoryModule(Module):
                 tenant_id=tenant_id,
             )
 
-        @mcp.tool()
+        @_tool("entity")
         async def memory_entity_update(
             entity_id: Annotated[str, Field(description="UUID string of the entity to update.")],
             tenant_id: Annotated[
@@ -959,7 +977,7 @@ class MemoryModule(Module):
 
         # --- Consolidation and cleanup tools ---
 
-        @mcp.tool()
+        @_tool("admin")
         async def memory_run_consolidation() -> dict[str, Any]:
             """Run memory consolidation to process unconsolidated episodes.
 
@@ -977,7 +995,7 @@ class MemoryModule(Module):
                 module._get_embedding_engine(),
             )
 
-        @mcp.tool()
+        @_tool("admin")
         async def memory_run_episode_cleanup(
             max_entries: int = 10000,
         ) -> dict[str, Any]:
@@ -1003,7 +1021,7 @@ class MemoryModule(Module):
                 max_entries=max_entries,
             )
 
-        @mcp.tool()
+        @_tool("entity")
         async def memory_entity_neighbors(
             entity_id: Annotated[str, Field(description="UUID string of the starting entity.")],
             tenant_id: Annotated[
@@ -1050,7 +1068,7 @@ class MemoryModule(Module):
                 direction=direction,
             )
 
-        @mcp.tool()
+        @_tool("entity")
         async def memory_entity_resolve(
             name: str | None = None,
             identifier: str | None = None,
@@ -1086,7 +1104,7 @@ class MemoryModule(Module):
                 enable_fuzzy=enable_fuzzy,
             )
 
-        @mcp.tool()
+        @_tool("entity")
         async def memory_entity_merge(
             source_entity_id: Annotated[
                 str,
@@ -1127,7 +1145,7 @@ class MemoryModule(Module):
 
         # --- Cross-butler catalog search tool ---
 
-        @mcp.tool()
+        @_tool("entity")
         async def memory_catalog_search(
             query: Annotated[str, Field(description="Search query text.")],
             memory_type: Annotated[
@@ -1174,7 +1192,7 @@ class MemoryModule(Module):
 
         # --- Preference tools ---
 
-        @mcp.tool()
+        @_tool("preferences")
         async def memory_set_preference(
             predicate: Annotated[
                 str,
@@ -1267,7 +1285,7 @@ class MemoryModule(Module):
                     ),
                 }
 
-        @mcp.tool()
+        @_tool("preferences")
         async def memory_get_preferences(
             scope: Annotated[
                 str | None,

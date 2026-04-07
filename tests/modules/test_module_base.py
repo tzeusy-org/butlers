@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -203,3 +203,44 @@ async def test_on_shutdown_signature():
     """on_shutdown is callable with no arguments (besides self)."""
     mod = MinimalModule()
     await mod.on_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Tool group filtering
+# ---------------------------------------------------------------------------
+
+
+class TestGroupEnabled:
+    def test_none_groups_enables_all(self):
+        """No groups config = all groups enabled (backwards compatible)."""
+        cfg = ToolGroupMixin(groups=None)
+        assert group_enabled(cfg, "core")
+        assert group_enabled(cfg, "anything")
+
+    def test_empty_groups_enables_all(self):
+        """Empty groups list = all groups enabled."""
+        cfg = ToolGroupMixin(groups=[])
+        assert group_enabled(cfg, "core")
+
+    def test_specific_groups(self):
+        """Only listed groups are enabled."""
+        cfg = ToolGroupMixin(groups=["core", "entity"])
+        assert group_enabled(cfg, "core")
+        assert group_enabled(cfg, "entity")
+        assert not group_enabled(cfg, "admin")
+        assert not group_enabled(cfg, "feedback")
+
+    def test_no_groups_attr(self):
+        """Config without groups attr = all enabled."""
+        assert group_enabled(object(), "core")
+
+    def test_mixin_in_config(self):
+        """ToolGroupMixin works as a Pydantic mixin."""
+
+        class MyConfig(ToolGroupMixin, BaseModel):
+            foo: str = "bar"
+
+        cfg = MyConfig(groups=["core"])
+        assert group_enabled(cfg, "core")
+        assert not group_enabled(cfg, "admin")
+        assert cfg.foo == "bar"

@@ -30,7 +30,7 @@ from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1001,8 +1001,17 @@ class CalendarSyncState(BaseModel):
     last_batch_change_count: int = 0
 
 
-class CalendarConfig(BaseModel):
-    """Configuration for the Calendar module."""
+class CalendarConfig(ToolGroupMixin, BaseModel):
+    """Configuration for the Calendar module.
+
+    Tool groups
+    -----------
+    core : list_events, get_event, create_event, update_event, delete_event,
+           sync_status, force_sync, set_primary
+    butler_events : create_butler_event, update_butler_event,
+                    delete_butler_event, toggle_butler_event
+    attendees : add_attendees, remove_attendees
+    """
 
     provider: str = Field(min_length=1)
     account: str | None = None
@@ -2500,7 +2509,12 @@ class CalendarModule(Module):
         self._db = db
         module = self
 
-        @mcp.tool()
+        def _tool(group: str):
+            if group_enabled(self._config, group):
+                return mcp.tool()
+            return lambda fn: fn
+
+        @_tool("core")
         async def calendar_list_events(
             calendar_id: str | None = None,
             start_at: datetime | None = None,
@@ -2541,7 +2555,7 @@ class CalendarModule(Module):
                 "events": [module._event_to_payload(event) for event in events],
             }
 
-        @mcp.tool()
+        @_tool("core")
         async def calendar_get_event(
             event_id: str,
             calendar_id: str | None = None,
@@ -2605,7 +2619,7 @@ class CalendarModule(Module):
                 "event": None if event is None else module._event_to_payload(event),
             }
 
-        @mcp.tool()
+        @_tool("core")
         async def calendar_create_event(
             title: str,
             start_at: date | datetime,
@@ -2836,7 +2850,7 @@ class CalendarModule(Module):
             )
             return result
 
-        @mcp.tool()
+        @_tool("core")
         async def calendar_update_event(
             event_id: str,
             title: str | None = None,
@@ -3154,7 +3168,7 @@ class CalendarModule(Module):
             )
             return result
 
-        @mcp.tool()
+        @_tool("core")
         async def calendar_delete_event(
             event_id: str,
             calendar_id: str | None = None,
@@ -3299,7 +3313,7 @@ class CalendarModule(Module):
             )
             return result
 
-        @mcp.tool()
+        @_tool("butler_events")
         async def calendar_create_butler_event(
             butler_name: str,
             title: str,
@@ -3503,7 +3517,7 @@ class CalendarModule(Module):
                 )
                 return error_payload
 
-        @mcp.tool()
+        @_tool("butler_events")
         async def calendar_update_butler_event(
             event_id: str,
             title: str | None = None,
@@ -3657,7 +3671,7 @@ class CalendarModule(Module):
                 )
                 return error_payload
 
-        @mcp.tool()
+        @_tool("butler_events")
         async def calendar_delete_butler_event(
             event_id: str,
             scope: Literal["series"] = "series",
@@ -3773,7 +3787,7 @@ class CalendarModule(Module):
                 )
                 return error_payload
 
-        @mcp.tool()
+        @_tool("butler_events")
         async def calendar_toggle_butler_event(
             event_id: str,
             enabled: bool,
@@ -3902,7 +3916,7 @@ class CalendarModule(Module):
                 )
                 return error_payload
 
-        @mcp.tool()
+        @_tool("attendees")
         async def calendar_add_attendees(
             event_id: str,
             attendees: list[str],
@@ -3957,7 +3971,7 @@ class CalendarModule(Module):
                 "event": module._event_to_payload(event),
             }
 
-        @mcp.tool()
+        @_tool("attendees")
         async def calendar_remove_attendees(
             event_id: str,
             attendees: list[str],
@@ -4009,7 +4023,7 @@ class CalendarModule(Module):
                 "event": module._event_to_payload(event),
             }
 
-        @mcp.tool()
+        @_tool("core")
         async def calendar_sync_status(
             calendar_id: str | None = None,
         ) -> dict[str, Any]:
@@ -4064,7 +4078,7 @@ class CalendarModule(Module):
                 "projection_freshness": projection_freshness,
             }
 
-        @mcp.tool()
+        @_tool("core")
         async def calendar_force_sync(
             calendar_id: str | None = None,
         ) -> dict[str, Any]:
@@ -4133,7 +4147,7 @@ class CalendarModule(Module):
                 "projection_freshness": await module._projection_freshness_metadata(),
             }
 
-        @mcp.tool()
+        @_tool("core")
         async def calendar_set_primary(
             calendar_id: str,
         ) -> dict[str, Any]:

@@ -40,6 +40,7 @@ enabled = false
 token_env = "BUTLER_TELEGRAM_TOKEN"
 
 [modules.memory]
+groups = ["core"]
 
 [modules.email]
 

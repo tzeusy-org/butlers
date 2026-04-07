@@ -693,6 +693,57 @@ class TestMemoryStoreFactSenderEntityIdFallback:
 # ---------------------------------------------------------------------------
 
 
+class TestToolGroups:
+    """Tool group filtering registers only requested groups."""
+
+    async def test_all_groups_when_none(self):
+        """No groups config registers all 25 tools."""
+        mod = MemoryModule()
+        mcp = RuntimeFastMCP("test")
+        config = MemoryModuleConfig()  # groups=None (default)
+        await mod.register_tools(mcp, config, MagicMock())
+        tools = await mcp.list_tools()
+        assert len(tools) == 25
+
+    async def test_core_only(self):
+        """groups=['core'] registers only the 8 core tools."""
+        mod = MemoryModule()
+        mcp = RuntimeFastMCP("test")
+        config = MemoryModuleConfig(groups=["core"])
+        await mod.register_tools(mcp, config, MagicMock())
+        tools = await mcp.list_tools()
+        tool_names = {t.name for t in tools}
+        assert len(tools) == 8
+        assert "memory_search" in tool_names
+        assert "memory_store_fact" in tool_names
+        assert "memory_context" in tool_names
+        # Not in core:
+        assert "memory_entity_create" not in tool_names
+        assert "memory_stats" not in tool_names
+
+    async def test_core_plus_entity(self):
+        """groups=['core', 'entity'] registers 15 tools."""
+        mod = MemoryModule()
+        mcp = RuntimeFastMCP("test")
+        config = MemoryModuleConfig(groups=["core", "entity"])
+        await mod.register_tools(mcp, config, MagicMock())
+        tools = await mcp.list_tools()
+        tool_names = {t.name for t in tools}
+        assert len(tools) == 15  # 8 core + 7 entity
+        assert "memory_entity_create" in tool_names
+        assert "memory_catalog_search" in tool_names
+        assert "memory_stats" not in tool_names  # admin
+
+    async def test_empty_groups_registers_all(self):
+        """groups=[] is treated as 'no filter' — registers all."""
+        mod = MemoryModule()
+        mcp = RuntimeFastMCP("test")
+        config = MemoryModuleConfig(groups=[])
+        await mod.register_tools(mcp, config, MagicMock())
+        tools = await mcp.list_tools()
+        assert len(tools) == 25
+
+
 class TestRegistryDiscovery:
     """Verify MemoryModule is found by default_registry()."""
 

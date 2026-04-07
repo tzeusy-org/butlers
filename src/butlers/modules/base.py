@@ -9,6 +9,42 @@ from typing import Any
 from pydantic import BaseModel
 
 
+class ToolGroupMixin(BaseModel):
+    """Mixin providing optional tool group filtering for module configs.
+
+    When a butler's ``butler.toml`` specifies ``groups = ["core", "entity"]``
+    under a module section, only tools in those groups are registered.
+    When ``groups`` is absent or empty, all tools are registered (backwards
+    compatible).
+
+    Usage in module config::
+
+        class MyModuleConfig(ToolGroupMixin, BaseModel):
+            some_setting: str = "default"
+
+    Usage in register_tools()::
+
+        if group_enabled(config, "core"):
+            @mcp.tool()
+            async def my_core_tool(...): ...
+    """
+
+    groups: list[str] | None = None
+
+
+def group_enabled(config: Any, group: str) -> bool:
+    """Return True if the given tool group should be registered.
+
+    When *config* has no ``groups`` field or it is ``None``/empty, all groups
+    are enabled (backwards compatible).  Otherwise, only groups listed in the
+    config are enabled.
+    """
+    groups = getattr(config, "groups", None)
+    if not groups:
+        return True
+    return group in groups
+
+
 @dataclass
 class ToolMeta:
     """Metadata for a single MCP tool registered by a module.
