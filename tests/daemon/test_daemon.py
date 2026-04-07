@@ -38,7 +38,8 @@ from starlette.testclient import TestClient
 
 from butlers.credentials import CredentialError
 from butlers.daemon import (
-    CORE_TOOL_NAMES,
+    DOMAIN_CORE_TOOL_NAMES,
+    UNIVERSAL_CORE_TOOL_NAMES,
     ButlerDaemon,
     _McpSseDisconnectGuard,
 )
@@ -471,7 +472,9 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
         daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
         await daemon.start()
 
-    assert set(registered_tools) == CORE_TOOL_NAMES
+    # "general" is a domain butler → gets universal + domain tools, not
+    # messenger or switchboard tools.
+    assert set(registered_tools) == UNIVERSAL_CORE_TOOL_NAMES | DOMAIN_CORE_TOOL_NAMES
 
 
 async def test_module_lifecycle(butler_dir_with_modules: Path) -> None:

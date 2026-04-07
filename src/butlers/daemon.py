@@ -140,7 +140,8 @@ logger = logging.getLogger(__name__)
 
 _SWITCHBOARD_HEARTBEAT_INTERVAL_S = 30
 
-CORE_TOOL_NAMES: frozenset[str] = frozenset(
+# Tools registered for ALL butlers regardless of type.
+UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "status",
         "trigger",
@@ -164,27 +165,46 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "notify",
         "remind",
         "get_attachment",
+        "module.states",
+        "module.set_enabled",
+        "correct",
+    }
+)
+
+# Tools only registered for messenger butler.
+MESSENGER_CORE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
         "delivery_preferences_set",
         "delivery_preferences_get",
         "deferred_notifications_list",
         "deferred_notification_cancel",
-        "event_chain_create",
-        "event_chain_update",
-        "event_chain_list",
-        "event_chain_delete",
-        "module.states",
-        "module.set_enabled",
-        "correct",
+    }
+)
+
+# Tools only registered for domain butlers (not staffers).
+DOMAIN_CORE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
         "deadline_create",
         "deadline_update",
         "deadline_list",
         "deadline_delete",
+        "event_chain_create",
+        "event_chain_update",
+        "event_chain_list",
+        "event_chain_delete",
         "seasonal_period_create",
         "seasonal_period_update",
         "seasonal_period_list",
         "seasonal_period_delete",
         "seasonal_period_create_preset",
     }
+)
+
+# Backwards-compatible alias: all core tools across all butler types.
+CORE_TOOL_NAMES: frozenset[str] = (
+    UNIVERSAL_CORE_TOOL_NAMES
+    | MESSENGER_CORE_TOOL_NAMES
+    | DOMAIN_CORE_TOOL_NAMES
 )
 
 _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram_chat_id"
@@ -3766,10 +3786,11 @@ class ButlerDaemon:
                 result_payload={"notify_response": notify_response},
             )
 
-        # Switchboard-only: ingest + route_to_butler tools
+        # ----- Switchboard-only tools -----
+        # ingest, route_to_butler, and backfill tools handle message ingestion.
         # NOTE: `deliver` is registered by SwitchboardModule.register_tools()
         # — do NOT register it inline here to avoid duplicate component warnings.
-        if butler_name == "switchboard":
+        if is_switchboard:
             import importlib.util as _ilu
 
             from butlers.tools.switchboard.backfill.connector import (
@@ -4722,1443 +4743,1470 @@ class ButlerDaemon:
             return {"id": resolved_id, "status": "deleted"}
 
         # Deadline tools (temporal-intelligence spec §3)
-        @mcp.tool()
-        async def deadline_create(
-            name: Annotated[str, Field(description="Unique deadline name.")],
-            prompt: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Prompt dispatched when a threshold fires. "
-                        "Should instruct the butler to notify the user about the deadline."
-                    )
-                ),
-            ],
-            target_date: Annotated[
-                str,
-                Field(description="Target due date in YYYY-MM-DD format. Must be in the future."),
-            ],
-            lead_time_days: Annotated[
-                int,
-                Field(
-                    description=(
-                        "Number of days before target_date to begin alerting. "
-                        "All alert_thresholds.days_before must be <= lead_time_days."
-                    )
-                ),
-            ],
-            alert_thresholds: Annotated[
-                list[dict[str, Any]],
-                Field(
-                    description=(
-                        "Non-empty list of threshold dicts: "
-                        '[{"days_before": int, "severity": "info|warning|critical"}, ...]. '
-                        "Each days_before must be <= lead_time_days."
-                    )
-                ),
-            ],
-            depends_on: Annotated[
-                list[str] | None,
-                Field(
-                    description=(
-                        "Optional list of deadline task UUIDs that must reach 'completed' "
-                        "status before this deadline's thresholds are evaluated."
-                    )
-                ),
-            ] = None,
-        ) -> dict:
-            """Create a countdown-based deadline task.
 
-            Deadlines alert the butler at configurable thresholds before a target date
-            (e.g., 6 weeks, 2 weeks, 3 days before). Unlike cron schedules, deadlines
-            count down from a fixed target date and fire once per threshold crossing.
+        # ----- Domain-only: deadlines, event chains, seasonal periods.
+        # Staffers (switchboard, messenger, qa) don't use these.
+        if butler_type != ButlerType.STAFFER:
 
-            Returns the new deadline's UUID and creation status.
-            """
-            try:
-                from datetime import date as _date
+            @mcp.tool()
+            async def deadline_create(
+                name: Annotated[str, Field(description="Unique deadline name.")],
+                prompt: Annotated[
+                    str,
+                    Field(
+                        description=(
+                            "Prompt dispatched when a threshold fires. "
+                            "Should instruct the butler to notify the user about the deadline."
+                        )
+                    ),
+                ],
+                target_date: Annotated[
+                    str,
+                    Field(
+                        description="Target due date in YYYY-MM-DD format. Must be in the future."
+                    ),
+                ],
+                lead_time_days: Annotated[
+                    int,
+                    Field(
+                        description=(
+                            "Number of days before target_date to begin alerting. "
+                            "All alert_thresholds.days_before must be <= lead_time_days."
+                        )
+                    ),
+                ],
+                alert_thresholds: Annotated[
+                    list[dict[str, Any]],
+                    Field(
+                        description=(
+                            "Non-empty list of threshold dicts: "
+                            '[{"days_before": int, "severity": "info|warning|critical"}, ...]. '
+                            "Each days_before must be <= lead_time_days."
+                        )
+                    ),
+                ],
+                depends_on: Annotated[
+                    list[str] | None,
+                    Field(
+                        description=(
+                            "Optional list of deadline task UUIDs that must reach 'completed' "
+                            "status before this deadline's thresholds are evaluated."
+                        )
+                    ),
+                ] = None,
+            ) -> dict:
+                """Create a countdown-based deadline task.
 
-                parsed_date = _date.fromisoformat(target_date)
-                validate_deadline_input(
-                    target_date=parsed_date,
-                    lead_time_days=lead_time_days,
-                    alert_thresholds=alert_thresholds,
-                )
-                task_id = await _deadline_create(
-                    pool,
-                    name=name,
-                    prompt=prompt,
-                    target_date=parsed_date,
-                    lead_time_days=lead_time_days,
-                    alert_thresholds=alert_thresholds,
-                    depends_on=depends_on,
-                )
-                return {
-                    "id": str(task_id),
-                    "status": "created",
-                    "name": name,
-                    "target_date": target_date,
-                    "lead_time_days": lead_time_days,
-                    "alert_thresholds": alert_thresholds,
-                    "depends_on": depends_on,
-                }
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Deadlines alert the butler at configurable thresholds before a target date
+                (e.g., 6 weeks, 2 weeks, 3 days before). Unlike cron schedules, deadlines
+                count down from a fixed target date and fire once per threshold crossing.
 
-        @mcp.tool()
-        async def deadline_update(
-            task_id: Annotated[str, Field(description="UUID of the deadline task to update.")],
-            name: Annotated[str | None, Field(description="New name (optional).")] = None,
-            prompt: Annotated[
-                str | None,
-                Field(description="New prompt template (optional)."),
-            ] = None,
-            target_date: Annotated[
-                str | None,
-                Field(
-                    description=(
-                        "New target date in YYYY-MM-DD format (optional). "
-                        "Changing target_date resets fired_thresholds and "
-                        "deadline_status to 'pending'."
-                    )
-                ),
-            ] = None,
-            lead_time_days: Annotated[
-                int | None,
-                Field(description="New lead time in days (optional)."),
-            ] = None,
-            alert_thresholds: Annotated[
-                list[dict[str, Any]] | None,
-                Field(description="New alert thresholds list (optional)."),
-            ] = None,
-            depends_on: Annotated[
-                list[str] | None,
-                Field(description="New dependency task UUID list (optional)."),
-            ] = None,
-            deadline_status: Annotated[
-                str | None,
-                Field(
-                    description=(
-                        "Explicit new status (optional). "
-                        "Valid values: pending, alerted, escalated, completed, expired."
-                    )
-                ),
-            ] = None,
-            enabled: Annotated[
-                bool | None,
-                Field(description="Enable or disable the deadline (optional)."),
-            ] = None,
-        ) -> dict:
-            """Update fields on an existing deadline task.
+                Returns the new deadline's UUID and creation status.
+                """
+                try:
+                    from datetime import date as _date
 
-            Only provided fields are changed. Changing target_date automatically resets
-            fired_thresholds to [] and deadline_status to 'pending' (unless
-            deadline_status is explicitly provided).
-            """
-            try:
-                from datetime import UTC as _UTC
-                from datetime import date as _date
-                from datetime import datetime as _datetime
-
-                parsed_date: _date | None = None
-                if target_date is not None:
                     parsed_date = _date.fromisoformat(target_date)
-                    today = _datetime.now(_UTC).date()
-                    if parsed_date <= today:
+                    validate_deadline_input(
+                        target_date=parsed_date,
+                        lead_time_days=lead_time_days,
+                        alert_thresholds=alert_thresholds,
+                    )
+                    task_id = await _deadline_create(
+                        pool,
+                        name=name,
+                        prompt=prompt,
+                        target_date=parsed_date,
+                        lead_time_days=lead_time_days,
+                        alert_thresholds=alert_thresholds,
+                        depends_on=depends_on,
+                    )
+                    return {
+                        "id": str(task_id),
+                        "status": "created",
+                        "name": name,
+                        "target_date": target_date,
+                        "lead_time_days": lead_time_days,
+                        "alert_thresholds": alert_thresholds,
+                        "depends_on": depends_on,
+                    }
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
+
+            @mcp.tool()
+            async def deadline_update(
+                task_id: Annotated[str, Field(description="UUID of the deadline task to update.")],
+                name: Annotated[str | None, Field(description="New name (optional).")] = None,
+                prompt: Annotated[
+                    str | None,
+                    Field(description="New prompt template (optional)."),
+                ] = None,
+                target_date: Annotated[
+                    str | None,
+                    Field(
+                        description=(
+                            "New target date in YYYY-MM-DD format (optional). "
+                            "Changing target_date resets fired_thresholds and "
+                            "deadline_status to 'pending'."
+                        )
+                    ),
+                ] = None,
+                lead_time_days: Annotated[
+                    int | None,
+                    Field(description="New lead time in days (optional)."),
+                ] = None,
+                alert_thresholds: Annotated[
+                    list[dict[str, Any]] | None,
+                    Field(description="New alert thresholds list (optional)."),
+                ] = None,
+                depends_on: Annotated[
+                    list[str] | None,
+                    Field(description="New dependency task UUID list (optional)."),
+                ] = None,
+                deadline_status: Annotated[
+                    str | None,
+                    Field(
+                        description=(
+                            "Explicit new status (optional). "
+                            "Valid values: pending, alerted, escalated, completed, expired."
+                        )
+                    ),
+                ] = None,
+                enabled: Annotated[
+                    bool | None,
+                    Field(description="Enable or disable the deadline (optional)."),
+                ] = None,
+            ) -> dict:
+                """Update fields on an existing deadline task.
+
+                Only provided fields are changed. Changing target_date automatically resets
+                fired_thresholds to [] and deadline_status to 'pending' (unless
+                deadline_status is explicitly provided).
+                """
+                try:
+                    from datetime import UTC as _UTC
+                    from datetime import date as _date
+                    from datetime import datetime as _datetime
+
+                    parsed_date: _date | None = None
+                    if target_date is not None:
+                        parsed_date = _date.fromisoformat(target_date)
+                        today = _datetime.now(_UTC).date()
+                        if parsed_date <= today:
+                            raise ValueError(
+                                f"target_date must be in the future"
+                                f" (got {parsed_date}; today is {today})"
+                            )
+
+                    if lead_time_days is not None and lead_time_days <= 0:
                         raise ValueError(
-                            f"target_date must be in the future"
-                            f" (got {parsed_date}; today is {today})"
+                            f"lead_time_days must be a positive integer (got {lead_time_days})"
                         )
 
-                if lead_time_days is not None and lead_time_days <= 0:
-                    raise ValueError(
-                        f"lead_time_days must be a positive integer (got {lead_time_days})"
-                    )
+                    if alert_thresholds is not None and not alert_thresholds:
+                        raise ValueError("alert_thresholds must contain at least one threshold")
 
-                if alert_thresholds is not None and not alert_thresholds:
-                    raise ValueError("alert_thresholds must contain at least one threshold")
+                    if alert_thresholds is not None and lead_time_days is not None:
+                        for t in alert_thresholds:
+                            days_before = t.get("days_before")
+                            if days_before is None:
+                                raise ValueError(
+                                    "Each threshold must have a 'days_before' integer field"
+                                )
+                            if days_before > lead_time_days:
+                                raise ValueError(
+                                    f"Threshold days_before={days_before} cannot"
+                                    f" exceed lead_time_days={lead_time_days}"
+                                )
 
-                if alert_thresholds is not None and lead_time_days is not None:
-                    for t in alert_thresholds:
-                        days_before = t.get("days_before")
-                        if days_before is None:
-                            raise ValueError(
-                                "Each threshold must have a 'days_before' integer field"
-                            )
-                        if days_before > lead_time_days:
-                            raise ValueError(
-                                f"Threshold days_before={days_before} cannot"
-                                f" exceed lead_time_days={lead_time_days}"
-                            )
-
-                await _deadline_update(
-                    pool,
-                    uuid.UUID(task_id),
-                    name=name,
-                    prompt=prompt,
-                    target_date=parsed_date,
-                    lead_time_days=lead_time_days,
-                    alert_thresholds=alert_thresholds,
-                    depends_on=depends_on,
-                    deadline_status=deadline_status,
-                    enabled=enabled,
-                )
-                return {
-                    "id": task_id,
-                    "status": "updated",
-                }
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
-
-        @mcp.tool()
-        async def deadline_list(
-            status_filter: Annotated[
-                str | None,
-                Field(
-                    description=(
-                        "Optional status filter. "
-                        "Valid values: pending, alerted, escalated, completed, expired. "
-                        "Omit to list all deadlines."
-                    )
-                ),
-            ] = None,
-        ) -> list[dict]:
-            """List all deadline tasks, optionally filtered by status.
-
-            Returns deadlines sorted by target_date (soonest first).
-            """
-            deadlines = await _deadline_list(pool, status=status_filter)
-            return deadlines
-
-        @mcp.tool()
-        async def deadline_delete(
-            task_id: Annotated[str, Field(description="UUID of the deadline task to delete.")],
-        ) -> dict:
-            """Delete a runtime deadline task.
-
-            TOML-sourced deadlines cannot be deleted via this tool — remove them
-            from butler.toml instead.
-            """
-            try:
-                await _deadline_delete(pool, uuid.UUID(task_id))
-                return {"id": task_id, "status": "deleted"}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
-
-        @mcp.tool()
-        async def schedule_trigger(task_id: str | None = None, id: str | None = None) -> dict:
-            """Trigger a scheduled task immediately (one-off dispatch).
-
-            Dispatches the task via the same mechanism as the scheduler tick
-            but does NOT advance next_run_at — this is a manual one-off run.
-            Updates last_run_at and last_result.
-            """
-            resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_trigger")
-            task_uuid = uuid.UUID(resolved_id)
-
-            row = await pool.fetchrow(
-                "SELECT id, name, dispatch_mode, prompt, job_name, job_args, complexity "
-                "FROM scheduled_tasks WHERE id = $1",
-                task_uuid,
-            )
-            if row is None:
-                return {"id": resolved_id, "status": "error", "error": "Schedule not found"}
-
-            name = row["name"]
-            dispatch_mode = row["dispatch_mode"] or "prompt"
-            prompt = row["prompt"]
-            job_name = row["job_name"]
-            raw_job_args = row["job_args"]
-            job_args = json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
-            task_complexity = _parse_complexity_from_db_row(row, name)
-
-            now = datetime.now(UTC)
-            try:
-                if dispatch_mode == "job":
-                    result = await daemon._dispatch_scheduled_task(
-                        trigger_source=f"schedule:{name}",
-                        job_name=job_name,
-                        job_args=job_args,
-                    )
-                else:
-                    result = await daemon._dispatch_scheduled_task(
-                        trigger_source=f"schedule:{name}",
+                    await _deadline_update(
+                        pool,
+                        uuid.UUID(task_id),
+                        name=name,
                         prompt=prompt,
-                        complexity=task_complexity,
+                        target_date=parsed_date,
+                        lead_time_days=lead_time_days,
+                        alert_thresholds=alert_thresholds,
+                        depends_on=depends_on,
+                        deadline_status=deadline_status,
+                        enabled=enabled,
                     )
-
-                # Serialize dispatch result for JSONB storage
-                if result is None:
-                    result_json = None
-                elif hasattr(result, "__dict__") and not isinstance(result, type):
-                    result_json = json.dumps(result.__dict__, default=str)
-                elif isinstance(result, dict):
-                    result_json = json.dumps(result, default=str)
-                else:
-                    result_json = json.dumps({"result": str(result)}, default=str)
-                await pool.execute(
-                    "UPDATE scheduled_tasks "
-                    "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
-                    "WHERE id = $1",
-                    task_uuid,
-                    now,
-                    result_json,
-                )
-                return {"id": resolved_id, "status": "triggered", "name": name}
-            except Exception as exc:
-                logger.exception("Manual trigger failed for schedule %s", name)
-                error_json = json.dumps({"error": str(exc)})
-                await pool.execute(
-                    "UPDATE scheduled_tasks "
-                    "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
-                    "WHERE id = $1",
-                    task_uuid,
-                    now,
-                    error_json,
-                )
-                return {"id": resolved_id, "status": "error", "error": str(exc)}
-
-        # Session tools
-        @mcp.tool()
-        async def sessions_list(limit: int = 20, offset: int = 0) -> list[dict]:
-            """List sessions ordered by most recent first."""
-            sessions = await _sessions_list(pool, limit, offset)
-            for s in sessions:
-                s["id"] = str(s["id"])
-            return sessions
-
-        @mcp.tool()
-        async def sessions_get(session_id: str) -> dict | None:
-            """Get a session by ID."""
-            session = await _sessions_get(pool, uuid.UUID(session_id))
-            if session:
-                session["id"] = str(session["id"])
-            return session
-
-        @mcp.tool()
-        async def sessions_summary(period: str = "today") -> dict:
-            """Return aggregate session/token stats for a period."""
-            return await _sessions_summary(pool, period)
-
-        @mcp.tool()
-        async def sessions_daily(from_date: str, to_date: str) -> dict:
-            """Return daily session/token aggregates for a date range."""
-            return await _sessions_daily(pool, from_date, to_date)
-
-        @mcp.tool()
-        async def top_sessions(limit: int = 10) -> dict:
-            """Return the highest-token completed sessions."""
-            return await _top_sessions(pool, limit)
-
-        @mcp.tool()
-        async def schedule_costs() -> dict:
-            """Return per-schedule token usage aggregates."""
-            return await _schedule_costs(pool)
-
-        # Notification tool
-        @mcp.tool()
-        @tool_span("notify", butler_name=butler_name)
-        async def notify(
-            channel: Annotated[
-                Literal["telegram", "email", "whatsapp"],
-                Field(description="Delivery channel. Allowed values: telegram | email | whatsapp."),
-            ],
-            message: Annotated[
-                str | None,
-                Field(description="Message text. Required for send/reply intents."),
-            ] = None,
-            recipient: Annotated[
-                str | None,
-                Field(description="Optional explicit recipient identity (for example email)."),
-            ] = None,
-            subject: Annotated[
-                str | None,
-                Field(description="Optional subject line (email channel)."),
-            ] = None,
-            intent: Annotated[
-                Literal["send", "reply", "react", "insight"],
-                Field(
-                    description="Delivery intent. Allowed values: send | reply | react | insight."
-                ),
-            ] = "send",
-            emoji: Annotated[
-                str | None,
-                Field(description="Required when intent=react."),
-            ] = None,
-            request_context: Annotated[
-                NotifyRequestContextInput | None,
-                Field(
-                    description=(
-                        "Context lineage for reply/react targeting. Must be a "
-                        "dict/object — do NOT pass as a JSON string. Required keys "
-                        "for reply/react: request_id, source_channel, "
-                        "source_endpoint_identity, source_sender_identity. For "
-                        "telegram reply/react include source_thread_identity. "
-                        "Do not pass placeholder strings such as "
-                        '"<the REQUEST CONTEXT object...>".'
-                    )
-                ),
-            ] = None,
-            contact_id: Annotated[
-                uuid.UUID | None,
-                Field(
-                    description=(
-                        "Optional contact UUID. When provided, the channel identifier is resolved "
-                        "from public.contact_info (primary entry preferred). If no matching "
-                        "contact_info entry exists, the notification is parked as a "
-                        "pending_action and {status: pending_missing_identifier} is returned."
-                    )
-                ),
-            ] = None,
-            priority: Annotated[
-                Literal["high", "medium", "low"],
-                Field(
-                    description=(
-                        "Notification priority for quiet-hours enforcement. "
-                        "Allowed values: high | medium | low. Default: medium. "
-                        "high — always delivers immediately (bypasses quiet hours). "
-                        "medium — deferred during quiet hours. "
-                        "low — deferred during quiet hours."
-                    )
-                ),
-            ] = "medium",
-        ) -> dict:
-            """Send a `notify.v1` envelope through Switchboard `deliver()`.
-
-            Required fields:
-            - `channel` (string enum): `telegram`, `email`, or `whatsapp`
-            - `message` (string): required for `send`/`reply`, omitted for `react`
-
-            Optional fields:
-            - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
-            - `contact_id` (UUID): resolve recipient from public.contact_info; primary entry
-              preferred. If no matching entry exists the notification is parked as a pending_action
-              and `{"status": "pending_missing_identifier"}` is returned.
-            - `subject` (string)
-            - `intent` (string enum): `send` | `reply` | `react` | `insight`
-            - `emoji` (string): required when `intent="react"`
-            - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
-              include `request_id`, `source_channel`, `source_endpoint_identity`,
-              `source_sender_identity` plus `source_thread_identity` for telegram `reply`/`react`.
-              Pass an object value, not a quoted placeholder string.
-
-            Recipient resolution priority:
-            1. `contact_id` provided → look up channel identifier from public.contact_info
-            2. `recipient` string provided → use as-is
-            3. Neither → resolve owner entity's channel identifier (default)
-
-            Valid JSON example:
-            {
-              "channel": "telegram",
-              "intent": "reply",
-              "message": "Done. I logged it.",
-              "request_context": {
-                "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
-                "source_channel": "telegram_bot",
-                "source_endpoint_identity": "switchboard",
-                "source_sender_identity": "health",
-                "source_thread_identity": "12345"
-              }
-            }
-            """
-            # Validate message is present (not required for react intent)
-            if intent != "react" and message is None:
-                logger.error(
-                    "notify() called without required 'message' parameter: "
-                    "channel=%r, intent=%r, emoji=%r, request_context=%r",
-                    channel,
-                    intent,
-                    emoji,
-                    request_context,
-                )
-                return {
-                    "status": "error",
-                    "error": (
-                        "Missing required 'message' parameter. "
-                        "notify() requires: channel, message, request_context."
-                    ),
-                }
-
-            # Validate message is not empty/whitespace (not required for react intent)
-            if intent != "react" and (not message or not message.strip()):
-                return {
-                    "status": "error",
-                    "error": "Message must not be empty or whitespace-only.",
-                }
-
-            _SUPPORTED_CHANNELS = {"telegram", "email"}
-            if channel not in _SUPPORTED_CHANNELS:
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Unsupported channel '{channel}'. "
-                        f"Supported channels: {', '.join(sorted(_SUPPORTED_CHANNELS))}"
-                    ),
-                }
-
-            if intent not in {"send", "reply", "react", "insight"}:
-                return {
-                    "status": "error",
-                    "error": "Unsupported notify intent. Supported intents: send, reply, react, insight",  # noqa: E501
-                }
-
-            # React intent validation
-            if intent == "react":
-                if not emoji:
                     return {
-                        "status": "error",
-                        "error": "React intent requires emoji parameter.",
+                        "id": task_id,
+                        "status": "updated",
                     }
-                if channel not in {"telegram"}:
-                    return {
-                        "status": "error",
-                        "error": (
-                            f"React intent is not supported for channel '{channel}'. "
-                            "Only telegram supports reactions."
-                        ),
-                    }
-                if not request_context or not request_context.get("source_thread_identity"):
-                    return {
-                        "status": "error",
-                        "error": (
-                            "React intent requires request_context with source_thread_identity."
-                        ),
-                    }
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            # Priority validation
-            from butlers.core.temporal.delivery_db import _VALID_PRIORITIES as _VP
-
-            if priority not in _VP:
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Invalid priority {priority!r}. Allowed values: {', '.join(sorted(_VP))}"
+            @mcp.tool()
+            async def deadline_list(
+                status_filter: Annotated[
+                    str | None,
+                    Field(
+                        description=(
+                            "Optional status filter. "
+                            "Valid values: pending, alerted, escalated, completed, expired. "
+                            "Omit to list all deadlines."
+                        )
                     ),
-                }
+                ] = None,
+            ) -> list[dict]:
+                """List all deadline tasks, optionally filtered by status.
 
-            # Quiet-hours gate: check delivery preferences and defer if needed
-            _notify_pool = daemon.db.pool if daemon.db is not None else None
-            if _notify_pool is not None and intent in {"send", "insight"}:
-                from datetime import UTC as _UTC
-                from datetime import datetime as _datetime
-                from zoneinfo import ZoneInfo as _ZoneInfo
+                Returns deadlines sorted by target_date (soonest first).
+                """
+                deadlines = await _deadline_list(pool, status=status_filter)
+                return deadlines
 
-                from butlers.core.temporal.delivery import (
-                    compute_deliver_at,
-                    should_defer_notification,
-                )
-                from butlers.core.temporal.delivery_db import (
-                    get_delivery_preferences,
-                    insert_deferred_notification,
-                )
+            @mcp.tool()
+            async def deadline_delete(
+                task_id: Annotated[str, Field(description="UUID of the deadline task to delete.")],
+            ) -> dict:
+                """Delete a runtime deadline task.
 
+                TOML-sourced deadlines cannot be deleted via this tool — remove them
+                from butler.toml instead.
+                """
                 try:
-                    _prefs = await get_delivery_preferences(_notify_pool, butler_name)
-                except Exception:
-                    # Table may not exist yet or pool unavailable; deliver immediately
-                    logger.exception(
-                        "notify() failed to fetch delivery preferences; delivering immediately"
-                    )
-                    _prefs = None
-                if _prefs is not None:
-                    _tz_name = _prefs.get("timezone", "UTC")
-                    try:
-                        _tz = _ZoneInfo(_tz_name)
-                    except Exception:
-                        _tz = _ZoneInfo("UTC")
-                    _now_utc = _datetime.now(_UTC)
-                    _now_local = _now_utc.astimezone(_tz).time()
+                    await _deadline_delete(pool, uuid.UUID(task_id))
+                    return {"id": task_id, "status": "deleted"}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-                    if should_defer_notification(
-                        priority=priority,
-                        current_time=_now_local,
-                        prefs=_prefs,
-                        channel=channel,
-                    ):
-                        # Build notify.v1 envelope to persist
-                        _envelope: dict[str, Any] = {
-                            "schema_version": "notify.v1",
-                            "origin_butler": butler_name,
-                            "delivery": {
-                                "intent": intent,
-                                "channel": channel,
-                                "message": message or "",
-                            },
-                        }
-                        if subject is not None:
-                            _envelope["delivery"]["subject"] = subject
-                        if recipient is not None:
-                            _envelope["delivery"]["recipient"] = recipient
-                        if request_context is not None:
-                            _envelope["request_context"] = request_context
+            @mcp.tool()
+            async def schedule_trigger(task_id: str | None = None, id: str | None = None) -> dict:
+                """Trigger a scheduled task immediately (one-off dispatch).
 
-                        _deliver_at = compute_deliver_at(prefs=_prefs, now=_now_utc)
-                        try:
-                            _notif_id = await insert_deferred_notification(
-                                _notify_pool,
-                                butler_name=butler_name,
-                                channel=channel,
-                                message=message or "",
-                                priority=priority,
-                                envelope=_envelope,
-                                deliver_at=_deliver_at,
-                                deferred_at=_now_utc,
-                            )
-                            logger.info(
-                                "notify() deferred notification %s (priority=%s) to %s",
-                                _notif_id,
-                                priority,
-                                _deliver_at.isoformat(),
-                            )
-                            return {
-                                "status": "deferred",
-                                "notification_id": _notif_id,
-                                "deliver_at": _deliver_at.isoformat(),
-                                "channel": channel,
-                                "priority": priority,
-                            }
-                        except Exception:
-                            # If we can't persist, fall through to immediate delivery
-                            logger.exception(
-                                "notify() failed to defer notification; delivering immediately"
-                            )
+                Dispatches the task via the same mechanism as the scheduler tick
+                but does NOT advance next_run_at — this is a manual one-off run.
+                Updates last_run_at and last_result.
+                """
+                resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_trigger")
+                task_uuid = uuid.UUID(resolved_id)
 
-            client = daemon.switchboard_client
-            if client is None and butler_name != "switchboard":
-                return {
-                    "status": "error",
-                    "error": (
-                        "Switchboard is not connected. Cannot deliver notification. "
-                        "The Switchboard butler may not be running — this is a transient "
-                        "infrastructure issue, not a parameter error. Retry after a delay "
-                        "or check butler status."
-                    ),
-                    "retryable": True,
-                }
-
-            # Resolution priority:
-            # (1) contact_id → query public.contact_info WHERE contact_id = X AND type = channel
-            # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
-            # (3) neither → resolve owner entity's channel identifier (default path)
-            if contact_id is not None:
-                contact_identifier = await daemon._resolve_contact_channel_identifier(
-                    contact_id=contact_id,
-                    channel=channel,
+                row = await pool.fetchrow(
+                    "SELECT id, name, dispatch_mode, prompt, job_name, job_args, complexity "
+                    "FROM scheduled_tasks WHERE id = $1",
+                    task_uuid,
                 )
-                if contact_identifier is None:
-                    # No matching contact_info entry — park as pending_action and notify owner
-                    action_id: uuid.UUID | None = None
+                if row is None:
+                    return {"id": resolved_id, "status": "error", "error": "Schedule not found"}
+
+                name = row["name"]
+                dispatch_mode = row["dispatch_mode"] or "prompt"
+                prompt = row["prompt"]
+                job_name = row["job_name"]
+                raw_job_args = row["job_args"]
+                job_args = (
+                    json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
+                )
+                task_complexity = _parse_complexity_from_db_row(row, name)
+
+                now = datetime.now(UTC)
+                try:
+                    if dispatch_mode == "job":
+                        result = await daemon._dispatch_scheduled_task(
+                            trigger_source=f"schedule:{name}",
+                            job_name=job_name,
+                            job_args=job_args,
+                        )
+                    else:
+                        result = await daemon._dispatch_scheduled_task(
+                            trigger_source=f"schedule:{name}",
+                            prompt=prompt,
+                            complexity=task_complexity,
+                        )
+
+                    # Serialize dispatch result for JSONB storage
+                    if result is None:
+                        result_json = None
+                    elif hasattr(result, "__dict__") and not isinstance(result, type):
+                        result_json = json.dumps(result.__dict__, default=str)
+                    elif isinstance(result, dict):
+                        result_json = json.dumps(result, default=str)
+                    else:
+                        result_json = json.dumps({"result": str(result)}, default=str)
+                    await pool.execute(
+                        "UPDATE scheduled_tasks "
+                        "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
+                        "WHERE id = $1",
+                        task_uuid,
+                        now,
+                        result_json,
+                    )
+                    return {"id": resolved_id, "status": "triggered", "name": name}
+                except Exception as exc:
+                    logger.exception("Manual trigger failed for schedule %s", name)
+                    error_json = json.dumps({"error": str(exc)})
+                    await pool.execute(
+                        "UPDATE scheduled_tasks "
+                        "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
+                        "WHERE id = $1",
+                        task_uuid,
+                        now,
+                        error_json,
+                    )
+                    return {"id": resolved_id, "status": "error", "error": str(exc)}
+
+            # Session tools
+            @mcp.tool()
+            async def sessions_list(limit: int = 20, offset: int = 0) -> list[dict]:
+                """List sessions ordered by most recent first."""
+                sessions = await _sessions_list(pool, limit, offset)
+                for s in sessions:
+                    s["id"] = str(s["id"])
+                return sessions
+
+            @mcp.tool()
+            async def sessions_get(session_id: str) -> dict | None:
+                """Get a session by ID."""
+                session = await _sessions_get(pool, uuid.UUID(session_id))
+                if session:
+                    session["id"] = str(session["id"])
+                return session
+
+            @mcp.tool()
+            async def sessions_summary(period: str = "today") -> dict:
+                """Return aggregate session/token stats for a period."""
+                return await _sessions_summary(pool, period)
+
+            @mcp.tool()
+            async def sessions_daily(from_date: str, to_date: str) -> dict:
+                """Return daily session/token aggregates for a date range."""
+                return await _sessions_daily(pool, from_date, to_date)
+
+            @mcp.tool()
+            async def top_sessions(limit: int = 10) -> dict:
+                """Return the highest-token completed sessions."""
+                return await _top_sessions(pool, limit)
+
+            @mcp.tool()
+            async def schedule_costs() -> dict:
+                """Return per-schedule token usage aggregates."""
+                return await _schedule_costs(pool)
+
+            # Notification tool
+            @mcp.tool()
+            @tool_span("notify", butler_name=butler_name)
+            async def notify(
+                channel: Annotated[
+                    Literal["telegram", "email", "whatsapp"],
+                    Field(
+                        description="Delivery channel. Allowed values: telegram | email | whatsapp."
+                    ),
+                ],
+                message: Annotated[
+                    str | None,
+                    Field(description="Message text. Required for send/reply intents."),
+                ] = None,
+                recipient: Annotated[
+                    str | None,
+                    Field(description="Optional explicit recipient identity (for example email)."),
+                ] = None,
+                subject: Annotated[
+                    str | None,
+                    Field(description="Optional subject line (email channel)."),
+                ] = None,
+                intent: Annotated[
+                    Literal["send", "reply", "react", "insight"],
+                    Field(
+                        description=(
+                            "Delivery intent. Allowed values:"
+                            " send | reply | react | insight."
+                        )
+                    ),
+                ] = "send",
+                emoji: Annotated[
+                    str | None,
+                    Field(description="Required when intent=react."),
+                ] = None,
+                request_context: Annotated[
+                    NotifyRequestContextInput | None,
+                    Field(
+                        description=(
+                            "Context lineage for reply/react targeting. Must be a "
+                            "dict/object — do NOT pass as a JSON string. Required keys "
+                            "for reply/react: request_id, source_channel, "
+                            "source_endpoint_identity, source_sender_identity. For "
+                            "telegram reply/react include source_thread_identity. "
+                            "Do not pass placeholder strings such as "
+                            '"<the REQUEST CONTEXT object...>".'
+                        )
+                    ),
+                ] = None,
+                contact_id: Annotated[
+                    uuid.UUID | None,
+                    Field(
+                        description=(
+                            "Optional contact UUID. When provided, the channel"
+                            " identifier is resolved "
+                            "from public.contact_info (primary entry preferred). If no matching "
+                            "contact_info entry exists, the notification is parked as a "
+                            "pending_action and {status: pending_missing_identifier} is returned."
+                        )
+                    ),
+                ] = None,
+                priority: Annotated[
+                    Literal["high", "medium", "low"],
+                    Field(
+                        description=(
+                            "Notification priority for quiet-hours enforcement. "
+                            "Allowed values: high | medium | low. Default: medium. "
+                            "high — always delivers immediately (bypasses quiet hours). "
+                            "medium — deferred during quiet hours. "
+                            "low — deferred during quiet hours."
+                        )
+                    ),
+                ] = "medium",
+            ) -> dict:
+                """Send a `notify.v1` envelope through Switchboard `deliver()`.
+
+                Required fields:
+                - `channel` (string enum): `telegram`, `email`, or `whatsapp`
+                - `message` (string): required for `send`/`reply`, omitted for `react`
+
+                Optional fields:
+                - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
+                - `contact_id` (UUID): resolve recipient from public.contact_info; primary entry
+                  preferred. If no matching entry exists the notification is parked as a
+                  pending_action
+                  and `{"status": "pending_missing_identifier"}` is returned.
+                - `subject` (string)
+                - `intent` (string enum): `send` | `reply` | `react` | `insight`
+                - `emoji` (string): required when `intent="react"`
+                - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
+                  include `request_id`, `source_channel`, `source_endpoint_identity`,
+                  `source_sender_identity` plus `source_thread_identity` for
+                  telegram `reply`/`react`.
+                  Pass an object value, not a quoted placeholder string.
+
+                Recipient resolution priority:
+                1. `contact_id` provided → look up channel identifier from public.contact_info
+                2. `recipient` string provided → use as-is
+                3. Neither → resolve owner entity's channel identifier (default)
+
+                Valid JSON example:
+                {
+                  "channel": "telegram",
+                  "intent": "reply",
+                  "message": "Done. I logged it.",
+                  "request_context": {
+                    "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+                    "source_channel": "telegram_bot",
+                    "source_endpoint_identity": "switchboard",
+                    "source_sender_identity": "health",
+                    "source_thread_identity": "12345"
+                  }
+                }
+                """
+                # Validate message is present (not required for react intent)
+                if intent != "react" and message is None:
+                    logger.error(
+                        "notify() called without required 'message' parameter: "
+                        "channel=%r, intent=%r, emoji=%r, request_context=%r",
+                        channel,
+                        intent,
+                        emoji,
+                        request_context,
+                    )
+                    return {
+                        "status": "error",
+                        "error": (
+                            "Missing required 'message' parameter. "
+                            "notify() requires: channel, message, request_context."
+                        ),
+                    }
+
+                # Validate message is not empty/whitespace (not required for react intent)
+                if intent != "react" and (not message or not message.strip()):
+                    return {
+                        "status": "error",
+                        "error": "Message must not be empty or whitespace-only.",
+                    }
+
+                _SUPPORTED_CHANNELS = {"telegram", "email"}
+                if channel not in _SUPPORTED_CHANNELS:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"Unsupported channel '{channel}'. "
+                            f"Supported channels: {', '.join(sorted(_SUPPORTED_CHANNELS))}"
+                        ),
+                    }
+
+                if intent not in {"send", "reply", "react", "insight"}:
+                    return {
+                        "status": "error",
+                        "error": "Unsupported notify intent. Supported intents: send, reply, react, insight",  # noqa: E501
+                    }
+
+                # React intent validation
+                if intent == "react":
+                    if not emoji:
+                        return {
+                            "status": "error",
+                            "error": "React intent requires emoji parameter.",
+                        }
+                    if channel not in {"telegram"}:
+                        return {
+                            "status": "error",
+                            "error": (
+                                f"React intent is not supported for channel '{channel}'. "
+                                "Only telegram supports reactions."
+                            ),
+                        }
+                    if not request_context or not request_context.get("source_thread_identity"):
+                        return {
+                            "status": "error",
+                            "error": (
+                                "React intent requires request_context with source_thread_identity."
+                            ),
+                        }
+
+                # Priority validation
+                from butlers.core.temporal.delivery_db import _VALID_PRIORITIES as _VP
+
+                if priority not in _VP:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"Invalid priority {priority!r}. "
+                            f"Allowed values: {', '.join(sorted(_VP))}"
+                        ),
+                    }
+
+                # Quiet-hours gate: check delivery preferences and defer if needed
+                _notify_pool = daemon.db.pool if daemon.db is not None else None
+                if _notify_pool is not None and intent in {"send", "insight"}:
+                    from datetime import UTC as _UTC
+                    from datetime import datetime as _datetime
+                    from zoneinfo import ZoneInfo as _ZoneInfo
+
+                    from butlers.core.temporal.delivery import (
+                        compute_deliver_at,
+                        should_defer_notification,
+                    )
+                    from butlers.core.temporal.delivery_db import (
+                        get_delivery_preferences,
+                        insert_deferred_notification,
+                    )
+
+                    try:
+                        _prefs = await get_delivery_preferences(_notify_pool, butler_name)
+                    except Exception:
+                        # Table may not exist yet or pool unavailable; deliver immediately
+                        logger.exception(
+                            "notify() failed to fetch delivery preferences; delivering immediately"
+                        )
+                        _prefs = None
+                    if _prefs is not None:
+                        _tz_name = _prefs.get("timezone", "UTC")
+                        try:
+                            _tz = _ZoneInfo(_tz_name)
+                        except Exception:
+                            _tz = _ZoneInfo("UTC")
+                        _now_utc = _datetime.now(_UTC)
+                        _now_local = _now_utc.astimezone(_tz).time()
+
+                        if should_defer_notification(
+                            priority=priority,
+                            current_time=_now_local,
+                            prefs=_prefs,
+                            channel=channel,
+                        ):
+                            # Build notify.v1 envelope to persist
+                            _envelope: dict[str, Any] = {
+                                "schema_version": "notify.v1",
+                                "origin_butler": butler_name,
+                                "delivery": {
+                                    "intent": intent,
+                                    "channel": channel,
+                                    "message": message or "",
+                                },
+                            }
+                            if subject is not None:
+                                _envelope["delivery"]["subject"] = subject
+                            if recipient is not None:
+                                _envelope["delivery"]["recipient"] = recipient
+                            if request_context is not None:
+                                _envelope["request_context"] = request_context
+
+                            _deliver_at = compute_deliver_at(prefs=_prefs, now=_now_utc)
+                            try:
+                                _notif_id = await insert_deferred_notification(
+                                    _notify_pool,
+                                    butler_name=butler_name,
+                                    channel=channel,
+                                    message=message or "",
+                                    priority=priority,
+                                    envelope=_envelope,
+                                    deliver_at=_deliver_at,
+                                    deferred_at=_now_utc,
+                                )
+                                logger.info(
+                                    "notify() deferred notification %s (priority=%s) to %s",
+                                    _notif_id,
+                                    priority,
+                                    _deliver_at.isoformat(),
+                                )
+                                return {
+                                    "status": "deferred",
+                                    "notification_id": _notif_id,
+                                    "deliver_at": _deliver_at.isoformat(),
+                                    "channel": channel,
+                                    "priority": priority,
+                                }
+                            except Exception:
+                                # If we can't persist, fall through to immediate delivery
+                                logger.exception(
+                                    "notify() failed to defer notification; delivering immediately"
+                                )
+
+                client = daemon.switchboard_client
+                if client is None and butler_name != "switchboard":
+                    return {
+                        "status": "error",
+                        "error": (
+                            "Switchboard is not connected. Cannot deliver notification. "
+                            "The Switchboard butler may not be running — this is a transient "
+                            "infrastructure issue, not a parameter error. Retry after a delay "
+                            "or check butler status."
+                        ),
+                        "retryable": True,
+                    }
+
+                # Resolution priority:
+                # (1) contact_id → query public.contact_info WHERE contact_id = X AND type = channel
+                # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
+                # (3) neither → resolve owner entity's channel identifier (default path)
+                if contact_id is not None:
+                    contact_identifier = await daemon._resolve_contact_channel_identifier(
+                        contact_id=contact_id,
+                        channel=channel,
+                    )
+                    if contact_identifier is None:
+                        # No matching contact_info entry — park as pending_action and notify owner
+                        action_id: uuid.UUID | None = None
+                        pool = daemon.db.pool if daemon.db is not None else None
+                        if pool is not None:
+                            import datetime as _dt
+
+                            from butlers.modules.approvals.models import ActionStatus
+
+                            action_id = uuid.uuid4()
+                            now = _dt.datetime.now(_dt.UTC)
+                            expires_at = now + _dt.timedelta(hours=72)
+                            info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
+                            agent_summary = (
+                                f"notify() could not deliver a {channel!r} notification: "
+                                f"contact {contact_id} has no {info_type!r} identifier in "
+                                f"public.contact_info. The message was: {message!r}. "
+                                f"To resolve, add a {info_type!r} contact_info entry for this "
+                                f"contact and re-trigger the notification."
+                            )
+                            await pool.execute(
+                                "INSERT INTO pending_actions "
+                                "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                                "requested_at, expires_at) "
+                                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                                action_id,
+                                "notify",
+                                json.dumps(
+                                    {
+                                        "channel": channel,
+                                        "message": message,
+                                        "contact_id": str(contact_id),
+                                        "intent": intent,
+                                    }
+                                ),
+                                agent_summary,
+                                get_current_runtime_session_id(),
+                                ActionStatus.PENDING.value,
+                                now,
+                                expires_at,
+                            )
+                            logger.warning(
+                                "notify() parked as pending_missing_identifier: "
+                                "contact_id=%s has no %r contact_info entry (action=%s)",
+                                contact_id,
+                                info_type,
+                                action_id,
+                            )
+                        # Notify the owner about the missing identifier.
+                        # Note: _resolve_default_notify_recipient only handles telegram+send;
+                        # owner_identifier will be None for non-telegram channels.
+                        owner_identifier = await daemon._resolve_default_notify_recipient(
+                            channel=channel,
+                            intent="send",
+                            recipient=None,
+                        )
+                        if owner_identifier is not None:
+                            owner_notify_request: dict[str, Any] = {
+                                "schema_version": "notify.v1",
+                                "origin_butler": butler_name,
+                                "delivery": {
+                                    "intent": "send",
+                                    "channel": channel,
+                                    "message": (
+                                        f"A notification could not be delivered to contact "
+                                        f"{contact_id} via {channel!r}: missing {info_type!r} "
+                                        f"channel identifier. The pending action has been queued "
+                                        f"for review."
+                                    ),
+                                    "recipient": owner_identifier,
+                                },
+                            }
+                            try:
+                                if client is not None:
+                                    await asyncio.wait_for(
+                                        client.call_tool(
+                                            "deliver",
+                                            {
+                                                "source_butler": butler_name,
+                                                "notify_request": owner_notify_request,
+                                            },
+                                        ),
+                                        timeout=15,
+                                    )
+                                elif butler_name == "switchboard":
+                                    _owner_pool = daemon.db.pool if daemon.db is not None else None
+                                    if _owner_pool is not None:
+                                        from butlers.tools.switchboard.notification.deliver import (
+                                            deliver as _sw_deliver,
+                                        )
+
+                                        await _sw_deliver(
+                                            _owner_pool,
+                                            source_butler=butler_name,
+                                            notify_request=owner_notify_request,
+                                        )
+                            except Exception as _owner_exc:  # noqa: BLE001
+                                logger.warning(
+                                    "notify() failed to alert owner about missing identifier: %s",
+                                    _owner_exc,
+                                )
+                        return {
+                            "status": "pending_missing_identifier",
+                            "contact_id": str(contact_id),
+                            "channel": channel,
+                            "pending_action_id": str(action_id) if action_id is not None else None,
+                        }
+                    resolved_recipient = contact_identifier
+                else:
+                    resolved_recipient = await daemon._resolve_default_notify_recipient(
+                        channel=channel,
+                        intent=intent,
+                        recipient=recipient,
+                        request_context=request_context,
+                    )
+
+                if (
+                    channel == "telegram"
+                    and intent in {"send", "insight"}
+                    and resolved_recipient is None
+                ):
+                    return {
+                        "status": "error",
+                        "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,
+                    }
+
+                # Validate email recipients against known contacts.
+                # This prevents LLM-hallucinated addresses from reaching delivery.
+                # NOTE: runs regardless of whether contact_id was used for resolution.
+                # The contact_id path resolves to an email address but does NOT verify
+                # that the address belongs to a known, non-temporary contact.
+                if channel == "email" and resolved_recipient is not None:
                     pool = daemon.db.pool if daemon.db is not None else None
                     if pool is not None:
-                        import datetime as _dt
+                        from butlers.modules.approvals.email_guard import (
+                            check_email_recipient,
+                        )
 
-                        from butlers.modules.approvals.models import ActionStatus
-
-                        action_id = uuid.uuid4()
-                        now = _dt.datetime.now(_dt.UTC)
-                        expires_at = now + _dt.timedelta(hours=72)
-                        info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
-                        agent_summary = (
-                            f"notify() could not deliver a {channel!r} notification: "
-                            f"contact {contact_id} has no {info_type!r} identifier in "
-                            f"public.contact_info. The message was: {message!r}. "
-                            f"To resolve, add a {info_type!r} contact_info entry for this "
-                            f"contact and re-trigger the notification."
-                        )
-                        await pool.execute(
-                            "INSERT INTO pending_actions "
-                            "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                            "requested_at, expires_at) "
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                            action_id,
-                            "notify",
-                            json.dumps(
-                                {
-                                    "channel": channel,
-                                    "message": message,
-                                    "contact_id": str(contact_id),
-                                    "intent": intent,
-                                }
-                            ),
-                            agent_summary,
-                            get_current_runtime_session_id(),
-                            ActionStatus.PENDING.value,
-                            now,
-                            expires_at,
-                        )
-                        logger.warning(
-                            "notify() parked as pending_missing_identifier: "
-                            "contact_id=%s has no %r contact_info entry (action=%s)",
-                            contact_id,
-                            info_type,
-                            action_id,
-                        )
-                    # Notify the owner about the missing identifier.
-                    # Note: _resolve_default_notify_recipient only handles telegram+send;
-                    # owner_identifier will be None for non-telegram channels.
-                    owner_identifier = await daemon._resolve_default_notify_recipient(
-                        channel=channel,
-                        intent="send",
-                        recipient=None,
-                    )
-                    if owner_identifier is not None:
-                        owner_notify_request: dict[str, Any] = {
-                            "schema_version": "notify.v1",
-                            "origin_butler": butler_name,
-                            "delivery": {
-                                "intent": "send",
-                                "channel": channel,
-                                "message": (
-                                    f"A notification could not be delivered to contact "
-                                    f"{contact_id} via {channel!r}: missing {info_type!r} "
-                                    f"channel identifier. The pending action has been queued "
-                                    f"for review."
-                                ),
-                                "recipient": owner_identifier,
-                            },
+                        _notify_args = {
+                            "channel": channel,
+                            "message": message,
+                            "recipient": resolved_recipient,
+                            "intent": intent,
                         }
-                        try:
-                            if client is not None:
-                                await asyncio.wait_for(
-                                    client.call_tool(
-                                        "deliver",
-                                        {
-                                            "source_butler": butler_name,
-                                            "notify_request": owner_notify_request,
-                                        },
-                                    ),
-                                    timeout=15,
-                                )
-                            elif butler_name == "switchboard":
-                                _owner_pool = daemon.db.pool if daemon.db is not None else None
-                                if _owner_pool is not None:
-                                    from butlers.tools.switchboard.notification.deliver import (
-                                        deliver as _sw_deliver,
-                                    )
+                        _decision = await check_email_recipient(
+                            pool,
+                            email_target=resolved_recipient,
+                            rule_tool_name="notify",
+                            rule_match_args=_notify_args,
+                            park_tool_name="notify",
+                            park_tool_args=_notify_args,
+                            park_summary=(
+                                f"notify() rejected: email to "
+                                f"{resolved_recipient!r}. Message: {message!r}"
+                            ),
+                            session_id=get_current_runtime_session_id(),
+                        )
+                        if not _decision.allowed:
+                            return {
+                                "status": "pending_approval",
+                                "error": (
+                                    f"Delivery blocked: email target "
+                                    f"'{resolved_recipient}' is a "
+                                    f"{_decision.contact_desc} "
+                                    f"and no standing approval rule matches. "
+                                    f"Create a standing rule or approve via the "
+                                    f"approval dashboard."
+                                ),
+                                "pending_action_id": str(_decision.action_id),
+                            }
 
-                                    await _sw_deliver(
-                                        _owner_pool,
-                                        source_butler=butler_name,
-                                        notify_request=owner_notify_request,
-                                    )
-                        except Exception as _owner_exc:  # noqa: BLE001
-                            logger.warning(
-                                "notify() failed to alert owner about missing identifier: %s",
-                                _owner_exc,
-                            )
-                    return {
-                        "status": "pending_missing_identifier",
-                        "contact_id": str(contact_id),
+                delivery_message = message if message is not None else ""
+                notify_request: dict[str, Any] = {
+                    "schema_version": "notify.v1",
+                    "origin_butler": butler_name,
+                    "delivery": {
+                        "intent": intent,
                         "channel": channel,
-                        "pending_action_id": str(action_id) if action_id is not None else None,
-                    }
-                resolved_recipient = contact_identifier
-            else:
-                resolved_recipient = await daemon._resolve_default_notify_recipient(
-                    channel=channel,
-                    intent=intent,
-                    recipient=recipient,
-                    request_context=request_context,
-                )
+                        "message": delivery_message,
+                    },
+                }
+                if emoji is not None:
+                    notify_request["delivery"]["emoji"] = emoji
+                if resolved_recipient is not None:
+                    notify_request["delivery"]["recipient"] = resolved_recipient
+                if subject is not None:
+                    notify_request["delivery"]["subject"] = subject
+                if request_context is not None:
+                    notify_request["request_context"] = request_context
 
-            if (
-                channel == "telegram"
-                and intent in {"send", "insight"}
-                and resolved_recipient is None
-            ):
-                return {
-                    "status": "error",
-                    "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,
+                deliver_args: dict[str, Any] = {
+                    "source_butler": butler_name,
+                    "notify_request": notify_request,
                 }
 
-            # Validate email recipients against known contacts.
-            # This prevents LLM-hallucinated addresses from reaching delivery.
-            # NOTE: runs regardless of whether contact_id was used for resolution.
-            # The contact_id path resolves to an email address but does NOT verify
-            # that the address belongs to a known, non-temporary contact.
-            if channel == "email" and resolved_recipient is not None:
-                pool = daemon.db.pool if daemon.db is not None else None
-                if pool is not None:
-                    from butlers.modules.approvals.email_guard import (
-                        check_email_recipient,
-                    )
-
-                    _notify_args = {
-                        "channel": channel,
-                        "message": message,
-                        "recipient": resolved_recipient,
-                        "intent": intent,
-                    }
-                    _decision = await check_email_recipient(
-                        pool,
-                        email_target=resolved_recipient,
-                        rule_tool_name="notify",
-                        rule_match_args=_notify_args,
-                        park_tool_name="notify",
-                        park_tool_args=_notify_args,
-                        park_summary=(
-                            f"notify() rejected: email to "
-                            f"{resolved_recipient!r}. Message: {message!r}"
-                        ),
-                        session_id=get_current_runtime_session_id(),
-                    )
-                    if not _decision.allowed:
+                # Switchboard self-delivery: call deliver() directly instead of
+                # proxying through switchboard_client (which is None on switchboard).
+                if client is None and butler_name == "switchboard":
+                    pool = daemon.db.pool if daemon.db is not None else None
+                    if pool is None:
                         return {
-                            "status": "pending_approval",
-                            "error": (
-                                f"Delivery blocked: email target "
-                                f"'{resolved_recipient}' is a "
-                                f"{_decision.contact_desc} "
-                                f"and no standing approval rule matches. "
-                                f"Create a standing rule or approve via the "
-                                f"approval dashboard."
-                            ),
-                            "pending_action_id": str(_decision.action_id),
+                            "status": "error",
+                            "error": "Database not available for direct delivery.",
                         }
+                    from butlers.tools.switchboard.notification.deliver import (
+                        deliver as switchboard_deliver,
+                    )
 
-            delivery_message = message if message is not None else ""
-            notify_request: dict[str, Any] = {
-                "schema_version": "notify.v1",
-                "origin_butler": butler_name,
-                "delivery": {
-                    "intent": intent,
-                    "channel": channel,
-                    "message": delivery_message,
-                },
-            }
-            if emoji is not None:
-                notify_request["delivery"]["emoji"] = emoji
-            if resolved_recipient is not None:
-                notify_request["delivery"]["recipient"] = resolved_recipient
-            if subject is not None:
-                notify_request["delivery"]["subject"] = subject
-            if request_context is not None:
-                notify_request["request_context"] = request_context
+                    try:
+                        result = await switchboard_deliver(
+                            pool,
+                            source_butler=butler_name,
+                            notify_request=notify_request,
+                        )
+                        status = result.get("status", "sent")
+                        if status == "failed":
+                            return {
+                                "status": "error",
+                                "error": result.get("error", "Delivery failed"),
+                            }
+                        return {"status": "ok", "result": result}
+                    except Exception as exc:
+                        logger.warning(
+                            "notify() direct deliver failed for switchboard: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                        return {"status": "error", "error": f"Direct delivery failed: {exc}"}
 
-            deliver_args: dict[str, Any] = {
-                "source_butler": butler_name,
-                "notify_request": notify_request,
-            }
-
-            # Switchboard self-delivery: call deliver() directly instead of
-            # proxying through switchboard_client (which is None on switchboard).
-            if client is None and butler_name == "switchboard":
-                pool = daemon.db.pool if daemon.db is not None else None
-                if pool is None:
+                _NOTIFY_TIMEOUT_S = 30
+                try:
+                    result = await asyncio.wait_for(
+                        client.call_tool("deliver", deliver_args),
+                        timeout=_NOTIFY_TIMEOUT_S,
+                    )
+                    # FastMCP call_tool returns a CallToolResult
+                    if result.is_error:
+                        # Extract error text from the result content
+                        error_text = (
+                            str(result.content[0].text) if result.content else "Unknown error"
+                        )
+                        return {"status": "error", "error": error_text}
+                    # Check inner payload for delivery-level failures (e.g. validation
+                    # errors from Switchboard/Messenger that don't raise MCP errors).
+                    data = result.data
+                    if isinstance(data, dict) and data.get("status") == "failed":
+                        return {
+                            "status": "error",
+                            "error": data.get("error", "Delivery failed"),
+                            "error_class": data.get("error_class", "delivery_error"),
+                            "retryable": data.get("retryable", False),
+                            "notification_id": data.get("notification_id"),
+                        }
+                    return {"status": "ok", "result": data}
+                except TimeoutError:
+                    logger.warning(
+                        "notify() timed out after %ds for butler %s",
+                        _NOTIFY_TIMEOUT_S,
+                        butler_name,
+                    )
                     return {
                         "status": "error",
-                        "error": "Database not available for direct delivery.",
+                        "error": (
+                            f"Switchboard call timed out after {_NOTIFY_TIMEOUT_S}s. "
+                            "The Switchboard may be overloaded or unresponsive. "
+                            "This is a transient error — retry after a brief delay."
+                        ),
+                        "retryable": True,
                     }
-                from butlers.tools.switchboard.notification.deliver import (
-                    deliver as switchboard_deliver,
-                )
-
-                try:
-                    result = await switchboard_deliver(
-                        pool,
-                        source_butler=butler_name,
-                        notify_request=notify_request,
-                    )
-                    status = result.get("status", "sent")
-                    if status == "failed":
-                        return {"status": "error", "error": result.get("error", "Delivery failed")}
-                    return {"status": "ok", "result": result}
-                except Exception as exc:
+                except (ConnectionError, OSError) as exc:
                     logger.warning(
-                        "notify() direct deliver failed for switchboard: %s",
+                        "notify() could not reach Switchboard for butler %s: %s",
+                        butler_name,
                         exc,
                         exc_info=True,
                     )
-                    return {"status": "error", "error": f"Direct delivery failed: {exc}"}
-
-            _NOTIFY_TIMEOUT_S = 30
-            try:
-                result = await asyncio.wait_for(
-                    client.call_tool("deliver", deliver_args),
-                    timeout=_NOTIFY_TIMEOUT_S,
-                )
-                # FastMCP call_tool returns a CallToolResult
-                if result.is_error:
-                    # Extract error text from the result content
-                    error_text = str(result.content[0].text) if result.content else "Unknown error"
-                    return {"status": "error", "error": error_text}
-                # Check inner payload for delivery-level failures (e.g. validation
-                # errors from Switchboard/Messenger that don't raise MCP errors).
-                data = result.data
-                if isinstance(data, dict) and data.get("status") == "failed":
                     return {
                         "status": "error",
-                        "error": data.get("error", "Delivery failed"),
-                        "error_class": data.get("error_class", "delivery_error"),
-                        "retryable": data.get("retryable", False),
-                        "notification_id": data.get("notification_id"),
+                        "error": (
+                            f"Switchboard unreachable: {exc}. "
+                            "The Switchboard process may have stopped or restarted. "
+                            "This is a transient error — retry after a brief delay."
+                        ),
+                        "retryable": True,
                     }
-                return {"status": "ok", "result": data}
-            except TimeoutError:
-                logger.warning(
-                    "notify() timed out after %ds for butler %s",
-                    _NOTIFY_TIMEOUT_S,
-                    butler_name,
-                )
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Switchboard call timed out after {_NOTIFY_TIMEOUT_S}s. "
-                        "The Switchboard may be overloaded or unresponsive. "
-                        "This is a transient error — retry after a brief delay."
-                    ),
-                    "retryable": True,
-                }
-            except (ConnectionError, OSError) as exc:
-                logger.warning(
-                    "notify() could not reach Switchboard for butler %s: %s",
-                    butler_name,
-                    exc,
-                    exc_info=True,
-                )
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Switchboard unreachable: {exc}. "
-                        "The Switchboard process may have stopped or restarted. "
-                        "This is a transient error — retry after a brief delay."
-                    ),
-                    "retryable": True,
-                }
-            except Exception as exc:
-                logger.warning(
-                    "notify() failed for butler %s: %s",
-                    butler_name,
-                    exc,
-                    exc_info=True,
-                )
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Switchboard call failed: {exc}. "
-                        "If this persists, check that all required parameters "
-                        "(channel, message, intent) are correct."
-                    ),
-                    "retryable": False,
-                }
+                except Exception as exc:
+                    logger.warning(
+                        "notify() failed for butler %s: %s",
+                        butler_name,
+                        exc,
+                        exc_info=True,
+                    )
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"Switchboard call failed: {exc}. "
+                            "If this persists, check that all required parameters "
+                            "(channel, message, intent) are correct."
+                        ),
+                        "retryable": False,
+                    }
 
-        # Delivery preferences and deferred notification tools
-        @mcp.tool()
-        async def delivery_preferences_set(
-            timezone: str,
-            quiet_hours_start: str | None = None,
-            quiet_hours_end: str | None = None,
-            batch_low_priority: bool | None = None,
-            batch_delivery_time: str | None = None,
-            override_channels: dict[str, Any] | None = None,
-        ) -> dict:
-            """Configure delivery preferences for quiet hours and batching.
+            # ----- Messenger-only: delivery preferences and deferred notifications.
+            if is_messenger:
 
-            Sets the butler's delivery preferences, which control when notifications
-            are delivered vs deferred. On first call, a row is created with defaults
-            for any unspecified fields.
+                @mcp.tool()
+                async def delivery_preferences_set(
+                    timezone: str,
+                    quiet_hours_start: str | None = None,
+                    quiet_hours_end: str | None = None,
+                    batch_low_priority: bool | None = None,
+                    batch_delivery_time: str | None = None,
+                    override_channels: dict[str, Any] | None = None,
+                ) -> dict:
+                    """Configure delivery preferences for quiet hours and batching.
 
-            Args:
-                timezone: IANA timezone string (required). Used to evaluate quiet hours
-                    in the user's local time. Example: 'America/New_York'.
-                quiet_hours_start: Quiet hours start in 'HH:MM' format (default '22:00').
-                quiet_hours_end: Quiet hours end in 'HH:MM' format (default '07:00').
-                batch_low_priority: If True, batch medium/low notifications during quiet
-                    hours and deliver at batch_delivery_time (default True).
-                batch_delivery_time: Time in 'HH:MM' format to flush deferred
-                    notifications (default '07:00').
-                override_channels: Per-channel quiet hours overrides as a dict mapping
-                    channel names to {quiet_hours_start, quiet_hours_end} dicts.
-                    Example: {'email': {'quiet_hours_start': '20:00', 'quiet_hours_end': '09:00'}}
+                    Sets the butler's delivery preferences, which control when notifications
+                    are delivered vs deferred. On first call, a row is created with defaults
+                    for any unspecified fields.
 
-            Returns:
-                The upserted delivery preferences row.
-            """
-            from butlers.core.temporal.delivery_db import upsert_delivery_preferences
+                    Args:
+                        timezone: IANA timezone string (required). Used to evaluate quiet hours
+                            in the user's local time. Example: 'America/New_York'.
+                        quiet_hours_start: Quiet hours start in 'HH:MM' format (default '22:00').
+                        quiet_hours_end: Quiet hours end in 'HH:MM' format (default '07:00').
+                        batch_low_priority: If True, batch medium/low notifications during quiet
+                            hours and deliver at batch_delivery_time (default True).
+                        batch_delivery_time: Time in 'HH:MM' format to flush deferred
+                            notifications (default '07:00').
+                        override_channels: Per-channel quiet hours overrides as a dict mapping
+                            channel names to {quiet_hours_start, quiet_hours_end} dicts.
+                            Example: {'email': {'quiet_hours_start': '20:00',
+                            'quiet_hours_end': '09:00'}}
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                result = await upsert_delivery_preferences(
-                    _db_pool,
-                    butler_name=butler_name,
-                    timezone=timezone,
-                    quiet_hours_start=quiet_hours_start,
-                    quiet_hours_end=quiet_hours_end,
-                    batch_low_priority=batch_low_priority,
-                    batch_delivery_time=batch_delivery_time,
-                    override_channels=override_channels,
-                )
-                return {"status": "ok", "preferences": result}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                    Returns:
+                        The upserted delivery preferences row.
+                    """
+                    from butlers.core.temporal.delivery_db import upsert_delivery_preferences
 
-        @mcp.tool()
-        async def delivery_preferences_get() -> dict:
-            """Get the current delivery preferences for this butler.
+                    _db_pool = daemon.db.pool if daemon.db is not None else None
+                    if _db_pool is None:
+                        return {"status": "error", "error": "Database not available."}
+                    try:
+                        result = await upsert_delivery_preferences(
+                            _db_pool,
+                            butler_name=butler_name,
+                            timezone=timezone,
+                            quiet_hours_start=quiet_hours_start,
+                            quiet_hours_end=quiet_hours_end,
+                            batch_low_priority=batch_low_priority,
+                            batch_delivery_time=batch_delivery_time,
+                            override_channels=override_channels,
+                        )
+                        return {"status": "ok", "preferences": result}
+                    except ValueError as exc:
+                        return {"status": "error", "error": str(exc)}
 
-            Returns the current delivery preferences, or a response indicating that
-            no preferences are configured (in which case no quiet hours enforcement
-            applies and all notifications deliver immediately).
+                @mcp.tool()
+                async def delivery_preferences_get() -> dict:
+                    """Get the current delivery preferences for this butler.
 
-            Returns:
-                Dict with 'preferences' key containing the current row, or
-                'preferences': None if no preferences are configured.
-            """
-            from butlers.core.temporal.delivery_db import get_delivery_preferences
+                    Returns the current delivery preferences, or a response indicating that
+                    no preferences are configured (in which case no quiet hours enforcement
+                    applies and all notifications deliver immediately).
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            prefs = await get_delivery_preferences(_db_pool, butler_name)
-            if prefs is None:
-                return {
-                    "status": "ok",
-                    "preferences": None,
-                    "message": (
-                        "No delivery preferences configured. "
-                        "All notifications deliver immediately (no quiet hours)."
-                    ),
-                }
-            return {"status": "ok", "preferences": prefs}
+                    Returns:
+                        Dict with 'preferences' key containing the current row, or
+                        'preferences': None if no preferences are configured.
+                    """
+                    from butlers.core.temporal.delivery_db import get_delivery_preferences
 
-        @mcp.tool()
-        async def deferred_notifications_list(
-            status: str | None = None,
-            limit: int = 100,
-        ) -> dict:
-            """List deferred notifications for this butler.
+                    _db_pool = daemon.db.pool if daemon.db is not None else None
+                    if _db_pool is None:
+                        return {"status": "error", "error": "Database not available."}
+                    prefs = await get_delivery_preferences(_db_pool, butler_name)
+                    if prefs is None:
+                        return {
+                            "status": "ok",
+                            "preferences": None,
+                            "message": (
+                                "No delivery preferences configured. "
+                                "All notifications deliver immediately (no quiet hours)."
+                            ),
+                        }
+                    return {"status": "ok", "preferences": prefs}
 
-            Args:
-                status: Optional filter. One of: pending | delivered | expired | cancelled.
-                    If omitted, all statuses are returned.
-                limit: Maximum number of rows to return (default 100).
+                @mcp.tool()
+                async def deferred_notifications_list(
+                    status: str | None = None,
+                    limit: int = 100,
+                ) -> dict:
+                    """List deferred notifications for this butler.
 
-            Returns:
-                Dict with 'notifications' list ordered by deliver_at ascending.
-            """
-            from butlers.core.temporal.delivery_db import list_deferred_notifications
+                    Args:
+                        status: Optional filter. One of: pending | delivered | expired | cancelled.
+                            If omitted, all statuses are returned.
+                        limit: Maximum number of rows to return (default 100).
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                notifications = await list_deferred_notifications(
-                    _db_pool,
-                    butler_name=butler_name,
-                    status=status,
-                    limit=limit,
-                )
-                return {
-                    "status": "ok",
-                    "notifications": notifications,
-                    "count": len(notifications),
-                }
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                    Returns:
+                        Dict with 'notifications' list ordered by deliver_at ascending.
+                    """
+                    from butlers.core.temporal.delivery_db import list_deferred_notifications
 
-        @mcp.tool()
-        async def deferred_notification_cancel(notification_id: str) -> dict:
-            """Cancel a pending deferred notification.
+                    _db_pool = daemon.db.pool if daemon.db is not None else None
+                    if _db_pool is None:
+                        return {"status": "error", "error": "Database not available."}
+                    try:
+                        notifications = await list_deferred_notifications(
+                            _db_pool,
+                            butler_name=butler_name,
+                            status=status,
+                            limit=limit,
+                        )
+                        return {
+                            "status": "ok",
+                            "notifications": notifications,
+                            "count": len(notifications),
+                        }
+                    except ValueError as exc:
+                        return {"status": "error", "error": str(exc)}
 
-            Only notifications with status='pending' can be cancelled. Delivered
-            or expired notifications cannot be cancelled.
+                @mcp.tool()
+                async def deferred_notification_cancel(notification_id: str) -> dict:
+                    """Cancel a pending deferred notification.
 
-            Args:
-                notification_id: UUID of the deferred notification to cancel.
+                    Only notifications with status='pending' can be cancelled. Delivered
+                    or expired notifications cannot be cancelled.
 
-            Returns:
-                Dict with status='cancelled' if successful, or an error if not found
-                or already delivered/expired.
-            """
-            from butlers.core.temporal.delivery_db import cancel_deferred_notification
+                    Args:
+                        notification_id: UUID of the deferred notification to cancel.
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                cancelled = await cancel_deferred_notification(
-                    _db_pool,
-                    notification_id,
-                    butler_name=butler_name,
-                )
-                if cancelled:
-                    return {"status": "cancelled", "notification_id": notification_id}
-                return {
-                    "status": "error",
-                    "error": (
-                        f"Notification {notification_id!r} not found, not owned by this butler, "
-                        "or already delivered/expired."
-                    ),
-                }
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                    Returns:
+                        Dict with status='cancelled' if successful, or an error if not found
+                        or already delivered/expired.
+                    """
+                    from butlers.core.temporal.delivery_db import cancel_deferred_notification
 
-        # Event chain tools
-        @mcp.tool()
-        async def event_chain_create(
-            name: str,
-            trigger_type: str,
-            actions: list[dict[str, Any]],
-            trigger_reference: str | None = None,
-        ) -> dict:
-            """Create a new event chain.
+                    _db_pool = daemon.db.pool if daemon.db is not None else None
+                    if _db_pool is None:
+                        return {"status": "error", "error": "Database not available."}
+                    try:
+                        cancelled = await cancel_deferred_notification(
+                            _db_pool,
+                            notification_id,
+                            butler_name=butler_name,
+                        )
+                        if cancelled:
+                            return {"status": "cancelled", "notification_id": notification_id}
+                        return {
+                            "status": "error",
+                            "error": (
+                                f"Notification {notification_id!r} not found, "
+                                "not owned by this butler, "
+                                "or already delivered/expired."
+                            ),
+                        }
+                    except ValueError as exc:
+                        return {"status": "error", "error": str(exc)}
 
-            An event chain defines an automated sequence of actions that fires
-            when a trigger event occurs (calendar event end, deadline expiry, or
-            deadline threshold alert).
+            # Event chain tools
+            @mcp.tool()
+            async def event_chain_create(
+                name: str,
+                trigger_type: str,
+                actions: list[dict[str, Any]],
+                trigger_reference: str | None = None,
+            ) -> dict:
+                """Create a new event chain.
 
-            Args:
-                name: Unique name for this chain (scoped to this butler).
-                trigger_type: When to fire. One of:
-                    - 'calendar_event_end': fires when a calendar event ends.
-                    - 'deadline_passed': fires when a deadline task expires/completes.
-                    - 'deadline_threshold': fires when a deadline alert threshold fires.
-                actions: Ordered list of action dicts. Each action must have:
-                    - action_type: 'prompt' or 'job'
-                    - delay_minutes: non-negative integer (cumulative offset from trigger)
-                    - For prompt actions: 'prompt' (non-empty string)
-                    - For job actions: 'job_name' (non-empty string);
-                        optionally 'job_args' (dict)
-                trigger_reference: Optional event_id or task_id this chain fires for.
-                    When omitted, the chain fires for all events of the given type.
+                An event chain defines an automated sequence of actions that fires
+                when a trigger event occurs (calendar event end, deadline expiry, or
+                deadline threshold alert).
 
-            Returns:
-                The created event chain record.
-            """
-            from butlers.core.temporal.event_chains_db import event_chain_create as _ec_create
+                Args:
+                    name: Unique name for this chain (scoped to this butler).
+                    trigger_type: When to fire. One of:
+                        - 'calendar_event_end': fires when a calendar event ends.
+                        - 'deadline_passed': fires when a deadline task expires/completes.
+                        - 'deadline_threshold': fires when a deadline alert threshold fires.
+                    actions: Ordered list of action dicts. Each action must have:
+                        - action_type: 'prompt' or 'job'
+                        - delay_minutes: non-negative integer (cumulative offset from trigger)
+                        - For prompt actions: 'prompt' (non-empty string)
+                        - For job actions: 'job_name' (non-empty string);
+                            optionally 'job_args' (dict)
+                    trigger_reference: Optional event_id or task_id this chain fires for.
+                        When omitted, the chain fires for all events of the given type.
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                chain = await _ec_create(
-                    _db_pool,
-                    name=name,
-                    trigger_type=trigger_type,
-                    actions=actions,
-                    butler_name=butler_name,
-                    trigger_reference=trigger_reference,
-                )
-                return {"status": "created", "chain": chain}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    The created event chain record.
+                """
+                from butlers.core.temporal.event_chains_db import event_chain_create as _ec_create
 
-        @mcp.tool()
-        async def event_chain_update(
-            chain_id: str,
-            name: str | None = None,
-            trigger_type: str | None = None,
-            trigger_reference: str | None = None,
-            actions: list[dict[str, Any]] | None = None,
-            status: str | None = None,
-        ) -> dict:
-            """Update fields on an existing event chain.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    chain = await _ec_create(
+                        _db_pool,
+                        name=name,
+                        trigger_type=trigger_type,
+                        actions=actions,
+                        butler_name=butler_name,
+                        trigger_reference=trigger_reference,
+                    )
+                    return {"status": "created", "chain": chain}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            When *actions* is updated, status is automatically reset to 'active'
-            (re-arms the chain) unless *status* is explicitly provided.
+            @mcp.tool()
+            async def event_chain_update(
+                chain_id: str,
+                name: str | None = None,
+                trigger_type: str | None = None,
+                trigger_reference: str | None = None,
+                actions: list[dict[str, Any]] | None = None,
+                status: str | None = None,
+            ) -> dict:
+                """Update fields on an existing event chain.
 
-            Args:
-                chain_id: UUID of the event chain to update.
-                name: New name (optional).
-                trigger_type: New trigger_type (optional).
-                trigger_reference: New trigger_reference (optional; pass empty string
-                    to clear the reference so the chain fires for all events).
-                actions: New actions array (optional). Updating actions resets
-                    status to 'active' so the chain can fire again.
-                status: Explicit status override: 'active' | 'fired' | 'disabled'.
-                    Use 'active' to re-arm a fired chain, 'disabled' to pause it.
+                When *actions* is updated, status is automatically reset to 'active'
+                (re-arms the chain) unless *status* is explicitly provided.
 
-            Returns:
-                The updated event chain record.
-            """
-            from butlers.core.temporal.event_chains_db import event_chain_update as _ec_update
+                Args:
+                    chain_id: UUID of the event chain to update.
+                    name: New name (optional).
+                    trigger_type: New trigger_type (optional).
+                    trigger_reference: New trigger_reference (optional; pass empty string
+                        to clear the reference so the chain fires for all events).
+                    actions: New actions array (optional). Updating actions resets
+                        status to 'active' so the chain can fire again.
+                    status: Explicit status override: 'active' | 'fired' | 'disabled'.
+                        Use 'active' to re-arm a fired chain, 'disabled' to pause it.
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                chain = await _ec_update(
-                    _db_pool,
-                    chain_id,
-                    butler_name=butler_name,
-                    name=name,
-                    trigger_type=trigger_type,
-                    trigger_reference=trigger_reference,
-                    actions=actions,
-                    status=status,
-                )
-                return {"status": "updated", "chain": chain}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    The updated event chain record.
+                """
+                from butlers.core.temporal.event_chains_db import event_chain_update as _ec_update
 
-        @mcp.tool()
-        async def event_chain_list(
-            trigger_type: str | None = None,
-            status: str | None = None,
-            limit: int = 100,
-        ) -> dict:
-            """List event chains for this butler.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    chain = await _ec_update(
+                        _db_pool,
+                        chain_id,
+                        butler_name=butler_name,
+                        name=name,
+                        trigger_type=trigger_type,
+                        trigger_reference=trigger_reference,
+                        actions=actions,
+                        status=status,
+                    )
+                    return {"status": "updated", "chain": chain}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            Args:
-                trigger_type: Optional filter. One of: calendar_event_end |
-                    deadline_passed | deadline_threshold. If omitted, all
-                    trigger types are returned.
-                status: Optional filter. One of: active | fired | disabled.
-                    If omitted, all statuses are returned.
-                limit: Maximum number of rows to return (default 100).
+            @mcp.tool()
+            async def event_chain_list(
+                trigger_type: str | None = None,
+                status: str | None = None,
+                limit: int = 100,
+            ) -> dict:
+                """List event chains for this butler.
 
-            Returns:
-                Dict with 'chains' list ordered by created_at ascending.
-            """
-            from butlers.core.temporal.event_chains_db import event_chain_list as _ec_list
+                Args:
+                    trigger_type: Optional filter. One of: calendar_event_end |
+                        deadline_passed | deadline_threshold. If omitted, all
+                        trigger types are returned.
+                    status: Optional filter. One of: active | fired | disabled.
+                        If omitted, all statuses are returned.
+                    limit: Maximum number of rows to return (default 100).
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                chains = await _ec_list(
-                    _db_pool,
-                    butler_name,
-                    trigger_type=trigger_type,
-                    status=status,
-                    limit=limit,
-                )
-                return {"status": "ok", "chains": chains, "count": len(chains)}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    Dict with 'chains' list ordered by created_at ascending.
+                """
+                from butlers.core.temporal.event_chains_db import event_chain_list as _ec_list
 
-        @mcp.tool()
-        async def event_chain_delete(chain_id: str) -> dict:
-            """Delete an event chain.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    chains = await _ec_list(
+                        _db_pool,
+                        butler_name,
+                        trigger_type=trigger_type,
+                        status=status,
+                        limit=limit,
+                    )
+                    return {"status": "ok", "chains": chains, "count": len(chains)}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            Permanently removes the event chain. This action cannot be undone.
-            To temporarily disable a chain without deleting it, use
-            event_chain_update with status='disabled' instead.
+            @mcp.tool()
+            async def event_chain_delete(chain_id: str) -> dict:
+                """Delete an event chain.
 
-            Args:
-                chain_id: UUID of the event chain to delete.
+                Permanently removes the event chain. This action cannot be undone.
+                To temporarily disable a chain without deleting it, use
+                event_chain_update with status='disabled' instead.
 
-            Returns:
-                Dict with status='deleted' if successful, or 'not_found' if
-                the chain was not found for this butler.
-            """
-            from butlers.core.temporal.event_chains_db import event_chain_delete as _ec_delete
+                Args:
+                    chain_id: UUID of the event chain to delete.
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                deleted = await _ec_delete(_db_pool, chain_id, butler_name=butler_name)
-                if deleted:
-                    return {"status": "deleted", "chain_id": chain_id}
-                return {
-                    "status": "not_found",
-                    "error": (f"Event chain {chain_id!r} not found for this butler."),
-                }
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    Dict with status='deleted' if successful, or 'not_found' if
+                    the chain was not found for this butler.
+                """
+                from butlers.core.temporal.event_chains_db import event_chain_delete as _ec_delete
 
-        # Seasonal tools (temporal-intelligence spec §4)
-        @mcp.tool()
-        async def seasonal_period_create(
-            name: str,
-            period_type: str = "annual",
-            start_month: int = 1,
-            start_day: int = 1,
-            end_month: int = 12,
-            end_day: int = 31,
-            timezone: str = "UTC",
-            metadata: dict[str, Any] | None = None,
-            enabled: bool = True,
-        ) -> dict[str, Any]:
-            """Create a new seasonal period for this butler.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    deleted = await _ec_delete(_db_pool, chain_id, butler_name=butler_name)
+                    if deleted:
+                        return {"status": "deleted", "chain_id": chain_id}
+                    return {
+                        "status": "not_found",
+                        "error": (f"Event chain {chain_id!r} not found for this butler."),
+                    }
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            Seasonal periods define recurring calendar windows (e.g., tax season,
-            academic terms) that inject context into task dispatch prompts.
+            # Seasonal tools (temporal-intelligence spec §4)
+            @mcp.tool()
+            async def seasonal_period_create(
+                name: str,
+                period_type: str = "annual",
+                start_month: int = 1,
+                start_day: int = 1,
+                end_month: int = 12,
+                end_day: int = 31,
+                timezone: str = "UTC",
+                metadata: dict[str, Any] | None = None,
+                enabled: bool = True,
+            ) -> dict[str, Any]:
+                """Create a new seasonal period for this butler.
 
-            Args:
-                name: Unique name for this period (per butler).
-                period_type: One of 'annual', 'academic', 'fiscal', 'custom'.
-                start_month: Period start month (1-12).
-                start_day: Period start day (1-31).
-                end_month: Period end month (1-12).
-                end_day: Period end day (1-31).
-                timezone: IANA timezone string (default 'UTC').
-                metadata: Optional dict with context hints and priority modifiers.
-                enabled: Whether the period is active immediately (default true).
+                Seasonal periods define recurring calendar windows (e.g., tax season,
+                academic terms) that inject context into task dispatch prompts.
 
-            Returns:
-                Dict with 'id' (UUID string) of the created period.
-            """
-            from butlers.core.seasonal import seasonal_period_create as _sp_create
+                Args:
+                    name: Unique name for this period (per butler).
+                    period_type: One of 'annual', 'academic', 'fiscal', 'custom'.
+                    start_month: Period start month (1-12).
+                    start_day: Period start day (1-31).
+                    end_month: Period end month (1-12).
+                    end_day: Period end day (1-31).
+                    timezone: IANA timezone string (default 'UTC').
+                    metadata: Optional dict with context hints and priority modifiers.
+                    enabled: Whether the period is active immediately (default true).
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                period_id = await _sp_create(
-                    _db_pool,
-                    butler_name,
-                    name=name,
-                    period_type=period_type,
-                    start_month=start_month,
-                    start_day=start_day,
-                    end_month=end_month,
-                    end_day=end_day,
-                    timezone=timezone,
-                    metadata=metadata,
-                    enabled=enabled,
-                )
-                return {"id": str(period_id), "status": "created"}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    Dict with 'id' (UUID string) of the created period.
+                """
+                from butlers.core.seasonal import seasonal_period_create as _sp_create
 
-        @mcp.tool()
-        async def seasonal_period_update(
-            period_id: str,
-            name: str | None = None,
-            period_type: str | None = None,
-            start_month: int | None = None,
-            start_day: int | None = None,
-            end_month: int | None = None,
-            end_day: int | None = None,
-            timezone: str | None = None,
-            metadata: dict[str, Any] | None = None,
-            enabled: bool | None = None,
-        ) -> dict[str, Any]:
-            """Update an existing seasonal period.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    period_id = await _sp_create(
+                        _db_pool,
+                        butler_name,
+                        name=name,
+                        period_type=period_type,
+                        start_month=start_month,
+                        start_day=start_day,
+                        end_month=end_month,
+                        end_day=end_day,
+                        timezone=timezone,
+                        metadata=metadata,
+                        enabled=enabled,
+                    )
+                    return {"id": str(period_id), "status": "created"}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            Only provided (non-null) fields are updated.  Month/day combinations
-            are validated against the resulting final state.
+            @mcp.tool()
+            async def seasonal_period_update(
+                period_id: str,
+                name: str | None = None,
+                period_type: str | None = None,
+                start_month: int | None = None,
+                start_day: int | None = None,
+                end_month: int | None = None,
+                end_day: int | None = None,
+                timezone: str | None = None,
+                metadata: dict[str, Any] | None = None,
+                enabled: bool | None = None,
+            ) -> dict[str, Any]:
+                """Update an existing seasonal period.
 
-            Args:
-                period_id: UUID of the period to update.
-                name: New name (must be unique per butler).
-                period_type: New type ('annual', 'academic', 'fiscal', 'custom').
-                start_month: New start month (1-12).
-                start_day: New start day (1-31).
-                end_month: New end month (1-12).
-                end_day: New end day (1-31).
-                timezone: New IANA timezone string.
-                metadata: New metadata dict (replaces existing).
-                enabled: New enabled flag.
+                Only provided (non-null) fields are updated.  Month/day combinations
+                are validated against the resulting final state.
 
-            Returns:
-                Dict with 'found' boolean.
-            """
-            from butlers.core.seasonal import seasonal_period_update as _sp_update
+                Args:
+                    period_id: UUID of the period to update.
+                    name: New name (must be unique per butler).
+                    period_type: New type ('annual', 'academic', 'fiscal', 'custom').
+                    start_month: New start month (1-12).
+                    start_day: New start day (1-31).
+                    end_month: New end month (1-12).
+                    end_day: New end day (1-31).
+                    timezone: New IANA timezone string.
+                    metadata: New metadata dict (replaces existing).
+                    enabled: New enabled flag.
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                found = await _sp_update(
-                    _db_pool,
-                    butler_name,
-                    period_id=period_id,
-                    name=name,
-                    period_type=period_type,
-                    start_month=start_month,
-                    start_day=start_day,
-                    end_month=end_month,
-                    end_day=end_day,
-                    timezone=timezone,
-                    metadata=metadata,
-                    enabled=enabled,
-                )
-                return {"found": found, "status": "updated" if found else "not_found"}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    Dict with 'found' boolean.
+                """
+                from butlers.core.seasonal import seasonal_period_update as _sp_update
 
-        @mcp.tool()
-        async def seasonal_period_list(
-            include_disabled: bool = True,
-        ) -> dict[str, Any]:
-            """List all seasonal periods for this butler.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    found = await _sp_update(
+                        _db_pool,
+                        butler_name,
+                        period_id=period_id,
+                        name=name,
+                        period_type=period_type,
+                        start_month=start_month,
+                        start_day=start_day,
+                        end_month=end_month,
+                        end_day=end_day,
+                        timezone=timezone,
+                        metadata=metadata,
+                        enabled=enabled,
+                    )
+                    return {"found": found, "status": "updated" if found else "not_found"}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            Returns all seasonal periods with their current active status
-            (whether today's date falls within each period's range).
+            @mcp.tool()
+            async def seasonal_period_list(
+                include_disabled: bool = True,
+            ) -> dict[str, Any]:
+                """List all seasonal periods for this butler.
 
-            Args:
-                include_disabled: If False, only return enabled periods
-                    (default True — return all).
+                Returns all seasonal periods with their current active status
+                (whether today's date falls within each period's range).
 
-            Returns:
-                Dict with 'periods' list, each entry including 'is_active' field.
-            """
-            from butlers.core.seasonal import seasonal_period_list as _sp_list
+                Args:
+                    include_disabled: If False, only return enabled periods
+                        (default True — return all).
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                periods = await _sp_list(_db_pool, butler_name)
-                if not include_disabled:
-                    periods = [p for p in periods if p.get("enabled")]
-                return {"periods": periods, "count": len(periods)}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    Dict with 'periods' list, each entry including 'is_active' field.
+                """
+                from butlers.core.seasonal import seasonal_period_list as _sp_list
 
-        @mcp.tool()
-        async def seasonal_period_delete(
-            period_id: str,
-        ) -> dict[str, Any]:
-            """Delete a seasonal period.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    periods = await _sp_list(_db_pool, butler_name)
+                    if not include_disabled:
+                        periods = [p for p in periods if p.get("enabled")]
+                    return {"periods": periods, "count": len(periods)}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            Args:
-                period_id: UUID of the period to delete.
+            @mcp.tool()
+            async def seasonal_period_delete(
+                period_id: str,
+            ) -> dict[str, Any]:
+                """Delete a seasonal period.
 
-            Returns:
-                Dict with 'found' boolean.
-            """
-            from butlers.core.seasonal import seasonal_period_delete as _sp_delete
+                Args:
+                    period_id: UUID of the period to delete.
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                found = await _sp_delete(_db_pool, butler_name, period_id=period_id)
-                return {"found": found, "status": "deleted" if found else "not_found"}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    Dict with 'found' boolean.
+                """
+                from butlers.core.seasonal import seasonal_period_delete as _sp_delete
 
-        @mcp.tool()
-        async def seasonal_period_create_preset(
-            preset: str,
-            timezone: str = "UTC",
-        ) -> dict[str, Any]:
-            """Create a seasonal period from a built-in preset.
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    found = await _sp_delete(_db_pool, butler_name, period_id=period_id)
+                    return {"found": found, "status": "deleted" if found else "not_found"}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
 
-            Available presets:
-            - 'us-tax-season': Jan 1 - Apr 15 (US tax filing season)
-            - 'year-end-holidays': Dec 15 - Jan 5 (year-end holiday season)
-            - 'back-to-school': Aug 1 - Sep 15 (back-to-school season)
-            - 'spring-semester': Jan 15 - May 15 (spring academic semester)
-            - 'fall-semester': Aug 25 - Dec 15 (fall academic semester)
+            @mcp.tool()
+            async def seasonal_period_create_preset(
+                preset: str,
+                timezone: str = "UTC",
+            ) -> dict[str, Any]:
+                """Create a seasonal period from a built-in preset.
 
-            Args:
-                preset: Preset name (e.g., 'us-tax-season').
-                timezone: IANA timezone string (default 'UTC').
+                Available presets:
+                - 'us-tax-season': Jan 1 - Apr 15 (US tax filing season)
+                - 'year-end-holidays': Dec 15 - Jan 5 (year-end holiday season)
+                - 'back-to-school': Aug 1 - Sep 15 (back-to-school season)
+                - 'spring-semester': Jan 15 - May 15 (spring academic semester)
+                - 'fall-semester': Aug 25 - Dec 15 (fall academic semester)
 
-            Returns:
-                Dict with 'id' (UUID string) of the created period.
-            """
-            from butlers.core.seasonal import seasonal_period_create_preset as _sp_preset
+                Args:
+                    preset: Preset name (e.g., 'us-tax-season').
+                    timezone: IANA timezone string (default 'UTC').
 
-            _db_pool = daemon.db.pool if daemon.db is not None else None
-            if _db_pool is None:
-                return {"status": "error", "error": "Database not available."}
-            try:
-                period_id = await _sp_preset(
-                    _db_pool, butler_name, preset=preset, timezone=timezone
-                )
-                return {"id": str(period_id), "status": "created", "preset": preset}
-            except ValueError as exc:
-                return {"status": "error", "error": str(exc)}
+                Returns:
+                    Dict with 'id' (UUID string) of the created period.
+                """
+                from butlers.core.seasonal import seasonal_period_create_preset as _sp_preset
 
-        # Messenger-specific operational domain tools
+                _db_pool = daemon.db.pool if daemon.db is not None else None
+                if _db_pool is None:
+                    return {"status": "error", "error": "Database not available."}
+                try:
+                    period_id = await _sp_preset(
+                        _db_pool, butler_name, preset=preset, timezone=timezone
+                    )
+                    return {"id": str(period_id), "status": "created", "preset": preset}
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
+
+            # Messenger-specific operational domain tools
         if butler_name == "messenger":
             from butlers.tools.messenger import (
                 messenger_delivery_attempts,
