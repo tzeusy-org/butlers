@@ -432,7 +432,7 @@ class QaModule(Module):
                 )
 
         # Initialize managed repo clone
-        self._managed_clone = ManagedRepoClone(db_pool=pool)
+        self._managed_clone = ManagedRepoClone(pool=pool)
         if pool is not None:
             try:
                 clone_path = await self._managed_clone.ensure_cloned()
