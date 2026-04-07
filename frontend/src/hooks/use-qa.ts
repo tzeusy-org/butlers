@@ -8,9 +8,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  addQaAllowedRepo,
+  deleteQaAllowedRepo,
   dismissQaKnownIssue,
   forceQaPatrol,
   getHealingAttempt,
+  getQaAllowedRepos,
   getQaCircuitBreaker,
   getQaInvestigations,
   getQaRepoConfig,
@@ -21,6 +24,7 @@ import {
   getQaSummary,
   getQaTrends,
   listHealingAttempts,
+  patchQaAllowedRepo,
   resetQaCircuitBreaker,
   syncQaRepo,
   undismissQaKnownIssue,
@@ -28,6 +32,7 @@ import {
 } from "@/api/index.ts";
 import type {
   HealingAttemptsParams,
+  QaAllowedRepoCreate,
   QaDismissRequest,
   QaInvestigationsParams,
   QaKnownIssuesParams,
@@ -269,6 +274,54 @@ export function useForceQaPatrol() {
       queryClient.invalidateQueries({ queryKey: ["qa-patrols"] });
       queryClient.invalidateQueries({ queryKey: ["qa-investigations"] });
       queryClient.invalidateQueries({ queryKey: ["qa-trends"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Allowed repositories
+// ---------------------------------------------------------------------------
+
+/** Fetch the QA allowed-repos whitelist. */
+export function useQaAllowedRepos() {
+  return useQuery({
+    queryKey: ["qa-allowed-repos"],
+    queryFn: () => getQaAllowedRepos(),
+    staleTime: STALE_TIME,
+  });
+}
+
+/** Add a repository to the QA whitelist. */
+export function useAddQaAllowedRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: QaAllowedRepoCreate) => addQaAllowedRepo(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-allowed-repos"] });
+    },
+  });
+}
+
+/** Toggle enabled on a whitelisted repository. */
+export function usePatchQaAllowedRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ owner, repo, enabled }: { owner: string; repo: string; enabled: boolean }) =>
+      patchQaAllowedRepo(owner, repo, { enabled }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-allowed-repos"] });
+    },
+  });
+}
+
+/** Remove a repository from the QA whitelist. */
+export function useDeleteQaAllowedRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ owner, repo }: { owner: string; repo: string }) =>
+      deleteQaAllowedRepo(owner, repo),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-allowed-repos"] });
     },
   });
 }

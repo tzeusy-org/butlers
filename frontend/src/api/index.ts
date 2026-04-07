@@ -642,6 +642,10 @@ export {
   getQaRepoConfig,
   updateQaRepoConfig,
   syncQaRepo,
+  getQaAllowedRepos,
+  addQaAllowedRepo,
+  patchQaAllowedRepo,
+  deleteQaAllowedRepo,
 } from "./client.ts";
 
 export type {
@@ -652,6 +656,9 @@ export type {
   QaRepoConfig,
   QaRepoConfigUpdate,
   QaRepoSyncResponse,
+  QaAllowedRepo,
+  QaAllowedRepoCreate,
+  QaAllowedRepoPatch,
   QaAllTimeStats,
   QaDismissal,
   QaDismissRequest,

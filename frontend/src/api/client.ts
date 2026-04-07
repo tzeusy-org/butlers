@@ -207,6 +207,9 @@ import type {
   QaRepoConfig,
   QaRepoConfigUpdate,
   QaRepoSyncResponse,
+  QaAllowedRepo,
+  QaAllowedRepoCreate,
+  QaAllowedRepoPatch,
   HealingAttempt,
   HealingAttemptsParams,
 } from "./types.ts";
@@ -3235,4 +3238,42 @@ export function syncQaRepo(): Promise<ApiResponse<QaRepoSyncResponse>> {
   return apiFetch<ApiResponse<QaRepoSyncResponse>>("/qa/settings/repo/sync", {
     method: "POST",
   });
+}
+
+/** GET /api/qa/settings/allowed-repos — list allowed repositories */
+export function getQaAllowedRepos(): Promise<PaginatedResponse<QaAllowedRepo>> {
+  return apiFetch<PaginatedResponse<QaAllowedRepo>>("/qa/settings/allowed-repos?limit=200");
+}
+
+/** POST /api/qa/settings/allowed-repos — add a repository */
+export function addQaAllowedRepo(
+  body: QaAllowedRepoCreate,
+): Promise<ApiResponse<QaAllowedRepo>> {
+  return apiFetch<ApiResponse<QaAllowedRepo>>("/qa/settings/allowed-repos", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** PATCH /api/qa/settings/allowed-repos/{owner}/{repo} — toggle enabled */
+export function patchQaAllowedRepo(
+  owner: string,
+  repo: string,
+  body: QaAllowedRepoPatch,
+): Promise<ApiResponse<QaAllowedRepo>> {
+  return apiFetch<ApiResponse<QaAllowedRepo>>(
+    `/qa/settings/allowed-repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+}
+
+/** DELETE /api/qa/settings/allowed-repos/{owner}/{repo} — remove */
+export function deleteQaAllowedRepo(
+  owner: string,
+  repo: string,
+): Promise<ApiResponse<Record<string, unknown>>> {
+  return apiFetch<ApiResponse<Record<string, unknown>>>(
+    `/qa/settings/allowed-repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    { method: "DELETE" },
+  );
 }

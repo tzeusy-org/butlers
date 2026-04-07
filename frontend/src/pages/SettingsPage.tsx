@@ -13,6 +13,7 @@ import type {
 } from "@/api/index.ts";
 import { BlobStorageCard } from "@/components/settings/BlobStorageCard.tsx";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
+import { QASettingsCard } from "@/components/settings/QASettingsCard.tsx";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -795,6 +796,8 @@ export default function SettingsPage() {
       <CLIAuthCard />
 
       <BlobStorageCard />
+
+      <QASettingsCard />
 
       <Card>
         <CardHeader>

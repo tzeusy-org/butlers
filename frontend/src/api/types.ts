@@ -3069,3 +3069,24 @@ export interface QaRepoSyncResponse {
   clone_path: string | null;
   error: string | null;
 }
+
+/** A single entry in the QA repository whitelist. */
+export interface QaAllowedRepo {
+  id: string;
+  owner: string;
+  repo: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Request body for adding a repository to the whitelist. */
+export interface QaAllowedRepoCreate {
+  owner_repo: string;
+  enabled?: boolean;
+}
+
+/** Request body for toggling the enabled flag on a whitelisted repository. */
+export interface QaAllowedRepoPatch {
+  enabled: boolean;
+}
