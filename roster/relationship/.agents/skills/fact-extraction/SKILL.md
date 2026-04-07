@@ -122,6 +122,21 @@ memory_store_fact(
 
 **Never store facts with only a raw subject string.** The `entity_id` ensures facts about "Chloe", "Chloe Wong", and "Chlo" all resolve to the same identity.
 
+### Content must be self-contained
+
+Fact content is read later in isolation — on entity pages, in search results, in reports. It will **not** have the original message beside it. Every `content` value must make sense without any surrounding context.
+
+**Rules:**
+- **Name all actors.** Never write "the sender", "the user", "they mentioned", or "someone suggested". Use the actual person's name from the preamble or message.
+- **Name all subjects.** If the fact references another person, use their name, not "him/her/them".
+- **Include the relationship or context that makes the fact meaningful.** "Invited to dinner" is less useful than "Chloe invited Yu Han to dinner".
+
+**Bad:** `"Mentioned in an invitation context; the sender suggested inviting Yu Han instead because he was described as much further ahead in his career."`
+→ Who is "the sender"? Who described him? Useless when read on Yu Han's entity page months later.
+
+**Good:** `"Chloe suggested inviting Yu Han instead of [other person] because Yu Han is much further ahead in his career"`
+→ Self-contained. Names the recommender, the subject, and the reason.
+
 ## Step 5b: Extract and Store Edge-Facts (Relationship Between Entities)
 
 When the message references a relationship between two people (or a person and an organization), store an **edge-fact** by including `object_entity_id`:
@@ -488,6 +503,7 @@ You should still run Steps 1–3 for any *other* people mentioned in the message
 - **Be concise** — users are on mobile devices
 - **Resolve before storing** — always call memory_entity_resolve before memory_store_fact; never store facts with only a raw subject string
 - **Attribute to the right person** — when the sender is not the owner, facts about the sender's preferences/interests belong on the sender's entity, not the owner's
+- **Self-contained content** — fact content is read in isolation; never use "the sender", "the user", or bare pronouns — always name the actual person so the fact makes sense on an entity page without the original message
 - **Extract liberally** — capture facts even if tangential to the main request
 - **Use tags** — they enable rich cross-cutting queries later
 - **Permanence matters** — stable facts (workplace, location) need different TTL than volatile facts (mood, temporary interests)
