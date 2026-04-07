@@ -13,13 +13,33 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin
 
 logger = logging.getLogger(__name__)
 
 
-class EducationModuleConfig(BaseModel):
-    """Configuration for the Education module (empty -- no settings needed yet)."""
+class EducationModuleConfig(ToolGroupMixin, BaseModel):
+    """Configuration for the Education module.
+
+    Tool groups
+    -----------
+    mind_maps : mind_map_create, mind_map_get, mind_map_list,
+                mind_map_update_status, mind_map_node_create, mind_map_node_get,
+                mind_map_node_list, mind_map_node_update, mind_map_edge_create,
+                mind_map_edge_delete, mind_map_frontier, mind_map_subtree
+    teaching : teaching_flow_start, teaching_flow_get, teaching_flow_advance,
+               teaching_flow_abandon, teaching_flow_list
+    mastery : mastery_record_response, mastery_get_node_history,
+              mastery_get_map_summary, mastery_detect_struggles
+    spaced_repetition : spaced_repetition_record_response,
+                        spaced_repetition_pending_reviews,
+                        spaced_repetition_schedule_cleanup
+    diagnostics : diagnostic_start, diagnostic_record_probe,
+                  diagnostic_complete
+    curriculum : curriculum_generate, curriculum_replan, curriculum_next_node
+    analytics : analytics_get_snapshot, analytics_get_trend,
+                analytics_get_cross_topic
+    """
 
 
 class EducationModule(Module):
@@ -67,4 +87,4 @@ class EducationModule(Module):
 
         from .tools import register_tools
 
-        register_tools(mcp, self)
+        register_tools(mcp, self, config)

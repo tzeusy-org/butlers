@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
-from butlers.modules.base import Module, ToolMeta
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +132,18 @@ class CachedEntityRegistryEntry:
 # ---------------------------------------------------------------------------
 
 
-class HomeAssistantConfig(BaseModel):
+class HomeAssistantConfig(ToolGroupMixin, BaseModel):
     """Configuration for the Home Assistant module.
+
+    Tool groups
+    -----------
+    core        : ha_get_entity_state, ha_list_entities, ha_list_areas,
+                  ha_list_services, ha_call_service, ha_activate_scene
+    history     : ha_get_history, ha_get_statistics, ha_render_template
+    maintenance : ha_maintenance_list, ha_maintenance_create,
+                  ha_maintenance_complete, ha_maintenance_remove
+
+    When ``groups`` is absent or empty, all groups are registered (default).
 
     Attributes
     ----------
@@ -411,6 +421,8 @@ class HomeAssistantModule(Module):
         Tools are registered as closures that capture the module instance
         so they can access the HTTP client at call time.
         """
+        from butlers.modules.base import group_enabled
+
         self._config = (
             config
             if isinstance(config, HomeAssistantConfig)
@@ -418,6 +430,11 @@ class HomeAssistantModule(Module):
         )
         self._db = db
         module = self  # capture for closures
+
+        def _tool(group: str):
+            if group_enabled(self._config, group):
+                return mcp.tool()
+            return lambda fn: fn  # no-op — function defined but not registered
 
         async def ha_get_entity_state(entity_id: str) -> dict[str, Any] | None:
             """Return the current state of a Home Assistant entity.
@@ -667,20 +684,20 @@ class HomeAssistantModule(Module):
             """
             return await module._maintenance_remove(name=name)
 
-        mcp.tool()(ha_get_entity_state)
-        mcp.tool()(ha_list_entities)
-        mcp.tool()(ha_list_areas)
-        mcp.tool()(ha_list_services)
-        mcp.tool()(ha_get_history)
-        mcp.tool()(ha_get_statistics)
-        mcp.tool()(ha_render_template)
-        mcp.tool()(ha_maintenance_list)
+        _tool("core")(ha_get_entity_state)
+        _tool("core")(ha_list_entities)
+        _tool("core")(ha_list_areas)
+        _tool("core")(ha_list_services)
+        _tool("history")(ha_get_history)
+        _tool("history")(ha_get_statistics)
+        _tool("history")(ha_render_template)
+        _tool("maintenance")(ha_maintenance_list)
         if not self._config.read_only:
-            mcp.tool()(ha_call_service)
-            mcp.tool()(ha_activate_scene)
-            mcp.tool()(ha_maintenance_create)
-            mcp.tool()(ha_maintenance_complete)
-            mcp.tool()(ha_maintenance_remove)
+            _tool("core")(ha_call_service)
+            _tool("core")(ha_activate_scene)
+            _tool("maintenance")(ha_maintenance_create)
+            _tool("maintenance")(ha_maintenance_complete)
+            _tool("maintenance")(ha_maintenance_remove)
 
     # ------------------------------------------------------------------
     # WebSocket transport — connection and authentication

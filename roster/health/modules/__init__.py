@@ -7,13 +7,26 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin
 
 logger = logging.getLogger(__name__)
 
 
-class HealthModuleConfig(BaseModel):
-    """Configuration for the Health module (empty — no settings needed yet)."""
+class HealthModuleConfig(ToolGroupMixin, BaseModel):
+    """Configuration for the Health module.
+
+    Tool groups
+    -----------
+    measurements : measurement_log, measurement_history, measurement_latest
+    medications  : medication_add, medication_list, medication_log_dose, medication_history
+    conditions   : condition_add, condition_list, condition_update
+    symptoms     : symptom_log, symptom_history, symptom_search
+    nutrition    : meal_log, meal_history, nutrition_summary
+    reports      : health_summary, trend_report
+    research     : research_save, research_search, research_summarize
+
+    When ``groups`` is absent or empty, all groups are registered (default).
+    """
 
 
 class HealthModule(Module):
@@ -87,4 +100,4 @@ class HealthModule(Module):
 
         from .tools import register_tools
 
-        register_tools(mcp, self)
+        register_tools(mcp, self, config)

@@ -13,13 +13,36 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin
 
 logger = logging.getLogger(__name__)
 
 
-class RelationshipModuleConfig(BaseModel):
-    """Configuration for the Relationship module (empty -- no settings needed yet)."""
+class RelationshipModuleConfig(ToolGroupMixin, BaseModel):
+    """Configuration for the Relationship module.
+
+    Tool groups
+    -----------
+    contacts : contact_create, contact_get, contact_update, contact_search,
+               contact_archive, contact_merge, contact_resolve,
+               address_add, address_list, address_update, address_remove,
+               contact_info_add, contact_info_list, contact_info_remove,
+               contact_search_by_info, contact_export_vcard, contact_import_vcard
+    interactions : interaction_log, interaction_list, feed_get, fact_set, fact_list
+    relationships : relationship_add, relationship_list, relationship_remove,
+                    relationship_type_get, relationship_types_list,
+                    life_event_types_list, life_event_log, life_event_list
+    social : date_add, date_list, upcoming_dates, gift_add, gift_list,
+             gift_update_status, group_create, group_add_member, group_list,
+             group_members
+    notes : note_create, note_list, note_search, label_create, label_assign,
+            contact_search_by_label
+    tracking : reminder_create, reminder_list, reminder_dismiss, task_create,
+               task_list, task_complete, task_delete, loan_create, loan_settle,
+               loan_list
+    management : dunbar_tier_set, stay_in_touch_set, contacts_overdue
+    entity : entity_resolve, entity_get, entity_update, entity_neighbors
+    """
 
 
 class RelationshipModule(Module):
@@ -68,4 +91,4 @@ class RelationshipModule(Module):
         self._db = db
         from .tools import register_tools
 
-        register_tools(mcp, self)
+        register_tools(mcp, self, config)

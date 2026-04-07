@@ -9,8 +9,18 @@ from datetime import datetime
 from typing import Any
 
 
-def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
-    """Register all health MCP tools on *mcp*, using *module* for pool access."""
+def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
+    """Register all health MCP tools on *mcp*, using *module* for pool access.
+
+    Each tool is decorated with ``@_tool("group")`` instead of ``@mcp.tool()``
+    so that butler.toml can opt-in to specific tool groups via ``groups = [...]``.
+    """
+    from butlers.modules.base import group_enabled
+
+    def _tool(group: str):
+        if group_enabled(config, group):
+            return mcp.tool()
+        return lambda fn: fn  # no-op — function defined but not registered
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.health import conditions as _cond
@@ -24,7 +34,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Measurement tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("measurements")
     async def measurement_log(
         type: str,
         value: Any,
@@ -41,7 +51,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), type, value, notes=notes, measured_at=measured_at
         )
 
-    @mcp.tool()
+    @_tool("measurements")
     async def measurement_history(
         type: str,
         start_date: datetime | None = None,
@@ -52,7 +62,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), type, start_date=start_date, end_date=end_date
         )
 
-    @mcp.tool()
+    @_tool("measurements")
     async def measurement_latest(type: str) -> dict[str, Any] | None:
         """Get the most recent measurement for a type."""
         return await _meas.measurement_latest(module._get_pool(), type)
@@ -61,7 +71,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Medication tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("medications")
     async def medication_add(
         name: str,
         dosage: str,
@@ -74,12 +84,12 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), name, dosage, frequency, schedule=schedule, notes=notes
         )
 
-    @mcp.tool()
+    @_tool("medications")
     async def medication_list(active_only: bool = True) -> list[dict[str, Any]]:
         """List medications, optionally only active ones."""
         return await _meds.medication_list(module._get_pool(), active_only=active_only)
 
-    @mcp.tool()
+    @_tool("medications")
     async def medication_log_dose(
         medication_id: str,
         taken_at: datetime | None = None,
@@ -91,7 +101,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), medication_id, taken_at=taken_at, skipped=skipped, notes=notes
         )
 
-    @mcp.tool()
+    @_tool("medications")
     async def medication_history(
         medication_id: str,
         start_date: datetime | None = None,
@@ -106,7 +116,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Condition tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("conditions")
     async def condition_add(
         name: str,
         status: str = "active",
@@ -118,12 +128,12 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), name, status=status, diagnosed_at=diagnosed_at, notes=notes
         )
 
-    @mcp.tool()
+    @_tool("conditions")
     async def condition_list(status: str | None = None) -> list[dict[str, Any]]:
         """List conditions, optionally filtered by status."""
         return await _cond.condition_list(module._get_pool(), status=status)
 
-    @mcp.tool()
+    @_tool("conditions")
     async def condition_update(
         condition_id: str,
         name: str | None = None,
@@ -151,7 +161,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Symptom tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("symptoms")
     async def symptom_log(
         name: str,
         severity: int,
@@ -169,7 +179,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             occurred_at=occurred_at,
         )
 
-    @mcp.tool()
+    @_tool("symptoms")
     async def symptom_history(
         start_date: datetime | None = None,
         end_date: datetime | None = None,
@@ -179,7 +189,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), start_date=start_date, end_date=end_date
         )
 
-    @mcp.tool()
+    @_tool("symptoms")
     async def symptom_search(
         name: str | None = None,
         min_severity: int | None = None,
@@ -201,7 +211,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Diet & Nutrition tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("nutrition")
     async def meal_log(
         type: str,
         description: str,
@@ -239,7 +249,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             create_calendar_event_fn=module._make_calendar_event_fn(),
         )
 
-    @mcp.tool()
+    @_tool("nutrition")
     async def meal_history(
         type: str | None = None,
         start_date: datetime | None = None,
@@ -250,7 +260,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), type=type, start_date=start_date, end_date=end_date
         )
 
-    @mcp.tool()
+    @_tool("nutrition")
     async def nutrition_summary(
         start_date: datetime,
         end_date: datetime,
@@ -265,12 +275,12 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Report tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("reports")
     async def health_summary() -> dict[str, Any]:
         """Get a health overview: latest measurements, active medications, conditions."""
         return await _reports.health_summary(module._get_pool())
 
-    @mcp.tool()
+    @_tool("reports")
     async def trend_report(period: str = "week") -> dict[str, Any]:
         """Generate a trend report over a period (week=7d, month=30d).
 
@@ -283,7 +293,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Research tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("research")
     async def research_save(
         title: str,
         content: str,
@@ -301,7 +311,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             condition_id=condition_id,
         )
 
-    @mcp.tool()
+    @_tool("research")
     async def research_search(
         query: str | None = None,
         tags: list[str] | None = None,
@@ -312,7 +322,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), query=query, tags=tags, condition_id=condition_id
         )
 
-    @mcp.tool()
+    @_tool("research")
     async def research_summarize(
         condition_id: str | None = None,
         tags: list[str] | None = None,

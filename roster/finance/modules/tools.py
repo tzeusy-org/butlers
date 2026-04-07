@@ -1,8 +1,13 @@
 """Finance MCP tool registrations.
 
-All ``@mcp.tool()`` closures live here, extracted from the monolithic
+All tool closures live here, extracted from the monolithic
 ``FinanceModule.register_tools`` method.  Called once during butler
-startup via ``register_tools(mcp, module)``.
+startup via ``register_tools(mcp, module, config)``.
+
+Each tool is decorated with ``@_tool("group")`` instead of ``@mcp.tool()``
+so that ``FinanceModuleConfig.groups`` can selectively enable/disable
+groups of tools.  When ``groups`` is absent or empty, all tools are
+registered (backwards compatible).
 """
 
 from __future__ import annotations
@@ -19,8 +24,14 @@ def _parse_metadata(metadata: str | None) -> dict[str, Any] | None:
     return json.loads(metadata)
 
 
-def register_tools(mcp: Any, module: Any) -> None:
+def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     """Register all finance MCP tools on *mcp*, using *module* for pool access."""
+    from butlers.modules.base import group_enabled
+
+    def _tool(group: str):
+        if group_enabled(config, group):
+            return mcp.tool()
+        return lambda fn: fn  # no-op — function defined but not registered
 
     # Import sub-modules (deferred to avoid import-time side effects)
     import importlib
@@ -57,7 +68,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Transaction tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("core")
     async def record_transaction(
         posted_at: str,
         merchant: str,
@@ -106,7 +117,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             metadata=_parse_metadata(metadata),
         )
 
-    @mcp.tool()
+    @_tool("core")
     async def list_transactions(
         start_date: str | None = None,
         end_date: str | None = None,
@@ -163,7 +174,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Subscription tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("subscriptions")
     async def track_subscription(
         service: str,
         amount: float,
@@ -215,7 +226,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Bill tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("bills")
     async def track_bill(
         payee: str,
         amount: float,
@@ -266,7 +277,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             metadata=_parse_metadata(metadata),
         )
 
-    @mcp.tool()
+    @_tool("bills")
     async def upcoming_bills(
         days_ahead: int = 14,
         include_overdue: bool = False,
@@ -289,7 +300,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Spending tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("analytics")
     async def spending_summary(
         start_date: str | None = None,
         end_date: str | None = None,
@@ -323,7 +334,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # SPO fact-layer tools (bu-ddb.4)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("facts")
     async def list_transaction_facts(
         start_date: str | None = None,
         end_date: str | None = None,
@@ -357,7 +368,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             offset=offset,
         )
 
-    @mcp.tool()
+    @_tool("facts")
     async def track_account_fact(
         institution: str,
         type: str,
@@ -382,7 +393,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             metadata=_parse_metadata(metadata),
         )
 
-    @mcp.tool()
+    @_tool("facts")
     async def track_subscription_fact(
         service: str,
         amount: float,
@@ -418,7 +429,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             metadata=_parse_metadata(metadata),
         )
 
-    @mcp.tool()
+    @_tool("facts")
     async def track_bill_fact(
         payee: str,
         amount: float,
@@ -455,7 +466,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             metadata=_parse_metadata(metadata),
         )
 
-    @mcp.tool()
+    @_tool("facts")
     async def spending_summary_facts(
         start_date: str | None = None,
         end_date: str | None = None,
@@ -485,7 +496,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Merchant normalization and bulk update tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("core")
     async def list_distinct_merchants(
         start_date: str | None = None,
         end_date: str | None = None,
@@ -516,7 +527,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             offset=offset,
         )
 
-    @mcp.tool()
+    @_tool("bulk")
     async def bulk_update_transactions(
         ops: str,
     ) -> dict[str, Any]:
@@ -546,7 +557,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Bulk transaction ingestion (embedding-bypass path)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("bulk")
     async def bulk_record_transactions(
         transactions: str,
         account_id: str | None = None,
@@ -600,7 +611,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if hasattr(_transactions, "update_transaction"):
 
-        @mcp.tool()
+        @_tool("core")
         async def update_transaction(
             transaction_id: str,
             category: str | None = None,
@@ -635,7 +646,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if hasattr(_transactions, "delete_transaction"):
 
-        @mcp.tool()
+        @_tool("core")
         async def delete_transaction(
             transaction_id: str,
         ) -> dict[str, Any]:
@@ -650,7 +661,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if hasattr(_transactions, "merge_duplicates"):
 
-        @mcp.tool()
+        @_tool("bulk")
         async def merge_duplicates(
             keep_id: str,
             duplicate_ids: str | None = None,
@@ -682,7 +693,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if hasattr(_transactions, "split_transaction"):
 
-        @mcp.tool()
+        @_tool("bulk")
         async def split_transaction(
             transaction_id: str,
             splits: str,
@@ -707,7 +718,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if hasattr(_transactions, "bulk_recategorize"):
 
-        @mcp.tool()
+        @_tool("bulk")
         async def bulk_recategorize(
             merchant_pattern: str,
             new_category: str,
@@ -738,7 +749,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _data_import is not None and hasattr(_data_import, "import_transactions"):
 
-        @mcp.tool()
+        @_tool("bulk")
         async def import_transactions(
             storage_ref: str,
             account_id: str | None = None,
@@ -781,7 +792,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _data_import is not None and hasattr(_data_import, "import_transactions_from_file"):
 
-        @mcp.tool()
+        @_tool("bulk")
         async def import_transactions_from_file(
             file_path: str,
             account_id: str | None = None,
@@ -822,7 +833,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         _pattern_recognition, "learn_merchant_categories"
     ):
 
-        @mcp.tool()
+        @_tool("intelligence")
         async def learn_merchant_categories() -> dict[str, Any]:
             """Learn merchant-to-category mappings from existing transaction history.
 
@@ -838,7 +849,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _pattern_recognition is not None and hasattr(_pattern_recognition, "suggest_categories"):
 
-        @mcp.tool()
+        @_tool("intelligence")
         async def suggest_categories(
             transaction_ids: str,
         ) -> dict[str, Any]:
@@ -863,7 +874,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         _pattern_recognition, "recall_merchant_mappings"
     ):
 
-        @mcp.tool()
+        @_tool("intelligence")
         async def recall_merchant_mappings(
             merchant_pattern: str | None = None,
             category: str | None = None,
@@ -888,7 +899,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _pattern_recognition is not None and hasattr(_pattern_recognition, "detect_recurring"):
 
-        @mcp.tool()
+        @_tool("subscriptions")
         async def detect_recurring(
             min_occurrences: int = 3,
         ) -> dict[str, Any]:
@@ -911,7 +922,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _pattern_recognition is not None and hasattr(_pattern_recognition, "predict_bills"):
 
-        @mcp.tool()
+        @_tool("bills")
         async def predict_bills(
             days_ahead: int = 30,
         ) -> dict[str, Any]:
@@ -936,7 +947,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _anomaly_detection is not None and hasattr(_anomaly_detection, "compute_baselines"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def compute_baselines() -> dict[str, Any]:
             """Compute statistical spending baselines from 6-month rolling history.
 
@@ -952,7 +963,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _anomaly_detection is not None and hasattr(_anomaly_detection, "anomaly_scan"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def anomaly_scan(
             days_back: int = 7,
             sensitivity: float = 2.5,
@@ -978,7 +989,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _anomaly_detection is not None and hasattr(_anomaly_detection, "detect_duplicates"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def detect_duplicates(
             days_back: int = 30,
         ) -> dict[str, Any]:
@@ -1003,7 +1014,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _budgets is not None and hasattr(_budgets, "budget_set"):
 
-        @mcp.tool()
+        @_tool("budgets")
         async def budget_set(
             category: str,
             amount: float,
@@ -1039,7 +1050,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _budgets is not None and hasattr(_budgets, "budget_list"):
 
-        @mcp.tool()
+        @_tool("budgets")
         async def budget_list() -> dict[str, Any]:
             """List all active spending budgets.
 
@@ -1052,7 +1063,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _budgets is not None and hasattr(_budgets, "budget_remove"):
 
-        @mcp.tool()
+        @_tool("budgets")
         async def budget_remove(
             category: str,
             period: str,
@@ -1072,7 +1083,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _budgets is not None and hasattr(_budgets, "budget_status"):
 
-        @mcp.tool()
+        @_tool("budgets")
         async def budget_status() -> dict[str, Any]:
             """Check current spending against all active budgets.
 
@@ -1087,7 +1098,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _budgets is not None and hasattr(_budgets, "spending_trends"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def spending_trends(
             comparison: str = "month_over_month",
             months: int = 6,
@@ -1111,7 +1122,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _budgets is not None and hasattr(_budgets, "spending_forecast"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def spending_forecast() -> dict[str, Any]:
             """Forecast end-of-month spending based on current-month trajectory.
 
@@ -1132,7 +1143,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _overview is not None and hasattr(_overview, "net_worth_snapshot"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def net_worth_snapshot(
             account: str,
             institution: str,
@@ -1164,7 +1175,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _overview is not None and hasattr(_overview, "net_worth_history"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def net_worth_history(
             months: int = 12,
         ) -> dict[str, Any]:
@@ -1186,7 +1197,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _overview is not None and hasattr(_overview, "cash_flow"):
 
-        @mcp.tool()
+        @_tool("analytics")
         async def cash_flow(
             period: str = "monthly",
             months: int = 6,
@@ -1213,7 +1224,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _overview is not None and hasattr(_overview, "subscription_audit"):
 
-        @mcp.tool()
+        @_tool("subscriptions")
         async def subscription_audit() -> dict[str, Any]:
             """Audit all subscriptions — tracked and auto-detected recurring charges.
 
@@ -1229,7 +1240,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _overview is not None and hasattr(_overview, "flag_tax_deductible"):
 
-        @mcp.tool()
+        @_tool("intelligence")
         async def flag_tax_deductible(
             year: int | None = None,
         ) -> dict[str, Any]:
@@ -1255,7 +1266,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _alerts is not None and hasattr(_alerts, "alert_configure"):
 
-        @mcp.tool()
+        @_tool("intelligence")
         async def alert_configure(
             type: str,
             threshold: float | None = None,
@@ -1285,7 +1296,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _alerts is not None and hasattr(_alerts, "alert_list"):
 
-        @mcp.tool()
+        @_tool("intelligence")
         async def alert_list() -> dict[str, Any]:
             """List all configured alert rules.
 
@@ -1298,7 +1309,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 
     if _alerts is not None and hasattr(_alerts, "detect_price_changes"):
 
-        @mcp.tool()
+        @_tool("subscriptions")
         async def detect_price_changes(
             days_back: int = 60,
         ) -> dict[str, Any]:

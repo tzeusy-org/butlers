@@ -2,7 +2,7 @@
 
 All ``@mcp.tool()`` closures live here, extracted from the monolithic
 ``EducationModule.register_tools`` method.  Called once during butler
-startup via ``register_tools(mcp, module)``.
+startup via ``register_tools(mcp, module, config)``.
 """
 
 from __future__ import annotations
@@ -10,8 +10,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from butlers.modules.base import group_enabled
 
-def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
+
+def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     """Register all education MCP tools on *mcp*, using *module* for pool access."""
 
     # Import sub-modules (deferred to avoid import-time side effects)
@@ -27,6 +29,13 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     from butlers.tools.education import mind_maps as _maps
     from butlers.tools.education import spaced_repetition as _sr
     from butlers.tools.education import teaching_flows as _flows
+
+    # Build a group-aware tool decorator: returns @mcp.tool() when the
+    # group is enabled, or a no-op passthrough when disabled.
+    def _tool(group: str):
+        if group_enabled(config, group):
+            return mcp.tool()
+        return lambda fn: fn  # no-op — function defined but not registered
 
     # --- Scheduler callback factories ---
     # Education tools use callback injection for scheduler integration.
@@ -60,26 +69,26 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Mind Map tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_create(title: str) -> str:
         """Create a new mind map with status='active'."""
         return await _maps.mind_map_create(module._get_pool(), title)
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_get(
         mind_map_id: str,
     ) -> dict[str, Any] | None:
         """Retrieve a mind map by ID, including its nodes and edges."""
         return await _maps.mind_map_get(module._get_pool(), mind_map_id)
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_list(
         status: str | None = None,
     ) -> list[dict[str, Any]]:
         """List mind maps, optionally filtered by status."""
         return await _maps.mind_map_list(module._get_pool(), status=status)
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_update_status(mind_map_id: str, status: str) -> None:
         """Update the status of a mind map."""
         await _maps.mind_map_update_status(module._get_pool(), mind_map_id, status)
@@ -88,7 +97,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Mind Map Node tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_node_create(
         mind_map_id: str,
         label: str,
@@ -111,14 +120,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             metadata=metadata,
         )
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_node_get(
         node_id: str,
     ) -> dict[str, Any] | None:
         """Retrieve a single node by ID."""
         return await _nodes.mind_map_node_get(module._get_pool(), node_id)
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_node_list(
         mind_map_id: str,
         mastery_status: str | None = None,
@@ -130,7 +139,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             mastery_status=mastery_status,
         )
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_node_update(
         node_id: str,
         mastery_score: float | None = None,
@@ -163,7 +172,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Mind Map Edge tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_edge_create(
         parent_node_id: str,
         child_node_id: str,
@@ -177,7 +186,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             edge_type=edge_type,
         )
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_edge_delete(parent_node_id: str, child_node_id: str) -> None:
         """Delete an edge between two nodes (idempotent)."""
         await _edges.mind_map_edge_delete(module._get_pool(), parent_node_id, child_node_id)
@@ -186,14 +195,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Mind Map Query tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_frontier(
         mind_map_id: str,
     ) -> list[dict[str, Any]]:
         """Return frontier nodes (prerequisites mastered, node not yet mastered)."""
         return await _queries.mind_map_frontier(module._get_pool(), mind_map_id)
 
-    @mcp.tool()
+    @_tool("mind_maps")
     async def mind_map_subtree(
         node_id: str,
     ) -> list[dict[str, Any]]:
@@ -204,7 +213,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Teaching Flow tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("teaching")
     async def teaching_flow_start(
         topic: str,
         goal: str | None = None,
@@ -212,21 +221,21 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Start a new teaching flow for a topic."""
         return await _flows.teaching_flow_start(module._get_pool(), topic, goal=goal)
 
-    @mcp.tool()
+    @_tool("teaching")
     async def teaching_flow_get(
         mind_map_id: str,
     ) -> dict[str, Any] | None:
         """Read current flow state from the KV store."""
         return await _flows.teaching_flow_get(module._get_pool(), mind_map_id)
 
-    @mcp.tool()
+    @_tool("teaching")
     async def teaching_flow_advance(
         mind_map_id: str,
     ) -> dict[str, Any]:
         """Advance the teaching flow state machine to the next state."""
         return await _flows.teaching_flow_advance(module._get_pool(), mind_map_id)
 
-    @mcp.tool()
+    @_tool("teaching")
     async def teaching_flow_abandon(mind_map_id: str) -> None:
         """Abandon a teaching flow and clean up pending review schedules."""
         await _flows.teaching_flow_abandon(
@@ -235,7 +244,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             schedule_delete=bound_schedule_delete,
         )
 
-    @mcp.tool()
+    @_tool("teaching")
     async def teaching_flow_list(
         status: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -246,7 +255,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Mastery tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("mastery")
     async def mastery_record_response(
         node_id: str,
         mind_map_id: str,
@@ -270,7 +279,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             evaluator_notes=evaluator_notes,
         )
 
-    @mcp.tool()
+    @_tool("mastery")
     async def mastery_get_node_history(
         node_id: str,
         limit: int | None = None,
@@ -278,14 +287,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Return quiz response history for a node, most recent first."""
         return await _mastery.mastery_get_node_history(module._get_pool(), node_id, limit=limit)
 
-    @mcp.tool()
+    @_tool("mastery")
     async def mastery_get_map_summary(
         mind_map_id: str,
     ) -> dict[str, Any]:
         """Return aggregate mastery statistics for all nodes in a mind map."""
         return await _mastery.mastery_get_map_summary(module._get_pool(), mind_map_id)
 
-    @mcp.tool()
+    @_tool("mastery")
     async def mastery_detect_struggles(
         mind_map_id: str,
     ) -> list[dict[str, Any]]:
@@ -296,7 +305,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Spaced Repetition tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("spaced_repetition")
     async def spaced_repetition_record_response(
         node_id: str,
         mind_map_id: str,
@@ -312,14 +321,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             schedule_delete=bound_schedule_delete,
         )
 
-    @mcp.tool()
+    @_tool("spaced_repetition")
     async def spaced_repetition_pending_reviews(
         mind_map_id: str,
     ) -> list[dict[str, Any]]:
         """Return nodes due for spaced-repetition review (next_review_at <= now)."""
         return await _sr.spaced_repetition_pending_reviews(module._get_pool(), mind_map_id)
 
-    @mcp.tool()
+    @_tool("spaced_repetition")
     async def spaced_repetition_schedule_cleanup(
         mind_map_id: str,
     ) -> int:
@@ -334,14 +343,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Diagnostic tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("diagnostics")
     async def diagnostic_start(
         mind_map_id: str,
     ) -> list[dict[str, Any]]:
         """Initialise a diagnostic assessment for a mind map."""
         return await _diagnostic.diagnostic_start(module._get_pool(), mind_map_id)
 
-    @mcp.tool()
+    @_tool("diagnostics")
     async def diagnostic_record_probe(
         mind_map_id: str,
         node_id: str,
@@ -363,7 +372,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             evaluator_notes=evaluator_notes,
         )
 
-    @mcp.tool()
+    @_tool("diagnostics")
     async def diagnostic_complete(
         mind_map_id: str,
     ) -> dict[str, Any]:
@@ -374,7 +383,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Curriculum tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("curriculum")
     async def curriculum_generate(
         mind_map_id: str,
         goal: str | None = None,
@@ -388,7 +397,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             diagnostic_results=diagnostic_results,
         )
 
-    @mcp.tool()
+    @_tool("curriculum")
     async def curriculum_replan(
         mind_map_id: str,
         reason: str | None = None,
@@ -396,7 +405,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Re-compute learning sequence based on current mastery state."""
         return await _curriculum.curriculum_replan(module._get_pool(), mind_map_id, reason=reason)
 
-    @mcp.tool()
+    @_tool("curriculum")
     async def curriculum_next_node(
         mind_map_id: str,
     ) -> dict[str, Any] | None:
@@ -407,7 +416,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Analytics tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("analytics")
     async def analytics_get_snapshot(
         mind_map_id: str,
         snapshot_date: str | None = None,
@@ -420,7 +429,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             module._get_pool(), mind_map_id, date=parsed_date
         )
 
-    @mcp.tool()
+    @_tool("analytics")
     async def analytics_get_trend(
         mind_map_id: str,
         days: int = 30,
@@ -428,7 +437,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Return a time-series of snapshots within the last N days."""
         return await _analytics.analytics_get_trend(module._get_pool(), mind_map_id, days=days)
 
-    @mcp.tool()
+    @_tool("analytics")
     async def analytics_get_cross_topic() -> dict[str, Any]:
         """Return comparative analytics across all active mind maps."""
         return await _analytics.analytics_get_cross_topic(module._get_pool())

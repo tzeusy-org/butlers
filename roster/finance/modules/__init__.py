@@ -18,13 +18,34 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin
 
 logger = logging.getLogger(__name__)
 
 
-class FinanceModuleConfig(BaseModel):
-    """Configuration for the Finance module (empty -- no settings needed yet)."""
+class FinanceModuleConfig(ToolGroupMixin, BaseModel):
+    """Configuration for the Finance module.
+
+    Tool groups
+    -----------
+    core : record_transaction, list_transactions, update_transaction,
+           delete_transaction, list_distinct_merchants
+    facts : list_transaction_facts, track_account_fact,
+            track_subscription_fact, track_bill_fact, spending_summary_facts
+    bulk : bulk_record_transactions, bulk_update_transactions,
+           bulk_recategorize, import_transactions, import_transactions_from_file,
+           merge_duplicates, split_transaction
+    subscriptions : track_subscription, subscription_audit, detect_recurring,
+                    detect_price_changes
+    bills : track_bill, upcoming_bills, predict_bills
+    budgets : budget_set, budget_list, budget_remove, budget_status
+    analytics : spending_summary, spending_trends, spending_forecast,
+                net_worth_snapshot, net_worth_history, cash_flow,
+                compute_baselines, anomaly_scan, detect_duplicates
+    intelligence : learn_merchant_categories, suggest_categories,
+                   recall_merchant_mappings, flag_tax_deductible,
+                   alert_configure, alert_list
+    """
 
 
 class FinanceModule(Module):
@@ -79,4 +100,4 @@ class FinanceModule(Module):
 
         from .tools import register_tools
 
-        register_tools(mcp, self)
+        register_tools(mcp, self, config)

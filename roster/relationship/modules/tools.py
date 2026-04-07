@@ -1,8 +1,8 @@
 """Relationship MCP tool registrations.
 
-All ``@mcp.tool()`` closures extracted from the monolithic ``module.py``.
-Called by ``RelationshipModule.register_tools`` via
-``register_tools(mcp, module)``.
+Group-aware tool closures called by ``RelationshipModule.register_tools``
+via ``register_tools(mcp, module, config)``.  When ``config.groups`` is set,
+only tools in the listed groups are registered on the MCP server.
 """
 
 from __future__ import annotations
@@ -13,8 +13,15 @@ from decimal import Decimal
 from typing import Any
 
 
-def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
+def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
     """Register all relationship MCP tools as closures over *module*."""
+
+    from butlers.modules.base import group_enabled
+
+    def _tool(group: str):
+        if group_enabled(config, group):
+            return mcp.tool()
+        return lambda fn: fn
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr
@@ -39,10 +46,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     from butlers.tools.relationship import vcard as _vcard
 
     # =================================================================
-    # Address tools
+    # Address tools (group: contacts)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("contacts")
     async def address_add(
         contact_id: uuid.UUID,
         line_1: str,
@@ -72,14 +79,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             is_current=is_current,
         )
 
-    @mcp.tool()
+    @_tool("contacts")
     async def address_list(
         contact_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
         """List all addresses for a contact, current address first."""
         return await _addr.address_list(module._get_pool(), contact_id)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def address_update(
         address_id: uuid.UUID,
         label: str | None = None,
@@ -113,16 +120,16 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         }
         return await _addr.address_update(module._get_pool(), address_id, **fields)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def address_remove(address_id: uuid.UUID) -> None:
         """Remove an address by ID."""
         await _addr.address_remove(module._get_pool(), address_id)
 
     # =================================================================
-    # Contact Info tools
+    # Contact Info tools (group: contacts)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_info_add(
         contact_id: uuid.UUID,
         type: str,
@@ -141,7 +148,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             is_primary=is_primary,
         )
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_info_list(
         contact_id: uuid.UUID,
         type: str | None = None,
@@ -150,14 +157,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         by type."""
         return await _ci.contact_info_list(module._get_pool(), contact_id, type=type)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_info_remove(
         contact_info_id: uuid.UUID,
     ) -> None:
         """Remove a piece of contact information by its ID."""
         await _ci.contact_info_remove(module._get_pool(), contact_info_id)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_search_by_info(
         value: str,
         type: str | None = None,
@@ -171,10 +178,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _ci.contact_search_by_info(module._get_pool(), value, type=type)
 
     # =================================================================
-    # Contact tools
+    # Contact tools (group: contacts)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_create(
         name: str | None = None,
         details: dict[str, Any] | None = None,
@@ -207,7 +214,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             metadata=metadata,
         )
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_get(
         contact_id: uuid.UUID,
         allow_missing: bool = False,
@@ -219,7 +226,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             allow_missing=allow_missing,
         )
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_update(
         contact_id: uuid.UUID,
         name: str | None = None,
@@ -256,7 +263,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         }
         return await _contacts.contact_update(module._get_pool(), contact_id, **fields)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_search(
         query: str,
         limit: int = 20,
@@ -265,14 +272,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Search contacts by legacy and spec fields."""
         return await _contacts.contact_search(module._get_pool(), query, limit, offset)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_archive(
         contact_id: uuid.UUID,
     ) -> dict[str, Any]:
         """Archive a contact across legacy/spec schemas."""
         return await _contacts.contact_archive(module._get_pool(), contact_id)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_merge(
         source_id: uuid.UUID,
         target_id: uuid.UUID,
@@ -286,10 +293,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _contacts.contact_merge(module._get_pool(), source_id, target_id)
 
     # =================================================================
-    # Date tools
+    # Date tools (group: social)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("social")
     async def date_add(
         contact_id: uuid.UUID,
         label: str,
@@ -301,14 +308,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         contact+label+month+day."""
         return await _dates.date_add(module._get_pool(), contact_id, label, month, day, year)
 
-    @mcp.tool()
+    @_tool("social")
     async def date_list(
         contact_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
         """List all important dates for a contact."""
         return await _dates.date_list(module._get_pool(), contact_id)
 
-    @mcp.tool()
+    @_tool("social")
     async def upcoming_dates(
         days_ahead: int = 30,
     ) -> list[dict[str, Any]]:
@@ -317,10 +324,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _dates.upcoming_dates(module._get_pool(), days_ahead)
 
     # =================================================================
-    # Fact tools
+    # Fact tools (group: interactions)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("interactions")
     async def fact_set(
         contact_id: uuid.UUID,
         key: str,
@@ -329,7 +336,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Set a quick fact for a contact (UPSERT)."""
         return await _facts.fact_set(module._get_pool(), contact_id, key, value)
 
-    @mcp.tool()
+    @_tool("interactions")
     async def fact_list(
         contact_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
@@ -337,10 +344,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _facts.fact_list(module._get_pool(), contact_id)
 
     # =================================================================
-    # Feed tools
+    # Feed tools (group: interactions)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("interactions")
     async def feed_get(
         contact_id: uuid.UUID | None = None,
         limit: int = 50,
@@ -355,10 +362,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         )
 
     # =================================================================
-    # Gift tools
+    # Gift tools (group: social)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("social")
     async def gift_add(
         contact_id: uuid.UUID,
         description: str,
@@ -367,7 +374,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Add a gift idea for a contact."""
         return await _gifts.gift_add(module._get_pool(), contact_id, description, occasion)
 
-    @mcp.tool()
+    @_tool("social")
     async def gift_list(
         contact_id: uuid.UUID,
         status: str | None = None,
@@ -375,7 +382,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """List gifts for a contact, optionally filtered by status."""
         return await _gifts.gift_list(module._get_pool(), contact_id, status)
 
-    @mcp.tool()
+    @_tool("social")
     async def gift_update_status(
         gift_id: uuid.UUID,
         status: str,
@@ -384,10 +391,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _gifts.gift_update_status(module._get_pool(), gift_id, status)
 
     # =================================================================
-    # Group tools
+    # Group tools (group: social)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("social")
     async def group_create(
         name: str,
         type: str | None = None,
@@ -395,7 +402,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Create a contact group."""
         return await _groups.group_create(module._get_pool(), name, type)
 
-    @mcp.tool()
+    @_tool("social")
     async def group_add_member(
         group_id: uuid.UUID,
         contact_id: uuid.UUID,
@@ -404,12 +411,12 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Add a contact to a group."""
         return await _groups.group_add_member(module._get_pool(), group_id, contact_id, role)
 
-    @mcp.tool()
+    @_tool("social")
     async def group_list() -> list[dict[str, Any]]:
         """List all groups."""
         return await _groups.group_list(module._get_pool())
 
-    @mcp.tool()
+    @_tool("social")
     async def group_members(
         group_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
@@ -417,10 +424,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _groups.group_members(module._get_pool(), group_id)
 
     # =================================================================
-    # Interaction tools
+    # Interaction tools (group: interactions)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("interactions")
     async def interaction_log(
         contact_id: uuid.UUID,
         type: str,
@@ -442,7 +449,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             metadata=metadata,
         )
 
-    @mcp.tool()
+    @_tool("interactions")
     async def interaction_list(
         contact_id: uuid.UUID,
         limit: int = 20,
@@ -462,10 +469,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         )
 
     # =================================================================
-    # Label tools
+    # Label tools (group: notes)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("notes")
     async def label_create(
         name: str,
         color: str | None = None,
@@ -473,7 +480,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Create a label."""
         return await _labels.label_create(module._get_pool(), name, color)
 
-    @mcp.tool()
+    @_tool("notes")
     async def label_assign(
         label_id: uuid.UUID,
         contact_id: uuid.UUID,
@@ -481,7 +488,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Assign a label to a contact."""
         return await _labels.label_assign(module._get_pool(), label_id, contact_id)
 
-    @mcp.tool()
+    @_tool("notes")
     async def contact_search_by_label(
         label_name: str,
     ) -> list[dict[str, Any]]:
@@ -489,16 +496,16 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _labels.contact_search_by_label(module._get_pool(), label_name)
 
     # =================================================================
-    # Life Event tools
+    # Life Event tools (group: relationships)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("relationships")
     async def life_event_types_list() -> list[dict[str, Any]]:
         """List all available life event types with their
         categories."""
         return await _life.life_event_types_list(module._get_pool())
 
-    @mcp.tool()
+    @_tool("relationships")
     async def life_event_log(
         contact_id: uuid.UUID,
         type_name: str,
@@ -527,7 +534,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             occurred_at=occurred_at,
         )
 
-    @mcp.tool()
+    @_tool("relationships")
     async def life_event_list(
         contact_id: uuid.UUID | None = None,
         type_name: str | None = None,
@@ -549,10 +556,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         )
 
     # =================================================================
-    # Loan tools
+    # Loan tools (group: tracking)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("tracking")
     async def loan_create(
         contact_id: uuid.UUID | None = None,
         amount: Decimal | None = None,
@@ -576,14 +583,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             currency=currency,
         )
 
-    @mcp.tool()
+    @_tool("tracking")
     async def loan_settle(
         loan_id: uuid.UUID,
     ) -> dict[str, Any]:
         """Settle a loan."""
         return await _loans.loan_settle(module._get_pool(), loan_id)
 
-    @mcp.tool()
+    @_tool("tracking")
     async def loan_list(
         contact_id: uuid.UUID | None = None,
     ) -> list[dict[str, Any]]:
@@ -591,10 +598,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _loans.loan_list(module._get_pool(), contact_id)
 
     # =================================================================
-    # Note tools
+    # Note tools (group: notes)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("notes")
     async def note_create(
         contact_id: uuid.UUID,
         content: str | None = None,
@@ -612,7 +619,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             emotion=emotion,
         )
 
-    @mcp.tool()
+    @_tool("notes")
     async def note_list(
         contact_id: uuid.UUID,
         limit: int = 20,
@@ -621,7 +628,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """List all notes for a contact."""
         return await _notes.note_list(module._get_pool(), contact_id, limit, offset)
 
-    @mcp.tool()
+    @_tool("notes")
     async def note_search(
         query: str,
         contact_id: uuid.UUID | None = None,
@@ -631,10 +638,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _notes.note_search(module._get_pool(), query, contact_id)
 
     # =================================================================
-    # Relationship tools
+    # Relationship tools (group: relationships)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("relationships")
     async def relationship_add(
         contact_a: uuid.UUID,
         contact_b: uuid.UUID,
@@ -660,14 +667,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             notes=notes,
         )
 
-    @mcp.tool()
+    @_tool("relationships")
     async def relationship_list(
         contact_id: uuid.UUID,
     ) -> list[dict[str, Any]]:
         """List all relationships for a contact."""
         return await _rels.relationship_list(module._get_pool(), contact_id)
 
-    @mcp.tool()
+    @_tool("relationships")
     async def relationship_remove(
         contact_a: uuid.UUID,
         contact_b: uuid.UUID,
@@ -675,14 +682,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Remove both directions of a relationship."""
         await _rels.relationship_remove(module._get_pool(), contact_a, contact_b)
 
-    @mcp.tool()
+    @_tool("relationships")
     async def relationship_type_get(
         type_id: uuid.UUID,
     ) -> dict[str, Any] | None:
         """Get a single relationship type by ID."""
         return await _rels.relationship_type_get(module._get_pool(), type_id)
 
-    @mcp.tool()
+    @_tool("relationships")
     async def relationship_types_list(
         group: str | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
@@ -695,10 +702,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _rels.relationship_types_list(module._get_pool(), group)
 
     # =================================================================
-    # Reminder tools
+    # Reminder tools (group: tracking)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("tracking")
     async def reminder_create(
         contact_id: uuid.UUID | None = None,
         message: str | None = None,
@@ -728,7 +735,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             calendar_event_id=calendar_event_id,
         )
 
-    @mcp.tool()
+    @_tool("tracking")
     async def reminder_list(
         contact_id: uuid.UUID | None = None,
         include_dismissed: bool = False,
@@ -740,7 +747,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             include_dismissed=include_dismissed,
         )
 
-    @mcp.tool()
+    @_tool("tracking")
     async def reminder_dismiss(
         reminder_id: uuid.UUID,
     ) -> dict[str, Any]:
@@ -748,10 +755,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _remind.reminder_dismiss(module._get_pool(), reminder_id)
 
     # =================================================================
-    # Resolve tools
+    # Resolve tools (group: contacts)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_resolve(
         name: str,
         context: str | None = None,
@@ -768,10 +775,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _resolve.contact_resolve(module._get_pool(), name, context)
 
     # =================================================================
-    # Dunbar tier tools
+    # Dunbar tier tools (group: management)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("management")
     async def dunbar_tier_set(
         contact_id: uuid.UUID,
         tier: int | None,
@@ -792,10 +799,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _dunbar.dunbar_tier_set(module._get_pool(), contact_id, tier)
 
     # =================================================================
-    # Stay-in-Touch tools
+    # Stay-in-Touch tools (group: management)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("management")
     async def stay_in_touch_set(
         contact_id: uuid.UUID,
         frequency_days: int | None,
@@ -807,7 +814,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """
         return await _sit.stay_in_touch_set(module._get_pool(), contact_id, frequency_days)
 
-    @mcp.tool()
+    @_tool("management")
     async def contacts_overdue() -> list[dict[str, Any]]:
         """Return contacts whose last interaction exceeds their
         stay-in-touch cadence.
@@ -819,10 +826,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _sit.contacts_overdue(module._get_pool())
 
     # =================================================================
-    # Task tools
+    # Task tools (group: tracking)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("tracking")
     async def task_create(
         contact_id: uuid.UUID,
         title: str,
@@ -831,7 +838,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """Create a task/to-do scoped to a contact."""
         return await _tasks.task_create(module._get_pool(), contact_id, title, description)
 
-    @mcp.tool()
+    @_tool("tracking")
     async def task_list(
         contact_id: uuid.UUID | None = None,
         include_completed: bool = False,
@@ -844,14 +851,14 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             include_completed=include_completed,
         )
 
-    @mcp.tool()
+    @_tool("tracking")
     async def task_complete(
         task_id: uuid.UUID,
     ) -> dict[str, Any]:
         """Mark a task as completed."""
         return await _tasks.task_complete(module._get_pool(), task_id)
 
-    @mcp.tool()
+    @_tool("tracking")
     async def task_delete(
         task_id: uuid.UUID,
     ) -> None:
@@ -859,10 +866,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         await _tasks.task_delete(module._get_pool(), task_id)
 
     # =================================================================
-    # vCard tools
+    # vCard tools (group: contacts)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_export_vcard(
         contact_id: uuid.UUID | None = None,
     ) -> str:
@@ -878,7 +885,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         """
         return await _vcard.contact_export_vcard(module._get_pool(), contact_id)
 
-    @mcp.tool()
+    @_tool("contacts")
     async def contact_import_vcard(
         vcf_content: str,
     ) -> list[dict[str, Any]]:
@@ -897,14 +904,15 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         return await _vcard.contact_import_vcard(module._get_pool(), vcf_content)
 
     # =================================================================
-    # Entity tools (from memory module, exposed for entity-first workflows)
+    # Entity tools (group: entity — from memory module, exposed for
+    # entity-first workflows)
     # =================================================================
 
     from butlers.modules.memory.tools import entities as _entities
 
     _ENTITY_TENANT_ID = "relationship"
 
-    @mcp.tool()
+    @_tool("entity")
     async def entity_resolve(
         name: str,
         entity_type: str | None = None,
@@ -938,7 +946,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             context_hints=hints,
         )
 
-    @mcp.tool()
+    @_tool("entity")
     async def entity_get(
         entity_id: str,
     ) -> dict[str, Any] | None:
@@ -949,7 +957,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             tenant_id=_ENTITY_TENANT_ID,
         )
 
-    @mcp.tool()
+    @_tool("entity")
     async def entity_update(
         entity_id: str,
         canonical_name: str | None = None,
@@ -966,7 +974,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             metadata=metadata,
         )
 
-    @mcp.tool()
+    @_tool("entity")
     async def entity_neighbors(
         entity_id: str,
         max_depth: int = 2,

@@ -83,7 +83,9 @@ class TestSpawnerMcpServers:
             await Spawner(config=config_mem, config_dir=tmp_path, runtime=adapter_mem).trigger(
                 prompt="test", trigger_source="trigger"
             )
-        assert adapter_mem.calls[0]["mcp_servers"] == {"test-butler": {"url": "http://localhost:9100/mcp"}}
+        mcp_url = adapter_mem.calls[0]["mcp_servers"]["test-butler"]["url"]
+        assert mcp_url.startswith("http://localhost:9100/mcp")
+        assert "trigger_source=trigger" in mcp_url
 
         # Memory disabled → fetch not called, butler MCP server still present
         config_no_mem = _make_config(modules={})
@@ -95,7 +97,9 @@ class TestSpawnerMcpServers:
             await Spawner(config=config_no_mem, config_dir=tmp_path, runtime=adapter_no_mem).trigger(
                 prompt="test", trigger_source="trigger"
             )
-        assert adapter_no_mem.calls[0]["mcp_servers"] == {"test-butler": {"url": "http://localhost:9100/mcp"}}
+        mcp_url_no_mem = adapter_no_mem.calls[0]["mcp_servers"]["test-butler"]["url"]
+        assert mcp_url_no_mem.startswith("http://localhost:9100/mcp")
+        assert "trigger_source=trigger" in mcp_url_no_mem
 
 
 class TestMemoryFetchGating:

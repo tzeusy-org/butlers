@@ -61,7 +61,7 @@ from butlers.modules.approvals.executor import (
 )
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
 logger = logging.getLogger(__name__)
 _HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
@@ -94,8 +94,19 @@ def validate_transition(current: ActionStatus, target: ActionStatus) -> None:
         )
 
 
-class ApprovalsConfig(BaseModel):
+class ApprovalsConfig(ToolGroupMixin, BaseModel):
     """Configuration for the Approvals module.
+
+    Tool groups
+    -----------
+    actions    : list_pending_actions, show_pending_action, approve_action,
+                 reject_action, pending_action_count, expire_stale_actions,
+                 list_executed_actions
+    rules      : create_approval_rule, create_rule_from_action,
+                 list_approval_rules, show_approval_rule,
+                 revoke_approval_rule, suggest_rule_constraints
+    promotions : list_promotion_suggestions, confirm_promotion_suggestion,
+                 dismiss_promotion_suggestion
 
     Extra fields (default_expiry_hours, default_risk_tier, gated_tools) are
     consumed by the daemon's approval-gate wiring via parse_approval_config()
@@ -319,21 +330,28 @@ class ApprovalsModule(Module):
         self._db = db
         module = self  # capture for closures
 
-        # --- Approval queue tools (6) ---
+        # Build a group-aware tool decorator: returns @mcp.tool() when the
+        # group is enabled, or a no-op passthrough when disabled.
+        def _tool(group: str):
+            if group_enabled(self._config, group):
+                return mcp.tool()
+            return lambda fn: fn  # no-op — function defined but not registered
 
-        @mcp.tool()
+        # --- Approval queue tools (7) ---
+
+        @_tool("actions")
         async def list_pending_actions(
             status: str | None = None, limit: int | None = None
         ) -> list[dict]:
             """List pending actions with optional status filter and limit."""
             return await module._list_pending_actions(status=status, limit=limit)
 
-        @mcp.tool()
+        @_tool("actions")
         async def show_pending_action(action_id: str) -> dict:
             """Show full details for a single pending action."""
             return await module._show_pending_action(action_id)
 
-        @mcp.tool()
+        @_tool("actions")
         async def approve_action(
             action_id: str,
             create_rule: bool = False,
@@ -345,7 +363,7 @@ class ApprovalsModule(Module):
                 actor=_actor_from_access_token(get_access_token()),
             )
 
-        @mcp.tool()
+        @_tool("actions")
         async def reject_action(
             action_id: str,
             reason: str | None = None,
@@ -357,17 +375,17 @@ class ApprovalsModule(Module):
                 actor=_actor_from_access_token(get_access_token()),
             )
 
-        @mcp.tool()
+        @_tool("actions")
         async def pending_action_count() -> dict:
             """Return count of pending actions."""
             return await module._pending_action_count()
 
-        @mcp.tool()
+        @_tool("actions")
         async def expire_stale_actions() -> dict:
             """Mark expired actions that are past their expires_at."""
             return await module._expire_stale_actions()
 
-        @mcp.tool()
+        @_tool("actions")
         async def list_executed_actions(
             tool_name: str | None = None,
             rule_id: str | None = None,
@@ -381,7 +399,7 @@ class ApprovalsModule(Module):
 
         # --- Standing approval rules CRUD tools (6) ---
 
-        @mcp.tool()
+        @_tool("rules")
         async def create_approval_rule(
             tool_name: str,
             arg_constraints: dict,
@@ -399,7 +417,7 @@ class ApprovalsModule(Module):
                 actor=_actor_from_access_token(get_access_token()),
             )
 
-        @mcp.tool()
+        @_tool("rules")
         async def create_rule_from_action(
             action_id: str,
             constraint_overrides: dict | None = None,
@@ -411,7 +429,7 @@ class ApprovalsModule(Module):
                 actor=_actor_from_access_token(get_access_token()),
             )
 
-        @mcp.tool()
+        @_tool("rules")
         async def list_approval_rules(
             tool_name: str | None = None,
             active_only: bool = True,
@@ -422,12 +440,12 @@ class ApprovalsModule(Module):
                 active_only=active_only,
             )
 
-        @mcp.tool()
+        @_tool("rules")
         async def show_approval_rule(rule_id: str) -> dict:
             """Show full details for a single standing approval rule."""
             return await module._show_approval_rule(rule_id)
 
-        @mcp.tool()
+        @_tool("rules")
         async def revoke_approval_rule(rule_id: str) -> dict:
             """Revoke (deactivate) a standing approval rule."""
             return await module._revoke_approval_rule(
@@ -435,14 +453,14 @@ class ApprovalsModule(Module):
                 actor=_actor_from_access_token(get_access_token()),
             )
 
-        @mcp.tool()
+        @_tool("rules")
         async def suggest_rule_constraints(action_id: str) -> dict:
             """Preview suggested constraints for creating a rule from a pending action."""
             return await module._suggest_rule_constraints(action_id)
 
         # --- Autonomy suggestion tools (3) ---
 
-        @mcp.tool()
+        @_tool("promotions")
         async def list_promotion_suggestions(
             status: str | None = "pending",
             suggestion_type: str | None = None,
@@ -455,7 +473,7 @@ class ApprovalsModule(Module):
                 limit=limit,
             )
 
-        @mcp.tool()
+        @_tool("promotions")
         async def confirm_promotion_suggestion(suggestion_id: str) -> dict:
             """Confirm a pending promotion suggestion (creates rule) or demotion (revokes rule)."""
             return await module._confirm_promotion_suggestion(
@@ -463,7 +481,7 @@ class ApprovalsModule(Module):
                 actor=_actor_from_access_token(get_access_token()),
             )
 
-        @mcp.tool()
+        @_tool("promotions")
         async def dismiss_promotion_suggestion(
             suggestion_id: str,
             reason: str | None = None,
