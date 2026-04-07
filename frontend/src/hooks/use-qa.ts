@@ -11,7 +11,9 @@ import {
   dismissQaKnownIssue,
   forceQaPatrol,
   getHealingAttempt,
+  getQaCircuitBreaker,
   getQaInvestigations,
+  getQaRepoConfig,
   getQaKnownIssues,
   getQaPatrol,
   getQaPatrolFindings,
@@ -19,7 +21,10 @@ import {
   getQaSummary,
   getQaTrends,
   listHealingAttempts,
+  resetQaCircuitBreaker,
+  syncQaRepo,
   undismissQaKnownIssue,
+  updateQaRepoConfig,
 } from "@/api/index.ts";
 import type {
   HealingAttemptsParams,
@@ -27,6 +32,7 @@ import type {
   QaInvestigationsParams,
   QaKnownIssuesParams,
   QaPatrolsParams,
+  QaRepoConfigUpdate,
 } from "@/api/index.ts";
 
 const STALE_TIME = 30_000;
@@ -183,6 +189,69 @@ export function useQaTrends(days = 7) {
     queryFn: () => getQaTrends(days),
     staleTime: STALE_TIME,
     refetchInterval: STALE_TIME,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Circuit breaker
+// ---------------------------------------------------------------------------
+
+/** Fetch QA circuit breaker status. */
+export function useQaCircuitBreaker() {
+  return useQuery({
+    queryKey: ["qa-circuit-breaker"],
+    queryFn: () => getQaCircuitBreaker(),
+    staleTime: STALE_TIME,
+    refetchInterval: STALE_TIME,
+  });
+}
+
+/** Reset the QA circuit breaker. Invalidates circuit-breaker + investigation caches. */
+export function useResetQaCircuitBreaker() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => resetQaCircuitBreaker(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-circuit-breaker"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-investigations"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-summary"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Repo config
+// ---------------------------------------------------------------------------
+
+/** Fetch QA repo configuration. */
+export function useQaRepoConfig() {
+  return useQuery({
+    queryKey: ["qa-repo-config"],
+    queryFn: () => getQaRepoConfig(),
+    staleTime: STALE_TIME,
+    refetchInterval: STALE_TIME,
+  });
+}
+
+/** Update QA repo URL. Invalidates repo-config cache on success. */
+export function useUpdateQaRepoConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: QaRepoConfigUpdate) => updateQaRepoConfig(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-repo-config"] });
+    },
+  });
+}
+
+/** Trigger immediate repo sync. Invalidates repo-config cache on success. */
+export function useSyncQaRepo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => syncQaRepo(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-repo-config"] });
+    },
   });
 }
 

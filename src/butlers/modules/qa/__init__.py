@@ -38,6 +38,7 @@ from butlers.core.qa.dispatch import (
     check_open_pr_statuses,
     dispatch_novel_findings,
 )
+from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
 from butlers.core.qa.sources.log_scanner import LogScannerSource
@@ -307,6 +308,9 @@ class QaModule(Module):
         self._repo_root: Path = Path(".")
         self._credential_store: Any = None
 
+        # Managed repo clone — initialized on startup
+        self._managed_clone: ManagedRepoClone | None = None
+
         # Repository whitelist — initialized on startup with the DB pool
         self._repo_whitelist: RepoWhitelist | None = None
 
@@ -424,6 +428,20 @@ class QaModule(Module):
                 logger.warning(
                     "QaModule startup: failed to load repo whitelist; "
                     "PR creation will be blocked until load succeeds",
+                    exc_info=True,
+                )
+
+        # Initialize managed repo clone
+        self._managed_clone = ManagedRepoClone(db_pool=pool)
+        if pool is not None:
+            try:
+                clone_path = await self._managed_clone.ensure_cloned()
+                self._repo_root = clone_path
+                logger.info("QaModule startup: managed clone ready at %s", clone_path)
+            except Exception:
+                logger.warning(
+                    "QaModule startup: failed to initialize managed repo clone; "
+                    "will fall back to daemon-provided repo_root",
                     exc_info=True,
                 )
 
@@ -910,6 +928,19 @@ class QaModule(Module):
 
             # Prune completed watchdog tasks before dispatching
             self._watchdog_tasks = [t for t in self._watchdog_tasks if not t.done()]
+
+            # Refresh managed repo clone before dispatch
+            if self._managed_clone is not None:
+                try:
+                    refreshed_root = await self._managed_clone.refresh()
+                    self._repo_root = refreshed_root
+                except Exception:
+                    logger.warning(
+                        "QaModule patrol %s: managed repo refresh failed (non-fatal); "
+                        "using existing clone state",
+                        patrol_id,
+                        exc_info=True,
+                    )
 
             _dispatch_span = None
             _dispatch_span_token = None
@@ -1424,6 +1455,13 @@ class QaModule(Module):
         """
         self._butler_name = butler_name
         self._spawner = spawner
-        self._repo_root = Path(repo_root)
+        # Only use daemon's repo_root as fallback if managed clone is not active
+        if self._managed_clone is None or self._managed_clone.clone_path is None:
+            self._repo_root = Path(repo_root)
         self._notify_fn = notify_fn
         self._switchboard_client = switchboard_client
+
+    @property
+    def managed_clone(self) -> ManagedRepoClone | None:
+        """Return the managed repo clone instance, if initialized."""
+        return self._managed_clone

@@ -637,10 +637,21 @@ export {
   undismissQaKnownIssue,
   getHealingAttempt,
   listHealingAttempts,
+  getQaCircuitBreaker,
+  resetQaCircuitBreaker,
+  getQaRepoConfig,
+  updateQaRepoConfig,
+  syncQaRepo,
 } from "./client.ts";
 
 export type {
+  CircuitBreakerAttempt,
+  CircuitBreakerResetResponse,
+  CircuitBreakerStatus,
   ForcePatrolResponse,
+  QaRepoConfig,
+  QaRepoConfigUpdate,
+  QaRepoSyncResponse,
   QaAllTimeStats,
   QaDismissal,
   QaDismissRequest,

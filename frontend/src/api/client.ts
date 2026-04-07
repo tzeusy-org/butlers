@@ -202,6 +202,11 @@ import type {
   QaInvestigationsParams,
   QaTrends,
   ForcePatrolResponse,
+  CircuitBreakerStatus,
+  CircuitBreakerResetResponse,
+  QaRepoConfig,
+  QaRepoConfigUpdate,
+  QaRepoSyncResponse,
   HealingAttempt,
   HealingAttemptsParams,
 } from "./types.ts";
@@ -3196,4 +3201,38 @@ export function getQaTrends(days = 7): Promise<ApiResponse<QaTrends>> {
 /** POST /api/qa/force-patrol — request an immediate patrol cycle */
 export function forceQaPatrol(): Promise<ApiResponse<ForcePatrolResponse>> {
   return apiFetch<ApiResponse<ForcePatrolResponse>>("/qa/force-patrol", { method: "POST" });
+}
+
+/** GET /api/qa/circuit-breaker — current circuit breaker state */
+export function getQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerStatus>> {
+  return apiFetch<ApiResponse<CircuitBreakerStatus>>("/qa/circuit-breaker");
+}
+
+/** POST /api/qa/circuit-breaker/reset — reset a tripped circuit breaker */
+export function resetQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerResetResponse>> {
+  return apiFetch<ApiResponse<CircuitBreakerResetResponse>>("/qa/circuit-breaker/reset", {
+    method: "POST",
+  });
+}
+
+/** GET /api/qa/settings/repo — current repo configuration */
+export function getQaRepoConfig(): Promise<ApiResponse<QaRepoConfig>> {
+  return apiFetch<ApiResponse<QaRepoConfig>>("/qa/settings/repo");
+}
+
+/** PUT /api/qa/settings/repo — update repo URL */
+export function updateQaRepoConfig(
+  body: QaRepoConfigUpdate,
+): Promise<ApiResponse<QaRepoConfig>> {
+  return apiFetch<ApiResponse<QaRepoConfig>>("/qa/settings/repo", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** POST /api/qa/settings/repo/sync — trigger immediate sync */
+export function syncQaRepo(): Promise<ApiResponse<QaRepoSyncResponse>> {
+  return apiFetch<ApiResponse<QaRepoSyncResponse>>("/qa/settings/repo/sync", {
+    method: "POST",
+  });
 }

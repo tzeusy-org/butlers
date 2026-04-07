@@ -3026,3 +3026,46 @@ export interface ForcePatrolResponse {
   accepted: boolean;
   message: string;
 }
+
+/** A recent healing attempt relevant to circuit breaker state */
+export interface CircuitBreakerAttempt {
+  id: string;
+  status: string;
+  closed_at: string;
+}
+
+/** Current state of the QA dispatch circuit breaker — GET /api/qa/circuit-breaker */
+export interface CircuitBreakerStatus {
+  tripped: boolean;
+  threshold: number;
+  recent_statuses: string[];
+  recent_attempts: CircuitBreakerAttempt[];
+}
+
+/** Response from POST /api/qa/circuit-breaker/reset */
+export interface CircuitBreakerResetResponse {
+  reset: boolean;
+  message: string;
+}
+
+/** QA repository configuration — GET /api/qa/settings/repo */
+export interface QaRepoConfig {
+  repo_url: string;
+  clone_path: string | null;
+  last_synced_at: string | null;
+  last_sync_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Request body for PUT /api/qa/settings/repo */
+export interface QaRepoConfigUpdate {
+  repo_url: string;
+}
+
+/** Response from POST /api/qa/settings/repo/sync */
+export interface QaRepoSyncResponse {
+  synced: boolean;
+  clone_path: string | null;
+  error: string | null;
+}

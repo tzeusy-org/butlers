@@ -21,6 +21,11 @@ Endpoints:
 - POST /api/qa/settings/allowed-repos               — add a repository to the whitelist
 - PATCH /api/qa/settings/allowed-repos/{owner}/{repo} — toggle enabled flag
 - DELETE /api/qa/settings/allowed-repos/{owner}/{repo} — remove a repository from the whitelist
+- GET  /api/qa/circuit-breaker                        — circuit breaker status
+- POST /api/qa/circuit-breaker/reset                  — reset tripped circuit breaker
+- GET  /api/qa/settings/repo                          — repository configuration
+- PUT  /api/qa/settings/repo                          — update repository URL
+- POST /api/qa/settings/repo/sync                     — trigger immediate repo sync
 
 All reads/writes query ``public.qa_patrols``, ``public.qa_findings``,
 ``public.qa_dismissals``, ``public.healing_attempts``, and
@@ -78,6 +83,16 @@ def _get_credentials_status_fn():
     must return a dict with at least ``{"gh_token_present": bool}``.
 
     Returns ``None`` by default (standalone API mode — status is unknown).
+    """
+    return None
+
+
+def _get_repo_sync_fn():
+    """Dependency stub for the managed repo clone sync callable.
+
+    Override via ``app.dependency_overrides[_get_repo_sync_fn]`` to inject
+    a callable that triggers ``ManagedRepoClone.refresh()``.
+    Returns None by default (standalone API mode).
     """
     return None
 
@@ -335,6 +350,55 @@ class ForcePatrolResponse(BaseModel):
 
     accepted: bool
     message: str
+
+
+class CircuitBreakerAttempt(BaseModel):
+    """A recent healing attempt relevant to circuit breaker state."""
+
+    id: str
+    status: str
+    closed_at: str
+
+
+class CircuitBreakerStatus(BaseModel):
+    """Current state of the QA dispatch circuit breaker."""
+
+    tripped: bool
+    threshold: int
+    recent_statuses: list[str]
+    recent_attempts: list[CircuitBreakerAttempt]
+
+
+class CircuitBreakerResetResponse(BaseModel):
+    """Response from resetting the circuit breaker."""
+
+    reset: bool
+    message: str
+
+
+class QaRepoConfig(BaseModel):
+    """Current QA repository configuration."""
+
+    repo_url: str
+    clone_path: str | None = None
+    last_synced_at: datetime | None = None
+    last_sync_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class QaRepoConfigUpdate(BaseModel):
+    """Request body for updating the QA repository URL."""
+
+    repo_url: str = Field(..., description="Git repository URL (HTTPS recommended)")
+
+
+class QaRepoSyncResponse(BaseModel):
+    """Response from a repo sync request."""
+
+    synced: bool
+    clone_path: str | None = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1558,3 +1622,221 @@ async def delete_allowed_repo(
         data={"owner": owner.lower(), "repo": repo.lower(), "deleted": True},
         meta=ApiMeta(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
+
+_CIRCUIT_BREAKER_THRESHOLD = 5
+_CIRCUIT_BREAKER_FAILURE_STATUSES = frozenset({"failed", "timeout", "anonymization_failed"})
+
+
+@router.get("/circuit-breaker", response_model=ApiResponse[CircuitBreakerStatus])
+async def get_circuit_breaker_status(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CircuitBreakerStatus]:
+    """Return the current QA dispatch circuit breaker state."""
+    pool = _shared_pool(db)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, status, closed_at
+        FROM public.healing_attempts
+        WHERE qa_patrol_id IS NOT NULL
+          AND closed_at IS NOT NULL
+        ORDER BY closed_at DESC
+        LIMIT $1
+        """,
+        _CIRCUIT_BREAKER_THRESHOLD,
+    )
+
+    statuses = [row["status"] for row in rows]
+    tripped = len(statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
+        s in _CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
+    )
+
+    return ApiResponse(
+        data=CircuitBreakerStatus(
+            tripped=tripped,
+            threshold=_CIRCUIT_BREAKER_THRESHOLD,
+            recent_statuses=statuses,
+            recent_attempts=[
+                CircuitBreakerAttempt(
+                    id=str(row["id"]),
+                    status=row["status"],
+                    closed_at=row["closed_at"].isoformat(),
+                )
+                for row in rows
+            ],
+        ),
+        meta=ApiMeta(),
+    )
+
+
+@router.post("/circuit-breaker/reset", response_model=ApiResponse[CircuitBreakerResetResponse])
+async def reset_circuit_breaker(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CircuitBreakerResetResponse]:
+    """Reset the QA circuit breaker by inserting a synthetic success record.
+
+    This breaks the consecutive-failure chain so future dispatches can proceed.
+    """
+    pool = _shared_pool(db)
+
+    # Verify it's actually tripped before resetting
+    rows = await pool.fetch(
+        """
+        SELECT status
+        FROM public.healing_attempts
+        WHERE qa_patrol_id IS NOT NULL
+          AND closed_at IS NOT NULL
+        ORDER BY closed_at DESC
+        LIMIT $1
+        """,
+        _CIRCUIT_BREAKER_THRESHOLD,
+    )
+    statuses = [row["status"] for row in rows]
+    tripped = len(statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
+        s in _CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
+    )
+
+    if not tripped:
+        return ApiResponse(
+            data=CircuitBreakerResetResponse(
+                reset=False,
+                message="Circuit breaker is not tripped — no reset needed.",
+            ),
+            meta=ApiMeta(),
+        )
+
+    # Insert a synthetic success to break the failure streak
+    await pool.execute(
+        """
+        INSERT INTO public.healing_attempts (
+            id, fingerprint, butler_name, status, severity,
+            exception_type, call_site, created_at, updated_at, closed_at,
+            error_detail
+        ) VALUES (
+            gen_random_uuid(),
+            'circuit-breaker-reset',
+            'dashboard',
+            'manual_reset',
+            4,
+            'CircuitBreakerReset',
+            'dashboard.circuit_breaker.reset',
+            now(), now(), now(),
+            'Manual reset via QA dashboard'
+        )
+        """,
+    )
+
+    logger.info("QA circuit breaker reset via dashboard")
+
+    return ApiResponse(
+        data=CircuitBreakerResetResponse(
+            reset=True,
+            message="Circuit breaker reset. Future dispatches will proceed normally.",
+        ),
+        meta=ApiMeta(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Repository configuration
+# ---------------------------------------------------------------------------
+
+
+@router.get("/settings/repo", response_model=ApiResponse[QaRepoConfig])
+async def get_repo_config(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[QaRepoConfig]:
+    """Return the current QA repository configuration."""
+    pool = _shared_pool(db)
+    row = await pool.fetchrow(
+        "SELECT repo_url, clone_path, last_synced_at, last_sync_error, "
+        "created_at, updated_at FROM public.qa_repo_config LIMIT 1"
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Repo config not initialized")
+
+    return ApiResponse(
+        data=QaRepoConfig(
+            repo_url=row["repo_url"],
+            clone_path=row["clone_path"],
+            last_synced_at=row["last_synced_at"],
+            last_sync_error=row["last_sync_error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        ),
+        meta=ApiMeta(),
+    )
+
+
+@router.put("/settings/repo", response_model=ApiResponse[QaRepoConfig])
+async def update_repo_config(
+    body: QaRepoConfigUpdate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[QaRepoConfig]:
+    """Update the QA repository URL.
+
+    The actual re-clone happens lazily on the next patrol cycle or manual sync.
+    """
+    pool = _shared_pool(db)
+    row = await pool.fetchrow(
+        """
+        UPDATE public.qa_repo_config
+        SET repo_url = $1, updated_at = now()
+        RETURNING repo_url, clone_path, last_synced_at, last_sync_error,
+                  created_at, updated_at
+        """,
+        body.repo_url.strip(),
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Repo config not initialized")
+
+    return ApiResponse(
+        data=QaRepoConfig(
+            repo_url=row["repo_url"],
+            clone_path=row["clone_path"],
+            last_synced_at=row["last_synced_at"],
+            last_sync_error=row["last_sync_error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        ),
+        meta=ApiMeta(),
+    )
+
+
+@router.post("/settings/repo/sync", response_model=ApiResponse[QaRepoSyncResponse])
+async def sync_repo(
+    repo_sync_fn=Depends(_get_repo_sync_fn),
+) -> ApiResponse[QaRepoSyncResponse]:
+    """Trigger an immediate repo sync (git fetch + reset to origin/main).
+
+    Requires the QA daemon to be running in-process to wire the sync callable.
+    """
+    if repo_sync_fn is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Repo sync is only available when the QA daemon is running in-process.",
+        )
+    try:
+        result_path = await repo_sync_fn()
+        return ApiResponse(
+            data=QaRepoSyncResponse(
+                synced=True,
+                clone_path=str(result_path) if result_path else None,
+            ),
+            meta=ApiMeta(),
+        )
+    except Exception as exc:
+        error_code = uuid.uuid4().hex
+        logger.exception("Repo sync failed [error_code=%s]", error_code)
+        return ApiResponse(
+            data=QaRepoSyncResponse(
+                synced=False,
+                error=f"Sync failed [error_code={error_code}]: {exc}",
+            ),
+            meta=ApiMeta(),
+        )

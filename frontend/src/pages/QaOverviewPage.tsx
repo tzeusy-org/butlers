@@ -32,15 +32,21 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Input } from "@/components/ui/input";
 import {
   useDismissQaIssue,
   useForceQaPatrol,
+  useQaCircuitBreaker,
   useQaInvestigations,
   useQaKnownIssues,
   useQaPatrols,
+  useQaRepoConfig,
   useQaSummary,
   useQaTrends,
+  useResetQaCircuitBreaker,
+  useSyncQaRepo,
   useUndismissQaIssue,
+  useUpdateQaRepoConfig,
 } from "@/hooks/use-qa";
 import type {
   QaInvestigation,
@@ -690,6 +696,174 @@ function ForcePatrolButton() {
 }
 
 // ---------------------------------------------------------------------------
+// Circuit breaker status
+// ---------------------------------------------------------------------------
+
+function CircuitBreakerButton() {
+  const { data, isLoading } = useQaCircuitBreaker();
+  const resetMutation = useResetQaCircuitBreaker();
+  const [lastMsg, setLastMsg] = useState<string | null>(null);
+
+  const status = data?.data;
+  const tripped = status?.tripped ?? false;
+
+  function handleReset() {
+    setLastMsg(null);
+    resetMutation.mutate(undefined, {
+      onSuccess: (resp) => {
+        setLastMsg(resp.data?.message ?? "Circuit breaker reset.");
+      },
+      onError: () => {
+        setLastMsg("Failed to reset circuit breaker.");
+      },
+    });
+  }
+
+  if (isLoading) {
+    return <Skeleton className="h-8 w-36" />;
+  }
+
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      {tripped ? (
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={resetMutation.isPending}
+          onClick={handleReset}
+        >
+          {resetMutation.isPending ? "Resetting\u2026" : "Circuit Breaker: OPEN"}
+        </Button>
+      ) : (
+        <Badge variant="outline" className="border-green-500 text-green-600 px-3 py-1 text-xs">
+          Circuit Breaker: closed
+        </Badge>
+      )}
+      {lastMsg && (
+        <p
+          className={`text-xs ${resetMutation.isError ? "text-destructive" : "text-muted-foreground"}`}
+        >
+          {lastMsg}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Repo config card
+// ---------------------------------------------------------------------------
+
+function RepoConfigCard() {
+  const { data: configResponse, isLoading } = useQaRepoConfig();
+  const updateMutation = useUpdateQaRepoConfig();
+  const syncMutation = useSyncQaRepo();
+  const [editUrl, setEditUrl] = useState<string | null>(null);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  const config = configResponse?.data;
+
+  function handleSave() {
+    if (editUrl === null) return;
+    updateMutation.mutate(
+      { repo_url: editUrl },
+      { onSuccess: () => setEditUrl(null) },
+    );
+  }
+
+  function handleSync() {
+    setSyncMsg(null);
+    syncMutation.mutate(undefined, {
+      onSuccess: (resp) => {
+        setSyncMsg(resp.data?.synced ? "Sync complete." : resp.data?.error ?? "Sync failed.");
+      },
+      onError: () => setSyncMsg("Sync unavailable (daemon not running)."),
+    });
+  }
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <Skeleton className="h-4 w-48" />
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-8 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!config) return null;
+
+  const editing = editUrl !== null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">Repository</CardTitle>
+        <CardDescription>Source repository for QA investigation worktrees.</CardDescription>
+        <CardAction>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={syncMutation.isPending}
+              onClick={handleSync}
+            >
+              {syncMutation.isPending ? "Syncing\u2026" : "Sync Now"}
+            </Button>
+          </div>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {editing ? (
+          <div className="flex gap-2">
+            <Input
+              value={editUrl}
+              onChange={(e) => setEditUrl(e.target.value)}
+              placeholder="https://github.com/owner/repo"
+              className="text-sm font-mono"
+            />
+            <Button size="sm" disabled={updateMutation.isPending} onClick={handleSave}>
+              Save
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setEditUrl(null)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <code className="text-sm bg-muted px-2 py-1 rounded">{config.repo_url}</code>
+            <Button variant="ghost" size="sm" onClick={() => setEditUrl(config.repo_url)}>
+              Edit
+            </Button>
+          </div>
+        )}
+        <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
+          {config.clone_path && (
+            <span>
+              Clone: <code className="bg-muted px-1 rounded">{config.clone_path}</code>
+            </span>
+          )}
+          <span>
+            Last synced: {config.last_synced_at ? formatRelative(config.last_synced_at) : "never"}
+          </span>
+        </div>
+        {config.last_sync_error && (
+          <p className="text-xs text-destructive">{config.last_sync_error}</p>
+        )}
+        {syncMsg && (
+          <p className={`text-xs ${syncMutation.isError ? "text-destructive" : "text-muted-foreground"}`}>
+            {syncMsg}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // QaOverviewPage
 // ---------------------------------------------------------------------------
 
@@ -721,7 +895,10 @@ export default function QaOverviewPage() {
             System-wide quality patrol, investigation pipeline, and known issue tracking.
           </p>
         </div>
-        <ForcePatrolButton />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <CircuitBreakerButton />
+          <ForcePatrolButton />
+        </div>
       </div>
 
       {/* Status banner — shown when last patrol errored */}
@@ -815,6 +992,9 @@ export default function QaOverviewPage() {
           </div>
         </>
       )}
+
+      {/* Repo config */}
+      <RepoConfigCard />
 
       {/* Investigation pipeline (Kanban) */}
       <Card>
