@@ -789,6 +789,7 @@ class Spawner:
         cwd: str | None = None,
         bypass_butler_semaphore: bool = False,
         max_token_budget: int | None = None,
+        env_override: dict[str, str] | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -831,6 +832,10 @@ class Spawner:
             completed session's ``input_tokens`` exceeds this value, the session
             is marked as a budget overrun (success remains True but a warning is
             logged and the ``error`` field records the overrun).
+        env_override:
+            When provided, replaces the automatically-built credential/env dict
+            with this explicit environment map. Used by the QA dispatcher to pass
+            a sandboxed environment that strips dangerous variables.
 
         Returns
         -------
@@ -930,6 +935,7 @@ class Spawner:
                         complexity,
                         cwd=cwd,
                         max_token_budget=max_token_budget,
+                        env_override=env_override,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -954,6 +960,7 @@ class Spawner:
                             complexity,
                             cwd=cwd,
                             max_token_budget=max_token_budget,
+                            env_override=env_override,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1039,6 +1046,7 @@ class Spawner:
         complexity: Complexity = Complexity.MEDIUM,
         cwd: str | None = None,
         max_token_budget: int | None = None,
+        env_override: dict[str, str] | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1244,10 +1252,14 @@ class Spawner:
             )
 
             # Build credential env.
+            # Caller-supplied env_override replaces the default env entirely (used by
+            # the QA dispatcher to pass a sandboxed environment).
             # Healing sessions get a minimal env: only PATH + GH_TOKEN for PR creation.
             # No butler-specific credentials are passed to the isolated healing agent.
-            if trigger_source == "healing":
-                env: dict[str, str] = {}
+            if env_override is not None:
+                env: dict[str, str] = dict(env_override)
+            elif trigger_source == "healing":
+                env = {}
                 host_path = os.environ.get("PATH")
                 if host_path:
                     env["PATH"] = host_path
