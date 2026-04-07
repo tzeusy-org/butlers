@@ -4257,7 +4257,25 @@ class ButlerDaemon:
                                 "butler": butler,
                                 "error": error_msg,
                             }
-                    return {"status": "ok", "butler": butler}
+                    # Unexpected response shape — log and surface as error so
+                    # the failure is visible instead of silently swallowed.
+                    logger.warning(
+                        "route_to_butler: target %s returned unexpected response "
+                        "(type=%s, inner_type=%s): %s",
+                        butler,
+                        type(result).__name__,
+                        type(inner).__name__ if inner is not None else "None",
+                        str(result)[:500],
+                    )
+                    return {
+                        "status": "error",
+                        "butler": butler,
+                        "error": (
+                            f"Unexpected response from {butler}: "
+                            f"expected dict with status 'accepted', "
+                            f"got {type(inner).__name__}"
+                        ),
+                    }
                 except Exception as exc:
                     logger.warning(
                         "route_to_butler failed for %s: %s",
@@ -6539,9 +6557,10 @@ class ButlerDaemon:
 
         _tools_to_remove: list[str] = []
 
-        # route.execute: only switchboard receives forwarded requests.
-        if not is_switchboard:
-            _tools_to_remove.append("route.execute")
+        # route.execute: ALL butlers need this to receive routed messages
+        # from the switchboard.  The switchboard calls target_butler's
+        # route.execute via MCP — removing it silently breaks all routing.
+        # (Do NOT remove route.execute from non-switchboard butlers.)
 
         # Delivery preferences & deferred notifications: only messenger.
         if not is_messenger:
@@ -6589,9 +6608,10 @@ class ButlerDaemon:
             ]
         )
 
-        # Attachment retrieval: only switchboard/messenger handle media.
-        if not is_switchboard and not is_messenger:
-            _tools_to_remove.append("get_attachment")
+        # Attachment retrieval: domain butlers receive routed messages with
+        # attachment refs and need get_attachment to fetch them.  Only remove
+        # from butlers that genuinely never handle media (none currently).
+        # (Do NOT remove get_attachment from domain butlers.)
 
         # Module admin: operational debugging, not normal LLM use.
         _tools_to_remove.extend(["module.states", "module.set_enabled"])

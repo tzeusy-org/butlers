@@ -864,6 +864,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         max_queued_sessions=butler_runtime.max_queued_sessions,
         session_timeout_s=butler_runtime.session_timeout_s,
         args=butler_runtime.args,
+        core_groups=butler_runtime.core_groups,
     )
 
     return ButlerConfig(

@@ -492,7 +492,19 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
                 return text
         return text
 
-    return result
+    # No text content blocks found — the MCP response is empty or malformed.
+    # This typically means a stale cached SSE connection or the target tool
+    # returned a non-text response.  Raise so the caller sees a real failure
+    # instead of silently returning an opaque CallToolResult object.
+    logger.warning(
+        "MCP call to %s returned no text content blocks (content=%r)",
+        tool_name,
+        content,
+    )
+    raise RuntimeError(
+        f"Tool '{tool_name}' returned no text content blocks — "
+        f"target may be unreachable or returning an unexpected response format"
+    )
 
 
 async def _log_routing(

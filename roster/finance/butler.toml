@@ -7,7 +7,9 @@ description = "Personal finance specialist for receipts, bills, subscriptions, a
 max_concurrent_sessions = 3
 core_groups = [
     "infra",          # status, trigger, route.execute, tick, correct
+    "state",          # state_get/set/delete/list — KV persistence
     "scheduling",     # schedule CRUD — dynamic reminders
+    "sessions",       # sessions_list/get/summary/daily, top_sessions
     "notifications",  # notify, remind
     "media",          # get_attachment
     "temporal",       # deadlines, event_chains, seasonal_periods
