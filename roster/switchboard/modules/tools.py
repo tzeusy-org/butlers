@@ -10,8 +10,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from butlers.modules.base import group_enabled
 
-def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
+
+def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
     """Register all switchboard MCP tools as closures over *module*."""
 
     # Import sub-modules (deferred to avoid import-time side effects)
@@ -25,11 +27,16 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     from butlers.tools.switchboard.routing import correct_route as _correct_route
     from butlers.tools.switchboard.routing import route as _route
 
+    def _tool(group: str):
+        if group_enabled(config, group):
+            return mcp.tool()
+        return lambda fn: fn
+
     # =================================================================
     # Registry tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("routing")
     async def list_butlers(routable_only: bool = False) -> list[dict[str, Any]]:
         """List registered butlers, optionally filtered by routing eligibility."""
         return await _registry.list_butlers(module._get_pool(), routable_only=routable_only)
@@ -38,7 +45,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Routing tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("routing")
     async def route(
         target_butler: str,
         tool_name: str,
@@ -58,7 +65,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             allow_quarantined=allow_quarantined,
         )
 
-    @mcp.tool()
+    @_tool("routing")
     async def post_mail(
         target_butler: str,
         sender: str,
@@ -80,7 +87,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             metadata=metadata,
         )
 
-    @mcp.tool()
+    @_tool("routing")
     async def correct_route(
         request_id: str,
         correct_butler: str,
@@ -137,7 +144,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Notification delivery tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("routing")
     async def deliver(
         channel: str | None = None,
         message: str | None = None,
@@ -161,7 +168,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Extraction audit tools
     # =================================================================
 
-    @mcp.tool()
+    @_tool("extraction")
     async def log_extraction(
         extraction_type: str,
         tool_name: str,
@@ -183,7 +190,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             source_channel=source_channel,
         )
 
-    @mcp.tool()
+    @_tool("extraction")
     async def extraction_log_list(
         contact_id: str | None = None,
         extraction_type: str | None = None,
@@ -199,7 +206,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             limit=limit,
         )
 
-    @mcp.tool()
+    @_tool("extraction")
     async def extraction_log_undo(log_id: str) -> dict[str, Any]:
         """Undo an extraction by reversing the original tool call."""
         return await _extraction.extraction_log_undo(module._get_pool(), log_id)
@@ -208,7 +215,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Backfill management tools (dashboard-facing)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("backfill")
     async def create_backfill_job(
         connector_type: str,
         endpoint_identity: str,
@@ -230,22 +237,22 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             daily_cost_cap_cents=daily_cost_cap_cents,
         )
 
-    @mcp.tool()
+    @_tool("backfill")
     async def backfill_pause(job_id: str) -> dict[str, Any]:
         """Pause an active backfill job."""
         return await _backfill_ctl.backfill_pause(module._get_pool(), job_id=job_id)
 
-    @mcp.tool()
+    @_tool("backfill")
     async def backfill_cancel(job_id: str) -> dict[str, Any]:
         """Cancel a backfill job."""
         return await _backfill_ctl.backfill_cancel(module._get_pool(), job_id=job_id)
 
-    @mcp.tool()
+    @_tool("backfill")
     async def backfill_resume(job_id: str) -> dict[str, Any]:
         """Resume a paused or cost-capped backfill job."""
         return await _backfill_ctl.backfill_resume(module._get_pool(), job_id=job_id)
 
-    @mcp.tool()
+    @_tool("backfill")
     async def backfill_list(
         connector_type: str | None = None,
         endpoint_identity: str | None = None,
@@ -265,7 +272,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Operator control tools (conn-based — acquire from pool)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("operator")
     async def manual_reroute_request(
         request_id: str,
         new_target_butler: str,
@@ -282,7 +289,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
                 reason=reason,
             )
 
-    @mcp.tool()
+    @_tool("operator")
     async def cancel_request(
         request_id: str,
         operator_identity: str,
@@ -297,7 +304,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
                 reason=reason,
             )
 
-    @mcp.tool()
+    @_tool("operator")
     async def abort_request(
         request_id: str,
         operator_identity: str,
@@ -312,7 +319,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
                 reason=reason,
             )
 
-    @mcp.tool()
+    @_tool("operator")
     async def force_complete_request(
         request_id: str,
         operator_identity: str,
@@ -333,7 +340,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
     # Dead-letter queue tools (conn-based — acquire from pool)
     # =================================================================
 
-    @mcp.tool()
+    @_tool("operator")
     async def replay_dead_letter_request(
         dead_letter_id: str,
         operator_identity: str,
@@ -348,7 +355,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
                 reason=reason,
             )
 
-    @mcp.tool()
+    @_tool("operator")
     async def list_replay_eligible_requests(
         limit: int = 100,
         failure_category: str | None = None,
@@ -361,7 +368,7 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
                 failure_category=failure_category,
             )
 
-    @mcp.tool()
+    @_tool("operator")
     async def get_dead_letter_stats(
         since: str | None = None,
     ) -> dict[str, Any]:

@@ -29,7 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolGroupMixin
 
 from .insight_broker import InsightBrokerConfig, InsightBrokerModule  # noqa: F401
 
@@ -44,8 +44,19 @@ __all__ = [
 ]
 
 
-class SwitchboardModuleConfig(BaseModel):
-    """Configuration for the Switchboard module (empty — no settings needed yet)."""
+class SwitchboardModuleConfig(ToolGroupMixin, BaseModel):
+    """Configuration for the Switchboard module.
+
+    Tool groups
+    -----------
+    routing : list_butlers, route, post_mail, correct_route, deliver
+    extraction : log_extraction, extraction_log_list, extraction_log_undo
+    backfill : create_backfill_job, backfill_pause, backfill_cancel,
+               backfill_resume, backfill_list
+    operator : manual_reroute_request, cancel_request, abort_request,
+               force_complete_request, replay_dead_letter_request,
+               list_replay_eligible_requests, get_dead_letter_stats
+    """
 
 
 class SwitchboardModule(Module):
@@ -93,4 +104,4 @@ class SwitchboardModule(Module):
         self._db = db
         from .tools import register_tools
 
-        register_tools(mcp, self)
+        register_tools(mcp, self, config=config)
