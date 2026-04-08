@@ -32,7 +32,9 @@ graph TB
         FIN["Finance"]
         TRV["Travel"]
         HOM["Home"]
+        LIF["Lifestyle"]
         MSG["Messenger"]
+        QA["QA"]
     end
 
     subgraph Infra["Infrastructure"]
@@ -65,6 +67,7 @@ graph TB
     SW -- "route.v1 / MCP" --> FIN
     SW -- "route.v1 / MCP" --> TRV
     SW -- "route.v1 / MCP" --> HOM
+    SW -- "route.v1 / MCP" --> LIF
     SW -- "route.v1 / MCP" --> MSG
 
     Core --> PG

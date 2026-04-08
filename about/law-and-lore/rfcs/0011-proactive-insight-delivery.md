@@ -1,6 +1,6 @@
 # RFC 0011: Proactive Insight Delivery Protocol
 
-**Status:** Draft
+**Status:** Accepted
 **Date:** 2026-03-25
 
 ## Summary

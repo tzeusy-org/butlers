@@ -1,20 +1,15 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Tech stack: Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL (JSONB), Docker, asyncio
+  Domain: AI agent framework — personal butler daemons with MCP-based communication
+  Doctrine: about/heart-and-soul/ (vision.md defines 7 non-negotiable rules)
+  Design contracts: about/law-and-lore/rfcs/ (12 accepted RFCs)
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  spec:
+    - >
+      Include a "## Source References" section at the end of each spec listing
+      the doctrine principles (by rule number from vision.md) and RFC numbers
+      that ground the spec's design decisions. Example:
+      "## Source References\n- Non-Negotiable Rule 3 (MCP-only inter-butler communication)\n- RFC 0003 (Switchboard routing and ingestion)"

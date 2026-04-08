@@ -20,6 +20,8 @@ graph TB
             TRV["travel :41106"]
             EDU["education :41107"]
             HOM["home :41108"]
+            LIF["lifestyle :41109"]
+            QA["qa :41110"]
         end
 
         subgraph ConnProcs["Connector Processes"]
@@ -57,19 +59,21 @@ butler fleet.
 
 ## Port Assignments
 
-### Butler MCP Ports (41100-41108)
+### Butler MCP Ports (41100-41110)
 
-| Butler | Port | Status |
-|---|---|---|
-| switchboard | 41100 | Functional |
-| general | 41101 | Functional |
-| relationship | 41102 | Functional |
-| health | 41103 | Functional |
-| messenger | 41104 | Functional |
-| finance | 41105 | Aspirational |
-| travel | 41106 | Aspirational |
-| education | 41107 | Aspirational |
-| home | 41108 | Aspirational |
+| Butler | Type | Port | Status |
+|---|---|---|---|
+| switchboard | staffer | 41100 | Functional |
+| general | butler | 41101 | Functional |
+| relationship | butler | 41102 | Functional |
+| health | butler | 41103 | Functional |
+| messenger | staffer | 41104 | Functional |
+| finance | butler | 41105 | Evolving |
+| travel | butler | 41106 | Evolving |
+| education | butler | 41107 | Evolving |
+| home | butler | 41108 | Evolving |
+| lifestyle | butler | 41109 | Evolving |
+| qa | staffer | 41110 | Evolving |
 
 ### Connector Health Ports (40081-40091)
 
@@ -134,7 +138,7 @@ Single PostgreSQL instance (pgvector/pg17) with schema-based isolation.
 
 ```
 butlers (database)
-├── shared           -- Cross-butler identity, model catalog, secrets
+├── public           -- Cross-butler identity, model catalog, secrets
 ├── switchboard      -- Switchboard-specific tables
 ├── general          -- General butler tables
 ├── relationship     -- Relationship butler tables
@@ -143,12 +147,14 @@ butlers (database)
 ├── finance          -- Finance butler tables
 ├── travel           -- Travel butler tables
 ├── education        -- Education butler tables
-└── home             -- Home butler tables
+├── home             -- Home butler tables
+├── lifestyle        -- Lifestyle butler tables
+└── qa               -- QA staffer tables
 ```
 
-Each butler's `search_path` is set to `{butler_schema}, shared, public` so
-queries resolve butler-local tables first, then shared identity tables, then
-PostgreSQL built-ins.
+Each butler's `search_path` is set to `{butler_schema}, public` so queries
+resolve butler-local tables first, then shared identity and coordination
+tables in `public`.
 
 Database provisioning (schema creation, Alembic migrations) happens automatically
 during butler daemon startup.

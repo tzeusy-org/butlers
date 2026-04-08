@@ -1,6 +1,6 @@
 # RFC 0012: Finance Transaction Data Model
 
-**Status:** Draft
+**Status:** Accepted
 **Date:** 2026-03-25
 
 ## Summary

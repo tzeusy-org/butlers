@@ -1,6 +1,6 @@
 # RFC 0009: Situational Context Bus
 
-**Status:** Draft
+**Status:** Accepted
 **Date:** 2026-03-25
 
 ## Summary
