@@ -153,7 +153,10 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         if self._api_key:
             logger.info("ApiKeyMiddleware: DASHBOARD_API_KEY is configured; auth is ENABLED")
         else:
-            logger.debug("ApiKeyMiddleware: DASHBOARD_API_KEY not set; auth is DISABLED")
+            logger.warning(
+                "ApiKeyMiddleware: DASHBOARD_API_KEY not set; dashboard API is UNAUTHENTICATED. "
+                "Set DASHBOARD_API_KEY for production use."
+            )
 
     async def dispatch(self, request: Request, call_next):
         # Auth disabled — pass through unconditionally.

@@ -202,4 +202,4 @@ Python 3.12+ · FastMCP · Claude Agent SDK · PostgreSQL · asyncpg · Docker �
 
 ## Status
 
-Early development. See `PROJECT_PLAN.md` for the full implementation roadmap.
+Early development. See [`docs/roadmap/project-plan.md`](docs/roadmap/project-plan.md) for the full implementation roadmap.
