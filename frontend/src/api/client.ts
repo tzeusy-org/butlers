@@ -1308,10 +1308,14 @@ export function mergeEntity(
   );
 }
 
-/** Delete (soft-delete) an entity. */
-export function deleteEntity(entityId: string): Promise<void> {
+/** Delete (soft-delete) an entity. Pass retireFacts to auto-retire active facts. */
+export function deleteEntity(
+  entityId: string,
+  opts?: { retireFacts?: boolean },
+): Promise<void> {
+  const qs = opts?.retireFacts ? "?retire_facts=true" : "";
   return apiFetch<void>(
-    `/memory/entities/${encodeURIComponent(entityId)}`,
+    `/memory/entities/${encodeURIComponent(entityId)}${qs}`,
     { method: "DELETE" },
   );
 }

@@ -265,6 +265,7 @@ function UnidentifiedEntitiesSection({
   const mergeMutation = useMergeEntity();
   const [mergeTarget, setMergeTarget] = useState<EntitySummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EntitySummary | null>(null);
+  const [factsWarning, setFactsWarning] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkMergeOpen, setBulkMergeOpen] = useState(false);
   const [bulkMerging, setBulkMerging] = useState(false);
@@ -521,17 +522,29 @@ function UnidentifiedEntitiesSection({
       <AlertDialog
         open={!!deleteTarget}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) {
+            setDeleteTarget(null);
+            setFactsWarning(null);
+          }
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete entity?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will soft-delete <strong>{deleteTarget?.canonical_name}</strong> and
-              unlink any associated contacts. The entity will be hidden from all
-              views but can be recovered from the database. Entities with active
-              facts cannot be deleted — retire or reassign those facts first.
+              {factsWarning != null ? (
+                <>
+                  <strong>{deleteTarget?.canonical_name}</strong> has{" "}
+                  <strong>{factsWarning}</strong> active fact(s) that will be
+                  retired. This cannot be undone.
+                </>
+              ) : (
+                <>
+                  This will soft-delete <strong>{deleteTarget?.canonical_name}</strong> and
+                  unlink any associated contacts. The entity will be hidden from all
+                  views but can be recovered from the database.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -542,17 +555,31 @@ function UnidentifiedEntitiesSection({
               onClick={async () => {
                 if (!deleteTarget) return;
                 try {
-                  await deleteMutation.mutateAsync(deleteTarget.id);
+                  await deleteMutation.mutateAsync({
+                    entityId: deleteTarget.id,
+                    retireFacts: factsWarning != null,
+                  });
                   toast.success(`Deleted ${deleteTarget.canonical_name}`);
+                  setDeleteTarget(null);
+                  setFactsWarning(null);
                 } catch (err) {
-                  toast.error(
-                    `Delete failed: ${err instanceof Error ? err.message : "Unknown error"}`,
-                  );
+                  const msg = err instanceof Error ? err.message : "";
+                  const match = msg.match(/has (\d+) active fact/);
+                  if (match) {
+                    setFactsWarning(parseInt(match[1], 10));
+                  } else {
+                    toast.error(`Delete failed: ${msg || "Unknown error"}`);
+                    setDeleteTarget(null);
+                    setFactsWarning(null);
+                  }
                 }
-                setDeleteTarget(null);
               }}
             >
-              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+              {deleteMutation.isPending
+                ? "Deleting..."
+                : factsWarning != null
+                  ? "Retire facts & delete"
+                  : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -573,6 +600,7 @@ export default function EntitiesPage() {
   const [page, setPage] = useState(0);
   const [mergeTarget, setMergeTarget] = useState<EntitySummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EntitySummary | null>(null);
+  const [factsWarning, setFactsWarning] = useState<number | null>(null);
   const deleteMutation = useDeleteEntity();
   const archiveMutation = useArchiveEntity();
   const unarchiveMutation = useUnarchiveEntity();
@@ -941,16 +969,30 @@ export default function EntitiesPage() {
       {/* Delete confirmation */}
       <AlertDialog
         open={!!deleteTarget}
-        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null);
+            setFactsWarning(null);
+          }
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete entity?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will soft-delete <strong>{deleteTarget?.canonical_name}</strong> and
-              unlink any associated contacts. The entity will be hidden from all
-              views but can be recovered from the database. Entities with active
-              facts cannot be deleted — retire or reassign those facts first.
+              {factsWarning != null ? (
+                <>
+                  <strong>{deleteTarget?.canonical_name}</strong> has{" "}
+                  <strong>{factsWarning}</strong> active fact(s) that will be
+                  retired. This cannot be undone.
+                </>
+              ) : (
+                <>
+                  This will soft-delete <strong>{deleteTarget?.canonical_name}</strong> and
+                  unlink any associated contacts. The entity will be hidden from all
+                  views but can be recovered from the database.
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -961,17 +1003,31 @@ export default function EntitiesPage() {
               onClick={async () => {
                 if (!deleteTarget) return;
                 try {
-                  await deleteMutation.mutateAsync(deleteTarget.id);
+                  await deleteMutation.mutateAsync({
+                    entityId: deleteTarget.id,
+                    retireFacts: factsWarning != null,
+                  });
                   toast.success(`Deleted ${deleteTarget.canonical_name}`);
+                  setDeleteTarget(null);
+                  setFactsWarning(null);
                 } catch (err) {
-                  toast.error(
-                    `Delete failed: ${err instanceof Error ? err.message : "Unknown error"}`,
-                  );
+                  const msg = err instanceof Error ? err.message : "";
+                  const match = msg.match(/has (\d+) active fact/);
+                  if (match) {
+                    setFactsWarning(parseInt(match[1], 10));
+                  } else {
+                    toast.error(`Delete failed: ${msg || "Unknown error"}`);
+                    setDeleteTarget(null);
+                    setFactsWarning(null);
+                  }
                 }
-                setDeleteTarget(null);
               }}
             >
-              {deleteMutation.isPending ? "Deleting..." : "Delete"}
+              {deleteMutation.isPending
+                ? "Deleting..."
+                : factsWarning != null
+                  ? "Retire facts & delete"
+                  : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

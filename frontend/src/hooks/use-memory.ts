@@ -169,11 +169,12 @@ export function useMergeEntity() {
   });
 }
 
-/** Soft-delete an entity. */
+/** Soft-delete an entity. Pass retireFacts to auto-retire active facts. */
 export function useDeleteEntity() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (entityId: string) => deleteEntity(entityId),
+    mutationFn: (opts: { entityId: string; retireFacts?: boolean }) =>
+      deleteEntity(opts.entityId, { retireFacts: opts.retireFacts }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
     },

@@ -1261,13 +1261,15 @@ async def merge_entity(
 @router.delete("/entities/{entity_id}", status_code=204)
 async def delete_entity(
     entity_id: str,
+    retire_facts: bool = Query(False, description="Retire all active facts before deleting"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> None:
     """Soft-delete an entity by setting metadata.deleted_at.
 
     Unlinks any contacts pointing to this entity.  Owner entities cannot be
-    deleted (returns 403).  Entities with active facts cannot be deleted
-    (returns 409) — reassign or retire the facts first.
+    deleted (returns 403).  When active facts exist, returns 409 with the count
+    unless ``retire_facts=true`` is passed, in which case all active facts are
+    retired (validity → 'retracted') first.
     """
     import uuid as _uuid
     from datetime import datetime
@@ -1286,8 +1288,7 @@ async def delete_entity(
     if "owner" in roles:
         raise HTTPException(status_code=403, detail="Cannot delete owner entity")
 
-    # Block soft-delete when active facts reference this entity.
-    # Fan out across all memory pools to get a global count.
+    # Check active facts referencing this entity across all memory pools.
     async def _count_active_facts(_: str, fpool: object) -> int:
         return (
             await fpool.fetchval(
@@ -1304,12 +1305,28 @@ async def delete_entity(
     )
     total_active_facts = sum(per_pool_counts)
     if total_active_facts > 0:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Entity has {total_active_facts} active fact(s). "
-                "Reassign or retire all active facts before deleting this entity."
-            ),
+        if not retire_facts:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Entity has {total_active_facts} active fact(s). "
+                    "Reassign or retire all active facts before deleting this entity."
+                ),
+            )
+
+        # Retire all active facts for this entity across every memory pool.
+        async def _retire_facts(_: str, fpool: object) -> int:
+            await fpool.execute(
+                "UPDATE facts SET validity = 'retracted'"
+                " WHERE entity_id = $1 AND validity = 'active'",
+                eid,
+            )
+            return 0
+
+        await _fan_out_memory_queries(
+            db,
+            query_name="delete_entity_retire_facts",
+            query_fn=_retire_facts,
         )
 
     deleted_at = datetime.now(UTC).isoformat()
