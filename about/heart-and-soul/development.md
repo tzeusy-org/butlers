@@ -32,7 +32,8 @@ Write the failing test first. Then write the code that makes it pass.
 - Database tests are separated (`tests/test_db.py`, `tests/test_migrations.py`)
   and can be skipped for fast iteration.
 - E2E test suite with benchmark scoring for routing accuracy and session
-  reliability.
+  reliability. E2E tests require `ANTHROPIC_API_KEY` and the `claude` binary;
+  they are not part of the default CI pipeline and run via `make test-e2e`.
 
 ## OpenSpec-Driven Development
 
@@ -123,12 +124,26 @@ purposes.
 **Quality gate before merge:**
 
 ```bash
-uv run ruff check src/ tests/ --output-format concise
+uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/ -q
-uv run pytest tests/ -q --maxfail=1 --tb=short
 ```
 
-All three must pass. No exceptions, no "I'll fix the lint later."
+Both must pass. No exceptions, no "I'll fix the lint later."
+
+**CI test pipeline** (runs automatically on push/PR):
+
+```bash
+# Unit tests — excludes DB, migration, and E2E tests for speed
+uv run pytest tests/ -q --maxfail=1 --tb=short \
+  --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e \
+  -m "not integration and not e2e"
+
+# Integration tests — requires Docker (testcontainers), runs in parallel
+uv run pytest roster/ tests/integration/ -q --maxfail=5 --tb=short \
+  -m "integration" -n auto --dist loadfile
+```
+
+The local quality-gate shortcut (`make test-qg`) mirrors the CI unit-test scope.
 
 ## Git Workflow
 
