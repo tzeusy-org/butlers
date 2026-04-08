@@ -1636,8 +1636,12 @@ export default function CalendarWorkspacePage() {
                           {dayEntries.slice(0, 2).map((entry) => (
                             <p
                               key={entry.entry_id}
-                              className="truncate rounded bg-accent/50 px-1 py-0.5 text-xs"
+                              className="truncate rounded bg-accent/50 px-1 py-0.5 text-xs cursor-pointer hover:bg-accent/80 transition-colors"
                               title={entry.title}
+                              onClick={(evt) => {
+                                evt.stopPropagation();
+                                if (view === "user") openUserEditDialog(entry);
+                              }}
                             >
                               {entry.title}
                             </p>
@@ -1683,8 +1687,12 @@ export default function CalendarWorkspacePage() {
                             {allDayEntries.map((entry) => (
                               <p
                                 key={entry.entry_id}
-                                className="truncate rounded bg-primary/15 px-1 py-0.5 text-[11px]"
+                                className="truncate rounded bg-primary/15 px-1 py-0.5 text-[11px] cursor-pointer hover:bg-primary/25 transition-colors"
                                 title={entry.title}
+                                onClick={(evt) => {
+                                  evt.stopPropagation();
+                                  if (view === "user") openUserEditDialog(entry);
+                                }}
                               >
                                 {entry.title}
                               </p>
@@ -1764,6 +1772,10 @@ export default function CalendarWorkspacePage() {
                                 className="absolute left-0.5 right-0.5 rounded bg-accent/70 border border-accent px-1 py-0.5 overflow-hidden cursor-pointer hover:bg-accent transition-colors"
                                 style={{ top: topPx, height: heightPx, minHeight: 16 }}
                                 title={`${formatEntryWindow(entry)} — ${entry.title}`}
+                                onClick={(evt) => {
+                                  evt.stopPropagation();
+                                  if (view === "user") openUserEditDialog(entry);
+                                }}
                               >
                                 <p className="text-[11px] font-medium truncate">{entry.title}</p>
                                 {heightPx >= 32 && (
