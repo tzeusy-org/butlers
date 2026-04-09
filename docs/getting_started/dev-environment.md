@@ -43,17 +43,29 @@ This installs all Python dependencies, including dev/test extras, into a virtual
 
 ### Step 2: Provision PostgreSQL
 
-Start the database, then run the provisioning script to install extensions and
-grant role membership:
+Butlers uses an **external** PostgreSQL instance (configured via `POSTGRES_HOST`
+in `.env.dev` / `.env.prod`).  There is no `postgres` service in
+`docker-compose.yml`.  Set up the database connection before proceeding:
 
-```bash
-docker compose up -d postgres
+1. Ensure your PostgreSQL server is running and that `POSTGRES_HOST`,
+   `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` are set in your
+   environment file (copy `.env.example` for a template).
 
-# Install extensions and grant butler role membership (requires superuser)
-psql -h localhost -U postgres -d butlers -f scripts/init-db.sql
-```
+2. Run the provisioning script as a superuser to install extensions and grant
+   butler role membership:
 
-This starts a PostgreSQL container on port 5432. Default credentials are `postgres`/`postgres`. The database is used by all butlers (one database, per-butler schemas plus the public schema).
+   ```bash
+   # Replace <POSTGRES_HOST> and <superuser> with your actual values.
+   # The script grants roles to POSTGRES_USER (defaults to 'butlers').
+   psql -h <POSTGRES_HOST> -U <superuser> -d butlers -f scripts/init-db.sql
+
+   # To target a different runtime user:
+   PGOPTIONS="-c butlers.connecting_user=$POSTGRES_USER" \
+       psql -h <POSTGRES_HOST> -U <superuser> -d butlers -f scripts/init-db.sql
+   ```
+
+The database is used by all butlers (one database, per-butler schemas plus the
+public schema).
 
 **Role membership is required for `SET ROLE` enforcement.** The Alembic
 migrations create per-butler database roles (`butler_{schema}_rw` and
@@ -114,9 +126,11 @@ docker compose --profile dev up
 
 This starts:
 
-- PostgreSQL on port 5432
 - Dashboard API on port 41200
 - Vite dev server on port 41173
+
+PostgreSQL remains external — configure `POSTGRES_HOST` in your environment
+file before starting the compose stack.
 
 You would still need to start butler daemons separately via `butlers up`.
 
