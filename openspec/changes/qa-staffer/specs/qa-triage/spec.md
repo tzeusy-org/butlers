@@ -18,11 +18,12 @@ The triage layer SHALL accept `QaFinding` objects from any discovery source and 
 The triage layer SHALL check each finding's fingerprint against three sources to determine novelty.
 
 #### Scenario: Check active healing attempts (includes open PRs)
-- **WHEN** a finding's fingerprint matches an active row in `public.healing_attempts` (status in: `dispatch_pending`, `investigating`, `pr_open`)
+- **WHEN** a finding's fingerprint matches an active row in `public.healing_attempts` (status in: `investigating`, `pr_open`)
 - **THEN** the finding is marked `dedup_reason = "active_investigation"`
 - **AND** it is excluded from investigation dispatch
 - **AND** the finding's `qa_findings` record is linked to the existing attempt ID
 - **AND** if the matched attempt has `status = "pr_open"` with a non-null `pr_url`, the finding's record also stores the `pr_url` for dashboard display
+- **NOTE** `dispatch_pending` is NOT a valid status and is NOT included here — there is no deferred pre-launch state; novelty claim and row insertion are atomic
 
 #### Scenario: Check local dismissal cache
 - **WHEN** a finding's fingerprint exists in the `public.qa_dismissals` table with `dismissed_until > now()`
@@ -47,7 +48,7 @@ All findings (novel and deduplicated) SHALL be recorded in `public.qa_findings` 
 
 #### Scenario: Finding record structure
 - **WHEN** a finding is processed by the triage layer
-- **THEN** a row is inserted in `public.qa_findings` with: `id` (UUIDv7), `patrol_id` (FK to qa_patrols), `fingerprint` (str), `source_type` (str, e.g., "log_scanner", "session_records", "butler_reports"), `source_butler` (str), `severity` (int), `exception_type` (str), `event_summary` (str), `call_site` (str), `occurrence_count` (int), `first_seen` (timestamptz), `last_seen` (timestamptz), `dedup_reason` (nullable text), `healing_attempt_id` (nullable UUIDv7 FK), `created_at` (timestamptz)
+- **THEN** a row is inserted in `public.qa_findings` with: `id` (UUIDv7), `patrol_id` (FK to qa_patrols), `fingerprint` (str), `source_type` (str, e.g., "log_scanner", "session_records", "butler_reports"), `source_butler` (str), `severity` (int), `exception_type` (str), `event_summary` (str), `call_site` (str), `occurrence_count` (int), `first_seen` (timestamptz), `last_seen` (timestamptz), `dedup_reason` (nullable text), `healing_attempt_id` (nullable UUIDv7 FK), `source_session_trigger_source` (nullable text — the `trigger_source` from the session or log entry that produced the error; drives QA self-recursion suppression), `created_at` (timestamptz)
 
 ### Requirement: Dismissal Management
 Operators SHALL be able to dismiss findings via the dashboard API, preventing them from triggering investigations for a configurable duration.

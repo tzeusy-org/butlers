@@ -107,6 +107,26 @@ Recovery and investigation orchestrators (for example self-healing and QA) MAY c
 
 Admission-control outcomes that occur before a runtime session launches (for example cooldown, concurrency cap, circuit breaker, or no-model) are dispatch decisions, not execution failures. Systems that expose recovery state MUST track these separately from launched workflow outcomes.
 
+#### Workflow Deadline Contract
+
+When an orchestrator creates a multi-session recovery workflow, it MUST:
+
+1. Compute `workflow_deadline_at = now() + configured_hard_limit` at row creation time.
+2. Store this value in the persisted workflow record (`healing_attempts.workflow_deadline_at`) and NEVER update it subsequently.
+3. Evaluate `workflow_deadline_at` — not `updated_at` — as the authoritative timeout reference during both watchdog monitoring and daemon restart recovery.
+
+The immutability of `workflow_deadline_at` is required so that restart recovery can make timeout decisions without ambiguity: a row with `workflow_deadline_at IS NOT NULL` and `now() > workflow_deadline_at` is timed out, regardless of `updated_at`. A row within its deadline is preserved for the watchdog to evaluate.
+
+Rows that predate the `workflow_deadline_at` column (legacy data) MUST have `workflow_deadline_at = NULL`. Restart recovery for such rows falls back to the `updated_at + timeout_minutes` heuristic as a best-effort approximation only.
+
+#### Dispatch Decision vs Launched Execution
+
+The Spawner MUST NOT create or mutate workflow attempt records for admission-control rejections. Specifically:
+
+- Cooldown, concurrency-cap, circuit-breaker, and no-model rejections produce only a `dispatch_decision` record, never a `healing_attempts` row with status `failed`.
+- A `healing_attempts` row is inserted only when the workflow's first runtime session is about to launch (after all gates pass and the worktree is ready).
+- The status `dispatch_pending` does NOT exist in the persisted state machine. The novelty claim and row insertion are a single atomic operation: either the row exists in `investigating` state or it does not exist at all.
+
 ### Request Context
 
 Every session carries a `request_id` in UUIDv7 format. Connector-sourced sessions inherit the request_id from the ingestion request context. Internally triggered sessions (tick, schedule, trigger) generate a fresh UUID. The request_id propagates to:

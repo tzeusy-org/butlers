@@ -70,7 +70,7 @@ Explicit exceptions (frontend contract):
 - Relationship domain endpoints use unwrapped typed payloads.
 - Trigger endpoint returns `TriggerResponse` (unwrapped).
 
-Admission-control decisions that did not launch a runtime session (for example cooldown or circuit-breaker rejects) SHOULD be exposed as their own records. The dashboard MUST NOT present them as failed investigation executions.
+Admission-control decisions that did not launch a runtime session (for example cooldown or circuit-breaker rejects) MUST be exposed as their own records via `GET /api/healing/dispatch-events`. The dashboard MUST NOT present them as failed investigation executions. `GET /api/healing/attempts` returns only rows where a workflow runtime session was actually launched; dispatch-event records are never mixed into that list.
 
 ### Core System Endpoints
 
@@ -107,7 +107,8 @@ Admission-control decisions that did not launch a runtime session (for example c
 | `GET /api/search` | `ApiResponse<SearchResults>` | Cross-domain search (groups: sessions, state, contacts) |
 | `GET /api/qa/summary` | `ApiResponse<QaSummary>` | QA staffer status, patrol rollup, circuit breaker |
 | `GET /api/qa/investigations` | `PaginatedResponse<QaInvestigation>` | QA-originated investigations with phase/deadline/evidence summary |
-| `GET /api/healing/dispatch-events` | `PaginatedResponse<DispatchDecision>` | Admission-control decisions that did not launch a workflow |
+| `GET /api/qa/meta-review` | `PaginatedResponse<QaMetaReviewFinding>` | QA-self-recursive findings routed to operator lane; never auto-investigated |
+| `GET /api/healing/dispatch-events` | `PaginatedResponse<DispatchDecision>` | Admission-control decisions that did not launch a workflow (distinct from failed executions) |
 
 ### Butler Control Endpoints
 
@@ -135,7 +136,7 @@ Admission-control decisions that did not launch a runtime session (for example c
 
 **Calendar:** Workspace read (user/butler views), metadata, sync, user-event and butler-event mutations.
 
-**QA:** Patrol summaries, finding history, investigation workflows with phase/deadline/evidence summary, circuit breaker controls, repository settings, and a meta-review lane for QA-self-recursive failures.
+**QA:** Patrol summaries, finding history, investigation workflows with phase/deadline/evidence summary, circuit breaker controls, repository settings, and a meta-review lane for QA-self-recursive failures (findings where `source_butler == "qa"` and the originating session's `trigger_source` identifies a QA-owned investigation — these are surfaced at `GET /api/qa/meta-review` and never auto-investigated).
 
 **OAuth:** Google OAuth start/callback, credential status surface.
 

@@ -48,7 +48,7 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 - **WHEN** the QA module's `register_tools()` is called
 - **THEN** it registers: `report_finding` (receives findings from butler relay via Switchboard route), `force_patrol` (triggers immediate patrol), `get_qa_status` (returns QA staffer operational summary)
 - **AND** `report_finding` is the tool called by butlers' self-healing modules via `switchboard_client.call_tool("route", {"target_butler": "qa", "tool_name": "report_finding", "args": ...})`
-- **AND** `report_finding` accepts: `fingerprint` (str), `exception_type` (str), `call_site` (str), `severity` (int), `event_summary` (str), `context` (str, optional), `source_butler` (str)
+- **AND** `report_finding` accepts: `fingerprint` (str), `exception_type` (str), `call_site` (str), `severity` (int), `event_summary` (str), `context` (str, optional), `source_butler` (str), `trigger_source` (str, optional — the calling session's `trigger_source` value, e.g. `"healing"` or `"qa_investigation"`; used to populate `source_session_trigger_source` for QA self-recursion suppression)
 - **AND** `report_finding` queues the finding in the `butler_reports` source buffer and returns `{"accepted": true}` synchronously
 - **AND** `tool_metadata()` declares `context` as sensitive on `report_finding` (may contain agent reasoning about user-related errors)
 
@@ -153,7 +153,9 @@ The QA Staffer SHALL run a scheduler-driven patrol loop that executes at a confi
 #### Scenario: Patrol crash recovery
 - **WHEN** the QA staffer daemon restarts and finds a `qa_patrols` row with `status = "running"` and no `completed_at`
 - **THEN** the stale row is updated to `status = "error"`, `completed_at = now()`, `error_detail = "daemon restart during patrol"`
-- **AND** any `dispatch_pending` healing attempts linked to that patrol are recovered (re-dispatched or failed depending on age)
+- **AND** any `investigating` healing attempts with `qa_patrol_id` matching that patrol are evaluated by the restart recovery logic in `healing_attempts` (deadline-based timeout or preserve — no special re-dispatch)
+- **AND** findings that were novel but not yet dispatched when the crash occurred are NOT durably queued; they will be rediscovered by `session_records` or `log_scanner` sources on the next patrol cycle
+- **NOTE** `dispatch_pending` is not a valid `healing_attempts` status — there is no special recovery path for it
 
 #### Scenario: Reactive findings between patrols
 - **WHEN** a butler calls `report_error` between patrol cycles
@@ -213,6 +215,13 @@ The QA Staffer SHALL participate in the two-tier concurrency model defined in RF
 - **THEN** the investigation session acquires the global semaphore (shared with all butler sessions)
 - **AND** it acquires the QA staffer's per-staffer semaphore
 - **AND** `max_concurrent_investigations` config caps the per-staffer concurrency independently of the global limit
+
+#### Scenario: QA concurrency cap counts only QA-originated investigations
+- **WHEN** the QA dispatcher evaluates the concurrency gate
+- **THEN** it calls `count_active_attempts(pool, qa_only=True)` which counts rows with `status = 'investigating'` AND `qa_patrol_id IS NOT NULL`
+- **AND** legacy per-butler self-healing attempts (`qa_patrol_id IS NULL`) do NOT consume QA concurrency budget
+- **AND** QA investigations do NOT consume legacy self-healing concurrency budget (the two caps are disjoint)
+- **AND** both paths still share the global semaphore (RFC 0001 two-tier model)
 
 #### Scenario: Investigation does not deadlock reporting butler
 - **WHEN** a butler calls `report_error` and the QA staffer dispatches an investigation

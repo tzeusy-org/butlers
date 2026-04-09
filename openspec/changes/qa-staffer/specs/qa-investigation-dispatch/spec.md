@@ -16,10 +16,12 @@ The QA dispatcher SHALL create investigations for novel findings, using the exis
 - **AND** the finding's `qa_findings.healing_attempt_id` is updated with the new attempt ID
 
 #### Scenario: Concurrency cap enforcement
-- **WHEN** the number of active investigations (status = "investigating") reaches `max_concurrent_investigations`
-- **THEN** remaining novel findings are queued (not dispatched) for the next patrol cycle
-- **AND** a dispatch-decision record is written with reason `concurrency_cap`
-- **AND** a log INFO message indicates queued findings count
+- **WHEN** the number of QA-originated active investigations (`count_active_attempts(pool, qa_only=True)`) reaches `max_concurrent_investigations`
+- **THEN** remaining novel findings in this patrol cycle are skipped (not dispatched)
+- **AND** a dispatch-decision record is written for each skipped finding with reason `concurrency_cap`
+- **AND** a log INFO message indicates skipped findings count
+- **AND** skipped findings are NOT placed in a durable queue — they will be rediscovered by `session_records` or `log_scanner` on the next patrol cycle within `log_lookback_minutes`
+- **AND** triage on the next patrol will treat them as novel again if no active investigation exists for their fingerprints
 
 ### Requirement: Gate Sequence Preservation
 The QA dispatcher SHALL preserve the existing 10-gate dispatch sequence from self-healing, applied to each novel finding before investigation. Note: triage performs a fast dedup check (non-atomic) to filter obvious duplicates early; the dispatch gates perform the authoritative atomic claim. Cooldown appears in both layers intentionally — triage's check is a fast-path optimization, dispatch's is the atomic guarantee.
@@ -103,13 +105,30 @@ QA findings and investigations SHALL carry structured evidence in addition to an
 - **AND** the prompt points the agent to that artifact for detailed inspection
 
 ### Requirement: QA Self-Recursion Barrier
-QA SHALL suppress autonomous investigation of failures originating from QA self-healing sessions.
+QA SHALL suppress autonomous investigation of failures originating from QA self-healing sessions. The suppression decision is driven by a `source_session_trigger_source` field carried on every `QaFinding`.
+
+#### Scenario: QaFinding carries source session trigger_source
+- **WHEN** a discovery source produces a `QaFinding`
+- **THEN** the finding MUST include `source_session_trigger_source` (nullable str): the `trigger_source` value from the session record or log entry that produced the error
+- **AND** for `session_records` source: `source_session_trigger_source` is read directly from the session row's `trigger_source` column
+- **AND** for `log_scanner` source: `source_session_trigger_source` is extracted from the structured JSON log field `trigger_source` if present; `null` if absent
+- **AND** for `butler_reports` source: `source_session_trigger_source` is derived from the source_butler's active session context at the time of `report_finding`; the `report_finding` tool SHALL accept an optional `trigger_source` parameter and include it in the buffered finding
+- **AND** `source_session_trigger_source` is stored in the `qa_findings` row for auditing
 
 #### Scenario: QA finding originated from QA self-healing session
-- **WHEN** a finding's originating session belongs to the QA butler and was itself a self-healing/investigation session
+- **WHEN** a finding's `source_butler == "qa"` AND `source_session_trigger_source` is in `{"healing", "qa_investigation"}`
 - **THEN** normal autonomous investigation is suppressed
-- **AND** the finding is routed to a QA meta-review/operator lane
+- **AND** the finding is routed to a QA meta-review/operator lane (visible at `GET /api/qa/meta-review`)
 - **AND** no standard QA investigation workflow is launched for that finding
+
+#### Scenario: QA finding with unknown trigger source
+- **WHEN** a finding's `source_butler == "qa"` AND `source_session_trigger_source` is null or not in `{"healing", "qa_investigation"}`
+- **THEN** the finding is treated as potentially recursive and routed to the meta-review/operator lane as a precaution
+- **AND** a log WARNING is emitted: "QA finding from QA butler with unrecognized trigger_source; routing to meta-review"
+
+#### Scenario: Non-QA finding is never suppressed by this barrier
+- **WHEN** a finding's `source_butler` is any value other than `"qa"`
+- **THEN** the self-recursion barrier does NOT apply regardless of `source_session_trigger_source`
 
 ### Requirement: Anonymized PR Pipeline
 Investigation agents SHALL create PRs through the anonymization pipeline, ensuring no sensitive data reaches the public GitHub repository. **All personal details and sensitive data MUST be anonymized.**

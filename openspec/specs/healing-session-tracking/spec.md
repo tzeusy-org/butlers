@@ -45,6 +45,7 @@ The `status` field SHALL follow a defined state machine with valid transitions.
 #### Scenario: Valid states
 - **WHEN** a healing attempt status is set
 - **THEN** the value MUST be one of: `investigating`, `pr_open`, `pr_merged`, `failed`, `unfixable`, `anonymization_failed`, `timeout`
+- **AND** `dispatch_pending` is NOT a valid status — it is not persisted; the novelty claim and row creation are atomic, so a row either enters `investigating` (launch succeeded) or is never created (launch failed before insert)
 
 #### Scenario: Initial state
 - **WHEN** a healing attempt row is inserted
@@ -124,25 +125,53 @@ When appending a session to an existing healing attempt, the system SHALL compar
 ### Requirement: Daemon Restart Recovery
 On dispatcher startup (daemon boot), the system SHALL recover from incomplete healing attempts left behind by a prior crash or restart.
 
-#### Scenario: Stale investigating attempts recovered
-- **WHEN** the daemon starts and `healing_attempts` rows exist with status `investigating` and `updated_at` older than `[healing] timeout_minutes` (default: 30)
-- **THEN** those rows are transitioned to `timeout` with `error_detail = "Recovered on daemon restart — investigation was interrupted"`
-- **AND** their worktrees are cleaned up by the stale worktree reaper
+#### Scenario: Stale investigating attempts recovered — deadline-aware
+- **WHEN** the daemon starts and a `healing_attempts` row exists with status `investigating`
+- **AND** `workflow_deadline_at` is NOT NULL and `now() > workflow_deadline_at`
+- **THEN** the row is transitioned to `timeout` with `error_detail = "Recovered on daemon restart — workflow deadline exceeded"`
+- **AND** its worktree is cleaned up by the stale worktree reaper
 
-#### Scenario: Recently created investigating attempt preserved
-- **WHEN** the daemon starts and a `healing_attempts` row exists with status `investigating` and `updated_at` is 5 minutes ago
-- **THEN** the row is NOT transitioned (it may have been created by a still-running agent from before the restart)
-- **AND** the watchdog timeout will handle it if the agent is truly dead
+#### Scenario: Stale investigating attempts recovered — deadline fallback
+- **WHEN** the daemon starts and a `healing_attempts` row exists with status `investigating`
+- **AND** `workflow_deadline_at` IS NULL and `updated_at` is older than `[healing] timeout_minutes` (default: 30)
+- **THEN** the row is transitioned to `timeout` with `error_detail = "Recovered on daemon restart — investigation was interrupted (no deadline set)"`
+- **AND** its worktree is cleaned up by the stale worktree reaper
+- **AND** this path exists only for legacy rows created before `workflow_deadline_at` was introduced
+
+#### Scenario: Recently active investigating attempt preserved
+- **WHEN** the daemon starts and a `healing_attempts` row exists with status `investigating`
+- **AND** `workflow_deadline_at` is NOT NULL and `now() <= workflow_deadline_at`
+- **THEN** the row is NOT transitioned — it is within budget and may belong to an agent that survived the restart
+- **AND** the per-phase watchdog timeout will handle it if the agent is truly dead
 
 #### Scenario: Investigating attempt with no healing_session_id
 - **WHEN** the daemon starts and a `healing_attempts` row has status `investigating` but `healing_session_id = NULL` and `created_at` is older than 5 minutes
 - **THEN** the row is transitioned to `failed` with `error_detail = "Recovered on daemon restart — agent was never spawned"`
 - **AND** its worktree (if any) is cleaned up
+- **AND** this applies regardless of `workflow_deadline_at` (no agent was ever launched, so no deadline budget has been consumed)
 
 #### Scenario: Recovery runs before new dispatches
 - **WHEN** the daemon starts the healing dispatcher
 - **THEN** recovery runs FIRST, before the dispatcher begins accepting new errors
 - **AND** the stale worktree reaper runs after recovery completes
+
+### Requirement: Workflow Deadline Authority
+The `workflow_deadline_at` field is the authoritative deadline reference for multi-session recovery workflows.
+
+#### Scenario: Deadline is set at row creation
+- **WHEN** a `healing_attempts` row is inserted for a launched workflow
+- **THEN** `workflow_deadline_at` is set to `now() + configured_workflow_hard_limit` (default: 60 minutes)
+- **AND** this value is never updated after row creation — it is an immutable deadline, not a rolling timeout
+
+#### Scenario: Deadline field is null for legacy rows
+- **WHEN** a `healing_attempts` row was created before the `workflow_deadline_at` column was added
+- **THEN** `workflow_deadline_at` is NULL
+- **AND** restart recovery falls back to the `updated_at + timeout_minutes` heuristic for those rows only
+
+#### Scenario: Deadline authority over updated_at heuristic
+- **WHEN** restart recovery evaluates a `healing_attempts` row with `workflow_deadline_at IS NOT NULL`
+- **THEN** the `workflow_deadline_at` field is the sole authority for timeout decisions
+- **AND** the `updated_at` heuristic is NOT applied to that row
 
 ### Requirement: Query Functions
 The system SHALL expose query functions for dispatch gate checks and dashboard display.
@@ -155,9 +184,15 @@ The system SHALL expose query functions for dispatch gate checks and dashboard d
 - **WHEN** `get_recent_attempt(pool, fingerprint, window_minutes)` is called
 - **THEN** it returns the most recent terminal attempt for that fingerprint closed within the window, or `None`
 
-#### Scenario: Active count for concurrency cap
-- **WHEN** `count_active_attempts(pool)` is called
-- **THEN** it returns the count of rows with status `investigating`
+#### Scenario: Active count for concurrency cap — scoped variant
+- **WHEN** `count_active_attempts(pool, qa_only=False)` is called with `qa_only=False` (default)
+- **THEN** it returns the count of all rows with status `investigating` (used by legacy per-butler self-healing)
+
+#### Scenario: Active count for concurrency cap — QA-scoped variant
+- **WHEN** `count_active_attempts(pool, qa_only=True)` is called
+- **THEN** it returns the count of rows with status `investigating` AND `qa_patrol_id IS NOT NULL`
+- **AND** this is the count used by the QA staffer's concurrency gate — QA-originated investigations only
+- **AND** legacy self-healing attempts (`qa_patrol_id IS NULL`) do NOT consume QA concurrency budget
 
 #### Scenario: Recent failures for circuit breaker
 - **WHEN** `get_recent_terminal_statuses(pool, limit)` is called
