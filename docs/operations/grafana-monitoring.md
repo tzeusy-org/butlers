@@ -8,6 +8,112 @@
 
 Butlers uses OpenTelemetry (OTel) for distributed tracing and metrics, with a Grafana LGTM stack (Loki, Grafana, Tempo, Mimir) as the observability backend. When `OTEL_EXPORTER_OTLP_ENDPOINT` is configured, all butler daemons and the dashboard API emit traces via OTLP HTTP to a Grafana Alloy collector (port 4318), which forwards them to Grafana Tempo. When unset, telemetry falls back to no-op providers with zero overhead.
 
+## Local Development Observability Stack
+
+For local development, a self-contained observability stack is provided via `docker-compose.observability.yml`. This stack includes all components needed to collect and visualize telemetry without external dependencies.
+
+### Starting the Stack
+
+Use `scripts/compose.sh` with the `--observability` flag:
+
+```bash
+./scripts/compose.sh --observability
+```
+
+This enables the `observability` profile in Docker Compose, which automatically:
+- Sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`
+- Starts all observability services (otel-collector, Tempo, Prometheus, Grafana)
+
+Alternatively, start the stack directly with Docker Compose:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+  --profile observability up -d
+```
+
+If using direct Docker Compose, set the OTLP endpoint environment variable:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
+  docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+  --profile observability up -d
+```
+
+### Signal Flow
+
+The local observability stack follows this signal flow:
+
+```
+Butler Daemons + Dashboard API
+  ↓ (OTLP HTTP)
+OpenTelemetry Collector (port 4318)
+  ├─ /v1/traces  → Grafana Tempo
+  └─ /v1/metrics → Prometheus (remote_write)
+
+Connector Health Endpoints (/metrics)
+  ↓ (Prometheus scrape)
+Prometheus
+
+Grafana
+  ├─ Queries Prometheus for metrics
+  └─ Queries Tempo for traces
+```
+
+### Components
+
+- **otel-collector** — OpenTelemetry Collector (port 4318 for OTLP HTTP, 4317 for gRPC)
+  - Receives OTLP signals from all butler services
+  - Routes traces to Tempo via gRPC
+  - Routes metrics to Prometheus via remote_write
+
+- **Tempo** — Grafana Tempo (port 3200)
+  - Receives distributed traces from otel-collector
+  - Provides trace query API for Grafana
+  - Stores traces in local volume (`tempo_data`)
+
+- **Prometheus** — Prometheus metrics database (port 9090)
+  - Scrapes connector health endpoints (prometheus_client text format)
+  - Receives OTLP metrics from otel-collector via remote_write
+  - Stores time-series data in local volume (`prometheus_data`)
+
+- **Grafana** — Grafana dashboards UI (port 3000)
+  - Pre-provisioned with Prometheus and Tempo datasources
+  - Pre-configured dashboards from `grafana/*.json`
+  - Credentials: `admin` / `admin` (overridable via `GF_SECURITY_ADMIN_PASSWORD`)
+
+### Accessing the UI
+
+- **Grafana** — http://localhost:3000
+  - Pre-provisioned dashboards visible on landing page
+  - Datasources already configured (Prometheus, Tempo)
+
+- **Prometheus** — http://localhost:9090
+  - Query interface for metrics
+  - Visualize metrics collected from butlers and connectors
+
+- **Tempo** — http://localhost:3200 (API only)
+  - No native UI; use Grafana's Explore tab to browse traces
+
+### Configuration Files
+
+The local stack is configured by:
+
+- **`docker-compose.observability.yml`** — Service definitions (images, ports, volumes, networks)
+- **`otel-collector/config.yaml`** — OTLP receiver config and routing rules
+- **`prometheus/prometheus.yml`** — Scrape targets for connector health endpoints
+- **`tempo/config.yaml`** — Trace ingestion and storage
+- **`grafana/provisioning/`** — Datasource and dashboard auto-provisioning
+
+### Stopping the Stack
+
+```bash
+./scripts/compose.sh --observability
+# Then: docker compose down
+
+# Or directly:
+docker compose -f docker-compose.yml -f docker-compose.observability.yml down
+```
+
 ## Telemetry Initialization
 
 The `init_telemetry(service_name)` function in `src/butlers/core/telemetry.py` sets up the OpenTelemetry `TracerProvider`:
