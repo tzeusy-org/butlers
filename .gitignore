@@ -1,14 +1,98 @@
-plugins/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Logs
+logs
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+uv.lock
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.json
+htmlcov/
+
+# Ruff
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+secrets/
+secrets/connectors/*
+!secrets/connectors/.gitkeep
+
+# Docker
+pgdata/
+
+# Temp files from CC spawner
+/tmp/butler_*/
+
+# Gastown
 .repo.git/
-.land-worktree/
+crew/
+mayor/
+metadata.json
+polecats/
+refinery/
+settings/
+witness/
+
+# bv (beads viewer) local config and caches
+.beads/locks
+.beads/audit.log
+.beads/metadata.json
+.beads/.doctor-test-write
+.beads/interaction.jsonl
+.beads/interactions.jsonl
+.beads/.bv.lock
+.beads/issues.jsonl
+.bv/
+dolt/
+
+.worktrees
+# Frontend
+/frontend/node_modules/
+/frontend/dist/
+
+# tmp
+.tmp
+node_modules/
+
+# Gas Town runtime artifacts
+.beads/backup/
+.runtime/
+.claude/commands/
+.logs/
 
 # Dolt database files (added by bd init)
 .dolt/
 *.db
-.worktrees/parallel-agents/bu-z2g0/
-.worktrees/parallel-agents/bu-um75.1/
 
 # Healing worktrees (created by self-healing dispatcher)
 .healing-worktrees/
-# bd worktree
-.worktrees/parallel-agents/bu-z38xe/
+bu-b9xg/
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
