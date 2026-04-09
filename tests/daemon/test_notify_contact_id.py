@@ -50,12 +50,51 @@ prompt = "Do the daily check"
     return butler_path
 
 
+def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
+    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
+    return {
+        "butler_name": butler_name,
+        "core_groups": None,
+        "model": None,
+        "runtime_type": "codex",
+        "args": "[]",
+        "max_concurrent": 3,
+        "max_queued": 10,
+        "session_timeout_s": 900,
+        "seeded_at": None,
+        "updated_at": None,
+    }
+
+
+def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
+    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
+    for runtime_config queries and None for all other queries."""
+
+    async def _fetchrow(query: str, *args, **kwargs):
+        if "runtime_config" in query:
+            return _make_runtime_config_row(butler_name)
+        return None
+
+    return _fetchrow
+
+
 def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
     """Patch infrastructure dependencies for daemon tests."""
     if mock_pool is None:
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(return_value=None)
+        mock_conn.fetchrow = AsyncMock(return_value=None)
+        mock_conn.fetchval = AsyncMock(return_value=None)
+        mock_conn.fetch = AsyncMock(return_value=[])
+
         mock_pool = AsyncMock()
+        # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_pool.fetchval = AsyncMock(return_value=None)
-        mock_pool.execute = AsyncMock()
+        mock_pool.execute = AsyncMock(return_value=None)
+        mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
+        mock_pool.fetch = AsyncMock(return_value=[])
 
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
@@ -194,7 +233,10 @@ def _make_pool_with_conn(fetchrow_return: Any = None, fetchrow_error: Exception 
 
     mock_pool = AsyncMock()
     mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.execute = AsyncMock()
+    mock_pool.execute = AsyncMock(return_value=None)
+    # pool-level fetchrow must return runtime_config rows so seed_if_empty works
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
+    mock_pool.fetch = AsyncMock(return_value=[])
 
     @asynccontextmanager
     async def mock_acquire():
@@ -266,8 +308,19 @@ class TestNotifyContactIdResolution:
 
 def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
     """Return patches + daemon startup for missing-identifier tests."""
+    mock_conn_inner = AsyncMock()
+    mock_conn_inner.execute = AsyncMock(return_value=None)
+    mock_conn_inner.fetchrow = AsyncMock(return_value=None)
+    mock_conn_inner.fetchval = AsyncMock(return_value=None)
+    mock_conn_inner.fetch = AsyncMock(return_value=[])
+
     mock_pool = AsyncMock()
-    mock_pool.execute = AsyncMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn_inner)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.execute = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
+    mock_pool.fetchval = AsyncMock(return_value=None)
+    mock_pool.fetch = AsyncMock(return_value=[])
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)

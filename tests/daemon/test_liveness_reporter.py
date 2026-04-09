@@ -65,6 +65,34 @@ def _make_butler_toml(
     return tmp_path
 
 
+def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
+    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
+    return {
+        "butler_name": butler_name,
+        "core_groups": None,
+        "model": None,
+        "runtime_type": "codex",
+        "args": "[]",
+        "max_concurrent": 3,
+        "max_queued": 10,
+        "session_timeout_s": 900,
+        "seeded_at": None,
+        "updated_at": None,
+    }
+
+
+def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
+    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
+    for runtime_config queries and None for all other queries."""
+
+    async def _fetchrow(query: str, *args, **kwargs):
+        if "runtime_config" in query:
+            return _make_runtime_config_row(butler_name)
+        return None
+
+    return _fetchrow
+
+
 def _patch_infra():
     """Return patches for all infrastructure dependencies used by ButlerDaemon.start()."""
     mock_conn = AsyncMock()
@@ -78,7 +106,7 @@ def _patch_infra():
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.fetch = AsyncMock(return_value=[])
 

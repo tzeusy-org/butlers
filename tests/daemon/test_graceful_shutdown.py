@@ -181,6 +181,34 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
     return registry
 
 
+def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
+    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
+    return {
+        "butler_name": butler_name,
+        "core_groups": None,
+        "model": None,
+        "runtime_type": "codex",
+        "args": "[]",
+        "max_concurrent": 3,
+        "max_queued": 10,
+        "session_timeout_s": 900,
+        "seeded_at": None,
+        "updated_at": None,
+    }
+
+
+def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
+    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
+    for runtime_config queries and None for all other queries."""
+
+    async def _fetchrow(query: str, *args, **kwargs):
+        if "runtime_config" in query:
+            return _make_runtime_config_row(butler_name)
+        return None
+
+    return _fetchrow
+
+
 def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
     mock_conn = AsyncMock()
@@ -194,7 +222,7 @@ def _patch_infra():
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.fetch = AsyncMock(return_value=[])
 
@@ -212,9 +240,10 @@ def _patch_infra():
     # Separate mock for the audit DB (switchboard schema) so that its close()
     # does not interfere with call-order assertions on the main DB's close().
     mock_audit_db = MagicMock()
-    mock_audit_db.connect = AsyncMock()
+    mock_audit_db.provision = AsyncMock()
+    mock_audit_db.connect = AsyncMock(return_value=mock_pool)
     mock_audit_db.close = AsyncMock()
-    mock_audit_db.pool = AsyncMock()
+    mock_audit_db.pool = mock_pool
 
     _db_call_count = 0
 
