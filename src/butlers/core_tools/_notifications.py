@@ -1,0 +1,769 @@
+"""Notifications core tools: remind and notify (group: notifications).
+
+notify is only registered for non-STAFFER butlers.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
+
+from butlers.config import ButlerType
+from butlers.core.scheduler import schedule_create as _schedule_create
+from butlers.core.telemetry import tool_span
+from butlers.core.tool_call_capture import get_current_runtime_session_id
+from butlers.core_tools._base import NotifyRequestContextInput, ToolContext
+
+logger = logging.getLogger(__name__)
+
+_NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
+    "No bot <-> user telegram chat has been configured - please add a "
+    "telegram_chat_id entity_info entry on the owner entity via the dashboard"
+)
+
+
+def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
+    """Register notifications group tools: remind and notify."""
+    daemon = ctx.daemon
+    pool = ctx.pool
+    butler_name = ctx.butler_name
+    butler_type = ctx.butler_type
+
+    @_core_tool("notifications")
+    async def remind(
+        message: Annotated[
+            str,
+            Field(description="The reminder message to deliver."),
+        ],
+        channel: Annotated[
+            Literal["telegram", "email"],
+            Field(description="Delivery channel for the reminder."),
+        ],
+        delay_minutes: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "Minutes from now to deliver the reminder. "
+                    "Only for reminders relative to the current moment "
+                    "(e.g. 'remind me in 30 minutes'). "
+                    "Do NOT use for event-based reminders — use remind_at instead. "
+                    "Mutually exclusive with remind_at."
+                )
+            ),
+        ] = None,
+        remind_at: Annotated[
+            datetime | None,
+            Field(
+                description=(
+                    "Absolute UTC datetime to deliver the reminder. "
+                    "PREFERRED for event-based reminders: compute the target time "
+                    "from the event's start time (e.g. event at 2026-03-20T06:00Z "
+                    "minus 1 hour = remind_at 2026-03-20T05:00Z). "
+                    "Mutually exclusive with delay_minutes."
+                )
+            ),
+        ] = None,
+        request_context: Annotated[
+            NotifyRequestContextInput | None,
+            Field(
+                description=(
+                    "Optional request context passed through to notify(). "
+                    "Must be a dict/object — do NOT pass as a JSON string."
+                )
+            ),
+        ] = None,
+    ) -> dict:
+        """Set a one-shot reminder that delivers a message via notify().
+
+        Exactly one of ``delay_minutes`` or ``remind_at`` must be provided.
+
+        IMPORTANT: When setting a reminder for a known future event (interview,
+        flight, meeting, etc.), ALWAYS use ``remind_at`` with an absolute UTC
+        time computed from the event's start time. For example, to remind 1 hour
+        before an event at 2026-03-20T14:00+08:00, use
+        remind_at=2026-03-20T05:00:00+00:00. Never use ``delay_minutes`` for
+        event-based reminders — it sets the reminder relative to *now*, not
+        relative to the event.
+        """
+        # --- validate inputs ---
+        if delay_minutes is not None and remind_at is not None:
+            return {
+                "status": "error",
+                "error": ("Provide exactly one of delay_minutes or remind_at, not both."),
+            }
+        if delay_minutes is None and remind_at is None:
+            return {
+                "status": "error",
+                "error": ("Provide exactly one of delay_minutes or remind_at."),
+            }
+        if delay_minutes is not None and delay_minutes < 1:
+            return {
+                "status": "error",
+                "error": "delay_minutes must be at least 1.",
+            }
+
+        # --- compute target time ---
+        now = datetime.now(UTC)
+        if delay_minutes is not None:
+            target = now + timedelta(minutes=delay_minutes)
+        else:
+            if remind_at is None:
+                return {"status": "error", "error": "Internal error: remind_at is None."}
+            # Ensure remind_at is timezone-aware (assume UTC if naive)
+            if remind_at.tzinfo is None:
+                target = remind_at.replace(tzinfo=UTC)
+            else:
+                target = remind_at
+            if target <= now:
+                return {
+                    "status": "error",
+                    "error": "remind_at must be in the future.",
+                }
+
+        # --- build cron expression for the target minute ---
+        cron = f"{target.minute} {target.hour} {target.day} {target.month} *"
+
+        # --- build prompt that calls notify() ---
+        notify_args: dict[str, Any] = {
+            "channel": channel,
+            "message": message,
+            "intent": "send",
+        }
+        if request_context is not None:
+            notify_args["request_context"] = request_context
+
+        prompt = (
+            f"Deliver this reminder by calling the notify tool with "
+            f"the following arguments: {json.dumps(notify_args)}"
+        )
+
+        # --- schedule a one-shot task ---
+        # No stagger_key: stagger is designed for recurring tasks to spread load
+        # across butlers.  One-shot reminders must fire as close to the target
+        # minute as possible — adding stagger can push next_run_at past the next
+        # tick boundary and delay delivery by a full extra tick interval.
+        until_at = target + timedelta(minutes=1)
+        task_id = await _schedule_create(
+            pool,
+            f"remind-{target.strftime('%Y%m%dT%H%M')}-{str(uuid.uuid4())[:8]}",
+            cron,
+            prompt,
+            until_at=until_at,
+        )
+
+        return {
+            "id": str(task_id),
+            "status": "scheduled",
+            "remind_at": target.isoformat(),
+            "channel": channel,
+            "message": message,
+        }
+
+    # notify is non-STAFFER only
+    if butler_type != ButlerType.STAFFER:
+
+        @_core_tool("notifications")
+        @tool_span("notify", butler_name=butler_name)
+        async def notify(
+            channel: Annotated[
+                Literal["telegram", "email", "whatsapp"],
+                Field(
+                    description="Delivery channel. Allowed values: telegram | email | whatsapp."
+                ),
+            ],
+            message: Annotated[
+                str | None,
+                Field(description="Message text. Required for send/reply intents."),
+            ] = None,
+            recipient: Annotated[
+                str | None,
+                Field(description="Optional explicit recipient identity (for example email)."),
+            ] = None,
+            subject: Annotated[
+                str | None,
+                Field(description="Optional subject line (email channel)."),
+            ] = None,
+            intent: Annotated[
+                Literal["send", "reply", "react", "insight"],
+                Field(
+                    description=(
+                        "Delivery intent. Allowed values: send | reply | react | insight."
+                    )
+                ),
+            ] = "send",
+            emoji: Annotated[
+                str | None,
+                Field(description="Required when intent=react."),
+            ] = None,
+            request_context: Annotated[
+                NotifyRequestContextInput | None,
+                Field(
+                    description=(
+                        "Context lineage for reply/react targeting. Must be a "
+                        "dict/object — do NOT pass as a JSON string. Required keys "
+                        "for reply/react: request_id, source_channel, "
+                        "source_endpoint_identity, source_sender_identity. For "
+                        "telegram reply/react include source_thread_identity. "
+                        "Do not pass placeholder strings such as "
+                        '"<the REQUEST CONTEXT object...>".'
+                    )
+                ),
+            ] = None,
+            contact_id: Annotated[
+                uuid.UUID | None,
+                Field(
+                    description=(
+                        "Optional contact UUID. When provided, the channel"
+                        " identifier is resolved "
+                        "from public.contact_info (primary entry preferred). If no matching "
+                        "contact_info entry exists, the notification is parked as a "
+                        "pending_action and {status: pending_missing_identifier} is returned."
+                    )
+                ),
+            ] = None,
+            priority: Annotated[
+                Literal["high", "medium", "low"],
+                Field(
+                    description=(
+                        "Notification priority for quiet-hours enforcement. "
+                        "Allowed values: high | medium | low. Default: medium. "
+                        "high — always delivers immediately (bypasses quiet hours). "
+                        "medium — deferred during quiet hours. "
+                        "low — deferred during quiet hours."
+                    )
+                ),
+            ] = "medium",
+        ) -> dict:
+            """Send a `notify.v1` envelope through Switchboard `deliver()`.
+
+            Required fields:
+            - `channel` (string enum): `telegram`, `email`, or `whatsapp`
+            - `message` (string): required for `send`/`reply`, omitted for `react`
+
+            Optional fields:
+            - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
+            - `contact_id` (UUID): resolve recipient from public.contact_info; primary entry
+              preferred. If no matching entry exists the notification is parked as a
+              pending_action
+              and `{"status": "pending_missing_identifier"}` is returned.
+            - `subject` (string)
+            - `intent` (string enum): `send` | `reply` | `react` | `insight`
+            - `emoji` (string): required when `intent="react"`
+            - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
+              include `request_id`, `source_channel`, `source_endpoint_identity`,
+              `source_sender_identity` plus `source_thread_identity` for
+              telegram `reply`/`react`.
+              Pass an object value, not a quoted placeholder string.
+
+            Recipient resolution priority:
+            1. `contact_id` provided → look up channel identifier from public.contact_info
+            2. `recipient` string provided → use as-is
+            3. Neither → resolve owner entity's channel identifier (default)
+
+            Valid JSON example:
+            {
+              "channel": "telegram",
+              "intent": "reply",
+              "message": "Done. I logged it.",
+              "request_context": {
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+                "source_channel": "telegram_bot",
+                "source_endpoint_identity": "switchboard",
+                "source_sender_identity": "health",
+                "source_thread_identity": "12345"
+              }
+            }
+            """
+            # Validate message is present (not required for react intent)
+            if intent != "react" and message is None:
+                logger.error(
+                    "notify() called without required 'message' parameter: "
+                    "channel=%r, intent=%r, emoji=%r, request_context=%r",
+                    channel,
+                    intent,
+                    emoji,
+                    request_context,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        "Missing required 'message' parameter. "
+                        "notify() requires: channel, message, request_context."
+                    ),
+                }
+
+            # Validate message is not empty/whitespace (not required for react intent)
+            if intent != "react" and (not message or not message.strip()):
+                return {
+                    "status": "error",
+                    "error": "Message must not be empty or whitespace-only.",
+                }
+
+            _SUPPORTED_CHANNELS = {"telegram", "email"}
+            if channel not in _SUPPORTED_CHANNELS:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Unsupported channel '{channel}'. "
+                        f"Supported channels: {', '.join(sorted(_SUPPORTED_CHANNELS))}"
+                    ),
+                }
+
+            if intent not in {"send", "reply", "react", "insight"}:
+                return {
+                    "status": "error",
+                    "error": "Unsupported notify intent. Supported intents: send, reply, react, insight",  # noqa: E501
+                }
+
+            # React intent validation
+            if intent == "react":
+                if not emoji:
+                    return {
+                        "status": "error",
+                        "error": "React intent requires emoji parameter.",
+                    }
+                if channel not in {"telegram"}:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"React intent is not supported for channel '{channel}'. "
+                            "Only telegram supports reactions."
+                        ),
+                    }
+                if not request_context or not request_context.get("source_thread_identity"):
+                    return {
+                        "status": "error",
+                        "error": (
+                            "React intent requires request_context with source_thread_identity."
+                        ),
+                    }
+
+            # Priority validation
+            from butlers.core.temporal.delivery_db import _VALID_PRIORITIES as _VP
+
+            if priority not in _VP:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Invalid priority {priority!r}. "
+                        f"Allowed values: {', '.join(sorted(_VP))}"
+                    ),
+                }
+
+            # Quiet-hours gate: check delivery preferences and defer if needed
+            _notify_pool = daemon.db.pool if daemon.db is not None else None
+            if _notify_pool is not None and intent in {"send", "insight"}:
+                from datetime import UTC as _UTC
+                from datetime import datetime as _datetime
+                from zoneinfo import ZoneInfo as _ZoneInfo
+
+                from butlers.core.temporal.delivery import (
+                    compute_deliver_at,
+                    should_defer_notification,
+                )
+                from butlers.core.temporal.delivery_db import (
+                    get_delivery_preferences,
+                    insert_deferred_notification,
+                )
+
+                try:
+                    _prefs = await get_delivery_preferences(_notify_pool, butler_name)
+                except Exception:
+                    # Table may not exist yet or pool unavailable; deliver immediately
+                    logger.exception(
+                        "notify() failed to fetch delivery preferences; delivering immediately"
+                    )
+                    _prefs = None
+                if _prefs is not None:
+                    _tz_name = _prefs.get("timezone", "UTC")
+                    try:
+                        _tz = _ZoneInfo(_tz_name)
+                    except Exception:
+                        _tz = _ZoneInfo("UTC")
+                    _now_utc = _datetime.now(_UTC)
+                    _now_local = _now_utc.astimezone(_tz).time()
+
+                    if should_defer_notification(
+                        priority=priority,
+                        current_time=_now_local,
+                        prefs=_prefs,
+                        channel=channel,
+                    ):
+                        # Build notify.v1 envelope to persist
+                        _envelope: dict[str, Any] = {
+                            "schema_version": "notify.v1",
+                            "origin_butler": butler_name,
+                            "delivery": {
+                                "intent": intent,
+                                "channel": channel,
+                                "message": message or "",
+                            },
+                        }
+                        if subject is not None:
+                            _envelope["delivery"]["subject"] = subject
+                        if recipient is not None:
+                            _envelope["delivery"]["recipient"] = recipient
+                        if request_context is not None:
+                            _envelope["request_context"] = request_context
+
+                        _deliver_at = compute_deliver_at(prefs=_prefs, now=_now_utc)
+                        try:
+                            _notif_id = await insert_deferred_notification(
+                                _notify_pool,
+                                butler_name=butler_name,
+                                channel=channel,
+                                message=message or "",
+                                priority=priority,
+                                envelope=_envelope,
+                                deliver_at=_deliver_at,
+                                deferred_at=_now_utc,
+                            )
+                            logger.info(
+                                "notify() deferred notification %s (priority=%s) to %s",
+                                _notif_id,
+                                priority,
+                                _deliver_at.isoformat(),
+                            )
+                            return {
+                                "status": "deferred",
+                                "notification_id": _notif_id,
+                                "deliver_at": _deliver_at.isoformat(),
+                                "channel": channel,
+                                "priority": priority,
+                            }
+                        except Exception:
+                            # If we can't persist, fall through to immediate delivery
+                            logger.exception(
+                                "notify() failed to defer notification; delivering immediately"
+                            )
+
+            client = daemon.switchboard_client
+            if client is None and butler_name != "switchboard":
+                return {
+                    "status": "error",
+                    "error": (
+                        "Switchboard is not connected. Cannot deliver notification. "
+                        "The Switchboard butler may not be running — this is a transient "
+                        "infrastructure issue, not a parameter error. Retry after a delay "
+                        "or check butler status."
+                    ),
+                    "retryable": True,
+                }
+
+            # Resolution priority:
+            # (1) contact_id → query public.contact_info WHERE contact_id = X AND type = channel
+            # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
+            # (3) neither → resolve owner entity's channel identifier (default path)
+            if contact_id is not None:
+                contact_identifier = await daemon._resolve_contact_channel_identifier(
+                    contact_id=contact_id,
+                    channel=channel,
+                )
+                if contact_identifier is None:
+                    # No matching contact_info entry — park as pending_action and notify owner
+                    action_id: uuid.UUID | None = None
+                    pool = daemon.db.pool if daemon.db is not None else None
+                    if pool is not None:
+                        import datetime as _dt
+
+                        from butlers.modules.approvals.models import ActionStatus
+
+                        action_id = uuid.uuid4()
+                        now = _dt.datetime.now(_dt.UTC)
+                        expires_at = now + _dt.timedelta(hours=72)
+                        info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
+                        agent_summary = (
+                            f"notify() could not deliver a {channel!r} notification: "
+                            f"contact {contact_id} has no {info_type!r} identifier in "
+                            f"public.contact_info. The message was: {message!r}. "
+                            f"To resolve, add a {info_type!r} contact_info entry for this "
+                            f"contact and re-trigger the notification."
+                        )
+                        await pool.execute(
+                            "INSERT INTO pending_actions "
+                            "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                            "requested_at, expires_at) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                            action_id,
+                            "notify",
+                            json.dumps(
+                                {
+                                    "channel": channel,
+                                    "message": message,
+                                    "contact_id": str(contact_id),
+                                    "intent": intent,
+                                }
+                            ),
+                            agent_summary,
+                            get_current_runtime_session_id(),
+                            ActionStatus.PENDING.value,
+                            now,
+                            expires_at,
+                        )
+                        logger.warning(
+                            "notify() parked as pending_missing_identifier: "
+                            "contact_id=%s has no %r contact_info entry (action=%s)",
+                            contact_id,
+                            info_type,
+                            action_id,
+                        )
+                    # Notify the owner about the missing identifier.
+                    # Note: _resolve_default_notify_recipient only handles telegram+send;
+                    # owner_identifier will be None for non-telegram channels.
+                    owner_identifier = await daemon._resolve_default_notify_recipient(
+                        channel=channel,
+                        intent="send",
+                        recipient=None,
+                    )
+                    if owner_identifier is not None:
+                        owner_notify_request: dict[str, Any] = {
+                            "schema_version": "notify.v1",
+                            "origin_butler": butler_name,
+                            "delivery": {
+                                "intent": "send",
+                                "channel": channel,
+                                "message": (
+                                    f"A notification could not be delivered to contact "
+                                    f"{contact_id} via {channel!r}: missing {info_type!r} "
+                                    f"channel identifier. The pending action has been queued "
+                                    f"for review."
+                                ),
+                                "recipient": owner_identifier,
+                            },
+                        }
+                        try:
+                            if client is not None:
+                                await asyncio.wait_for(
+                                    client.call_tool(
+                                        "deliver",
+                                        {
+                                            "source_butler": butler_name,
+                                            "notify_request": owner_notify_request,
+                                        },
+                                    ),
+                                    timeout=15,
+                                )
+                            elif butler_name == "switchboard":
+                                _owner_pool = daemon.db.pool if daemon.db is not None else None
+                                if _owner_pool is not None:
+                                    from butlers.tools.switchboard.notification.deliver import (
+                                        deliver as _sw_deliver,
+                                    )
+
+                                    await _sw_deliver(
+                                        _owner_pool,
+                                        source_butler=butler_name,
+                                        notify_request=owner_notify_request,
+                                    )
+                        except Exception as _owner_exc:  # noqa: BLE001
+                            logger.warning(
+                                "notify() failed to alert owner about missing identifier: %s",
+                                _owner_exc,
+                            )
+                    return {
+                        "status": "pending_missing_identifier",
+                        "contact_id": str(contact_id),
+                        "channel": channel,
+                        "pending_action_id": str(action_id) if action_id is not None else None,
+                    }
+                resolved_recipient = contact_identifier
+            else:
+                resolved_recipient = await daemon._resolve_default_notify_recipient(
+                    channel=channel,
+                    intent=intent,
+                    recipient=recipient,
+                    request_context=request_context,
+                )
+
+            if (
+                channel == "telegram"
+                and intent in {"send", "insight"}
+                and resolved_recipient is None
+            ):
+                return {
+                    "status": "error",
+                    "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,
+                }
+
+            # Validate email recipients against known contacts.
+            # This prevents LLM-hallucinated addresses from reaching delivery.
+            # NOTE: runs regardless of whether contact_id was used for resolution.
+            # The contact_id path resolves to an email address but does NOT verify
+            # that the address belongs to a known, non-temporary contact.
+            if channel == "email" and resolved_recipient is not None:
+                pool = daemon.db.pool if daemon.db is not None else None
+                if pool is not None:
+                    from butlers.modules.approvals.email_guard import (
+                        check_email_recipient,
+                    )
+
+                    _notify_args = {
+                        "channel": channel,
+                        "message": message,
+                        "recipient": resolved_recipient,
+                        "intent": intent,
+                    }
+                    _decision = await check_email_recipient(
+                        pool,
+                        email_target=resolved_recipient,
+                        rule_tool_name="notify",
+                        rule_match_args=_notify_args,
+                        park_tool_name="notify",
+                        park_tool_args=_notify_args,
+                        park_summary=(
+                            f"notify() rejected: email to "
+                            f"{resolved_recipient!r}. Message: {message!r}"
+                        ),
+                        session_id=get_current_runtime_session_id(),
+                    )
+                    if not _decision.allowed:
+                        return {
+                            "status": "pending_approval",
+                            "error": (
+                                f"Delivery blocked: email target "
+                                f"'{resolved_recipient}' is a "
+                                f"{_decision.contact_desc} "
+                                f"and no standing approval rule matches. "
+                                f"Create a standing rule or approve via the "
+                                f"approval dashboard."
+                            ),
+                            "pending_action_id": str(_decision.action_id),
+                        }
+
+            delivery_message = message if message is not None else ""
+            notify_request: dict[str, Any] = {
+                "schema_version": "notify.v1",
+                "origin_butler": butler_name,
+                "delivery": {
+                    "intent": intent,
+                    "channel": channel,
+                    "message": delivery_message,
+                },
+            }
+            if emoji is not None:
+                notify_request["delivery"]["emoji"] = emoji
+            if resolved_recipient is not None:
+                notify_request["delivery"]["recipient"] = resolved_recipient
+            if subject is not None:
+                notify_request["delivery"]["subject"] = subject
+            if request_context is not None:
+                notify_request["request_context"] = request_context
+
+            deliver_args: dict[str, Any] = {
+                "source_butler": butler_name,
+                "notify_request": notify_request,
+            }
+
+            # Switchboard self-delivery: call deliver() directly instead of
+            # proxying through switchboard_client (which is None on switchboard).
+            if client is None and butler_name == "switchboard":
+                pool = daemon.db.pool if daemon.db is not None else None
+                if pool is None:
+                    return {
+                        "status": "error",
+                        "error": "Database not available for direct delivery.",
+                    }
+                from butlers.tools.switchboard.notification.deliver import (
+                    deliver as switchboard_deliver,
+                )
+
+                try:
+                    result = await switchboard_deliver(
+                        pool,
+                        source_butler=butler_name,
+                        notify_request=notify_request,
+                    )
+                    status = result.get("status", "sent")
+                    if status == "failed":
+                        return {
+                            "status": "error",
+                            "error": result.get("error", "Delivery failed"),
+                        }
+                    return {"status": "ok", "result": result}
+                except Exception as exc:
+                    logger.warning(
+                        "notify() direct deliver failed for switchboard: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    return {"status": "error", "error": f"Direct delivery failed: {exc}"}
+
+            _NOTIFY_TIMEOUT_S = 30
+            try:
+                result = await asyncio.wait_for(
+                    client.call_tool("deliver", deliver_args),
+                    timeout=_NOTIFY_TIMEOUT_S,
+                )
+                # FastMCP call_tool returns a CallToolResult
+                if result.is_error:
+                    # Extract error text from the result content
+                    error_text = (
+                        str(result.content[0].text) if result.content else "Unknown error"
+                    )
+                    return {"status": "error", "error": error_text}
+                # Check inner payload for delivery-level failures (e.g. validation
+                # errors from Switchboard/Messenger that don't raise MCP errors).
+                data = result.data
+                if isinstance(data, dict) and data.get("status") == "failed":
+                    return {
+                        "status": "error",
+                        "error": data.get("error", "Delivery failed"),
+                        "error_class": data.get("error_class", "delivery_error"),
+                        "retryable": data.get("retryable", False),
+                        "notification_id": data.get("notification_id"),
+                    }
+                return {"status": "ok", "result": data}
+            except TimeoutError:
+                logger.warning(
+                    "notify() timed out after %ds for butler %s",
+                    _NOTIFY_TIMEOUT_S,
+                    butler_name,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Switchboard call timed out after {_NOTIFY_TIMEOUT_S}s. "
+                        "The Switchboard may be overloaded or unresponsive. "
+                        "This is a transient error — retry after a brief delay."
+                    ),
+                    "retryable": True,
+                }
+            except (ConnectionError, OSError) as exc:
+                logger.warning(
+                    "notify() could not reach Switchboard for butler %s: %s",
+                    butler_name,
+                    exc,
+                    exc_info=True,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Switchboard unreachable: {exc}. "
+                        "The Switchboard process may have stopped or restarted. "
+                        "This is a transient error — retry after a brief delay."
+                    ),
+                    "retryable": True,
+                }
+            except Exception as exc:
+                logger.warning(
+                    "notify() failed for butler %s: %s",
+                    butler_name,
+                    exc,
+                    exc_info=True,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Switchboard call failed: {exc}. "
+                        "If this persists, check that all required parameters "
+                        "(channel, message, intent) are correct."
+                    ),
+                    "retryable": False,
+                }

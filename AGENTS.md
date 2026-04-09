@@ -1000,5 +1000,7 @@ For more details, see README.md and docs/QUICKSTART.md.
 - `gt patrol report --steps` for witness cycles expects the canonical patrol step keys (`inbox-check`, `process-cleanups`, `check-refinery`, `survey-workers`, `check-timer-gates`, `check-swarm-completion`, `patrol-cleanup`, `context-check`, `loop-or-exit`); custom labels are recorded as `SKIP`.
 - `gt hook --json` may expose the current hooked wisp under `pinned_bead`; rely on each issue `status` field (`hooked` vs `pinned`) for truth.
 - `gt polecat list` can temporarily show stale `working` state after Dolt disturbances; verify with `gt hook show <agent> --json` and `bd show <issue> --json` before taking cleanup action.
+- `gt polecat stale` / `gt polecat check-recovery` can lag just-recovered sessions; before intervening, confirm live session truth with `gt polecat status <rig>/<name> --json`.
 - Witness loop step command to resolve `role_type: witness` agent bead can return zero results in this rig; if no witness agent bead exists, skip `gt mol step await-signal` and continue patrol roll with `gt patrol report` while flagging the missing bead.
 - For polecat hook inspection, use full agent paths like `gt hook show butlers/polecats/<name> --json`; shorthand `butlers/<name>` may incorrectly report `status":"empty"`.
+- `gt patrol report` can rotate the hooked patrol wisp without updating `/home/tze/gt/butlers/witness/state.json`; treat the hooked patrol bead and polecat agent beads as the source of truth for current-cycle state.

@@ -165,10 +165,14 @@ def _mock_route_inbox(monkeypatch):
     mock_mark_processing = AsyncMock()
     mock_mark_processed = AsyncMock()
     mock_mark_errored = AsyncMock()
-    monkeypatch.setattr("butlers.daemon.route_inbox_insert", mock_insert)
-    monkeypatch.setattr("butlers.daemon.route_inbox_mark_processing", mock_mark_processing)
-    monkeypatch.setattr("butlers.daemon.route_inbox_mark_processed", mock_mark_processed)
-    monkeypatch.setattr("butlers.daemon.route_inbox_mark_errored", mock_mark_errored)
+    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.route_inbox_mark_processing", mock_mark_processing
+    )
+    monkeypatch.setattr(
+        "butlers.core_tools._routing.route_inbox_mark_processed", mock_mark_processed
+    )
+    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", mock_mark_errored)
     return mock_insert
 
 
