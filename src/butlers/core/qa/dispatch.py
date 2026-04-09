@@ -48,7 +48,9 @@ from butlers.core.healing.dispatch import (
 )
 from butlers.core.healing.tracking import (
     count_active_attempts,
+    create_dispatch_event,
     create_or_join_attempt,
+    delete_orphaned_attempt,
     get_recent_attempt,
     update_attempt_status,
 )
@@ -58,7 +60,7 @@ from butlers.core.healing.worktree import (
     remove_healing_worktree,
 )
 from butlers.core.model_routing import Complexity, resolve_model
-from butlers.core.qa.findings import update_finding_attempt
+from butlers.core.qa.findings import update_finding_attempt, update_finding_dedup_reason
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
@@ -1377,15 +1379,22 @@ async def _is_circuit_breaker_tripped(
     statuses.  This correctly captures "N consecutive failures" semantics:
     if any of the last N terminal attempts was a success (e.g., ``pr_merged``),
     the breaker stays open.
+
+    Only launched executions (``healing_session_id IS NOT NULL``) are counted.
+    Gate rejections that were cleaned up as dispatch events do not have a
+    ``healing_session_id`` and are excluded from the circuit-breaker signal.
     """
-    # Check only QA-originated terminal attempts (qa_patrol_id IS NOT NULL,
-    # closed_at IS NOT NULL ensures we only look at completed rows)
+    # Check only QA-originated terminal attempts where an investigation actually
+    # launched (healing_session_id IS NOT NULL).  Admission-control rejections
+    # were never inserted as attempts (they use healing_dispatch_events instead),
+    # so this filter is defensive against any legacy rows.
     rows = await pool.fetch(
         """
         SELECT status
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
           AND closed_at IS NOT NULL
+          AND healing_session_id IS NOT NULL
         ORDER BY closed_at DESC
         LIMIT $1
         """,
@@ -1484,17 +1493,41 @@ async def dispatch_qa_investigation(
 
         if not is_new:
             logger.debug("QA dispatch skipped: already investigating fingerprint=%s", fp[:12])
+            # Write back the authoritative rejection reason to the finding record.
+            try:
+                await update_finding_dedup_reason(pool, finding_id, "already_investigating")
+            except Exception as _dr_exc:
+                logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+            # Record a dispatch event (no new attempt row — the existing one is the authority).
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="novelty_join",
+                    reason="Active investigation already exists for this fingerprint",
+                    attempt_id=attempt_id,
+                )
+            except Exception as _evt_exc:
+                logger.debug("QA dispatch: failed to record novelty_join event: %s", _evt_exc)
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
                 reason="already_investigating",
+                attempt_id=attempt_id,
             )
 
-        # From here on, we have an 'investigating' row; any early exit must
-        # update it to a terminal state to avoid leaking an orphaned row.
+        # From here on, we have an 'investigating' row with no session yet.
+        # Any early exit that is an admission-control rejection (not a launch
+        # failure) MUST delete the row and record a dispatch event rather than
+        # marking the row "failed", so gate rejections do not poison the
+        # circuit-breaker history.
 
-        # Link the finding to this attempt immediately
-        await update_finding_attempt(pool, finding_id, attempt_id)
+        # Link the finding to this attempt immediately (best-effort; do not abort on failure).
+        try:
+            await update_finding_attempt(pool, finding_id, attempt_id)
+        except Exception as _link_exc:
+            logger.debug("QA dispatch: failed to link finding to attempt: %s", _link_exc)
 
         # ---------------------------------------------------------------
         # Gate 7: Cooldown gate
@@ -1502,12 +1535,23 @@ async def dispatch_qa_investigation(
         recent = await get_recent_attempt(pool, fp, config.cooldown_minutes)
         if recent is not None:
             logger.debug("QA dispatch skipped: cooldown active for fingerprint=%s", fp[:12])
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail="Dispatch rejected by cooldown gate",
-            )
+            await delete_orphaned_attempt(pool, attempt_id)
+            try:
+                await update_finding_dedup_reason(pool, finding_id, "cooldown")
+            except Exception as _dr_exc:
+                logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="cooldown",
+                    reason=(
+                        f"Cooldown active: recent attempt closed within {config.cooldown_minutes}m"
+                    ),
+                )
+            except Exception as _evt_exc:
+                logger.debug("QA dispatch: failed to record cooldown event: %s", _evt_exc)
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
@@ -1526,12 +1570,24 @@ async def dispatch_qa_investigation(
                 config.max_concurrent,
                 fp[:12],
             )
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail="Dispatch rejected by concurrency cap",
-            )
+            await delete_orphaned_attempt(pool, attempt_id)
+            try:
+                await update_finding_dedup_reason(pool, finding_id, "concurrency_cap")
+            except Exception as _dr_exc:
+                logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="concurrency_cap",
+                    reason=(
+                        f"Concurrency cap reached: {active_count} active"
+                        f" / {config.max_concurrent} max"
+                    ),
+                )
+            except Exception as _evt_exc:
+                logger.debug("QA dispatch: failed to record concurrency_cap event: %s", _evt_exc)
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
@@ -1549,12 +1605,26 @@ async def dispatch_qa_investigation(
                     config.circuit_breaker_threshold,
                     fp[:12],
                 )
-                await update_attempt_status(
-                    pool,
-                    attempt_id,
-                    "failed",
-                    error_detail="Dispatch rejected by circuit breaker",
-                )
+                await delete_orphaned_attempt(pool, attempt_id)
+                try:
+                    await update_finding_dedup_reason(pool, finding_id, "circuit_breaker")
+                except Exception as _dr_exc:
+                    logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+                try:
+                    await create_dispatch_event(
+                        pool,
+                        fingerprint=fp,
+                        butler_name=finding.source_butler,
+                        decision="circuit_breaker",
+                        reason=(
+                            f"Circuit breaker tripped:"
+                            f" {config.circuit_breaker_threshold} consecutive failures"
+                        ),
+                    )
+                except Exception as _evt_exc:
+                    logger.debug(
+                        "QA dispatch: failed to record circuit_breaker event: %s", _evt_exc
+                    )
                 return QaDispatchResult(
                     accepted=False,
                     fingerprint=fp,
@@ -1581,17 +1651,25 @@ async def dispatch_qa_investigation(
                 finding.source_butler,
                 fp[:12],
             )
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail="No self_healing tier model available",
-            )
+            await delete_orphaned_attempt(pool, attempt_id)
+            try:
+                await update_finding_dedup_reason(pool, finding_id, "no_model")
+            except Exception as _dr_exc:
+                logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="no_model",
+                    reason="No self_healing tier model available",
+                )
+            except Exception as _evt_exc:
+                logger.debug("QA dispatch: failed to record no_model event: %s", _evt_exc)
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
                 reason="no_model",
-                attempt_id=attempt_id,
             )
 
         # ---------------------------------------------------------------

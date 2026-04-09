@@ -130,6 +130,41 @@ async def update_finding_attempt(
     )
 
 
+async def update_finding_dedup_reason(
+    pool: asyncpg.Pool,
+    finding_id: uuid.UUID,
+    dedup_reason: str,
+) -> None:
+    """Write an authoritative gate rejection reason back to a qa_findings row.
+
+    Called by the QA dispatcher when a post-novelty gate (cooldown, concurrency
+    cap, circuit breaker, no-model) rejects a finding after triage classified
+    it as novel.  Triage performs a fast non-atomic dedup check; the dispatcher
+    performs the authoritative atomic claim.  When the dispatcher rejects a
+    triage-novel finding, this function records the authoritative reason.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the public schema.
+    finding_id:
+        UUID of the qa_findings row to update.
+    dedup_reason:
+        Authoritative gate rejection reason, e.g. ``"cooldown"``,
+        ``"concurrency_cap"``, ``"circuit_breaker"``, ``"no_model"``,
+        ``"already_investigating"``.
+    """
+    await pool.execute(
+        """
+        UPDATE public.qa_findings
+        SET dedup_reason = $1
+        WHERE id = $2
+        """,
+        dedup_reason,
+        finding_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------

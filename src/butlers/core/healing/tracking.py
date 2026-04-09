@@ -1050,6 +1050,56 @@ async def update_phase_session_status(
     return True
 
 
+async def delete_orphaned_attempt(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+) -> bool:
+    """Delete an ``investigating`` healing attempt that was never launched.
+
+    Used by the dispatch engine when a post-novelty gate (cooldown, concurrency
+    cap, circuit breaker, no-model) rejects a dispatch *before* any healing
+    session is spawned.  Removing the row rather than marking it ``failed``
+    keeps the execution history clean and prevents gate rejections from
+    contributing to circuit-breaker failure counts.
+
+    Only deletes rows that are still ``investigating`` with
+    ``healing_session_id IS NULL`` — this is a safety guard against deleting
+    a row that has since transitioned or received a real session.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    attempt_id:
+        UUID of the ``healing_attempts`` row to delete.
+
+    Returns
+    -------
+    bool
+        ``True`` if the row was deleted, ``False`` if it was not found or
+        no longer qualifies (e.g. already has a session_id or was transitioned).
+    """
+    deleted = await pool.fetchval(
+        """
+        DELETE FROM public.healing_attempts
+        WHERE id = $1
+          AND status = 'investigating'
+          AND healing_session_id IS NULL
+        RETURNING id
+        """,
+        attempt_id,
+    )
+    if deleted is None:
+        logger.debug(
+            "delete_orphaned_attempt: attempt %s not deleted (not found, already launched, "
+            "or in wrong state)",
+            attempt_id,
+        )
+        return False
+    logger.debug("delete_orphaned_attempt: deleted orphaned attempt %s", attempt_id)
+    return True
+
+
 async def list_phase_sessions(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,

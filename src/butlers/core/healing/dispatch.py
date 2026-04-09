@@ -46,7 +46,9 @@ from butlers.core.healing.fingerprint import (
 )
 from butlers.core.healing.tracking import (
     count_active_attempts,
+    create_dispatch_event,
     create_or_join_attempt,
+    delete_orphaned_attempt,
     get_attempt,
     get_recent_attempt,
     get_recent_terminal_statuses,
@@ -968,16 +970,32 @@ async def dispatch_healing(
                 "Healing dispatch skipped: already investigating fingerprint=%s",
                 fp.fingerprint[:12],
             )
+            # Record the join as a dispatch decision (no new attempt row created).
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp.fingerprint,
+                    butler_name=butler_name,
+                    decision="novelty_join",
+                    reason="Active investigation already exists for this fingerprint",
+                    attempt_id=attempt_id_or_existing,
+                )
+            except Exception as _evt_exc:
+                logger.debug("dispatch_healing: failed to record novelty_join event: %s", _evt_exc)
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
                 reason="already_investigating",
+                attempt_id=attempt_id_or_existing,
             )
 
         attempt_id = attempt_id_or_existing
 
-        # From here on, we have an 'investigating' row; any early exit must
-        # update it to a terminal state to avoid leaking an orphaned row.
+        # From here on, we have an 'investigating' row with no session yet.
+        # Any early exit that is an admission-control rejection (not a launch
+        # failure) MUST delete the row (rather than marking it "failed") so
+        # that gate rejections do not poison the circuit-breaker history.
+        # The rejection is recorded as a healing_dispatch_events entry instead.
 
         # -------------------------------------------------------------------
         # Gate 7: Cooldown gate
@@ -988,12 +1006,19 @@ async def dispatch_healing(
                 "Healing dispatch skipped: cooldown active for fingerprint=%s",
                 fp.fingerprint[:12],
             )
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail="Dispatch rejected by cooldown gate",
-            )
+            await delete_orphaned_attempt(pool, attempt_id)
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp.fingerprint,
+                    butler_name=butler_name,
+                    decision="cooldown",
+                    reason=(
+                        f"Cooldown active: recent attempt closed within {config.cooldown_minutes}m"
+                    ),
+                )
+            except Exception as _evt_exc:
+                logger.debug("dispatch_healing: failed to record cooldown event: %s", _evt_exc)
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
@@ -1013,12 +1038,22 @@ async def dispatch_healing(
                 config.max_concurrent,
                 butler_name,
             )
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail="Dispatch rejected by concurrency cap",
-            )
+            await delete_orphaned_attempt(pool, attempt_id)
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp.fingerprint,
+                    butler_name=butler_name,
+                    decision="concurrency_cap",
+                    reason=(
+                        f"Concurrency cap reached: {active_count} active"
+                        f" / {config.max_concurrent} max"
+                    ),
+                )
+            except Exception as _evt_exc:
+                logger.debug(
+                    "dispatch_healing: failed to record concurrency_cap event: %s", _evt_exc
+                )
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
@@ -1036,12 +1071,22 @@ async def dispatch_healing(
                     config.circuit_breaker_threshold,
                     butler_name,
                 )
-                await update_attempt_status(
-                    pool,
-                    attempt_id,
-                    "failed",
-                    error_detail="Dispatch rejected by circuit breaker",
-                )
+                await delete_orphaned_attempt(pool, attempt_id)
+                try:
+                    await create_dispatch_event(
+                        pool,
+                        fingerprint=fp.fingerprint,
+                        butler_name=butler_name,
+                        decision="circuit_breaker",
+                        reason=(
+                            f"Circuit breaker tripped:"
+                            f" {config.circuit_breaker_threshold} consecutive failures"
+                        ),
+                    )
+                except Exception as _evt_exc:
+                    logger.debug(
+                        "dispatch_healing: failed to record circuit_breaker event: %s", _evt_exc
+                    )
                 return DispatchResult(
                     accepted=False,
                     fingerprint=fp.fingerprint,
@@ -1066,12 +1111,17 @@ async def dispatch_healing(
                 "Healing dispatch skipped: no self_healing tier model available for butler=%s",
                 butler_name,
             )
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "failed",
-                error_detail="No self_healing tier model available",
-            )
+            await delete_orphaned_attempt(pool, attempt_id)
+            try:
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp.fingerprint,
+                    butler_name=butler_name,
+                    decision="no_model",
+                    reason="No self_healing tier model available",
+                )
+            except Exception as _evt_exc:
+                logger.debug("dispatch_healing: failed to record no_model event: %s", _evt_exc)
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
