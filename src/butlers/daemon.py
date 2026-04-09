@@ -259,10 +259,6 @@ _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
 }
 
 
-class RuntimeBinaryNotFoundError(RuntimeError):
-    """Raised when the runtime adapter's binary is not found on PATH."""
-
-
 class ButlerDaemon:
     """Central orchestrator for a single butler instance."""
 

@@ -39,6 +39,7 @@ from butlers.credentials import (
 )
 from butlers.daemon_utils import _flatten_config_for_secret_scan
 from butlers.db import Database
+from butlers.exceptions import RuntimeBinaryNotFoundError
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
@@ -272,8 +273,6 @@ async def run_startup(daemon: Any) -> None:
 
     binary = runtime.binary_name
     if not shutil.which(binary):
-        from butlers.daemon import RuntimeBinaryNotFoundError
-
         raise RuntimeBinaryNotFoundError(
             f"Runtime binary {binary!r} not found on PATH. "
             f"The {daemon.config.runtime.type!r} runtime requires {binary!r} to be installed."
