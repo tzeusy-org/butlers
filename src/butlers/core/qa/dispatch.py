@@ -6,6 +6,7 @@ monitors timeouts, creates anonymized PRs, and records outcomes.
 
 The dispatcher applies the same 10-gate sequence as the self-healing dispatcher
 but with QA-specific wiring:
+ - Gate 0: QA self-recursion barrier (suppress findings from QA self-healing/investigation sessions)
  - Gate 1: No-recursion guard (trigger_source == "healing" → skip)
  - Gate 2: Opt-in gate (always on for QA dispatcher)
  - Gate 3: Fingerprint (pre-computed from QaFinding)
