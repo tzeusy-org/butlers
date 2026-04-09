@@ -166,14 +166,15 @@ def test_qa_finding_structured_evidence_set():
 async def test_insert_finding_includes_source_session_trigger_source():
     """insert_finding passes source_session_trigger_source to the SQL."""
     pool = _make_qa_pool()
-    finding = _make_finding(source_session_trigger_source="qa_investigation")
+    # Use "qa" which is the real trigger_source emitted by QA investigation sessions.
+    finding = _make_finding(source_session_trigger_source="qa")
     patrol_id = uuid.uuid4()
 
     await insert_finding(pool, patrol_id, finding, dedup_reason=None)
 
     call_args = pool.fetchval.call_args.args
     # source_session_trigger_source should be in the args
-    assert "qa_investigation" in call_args
+    assert "qa" in call_args
 
 
 @pytest.mark.asyncio
@@ -233,11 +234,17 @@ async def test_qa_self_recursion_barrier_healing_trigger():
 
 
 @pytest.mark.asyncio
-async def test_qa_self_recursion_barrier_qa_investigation_trigger():
-    """QA finding from QA butler with trigger_source=qa_investigation is suppressed."""
+async def test_qa_self_recursion_barrier_qa_trigger():
+    """QA finding from QA butler with trigger_source=qa is suppressed.
+
+    QA investigation sessions use trigger_source="qa" (per TRIGGER_SOURCES in
+    sessions.py and the spawner call sites in dispatch.py). A finding whose
+    source_session_trigger_source is "qa" indicates the error came from a QA
+    investigation session, which is a recursive case that must be blocked.
+    """
     finding = _make_finding(
         source_butler="qa",
-        source_session_trigger_source="qa_investigation",
+        source_session_trigger_source="qa",
     )
     result = await dispatch_qa_investigation(
         pool=_make_qa_pool(),

@@ -1546,11 +1546,17 @@ async def dispatch_qa_investigation(
         # Gate 0: QA self-recursion barrier
         # ---------------------------------------------------------------
         # Suppress autonomous investigation when the finding originated from a
-        # QA self-healing session.  Applies only when source_butler == "qa".
-        # Findings from other butlers are never blocked by this barrier.
+        # QA or healing session spawned by the QA butler.  Applies only when
+        # source_butler == "qa".  Findings from other butlers are never blocked.
+        #
+        # Recursive trigger_source values (per TRIGGER_SOURCES in sessions.py):
+        #   "healing" — sessions launched by the healing dispatcher
+        #   "qa"      — sessions launched by the QA investigation dispatcher
+        #               (both _run_investigation_session and follow-up agents
+        #                use trigger_source="qa")
         if finding.source_butler == "qa":
             trigger_src = finding.source_session_trigger_source
-            if trigger_src in {"healing", "qa_investigation"}:
+            if trigger_src in {"healing", "qa"}:
                 logger.info(
                     "QA dispatch suppressed: self-recursion barrier triggered "
                     "(source_session_trigger_source=%r, fingerprint=%s) — routing to meta-review",
