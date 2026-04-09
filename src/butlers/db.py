@@ -251,11 +251,12 @@ class Database:
                     self._role_verified = await self._verify_role_exists(check_conn)
                 finally:
                     await check_conn.close()
-            except Exception:
+            except (asyncpg.PostgresError, OSError) as exc:
                 logger.warning(
-                    "Could not verify role %r existence; SET ROLE enforcement disabled for %s",
+                    "Could not verify role %r existence; SET ROLE enforcement disabled for %s: %s",
                     self.role,
                     self.db_name,
+                    exc,
                 )
                 self._role_verified = False
 
