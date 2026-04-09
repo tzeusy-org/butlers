@@ -147,7 +147,7 @@ class Database:
 
     async def _setup_connection(self, conn: asyncpg.Connection) -> None:
         """asyncpg setup callback: SET ROLE on every connection acquire."""
-        if not self._role_verified:
+        if not self._role_verified or self.role is None:
             return
         quoted_role = '"' + self.role.replace('"', '""') + '"'
         await conn.execute(f"SET ROLE {quoted_role}")
@@ -223,15 +223,30 @@ class Database:
 
         # Verify role existence before pool creation
         if self.role is not None:
-            try:
-                check_conn = await asyncpg.connect(
+            _check_ssl = self.ssl
+
+            async def _open_check_conn(ssl: str | None) -> asyncpg.Connection:
+                return await asyncpg.connect(
                     host=self.host,
                     port=self.port,
                     user=self.user,
                     password=self.password,
                     database=self.db_name,
-                    ssl=self.ssl,
+                    ssl=ssl,
                 )
+
+            try:
+                try:
+                    check_conn = await _open_check_conn(_check_ssl)
+                except Exception as exc:
+                    if not should_retry_with_ssl_disable(exc, _check_ssl):
+                        raise
+                    logger.info(
+                        "Retrying role verification connection with ssl=disable "
+                        "after SSL upgrade loss"
+                    )
+                    _check_ssl = "disable"
+                    check_conn = await _open_check_conn(_check_ssl)
                 try:
                     self._role_verified = await self._verify_role_exists(check_conn)
                 finally:

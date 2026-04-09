@@ -172,6 +172,43 @@ async def test_role_verified_setup_callback_in_ssl_retry(
         assert callable(setup_cb) and setup_cb.__func__ is Database._setup_connection
 
 
+@patch("butlers.db.asyncpg.create_pool", new_callable=AsyncMock)
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_role_verify_connection_retries_with_ssl_disable(
+    mock_connect: AsyncMock, mock_create_pool: AsyncMock
+) -> None:
+    """When check-conn fails with SSL upgrade loss, role verification retries with ssl=disable."""
+    check_conn = AsyncMock()
+    check_conn.fetchval = AsyncMock(return_value=True)
+    check_conn.close = AsyncMock()
+    # First connect (ssl=None) raises SSL upgrade loss error; second (ssl=disable) succeeds
+    mock_connect.side_effect = [ConnectionError("unexpected connection_lost() call"), check_conn]
+
+    pool = AsyncMock()
+    mock_create_pool.return_value = pool
+
+    db = Database(db_name="test_db", role="butler_general_rw")
+    out = await db.connect()
+    assert out is pool
+    assert db._role_verified is True
+    # Second connect call should use ssl=disable
+    assert mock_connect.await_args_list[1].kwargs["ssl"] == "disable"
+    # setup callback should be registered since role was verified on retry
+    assert callable(mock_create_pool.await_args.kwargs.get("setup"))
+
+
+async def test_setup_connection_skips_when_role_is_none_despite_verified() -> None:
+    """_setup_connection skips when self.role is None (defensive guard), even if _role_verified."""
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+
+    db = Database(db_name="test_db", role=None)
+    db._role_verified = True  # Force verified even with None role
+
+    await db._setup_connection(conn)
+    conn.execute.assert_not_awaited()
+
+
 async def test_setup_connection_runs_set_role() -> None:
     """_setup_connection executes SET ROLE with properly quoted identifier."""
     conn = AsyncMock()
