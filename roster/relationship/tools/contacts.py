@@ -14,9 +14,6 @@ from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
 
-# Tenant ID used when writing memory entities on behalf of the relationship butler.
-_MEMORY_TENANT_ID = "relationship"
-
 
 def _split_name(name: str) -> tuple[str | None, str | None]:
     parts = name.strip().split(None, 1)
@@ -112,7 +109,6 @@ async def _ensure_entity(
     first_name: str | None,
     last_name: str | None,
     nickname: str | None,
-    tenant_id: str,
     entity_type: str = "person",
 ) -> str:
     """Resolve or create a memory entity for a contact. Returns entity_id.
@@ -133,7 +129,6 @@ async def _ensure_entity(
             pool,
             canonical_name,
             entity_type,
-            tenant_id=tenant_id,
             aliases=aliases,
         )
         return result["entity_id"]
@@ -148,9 +143,7 @@ async def _ensure_entity(
 
     # Resolve existing entity
     try:
-        candidates = await entity_resolve(
-            pool, canonical_name, tenant_id=tenant_id, entity_type=entity_type
-        )
+        candidates = await entity_resolve(pool, canonical_name, entity_type=entity_type)
         if candidates:
             return candidates[0]["entity_id"]
     except Exception:
@@ -171,7 +164,6 @@ async def _sync_entity_update(
     first_name: str | None,
     last_name: str | None,
     nickname: str | None,
-    tenant_id: str,
 ) -> None:
     """Update the memory entity canonical name and aliases. Best-effort."""
     from butlers.modules.memory.tools.entities import entity_update
@@ -182,7 +174,6 @@ async def _sync_entity_update(
         await entity_update(
             pool,
             entity_id,
-            tenant_id=tenant_id,
             canonical_name=canonical_name,
             aliases=aliases,
         )
@@ -209,7 +200,6 @@ async def contact_create(
     listed: bool | None = None,
     metadata: dict[str, Any] | None = None,
     memory_pool: asyncpg.Pool | None = None,
-    memory_tenant_id: str = _MEMORY_TENANT_ID,
 ) -> dict[str, Any]:
     """Create a contact linked to a memory entity.
 
@@ -239,7 +229,6 @@ async def contact_create(
             first_name=first_name,
             last_name=last_name,
             nickname=nickname,
-            tenant_id=memory_tenant_id,
             entity_type=_infer_entity_type(first_name, last_name, company),
         )
         entity_uuid = uuid.UUID(entity_id_str)
@@ -314,7 +303,6 @@ async def contact_update(
     pool: asyncpg.Pool,
     contact_id: uuid.UUID,
     memory_pool: asyncpg.Pool | None = None,
-    memory_tenant_id: str = _MEMORY_TENANT_ID,
     **fields: Any,
 ) -> dict[str, Any]:
     """Update a contact's fields across legacy/spec schemas.
@@ -416,7 +404,6 @@ async def contact_update(
                 first_name=result.get("first_name"),
                 last_name=result.get("last_name"),
                 nickname=result.get("nickname"),
-                tenant_id=memory_tenant_id,
             )
 
     await _log_activity(
@@ -572,7 +559,6 @@ async def contact_merge(
     source_id: uuid.UUID,
     target_id: uuid.UUID,
     memory_pool: asyncpg.Pool | None = None,
-    memory_tenant_id: str = _MEMORY_TENANT_ID,
 ) -> dict[str, Any]:
     """Merge source contact into target contact.
 
@@ -677,7 +663,6 @@ async def contact_merge(
                     entity_pool,
                     str(src_entity_id),
                     str(tgt_entity_id),
-                    tenant_id=memory_tenant_id,
                 )
             except Exception:
                 logger.exception(

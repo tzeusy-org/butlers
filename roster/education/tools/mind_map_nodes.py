@@ -108,8 +108,8 @@ async def mind_map_node_create(
     await pool.execute(
         """
         INSERT INTO public.entities
-            (tenant_id, canonical_name, entity_type, aliases, metadata)
-        VALUES ('shared', $1, 'other', '{}', $2::jsonb)
+            (canonical_name, entity_type, aliases, metadata)
+        VALUES ($1, 'other', '{}', $2::jsonb)
         ON CONFLICT DO NOTHING
         """,
         canonical_name,
@@ -120,8 +120,7 @@ async def mind_map_node_create(
         await pool.fetchval(
             """
             SELECT id FROM public.entities
-            WHERE tenant_id = 'shared'
-              AND canonical_name = $1
+            WHERE canonical_name = $1
               AND entity_type = 'other'
               AND (metadata->>'merged_into') IS NULL
             """,

@@ -9,7 +9,6 @@ The `entities` table SHALL reside in the `public` PostgreSQL schema (`public.ent
 ```sql
 CREATE TABLE public.entities (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id TEXT NOT NULL,
     canonical_name VARCHAR NOT NULL,
     entity_type VARCHAR NOT NULL DEFAULT 'other',
     aliases TEXT[] NOT NULL DEFAULT '{}',
@@ -20,13 +19,14 @@ CREATE TABLE public.entities (
     CONSTRAINT chk_entities_entity_type CHECK (
         entity_type IN ('person', 'organization', 'place', 'other')
     ),
-    CONSTRAINT uq_entities_tenant_canonical_type
-        UNIQUE (tenant_id, canonical_name, entity_type)
+    CONSTRAINT uq_entities_canonical_type
+        UNIQUE (canonical_name, entity_type)
 );
 ```
 
 **Implementation note (core_014):** The `public.entities` table is created by `core_014_entities_to_shared.py`. It includes supporting indexes:
-- `idx_entities_tenant_canonical` on `(tenant_id, canonical_name)`
+- `idx_entities_canonical` on `(canonical_name)`
+- `uq_entities_canonical_type_live` partial unique on `(canonical_name, entity_type)` WHERE merged_into IS NULL AND deleted_at IS NULL
 - `idx_entities_aliases` using GIN on `aliases`
 - `idx_entities_metadata` using GIN on `metadata`
 
@@ -48,56 +48,9 @@ CREATE TABLE public.entities (
 
 ---
 
-### Requirement: MCP entity tools default tenant_id to shared
+### Requirement: [WITHDRAWN] Entity tenant_id
 
-All MCP entity tools that accept a `tenant_id` parameter MUST default to `'shared'` when no `tenant_id` is provided by the caller. This ensures that runtime agents operating without explicit tenant context naturally create and resolve entities in the `public` schema — the correct cross-butler entity namespace.
-
-Affected tools: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`, `entity_merge`, `entity_neighbors`.
-
-**Rationale:** Before this requirement, `entity_resolve` defaulted to `'default'` (which no longer exists as a tenant after the `public.entities` migration) and `entity_create` required `tenant_id` as a positional argument, causing agents to either omit it (error) or guess the wrong value. All runtime agents should operate in the `'shared'` tenant unless explicitly instructed otherwise.
-
-#### Scenario: entity_create with no tenant_id uses shared
-
-- **WHEN** a runtime agent calls `entity_create(canonical_name='Alice', entity_type='person')` without providing `tenant_id`
-- **THEN** the entity MUST be created with `tenant_id = 'shared'`
-- **AND** the entity MUST be stored in `public.entities`
-
-#### Scenario: entity_resolve with no tenant_id searches shared
-
-- **WHEN** a runtime agent calls `entity_resolve(name='Alice')` without providing `tenant_id`
-- **THEN** the resolution MUST search within `tenant_id = 'shared'`
-- **AND** MUST NOT fall back to a `'default'` tenant that no longer exists
-
-#### Scenario: Explicit tenant_id overrides the default
-
-- **WHEN** a caller provides an explicit `tenant_id` (e.g., for a butler-local namespace)
-- **THEN** the tool MUST use the caller-provided value instead of the default
-- **AND** `tenant_id = 'shared'` remains the only cross-butler accessible tenant
-
----
-
-### Requirement: UUID-based entity lookups are tenant-agnostic
-
-Entity operations that look up by UUID (`entity_get`, `entity_update`, `entity_merge`) MUST NOT include a `tenant_id` filter in the WHERE clause. Entity UUIDs are globally unique primary keys — the `tenant_id` constraint is unnecessary for UUID lookups and causes failures when entities exist in a different tenant than expected (e.g., entities created with `tenant_id='owner'` before the default was unified to `'shared'`).
-
-The `tenant_id` parameter is retained in function signatures for backward compatibility and for use in audit events, but MUST NOT be used to filter UUID-based SELECT or UPDATE queries on `public.entities`.
-
-**Rationale:** Migration `mem_013` moved legacy `owner`-tenant entities to `public`, but new entities could still be created in the wrong tenant if an LLM runtime passed `tenant_id='owner'` (reading the value from `request_context` descriptions). Removing the tenant filter from UUID lookups ensures that `entity_merge` and `entity_get` work regardless of which tenant the entity resides in.
-
-**Note:** `entity_resolve` (name-based lookup) and `entity_create` still use `tenant_id` for scoping, as name uniqueness is per-tenant.
-
-#### Scenario: entity_get finds entity regardless of tenant
-
-- **WHEN** `entity_get(entity_id=<uuid>, tenant_id='shared')` is called
-- **AND** the entity exists with `tenant_id='home'`
-- **THEN** the entity MUST be returned (UUID lookup is tenant-agnostic)
-
-#### Scenario: entity_merge works across tenants
-
-- **WHEN** `entity_merge(source=<uuid_a>, target=<uuid_b>, tenant_id='shared')` is called
-- **AND** the source entity has `tenant_id='owner'` and target has `tenant_id='shared'`
-- **THEN** the merge MUST succeed (both entities found by UUID)
-- **AND** facts MUST be re-pointed from source to target
+**Withdrawn (core_062).** The tenant_id column was removed from public.entities. Entities live in a single shared namespace — uniqueness is enforced on (canonical_name, entity_type). Schema-based isolation (per-butler PostgreSQL schemas) provides the actual boundary between butlers.
 
 ---
 
@@ -174,7 +127,7 @@ WHERE 'owner' = ANY(roles);
 
 When any butler daemon starts, it SHALL create the owner entity before the owner contact:
 
-1. Check whether `public.entities` exists and has a `roles` column; if so, insert into `public.entities` with `tenant_id='shared'`, `canonical_name='Owner'`, `entity_type='person'`, `roles=['owner']`. Use `ON CONFLICT (tenant_id, canonical_name, entity_type) DO NOTHING` for idempotency. If the INSERT returns no row (conflict), SELECT the existing entity id.
+1. Check whether `public.entities` exists and has a `roles` column; if so, insert into `public.entities` with `canonical_name='Owner'`, `entity_type='person'`, `roles=['owner']`. Use `ON CONFLICT (canonical_name, entity_type) DO NOTHING` for idempotency. If the INSERT returns no row (conflict), SELECT the existing entity id.
 2. Insert into `public.contacts` with `name='Owner'`, `roles=['owner']`, `entity_id` pointing to the owner entity (if entity was created/found). Use `ON CONFLICT DO NOTHING` against `ix_contacts_owner_singleton`.
 
 **Implementation note:** `_ensure_owner_entity_and_contact()` in `src/butlers/daemon.py` implements this. It guards each step with existence checks (`to_regclass`, `information_schema.columns`) so the function is a no-op when tables or the `roles` column have not yet been migrated in. The `contacts.roles` column is also populated on the contact row (backward compat until `core_015`).
@@ -265,29 +218,9 @@ The `roles` field on entities MUST NOT be writable by runtime MCP tool callers. 
 
 ---
 
-### Requirement: MCP entity tools default tenant_id to 'shared'
+### Requirement: [WITHDRAWN] MCP entity tools default tenant_id
 
-All memory module MCP entity tools (`entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_neighbors`, `entity_merge`) SHALL default `tenant_id` to `'shared'`. The `public` schema is the single source of truth for identity entities. Per-butler tenant isolation is a target-state requirement (see module-memory spec, "Tenant-bounded isolation"); until fully implemented, `'shared'` is the only valid `tenant_id` for identity entities.
-
-**Implementation note:** All six entity MCP tool wrappers in `src/butlers/modules/memory/__init__.py` use `tenant_id: str = "shared"` as the default parameter value. The underlying Python functions in `entities.py` accept any `tenant_id` (for internal use such as daemon bootstrap), but the MCP surface always defaults to `'shared'`.
-
-#### Scenario: Entity created without explicit tenant_id
-
-- **WHEN** a runtime instance calls `memory_entity_create(canonical_name="Alice", entity_type="person")`
-- **AND** `tenant_id` is not provided
-- **THEN** the entity MUST be created with `tenant_id = 'shared'`
-
-#### Scenario: Entity resolved without explicit tenant_id
-
-- **WHEN** a runtime instance calls `memory_entity_resolve(name="Alice")`
-- **AND** `tenant_id` is not provided
-- **THEN** the resolution MUST search within `tenant_id = 'shared'`
-
-#### Scenario: Dashboard visibility of entities
-
-- **WHEN** an entity is created with the default `tenant_id = 'shared'`
-- **THEN** the entity MUST be visible in the dashboard entity list and detail pages
-- **AND** the dashboard MUST NOT filter entities by a restrictive set of tenant_id values
+**Withdrawn (core_062).** Entity tools no longer accept a tenant_id parameter. See above.
 
 ---
 

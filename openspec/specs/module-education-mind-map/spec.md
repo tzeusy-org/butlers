@@ -131,7 +131,7 @@ The `entity_id` column on `mind_map_nodes` SHALL be a nullable UUID foreign key 
 #### Scenario: Node creation auto-creates a shared entity
 
 - **WHEN** `mind_map_node_create(pool, <map_id>, "List Comprehensions")` is called on a mind map titled "Python"
-- **THEN** a new row MUST exist in `public.entities` with `canonical_name = 'Python > List Comprehensions'`, `entity_type = 'other'`, and `tenant_id = 'shared'`
+- **THEN** a new row MUST exist in `public.entities` with `canonical_name = 'Python > List Comprehensions'` and `entity_type = 'other'`
 - **AND** the entity's `metadata` MUST include `{"source_butler": "education", "source_scope": "education"}`
 - **AND** the entity MUST NOT have `metadata.unidentified = true` (it is curriculum-derived, not transitory)
 - **AND** the created node's `entity_id` column MUST reference the new entity's UUID

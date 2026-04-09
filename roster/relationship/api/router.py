@@ -597,7 +597,6 @@ async def _suggest_entities(
         results = await entity_resolve(
             memory_pool,
             name,
-            tenant_id="shared",
             entity_type="person",
             enable_fuzzy=True,
         )
@@ -621,7 +620,6 @@ async def _suggest_entities(
                     matches = await entity_resolve(
                         memory_pool,
                         ci_value,
-                        tenant_id="shared",
                         enable_fuzzy=False,
                     )
                 except Exception:  # noqa: BLE001
@@ -640,7 +638,6 @@ async def _suggest_entities(
             org_results = await entity_resolve(
                 memory_pool,
                 company,
-                tenant_id="shared",
                 entity_type="organization",
                 enable_fuzzy=False,
             )
@@ -830,7 +827,7 @@ async def link_entity(
 
     from butlers.modules.memory.tools.entities import entity_get
 
-    entity = await entity_get(memory_pool, str(request.entity_id), tenant_id="shared")
+    entity = await entity_get(memory_pool, str(request.entity_id))
     if entity is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
@@ -894,7 +891,6 @@ async def create_and_link_entity(
             memory_pool,
             canonical_name,
             request.entity_type,
-            tenant_id="shared",
             aliases=aliases or None,
             metadata=meta or None,
         )
@@ -1459,7 +1455,6 @@ async def merge_contact(
                     memory_pool,
                     str(src_entity_id),
                     str(tgt_entity_id),
-                    tenant_id="shared",
                 )
                 entity_merged = True
         except Exception:  # noqa: BLE001

@@ -251,18 +251,17 @@ def upgrade() -> None:
 
             -- Create companion entity (roles=['google_account']).
             INSERT INTO public.entities (
-                tenant_id, canonical_name, entity_type, roles
+                canonical_name, entity_type, roles
             )
-            VALUES ('shared', v_canonical_name, 'other', ARRAY['google_account'])
-            ON CONFLICT (tenant_id, canonical_name, entity_type) DO NOTHING
+            VALUES (v_canonical_name, 'other', ARRAY['google_account'])
+            ON CONFLICT (canonical_name, entity_type) DO NOTHING
             RETURNING id INTO v_companion_entity_id;
 
             -- Fetch id if it already existed.
             IF v_companion_entity_id IS NULL THEN
                 SELECT id INTO v_companion_entity_id
                 FROM public.entities
-                WHERE tenant_id = 'shared'
-                  AND canonical_name = v_canonical_name
+                WHERE canonical_name = v_canonical_name
                   AND entity_type = 'other';
             END IF;
 

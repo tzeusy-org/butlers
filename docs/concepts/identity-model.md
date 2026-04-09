@@ -17,7 +17,6 @@ The identity model spans three tables in the `public` schema:
 The entity table is the anchor for identity. Each row represents a known person or actor. Key fields:
 
 - **`id`** (UUID) --- primary key
-- **`tenant_id`** --- always `"shared"` in the default tenant model
 - **`canonical_name`** --- display name
 - **`entity_type`** --- typically `"person"`
 - **`roles`** (TEXT[]) --- role assignments (e.g., `['owner']`)
@@ -90,10 +89,6 @@ The `build_identity_preamble()` function constructs a structured text prefix tha
 - **Unknown sender:** `[Source: Unknown sender (contact_id: <uuid>, entity_id: <uuid>), via telegram -- pending disambiguation]`
 
 This preamble gives domain butlers the sender context they need for personalized responses, access control decisions, and entity-linked memory retrieval.
-
-## Tenant Model
-
-All identity tables use `tenant_id = "shared"` as the default tenant. This unified tenant model means all butlers in a deployment share a single identity namespace. The `public` schema is readable by all butler database roles, while each butler's own schema is private.
 
 ## Usage Points
 

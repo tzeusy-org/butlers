@@ -597,8 +597,8 @@ def upgrade() -> None:
         DROP CONSTRAINT IF EXISTS uq_entities_tenant_canonical_type
     """)
     op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_tenant_canonical_type_live
-        ON public.entities (tenant_id, canonical_name, entity_type)
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_canonical_type_live
+        ON public.entities (canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
           AND (metadata->>'deleted_at') IS NULL
     """)
@@ -606,11 +606,11 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Drop partial unique index on public.entities and restore absolute constraint.
-    op.execute("DROP INDEX IF EXISTS public.uq_entities_tenant_canonical_type_live")
+    op.execute("DROP INDEX IF EXISTS public.uq_entities_canonical_type_live")
     op.execute("""
         ALTER TABLE public.entities
-        ADD CONSTRAINT uq_entities_tenant_canonical_type
-        UNIQUE (tenant_id, canonical_name, entity_type)
+        ADD CONSTRAINT uq_entities_canonical_type
+        UNIQUE (canonical_name, entity_type)
     """)
 
     op.execute("DROP TABLE IF EXISTS embedding_versions CASCADE")

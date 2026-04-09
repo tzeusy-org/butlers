@@ -1330,8 +1330,8 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                     owner_entity_id = await conn.fetchval(
                         """
                         INSERT INTO public.entities
-                            (tenant_id, canonical_name, entity_type, roles)
-                        VALUES ('shared', 'Owner', 'person', $1)
+                            (canonical_name, entity_type, roles)
+                        VALUES ('Owner', 'person', $1)
                         ON CONFLICT DO NOTHING
                         RETURNING id
                         """,
@@ -1349,8 +1349,7 @@ async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
                         await conn.fetchval(
                             """
                             SELECT id FROM public.entities
-                            WHERE tenant_id = 'shared'
-                              AND canonical_name = 'Owner'
+                            WHERE canonical_name = 'Owner'
                               AND entity_type = 'person'
                             """
                         )

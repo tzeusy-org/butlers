@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-from butlers.modules.memory.tools._helpers import _serialize_row, validate_tenant_id
+from butlers.modules.memory.tools._helpers import _serialize_row
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,6 @@ async def entity_create(
     canonical_name: str,
     entity_type: Literal["person", "organization", "place", "other"],
     *,
-    tenant_id: str,
     aliases: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     roles: list[str] | None = None,
@@ -63,7 +62,6 @@ async def entity_create(
         pool: asyncpg connection pool.
         canonical_name: The canonical name of the entity.
         entity_type: One of 'person', 'organization', 'place', 'other'.
-        tenant_id: Tenant scope for isolation.
         aliases: Optional list of alternative names for the entity.
         metadata: Optional JSONB metadata dict.
         roles: Optional list of identity roles (e.g. ['owner']).  Internal use
@@ -73,10 +71,9 @@ async def entity_create(
         Dict with key ``entity_id`` (UUID string).
 
     Raises:
-        ValueError: If the (tenant_id, canonical_name, entity_type) already exists
+        ValueError: If the (canonical_name, entity_type) already exists
                     or if entity_type is invalid.
     """
-    validate_tenant_id(tenant_id)
     if entity_type not in VALID_ENTITY_TYPES:
         raise ValueError(
             f"Invalid entity_type '{entity_type}'. Must be one of: {sorted(VALID_ENTITY_TYPES)}"
@@ -88,17 +85,17 @@ async def entity_create(
 
     insert_sql = """
         INSERT INTO public.entities
-            (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+            (canonical_name, entity_type, aliases, metadata, roles)
+        VALUES ($1, $2, $3, $4::jsonb, $5)
         RETURNING id
     """
-    insert_args = (tenant_id, canonical_name, entity_type, aliases_list, metadata_json, roles_list)
+    insert_args = (canonical_name, entity_type, aliases_list, metadata_json, roles_list)
 
     try:
         entity_id = await pool.fetchval(insert_sql, *insert_args)
     except Exception as exc:
         exc_str = str(exc)
-        if "uq_entities_tenant_canonical_type" not in exc_str and "unique" not in exc_str.lower():
+        if "uq_entities_canonical_type" not in exc_str and "unique" not in exc_str.lower():
             raise
 
         # The name slot may be occupied by a tombstoned (merged) entity.
@@ -108,13 +105,11 @@ async def entity_create(
             UPDATE public.entities
             SET canonical_name = canonical_name || ' [merged:' || id::text || ']',
                 updated_at = now()
-            WHERE tenant_id = $1
-              AND LOWER(canonical_name) = LOWER($2)
-              AND entity_type = $3
+            WHERE LOWER(canonical_name) = LOWER($1)
+              AND entity_type = $2
               AND (metadata->>'merged_into') IS NOT NULL
             RETURNING id
             """,
-            tenant_id,
             canonical_name,
             entity_type,
         )
@@ -122,7 +117,7 @@ async def entity_create(
             # Conflict is with a live (non-merged) entity — genuine duplicate
             raise ValueError(
                 f"Entity with canonical_name='{canonical_name}' and "
-                f"entity_type='{entity_type}' already exists for this tenant."
+                f"entity_type='{entity_type}' already exists."
             ) from exc
 
         entity_id = await pool.fetchval(insert_sql, *insert_args)
@@ -133,23 +128,19 @@ async def entity_create(
 async def entity_get(
     pool: Pool,
     entity_id: str,
-    *,
-    tenant_id: str,
 ) -> dict[str, Any] | None:
     """Return the full entity record including aliases and metadata.
 
     Args:
         pool: asyncpg connection pool.
         entity_id: UUID string of the entity.
-        tenant_id: Tenant scope for isolation.
 
     Returns:
         Serialized entity dict or None if not found.
     """
-    validate_tenant_id(tenant_id)
     row = await pool.fetchrow(
         """
-        SELECT id, tenant_id, canonical_name, entity_type, aliases, metadata,
+        SELECT id, canonical_name, entity_type, aliases, metadata,
                roles, created_at, updated_at
         FROM public.entities
         WHERE id = $1
@@ -167,7 +158,6 @@ async def entity_update(
     pool: Pool,
     entity_id: str,
     *,
-    tenant_id: str,
     canonical_name: str | None = None,
     aliases: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -181,7 +171,6 @@ async def entity_update(
     Args:
         pool: asyncpg connection pool.
         entity_id: UUID string of the entity to update.
-        tenant_id: Tenant scope for isolation.
         canonical_name: New canonical name (optional).
         aliases: Full replacement aliases list (optional).
         metadata: Metadata keys to merge in (optional).
@@ -189,7 +178,6 @@ async def entity_update(
     Returns:
         Updated serialized entity dict or None if not found.
     """
-    validate_tenant_id(tenant_id)
     eid = uuid.UUID(entity_id)
 
     current = await pool.fetchrow(
@@ -228,7 +216,7 @@ async def entity_update(
         UPDATE public.entities
         SET {", ".join(set_clauses)}
         WHERE id = ${where_id_idx}
-        RETURNING id, tenant_id, canonical_name, entity_type, aliases, metadata,
+        RETURNING id, canonical_name, entity_type, aliases, metadata,
                   roles, created_at, updated_at
         """,
         *params,
@@ -245,7 +233,6 @@ async def entity_resolve(
     name: str | None = None,
     *,
     identifier: str | None = None,
-    tenant_id: str,
     entity_type: str | None = None,
     context_hints: dict[str, Any] | None = None,
     enable_fuzzy: bool = False,
@@ -270,7 +257,6 @@ async def entity_resolve(
         identifier: Unified identifier string.  Tries role match first,
             then falls through to name-based tiers.  Mutually exclusive
             with ``name`` — provide one or the other.
-        tenant_id: Tenant scope for isolation.
         entity_type: Optional entity type filter (person/organization/place/other).
         context_hints: Optional dict with keys ``topic`` (str),
             ``mentioned_with`` (list of names), ``domain_scores``
@@ -287,7 +273,6 @@ async def entity_resolve(
         ValueError: If both ``name`` and ``identifier`` are provided, or
             neither is provided.
     """
-    validate_tenant_id(tenant_id)
     if name and identifier:
         raise ValueError("Provide either 'name' or 'identifier', not both.")
 
@@ -301,7 +286,7 @@ async def entity_resolve(
     hints = context_hints or {}
 
     # Build type filter clause
-    type_params: list[Any] = [tenant_id, name_lower]
+    type_params: list[Any] = [name_lower]
     type_filter = ""
     if entity_type is not None:
         type_params.append(entity_type)
@@ -322,8 +307,7 @@ async def entity_resolve(
         -- Tier 0: role-based match (case-insensitive against roles array)
         SELECT id, canonical_name, entity_type, aliases, 0 AS tier, 'role' AS match_type
         FROM public.entities
-        WHERE tenant_id = $1
-          AND LOWER($2) = ANY(SELECT LOWER(r) FROM UNNEST(roles) AS r)
+        WHERE LOWER($1) = ANY(SELECT LOWER(r) FROM UNNEST(roles) AS r)
           AND (metadata->>'merged_into') IS NULL
           AND (metadata->>'deleted_at') IS NULL
           AND NOT ('google_account' = ANY(roles))
@@ -340,8 +324,7 @@ async def entity_resolve(
             -- Tier 1: exact canonical_name match (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 1 AS tier, 'exact' AS match_type
             FROM public.entities
-            WHERE tenant_id = $1
-              AND LOWER(canonical_name) = $2
+            WHERE LOWER(canonical_name) = $1
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
               AND NOT ('google_account' = ANY(roles))
@@ -352,8 +335,7 @@ async def entity_resolve(
             -- Tier 2: exact alias match (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 2 AS tier, 'alias' AS match_type
             FROM public.entities
-            WHERE tenant_id = $1
-              AND $2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
+            WHERE $1 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
               AND NOT ('google_account' = ANY(roles))
@@ -364,19 +346,18 @@ async def entity_resolve(
             -- Tier 3: prefix/substring match on canonical_name and aliases
             SELECT id, canonical_name, entity_type, aliases, 3 AS tier, 'prefix' AS match_type
             FROM public.entities
-            WHERE tenant_id = $1
-              AND (
-                  LOWER(canonical_name) LIKE ($2 || '%')
-                  OR LOWER(canonical_name) LIKE ('%' || $2 || '%')
+            WHERE (
+                  LOWER(canonical_name) LIKE ($1 || '%')
+                  OR LOWER(canonical_name) LIKE ('%' || $1 || '%')
                   OR EXISTS (
                       SELECT 1 FROM UNNEST(aliases) AS a
-                      WHERE LOWER(a) LIKE ($2 || '%')
-                         OR LOWER(a) LIKE ('%' || $2 || '%')
+                      WHERE LOWER(a) LIKE ($1 || '%')
+                         OR LOWER(a) LIKE ('%' || $1 || '%')
                   )
               )
               -- Exclude already-exact matches
-              AND LOWER(canonical_name) != $2
-              AND NOT ($2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
+              AND LOWER(canonical_name) != $1
+              AND NOT ($1 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
               AND NOT ('google_account' = ANY(roles))
@@ -390,9 +371,7 @@ async def entity_resolve(
     # Optionally add fuzzy candidates (edit distance <= 2)
     fuzzy_rows: list[Any] = []
     if enable_fuzzy and len(name_stripped) > 2:
-        fuzzy_rows = await _fetch_fuzzy_candidates(
-            pool, name_stripped, tenant_id, entity_type, type_params
-        )
+        fuzzy_rows = await _fetch_fuzzy_candidates(pool, name_stripped, entity_type, type_params)
 
     # -------------------------------------------------------------------------
     # Step 2: build candidate set (dedup by entity id, prefer higher-priority tier)
@@ -487,7 +466,6 @@ async def entity_resolve(
 async def _fetch_fuzzy_candidates(
     pool: Pool,
     name: str,
-    tenant_id: str,
     entity_type: str | None,
     existing_params: list[Any],
 ) -> list[Any]:
@@ -497,7 +475,7 @@ async def _fetch_fuzzy_candidates(
     graceful degradation in environments without the extension.
     """
     try:
-        fuzzy_params: list[Any] = [tenant_id, name]
+        fuzzy_params: list[Any] = [name]
         fuzzy_type_filter = ""
         if entity_type is not None:
             fuzzy_params.append(entity_type)
@@ -507,16 +485,15 @@ async def _fetch_fuzzy_candidates(
             f"""
             SELECT id, canonical_name, entity_type, aliases
             FROM public.entities
-            WHERE tenant_id = $1
-              AND (
-                  similarity(canonical_name, $2) > 0.3
+            WHERE (
+                  similarity(canonical_name, $1) > 0.3
                   OR EXISTS (
                       SELECT 1 FROM UNNEST(aliases) AS a
-                      WHERE similarity(a, $2) > 0.3
+                      WHERE similarity(a, $1) > 0.3
                   )
               )
-              AND LOWER(canonical_name) != LOWER($2)
-              AND NOT (LOWER($2) = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
+              AND LOWER(canonical_name) != LOWER($1)
+              AND NOT (LOWER($1) = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
               AND NOT ('google_account' = ANY(roles))
@@ -610,7 +587,6 @@ async def entity_neighbors(
     pool: Pool,
     entity_id: str,
     *,
-    tenant_id: str,
     max_depth: int = 2,
     predicate_filter: list[str] | None = None,
     direction: Literal["outgoing", "incoming", "both"] = "both",
@@ -624,7 +600,6 @@ async def entity_neighbors(
     Args:
         pool: asyncpg connection pool.
         entity_id: UUID string of the starting entity.
-        tenant_id: Tenant scope for isolation.
         max_depth: Maximum traversal depth (1–5, default 2).
         predicate_filter: Optional list of predicates to restrict traversal.
         direction: Edge direction to follow: outgoing, incoming, or both.
@@ -639,20 +614,18 @@ async def entity_neighbors(
           - fact_id: UUID string of the edge fact
           - path: list of entity ID strings along the traversal path
     """
-    validate_tenant_id(tenant_id)
     max_depth = max(1, min(max_depth, 5))
     eid = uuid.UUID(entity_id)
 
     # Validate entity existence.
     exists = await pool.fetchval(
-        "SELECT 1 FROM public.entities WHERE id = $1 AND tenant_id = $2",
+        "SELECT 1 FROM public.entities WHERE id = $1",
         eid,
-        tenant_id,
     )
     if not exists:
         raise ValueError(f"entity_id {entity_id!r} does not exist")
 
-    params: list[Any] = [eid, tenant_id, max_depth]
+    params: list[Any] = [eid, max_depth]
     pred_clause = ""
     if predicate_filter:
         params.append(predicate_filter)
@@ -675,7 +648,7 @@ async def entity_neighbors(
         WHERE f.object_entity_id IS NOT NULL
           AND f.validity = 'active'
           AND f.object_entity_id != ALL(n.path)
-          AND n.depth < $3{pred_clause}"""
+          AND n.depth < $2{pred_clause}"""
     elif direction == "incoming":
         base_sql = f"""
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
@@ -692,7 +665,7 @@ async def entity_neighbors(
         JOIN facts f ON f.object_entity_id = n.neighbor_id
         WHERE f.validity = 'active'
           AND f.entity_id != ALL(n.path)
-          AND n.depth < $3{pred_clause}"""
+          AND n.depth < $2{pred_clause}"""
     else:  # both
         base_sql = f"""
         SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
@@ -717,7 +690,7 @@ async def entity_neighbors(
         WHERE f.object_entity_id IS NOT NULL
           AND f.validity = 'active'
           AND f.object_entity_id != ALL(n.path)
-          AND n.depth < $3{pred_clause}
+          AND n.depth < $2{pred_clause}
         UNION ALL
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'incoming'::text AS dir,
@@ -726,7 +699,7 @@ async def entity_neighbors(
         JOIN facts f ON f.object_entity_id = n.neighbor_id
         WHERE f.validity = 'active'
           AND f.entity_id != ALL(n.path)
-          AND n.depth < $3{pred_clause}"""
+          AND n.depth < $2{pred_clause}"""
 
     sql = f"""
     WITH RECURSIVE neighbors AS (
@@ -745,7 +718,7 @@ async def entity_neighbors(
         n.depth,
         n.path
     FROM neighbors n
-    JOIN public.entities e ON e.id = n.neighbor_id AND e.tenant_id = $2
+    JOIN public.entities e ON e.id = n.neighbor_id
     WHERE NOT ('google_account' = ANY(e.roles))
     ORDER BY n.depth, e.canonical_name
     """
@@ -900,7 +873,6 @@ async def entity_merge(
     source_entity_id: str,
     target_entity_id: str,
     *,
-    tenant_id: str,
     extra_pools: list[Pool] | None = None,
 ) -> dict[str, Any]:
     """Merge a source entity into a target entity.
@@ -925,7 +897,6 @@ async def entity_merge(
         pool: asyncpg connection pool.
         source_entity_id: UUID string of the entity to merge from (will be tombstoned).
         target_entity_id: UUID string of the entity to merge into (survives).
-        tenant_id: Tenant scope for isolation.
         extra_pools: Additional pools to re-point facts on (for multi-butler setups
                      where facts may live in different schemas).
 
@@ -940,10 +911,9 @@ async def entity_merge(
           - aliases_added: number of new aliases added to target.
 
     Raises:
-        ValueError: If source or target entity not found for this tenant,
+        ValueError: If source or target entity not found,
                     or if source == target.
     """
-    validate_tenant_id(tenant_id)
     if source_entity_id == target_entity_id:
         raise ValueError("source_entity_id and target_entity_id must be different.")
 
@@ -1055,9 +1025,8 @@ async def entity_merge(
             await conn.execute(
                 """
                 INSERT INTO memory_events (event_type, tenant_id, payload)
-                VALUES ('entity_merge', $1, $2::jsonb)
+                VALUES ('entity_merge', 'shared', $1::jsonb)
                 """,
-                tenant_id,
                 json.dumps(
                     {
                         "source_entity_id": source_entity_id,

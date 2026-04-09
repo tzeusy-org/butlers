@@ -280,8 +280,8 @@ async def create_temp_contact(
                 entity_id: UUID = await conn.fetchval(
                     """
                     INSERT INTO public.entities
-                        (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
-                    VALUES ('shared', $1, 'person', '{}', $2::jsonb, '{}')
+                        (canonical_name, entity_type, aliases, metadata, roles)
+                    VALUES ($1, 'person', '{}', $2::jsonb, '{}')
                     RETURNING id
                     """,
                     name,

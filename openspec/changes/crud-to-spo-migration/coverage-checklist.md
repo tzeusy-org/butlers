@@ -89,13 +89,13 @@ into the registry.
 |---|---|---|
 | Home `ha_state` predicate migration | DONE | `roster/home/migrations/002_seed_ha_state_predicate.py` |
 | `ha_entity_snapshot` persistence → `ha_state` property fact with supersession | DONE | `roster/home/modules/__init__.py` — `_persist_entity_snapshot()` |
-| HA device entity lazy-create/lookup pattern | DONE | Inline UPSERT on `public.entities (tenant_id, canonical_name, entity_type)` in `_persist_entity_snapshot()` |
+| HA device entity lazy-create/lookup pattern | DONE | Inline UPSERT on `public.entities (canonical_name, entity_type)` in `_persist_entity_snapshot()` |
 | Home butler tests updated | DONE | `tests/modules/test_module_home_assistant.py` |
 | Phase 4 backfill script | DONE | `src/butlers/scripts/backfill_facts.py::backfill_home()` |
 
 ### Home Implementation Notes
 
-- Entity resolution uses `UPSERT ... ON CONFLICT (tenant_id, canonical_name, entity_type) DO UPDATE SET updated_at = now()` — consistent with D8 specification.
+- Entity resolution uses `UPSERT ... ON CONFLICT (canonical_name, entity_type) DO UPDATE SET updated_at = now()` — consistent with D8 specification.
 - `valid_at=None` is passed to `store_fact()` — correct property-fact semantics. Each new snapshot supersedes the previous active `ha_state` fact.
 - `permanence="volatile"` — consistent with short-lived device state.
 - Backfill script uses `predicate="status"` (generic) rather than `"ha_state"` for legacy `ha_entity_snapshot` rows, since the predicate registry entry `ha_state` was added post-migration. This is intentional — it avoids mixing legacy snapshots with live `ha_state` facts in the same query plane.

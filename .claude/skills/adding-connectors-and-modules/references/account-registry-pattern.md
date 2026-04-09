@@ -32,8 +32,8 @@ Each account row has a companion entity for credential anchoring:
 
 ```sql
 -- Created on account connect:
-INSERT INTO public.entities (tenant_id, canonical_name, entity_type, roles)
-VALUES ('shared', '<service>-account:<external_id>', 'other', ARRAY['<service>_account']);
+INSERT INTO public.entities (canonical_name, entity_type, roles)
+VALUES ('<service>-account:<external_id>', 'other', ARRAY['<service>_account']);
 
 -- Credential stored as secured entity_info:
 INSERT INTO public.entity_info (entity_id, type, value, secured)

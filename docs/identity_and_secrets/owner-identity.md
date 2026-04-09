@@ -88,8 +88,7 @@ public.entities
 ├── id: UUID
 ├── canonical_name: "Owner"
 ├── entity_type: "person"
-├── roles: ["owner"]
-└── tenant_id: "shared"
+└── roles: ["owner"]
 
 public.entity_info (for the owner entity)
 ├── (entity_id, "email") -> "user@example.com"

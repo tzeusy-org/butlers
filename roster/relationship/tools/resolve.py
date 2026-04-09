@@ -87,7 +87,6 @@ async def contact_resolve(
     context: str | None = None,
     *,
     memory_pool: asyncpg.Pool | None = None,
-    memory_tenant_id: str = "relationship",
 ) -> dict[str, Any]:
     """Resolve a name string to a contact_id.
 
@@ -112,7 +111,6 @@ async def contact_resolve(
         context: Optional free-text context for boosting candidate scores.
         memory_pool: Optional asyncpg pool for the memory module database.
             When provided, entity_resolve is called with salience domain_scores.
-        memory_tenant_id: Tenant ID used when querying the memory module.
 
     Returns:
         {
@@ -189,7 +187,6 @@ async def contact_resolve(
             candidates,
             name,
             context,
-            memory_tenant_id,
         )
 
         candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -278,7 +275,6 @@ async def contact_resolve(
             candidates,
             name,
             context,
-            memory_tenant_id,
         )
     elif context:
         # Single candidate still benefits from context boosting for score accuracy
@@ -384,7 +380,6 @@ async def _resolve_via_entity_resolve(
     candidates: list[dict[str, Any]],
     name: str,
     context: str | None,
-    memory_tenant_id: str,
 ) -> list[dict[str, Any]]:
     """Integrate entity_resolve with salience domain_scores.
 
@@ -430,7 +425,6 @@ async def _resolve_via_entity_resolve(
         entity_candidates = await entity_resolve(
             memory_pool,
             name,
-            tenant_id=memory_tenant_id,
             entity_type="person",
             context_hints=context_hints,
         )

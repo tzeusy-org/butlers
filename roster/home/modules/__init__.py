@@ -1947,7 +1947,7 @@ class HomeAssistantModule(Module):
         always contains exactly one active ``ha_state`` fact per HA entity.
 
         Entity resolution (create-or-reuse) is handled inline via an UPSERT on
-        ``public.entities (tenant_id, canonical_name, entity_type)`` so no
+        ``public.entities (canonical_name, entity_type)`` so no
         external helper is needed.
 
         Silently skips when no DB pool is available or the entity cache is empty.
@@ -1981,7 +1981,6 @@ class HomeAssistantModule(Module):
             )
             embedding_engine = EmbeddingEngine()
 
-        tenant_id = "home"
         persisted = 0
         errors = 0
 
@@ -1993,13 +1992,12 @@ class HomeAssistantModule(Module):
                 entity_uuid = await pool.fetchval(
                     """
                     INSERT INTO public.entities
-                        (tenant_id, canonical_name, entity_type, metadata)
-                    VALUES ($1, $2, 'other', $3::jsonb)
-                    ON CONFLICT (tenant_id, canonical_name, entity_type) DO UPDATE
+                        (canonical_name, entity_type, metadata)
+                    VALUES ($1, 'other', $2::jsonb)
+                    ON CONFLICT (canonical_name, entity_type) DO UPDATE
                         SET updated_at = now()
                     RETURNING id
                     """,
-                    tenant_id,
                     e.entity_id,
                     '{"source": "home_assistant"}',
                 )

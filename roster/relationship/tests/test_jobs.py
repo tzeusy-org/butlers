@@ -94,7 +94,6 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE_ENTITIES_SQL = """
 CREATE TABLE IF NOT EXISTS public.entities (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id TEXT NOT NULL DEFAULT '',
     canonical_name VARCHAR NOT NULL DEFAULT '',
     name TEXT NOT NULL DEFAULT '',
     entity_type VARCHAR NOT NULL DEFAULT 'other',

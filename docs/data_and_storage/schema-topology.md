@@ -29,7 +29,7 @@ The `public` schema contains tables that multiple butlers need to read. It is th
 
 - **`public.contacts`** -- Canonical contact registry. One row per known person/actor. Includes a `roles` array (e.g., `['owner']`) and optional `entity_id` FK to the entity graph.
 - **`public.contact_info`** -- Per-channel identifiers linked to contacts (e.g., Telegram chat ID, email address). UNIQUE on `(type, value)`. `secured=true` marks credential entries.
-- **`public.entities`** -- Entity graph nodes. Each entity has a `tenant_id` (defaulting to `'shared'`), `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB.
+- **`public.entities`** -- Entity graph nodes. Each entity has a `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB.
 - **`public.entity_info`** -- Key-value pairs attached to entities. Used for credential storage (e.g., `google_oauth_refresh` tokens). UNIQUE on `(entity_id, type)`.
 - **`public.google_accounts`** -- Connected Google account registry with companion entities.
 - **`public.memory_catalog`** -- Shared predicate/schema definitions for the memory module.

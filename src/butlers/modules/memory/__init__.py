@@ -877,16 +877,6 @@ class MemoryModule(Module):
                 Literal["person", "organization", "place", "other"],
                 Field(description="Entity type: person | organization | place | other."),
             ],
-            tenant_id: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Tenant scope for isolation. Defaults to 'shared'. "
-                        "Valid values: shared, education, finance, general, health, "
-                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
-                    )
-                ),
-            ] = "shared",
             aliases: Annotated[
                 list[str] | None,
                 BeforeValidator(_coerce_json_list),
@@ -899,7 +889,7 @@ class MemoryModule(Module):
         ) -> dict[str, Any]:
             """Create a new named entity in the memory entity graph.
 
-            Inserts a new entity record. Fails if (tenant_id, canonical_name, entity_type)
+            Inserts a new entity record. Fails if (canonical_name, entity_type)
             already exists.
 
             Returns:
@@ -909,7 +899,6 @@ class MemoryModule(Module):
                 module._get_pool(),
                 canonical_name,
                 entity_type,
-                tenant_id=tenant_id,
                 aliases=aliases,
                 metadata=metadata,
             )
@@ -917,41 +906,20 @@ class MemoryModule(Module):
         @_tool("entity")
         async def memory_entity_get(
             entity_id: Annotated[str, Field(description="UUID string of the entity.")],
-            tenant_id: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Tenant scope for isolation. Defaults to 'shared'. "
-                        "Valid values: shared, education, finance, general, health, "
-                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
-                    )
-                ),
-            ] = "shared",
         ) -> dict[str, Any] | None:
             """Retrieve a named entity from the memory entity graph by ID.
 
             Returns the full entity record including aliases and metadata,
-            or None if the entity does not exist within the given tenant.
+            or None if the entity does not exist.
             """
             return await _entities.entity_get(
                 module._get_pool(),
                 entity_id,
-                tenant_id=tenant_id,
             )
 
         @_tool("entity")
         async def memory_entity_update(
             entity_id: Annotated[str, Field(description="UUID string of the entity to update.")],
-            tenant_id: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Tenant scope for isolation. Defaults to 'shared'. "
-                        "Valid values: shared, education, finance, general, health, "
-                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
-                    )
-                ),
-            ] = "shared",
             canonical_name: Annotated[
                 str | None,
                 Field(description="New canonical name (optional)."),
@@ -979,7 +947,6 @@ class MemoryModule(Module):
             return await _entities.entity_update(
                 module._get_pool(),
                 entity_id,
-                tenant_id=tenant_id,
                 canonical_name=canonical_name,
                 aliases=aliases,
                 metadata=metadata,
@@ -1034,16 +1001,6 @@ class MemoryModule(Module):
         @_tool("entity")
         async def memory_entity_neighbors(
             entity_id: Annotated[str, Field(description="UUID string of the starting entity.")],
-            tenant_id: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Tenant scope for isolation. Defaults to 'shared'. "
-                        "Valid values: shared, education, finance, general, health, "
-                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
-                    )
-                ),
-            ] = "shared",
             max_depth: Annotated[
                 int,
                 Field(description="Maximum traversal depth (1–5, default 2)."),
@@ -1072,7 +1029,6 @@ class MemoryModule(Module):
             return await _entities.entity_neighbors(
                 module._get_pool(),
                 entity_id,
-                tenant_id=tenant_id,
                 max_depth=max_depth,
                 predicate_filter=predicate_filter,
                 direction=direction,
@@ -1082,7 +1038,6 @@ class MemoryModule(Module):
         async def memory_entity_resolve(
             name: str | None = None,
             identifier: str | None = None,
-            tenant_id: str = "shared",
             entity_type: str | None = None,
             context_hints: dict[str, Any] | None = None,
             enable_fuzzy: bool = False,
@@ -1108,7 +1063,6 @@ class MemoryModule(Module):
                 module._get_pool(),
                 name,
                 identifier=identifier,
-                tenant_id=tenant_id,
                 entity_type=entity_type,
                 context_hints=context_hints,
                 enable_fuzzy=enable_fuzzy,
@@ -1123,16 +1077,6 @@ class MemoryModule(Module):
             target_entity_id: Annotated[
                 str, Field(description="UUID string of the surviving entity.")
             ],
-            tenant_id: Annotated[
-                str,
-                Field(
-                    description=(
-                        "Tenant scope for isolation. Defaults to 'shared'. "
-                        "Valid values: shared, education, finance, general, health, "
-                        "home, lifestyle, messenger, qa, relationship, switchboard, travel."
-                    )
-                ),
-            ] = "shared",
         ) -> dict[str, Any] | None:
             """Merge source entity into target entity in the memory entity graph.
 
@@ -1150,7 +1094,6 @@ class MemoryModule(Module):
                 module._get_pool(),
                 source_entity_id,
                 target_entity_id,
-                tenant_id=tenant_id,
             )
 
         # --- Cross-butler catalog search tool ---

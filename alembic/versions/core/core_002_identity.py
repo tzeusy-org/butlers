@@ -83,7 +83,6 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE IF NOT EXISTS public.entities (
             id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            tenant_id       TEXT NOT NULL,
             canonical_name  VARCHAR NOT NULL,
             entity_type     VARCHAR NOT NULL DEFAULT 'other',
             aliases         TEXT[] NOT NULL DEFAULT '{}',
@@ -98,8 +97,8 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-        CREATE INDEX IF NOT EXISTS idx_shared_entities_tenant_canonical
-        ON public.entities (tenant_id, canonical_name)
+        CREATE INDEX IF NOT EXISTS idx_entities_canonical
+        ON public.entities (canonical_name)
     """)
 
     op.execute("""
@@ -122,8 +121,8 @@ def upgrade() -> None:
     # Partial unique: prevent duplicate live entities per (tenant, name, type).
     # Excludes tombstoned entities (merged or soft-deleted).
     op.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_tenant_canonical_type_live
-        ON public.entities (tenant_id, canonical_name, entity_type)
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_entities_canonical_type_live
+        ON public.entities (canonical_name, entity_type)
         WHERE (metadata->>'merged_into') IS NULL
           AND (metadata->>'deleted_at') IS NULL
     """)

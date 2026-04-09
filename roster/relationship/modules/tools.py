@@ -910,8 +910,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     from butlers.modules.memory.tools import entities as _entities
 
-    _ENTITY_TENANT_ID = "relationship"
-
     @_tool("entity")
     async def entity_resolve(
         name: str,
@@ -941,7 +939,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _entities.entity_resolve(
             module._get_pool(),
             name,
-            tenant_id=_ENTITY_TENANT_ID,
             entity_type=entity_type,
             context_hints=hints,
         )
@@ -954,7 +951,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _entities.entity_get(
             module._get_pool(),
             entity_id,
-            tenant_id=_ENTITY_TENANT_ID,
         )
 
     @_tool("entity")
@@ -968,7 +964,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _entities.entity_update(
             module._get_pool(),
             entity_id,
-            tenant_id=_ENTITY_TENANT_ID,
             canonical_name=canonical_name,
             aliases=aliases,
             metadata=metadata,
@@ -995,7 +990,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _entities.entity_neighbors(
             module._get_pool(),
             entity_id,
-            tenant_id=_ENTITY_TENANT_ID,
             max_depth=max_depth,
             predicate_filter=predicate_filter,
             direction=direction,

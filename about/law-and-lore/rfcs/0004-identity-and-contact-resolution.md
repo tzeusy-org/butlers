@@ -24,7 +24,6 @@ The anchor table for identity. Each row represents a known person or actor.
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID | Primary key |
-| `tenant_id` | TEXT | Always `"shared"` in the default tenant model |
 | `canonical_name` | TEXT | Display name |
 | `entity_type` | TEXT | Typically `"person"` |
 | `roles` | TEXT[] | Role assignments (e.g., `['owner']`) |
@@ -136,10 +135,6 @@ The owner entity is bootstrapped automatically on daemon startup. It carries the
 - **Approval gates** -- Certain sensitive tool calls may require owner authorization.
 - **Routing priority** -- Owner messages receive preferential queue ordering in the email priority tier system (see RFC 0003).
 - **Credential anchoring** -- Owner entity_info entries store identity-bound credentials (e.g., Telegram user-client session, Google OAuth tokens).
-
-### Tenant Model
-
-All identity tables use `tenant_id = "shared"` as the default. This unified tenant model means all butlers in a deployment share a single identity namespace. The `public` schema is readable by all butler database roles, while each butler's own schema is private (see RFC 0006).
 
 ### Usage Points
 

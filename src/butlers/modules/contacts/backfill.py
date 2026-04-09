@@ -353,8 +353,8 @@ class ContactBackfillWriter:
         ]
         try:
             row = await self._pool.fetchrow(
-                "INSERT INTO public.entities (tenant_id, canonical_name, entity_type, "
-                "aliases, metadata, roles) VALUES ('relationship', $1, $2, $3, "
+                "INSERT INTO public.entities (canonical_name, entity_type, "
+                "aliases, metadata, roles) VALUES ($1, $2, $3, "
                 "'{}'::jsonb, '{}') RETURNING id",
                 canonical,
                 entity_type,
@@ -363,8 +363,8 @@ class ContactBackfillWriter:
             return row["id"] if row else None
         except asyncpg.UniqueViolationError:
             row = await self._pool.fetchrow(
-                "SELECT id FROM public.entities WHERE tenant_id = 'relationship' "
-                "AND LOWER(canonical_name) = LOWER($1) AND entity_type = $2 "
+                "SELECT id FROM public.entities WHERE LOWER(canonical_name) = LOWER($1) "
+                "AND entity_type = $2 "
                 "AND (metadata->>'merged_into') IS NULL LIMIT 1",
                 canonical,
                 entity_type,

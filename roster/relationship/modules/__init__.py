@@ -2,7 +2,7 @@
 
 Registers 60+ MCP tools that delegate to the existing implementations in
 ``butlers.tools.relationship``. The tool closures strip ``pool`` and internal
-params (``memory_pool``, ``memory_tenant_id``) from the MCP-visible signature
+params (``memory_pool``) from the MCP-visible signature
 and inject them from module state at call time.
 """
 

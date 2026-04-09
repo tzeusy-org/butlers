@@ -74,7 +74,7 @@ Each Google account row SHALL have a companion entity in `public.entities` that 
 #### Scenario: Companion entity creation
 
 - **WHEN** a new Google account is registered
-- **THEN** an entity SHALL be created with `tenant_id = 'shared'`, `canonical_name = 'google-account:<email>'`, `entity_type = 'other'`, `roles = ['google_account']`
+- **THEN** an entity SHALL be created with `canonical_name = 'google-account:<email>'`, `entity_type = 'other'`, `roles = ['google_account']`
 - **AND** the entity's `id` SHALL be stored as `google_accounts.entity_id`
 
 #### Scenario: Companion entity excluded from identity resolution

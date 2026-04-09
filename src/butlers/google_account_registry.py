@@ -161,9 +161,9 @@ async def _create_companion_entity(conn: Any, email: str | None) -> uuid.UUID:
     canonical_name = f"google-account:{email}" if email else f"google-account:{uuid.uuid4()}"
     row = await conn.fetchrow(
         """
-        INSERT INTO public.entities (tenant_id, canonical_name, entity_type, roles)
-        VALUES ('shared', $1, 'other', ARRAY['google_account'])
-        ON CONFLICT (tenant_id, canonical_name, entity_type)
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ($1, 'other', ARRAY['google_account'])
+        ON CONFLICT (canonical_name, entity_type)
             WHERE (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
             DO UPDATE SET roles = ARRAY['google_account']

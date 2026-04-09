@@ -51,7 +51,7 @@ Entity roles SHALL only be modifiable through the dashboard API (authenticated H
 ### Requirement: Owner entity and contact bootstrap on first startup
 
 When any butler daemon starts, it SHALL follow entity-first bootstrap:
-1. Create an owner entity in `public.entities` with `roles=['owner']`, `tenant_id='shared'`, `entity_type='person'` (if `public.entities` exists).
+1. Create an owner entity in `public.entities` with `roles=['owner']`, `entity_type='person'` (if `public.entities` exists).
 2. Create an owner contact in `public.contacts` linked to the entity via `entity_id`.
 
 The operation MUST be idempotent across concurrent butler startups. See the `entity-identity` spec for the authoritative entity bootstrap definition.

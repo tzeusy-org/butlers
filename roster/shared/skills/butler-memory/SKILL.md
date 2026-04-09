@@ -38,7 +38,7 @@ When creating a transitory entity, infer the correct `entity_type` from context:
 | City, venue, address, geographic location | `place` |
 | Unknown or ambiguous | `other` |
 
-Using the correct type improves future resolution accuracy — the unique constraint is on `(tenant_id, canonical_name, entity_type)`, so a well-typed entity avoids false collisions.
+Using the correct type improves future resolution accuracy — the unique constraint is on `(canonical_name, entity_type)`, so a well-typed entity avoids false collisions.
 
 ### Resolve-or-Create Protocol
 
@@ -63,7 +63,7 @@ When `memory_entity_resolve` returns zero candidates:
 
 ### Idempotency on Duplicate Entity Names
 
-If `memory_entity_create` raises a unique constraint violation (entity already exists for this `(tenant_id, canonical_name, entity_type)`), this is not an error. It means the entity was already created by a prior session or concurrent processing:
+If `memory_entity_create` raises a unique constraint violation (entity already exists for this `(canonical_name, entity_type)`), this is not an error. It means the entity was already created by a prior session or concurrent processing:
 
 1. Catch the `ValueError` from `memory_entity_create`.
 2. Call `memory_entity_resolve(name, entity_type=<same_type>)` to obtain the existing `entity_id`.
