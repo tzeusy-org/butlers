@@ -9,7 +9,6 @@ Functions
 dispatch_scheduled_task    -- dispatch one cron-triggered task (deterministic or prompt)
 scheduler_loop             -- cron-driven task dispatch loop
 liveness_reporter_loop     -- periodic POST to Switchboard heartbeat endpoint
-switchboard_heartbeat_loop -- periodic Switchboard connection probe / reconnect
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from butlers.scheduled_jobs import (
 
 logger = logging.getLogger(__name__)
 
-_SWITCHBOARD_HEARTBEAT_INTERVAL_S = 30
 _DEFERRED_NOTIFY_TIMEOUT_S = 30
 
 
@@ -365,55 +363,3 @@ async def liveness_reporter_loop(
             logger.info("Liveness reporter cancelled for butler %s", butler_name)
 
 
-# ---------------------------------------------------------------------------
-# Switchboard heartbeat loop
-# ---------------------------------------------------------------------------
-
-
-async def switchboard_heartbeat_loop(
-    *,
-    get_switchboard_client: Callable[[], Any],
-    connect_fn: Callable[[], Coroutine[Any, Any, None]],
-    disconnect_fn: Callable[[], Coroutine[Any, Any, None]],
-    interval: int = _SWITCHBOARD_HEARTBEAT_INTERVAL_S,
-) -> None:
-    """Periodically check and re-establish the Switchboard connection.
-
-    Runs as a background task for the lifetime of the butler.  On each tick it
-    either attempts to connect (when the client is ``None``) or probes liveness
-    of the existing connection via ``list_tools()``.  A failed probe triggers a
-    disconnect + reconnect.
-
-    All exceptions (except ``CancelledError``) are swallowed so that the
-    heartbeat never crashes the butler.
-
-    Parameters
-    ----------
-    get_switchboard_client:
-        Zero-argument callable returning the current MCP client (or ``None``).
-    connect_fn:
-        Coroutine function that opens a new Switchboard connection.
-    disconnect_fn:
-        Coroutine function that closes the current Switchboard connection.
-    interval:
-        Sleep duration between heartbeat probes in seconds.
-    """
-    try:
-        while True:
-            await asyncio.sleep(interval)
-            try:
-                client = get_switchboard_client()
-                if client is None:
-                    logger.debug("Switchboard heartbeat: client is None, attempting reconnect")
-                    await connect_fn()
-                else:
-                    try:
-                        await asyncio.wait_for(client.list_tools(), timeout=5.0)
-                    except Exception:
-                        logger.warning("Switchboard heartbeat: connection dead, reconnecting")
-                        await disconnect_fn()
-                        await connect_fn()
-            except Exception:
-                logger.warning("Switchboard heartbeat: unexpected error", exc_info=True)
-    except asyncio.CancelledError:
-        return
