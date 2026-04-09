@@ -1,0 +1,30 @@
+apiVersion: 1
+
+datasources:
+  # Prometheus — scraped metrics from butler connectors and the OTLP → Prometheus pipeline
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+
+  # Tempo — distributed traces exported via OTLP from butler daemons and the dashboard API
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: ""
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: ""

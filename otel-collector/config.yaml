@@ -1,0 +1,56 @@
+# OpenTelemetry Collector configuration for the Butlers observability stack.
+#
+# Receives OTLP signals from butler daemons and the dashboard API, then routes:
+#   traces  → Grafana Tempo (OTLP gRPC)
+#   metrics → Prometheus (remote_write)
+#
+# Set OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 in your env
+# for butler services to send telemetry here.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  # Drop empty/invalid spans to reduce noise
+  filter/traces:
+    error_mode: ignore
+    traces:
+      span: []
+
+exporters:
+  # Forward traces to Tempo via OTLP gRPC
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Forward metrics to Prometheus via remote_write
+  prometheusremotewrite:
+    endpoint: "http://prometheus:9090/api/v1/write"
+    tls:
+      insecure: true
+
+  # Debug logging (disabled by default; set level: detailed to enable)
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheusremotewrite]

@@ -1,0 +1,96 @@
+# Prometheus configuration for the Butlers observability stack.
+#
+# Used by docker-compose.observability.yml (observability profile).
+#
+# Metrics signal flow:
+#   Connector health endpoints (prometheus_client text format)
+#     → scraped by this Prometheus instance
+#   Butler daemon + dashboard API OTLP metrics
+#     → otel-collector → Prometheus remote_write receiver (/api/v1/write)
+#
+# NOTE: Connector health endpoints are optional — Prometheus reports a
+# scrape error for connectors that are not running, which is expected.
+#
+# Connector health port assignments (from docker-compose.yml and connector defaults):
+#   connector-telegram-bot:    40081  (default, no compose override)
+#   connector-gmail:           40082  (default, no compose override)
+#   connector-whatsapp-user:   40082  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-spotify:         40083  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-google-calendar: 40085  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-owntracks:       40086  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-home-assistant:  40087  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-google-drive:    40088  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-live-listener:   40091  (compose CONNECTOR_HEALTH_PORT override)
+#
+# Each connector runs in its own container with its own network namespace,
+# so port 40082 on connector-gmail and connector-whatsapp-user are distinct.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: local
+
+scrape_configs:
+  # ── Connector: Telegram Bot ────────────────────────────────────────────
+  - job_name: connector-telegram-bot
+    static_configs:
+      - targets: ["connector-telegram-bot:40081"]
+        labels:
+          connector: telegram_bot
+
+  # ── Connector: Gmail ──────────────────────────────────────────────────
+  - job_name: connector-gmail
+    static_configs:
+      - targets: ["connector-gmail:40082"]
+        labels:
+          connector: gmail
+
+  # ── Connector: WhatsApp User ──────────────────────────────────────────
+  - job_name: connector-whatsapp-user
+    static_configs:
+      - targets: ["connector-whatsapp-user:40082"]
+        labels:
+          connector: whatsapp_user
+
+  # ── Connector: Spotify ────────────────────────────────────────────────
+  - job_name: connector-spotify
+    static_configs:
+      - targets: ["connector-spotify:40083"]
+        labels:
+          connector: spotify
+
+  # ── Connector: Google Calendar ────────────────────────────────────────
+  - job_name: connector-google-calendar
+    static_configs:
+      - targets: ["connector-google-calendar:40085"]
+        labels:
+          connector: google_calendar
+
+  # ── Connector: OwnTracks ──────────────────────────────────────────────
+  - job_name: connector-owntracks
+    static_configs:
+      - targets: ["connector-owntracks:40086"]
+        labels:
+          connector: owntracks
+
+  # ── Connector: Home Assistant ─────────────────────────────────────────
+  - job_name: connector-home-assistant
+    static_configs:
+      - targets: ["connector-home-assistant:40087"]
+        labels:
+          connector: home_assistant
+
+  # ── Connector: Google Drive ───────────────────────────────────────────
+  - job_name: connector-google-drive
+    static_configs:
+      - targets: ["connector-google-drive:40088"]
+        labels:
+          connector: google_drive
+
+  # ── Connector: Live Listener (audio profile only) ─────────────────────
+  - job_name: connector-live-listener
+    static_configs:
+      - targets: ["connector-live-listener:40091"]
+        labels:
+          connector: live_listener

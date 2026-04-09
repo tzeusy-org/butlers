@@ -1,0 +1,121 @@
+# docker-compose.observability.yml — Observability profile override
+#
+# USAGE:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+#     --profile observability up -d
+#
+# Or via compose.sh with an env override:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
+#     docker compose -f docker-compose.yml -f docker-compose.observability.yml \
+#     --profile observability up -d
+#
+# WHAT THIS ADDS (observability profile):
+#   otel-collector  — OpenTelemetry Collector (OTLP HTTP :4318, gRPC :4317)
+#                     Routes traces → Tempo, metrics → Prometheus
+#   tempo           — Grafana Tempo (receives OTLP traces from otel-collector)
+#   prometheus      — Prometheus (scrapes connector /metrics endpoints +
+#                     receives OTLP metrics from otel-collector)
+#   grafana         — Grafana (pre-provisioned with all dashboards in grafana/)
+#
+# SIGNAL FLOW:
+#   butler daemons + dashboard API
+#     → OTLP HTTP (http://otel-collector:4318)
+#       → otel-collector
+#         → /v1/traces  → Tempo
+#         → /v1/metrics → Prometheus (remote_write)
+#   connector health endpoints (/metrics, prometheus text format)
+#     → Prometheus scrape
+#
+# UI:
+#   Grafana:    http://localhost:3000  (admin / admin)
+#   Prometheus: http://localhost:9090
+#   Tempo:      http://localhost:3200  (API only; use Grafana for browsing)
+#
+# NETWORK:
+#   All observability services join the `backend` network so they can
+#   reach connector health endpoints. Grafana and Prometheus also join
+#   `frontend` for host-port exposure.
+
+services:
+
+  # ── OpenTelemetry Collector ───────────────────────────────────────────
+  # Single OTLP ingest endpoint for all butler daemons and the dashboard API.
+  # Routes traces to Tempo and metrics to Prometheus.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.105.0
+    profiles: [observability]
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP gRPC
+      - "127.0.0.1:4318:4318"   # OTLP HTTP
+    networks: [backend, egress]
+    depends_on:
+      - tempo
+      - prometheus
+    restart: unless-stopped
+
+  # ── Tempo ─────────────────────────────────────────────────────────────
+  # Receives OTLP traces forwarded by otel-collector.
+  # Grafana queries Tempo via its HTTP API on port 3200.
+  tempo:
+    image: grafana/tempo:2.5.0
+    profiles: [observability]
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./tempo/config.yaml:/etc/tempo/config.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "127.0.0.1:3200:3200"   # Tempo HTTP API (Grafana datasource)
+    networks: [backend]
+    restart: unless-stopped
+
+  # ── Prometheus ────────────────────────────────────────────────────────
+  # Scrapes connector /metrics endpoints (prometheus_client text format).
+  # Also receives OTLP metrics forwarded by otel-collector via remote_write.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: [observability]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks: [backend]
+    restart: unless-stopped
+
+  # ── Grafana ───────────────────────────────────────────────────────────
+  # Pre-provisioned with Prometheus + Tempo datasources and all dashboards
+  # from grafana/*.json.
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [backend, frontend]
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+# ── Additional volumes ───────────────────────────────────────────────────
+
+volumes:
+  tempo_data:
+  prometheus_data:
+  grafana_data:
