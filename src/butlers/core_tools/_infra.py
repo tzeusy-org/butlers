@@ -180,9 +180,7 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             if client is None:
                 return {
                     "status": "error",
-                    "error": (
-                        "Switchboard is not connected. Cannot perform misroute correction."
-                    ),
+                    "error": ("Switchboard is not connected. Cannot perform misroute correction."),
                 }
             return await handle_misroute(
                 pool,
@@ -218,7 +216,5 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             return {
                 "status": "failed",
                 "correction_id": "",
-                "summary": FAILURE_MESSAGES["unknown_correction_type"].format(
-                    type=correction_type
-                ),
+                "summary": FAILURE_MESSAGES["unknown_correction_type"].format(type=correction_type),
             }

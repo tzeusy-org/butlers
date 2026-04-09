@@ -174,9 +174,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
         async def notify(
             channel: Annotated[
                 Literal["telegram", "email", "whatsapp"],
-                Field(
-                    description="Delivery channel. Allowed values: telegram | email | whatsapp."
-                ),
+                Field(description="Delivery channel. Allowed values: telegram | email | whatsapp."),
             ],
             message: Annotated[
                 str | None,
@@ -193,9 +191,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             intent: Annotated[
                 Literal["send", "reply", "react", "insight"],
                 Field(
-                    description=(
-                        "Delivery intent. Allowed values: send | reply | react | insight."
-                    )
+                    description=("Delivery intent. Allowed values: send | reply | react | insight.")
                 ),
             ] = "send",
             emoji: Annotated[
@@ -352,8 +348,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 return {
                     "status": "error",
                     "error": (
-                        f"Invalid priority {priority!r}. "
-                        f"Allowed values: {', '.join(sorted(_VP))}"
+                        f"Invalid priority {priority!r}. Allowed values: {', '.join(sorted(_VP))}"
                     ),
                 }
 
@@ -704,9 +699,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 # FastMCP call_tool returns a CallToolResult
                 if result.is_error:
                     # Extract error text from the result content
-                    error_text = (
-                        str(result.content[0].text) if result.content else "Unknown error"
-                    )
+                    error_text = str(result.content[0].text) if result.content else "Unknown error"
                     return {"status": "error", "error": error_text}
                 # Check inner payload for delivery-level failures (e.g. validation
                 # errors from Switchboard/Messenger that don't raise MCP errors).

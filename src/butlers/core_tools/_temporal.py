@@ -40,9 +40,7 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
             ],
             target_date: Annotated[
                 str,
-                Field(
-                    description="Target due date in YYYY-MM-DD format. Must be in the future."
-                ),
+                Field(description="Target due date in YYYY-MM-DD format. Must be in the future."),
             ],
             lead_time_days: Annotated[
                 int,
@@ -113,12 +111,8 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
 
         @_core_tool("temporal")
         async def deadline_update(
-            task_id: Annotated[
-                str, Field(description="UUID of the deadline task to update.")
-            ],
-            name: Annotated[
-                str | None, Field(description="New name (optional).")
-            ] = None,
+            task_id: Annotated[str, Field(description="UUID of the deadline task to update.")],
+            name: Annotated[str | None, Field(description="New name (optional).")] = None,
             prompt: Annotated[
                 str | None,
                 Field(description="New prompt template (optional)."),
@@ -242,9 +236,7 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
 
         @_core_tool("temporal")
         async def deadline_delete(
-            task_id: Annotated[
-                str, Field(description="UUID of the deadline task to delete.")
-            ],
+            task_id: Annotated[str, Field(description="UUID of the deadline task to delete.")],
         ) -> dict:
             """Delete a runtime deadline task.
 

@@ -45,9 +45,7 @@ def register_state_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         """Delete a key from the state store."""
         parent_ctx = extract_trace_context(_trace_context) if _trace_context else None
         tracer = trace.get_tracer("butlers")
-        with tracer.start_as_current_span(
-            "butler.tool.state_delete", context=parent_ctx
-        ) as span:
+        with tracer.start_as_current_span("butler.tool.state_delete", context=parent_ctx) as span:
             tag_butler_span(span, daemon.config.name)
             await _state_delete(pool, key)
             return {"key": key, "status": "deleted"}

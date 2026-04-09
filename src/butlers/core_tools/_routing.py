@@ -241,9 +241,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         """Execute routed requests and terminate messenger notify deliveries."""
         parent_ctx = extract_trace_context(trace_context) if trace_context else None
         tracer = trace.get_tracer("butlers")
-        with tracer.start_as_current_span(
-            "butler.tool.route.execute", context=parent_ctx
-        ) as _span:
+        with tracer.start_as_current_span("butler.tool.route.execute", context=parent_ctx) as _span:
             tag_butler_span(_span, butler_name)
             # Capture the accept-phase span context so the background processing
             # task can link back to it via a SpanLink (cross-trace correlation).
@@ -542,9 +540,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         await route_inbox_mark_errored(_pool, _inbox_id, error_msg)
 
             # Record accept-phase metrics
-            route_metrics.record_route_accept_latency(
-                (time.monotonic() - accept_started_at) * 1000
-            )
+            route_metrics.record_route_accept_latency((time.monotonic() - accept_started_at) * 1000)
             route_metrics.route_queue_depth_inc()
 
             task = asyncio.create_task(
@@ -631,8 +627,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         expected_origin = parsed_route.request_context.source_sender_identity
         if notify_request.origin_butler != expected_origin:
             message = (
-                "notify_request.origin_butler must match "
-                "request_context.source_sender_identity."
+                "notify_request.origin_butler must match request_context.source_sender_identity."
             )
             return _route_error_response(
                 context_payload=route_context,
@@ -774,9 +769,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         )
                     send_tool = getattr(whatsapp_module, "_send_message", None)
                     if send_tool is None or not callable(send_tool):
-                        raise RuntimeError(
-                            "WhatsApp module does not expose _send_message method."
-                        )
+                        raise RuntimeError("WhatsApp module does not expose _send_message method.")
                     adapter_result = await send_tool(recipient, rendered_text)
                 elif intent == "reply":
                     thread_identity = (
@@ -789,9 +782,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         )
                     send_tool = getattr(whatsapp_module, "_send_message", None)
                     if send_tool is None or not callable(send_tool):
-                        raise RuntimeError(
-                            "WhatsApp module does not expose _send_message method."
-                        )
+                        raise RuntimeError("WhatsApp module does not expose _send_message method.")
                     adapter_result = await send_tool(thread_identity, rendered_text)
                 else:
                     raise ValueError(f"Unsupported whatsapp intent: {intent}")

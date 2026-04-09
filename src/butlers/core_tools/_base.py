@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 from pydantic import Field
 
 if TYPE_CHECKING:
-
     pass
 
 

@@ -220,9 +220,7 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
     if butler_type != ButlerType.STAFFER:
 
         @_core_tool("scheduling")
-        async def schedule_trigger(
-            task_id: str | None = None, id: str | None = None
-        ) -> dict:
+        async def schedule_trigger(task_id: str | None = None, id: str | None = None) -> dict:
             """Trigger a scheduled task immediately (one-off dispatch).
 
             Dispatches the task via the same mechanism as the scheduler tick
@@ -245,9 +243,7 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             prompt = row["prompt"]
             job_name = row["job_name"]
             raw_job_args = row["job_args"]
-            job_args = (
-                json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
-            )
+            job_args = json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
             task_complexity = _parse_complexity_from_db_row(row, name)
 
             now = datetime.now(UTC)
@@ -286,9 +282,7 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             except Exception as exc:
                 import logging
 
-                logging.getLogger(__name__).exception(
-                    "Manual trigger failed for schedule %s", name
-                )
+                logging.getLogger(__name__).exception("Manual trigger failed for schedule %s", name)
                 error_json = json.dumps({"error": str(exc)})
                 await pool.execute(
                     "UPDATE scheduled_tasks "

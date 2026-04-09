@@ -175,9 +175,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             )
             if result.classification_error or result.routing_error or result.failed_targets:
                 routing_failed = True
-                _parts = [
-                    p for p in [result.classification_error, result.routing_error] if p
-                ]
+                _parts = [p for p in [result.classification_error, result.routing_error] if p]
                 if result.failed_targets:
                     _parts.append(f"failed_targets: {result.failed_targets}")
                 _routing_error_detail = "; ".join(_parts) if _parts else "routing failed"
@@ -251,9 +249,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         if control is not None:
             envelope["control"] = control
         try:
-            result = await ingest_v1(
-                pool, envelope, policy_evaluator=_global_policy_evaluator
-            )
+            result = await ingest_v1(pool, envelope, policy_evaluator=_global_policy_evaluator)
         except ValueError as exc:
             return {"status": "error", "error": str(exc)}
 
@@ -396,9 +392,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         _complexity_values = {c.value for c in Complexity}
         _raw_complexity = complexity.strip().lower() if isinstance(complexity, str) else ""
         _normalized_complexity = (
-            _raw_complexity
-            if _raw_complexity in _complexity_values
-            else Complexity.MEDIUM.value
+            _raw_complexity if _raw_complexity in _complexity_values else Complexity.MEDIUM.value
         )
 
         # Forward attachment metadata from routing context so target
