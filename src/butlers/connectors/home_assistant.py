@@ -66,6 +66,7 @@ from urllib.parse import urlparse
 
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -1328,6 +1329,7 @@ async def _main() -> None:
                 min_size=1,
                 max_size=2,
                 command_timeout=5,
+                setup=connector_setup_role,
             )
             try:
                 if not ha_base_url:

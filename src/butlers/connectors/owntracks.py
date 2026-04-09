@@ -64,6 +64,7 @@ from fastapi.responses import JSONResponse
 from prometheus_client import Counter, generate_latest
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -1729,6 +1730,7 @@ async def run_owntracks_connector() -> None:
                 pool_kwargs["server_settings"] = {"search_path": schema_search_path(shared_schema)}
             except ValueError:
                 pass
+        pool_kwargs["setup"] = connector_setup_role
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)
         except Exception as exc:

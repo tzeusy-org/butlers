@@ -153,6 +153,7 @@ async def create_cursor_pool(
     """
     import asyncpg as _asyncpg
 
+    from butlers.connectors.db_role import connector_setup_role
     from butlers.db import should_retry_with_ssl_disable
 
     pool_kwargs: dict = {
@@ -164,6 +165,7 @@ async def create_cursor_pool(
         "min_size": min_size,
         "max_size": max_size,
         "command_timeout": 5,
+        "setup": connector_setup_role,
     }
     if ssl is not None:
         pool_kwargs["ssl"] = ssl

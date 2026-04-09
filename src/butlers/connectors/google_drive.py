@@ -56,6 +56,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_late
 from pydantic import BaseModel
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -2259,6 +2260,7 @@ async def run_google_drive_connector() -> None:
         ssl = db_params.get("ssl")
         if ssl is not None:
             pool_kwargs["ssl"] = ssl
+        pool_kwargs["setup"] = connector_setup_role
 
         try:
             shared_pool = await _asyncpg.create_pool(**pool_kwargs)

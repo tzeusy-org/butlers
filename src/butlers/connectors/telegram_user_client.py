@@ -57,6 +57,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
     DiscretionEvaluator,
@@ -1926,6 +1927,7 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
                 min_size=1,
                 max_size=2,
                 command_timeout=5,
+                setup=connector_setup_role,
             )
             connected_pools.append((db_name, pool))
         except Exception as exc:

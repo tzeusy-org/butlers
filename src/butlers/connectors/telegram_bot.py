@@ -43,6 +43,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
@@ -1162,6 +1163,7 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
                 max_size=2,
                 command_timeout=5,
                 server_settings={"search_path": "public"},
+                setup=connector_setup_role,
             )
             connected_pools.append((db_name, pool))
         except Exception as exc:
