@@ -158,6 +158,10 @@ git push                # Push to remote
 - `[butler.runtime].args` now accepts an ordered array of non-empty strings and is stored on `RuntimeConfig.args` as a tuple.
 - `Spawner` forwards non-empty runtime args into adapter invocation as `runtime_args`, and `CodexAdapter` appends them to `codex exec` before the `--` prompt delimiter (supports flags like `--config model_reasoning_effort="high"`).
 
+### Recovery workflow accounting contract
+- Recovery/session timeout semantics are split: `session_timeout_s` bounds one spawned runtime session, while higher-level healing/QA workflows own any broader investigation deadline.
+- Pre-launch gate rejects (cooldown, concurrency cap, circuit breaker, no-model) should be tracked as dispatch decisions, not written as failed `healing_attempts`, or breaker state and operator history become polluted.
+
 ### PR merge from worktree contract
 - In this repo's multi-worktree setup, `gh pr merge` from a non-main worktree can fail with `fatal: 'main' is already checked out at '/home/tze/GitHub/butlers'`; reviewer workers should merge via GitHub API (`PUT /repos/{owner}/{repo}/pulls/{number}/merge`) and delete the head ref separately when needed.
 
