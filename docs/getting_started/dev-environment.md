@@ -41,13 +41,26 @@ uv sync --dev
 
 This installs all Python dependencies, including dev/test extras, into a virtual environment managed by uv.
 
-### Step 2: Start PostgreSQL
+### Step 2: Provision PostgreSQL
+
+Start the database, then run the provisioning script to install extensions and
+grant role membership:
 
 ```bash
 docker compose up -d postgres
+
+# Install extensions and grant butler role membership (requires superuser)
+psql -h localhost -U postgres -d butlers -f scripts/init-db.sql
 ```
 
 This starts a PostgreSQL container on port 5432. Default credentials are `postgres`/`postgres`. The database is used by all butlers (one database, per-butler schemas plus the public schema).
+
+**Role membership is required for `SET ROLE` enforcement.** The Alembic
+migrations create per-butler database roles (`butler_{schema}_rw` and
+`connector_writer`), but the connecting user (`POSTGRES_USER`, typically
+`butlers`) must be granted membership in those roles before runtime `SET ROLE`
+calls can succeed.  `scripts/init-db.sql` handles this step.  If you skip it,
+runtime role switches will fail with a "permission denied to set role" error.
 
 ### Step 3: Start Butler Daemons
 

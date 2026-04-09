@@ -2,6 +2,45 @@
 
 Utility scripts for repository maintenance and fixes.
 
+## init-db.sql
+
+PostgreSQL provisioning script to run **before** Alembic migrations on a fresh
+database.  Must be executed by a superuser (or the database owner).
+
+What it does:
+
+1. Installs required extensions: `pgcrypto`, `uuid-ossp`, `vector` (pgvector),
+   and `pg_trgm`.
+2. Grants each butler runtime role (`butler_{schema}_rw` for the 10 butler
+   schemas) and `connector_writer` to the connecting user (`POSTGRES_USER`,
+   typically `butlers`).
+
+**Why the role grants are required:** The core Alembic migrations create the
+runtime roles and ACLs, but they cannot grant role *membership* to the
+connecting user on your behalf.  Role membership is required so that
+`SET ROLE butler_{schema}_rw` works at runtime for schema-isolated DB
+operations.
+
+### Usage
+
+```bash
+# Typical dev: run as superuser, grants to 'butlers' (default connecting user)
+psql -h localhost -U postgres -d butlers -f scripts/init-db.sql
+
+# Targeting a different connecting user
+PGOPTIONS="-c butlers.connecting_user=myappuser" \
+    psql -h localhost -U postgres -d butlers -f scripts/init-db.sql
+```
+
+The script is idempotent — safe to re-run on an already-provisioned database.
+
+**Note on ordering:**
+- Run `init-db.sql` **after** the database and connecting user exist.
+- Run Alembic migrations next: `butlers db migrate` (or `docker compose run
+  migrations`).
+- If you run `init-db.sql` before migrations create the roles, it will log
+  notices for missing roles.  Re-run the script after migrations complete.
+
 ## dev.sh
 
 Bootstraps the full local Butlers development stack in `tmux` (dashboard, frontend, connectors, backend, OAuth gate, and postgres preflight).

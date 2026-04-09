@@ -22,6 +22,15 @@
 #
 # NETWORK MODEL (see RFC 0008):
 #   db        (internal) — minio, migrations (external postgres via tailnet)
+#
+# DATABASE PROVISIONING:
+#   Before first use, run scripts/init-db.sql against your PostgreSQL server
+#   as a superuser to install extensions and grant butler role membership:
+#
+#     psql -h <POSTGRES_HOST> -U <superuser> -d butlers \
+#         -f scripts/init-db.sql
+#
+#   This is required for SET ROLE enforcement — see scripts/README.md.
 #   backend   (internal) — inter-service communication
 #   frontend  (internal) — Vite dev server <-> dashboard-api
 #   egress    (bridge)   — outbound internet for LLM APIs, Google OAuth, etc.
