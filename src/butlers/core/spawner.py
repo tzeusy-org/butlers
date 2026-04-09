@@ -1347,6 +1347,7 @@ class Spawner:
             if merged_args:
                 invoke_kwargs["runtime_args"] = merged_args
             timeout_s = accessor_timeout or self._config.runtime.session_timeout_s
+            invoke_kwargs["timeout"] = timeout_s
             try:
                 result_text, tool_calls, usage = await asyncio.wait_for(
                     runtime.invoke(**invoke_kwargs),

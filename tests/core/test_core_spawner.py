@@ -483,6 +483,53 @@ class TestSpawnerInvocation:
         assert result.success is True
         assert captured["runtime_args"] == ["--config", 'model_reasoning_effort="high"']
 
+    async def test_session_timeout_forwarded_to_runtime_invoke(self, tmp_path: Path):
+        """Effective session timeout is forwarded to adapter invoke kwargs."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(session_timeout_s=123)
+
+        captured: dict[str, Any] = {}
+
+        class RuntimeTimeoutCaptureAdapter(RuntimeAdapter):
+            @property
+            def binary_name(self) -> str:
+                return "runtime-timeout-capture"
+
+            async def invoke(
+                self,
+                prompt: str,
+                system_prompt: str,
+                mcp_servers: dict[str, Any],
+                env: dict[str, str],
+                max_turns: int = 20,
+                model: str | None = None,
+                runtime_args: list[str] | None = None,
+                cwd: Path | None = None,
+                timeout: int | None = None,
+            ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+                captured["timeout"] = timeout
+                return "ok", [], None
+
+            def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
+                config_path = tmp_dir / "capture_config.json"
+                config_path.write_text(json.dumps({"mcpServers": mcp_servers}))
+                return config_path
+
+            def parse_system_prompt_file(self, config_dir: Path) -> str:
+                return ""
+
+        spawner = Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=RuntimeTimeoutCaptureAdapter(),
+        )
+
+        result = await spawner.trigger("hello", "tick")
+
+        assert result.success is True
+        assert captured["timeout"] == 123
+
     async def test_error_wrapping_and_reset_behavior(self, tmp_path: Path):
         """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset."""
         config_dir = tmp_path / "config"
