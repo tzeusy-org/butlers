@@ -1493,6 +1493,13 @@ async def dispatch_qa_investigation(
 
         if not is_new:
             logger.debug("QA dispatch skipped: already investigating fingerprint=%s", fp[:12])
+            # Link the finding to the existing active attempt so the dashboard can trace it.
+            try:
+                await update_finding_attempt(pool, finding_id, attempt_id)
+            except Exception as _link_exc:
+                logger.debug(
+                    "QA dispatch: failed to link finding to existing attempt: %s", _link_exc
+                )
             # Write back the authoritative rejection reason to the finding record.
             try:
                 await update_finding_dedup_reason(pool, finding_id, "already_investigating")

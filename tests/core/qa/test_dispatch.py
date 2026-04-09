@@ -1011,7 +1011,7 @@ async def test_qa_dispatch_concurrency_cap_uses_delete_event_and_dedup_reason():
 
 @pytest.mark.asyncio
 async def test_qa_dispatch_already_investigating_emits_event_and_dedup_reason():
-    """Already-investigating (novelty join): dispatch event + dedup_reason, no attempt row."""
+    """Already-investigating (novelty join): dispatch event + dedup_reason + attempt link."""
     existing_attempt_id = uuid.uuid4()
     finding_id = uuid.uuid4()
     with (
@@ -1020,6 +1020,10 @@ async def test_qa_dispatch_already_investigating_emits_event_and_dedup_reason():
             new_callable=AsyncMock,
             return_value=(existing_attempt_id, False),  # is_new=False → join
         ),
+        patch(
+            "butlers.core.qa.dispatch.update_finding_attempt",
+            new_callable=AsyncMock,
+        ) as mock_link,
         patch(
             "butlers.core.qa.dispatch.update_finding_dedup_reason",
             new_callable=AsyncMock,
@@ -1045,6 +1049,9 @@ async def test_qa_dispatch_already_investigating_emits_event_and_dedup_reason():
 
     assert result.accepted is False and result.reason == "already_investigating"
     assert result.attempt_id == existing_attempt_id
+    # Finding must be linked to the existing active attempt
+    mock_link.assert_awaited_once()
+    assert mock_link.call_args[0][2] == existing_attempt_id
     mock_dedup.assert_awaited_once()
     assert mock_dedup.call_args[0][2] == "already_investigating"
     mock_event.assert_awaited_once()
