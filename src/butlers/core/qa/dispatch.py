@@ -52,7 +52,9 @@ from butlers.core.healing.tracking import (
     create_or_join_attempt,
     delete_orphaned_attempt,
     get_recent_attempt,
+    record_phase_session,
     update_attempt_status,
+    update_phase_session_status,
 )
 from butlers.core.healing.worktree import (
     WorktreeCreationError,
@@ -562,6 +564,7 @@ async def _run_investigation_session(
     separate timeout watchdog task.
     """
     investigation_session_id: uuid.UUID | None = None
+    phase_session_id: uuid.UUID | None = None
 
     # Create an independent ROOT span for this investigation (NOT a child of the patrol span).
     # Investigations are long-running, potentially outliving the patrol cycle that spawned them.
@@ -616,12 +619,35 @@ async def _run_investigation_session(
             # state machine rejects 'investigating → investigating' transitions.  The session_id
             # will be attached on the next valid status transition (pr_open / failed / timeout).
             investigation_session_id = result.session_id
+            # Record the phase session to link this launched session to the attempt with lineage.
+            # QA investigations start with a single "investigate" phase; phased workflows
+            # would record additional phases here as they are introduced.
+            try:
+                phase_session_id = await record_phase_session(
+                    pool,
+                    attempt_id,
+                    "investigate",
+                    investigation_session_id,
+                )
+            except Exception as _ps_exc:
+                logger.debug(
+                    "_run_investigation_session: failed to record phase session (attempt=%s): %s",
+                    attempt_id,
+                    _ps_exc,
+                )
 
         if not result.success:
             error_detail = result.error or "Investigation agent returned non-success result"
             logger.warning(
                 "QA investigation agent failed (attempt=%s): %s", attempt_id, error_detail
             )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool, phase_session_id, "failed", error_detail=error_detail
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -637,6 +663,11 @@ async def _run_investigation_session(
         # Check for unfixable sentinel
         if (worktree_path / _UNFIXABLE_FILE).exists():
             logger.info("Investigation agent marked error as unfixable (attempt=%s)", attempt_id)
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -662,6 +693,16 @@ async def _run_investigation_session(
         )
 
         if pr_error == "anonymization_failed":
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool,
+                        phase_session_id,
+                        "failed",
+                        error_detail="PR blocked: anonymization_failed",
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -675,6 +716,13 @@ async def _run_investigation_session(
             return
 
         if pr_error == "no_gh_token":
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool, phase_session_id, "failed", error_detail="no_gh_token"
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -701,6 +749,13 @@ async def _run_investigation_session(
                 wl_detail = "could not determine repository from origin remote URL"
             else:
                 wl_detail = "repository is not in the QA whitelist"
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool, phase_session_id, "failed", error_detail=f"PR blocked: {wl_detail}"
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -714,6 +769,13 @@ async def _run_investigation_session(
             return
 
         if pr_error is not None:
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool, phase_session_id, "failed", error_detail=pr_error
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -727,6 +789,11 @@ async def _run_investigation_session(
             return
 
         # PR created successfully
+        if phase_session_id is not None:
+            try:
+                await update_phase_session_status(pool, phase_session_id, "completed")
+            except Exception as _pss_exc:
+                logger.debug("Failed to mark phase session completed: %s", _pss_exc)
         await update_attempt_status(
             pool,
             attempt_id,
@@ -746,6 +813,16 @@ async def _run_investigation_session(
 
     except asyncio.CancelledError:
         # Cancelled by watchdog — watchdog sets status to "timeout"
+        if phase_session_id is not None:
+            try:
+                await update_phase_session_status(
+                    pool,
+                    phase_session_id,
+                    "timeout",
+                    error_detail="Investigation session cancelled by watchdog",
+                )
+            except Exception as _pss_exc:
+                logger.debug("Failed to mark phase session timeout: %s", _pss_exc)
         if _HAS_OTEL and _inv_span is not None:
             _inv_span.set_status(trace.StatusCode.ERROR, "investigation cancelled (timeout)")
         raise
@@ -754,6 +831,13 @@ async def _run_investigation_session(
         logger.exception(
             "Unexpected error in QA investigation session (attempt=%s): %s", attempt_id, exc
         )
+        if phase_session_id is not None:
+            try:
+                await update_phase_session_status(
+                    pool, phase_session_id, "failed", error_detail=f"{type(exc).__name__}: {exc}"
+                )
+            except Exception as _pss_exc:
+                logger.debug("Failed to mark phase session failed: %s", _pss_exc)
         if _HAS_OTEL and _inv_span is not None:
             _inv_span.record_exception(exc)
             _inv_span.set_status(trace.StatusCode.ERROR, str(exc))
@@ -1457,6 +1541,41 @@ async def dispatch_qa_investigation(
     fp = finding.fingerprint
 
     try:
+        # ---------------------------------------------------------------
+        # Gate 0: QA self-recursion barrier
+        # ---------------------------------------------------------------
+        # Suppress autonomous investigation when the finding originated from a
+        # QA self-healing session.  Applies only when source_butler == "qa".
+        # Findings from other butlers are never blocked by this barrier.
+        if finding.source_butler == "qa":
+            trigger_src = finding.source_session_trigger_source
+            if trigger_src in {"healing", "qa_investigation"}:
+                logger.info(
+                    "QA dispatch suppressed: self-recursion barrier triggered "
+                    "(source_session_trigger_source=%r, fingerprint=%s) — routing to meta-review",
+                    trigger_src,
+                    fp[:12],
+                )
+                return QaDispatchResult(
+                    accepted=False,
+                    fingerprint=fp,
+                    reason="qa_self_recursion",
+                )
+            else:
+                # Unknown or null trigger_source from QA butler — treat as
+                # potentially recursive; route to meta-review as a precaution.
+                logger.warning(
+                    "QA finding from QA butler with unrecognized trigger_source; "
+                    "routing to meta-review (source_session_trigger_source=%r, fingerprint=%s)",
+                    trigger_src,
+                    fp[:12],
+                )
+                return QaDispatchResult(
+                    accepted=False,
+                    fingerprint=fp,
+                    reason="qa_self_recursion_precaution",
+                )
+
         # ---------------------------------------------------------------
         # Gate 5: Severity gate
         # ---------------------------------------------------------------
