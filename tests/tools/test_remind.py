@@ -56,26 +56,26 @@ def _patch_infra():
     mock_trigger_result.duration_ms = 100
     mock_spawner.trigger = AsyncMock(return_value=mock_trigger_result)
     return {
-        "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
+        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
-            "butlers.daemon.validate_module_credentials_async",
+            "butlers.lifecycle.validate_module_credentials_async",
             new_callable=AsyncMock,
             return_value={},
         ),
-        "init_telemetry": patch("butlers.daemon.init_telemetry"),
-        "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
-        "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
+        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
+        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
+        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
         "get_adapter": patch(
-            "butlers.daemon.get_adapter",
+            "butlers.lifecycle.get_adapter",
             return_value=type(
                 "MockAdapter",
                 (),
                 {"binary_name": "claude", "__init__": lambda self, **kwargs: None},
             ),
         ),
-        "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
+        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
@@ -111,7 +111,7 @@ async def _start_daemon_capture_tools(
         patches["validate_module_credentials"],
         patches["init_telemetry"],
         patches["sync_schedules"],
-        patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
         patches["Spawner"],
         patches["get_adapter"],
         patches["shutil_which"],

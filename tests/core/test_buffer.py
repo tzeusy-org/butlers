@@ -403,20 +403,20 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
             return _MockAdapterInstance()
 
     common_patches = {
-        "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
+        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
-            "butlers.daemon.validate_module_credentials_async",
+            "butlers.lifecycle.validate_module_credentials_async",
             new_callable=AsyncMock,
             return_value={},
         ),
-        "init_telemetry": patch("butlers.daemon.init_telemetry"),
-        "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.daemon.FastMCP"),
-        "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
-        "get_adapter": patch("butlers.daemon.get_adapter", return_value=_MockAdapterCls),
-        "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
+        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
+        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
+        "FastMCP": patch("butlers.lifecycle.FastMCP"),
+        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
+        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=_MockAdapterCls),
+        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch(
             "butlers.daemon.ButlerDaemon._start_mcp_server", new_callable=AsyncMock
         ),
