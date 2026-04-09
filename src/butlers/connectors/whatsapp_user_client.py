@@ -53,6 +53,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.connectors.bridge_manager import BridgeConfig, BridgeSubprocessManager
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
     DiscretionEvaluator,
@@ -1489,6 +1490,7 @@ async def _resolve_whatsapp_phone_from_db() -> str | None:
                 min_size=1,
                 max_size=2,
                 command_timeout=5,
+                setup=connector_setup_role,
             )
             try:
                 phone = await resolve_owner_entity_info(pool, "whatsapp_phone")

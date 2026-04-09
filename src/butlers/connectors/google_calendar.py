@@ -57,6 +57,7 @@ from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -2310,6 +2311,7 @@ async def run_google_calendar_connector() -> None:
         ssl = db_params.get("ssl")
         if ssl is not None:
             pool_kwargs["ssl"] = ssl
+        pool_kwargs["setup"] = connector_setup_role
 
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)

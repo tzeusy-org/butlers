@@ -62,6 +62,7 @@ from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
@@ -3673,6 +3674,7 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
         configured_ssl = db_params.get("ssl")
         if configured_ssl is not None:
             pool_kwargs["ssl"] = configured_ssl
+        pool_kwargs["setup"] = connector_setup_role
 
         try:
             pool = await asyncpg.create_pool(**pool_kwargs)
@@ -3881,6 +3883,7 @@ async def _create_shared_db_pool() -> asyncpg.Pool:
     configured_ssl = db_params.get("ssl")
     if configured_ssl is not None:
         pool_kwargs["ssl"] = configured_ssl
+    pool_kwargs["setup"] = connector_setup_role
 
     try:
         return await _asyncpg.create_pool(**pool_kwargs)

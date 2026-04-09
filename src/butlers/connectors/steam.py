@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from prometheus_client import Counter, Histogram, generate_latest
 
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
@@ -1847,6 +1848,7 @@ async def _run() -> None:
     }
     if params.get("ssl"):
         pool_kwargs["ssl"] = params["ssl"]
+    pool_kwargs["setup"] = connector_setup_role
 
     try:
         pool = await asyncpg.create_pool(**pool_kwargs)

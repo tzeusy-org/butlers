@@ -62,6 +62,7 @@ from fastapi import FastAPI
 from prometheus_client import Counter, Histogram, generate_latest
 
 from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -497,7 +498,7 @@ def build_listening_digest_envelope(
     Shows only tracks played since the last digest (or session start).
     """
     context_label = session.context_uri.split(":")[-1] if session.context_uri else None
-    period_tracks = session.track_names[session.last_digest_track_index:]
+    period_tracks = session.track_names[session.last_digest_track_index :]
     period_count = len(period_tracks)
     track_list = ", ".join(period_tracks)
 
@@ -1318,8 +1319,7 @@ class SpotifyConnector:
         # rather than one ingestion per track every few minutes.
         # Active playback detection via currently-playing is unaffected.
         gap_fill_due = self._last_gap_fill_poll_at == 0.0 or (
-            time.monotonic() - self._last_gap_fill_poll_at
-            >= self._config.gap_fill_idle_interval_s
+            time.monotonic() - self._last_gap_fill_poll_at >= self._config.gap_fill_idle_interval_s
         )
         if gap_fill_due:
             await self._poll_recently_played(now, observed_at)
@@ -1789,6 +1789,7 @@ async def run_spotify_connector() -> None:
         ssl = db_params.get("ssl")
         if ssl is not None:
             pool_kwargs["ssl"] = ssl
+        pool_kwargs["setup"] = connector_setup_role
 
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)
