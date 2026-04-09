@@ -122,21 +122,6 @@ async def pool(provisioned_postgres_pool):
                 ON interactions (contact_id, occurred_at)
         """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS reminders (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID REFERENCES contacts(id) ON DELETE CASCADE,
-                label TEXT NOT NULL,
-                type TEXT NOT NULL DEFAULT 'one_time',
-                next_trigger_at TIMESTAMPTZ,
-                timezone TEXT NOT NULL DEFAULT 'UTC',
-                until_at TIMESTAMPTZ,
-                calendar_event_id TEXT,
-                last_triggered_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
             CREATE TABLE IF NOT EXISTS gifts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,

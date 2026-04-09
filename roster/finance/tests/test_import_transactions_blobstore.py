@@ -31,14 +31,14 @@ class TestFinanceModuleLifecycle:
 
     async def test_blob_store_none_by_default(self):
         """FinanceModule.blob_store is None before on_startup is called."""
-        from roster.finance.modules import FinanceModule
+        from butlers.modules._roster_finance import FinanceModule
 
         mod = FinanceModule()
         assert mod.blob_store is None
 
     async def test_blob_store_stored_in_on_startup(self):
         """on_startup stores the provided blob_store on the module."""
-        from roster.finance.modules import FinanceModule
+        from butlers.modules._roster_finance import FinanceModule
 
         mod = FinanceModule()
         fake_blob_store = MagicMock()
@@ -51,7 +51,7 @@ class TestFinanceModuleLifecycle:
 
     async def test_blob_store_none_when_not_provided(self):
         """on_startup without blob_store leaves blob_store as None."""
-        from roster.finance.modules import FinanceModule
+        from butlers.modules._roster_finance import FinanceModule
 
         mod = FinanceModule()
         fake_db = MagicMock()
@@ -63,7 +63,7 @@ class TestFinanceModuleLifecycle:
 
     async def test_blob_store_cleared_on_shutdown(self):
         """on_shutdown clears the blob_store reference."""
-        from roster.finance.modules import FinanceModule
+        from butlers.modules._roster_finance import FinanceModule
 
         mod = FinanceModule()
         fake_blob_store = MagicMock()
@@ -78,7 +78,7 @@ class TestFinanceModuleLifecycle:
 
     async def test_on_startup_accepts_blob_store_kwarg(self):
         """on_startup signature accepts blob_store as a keyword argument."""
-        from roster.finance.modules import FinanceModule
+        from butlers.modules._roster_finance import FinanceModule
 
         sig = inspect.signature(FinanceModule.on_startup)
         assert "blob_store" in sig.parameters
@@ -132,7 +132,7 @@ class TestImportTransactionsToolRegistration:
         """Helper: register tools with a fake data_import module injected into sys.modules."""
         import sys
 
-        from roster.finance.modules.tools import register_tools
+        from butlers.modules._roster_finance.tools import register_tools
 
         mcp = _FakeMCP()
         module = _FakeModule(blob_store=blob_store)

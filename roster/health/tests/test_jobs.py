@@ -206,7 +206,7 @@ async def _insert_symptom(
 
 async def test_insight_scan_no_data(provisioned_postgres_pool):
     """No-op: returns zeros when no health data exists."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -223,7 +223,7 @@ async def test_insight_scan_no_data(provisioned_postgres_pool):
 
 async def test_insight_scan_result_keys_present(provisioned_postgres_pool):
     """Result dict always contains all expected keys."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -245,7 +245,7 @@ async def test_insight_scan_result_keys_present(provisioned_postgres_pool):
 
 async def test_measurement_gap_no_gap_does_not_generate_candidate(provisioned_postgres_pool):
     """Recent measurements within normal cadence produce no gap insight."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -267,7 +267,7 @@ async def test_measurement_gap_no_gap_does_not_generate_candidate(provisioned_po
 
 async def test_measurement_gap_insufficient_history_excluded(provisioned_postgres_pool):
     """Types with fewer than 3 historical entries are excluded from gap detection."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -289,7 +289,7 @@ async def test_measurement_gap_insufficient_history_excluded(provisioned_postgre
 
 async def test_measurement_gap_2x_cadence_generates_warning_candidate(provisioned_postgres_pool):
     """Gap exceeding 2x typical cadence generates a warning (priority 55) candidate."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -319,7 +319,7 @@ async def test_measurement_gap_2x_cadence_generates_warning_candidate(provisione
 
 async def test_measurement_gap_3x_cadence_generates_critical_candidate(provisioned_postgres_pool):
     """Gap exceeding 3x typical cadence generates a critical (priority 75) candidate."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -345,7 +345,7 @@ async def test_measurement_gap_3x_cadence_generates_critical_candidate(provision
 
 async def test_measurement_gap_dedup_key_format(provisioned_postgres_pool):
     """Measurement gap dedup_key follows health:measurement-gap:{type} format."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -368,7 +368,7 @@ async def test_measurement_gap_dedup_key_format(provisioned_postgres_pool):
 
 async def test_measurement_gap_expires_3_days_from_now(provisioned_postgres_pool):
     """Measurement gap candidate expires_at is 3 days from generation."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -402,7 +402,7 @@ async def test_measurement_gap_expires_3_days_from_now(provisioned_postgres_pool
 
 async def test_medication_refill_inactive_medication_excluded(provisioned_postgres_pool):
     """Inactive medications are excluded from refill insights."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -424,7 +424,7 @@ async def test_medication_refill_inactive_medication_excluded(provisioned_postgr
 
 async def test_medication_refill_no_doses_excluded(provisioned_postgres_pool):
     """Active medications with no dose history in 30 days are excluded."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -443,7 +443,7 @@ async def test_medication_refill_no_doses_excluded(provisioned_postgres_pool):
 
 async def test_medication_refill_within_14_days_generates_candidate(provisioned_postgres_pool):
     """Active medication running out within 14 days generates a refill candidate."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -470,7 +470,7 @@ async def test_medication_refill_within_14_days_generates_candidate(provisioned_
 
 async def test_medication_refill_critical_priority_within_3_days(provisioned_postgres_pool):
     """Medication depleting within 3 days gets priority 90 (time-critical)."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -493,7 +493,7 @@ async def test_medication_refill_critical_priority_within_3_days(provisioned_pos
 
 async def test_medication_refill_dedup_key_format(provisioned_postgres_pool):
     """Medication refill dedup_key follows health:medication-refill:{id} format."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -515,7 +515,7 @@ async def test_medication_refill_dedup_key_format(provisioned_postgres_pool):
 
 async def test_medication_refill_skipped_doses_excluded_from_count(provisioned_postgres_pool):
     """Skipped doses are excluded when computing supply consumption."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -551,7 +551,7 @@ async def test_medication_refill_skipped_doses_excluded_from_count(provisioned_p
 
 async def test_symptom_trend_below_threshold_no_candidate(provisioned_postgres_pool):
     """Symptom logged only twice in 7 days does not trigger a trend alert."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -572,7 +572,7 @@ async def test_symptom_trend_below_threshold_no_candidate(provisioned_postgres_p
 
 async def test_symptom_trend_low_severity_excluded(provisioned_postgres_pool):
     """Symptoms with severity below threshold are excluded even if frequent."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -596,7 +596,7 @@ async def test_symptom_trend_low_severity_excluded(provisioned_postgres_pool):
 
 async def test_symptom_trend_3x_in_7_days_generates_candidate(provisioned_postgres_pool):
     """Symptom logged 3+ times in 7 days with severity >= 3 generates a trend alert."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -624,7 +624,7 @@ async def test_symptom_trend_3x_in_7_days_generates_candidate(provisioned_postgr
 
 async def test_symptom_trend_dedup_key_includes_year_week(provisioned_postgres_pool):
     """Symptom trend dedup_key includes health:symptom-trend:{name}:{year-week}."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -651,7 +651,7 @@ async def test_symptom_trend_dedup_key_includes_year_week(provisioned_postgres_p
 
 async def test_symptom_trend_excludes_symptoms_outside_7_days(provisioned_postgres_pool):
     """Symptoms older than 7 days are excluded from trend detection."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -683,7 +683,7 @@ async def test_symptom_trend_excludes_symptoms_outside_7_days(provisioned_postgr
 
 async def test_symptom_trend_message_includes_count_and_severity(provisioned_postgres_pool):
     """Symptom trend message includes occurrence count and average severity."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -709,7 +709,7 @@ async def test_symptom_trend_message_includes_count_and_severity(provisioned_pos
 
 async def test_symptom_trend_expires_3_days_from_now(provisioned_postgres_pool):
     """Symptom trend candidate expires_at is 3 days from generation."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -742,7 +742,7 @@ async def test_symptom_trend_expires_3_days_from_now(provisioned_postgres_pool):
 
 async def test_streak_no_measurements_no_candidate(provisioned_postgres_pool):
     """No measurements → no streak candidate generated."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -759,7 +759,7 @@ async def test_streak_no_measurements_no_candidate(provisioned_postgres_pool):
 
 async def test_streak_5_consecutive_days_no_milestone(provisioned_postgres_pool):
     """5 consecutive days does not hit any milestone threshold."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -782,7 +782,7 @@ async def test_streak_5_consecutive_days_no_milestone(provisioned_postgres_pool)
 
 async def test_streak_7_consecutive_days_generates_candidate(provisioned_postgres_pool):
     """7 consecutive days of measurements triggers the first streak milestone."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -811,7 +811,7 @@ async def test_streak_7_consecutive_days_generates_candidate(provisioned_postgre
 
 async def test_streak_30_day_milestone(provisioned_postgres_pool):
     """30 consecutive days of measurements triggers the 30-day milestone."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -836,7 +836,7 @@ async def test_streak_30_day_milestone(provisioned_postgres_pool):
 
 async def test_streak_only_one_milestone_per_type_per_run(provisioned_postgres_pool):
     """Only one milestone candidate is generated per measurement type per run."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -859,7 +859,7 @@ async def test_streak_only_one_milestone_per_type_per_run(provisioned_postgres_p
 
 async def test_streak_expires_7_days_from_now(provisioned_postgres_pool):
     """Streak candidate expires_at is 7 days from generation."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -886,7 +886,7 @@ async def test_streak_expires_7_days_from_now(provisioned_postgres_pool):
 
 async def test_streak_non_consecutive_days_no_milestone(provisioned_postgres_pool):
     """Non-consecutive measurement days reset the streak and miss milestones."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -916,7 +916,7 @@ async def test_insight_scan_verbosity_off_exits_early_on_measurement_gap(
     provisioned_postgres_pool,
 ):
     """When verbosity=off, first measurement gap candidate causes early exit."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -944,7 +944,7 @@ async def test_insight_scan_verbosity_off_exits_early_on_symptom_trend(
     provisioned_postgres_pool,
 ):
     """When verbosity=off, first symptom trend candidate causes early exit."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)
@@ -975,7 +975,7 @@ async def test_insight_scan_verbosity_off_exits_early_on_symptom_trend(
 
 async def test_insight_scan_origin_butler_is_health(provisioned_postgres_pool):
     """All candidates submitted by the health insight scan have origin_butler='health'."""
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_health_schema(pool)

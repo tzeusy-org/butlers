@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from roster.switchboard.tools.connector.heartbeat import (
+from butlers.tools.switchboard.connector.heartbeat import (
     ConnectorHeartbeatV1,
     HeartbeatAcceptedResponse,
     heartbeat,

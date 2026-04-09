@@ -215,9 +215,10 @@ async def _run_travel_insight_scan_job(
 ) -> dict[str, Any]:
     """Run travel butler insight scan job."""
     del job_args
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster_loader import load_roster_jobs
 
-    return await run_insight_scan(pool)
+    mod = load_roster_jobs("travel")
+    return await mod.run_insight_scan(pool)
 
 
 async def _run_health_insight_scan_job(
@@ -226,9 +227,10 @@ async def _run_health_insight_scan_job(
 ) -> dict[str, Any]:
     """Run health butler insight scan job."""
     del job_args
-    from roster.health.jobs.health_jobs import run_insight_scan
+    from butlers.jobs._roster_loader import load_roster_jobs
 
-    return await run_insight_scan(pool)
+    mod = load_roster_jobs("health")
+    return await mod.run_insight_scan(pool)
 
 
 async def _run_relationship_insight_scan_job(
@@ -237,9 +239,10 @@ async def _run_relationship_insight_scan_job(
 ) -> dict[str, Any]:
     """Run relationship butler insight scan job."""
     del job_args
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster_loader import load_roster_jobs
 
-    return await run_insight_scan(pool)
+    mod = load_roster_jobs("relationship")
+    return await mod.run_insight_scan(pool)
 
 
 async def _run_relationship_interaction_sync_job(
@@ -248,9 +251,10 @@ async def _run_relationship_interaction_sync_job(
 ) -> dict[str, Any]:
     """Run relationship butler interaction sync job."""
     del job_args
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster_loader import load_roster_jobs
 
-    return await run_interaction_sync(pool)
+    mod = load_roster_jobs("relationship")
+    return await mod.run_interaction_sync(pool)
 
 
 async def _run_education_briefing_contribution_job(

@@ -755,6 +755,7 @@ async def list_patrols(
         "findings_dispatched",
         "error",
         "skipped_overlap",
+        "suppressed",
     }
 
     if status is not None:

@@ -1,6 +1,6 @@
 """Scheduled jobs for the Finance butler."""
 
-from roster.finance.jobs.finance_jobs import (
+from .finance_jobs import (
     run_finance_insight_scan,
     run_monthly_spending_summary,
     run_subscription_renewal_alerts,

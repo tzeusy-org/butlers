@@ -272,7 +272,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # 2. Stale contact insights (tier-aware cadence)
     # -----------------------------------------------------------------------
-    from roster.relationship.tools.dunbar import (
+    from butlers.tools.relationship.dunbar import (
         TIER_CADENCES,
         _fetch_overrides,
         compute_dunbar_scores,
@@ -688,7 +688,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         (ISO8601), processed, logged, skipped_unresolved, skipped_owner,
         calendar_events_scanned, errors.
     """
-    from roster.relationship.tools.interactions import interaction_log
+    from butlers.tools.relationship.interactions import interaction_log
 
     logger.info("Running relationship interaction sync job")
 

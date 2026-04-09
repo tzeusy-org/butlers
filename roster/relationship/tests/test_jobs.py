@@ -216,7 +216,7 @@ async def _insert_gift_fact(
     occasion: str | None = None,
 ) -> str:
     """Insert a gift (facts-based) for a contact and return fact UUID string."""
-    from roster.relationship.tools.gifts import _slug
+    from butlers.tools.relationship.gifts import _slug
 
     fact_id = str(uuid.uuid4())
     subject = f"contact:{contact_id}:gift:{_slug(description)}"
@@ -243,7 +243,7 @@ async def _insert_gift_fact(
 
 async def test_insight_scan_no_contacts_no_op(provisioned_postgres_pool):
     """No-op: returns zeros when no contacts exist."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -260,7 +260,7 @@ async def test_insight_scan_no_contacts_no_op(provisioned_postgres_pool):
 
 async def test_insight_scan_unlisted_contact_excluded(provisioned_postgres_pool):
     """Unlisted contacts are excluded from all insight categories."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -288,7 +288,7 @@ async def test_insight_scan_unlisted_contact_excluded(provisioned_postgres_pool)
 
 async def test_insight_scan_upcoming_birthday_today_priority_95(provisioned_postgres_pool):
     """Birthday today gets priority 95 (time-critical)."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -317,7 +317,7 @@ async def test_insight_scan_upcoming_birthday_today_priority_95(provisioned_post
 
 async def test_insight_scan_upcoming_birthday_3_days_priority_80(provisioned_postgres_pool):
     """Birthday in 3 days gets priority 80."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -344,7 +344,7 @@ async def test_insight_scan_upcoming_birthday_3_days_priority_80(provisioned_pos
 
 async def test_insight_scan_upcoming_birthday_7_days_priority_70(provisioned_postgres_pool):
     """Birthday in 5-7 days gets priority 70."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -371,7 +371,7 @@ async def test_insight_scan_upcoming_birthday_7_days_priority_70(provisioned_pos
 
 async def test_insight_scan_birthday_beyond_window_excluded(provisioned_postgres_pool):
     """Birthdays beyond 7 days are excluded."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -393,7 +393,7 @@ async def test_insight_scan_birthday_beyond_window_excluded(provisioned_postgres
 
 async def test_insight_scan_anniversary_dedup_key_format(provisioned_postgres_pool):
     """Anniversary dedup_key follows anniversary:{entity-id}:{year} format."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -424,7 +424,7 @@ async def test_insight_scan_anniversary_dedup_key_format(provisioned_postgres_po
 
 async def test_insight_scan_birthday_dedup_key_format(provisioned_postgres_pool):
     """Birthday dedup_key follows birthday:{entity-id}:{year} format when entity_id exists."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -454,7 +454,7 @@ async def test_insight_scan_birthday_dedup_key_format(provisioned_postgres_pool)
 
 async def test_insight_scan_birthday_cooldown_days(provisioned_postgres_pool):
     """Birthday cooldown_days matches priority tier."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -482,7 +482,7 @@ async def test_insight_scan_birthday_cooldown_days(provisioned_postgres_pool):
 
 async def test_insight_scan_birthday_message_includes_contact_name(provisioned_postgres_pool):
     """Birthday message includes the contact name."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -516,7 +516,7 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
     provisioned_postgres_pool,
 ):
     """Contact overdue by >2x cadence gets priority 45."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -543,7 +543,7 @@ async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
     provisioned_postgres_pool,
 ):
     """Contact overdue by 1-2x cadence gets priority 35."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -568,7 +568,7 @@ async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
 
 async def test_insight_scan_stale_contact_not_yet_overdue_excluded(provisioned_postgres_pool):
     """Contact not yet overdue is excluded from stale-contact insights."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -594,7 +594,7 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
     provisioned_postgres_pool,
 ):
     """Stale contact dedup_key uses relationship:stale-contact:{id}:{year-week} format."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -623,7 +623,7 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
 
 async def test_insight_scan_stale_contact_expires_7_days_from_now(provisioned_postgres_pool):
     """Stale contact candidate expires 7 days from generation."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -657,7 +657,7 @@ async def test_insight_scan_pending_gift_with_upcoming_date_priority_60(
     provisioned_postgres_pool,
 ):
     """Pending gift (idea/purchased) with upcoming date gets priority 60."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -686,7 +686,7 @@ async def test_insight_scan_pending_gift_with_upcoming_date_priority_60(
 
 async def test_insight_scan_pending_gift_no_upcoming_date_excluded(provisioned_postgres_pool):
     """Pending gift without upcoming contact date is not surfaced."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -703,7 +703,7 @@ async def test_insight_scan_pending_gift_no_upcoming_date_excluded(provisioned_p
 
 async def test_insight_scan_pending_gift_dedup_key_format(provisioned_postgres_pool):
     """Pending gift dedup_key follows relationship:pending-gift:{gift-id} format."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -734,7 +734,7 @@ async def test_insight_scan_pending_gift_dedup_key_format(provisioned_postgres_p
 
 async def test_insight_scan_gift_given_status_excluded(provisioned_postgres_pool):
     """Gifts with status 'given' or 'thanked' are excluded."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -759,7 +759,7 @@ async def test_insight_scan_gift_given_status_excluded(provisioned_postgres_pool
 
 async def test_insight_scan_pending_gift_expires_at_upcoming_date(provisioned_postgres_pool):
     """Pending gift candidate expires_at matches the associated upcoming date."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -793,7 +793,7 @@ async def test_insight_scan_pending_gift_expires_at_upcoming_date(provisioned_po
 
 async def test_insight_scan_milestone_100th_interaction(provisioned_postgres_pool):
     """100th interaction with a contact generates a milestone insight."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -822,7 +822,7 @@ async def test_insight_scan_milestone_100th_interaction(provisioned_postgres_poo
 
 async def test_insight_scan_milestone_dedup_key_format(provisioned_postgres_pool):
     """Milestone dedup_key follows relationship:milestone:{contact-id}:{milestone-type} format."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -850,7 +850,7 @@ async def test_insight_scan_milestone_dedup_key_format(provisioned_postgres_pool
 
 async def test_insight_scan_milestone_non_notable_count_excluded(provisioned_postgres_pool):
     """Non-notable interaction counts (e.g., 7) do not generate milestones."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -871,7 +871,7 @@ async def test_insight_scan_milestone_non_notable_count_excluded(provisioned_pos
 
 async def test_insight_scan_first_interaction_anniversary(provisioned_postgres_pool):
     """1-year anniversary of first interaction generates a milestone insight."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -911,7 +911,7 @@ async def test_insight_scan_first_interaction_anniversary(provisioned_postgres_p
 
 async def test_insight_scan_early_exit_verbosity_off(provisioned_postgres_pool):
     """Early exit when verbosity=off: job returns early_exit=True."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -943,7 +943,7 @@ async def test_insight_scan_early_exit_verbosity_off(provisioned_postgres_pool):
 
 async def test_insight_scan_stats_keys_present(provisioned_postgres_pool):
     """Result dict always contains all expected statistics keys."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -965,7 +965,7 @@ async def test_insight_scan_stats_keys_present(provisioned_postgres_pool):
 
 async def test_insight_scan_origin_butler_is_relationship(provisioned_postgres_pool):
     """All generated candidates are tagged with origin_butler='relationship'."""
-    from roster.relationship.jobs.relationship_jobs import run_insight_scan
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_relationship_schema(pool)
@@ -1320,7 +1320,7 @@ async def _insert_calendar_event(
 
 async def test_interaction_sync_no_messages_returns_zeros(provisioned_postgres_pool):
     """No-op: returns zeros when message_inbox is empty."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1336,7 +1336,7 @@ async def test_interaction_sync_no_messages_returns_zeros(provisioned_postgres_p
 
 async def test_interaction_sync_returns_expected_stats_keys(provisioned_postgres_pool):
     """Result dict always contains all expected statistics keys."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1354,7 +1354,7 @@ async def test_interaction_sync_returns_expected_stats_keys(provisioned_postgres
 
 async def test_interaction_sync_unresolved_sender_skipped(provisioned_postgres_pool):
     """Senders with no matching contact_info entry are counted as skipped_unresolved."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1375,7 +1375,7 @@ async def test_interaction_sync_unresolved_sender_skipped(provisioned_postgres_p
 
 async def test_interaction_sync_outbound_messages_ignored(provisioned_postgres_pool):
     """Outbound messages are not processed (only inbound are synced)."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1400,7 +1400,7 @@ async def test_interaction_sync_outbound_messages_ignored(provisioned_postgres_p
 
 async def test_interaction_sync_owner_contact_skipped(provisioned_postgres_pool):
     """Owner contacts are skipped even when their sender identity is resolved."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1426,7 +1426,7 @@ async def test_interaction_sync_owner_contact_skipped(provisioned_postgres_pool)
 
 async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_pool):
     """A resolved telegram_user_client message is logged as an interaction fact."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1467,7 +1467,7 @@ async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_p
 
 async def test_interaction_sync_deduplicates_same_sender_same_day(provisioned_postgres_pool):
     """Multiple messages from the same sender on the same day → one interaction fact."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1498,7 +1498,7 @@ async def test_interaction_sync_different_channels_logged_separately(
     provisioned_postgres_pool,
 ):
     """Same contact via different channels (telegram + email) → two separate facts."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1534,7 +1534,7 @@ async def test_interaction_sync_different_channels_logged_separately(
 
 async def test_interaction_sync_old_messages_excluded(provisioned_postgres_pool):
     """Messages older than the scan window are not processed."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1560,7 +1560,7 @@ async def test_interaction_sync_old_messages_excluded(provisioned_postgres_pool)
 
 async def test_interaction_sync_unknown_channel_ignored(provisioned_postgres_pool):
     """Messages from unsupported channels (e.g. telegram_bot) are not processed."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1583,7 +1583,7 @@ async def test_interaction_sync_unknown_channel_ignored(provisioned_postgres_poo
 
 async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool):
     """Running interaction sync twice for the same messages does not create duplicate facts."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1617,7 +1617,7 @@ async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool)
 
 async def test_interaction_sync_whatsapp_channel_resolved(provisioned_postgres_pool):
     """A resolved whatsapp_user_client message is logged via whatsapp_jid contact_info."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1640,7 +1640,7 @@ async def test_interaction_sync_whatsapp_channel_resolved(provisioned_postgres_p
 
 async def test_interaction_sync_email_channel_resolved(provisioned_postgres_pool):
     """A resolved email message is logged via email contact_info."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1667,7 +1667,7 @@ async def test_interaction_sync_email_channel_resolved(provisioned_postgres_pool
 
 async def test_interaction_sync_no_checkpoint_uses_30_day_default(provisioned_postgres_pool):
     """Without a checkpoint, scan_window_start defaults to ~30 days ago."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1686,7 +1686,7 @@ async def test_interaction_sync_no_checkpoint_uses_30_day_default(provisioned_po
 async def test_interaction_sync_checkpoint_used_as_start(provisioned_postgres_pool):
     """When a checkpoint exists, it is used as scan_window_start."""
     from butlers.core.state import state_set
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1707,7 +1707,7 @@ async def test_interaction_sync_checkpoint_used_as_start(provisioned_postgres_po
 async def test_interaction_sync_checkpoint_capped_at_30_days(provisioned_postgres_pool):
     """A checkpoint older than 30 days is capped to 30 days ago."""
     from butlers.core.state import state_set
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1728,7 +1728,7 @@ async def test_interaction_sync_checkpoint_capped_at_30_days(provisioned_postgre
 async def test_interaction_sync_writes_checkpoint_on_success(provisioned_postgres_pool):
     """After a successful run, the state store contains scan_window_end as the new checkpoint."""
     from butlers.core.state import state_get
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1742,7 +1742,7 @@ async def test_interaction_sync_writes_checkpoint_on_success(provisioned_postgre
 
 async def test_interaction_sync_window_end_is_iso8601(provisioned_postgres_pool):
     """scan_window_start and scan_window_end are valid ISO8601 strings."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1757,7 +1757,7 @@ async def test_interaction_sync_window_end_is_iso8601(provisioned_postgres_pool)
 async def test_interaction_sync_second_run_uses_first_checkpoint(provisioned_postgres_pool):
     """Second run uses the checkpoint written by the first run."""
     from butlers.core.state import state_get
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1782,7 +1782,7 @@ async def test_interaction_sync_second_run_uses_first_checkpoint(provisioned_pos
 
 async def test_interaction_sync_calendar_stats_key_present(provisioned_postgres_pool):
     """calendar_events_scanned is always present in the return stats."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1795,7 +1795,7 @@ async def test_interaction_sync_calendar_stats_key_present(provisioned_postgres_
 
 async def test_interaction_sync_calendar_no_events_returns_zero(provisioned_postgres_pool):
     """No calendar events → calendar_events_scanned remains 0."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1809,7 +1809,7 @@ async def test_interaction_sync_calendar_no_events_returns_zero(provisioned_post
 
 async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_postgres_pool):
     """A calendar event with a resolved attendee email logs an interaction fact."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1859,7 +1859,7 @@ async def test_interaction_sync_calendar_unresolved_attendee_skipped(
     provisioned_postgres_pool,
 ):
     """Attendee email not in contact_info increments skipped_unresolved."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1882,7 +1882,7 @@ async def test_interaction_sync_calendar_unresolved_attendee_skipped(
 
 async def test_interaction_sync_calendar_declined_event_excluded(provisioned_postgres_pool):
     """Events where the owner RSVP is declined are excluded (not counted)."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1915,7 +1915,7 @@ async def test_interaction_sync_calendar_declined_event_excluded(provisioned_pos
 
 async def test_interaction_sync_calendar_cancelled_event_excluded(provisioned_postgres_pool):
     """Events with status='cancelled' are excluded by the query filter."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1942,7 +1942,7 @@ async def test_interaction_sync_calendar_cancelled_event_excluded(provisioned_po
 
 async def test_interaction_sync_calendar_owner_attendee_excluded(provisioned_postgres_pool):
     """The owner's own attendee entry (self=True) is excluded from interaction logging."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -1973,7 +1973,7 @@ async def test_interaction_sync_calendar_owner_attendee_excluded(provisioned_pos
 
 async def test_interaction_sync_calendar_owner_contact_skipped(provisioned_postgres_pool):
     """Owner contact resolved via non-self email entry is counted as skipped_owner."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -2007,7 +2007,7 @@ async def test_interaction_sync_calendar_case_insensitive_email_match(
     provisioned_postgres_pool,
 ):
     """Attendee email matching against contact_info is case-insensitive."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -2036,7 +2036,7 @@ async def test_interaction_sync_calendar_multiple_attendees_same_event(
     provisioned_postgres_pool,
 ):
     """A single event with multiple resolved attendees creates one fact per contact."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -2078,7 +2078,7 @@ async def test_interaction_sync_calendar_event_outside_window_excluded(
     provisioned_postgres_pool,
 ):
     """Calendar events older than the lookback window are not processed."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -2108,7 +2108,7 @@ async def test_interaction_sync_calendar_event_outside_window_excluded(
 
 async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postgres_pool):
     """Running interaction sync twice for the same event does not create duplicate facts."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -2143,7 +2143,7 @@ async def test_interaction_sync_calendar_no_attendees_field_skipped(
     provisioned_postgres_pool,
 ):
     """Events with no attendees field in metadata are silently skipped."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)
@@ -2163,7 +2163,7 @@ async def test_interaction_sync_calendar_no_attendees_field_skipped(
 
 async def test_interaction_sync_combined_messages_and_calendar(provisioned_postgres_pool):
     """Messages and calendar events are both processed in a single run."""
-    from roster.relationship.jobs.relationship_jobs import run_interaction_sync
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
 
     async with provisioned_postgres_pool() as pool:
         await _setup_interaction_sync_schema(pool)

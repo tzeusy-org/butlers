@@ -68,7 +68,7 @@ class TestGetThreadAffinitySettings:
         pool = _make_pool(fetchrow_return=_fake_settings_row())
         db = _make_db(pool)
 
-        from roster.switchboard.api.router import get_thread_affinity_settings
+        from switchboard_api_router import get_thread_affinity_settings
 
         result = await get_thread_affinity_settings(db=db)
         assert result.enabled is True
@@ -85,7 +85,7 @@ class TestGetThreadAffinitySettings:
         )
         db = _make_db(pool)
 
-        from roster.switchboard.api.router import get_thread_affinity_settings
+        from switchboard_api_router import get_thread_affinity_settings
 
         result = await get_thread_affinity_settings(db=db)
         assert result.enabled is False
@@ -98,7 +98,7 @@ class TestGetThreadAffinitySettings:
         pool = _make_pool(fetchrow_return=None)
         db = _make_db(pool)
 
-        from roster.switchboard.api.router import get_thread_affinity_settings
+        from switchboard_api_router import get_thread_affinity_settings
 
         with pytest.raises(HTTPException) as exc_info:
             await get_thread_affinity_settings(db=db)
@@ -116,8 +116,8 @@ class TestUpdateThreadAffinitySettings:
         pool = _make_pool(fetchrow_return=_fake_settings_row(enabled=False))
         db = _make_db(pool)
 
-        from roster.switchboard.api.models import ThreadAffinitySettingsUpdate
-        from roster.switchboard.api.router import update_thread_affinity_settings
+        from switchboard_api_models import ThreadAffinitySettingsUpdate
+        from switchboard_api_router import update_thread_affinity_settings
 
         body = ThreadAffinitySettingsUpdate(enabled=False)
         result = await update_thread_affinity_settings(body=body, db=db)
@@ -128,8 +128,8 @@ class TestUpdateThreadAffinitySettings:
         pool = _make_pool(fetchrow_return=_fake_settings_row(ttl_days=14))
         db = _make_db(pool)
 
-        from roster.switchboard.api.models import ThreadAffinitySettingsUpdate
-        from roster.switchboard.api.router import update_thread_affinity_settings
+        from switchboard_api_models import ThreadAffinitySettingsUpdate
+        from switchboard_api_router import update_thread_affinity_settings
 
         body = ThreadAffinitySettingsUpdate(ttl_days=14)
         result = await update_thread_affinity_settings(body=body, db=db)
@@ -137,9 +137,8 @@ class TestUpdateThreadAffinitySettings:
 
     async def test_no_fields_raises_422(self) -> None:
         from fastapi import HTTPException
-
-        from roster.switchboard.api.models import ThreadAffinitySettingsUpdate
-        from roster.switchboard.api.router import update_thread_affinity_settings
+        from switchboard_api_models import ThreadAffinitySettingsUpdate
+        from switchboard_api_router import update_thread_affinity_settings
 
         pool = _make_pool()
         db = _make_db(pool)
@@ -152,9 +151,8 @@ class TestUpdateThreadAffinitySettings:
 
     async def test_zero_ttl_days_raises_422(self) -> None:
         from fastapi import HTTPException
-
-        from roster.switchboard.api.models import ThreadAffinitySettingsUpdate
-        from roster.switchboard.api.router import update_thread_affinity_settings
+        from switchboard_api_models import ThreadAffinitySettingsUpdate
+        from switchboard_api_router import update_thread_affinity_settings
 
         pool = _make_pool()
         db = _make_db(pool)
@@ -176,7 +174,7 @@ class TestListThreadAffinityOverrides:
         pool = _make_pool(fetchrow_return=_fake_settings_row(overrides={}))
         db = _make_db(pool)
 
-        from roster.switchboard.api.router import list_thread_affinity_overrides
+        from switchboard_api_router import list_thread_affinity_overrides
 
         result = await list_thread_affinity_overrides(db=db)
         assert result == []
@@ -189,7 +187,7 @@ class TestListThreadAffinityOverrides:
         )
         db = _make_db(pool)
 
-        from roster.switchboard.api.router import list_thread_affinity_overrides
+        from switchboard_api_router import list_thread_affinity_overrides
 
         result = await list_thread_affinity_overrides(db=db)
         assert len(result) == 2
@@ -201,7 +199,7 @@ class TestListThreadAffinityOverrides:
         pool = _make_pool(fetchrow_return=None)
         db = _make_db(pool)
 
-        from roster.switchboard.api.router import list_thread_affinity_overrides
+        from switchboard_api_router import list_thread_affinity_overrides
 
         result = await list_thread_affinity_overrides(db=db)
         assert result == []
@@ -217,8 +215,8 @@ class TestUpsertThreadAffinityOverride:
         pool = _make_pool()
         db = _make_db(pool)
 
-        from roster.switchboard.api.models import ThreadOverrideUpsert
-        from roster.switchboard.api.router import upsert_thread_affinity_override
+        from switchboard_api_models import ThreadOverrideUpsert
+        from switchboard_api_router import upsert_thread_affinity_override
 
         body = ThreadOverrideUpsert(mode="disabled")
         result = await upsert_thread_affinity_override(thread_id="thread-001", body=body, db=db)
@@ -231,8 +229,8 @@ class TestUpsertThreadAffinityOverride:
         pool = _make_pool()
         db = _make_db(pool)
 
-        from roster.switchboard.api.models import ThreadOverrideUpsert
-        from roster.switchboard.api.router import upsert_thread_affinity_override
+        from switchboard_api_models import ThreadOverrideUpsert
+        from switchboard_api_router import upsert_thread_affinity_override
 
         body = ThreadOverrideUpsert(mode="force:finance")
         result = await upsert_thread_affinity_override(
@@ -246,8 +244,8 @@ class TestUpsertThreadAffinityOverride:
         pool = _make_pool()
         db = _make_db(pool)
 
-        from roster.switchboard.api.models import ThreadOverrideUpsert
-        from roster.switchboard.api.router import upsert_thread_affinity_override
+        from switchboard_api_models import ThreadOverrideUpsert
+        from switchboard_api_router import upsert_thread_affinity_override
 
         body = ThreadOverrideUpsert(mode="disabled")
         result = await upsert_thread_affinity_override(thread_id="  thread-001  ", body=body, db=db)
@@ -256,9 +254,8 @@ class TestUpsertThreadAffinityOverride:
 
     async def test_raises_422_for_empty_thread_id(self) -> None:
         from fastapi import HTTPException
-
-        from roster.switchboard.api.models import ThreadOverrideUpsert
-        from roster.switchboard.api.router import upsert_thread_affinity_override
+        from switchboard_api_models import ThreadOverrideUpsert
+        from switchboard_api_router import upsert_thread_affinity_override
 
         pool = _make_pool()
         db = _make_db(pool)
@@ -280,7 +277,7 @@ class TestDeleteThreadAffinityOverride:
         pool = _make_pool()
         db = _make_db(pool)
 
-        from roster.switchboard.api.router import delete_thread_affinity_override
+        from switchboard_api_router import delete_thread_affinity_override
 
         # Should not raise
         await delete_thread_affinity_override(thread_id="thread-001", db=db)
@@ -288,8 +285,7 @@ class TestDeleteThreadAffinityOverride:
 
     async def test_delete_raises_422_for_empty_thread_id(self) -> None:
         from fastapi import HTTPException
-
-        from roster.switchboard.api.router import delete_thread_affinity_override
+        from switchboard_api_router import delete_thread_affinity_override
 
         pool = _make_pool()
         db = _make_db(pool)
@@ -301,8 +297,7 @@ class TestDeleteThreadAffinityOverride:
 
     async def test_delete_raises_422_for_whitespace_thread_id(self) -> None:
         from fastapi import HTTPException
-
-        from roster.switchboard.api.router import delete_thread_affinity_override
+        from switchboard_api_router import delete_thread_affinity_override
 
         pool = _make_pool()
         db = _make_db(pool)
@@ -320,31 +315,31 @@ class TestDeleteThreadAffinityOverride:
 
 class TestThreadOverrideUpsertValidation:
     def test_disabled_mode_valid(self) -> None:
-        from roster.switchboard.api.models import ThreadOverrideUpsert
+        from switchboard_api_models import ThreadOverrideUpsert
 
         m = ThreadOverrideUpsert(mode="disabled")
         assert m.mode == "disabled"
 
     def test_force_mode_with_butler_valid(self) -> None:
-        from roster.switchboard.api.models import ThreadOverrideUpsert
+        from switchboard_api_models import ThreadOverrideUpsert
 
         m = ThreadOverrideUpsert(mode="force:finance")
         assert m.mode == "force:finance"
 
     def test_force_mode_without_butler_invalid(self) -> None:
-        from roster.switchboard.api.models import ThreadOverrideUpsert
+        from switchboard_api_models import ThreadOverrideUpsert
 
         with pytest.raises(Exception):
             ThreadOverrideUpsert(mode="force:")
 
     def test_unknown_mode_invalid(self) -> None:
-        from roster.switchboard.api.models import ThreadOverrideUpsert
+        from switchboard_api_models import ThreadOverrideUpsert
 
         with pytest.raises(Exception):
             ThreadOverrideUpsert(mode="allow")
 
     def test_empty_mode_invalid(self) -> None:
-        from roster.switchboard.api.models import ThreadOverrideUpsert
+        from switchboard_api_models import ThreadOverrideUpsert
 
         with pytest.raises(Exception):
             ThreadOverrideUpsert(mode="")

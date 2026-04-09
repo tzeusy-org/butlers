@@ -214,7 +214,7 @@ async def _insert_document(
 
 async def test_upcoming_travel_check_no_trips(provisioned_postgres_pool):
     """No-op: returns zeros when no upcoming trips exist."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -228,7 +228,7 @@ async def test_upcoming_travel_check_no_trips(provisioned_postgres_pool):
 
 async def test_upcoming_travel_check_no_trips_in_window(provisioned_postgres_pool):
     """Trips starting beyond 7 days are excluded."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -244,7 +244,7 @@ async def test_upcoming_travel_check_no_trips_in_window(provisioned_postgres_poo
 
 async def test_upcoming_travel_check_excludes_completed(provisioned_postgres_pool):
     """Completed or cancelled trips are excluded."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -259,7 +259,7 @@ async def test_upcoming_travel_check_excludes_completed(provisioned_postgres_poo
 
 async def test_upcoming_travel_check_trip_found(provisioned_postgres_pool):
     """Planned trip within 7 days is detected."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -273,7 +273,7 @@ async def test_upcoming_travel_check_trip_found(provisioned_postgres_pool):
 
 async def test_upcoming_travel_check_missing_boarding_pass(provisioned_postgres_pool):
     """Missing boarding pass is surfaced for flight trips."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -296,7 +296,7 @@ async def test_upcoming_travel_check_no_missing_boarding_pass_when_attached(
     provisioned_postgres_pool,
 ):
     """Boarding pass action is not raised when document is already attached."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -314,7 +314,7 @@ async def test_upcoming_travel_check_no_missing_boarding_pass_when_attached(
 
 async def test_upcoming_travel_check_unassigned_seat(provisioned_postgres_pool):
     """Unassigned seat action is surfaced when flight leg has no seat."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -331,7 +331,7 @@ async def test_upcoming_travel_check_unassigned_seat(provisioned_postgres_pool):
 
 async def test_upcoming_travel_check_no_unassigned_seat_when_assigned(provisioned_postgres_pool):
     """Unassigned seat action is not raised when a seat is assigned."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -349,7 +349,7 @@ async def test_upcoming_travel_check_no_unassigned_seat_when_assigned(provisione
 
 async def test_upcoming_travel_check_check_in_pending(provisioned_postgres_pool):
     """Check-in pending action is surfaced for flights departing within 24h."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -375,7 +375,7 @@ async def test_upcoming_travel_check_check_in_pending(provisioned_postgres_pool)
 
 async def test_upcoming_travel_check_no_check_in_for_future_flight(provisioned_postgres_pool):
     """Check-in pending action is NOT raised for flights departing beyond 24h."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -402,7 +402,7 @@ async def test_upcoming_travel_check_no_check_in_for_future_flight(provisioned_p
 
 async def test_upcoming_travel_check_non_flight_no_boarding_pass_check(provisioned_postgres_pool):
     """Trips with only non-flight legs do not generate a boarding pass action."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -419,7 +419,7 @@ async def test_upcoming_travel_check_non_flight_no_boarding_pass_check(provision
 
 async def test_upcoming_travel_check_multiple_trips(provisioned_postgres_pool):
     """Multiple upcoming trips are all scanned."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -439,7 +439,7 @@ async def test_upcoming_travel_check_multiple_trips(provisioned_postgres_pool):
 
 async def test_upcoming_travel_check_action_includes_trip_context(provisioned_postgres_pool):
     """Pretrip actions include trip_id, trip_name, and days_until_departure."""
-    from roster.travel.jobs.travel_jobs import run_upcoming_travel_check
+    from butlers.jobs._roster.travel_jobs import run_upcoming_travel_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -467,7 +467,7 @@ async def test_upcoming_travel_check_action_includes_trip_context(provisioned_po
 
 async def test_trip_document_expiry_no_documents(provisioned_postgres_pool):
     """No-op: returns zeros when no documents exist."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -483,7 +483,7 @@ async def test_trip_document_expiry_no_documents(provisioned_postgres_pool):
 
 async def test_trip_document_expiry_no_expiring_within_90_days(provisioned_postgres_pool):
     """Documents expiring beyond 90 days are excluded."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -503,7 +503,7 @@ async def test_trip_document_expiry_no_expiring_within_90_days(provisioned_postg
 
 async def test_trip_document_expiry_urgent_30_days(provisioned_postgres_pool):
     """Document expiring within 30 days is classified as urgent."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -527,7 +527,7 @@ async def test_trip_document_expiry_urgent_30_days(provisioned_postgres_pool):
 
 async def test_trip_document_expiry_warning_60_days(provisioned_postgres_pool):
     """Document expiring within 31-60 days is classified as warning."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -551,7 +551,7 @@ async def test_trip_document_expiry_warning_60_days(provisioned_postgres_pool):
 
 async def test_trip_document_expiry_informational_90_days(provisioned_postgres_pool):
     """Document expiring within 61-90 days is classified as informational."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -575,7 +575,7 @@ async def test_trip_document_expiry_informational_90_days(provisioned_postgres_p
 
 async def test_trip_document_expiry_graduated_urgency(provisioned_postgres_pool):
     """Multiple documents at different expiry windows are classified correctly."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -607,7 +607,7 @@ async def test_trip_document_expiry_graduated_urgency(provisioned_postgres_pool)
 
 async def test_trip_document_expiry_excludes_receipt_type(provisioned_postgres_pool):
     """Receipt documents are excluded from expiry scans."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -628,7 +628,7 @@ async def test_trip_document_expiry_excludes_receipt_type(provisioned_postgres_p
 
 async def test_trip_document_expiry_excludes_null_expiry(provisioned_postgres_pool):
     """Documents without an expiry_date are excluded."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -644,7 +644,7 @@ async def test_trip_document_expiry_excludes_null_expiry(provisioned_postgres_po
 
 async def test_trip_document_expiry_document_has_linked_trip_context(provisioned_postgres_pool):
     """Expiring document result includes trip_id, trip_name, and document_type."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -671,7 +671,7 @@ async def test_trip_document_expiry_document_has_linked_trip_context(provisioned
 
 async def test_trip_document_expiry_sorted_by_expiry_date(provisioned_postgres_pool):
     """Documents are returned sorted by expiry_date ascending."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -699,7 +699,7 @@ async def test_trip_document_expiry_sorted_by_expiry_date(provisioned_postgres_p
 
 async def test_trip_document_expiry_expiring_today_is_urgent(provisioned_postgres_pool):
     """Document expiring today is classified as urgent."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -721,7 +721,7 @@ async def test_trip_document_expiry_expiring_today_is_urgent(provisioned_postgre
 
 async def test_trip_document_expiry_insurance_included(provisioned_postgres_pool):
     """Insurance documents are included in expiry scans."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -741,7 +741,7 @@ async def test_trip_document_expiry_insurance_included(provisioned_postgres_pool
 
 async def test_trip_document_expiry_boarding_pass_included(provisioned_postgres_pool):
     """Boarding pass documents are included in expiry scans."""
-    from roster.travel.jobs.travel_jobs import run_trip_document_expiry
+    from butlers.jobs._roster.travel_jobs import run_trip_document_expiry
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -778,7 +778,7 @@ async def _setup_insight_tables(pool) -> None:
 
 async def test_insight_scan_no_trips_no_documents(provisioned_postgres_pool):
     """No-op: returns zeros when no trips or documents exist."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -795,7 +795,7 @@ async def test_insight_scan_no_trips_no_documents(provisioned_postgres_pool):
 
 async def test_insight_scan_excludes_completed_trips(provisioned_postgres_pool):
     """Completed and cancelled trips do not generate pre-trip insights."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -811,7 +811,7 @@ async def test_insight_scan_excludes_completed_trips(provisioned_postgres_pool):
 
 async def test_insight_scan_excludes_trips_beyond_window(provisioned_postgres_pool):
     """Trips departing beyond 7 days are excluded from pre-trip insights."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -826,7 +826,7 @@ async def test_insight_scan_excludes_trips_beyond_window(provisioned_postgres_po
 
 async def test_insight_scan_excludes_past_trips(provisioned_postgres_pool):
     """Trips with departure dates in the past are excluded."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -846,7 +846,7 @@ async def test_insight_scan_excludes_past_trips(provisioned_postgres_pool):
 
 async def test_insight_scan_pretrip_priority_critical_1_day(provisioned_postgres_pool):
     """Trip departing in 1 day gets priority 92 (time-critical)."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -873,7 +873,7 @@ async def test_insight_scan_pretrip_priority_critical_1_day(provisioned_postgres
 
 async def test_insight_scan_pretrip_priority_urgent_3_days(provisioned_postgres_pool):
     """Trip departing in 3 days gets priority 78."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -895,7 +895,7 @@ async def test_insight_scan_pretrip_priority_urgent_3_days(provisioned_postgres_
 
 async def test_insight_scan_pretrip_priority_info_7_days(provisioned_postgres_pool):
     """Trip departing in 5-7 days gets priority 65."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -917,7 +917,7 @@ async def test_insight_scan_pretrip_priority_info_7_days(provisioned_postgres_po
 
 async def test_insight_scan_pretrip_dedup_key_format(provisioned_postgres_pool):
     """Pre-trip dedup_key follows travel:pre-trip:{trip-id}:{departure-date} format."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -940,7 +940,7 @@ async def test_insight_scan_pretrip_dedup_key_format(provisioned_postgres_pool):
 
 async def test_insight_scan_pretrip_message_references_destination(provisioned_postgres_pool):
     """Pre-trip message references the destination and pre-trip checklist."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -966,7 +966,7 @@ async def test_insight_scan_pretrip_message_references_destination(provisioned_p
 
 async def test_insight_scan_pretrip_expires_at_is_departure_date(provisioned_postgres_pool):
     """Pre-trip candidate expires_at is set to the departure date."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -992,7 +992,7 @@ async def test_insight_scan_pretrip_expires_at_is_departure_date(provisioned_pos
 
 async def test_insight_scan_document_expiry_30_days_priority_85(provisioned_postgres_pool):
     """Visa expiring within 30 days generates priority 85 insight."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1016,7 +1016,7 @@ async def test_insight_scan_document_expiry_30_days_priority_85(provisioned_post
 
 async def test_insight_scan_document_expiry_60_days_priority_65(provisioned_postgres_pool):
     """Document expiring within 31-60 days generates priority 65 insight."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1040,7 +1040,7 @@ async def test_insight_scan_document_expiry_60_days_priority_65(provisioned_post
 
 async def test_insight_scan_document_expiry_90_days_priority_45(provisioned_postgres_pool):
     """Document expiring within 61-90 days generates priority 45 insight."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1064,7 +1064,7 @@ async def test_insight_scan_document_expiry_90_days_priority_45(provisioned_post
 
 async def test_insight_scan_document_expiry_dedup_key_format(provisioned_postgres_pool):
     """Document expiry dedup_key follows travel:document-expiry:{type}:{expiry-date} format."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1086,7 +1086,7 @@ async def test_insight_scan_document_expiry_dedup_key_format(provisioned_postgre
 
 async def test_insight_scan_document_excludes_receipt_type(provisioned_postgres_pool):
     """Receipt documents are excluded from document expiry insight scan."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1112,7 +1112,7 @@ async def test_insight_scan_document_excludes_receipt_type(provisioned_postgres_
 
 async def test_insight_scan_document_excludes_beyond_90_days(provisioned_postgres_pool):
     """Documents expiring beyond 90 days are excluded from insight scan."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1143,7 +1143,7 @@ async def test_insight_scan_document_excludes_beyond_90_days(provisioned_postgre
 
 async def test_insight_scan_verbosity_off_exits_early(provisioned_postgres_pool):
     """When verbosity=off, first candidate returns filtered and job exits early."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1175,7 +1175,7 @@ async def test_insight_scan_multiple_trips_generate_multiple_candidates(
     provisioned_postgres_pool,
 ):
     """Multiple trips within window each generate their own pre-trip candidate."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1196,7 +1196,7 @@ async def test_insight_scan_combined_pretrip_and_document_candidates(
     provisioned_postgres_pool,
 ):
     """Pre-trip and document expiry candidates coexist in one scan run."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)
@@ -1225,7 +1225,7 @@ async def test_insight_scan_combined_pretrip_and_document_candidates(
 
 async def test_insight_scan_result_keys_present(provisioned_postgres_pool):
     """Result dict always contains all expected keys."""
-    from roster.travel.jobs.travel_jobs import run_insight_scan
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_travel_schema(pool)

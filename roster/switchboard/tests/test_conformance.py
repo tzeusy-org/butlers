@@ -461,7 +461,7 @@ class TestTimeoutScenarios:
             )
 
             # Capture to dead-letter queue
-            from roster.switchboard.tools.dead_letter.capture import (
+            from butlers.tools.switchboard.dead_letter.capture import (
                 capture_to_dead_letter,
             )
 
@@ -493,10 +493,10 @@ class TestDeadLetterReplay:
     async def test_capture_and_replay_flow(self, switchboard_pool):
         """Test capturing a failed request and replaying it."""
         async with switchboard_pool.acquire() as conn:
-            from roster.switchboard.tools.dead_letter.capture import (
+            from butlers.tools.switchboard.dead_letter.capture import (
                 capture_to_dead_letter,
             )
-            from roster.switchboard.tools.dead_letter.replay import (
+            from butlers.tools.switchboard.dead_letter.replay import (
                 replay_dead_letter_request,
             )
 
@@ -594,10 +594,10 @@ class TestDeadLetterReplay:
     async def test_replay_idempotency(self, switchboard_pool):
         """Test that replaying an already-replayed request fails."""
         async with switchboard_pool.acquire() as conn:
-            from roster.switchboard.tools.dead_letter.capture import (
+            from butlers.tools.switchboard.dead_letter.capture import (
                 capture_to_dead_letter,
             )
-            from roster.switchboard.tools.dead_letter.replay import (
+            from butlers.tools.switchboard.dead_letter.replay import (
                 replay_dead_letter_request,
             )
 
@@ -659,7 +659,7 @@ class TestOperatorControls:
     async def test_manual_reroute(self, switchboard_pool):
         """Test manual reroute of a request."""
         async with switchboard_pool.acquire() as conn:
-            from roster.switchboard.tools.operator.controls import manual_reroute_request
+            from butlers.tools.switchboard.operator.controls import manual_reroute_request
 
             request_id = uuid.uuid4()
             await conn.execute(
@@ -715,7 +715,7 @@ class TestOperatorControls:
     async def test_cancel_request(self, switchboard_pool):
         """Test cancelling an in-flight request."""
         async with switchboard_pool.acquire() as conn:
-            from roster.switchboard.tools.operator.controls import cancel_request
+            from butlers.tools.switchboard.operator.controls import cancel_request
 
             request_id = uuid.uuid4()
             await conn.execute(
@@ -755,7 +755,7 @@ class TestOperatorControls:
     async def test_force_complete(self, switchboard_pool):
         """Test force-completing a request."""
         async with switchboard_pool.acquire() as conn:
-            from roster.switchboard.tools.operator.controls import (
+            from butlers.tools.switchboard.operator.controls import (
                 force_complete_request,
             )
 
@@ -798,7 +798,7 @@ class TestOperatorControls:
     async def test_cannot_reroute_terminal_request(self, switchboard_pool):
         """Test that terminal requests cannot be rerouted."""
         async with switchboard_pool.acquire() as conn:
-            from roster.switchboard.tools.operator.controls import manual_reroute_request
+            from butlers.tools.switchboard.operator.controls import manual_reroute_request
 
             request_id = uuid.uuid4()
             await conn.execute(

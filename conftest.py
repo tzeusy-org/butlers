@@ -27,6 +27,26 @@ __all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
 
 _default_registry()
 
+# Pre-load roster job modules so ``from butlers.jobs._roster.<butler>_jobs``
+# imports work in tests without relying on roster/ being a namespace package
+# on sys.path (which fails in Docker).
+from butlers.jobs._roster_loader import load_roster_jobs as _load_roster_jobs  # noqa: E402
+
+for _butler in ("finance", "health", "relationship", "travel"):
+    try:
+        _load_roster_jobs(_butler)
+    except FileNotFoundError:
+        pass
+
+# Pre-load roster API routers so ``from butlers.api._roster.<butler>.router``
+# and ``from butlers.api._roster.<butler>.models`` work in tests.
+from butlers.api.router_discovery import discover_butler_routers as _discover_routers  # noqa: E402
+
+try:
+    _discover_routers()
+except Exception:
+    pass
+
 
 @pytest.fixture(autouse=True)
 def _mock_s3_startup_check(monkeypatch):

@@ -103,7 +103,7 @@ class TestImportTransactionsFromFile:
     """Tests for basic functionality of import_transactions_from_file."""
 
     async def test_returns_import_batch_id(self):
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -115,7 +115,7 @@ class TestImportTransactionsFromFile:
             os.unlink(path)
 
     async def test_detects_chase_format(self):
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -126,7 +126,7 @@ class TestImportTransactionsFromFile:
             os.unlink(path)
 
     async def test_detects_amex_format(self):
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(AMEX_CSV)
         try:
@@ -137,7 +137,7 @@ class TestImportTransactionsFromFile:
             os.unlink(path)
 
     async def test_detects_capital_one_format(self):
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CAPITAL_ONE_CSV)
         try:
@@ -148,7 +148,7 @@ class TestImportTransactionsFromFile:
             os.unlink(path)
 
     async def test_detects_generic_format(self):
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(GENERIC_CSV)
         try:
@@ -159,7 +159,7 @@ class TestImportTransactionsFromFile:
             os.unlink(path)
 
     async def test_imports_four_rows_from_chase(self):
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -172,7 +172,7 @@ class TestImportTransactionsFromFile:
             os.unlink(path)
 
     async def test_result_has_all_required_keys(self):
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -194,7 +194,7 @@ class TestImportTransactionsFromFile:
 
     async def test_500_row_batch_boundary(self):
         """501 rows triggers exactly two batches (500 + 1)."""
-        from roster.finance.tools.data_import import _BATCH_SIZE, import_transactions_from_file
+        from butlers.tools.finance.data_import import _BATCH_SIZE, import_transactions_from_file
 
         assert _BATCH_SIZE == 500
         lines = ["Transaction Date,Description,Amount,Balance"]
@@ -215,7 +215,7 @@ class TestImportTransactionsFromFile:
         content = "txn_date,vendor,charge\n2024-01-15,Coffee Shop,-5.00\n"
         path = _write_tmp_csv(content)
         try:
-            from roster.finance.tools.data_import import import_transactions_from_file
+            from butlers.tools.finance.data_import import import_transactions_from_file
 
             pool = _make_pool()
             result = await import_transactions_from_file(
@@ -231,7 +231,7 @@ class TestImportTransactionsFromFile:
         """The supplied currency is stored on every imported row."""
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            from roster.finance.tools.data_import import import_transactions_from_file
+            from butlers.tools.finance.data_import import import_transactions_from_file
 
             inserted_rows: list = []
 
@@ -260,7 +260,7 @@ class TestImportTransactionsFromFile:
 class TestImportDeduplication:
     async def test_duplicate_row_is_skipped(self):
         """A row matching an existing transaction is counted as skipped."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -272,7 +272,7 @@ class TestImportDeduplication:
                 return set(range(len(batch)))
 
             with patch(
-                "roster.finance.tools.data_import._check_duplicates_batch",
+                "butlers.tools.finance.data_import._check_duplicates_batch",
                 side_effect=all_duplicates,
             ):
                 result = await import_transactions_from_file(pool, file_path=path)
@@ -283,7 +283,7 @@ class TestImportDeduplication:
 
     async def test_no_duplicates_all_imported(self):
         """When no duplicates exist, all rows are inserted."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -305,7 +305,7 @@ class TestImportDeduplication:
 class TestMerchantMappingAutoApply:
     async def test_merchant_mapping_applied_to_uncategorized_rows(self):
         """Uncategorized rows get category from merchant_mappings lookup."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(UNCATEGORIZED_CSV)
         try:
@@ -339,7 +339,7 @@ class TestMerchantMappingAutoApply:
 
     async def test_no_merchant_mappings_applied_when_table_missing(self):
         """When merchant_mappings table is absent, auto-apply is skipped."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(UNCATEGORIZED_CSV)
         try:
@@ -356,7 +356,7 @@ class TestMerchantMappingAutoApply:
 
     async def test_already_categorized_rows_not_overridden(self):
         """Rows that already have a non-'uncategorized' category are not touched."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         # Chase CSV has categories (food, travel, entertainment, income)
         path = _write_tmp_csv(CHASE_CSV)
@@ -375,7 +375,7 @@ class TestMerchantMappingAutoApply:
 
     async def test_merchant_mapping_lookup_failure_does_not_abort_import(self):
         """A merchant mapping lookup error is swallowed; import proceeds."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(UNCATEGORIZED_CSV)
         try:
@@ -412,7 +412,7 @@ class TestMerchantMappingAutoApply:
 class TestPostImportTriggers:
     async def test_spending_summaries_refreshed_after_import(self):
         """spending_summaries is refreshed when rows are imported."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -447,7 +447,7 @@ class TestPostImportTriggers:
 
     async def test_spending_summaries_not_refreshed_when_mv_absent(self):
         """mv_refreshed is False when spending_summaries MV does not exist."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -479,7 +479,7 @@ class TestPostImportTriggers:
 
         path = _write_tmp_csv(content)
         try:
-            from roster.finance.tools.data_import import import_transactions_from_file
+            from butlers.tools.finance.data_import import import_transactions_from_file
 
             pool = MagicMock()
             pool.execute = AsyncMock(return_value="INSERT 0 1")
@@ -493,7 +493,7 @@ class TestPostImportTriggers:
                 return {"status": "ok"}
 
             with patch(
-                "roster.finance.tools.data_import._trigger_compute_baselines",
+                "butlers.tools.finance.data_import._trigger_compute_baselines",
                 new=AsyncMock(return_value=True),
             ):
                 result = await import_transactions_from_file(pool, file_path=path)
@@ -505,7 +505,7 @@ class TestPostImportTriggers:
 
     async def test_compute_baselines_not_triggered_for_less_than_50_rows(self):
         """compute_baselines is NOT called when fewer than 50 rows are imported."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)  # 4 rows
         try:
@@ -515,7 +515,7 @@ class TestPostImportTriggers:
             pool.fetchval = AsyncMock(return_value=False)
 
             with patch(
-                "roster.finance.tools.data_import._trigger_compute_baselines",
+                "butlers.tools.finance.data_import._trigger_compute_baselines",
                 new=AsyncMock(return_value=True),
             ) as mock_trigger:
                 result = await import_transactions_from_file(pool, file_path=path)
@@ -526,7 +526,7 @@ class TestPostImportTriggers:
 
     async def test_no_triggers_when_nothing_imported(self):
         """Post-import triggers are skipped when imported == 0."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -539,15 +539,15 @@ class TestPostImportTriggers:
 
             with (
                 patch(
-                    "roster.finance.tools.data_import._check_duplicates_batch",
+                    "butlers.tools.finance.data_import._check_duplicates_batch",
                     side_effect=all_duplicates,
                 ),
                 patch(
-                    "roster.finance.tools.data_import._refresh_spending_summaries",
+                    "butlers.tools.finance.data_import._refresh_spending_summaries",
                     new=AsyncMock(return_value=True),
                 ) as mock_refresh,
                 patch(
-                    "roster.finance.tools.data_import._trigger_compute_baselines",
+                    "butlers.tools.finance.data_import._trigger_compute_baselines",
                     new=AsyncMock(return_value=True),
                 ) as mock_baselines,
             ):
@@ -567,7 +567,7 @@ class TestPostImportTriggers:
 class TestDryRunMode:
     async def test_dry_run_no_inserts(self):
         """Dry run does not insert any rows."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -593,7 +593,7 @@ class TestDryRunMode:
 
         path = _write_tmp_csv(content)
         try:
-            from roster.finance.tools.data_import import import_transactions_from_file
+            from butlers.tools.finance.data_import import import_transactions_from_file
 
             pool = MagicMock()
             pool.fetchrow = AsyncMock(return_value=None)
@@ -607,7 +607,7 @@ class TestDryRunMode:
 
     async def test_dry_run_preview_includes_is_duplicate_flag(self):
         """Each preview item has the is_duplicate boolean field."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -625,7 +625,7 @@ class TestDryRunMode:
 
     async def test_dry_run_duplicate_flagged_correctly(self):
         """A preview row that matches an existing transaction has is_duplicate=True."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -646,7 +646,7 @@ class TestDryRunMode:
 
     async def test_dry_run_preview_item_shape(self):
         """Each preview item has the expected fields."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -664,7 +664,7 @@ class TestDryRunMode:
 
     async def test_dry_run_returns_counts(self):
         """Dry run result includes total, parsed, parse_errors counts."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -683,7 +683,7 @@ class TestDryRunMode:
 
     async def test_dry_run_includes_merchant_mappings_applied(self):
         """Dry run also shows how many merchant mappings would be applied."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(UNCATEGORIZED_CSV)
         try:
@@ -699,7 +699,7 @@ class TestDryRunMode:
             pool.fetchval = AsyncMock(side_effect=fake_fetchval)
 
             with patch(
-                "roster.finance.tools.data_import._lookup_merchant_category",
+                "butlers.tools.finance.data_import._lookup_merchant_category",
                 new=AsyncMock(return_value="dining"),
             ):
                 result = await import_transactions_from_file(pool, file_path=path, dry_run=True)
@@ -717,7 +717,7 @@ class TestDryRunMode:
 class TestErrorHandling:
     async def test_missing_file_returns_error(self):
         """Non-existent file path returns structured error, not exception."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         pool = _make_pool()
         result = await import_transactions_from_file(pool, file_path="/nonexistent/path/import.csv")
@@ -729,7 +729,7 @@ class TestErrorHandling:
         bad_csv = "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n"
         path = _write_tmp_csv(bad_csv)
         try:
-            from roster.finance.tools.data_import import import_transactions_from_file
+            from butlers.tools.finance.data_import import import_transactions_from_file
 
             pool = _make_pool()
             result = await import_transactions_from_file(pool, file_path=path)
@@ -740,7 +740,7 @@ class TestErrorHandling:
 
     async def test_db_error_during_insert_captured(self):
         """DB insert failure is captured in error_details."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
@@ -756,7 +756,7 @@ class TestErrorHandling:
 
     async def test_import_result_always_has_batch_id(self):
         """Result always contains import_batch_id (even on errors)."""
-        from roster.finance.tools.data_import import import_transactions_from_file
+        from butlers.tools.finance.data_import import import_transactions_from_file
 
         pool = _make_pool()
         result = await import_transactions_from_file(pool, file_path="/nonexistent/file.csv")
@@ -771,7 +771,7 @@ class TestErrorHandling:
 
 class TestLoadCsvFromFile:
     def test_reads_utf8_file(self):
-        from roster.finance.tools.data_import import _load_csv_from_file
+        from butlers.tools.finance.data_import import _load_csv_from_file
 
         content = "Date,Merchant,Amount\n2024-01-15,Coffee,-5.00\n"
         path = _write_tmp_csv(content)
@@ -783,7 +783,7 @@ class TestLoadCsvFromFile:
 
     def test_reads_bom_utf8_file(self):
         """UTF-8 with BOM (common in Windows-exported CSVs)."""
-        from roster.finance.tools.data_import import _load_csv_from_file
+        from butlers.tools.finance.data_import import _load_csv_from_file
 
         content = "\ufeffDate,Merchant,Amount\n2024-01-15,Coffee,-5.00\n"
         fd, path = tempfile.mkstemp(suffix=".csv")
@@ -797,7 +797,7 @@ class TestLoadCsvFromFile:
             os.unlink(path)
 
     def test_raises_for_missing_file(self):
-        from roster.finance.tools.data_import import _load_csv_from_file
+        from butlers.tools.finance.data_import import _load_csv_from_file
 
         with pytest.raises(FileNotFoundError):
             _load_csv_from_file("/nonexistent/path/to/file.csv")
@@ -810,7 +810,7 @@ class TestLoadCsvFromFile:
 
 class TestLookupMerchantCategory:
     async def test_returns_category_when_found(self):
-        from roster.finance.tools.data_import import _lookup_merchant_category
+        from butlers.tools.finance.data_import import _lookup_merchant_category
 
         pool = MagicMock()
         row = MagicMock()
@@ -821,7 +821,7 @@ class TestLookupMerchantCategory:
         assert result == "dining"
 
     async def test_returns_none_when_no_mapping(self):
-        from roster.finance.tools.data_import import _lookup_merchant_category
+        from butlers.tools.finance.data_import import _lookup_merchant_category
 
         pool = MagicMock()
         pool.fetchrow = AsyncMock(return_value=None)
@@ -837,7 +837,7 @@ class TestLookupMerchantCategory:
 
 class TestApplyMerchantMappings:
     async def test_no_mapping_when_table_absent(self):
-        from roster.finance.tools.data_import import _apply_merchant_mappings
+        from butlers.tools.finance.data_import import _apply_merchant_mappings
 
         pool = MagicMock()
         pool.fetchval = AsyncMock(return_value=False)  # table doesn't exist
@@ -848,7 +848,7 @@ class TestApplyMerchantMappings:
         assert result_rows[0]["category"] == "uncategorized"
 
     async def test_applies_mapping_to_uncategorized(self):
-        from roster.finance.tools.data_import import _apply_merchant_mappings
+        from butlers.tools.finance.data_import import _apply_merchant_mappings
 
         pool = MagicMock()
         pool.fetchval = AsyncMock(return_value=True)  # table exists
@@ -865,7 +865,7 @@ class TestApplyMerchantMappings:
         assert result_rows[0]["category"] == "groceries"
 
     async def test_skips_already_categorized_rows(self):
-        from roster.finance.tools.data_import import _apply_merchant_mappings
+        from butlers.tools.finance.data_import import _apply_merchant_mappings
 
         pool = MagicMock()
         pool.fetchval = AsyncMock(return_value=True)  # table exists
@@ -879,7 +879,7 @@ class TestApplyMerchantMappings:
 
     async def test_deduplicates_merchant_lookups(self):
         """Multiple rows with the same merchant only trigger one DB lookup."""
-        from roster.finance.tools.data_import import _apply_merchant_mappings
+        from butlers.tools.finance.data_import import _apply_merchant_mappings
 
         pool = MagicMock()
         pool.fetchval = AsyncMock(return_value=True)

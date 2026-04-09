@@ -199,7 +199,7 @@ async def _insert_transaction(
 
 async def test_upcoming_bills_check_no_bills(provisioned_postgres_pool):
     """No-op: returns zeros when bills table is empty."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -215,7 +215,7 @@ async def test_upcoming_bills_check_no_bills(provisioned_postgres_pool):
 
 async def test_upcoming_bills_check_due_soon(provisioned_postgres_pool):
     """Bills due within 14 days are found and classified as due_soon."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -238,7 +238,7 @@ async def test_upcoming_bills_check_due_soon(provisioned_postgres_pool):
 
 async def test_upcoming_bills_check_due_today(provisioned_postgres_pool):
     """Bills due today are classified as due_today."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -254,7 +254,7 @@ async def test_upcoming_bills_check_due_today(provisioned_postgres_pool):
 
 async def test_upcoming_bills_check_overdue_status(provisioned_postgres_pool):
     """Bills with status=overdue are classified as overdue."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -276,7 +276,7 @@ async def test_upcoming_bills_check_overdue_status(provisioned_postgres_pool):
 
 async def test_upcoming_bills_check_past_due_pending(provisioned_postgres_pool):
     """Bills with past due_date and status=pending are classified as overdue."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -296,7 +296,7 @@ async def test_upcoming_bills_check_past_due_pending(provisioned_postgres_pool):
 
 async def test_upcoming_bills_check_excludes_paid(provisioned_postgres_pool):
     """Paid bills are excluded from upcoming bills check."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -315,7 +315,7 @@ async def test_upcoming_bills_check_excludes_paid(provisioned_postgres_pool):
 
 async def test_upcoming_bills_check_excludes_far_future(provisioned_postgres_pool):
     """Bills due beyond 14 days are not included."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -334,7 +334,7 @@ async def test_upcoming_bills_check_excludes_far_future(provisioned_postgres_poo
 
 async def test_upcoming_bills_check_mixed_urgency(provisioned_postgres_pool):
     """Mixed urgency bill set is classified correctly."""
-    from roster.finance.jobs.finance_jobs import run_upcoming_bills_check
+    from butlers.jobs._roster.finance_jobs import run_upcoming_bills_check
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -367,7 +367,7 @@ async def test_upcoming_bills_check_mixed_urgency(provisioned_postgres_pool):
 
 async def test_subscription_renewal_alerts_no_subscriptions(provisioned_postgres_pool):
     """No-op: returns zeros when subscriptions table is empty."""
-    from roster.finance.jobs.finance_jobs import run_subscription_renewal_alerts
+    from butlers.jobs._roster.finance_jobs import run_subscription_renewal_alerts
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -380,7 +380,7 @@ async def test_subscription_renewal_alerts_no_subscriptions(provisioned_postgres
 
 async def test_subscription_renewal_alerts_upcoming_renewal(provisioned_postgres_pool):
     """Active subscriptions renewing within 7 days are found."""
-    from roster.finance.jobs.finance_jobs import run_subscription_renewal_alerts
+    from butlers.jobs._roster.finance_jobs import run_subscription_renewal_alerts
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -400,7 +400,7 @@ async def test_subscription_renewal_alerts_upcoming_renewal(provisioned_postgres
 
 async def test_subscription_renewal_alerts_renewing_today(provisioned_postgres_pool):
     """Subscriptions renewing today are included."""
-    from roster.finance.jobs.finance_jobs import run_subscription_renewal_alerts
+    from butlers.jobs._roster.finance_jobs import run_subscription_renewal_alerts
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -414,7 +414,7 @@ async def test_subscription_renewal_alerts_renewing_today(provisioned_postgres_p
 
 async def test_subscription_renewal_alerts_excludes_cancelled(provisioned_postgres_pool):
     """Cancelled subscriptions are excluded."""
-    from roster.finance.jobs.finance_jobs import run_subscription_renewal_alerts
+    from butlers.jobs._roster.finance_jobs import run_subscription_renewal_alerts
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -433,7 +433,7 @@ async def test_subscription_renewal_alerts_excludes_cancelled(provisioned_postgr
 
 async def test_subscription_renewal_alerts_excludes_paused(provisioned_postgres_pool):
     """Paused subscriptions are excluded."""
-    from roster.finance.jobs.finance_jobs import run_subscription_renewal_alerts
+    from butlers.jobs._roster.finance_jobs import run_subscription_renewal_alerts
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -452,7 +452,7 @@ async def test_subscription_renewal_alerts_excludes_paused(provisioned_postgres_
 
 async def test_subscription_renewal_alerts_excludes_far_future(provisioned_postgres_pool):
     """Subscriptions renewing more than 7 days away are excluded."""
-    from roster.finance.jobs.finance_jobs import run_subscription_renewal_alerts
+    from butlers.jobs._roster.finance_jobs import run_subscription_renewal_alerts
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -467,7 +467,7 @@ async def test_subscription_renewal_alerts_excludes_far_future(provisioned_postg
 
 async def test_subscription_renewal_alerts_excludes_past_renewals(provisioned_postgres_pool):
     """Subscriptions with next_renewal in the past are excluded."""
-    from roster.finance.jobs.finance_jobs import run_subscription_renewal_alerts
+    from butlers.jobs._roster.finance_jobs import run_subscription_renewal_alerts
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -508,7 +508,7 @@ def _two_months_ago_mid() -> datetime:
 
 async def test_monthly_spending_summary_no_transactions(provisioned_postgres_pool):
     """No-op: returns zeros when no transactions exist in the prior month."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -529,7 +529,7 @@ async def test_monthly_spending_summary_no_transactions(provisioned_postgres_poo
 
 async def test_monthly_spending_summary_basic(provisioned_postgres_pool):
     """Transactions in the prior month are aggregated correctly."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -569,7 +569,7 @@ async def test_monthly_spending_summary_basic(provisioned_postgres_pool):
 
 async def test_monthly_spending_summary_excludes_credits(provisioned_postgres_pool):
     """Credit transactions are excluded from spending summary."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -592,7 +592,7 @@ async def test_monthly_spending_summary_excludes_credits(provisioned_postgres_po
 
 async def test_monthly_spending_summary_excludes_current_month(provisioned_postgres_pool):
     """Transactions from the current month are not included."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -614,7 +614,7 @@ async def test_monthly_spending_summary_excludes_current_month(provisioned_postg
 
 async def test_monthly_spending_summary_merchant_top_10(provisioned_postgres_pool):
     """Only top 10 merchants by spend are counted."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -653,7 +653,7 @@ async def test_monthly_spending_summary_merchant_top_10(provisioned_postgres_poo
 
 async def test_monthly_spending_summary_notable_changes_new_category(provisioned_postgres_pool):
     """A brand-new category in prior month (not in 2-months-ago) counts as notable."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -677,7 +677,7 @@ async def test_monthly_spending_summary_notable_changes_new_category(provisioned
 
 async def test_monthly_spending_summary_notable_changes_large_increase(provisioned_postgres_pool):
     """Category with >20% spend increase over prior month is flagged as notable."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -712,7 +712,7 @@ async def test_monthly_spending_summary_notable_changes_large_increase(provision
 
 async def test_monthly_spending_summary_no_notable_change_small_swing(provisioned_postgres_pool):
     """Categories with <=20% swing are not flagged as notable."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -747,7 +747,7 @@ async def test_monthly_spending_summary_no_notable_change_small_swing(provisione
 
 async def test_monthly_spending_summary_period_label(provisioned_postgres_pool):
     """Period label is formatted as YYYY-MM for the prior month."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -766,7 +766,7 @@ async def test_monthly_spending_summary_notable_changes_disappeared_category(
     provisioned_postgres_pool,
 ):
     """A category present two months ago but absent last month counts as notable."""
-    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+    from butlers.jobs._roster.finance_jobs import run_monthly_spending_summary
 
     async with provisioned_postgres_pool() as pool:
         await _setup_finance_schema(pool)
@@ -977,7 +977,7 @@ async def _fetch_candidates(pool) -> list[dict]:
 
 async def test_insight_scan_empty_db_no_candidates(provisioned_postgres_pool):
     """No-op: empty finance tables produce no insight candidates."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -992,7 +992,7 @@ async def test_insight_scan_empty_db_no_candidates(provisioned_postgres_pool):
 
 async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgres_pool):
     """Bill due tomorrow gets priority 92 (time-critical)."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1013,7 +1013,7 @@ async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgr
 
 async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postgres_pool):
     """Bill due in 3 days gets priority 75."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1032,7 +1032,7 @@ async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postg
 
 async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres_pool):
     """Bills due more than 3 days away do not generate insight candidates."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1049,7 +1049,7 @@ async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres
 
 async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
     """Paid bills do not generate insight candidates."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1069,7 +1069,7 @@ async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
 
 async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
     """Bill insight dedup_key matches finance:bill-due:{bill_id}:{due_date}."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1088,7 +1088,7 @@ async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
 
 async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
     """Bill insight has cooldown_days=1."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1104,7 +1104,7 @@ async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
 
 async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
     """Budget at 90%+ utilisation gets priority 70."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1135,7 +1135,7 @@ async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
 
 async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_pool):
     """Budget at 80–90% utilisation gets priority 50."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1165,7 +1165,7 @@ async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_
 
 async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres_pool):
     """Budget below 80% does not generate an insight candidate."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1194,7 +1194,7 @@ async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres
 
 async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
     """Budget insight dedup_key matches finance:budget-threshold:{category}:{year-month}."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1226,7 +1226,7 @@ async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
     provisioned_postgres_pool,
 ):
     """Annual subscription renewing within 3 days gets priority 75."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1247,7 +1247,7 @@ async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
     provisioned_postgres_pool,
 ):
     """Annual subscription renewing in 4–14 days gets priority 55."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1269,7 +1269,7 @@ async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
 
 async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_pool):
     """Monthly subscriptions do NOT generate insight candidates (only annual)."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1290,7 +1290,7 @@ async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_p
 
 async def test_insight_scan_subscription_beyond_14_days_excluded(provisioned_postgres_pool):
     """Annual subscriptions renewing beyond 14 days are excluded."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1306,7 +1306,7 @@ async def test_insight_scan_subscription_beyond_14_days_excluded(provisioned_pos
 
 async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_pool):
     """Subscription insight dedup_key matches finance:subscription-renewal:{id}:{date}."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1328,7 +1328,7 @@ async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
     provisioned_postgres_pool,
 ):
     """Category spending >30% above 3-month average generates an insight."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1377,7 +1377,7 @@ async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
 
 async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_postgres_pool):
     """Category 30–50% above average gets priority 50."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1424,7 +1424,7 @@ async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_po
 
 async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_postgres_pool):
     """Category 50–100% above average gets priority 65."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1471,7 +1471,7 @@ async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_p
 
 async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(provisioned_postgres_pool):
     """Category within 30% of average does NOT generate an insight."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1519,7 +1519,7 @@ async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
     provisioned_postgres_pool,
 ):
     """Categories with fewer than 3 months of history are excluded from anomaly detection."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1566,7 +1566,7 @@ async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
 
 async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgres_pool):
     """Anomaly insight dedup_key matches finance:spending-anomaly:{category}:{year-month}."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1612,7 +1612,7 @@ async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgr
 
 async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
     """When verbosity=off, the first submission is filtered and no more are submitted."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1634,7 +1634,7 @@ async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
 
 async def test_insight_scan_result_has_expected_keys(provisioned_postgres_pool):
     """Result dict contains all expected keys."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1650,7 +1650,7 @@ async def test_insight_scan_result_has_expected_keys(provisioned_postgres_pool):
 
 async def test_insight_scan_multiple_categories_all_submitted(provisioned_postgres_pool):
     """Multiple categories (bill + subscription) each get a candidate submitted."""
-    from roster.finance.jobs.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)

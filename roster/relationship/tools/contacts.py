@@ -599,7 +599,6 @@ async def contact_merge(
     _child_tables = [
         ("notes", "contact_id"),
         ("interactions", "contact_id"),
-        ("reminders", "contact_id"),
         ("dates", "contact_id"),
         ("relationships", "contact_a"),
         ("relationships", "contact_b"),

@@ -217,7 +217,7 @@ class TestRecordBooking:
 
     async def test_happy_path_creates_trip_and_leg(self, pool):
         """record_booking auto-creates a trip and leg from a flight payload."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         dep_at = (_utcnow() + timedelta(days=10)).isoformat()
         arr_at = (_utcnow() + timedelta(days=10, hours=12)).isoformat()
@@ -246,7 +246,7 @@ class TestRecordBooking:
 
     async def test_auto_trip_creation_sets_destination(self, pool):
         """Auto-created trip uses arrival as destination."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         dep_at = (_utcnow() + timedelta(days=5)).isoformat()
         arr_at = (_utcnow() + timedelta(days=5, hours=8)).isoformat()
@@ -269,7 +269,7 @@ class TestRecordBooking:
 
     async def test_trip_matching_by_date_and_destination(self, pool):
         """record_booking matches an existing planned trip by date/destination overlap."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         trip_id = await _insert_trip(pool, destination="Tokyo", days_ahead=5)
 
@@ -292,7 +292,7 @@ class TestRecordBooking:
 
     async def test_deduplication_skips_existing_entity(self, pool):
         """Duplicate source_message_id + confirmation_number returns deduped=True."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         dep_at = (_utcnow() + timedelta(days=8)).isoformat()
         arr_at = (_utcnow() + timedelta(days=8, hours=11)).isoformat()
@@ -313,7 +313,7 @@ class TestRecordBooking:
 
     async def test_accommodation_entity_type(self, pool):
         """record_booking creates an accommodation when entity_type='accommodation'."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         check_in = (_utcnow() + timedelta(days=3)).isoformat()
         check_out = (_utcnow() + timedelta(days=6)).isoformat()
@@ -343,7 +343,7 @@ class TestRecordBooking:
 
     async def test_reservation_entity_type(self, pool):
         """record_booking creates a reservation when entity_type='reservation'."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         event_dt = (_utcnow() + timedelta(days=4)).isoformat()
 
@@ -364,7 +364,7 @@ class TestRecordBooking:
 
     async def test_document_entity_type(self, pool):
         """record_booking creates a document when entity_type='document'."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         trip_id = await _insert_trip(pool, destination="London", days_ahead=14)
 
@@ -386,7 +386,7 @@ class TestRecordBooking:
 
     async def test_invalid_entity_type_generates_warning_and_defaults_to_leg(self, pool):
         """Invalid entity_type falls back to 'leg' with a warning."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         dep_at = (_utcnow() + timedelta(days=6)).isoformat()
         arr_at = (_utcnow() + timedelta(days=6, hours=9)).isoformat()
@@ -405,7 +405,7 @@ class TestRecordBooking:
 
     async def test_missing_departure_at_returns_warning(self, pool):
         """Missing departure_at for a leg produces a warning and no entity_id."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         result = await record_booking(
             pool=pool,
@@ -422,7 +422,7 @@ class TestRecordBooking:
 
     async def test_candidate_trip_hints_used_for_matching(self, pool):
         """Explicit candidate_trip_hints dates/destinations guide trip matching."""
-        from roster.travel.tools.bookings import record_booking
+        from butlers.tools.travel.bookings import record_booking
 
         trip_id = await _insert_trip(pool, destination="Berlin", days_ahead=3)
         hint_date = (_utcnow() + timedelta(days=3)).date().isoformat()
@@ -455,7 +455,7 @@ class TestUpdateItinerary:
 
     async def test_time_change_on_leg(self, pool):
         """update_itinerary updates departure_at and records prior value in metadata."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Paris", days_ahead=10)
         leg_id = await _insert_leg(pool, trip_id, days_ahead=10)
@@ -488,7 +488,7 @@ class TestUpdateItinerary:
 
     async def test_cancellation_status_transition(self, pool):
         """update_itinerary transitions trip from planned to cancelled."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Osaka", days_ahead=20)
 
@@ -507,7 +507,7 @@ class TestUpdateItinerary:
 
     async def test_seat_change_via_leg_id_shortcut(self, pool):
         """update_itinerary updates seat using leg_id shortcut field."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Seoul", days_ahead=14)
         leg_id = await _insert_leg(pool, trip_id, days_ahead=14, seat="22A")
@@ -526,7 +526,7 @@ class TestUpdateItinerary:
 
     async def test_prior_values_recorded_for_seat_change(self, pool):
         """Prior seat value is captured in change_history before update."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Bangkok", days_ahead=12)
         leg_id = await _insert_leg(pool, trip_id, days_ahead=12, seat="10B")
@@ -551,7 +551,7 @@ class TestUpdateItinerary:
 
     async def test_invalid_backward_status_transition_adds_conflict(self, pool):
         """Backward status transitions are blocked and surface in conflicts."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Sydney", days_ahead=5, status="completed")
 
@@ -566,7 +566,7 @@ class TestUpdateItinerary:
 
     async def test_unknown_trip_raises_value_error(self, pool):
         """update_itinerary raises ValueError for non-existent trip_id."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         with pytest.raises(ValueError, match="not found"):
             await update_itinerary(
@@ -577,7 +577,7 @@ class TestUpdateItinerary:
 
     async def test_entity_not_found_adds_conflict(self, pool):
         """Patching a leg_id that does not exist adds a conflict entry."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Dubai", days_ahead=8)
         fake_leg_id = str(uuid.uuid4())
@@ -592,7 +592,7 @@ class TestUpdateItinerary:
 
     async def test_optimistic_concurrency_conflict_on_version_token_mismatch(self, pool):
         """version_token mismatch causes a conflict and skips the update."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Amsterdam", days_ahead=9)
         leg_id = await _insert_leg(pool, trip_id, days_ahead=9)
@@ -611,7 +611,7 @@ class TestUpdateItinerary:
 
     async def test_trip_field_update_destination(self, pool):
         """update_itinerary updates trip-level destination field."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Lisbon", days_ahead=11)
 
@@ -630,7 +630,7 @@ class TestUpdateItinerary:
 
     async def test_status_transition_planned_to_active(self, pool):
         """update_itinerary advances trip status from planned to active."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Montreal", days_ahead=1, status="planned")
 
@@ -645,7 +645,7 @@ class TestUpdateItinerary:
 
     async def test_accommodation_check_out_update(self, pool):
         """update_itinerary patches accommodation check_out datetime."""
-        from roster.travel.tools.bookings import update_itinerary
+        from butlers.tools.travel.bookings import update_itinerary
 
         trip_id = await _insert_trip(pool, destination="Vienna", days_ahead=7)
         check_in = _utcnow() + timedelta(days=7)
@@ -684,7 +684,7 @@ class TestListTrips:
 
     async def test_empty_result_when_no_trips(self, pool):
         """list_trips returns zero items and total=0 when table is empty."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         result = await list_trips(pool)
 
@@ -695,7 +695,7 @@ class TestListTrips:
 
     async def test_returns_inserted_trip(self, pool):
         """list_trips returns a single inserted trip with correct fields."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         trip_id = await _insert_trip(pool, destination="Rome", days_ahead=15)
 
@@ -708,7 +708,7 @@ class TestListTrips:
 
     async def test_filter_by_status(self, pool):
         """list_trips filters by status, excluding trips with different status."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         await _insert_trip(pool, destination="Rome", days_ahead=15, status="planned")
         await _insert_trip(pool, destination="Lyon", days_ahead=5, status="active")
@@ -723,7 +723,7 @@ class TestListTrips:
 
     async def test_filter_by_from_date(self, pool):
         """list_trips respects from_date lower bound on start_date."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         await _insert_trip(pool, destination="Near", days_ahead=2)
         await _insert_trip(pool, destination="Far", days_ahead=30)
@@ -736,7 +736,7 @@ class TestListTrips:
 
     async def test_filter_by_to_date(self, pool):
         """list_trips respects to_date upper bound on start_date."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         await _insert_trip(pool, destination="Near", days_ahead=2)
         await _insert_trip(pool, destination="Far", days_ahead=30)
@@ -749,7 +749,7 @@ class TestListTrips:
 
     async def test_pagination_limit_and_offset(self, pool):
         """list_trips limit/offset pagination returns correct slices."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         for i in range(5):
             await _insert_trip(pool, destination=f"City{i}", days_ahead=i + 1)
@@ -766,7 +766,7 @@ class TestListTrips:
 
     async def test_default_sort_is_start_date_desc(self, pool):
         """Default sort returns trips ordered by start_date DESC."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         await _insert_trip(pool, destination="Early", days_ahead=3)
         await _insert_trip(pool, destination="Late", days_ahead=20)
@@ -778,14 +778,14 @@ class TestListTrips:
 
     async def test_invalid_status_raises_value_error(self, pool):
         """list_trips raises ValueError for unrecognised status values."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         with pytest.raises(ValueError, match="Unsupported status"):
             await list_trips(pool, status="unknown")
 
     async def test_string_date_inputs_accepted(self, pool):
         """list_trips accepts ISO string dates for from_date and to_date."""
-        from roster.travel.tools.trips import list_trips
+        from butlers.tools.travel.trips import list_trips
 
         await _insert_trip(pool, destination="DateTest", days_ahead=5)
 
@@ -806,7 +806,7 @@ class TestTripSummary:
 
     async def test_full_trip_with_all_entity_types(self, pool):
         """trip_summary returns trip with legs, accommodations, reservations, documents."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Barcelona", days_ahead=7)
         await _insert_leg(pool, trip_id, days_ahead=7)
@@ -852,14 +852,14 @@ class TestTripSummary:
 
     async def test_raises_on_unknown_trip_id(self, pool):
         """trip_summary raises ValueError for a non-existent trip_id."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         with pytest.raises(ValueError, match="Trip not found"):
             await trip_summary(pool, str(uuid.uuid4()))
 
     async def test_include_documents_false_omits_documents(self, pool):
         """trip_summary returns empty documents list when include_documents=False."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Zurich", days_ahead=10)
         await pool.execute(
@@ -877,7 +877,7 @@ class TestTripSummary:
 
     async def test_include_timeline_false_omits_timeline(self, pool):
         """trip_summary returns empty timeline when include_timeline=False."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Prague", days_ahead=8)
         await _insert_leg(pool, trip_id, days_ahead=8)
@@ -888,7 +888,7 @@ class TestTripSummary:
 
     async def test_timeline_is_chronological(self, pool):
         """trip_summary timeline entries are sorted by departure/check-in time."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Copenhagen", days_ahead=5)
         dep_early = _utcnow() + timedelta(days=5)
@@ -922,7 +922,7 @@ class TestTripSummary:
 
     async def test_alerts_missing_boarding_pass(self, pool):
         """trip_summary generates a high-severity alert when no boarding pass exists."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Helsinki", days_ahead=4)
         await _insert_leg(pool, trip_id, days_ahead=4)
@@ -935,7 +935,7 @@ class TestTripSummary:
 
     async def test_alerts_unassigned_seat(self, pool):
         """trip_summary generates a low-severity alert for flight with no seat."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Reykjavik", days_ahead=6)
         await _insert_leg(pool, trip_id, days_ahead=6, seat=None)
@@ -955,7 +955,7 @@ class TestTripSummary:
 
     async def test_empty_trip_no_alerts(self, pool):
         """trip_summary returns no alerts for a trip with no flight legs."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Luxembourg", days_ahead=3)
 
@@ -966,7 +966,7 @@ class TestTripSummary:
 
     async def test_result_shape(self, pool):
         """trip_summary result contains all expected top-level keys."""
-        from roster.travel.tools.trips import trip_summary
+        from butlers.tools.travel.trips import trip_summary
 
         trip_id = await _insert_trip(pool, destination="Nairobi", days_ahead=20)
         result = await trip_summary(pool, trip_id)
@@ -993,7 +993,7 @@ class TestUpcomingTravel:
 
     async def test_empty_result_when_no_upcoming_trips(self, pool):
         """upcoming_travel returns empty lists when no trips fall in window."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         result = await upcoming_travel(pool, within_days=14)
 
@@ -1002,7 +1002,7 @@ class TestUpcomingTravel:
 
     async def test_finds_trips_within_window(self, pool):
         """upcoming_travel includes planned trips starting within within_days."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         trip_id = await _insert_trip(pool, destination="Kyoto", days_ahead=5, status="planned")
 
@@ -1013,7 +1013,7 @@ class TestUpcomingTravel:
 
     async def test_excludes_trips_outside_window(self, pool):
         """upcoming_travel excludes trips whose start_date is beyond within_days."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         await _insert_trip(pool, destination="FarAway", days_ahead=30, status="planned")
 
@@ -1023,7 +1023,7 @@ class TestUpcomingTravel:
 
     async def test_excludes_completed_and_cancelled_trips(self, pool):
         """upcoming_travel skips completed and cancelled trips even if in window."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         await _insert_trip(pool, destination="Done", days_ahead=3, status="completed")
         await _insert_trip(pool, destination="Gone", days_ahead=4, status="cancelled")
@@ -1034,7 +1034,7 @@ class TestUpcomingTravel:
 
     async def test_days_until_departure_computed(self, pool):
         """upcoming_travel computes days_until_departure correctly."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         await _insert_trip(pool, destination="Seoul", days_ahead=3, status="planned")
 
@@ -1045,7 +1045,7 @@ class TestUpcomingTravel:
 
     async def test_pretrip_actions_for_missing_boarding_pass(self, pool):
         """upcoming_travel surfaces missing_boarding_pass action for flight with no doc."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         trip_id = await _insert_trip(pool, destination="Taipei", days_ahead=4, status="planned")
         await _insert_leg(pool, trip_id, days_ahead=4)
@@ -1056,7 +1056,7 @@ class TestUpcomingTravel:
 
     async def test_no_actions_when_include_pretrip_false(self, pool):
         """upcoming_travel returns empty actions when include_pretrip_actions=False."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         trip_id = await _insert_trip(pool, destination="Bogota", days_ahead=5, status="planned")
         await _insert_leg(pool, trip_id, days_ahead=5)
@@ -1067,7 +1067,7 @@ class TestUpcomingTravel:
 
     async def test_actions_have_urgency_rank(self, pool):
         """upcoming_travel action list has consecutive urgency_rank values."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         trip_id = await _insert_trip(pool, destination="Cairo", days_ahead=6, status="planned")
         await _insert_leg(pool, trip_id, days_ahead=6, seat=None)
@@ -1079,7 +1079,7 @@ class TestUpcomingTravel:
 
     async def test_high_severity_actions_ranked_before_low(self, pool):
         """upcoming_travel ranks high-severity actions before low-severity."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         trip_id = await _insert_trip(pool, destination="Accra", days_ahead=7, status="planned")
         # Flight with no boarding pass (high) and no seat (low)
@@ -1096,7 +1096,7 @@ class TestUpcomingTravel:
 
     async def test_window_dates_in_result(self, pool):
         """upcoming_travel result contains window_start and window_end."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         result = await upcoming_travel(pool, within_days=7)
 
@@ -1108,7 +1108,7 @@ class TestUpcomingTravel:
 
     async def test_legs_included_per_trip(self, pool):
         """upcoming_travel embeds leg records under each trip entry."""
-        from roster.travel.tools.trips import upcoming_travel
+        from butlers.tools.travel.trips import upcoming_travel
 
         trip_id = await _insert_trip(pool, destination="Havana", days_ahead=2, status="active")
         await _insert_leg(pool, trip_id, days_ahead=2, carrier="Cubana")
@@ -1130,7 +1130,7 @@ class TestAddDocument:
 
     async def test_attach_boarding_pass(self, pool):
         """add_document attaches a boarding_pass to a trip and returns a document_id."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="Rome", days_ahead=5)
 
@@ -1148,7 +1148,7 @@ class TestAddDocument:
 
     async def test_attach_visa_with_expiry(self, pool):
         """add_document stores a visa with expiry_date correctly."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="India", days_ahead=10)
         expiry = (date.today() + timedelta(days=365)).isoformat()
@@ -1170,7 +1170,7 @@ class TestAddDocument:
 
     async def test_attach_insurance_without_blob(self, pool):
         """add_document accepts a document with no blob_ref (metadata-only)."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="Brazil", days_ahead=15)
 
@@ -1186,7 +1186,7 @@ class TestAddDocument:
 
     async def test_attach_receipt(self, pool):
         """add_document supports receipt type with metadata."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="Morocco", days_ahead=8)
 
@@ -1203,7 +1203,7 @@ class TestAddDocument:
 
     async def test_all_valid_document_types(self, pool):
         """add_document accepts all four valid document types."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="AnyDest", days_ahead=20)
 
@@ -1213,7 +1213,7 @@ class TestAddDocument:
 
     async def test_invalid_type_raises_value_error(self, pool):
         """add_document raises ValueError for unsupported document types."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="Nowhere", days_ahead=3)
 
@@ -1222,7 +1222,7 @@ class TestAddDocument:
 
     async def test_unknown_trip_id_raises_value_error(self, pool):
         """add_document raises ValueError when trip_id is not found."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         with pytest.raises(ValueError, match="not found"):
             await add_document(
@@ -1233,7 +1233,7 @@ class TestAddDocument:
 
     async def test_metadata_round_trip(self, pool):
         """add_document stores and returns arbitrary metadata dict faithfully."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="Capetown", days_ahead=12)
         meta = {"flight": "SA 201", "gate": "C42", "notes": "priority boarding"}
@@ -1251,7 +1251,7 @@ class TestAddDocument:
 
     async def test_result_shape(self, pool):
         """add_document result contains all expected keys."""
-        from roster.travel.tools.documents import add_document
+        from butlers.tools.travel.documents import add_document
 
         trip_id = await _insert_trip(pool, destination="Malta", days_ahead=7)
         result = await add_document(pool=pool, trip_id=trip_id, type="visa")

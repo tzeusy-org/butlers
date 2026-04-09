@@ -1,6 +1,6 @@
 """Scheduled jobs for the Travel butler."""
 
-from roster.travel.jobs.travel_jobs import (
+from .travel_jobs import (
     run_insight_scan,
     run_trip_document_expiry,
     run_upcoming_travel_check,

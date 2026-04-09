@@ -573,15 +573,44 @@ async def run_relationship_briefing_contribution(
         )
 
     # --- Follow-ups due or overdue ---
+    # Reminders are stored as SPO facts (predicate='reminder') in the facts
+    # table.  The contact UUID is embedded in the subject key as
+    # "contact:{contact_id}:reminder:{uuid}".  Trigger time lives in
+    # metadata->>'next_trigger_at' (or fallback metadata->>'due_at').
     reminder_rows = await pool.fetch(
         """
-        SELECT c.name, r.label, r.next_trigger_at,
-               r.next_trigger_at < now() AS is_overdue
-        FROM reminders r
-        JOIN contacts c ON c.id = r.contact_id
-        WHERE r.next_trigger_at IS NOT NULL
-          AND r.next_trigger_at <= $1
-        ORDER BY r.next_trigger_at ASC
+        SELECT c.name,
+               f.content AS label,
+               COALESCE(
+                   (f.metadata->>'next_trigger_at')::timestamptz,
+                   (f.metadata->>'due_at')::timestamptz
+               ) AS next_trigger_at,
+               COALESCE(
+                   (f.metadata->>'next_trigger_at')::timestamptz,
+                   (f.metadata->>'due_at')::timestamptz
+               ) < now() AS is_overdue
+        FROM facts f
+        JOIN contacts c
+          ON c.id = (split_part(f.subject, ':', 2))::uuid
+        WHERE f.predicate = 'reminder'
+          AND f.scope = 'relationship'
+          AND f.validity = 'active'
+          AND f.valid_at IS NULL
+          AND COALESCE(
+                  (f.metadata->>'dismissed')::boolean, false
+              ) = false
+          AND COALESCE(
+                  (f.metadata->>'next_trigger_at')::timestamptz,
+                  (f.metadata->>'due_at')::timestamptz
+              ) IS NOT NULL
+          AND COALESCE(
+                  (f.metadata->>'next_trigger_at')::timestamptz,
+                  (f.metadata->>'due_at')::timestamptz
+              ) <= $1
+        ORDER BY COALESCE(
+                     (f.metadata->>'next_trigger_at')::timestamptz,
+                     (f.metadata->>'due_at')::timestamptz
+                 ) ASC
         LIMIT 10
         """,
         now_utc + timedelta(days=1),  # due today or overdue

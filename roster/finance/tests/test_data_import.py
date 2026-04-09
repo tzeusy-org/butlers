@@ -69,7 +69,7 @@ Date,Payee,Amount,Notes
 
 class TestDetectFormat:
     def test_chase_detected(self):
-        from roster.finance.tools.data_import import detect_format
+        from butlers.tools.finance.data_import import detect_format
 
         headers = [
             "Transaction Date",
@@ -85,21 +85,21 @@ class TestDetectFormat:
 
     def test_chase_checking_minimal_headers(self):
         """Chase checking has fewer columns but still has Transaction Date + Amount."""
-        from roster.finance.tools.data_import import detect_format
+        from butlers.tools.finance.data_import import detect_format
 
         headers = ["Transaction Date", "Description", "Amount", "Balance"]
         fmt = detect_format(headers)
         assert fmt["name"] == "chase"
 
     def test_amex_detected(self):
-        from roster.finance.tools.data_import import detect_format
+        from butlers.tools.finance.data_import import detect_format
 
         headers = ["Date", "Description", "Card Member", "Account #", "Amount"]
         fmt = detect_format(headers)
         assert fmt["name"] == "amex"
 
     def test_capital_one_detected(self):
-        from roster.finance.tools.data_import import detect_format
+        from butlers.tools.finance.data_import import detect_format
 
         headers = [
             "Transaction Date",
@@ -114,7 +114,7 @@ class TestDetectFormat:
         assert fmt["name"] == "capital_one"
 
     def test_generic_fallback(self):
-        from roster.finance.tools.data_import import detect_format
+        from butlers.tools.finance.data_import import detect_format
 
         headers = ["Date", "Payee", "Amount", "Notes"]
         fmt = detect_format(headers)
@@ -122,14 +122,14 @@ class TestDetectFormat:
 
     def test_case_insensitive_detection(self):
         """Headers are matched case-insensitively."""
-        from roster.finance.tools.data_import import detect_format
+        from butlers.tools.finance.data_import import detect_format
 
         headers = ["TRANSACTION DATE", "DESCRIPTION", "AMOUNT", "BALANCE"]
         fmt = detect_format(headers)
         assert fmt["name"] == "chase"
 
     def test_empty_headers_gives_generic(self):
-        from roster.finance.tools.data_import import detect_format
+        from butlers.tools.finance.data_import import detect_format
 
         fmt = detect_format([])
         assert fmt["name"] == "generic"
@@ -142,42 +142,42 @@ class TestDetectFormat:
 
 class TestDetectDateFormat:
     def test_iso_format(self):
-        from roster.finance.tools.data_import import _detect_date_format
+        from butlers.tools.finance.data_import import _detect_date_format
 
         fmt = _detect_date_format(["2024-01-15", "2024-02-28", "2023-12-01"])
         assert fmt == "%Y-%m-%d"
 
     def test_us_slash_format(self):
-        from roster.finance.tools.data_import import _detect_date_format
+        from butlers.tools.finance.data_import import _detect_date_format
 
         fmt = _detect_date_format(["01/15/2024", "02/28/2024", "12/01/2023"])
         assert fmt == "%m/%d/%Y"
 
     def test_us_dash_format(self):
-        from roster.finance.tools.data_import import _detect_date_format
+        from butlers.tools.finance.data_import import _detect_date_format
 
         fmt = _detect_date_format(["01-15-2024", "02-28-2024"])
         assert fmt == "%m-%d-%Y"
 
     def test_two_digit_year(self):
-        from roster.finance.tools.data_import import _detect_date_format
+        from butlers.tools.finance.data_import import _detect_date_format
 
         fmt = _detect_date_format(["01/15/24", "02/28/24"])
         assert fmt == "%m/%d/%y"
 
     def test_no_samples_returns_none(self):
-        from roster.finance.tools.data_import import _detect_date_format
+        from butlers.tools.finance.data_import import _detect_date_format
 
         assert _detect_date_format([]) is None
 
     def test_empty_strings_ignored(self):
-        from roster.finance.tools.data_import import _detect_date_format
+        from butlers.tools.finance.data_import import _detect_date_format
 
         fmt = _detect_date_format(["", "2024-01-15", ""])
         assert fmt == "%Y-%m-%d"
 
     def test_mixed_formats_returns_none(self):
-        from roster.finance.tools.data_import import _detect_date_format
+        from butlers.tools.finance.data_import import _detect_date_format
 
         result = _detect_date_format(["01/15/2024", "2024-01-16"])
         assert result is None
@@ -190,49 +190,49 @@ class TestDetectDateFormat:
 
 class TestParseAmount:
     def test_simple_decimal(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         assert _parse_amount("45.32") == Decimal("45.32")
 
     def test_negative(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         assert _parse_amount("-45.32") == Decimal("-45.32")
 
     def test_dollar_sign(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         assert _parse_amount("$45.32") == Decimal("45.32")
 
     def test_comma_thousands(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         assert _parse_amount("1,234.56") == Decimal("1234.56")
 
     def test_currency_and_commas(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         assert _parse_amount("$1,234.56") == Decimal("1234.56")
 
     def test_parenthetical_negative(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         assert _parse_amount("(1,234.56)") == Decimal("-1234.56")
 
     def test_empty_raises(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         with pytest.raises(ValueError):
             _parse_amount("")
 
     def test_invalid_raises(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         with pytest.raises(ValueError):
             _parse_amount("not-a-number")
 
     def test_euro_symbol(self):
-        from roster.finance.tools.data_import import _parse_amount
+        from butlers.tools.finance.data_import import _parse_amount
 
         assert _parse_amount("€45.32") == Decimal("45.32")
 
@@ -244,38 +244,38 @@ class TestParseAmount:
 
 class TestNormalizeMerchant:
     def test_basic_title_case(self):
-        from roster.finance.tools.data_import import _normalize_merchant
+        from butlers.tools.finance.data_import import _normalize_merchant
 
         result = _normalize_merchant("WHOLE FOODS MARKET")
         assert result == "Whole Foods Market"
 
     def test_strips_trailing_whitespace(self):
-        from roster.finance.tools.data_import import _normalize_merchant
+        from butlers.tools.finance.data_import import _normalize_merchant
 
         result = _normalize_merchant("  NETFLIX  ")
         assert result == "Netflix"
 
     def test_collapses_whitespace(self):
-        from roster.finance.tools.data_import import _normalize_merchant
+        from butlers.tools.finance.data_import import _normalize_merchant
 
         result = _normalize_merchant("SHELL  OIL   COMPANY")
         assert result == "Shell Oil Company"
 
     def test_strips_trailing_numeric_id(self):
-        from roster.finance.tools.data_import import _normalize_merchant
+        from butlers.tools.finance.data_import import _normalize_merchant
 
         result = _normalize_merchant("SHELL OIL 1234567890")
         assert "1234567890" not in result
 
     def test_strips_hash_suffix(self):
-        from roster.finance.tools.data_import import _normalize_merchant
+        from butlers.tools.finance.data_import import _normalize_merchant
 
         result = _normalize_merchant("WHOLE FOODS #123")
         # The hash suffix should be removed or result should not contain '#123'
         assert "#123" not in result
 
     def test_empty_string(self):
-        from roster.finance.tools.data_import import _normalize_merchant
+        from butlers.tools.finance.data_import import _normalize_merchant
 
         result = _normalize_merchant("")
         assert result == ""
@@ -288,7 +288,7 @@ class TestNormalizeMerchant:
 
 class TestChaseParsing:
     def _parse(self, content: str, currency: str = "USD"):
-        from roster.finance.tools.data_import import (
+        from butlers.tools.finance.data_import import (
             _detect_date_format,
             _parse_csv_rows,
             _sample_date_values,
@@ -352,7 +352,7 @@ class TestChaseParsing:
 
 class TestAmexParsing:
     def _parse(self, content: str, currency: str = "USD"):
-        from roster.finance.tools.data_import import (
+        from butlers.tools.finance.data_import import (
             _detect_date_format,
             _parse_csv_rows,
             _sample_date_values,
@@ -399,7 +399,7 @@ class TestAmexParsing:
 
 class TestCapitalOneParsing:
     def _parse(self, content: str, currency: str = "USD"):
-        from roster.finance.tools.data_import import (
+        from butlers.tools.finance.data_import import (
             _detect_date_format,
             _parse_csv_rows,
             _sample_date_values,
@@ -444,7 +444,7 @@ class TestCapitalOneParsing:
 
 class TestGenericParsing:
     def _parse(self, content: str, currency: str = "USD", column_map=None):
-        from roster.finance.tools.data_import import (
+        from butlers.tools.finance.data_import import (
             _COL_DATE,
             _detect_date_format,
             _parse_csv_rows,
@@ -512,7 +512,7 @@ class TestDryRun:
 
     async def test_dry_run_no_inserts(self):
         """Dry run returns preview without touching the pool."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
@@ -534,7 +534,7 @@ class TestDryRun:
 
     async def test_dry_run_preview_max_10(self):
         """Dry run preview contains at most 10 transactions."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         # Build a CSV with 20 rows.
         lines = ["Transaction Date,Description,Amount,Balance"]
@@ -556,7 +556,7 @@ class TestDryRun:
 
     async def test_dry_run_preview_shape(self):
         """Each preview item has expected fields."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
@@ -577,7 +577,7 @@ class TestDryRun:
 
     async def test_dry_run_returns_counts(self):
         """Dry run result includes total, parsed, parse_errors counts."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
@@ -614,7 +614,7 @@ class TestDeduplication:
         from datetime import UTC, datetime
         from decimal import Decimal
 
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
 
@@ -665,7 +665,7 @@ class TestDeduplication:
 
         Now uses batch dedup: pool.fetch returns empty list when no duplicates.
         """
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
 
@@ -689,7 +689,7 @@ class TestDeduplication:
         from datetime import UTC, datetime
         from decimal import Decimal
 
-        from roster.finance.tools.data_import import _check_duplicates_batch
+        from butlers.tools.finance.data_import import _check_duplicates_batch
 
         batch = [
             {
@@ -732,7 +732,7 @@ class TestDeduplication:
         from datetime import UTC, datetime
         from decimal import Decimal
 
-        from roster.finance.tools.data_import import _check_duplicates_batch
+        from butlers.tools.finance.data_import import _check_duplicates_batch
 
         batch = [
             {
@@ -754,7 +754,7 @@ class TestDeduplication:
         from datetime import UTC, datetime
         from decimal import Decimal
 
-        from roster.finance.tools.data_import import _check_duplicates_batch
+        from butlers.tools.finance.data_import import _check_duplicates_batch
 
         batch = [
             {
@@ -802,7 +802,7 @@ class TestDeduplication:
         from datetime import UTC, datetime
         from decimal import Decimal
 
-        from roster.finance.tools.data_import import _check_duplicates_batch
+        from butlers.tools.finance.data_import import _check_duplicates_batch
 
         account_id = "12345678-1234-5678-1234-567812345678"
         batch = [
@@ -825,7 +825,7 @@ class TestDeduplication:
 
     async def test_batch_dedup_empty_batch(self):
         """_check_duplicates_batch returns empty set for empty batch."""
-        from roster.finance.tools.data_import import _check_duplicates_batch
+        from butlers.tools.finance.data_import import _check_duplicates_batch
 
         pool = MagicMock()
         dup_indices = await _check_duplicates_batch(pool, [], account_id=None)
@@ -854,7 +854,7 @@ class TestBatchProcessing:
 
     async def test_1000_rows_processed(self):
         """1000 rows are processed without error via batch logic."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         content = self._build_large_csv(1000)
         blob_store = self._make_blob_store(content)
@@ -874,7 +874,7 @@ class TestBatchProcessing:
 
     async def test_500_row_batch_boundary(self):
         """501 rows triggers exactly 2 batches (500 + 1)."""
-        from roster.finance.tools.data_import import _BATCH_SIZE, import_transactions
+        from butlers.tools.finance.data_import import _BATCH_SIZE, import_transactions
 
         assert _BATCH_SIZE == 500
         content = self._build_large_csv(501)
@@ -906,7 +906,7 @@ class TestErrorHandling:
 
     async def test_blob_fetch_failure_returns_error_dict(self):
         """Blob fetch failure returns structured error, not exception."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = AsyncMock()
         blob_store.get = AsyncMock(side_effect=RuntimeError("S3 unreachable"))
@@ -923,7 +923,7 @@ class TestErrorHandling:
 
     async def test_undetectable_date_format_returns_error(self):
         """CSV with unrecognizable date format returns structured error."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         bad_csv = "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n"
         blob_store = self._make_blob_store(bad_csv)
@@ -940,7 +940,7 @@ class TestErrorHandling:
 
     async def test_row_with_missing_amount_logged_as_error(self):
         """Row with empty amount is captured in error_details, not raised."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         content = (
             "Transaction Date,Description,Amount\n"
@@ -965,7 +965,7 @@ class TestErrorHandling:
 
     async def test_db_error_during_insert_captured(self):
         """DB insert failure for one row is captured in error_details."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
@@ -984,7 +984,7 @@ class TestErrorHandling:
 
     async def test_import_result_includes_batch_id(self):
         """Result always includes import_batch_id."""
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
@@ -1013,7 +1013,7 @@ class TestReturnShape:
         return blob_store
 
     async def test_detected_format_in_result(self):
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
@@ -1029,7 +1029,7 @@ class TestReturnShape:
         assert result["detected_format"] == "chase"
 
     async def test_amex_format_in_result(self):
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(AMEX_CSV)
         pool = MagicMock()
@@ -1045,7 +1045,7 @@ class TestReturnShape:
         assert result["detected_format"] == "amex"
 
     async def test_capital_one_format_in_result(self):
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CAPITAL_ONE_CSV)
         pool = MagicMock()
@@ -1061,7 +1061,7 @@ class TestReturnShape:
         assert result["detected_format"] == "capital_one"
 
     async def test_result_has_all_required_keys(self):
-        from roster.finance.tools.data_import import import_transactions
+        from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()

@@ -10,3 +10,5 @@ plugins/
 
 # Healing worktrees (created by self-healing dispatcher)
 .healing-worktrees/
+# bd worktree
+.worktrees/parallel-agents/bu-z38xe/
