@@ -52,7 +52,9 @@ from butlers.core.healing.tracking import (
     get_attempt,
     get_recent_attempt,
     get_recent_terminal_statuses,
+    record_phase_session,
     update_attempt_status,
+    update_phase_session_status,
 )
 from butlers.core.healing.worktree import (
     WorktreeCreationError,
@@ -633,6 +635,7 @@ async def _run_healing_session(
     separate timeout watchdog task.
     """
     healing_session_id: uuid.UUID | None = None
+    phase_session_id: uuid.UUID | None = None
 
     try:
         prompt = _build_healing_prompt(fp, butler_name, trigger_source, agent_context)
@@ -655,16 +658,34 @@ async def _run_healing_session(
 
         if result.session_id is not None:
             healing_session_id = result.session_id
-            await update_attempt_status(
-                pool,
-                attempt_id,
-                "investigating",
-                healing_session_id=healing_session_id,
-            )
+            # Record the phase session: this is a single-phase workflow using
+            # "diagnose_and_fix" to represent the combined healing session.
+            # Also keeps healing_session_id aligned with the active phase for
+            # backward compatibility.
+            try:
+                phase_session_id = await record_phase_session(
+                    pool,
+                    attempt_id,
+                    "diagnose_and_fix",
+                    healing_session_id,
+                )
+            except Exception as _ps_exc:
+                logger.debug(
+                    "_run_healing_session: failed to record phase session (attempt=%s): %s",
+                    attempt_id,
+                    _ps_exc,
+                )
 
         if not result.success:
             error_detail = result.error or "Healing agent returned non-success result"
             logger.warning("Healing agent failed (attempt=%s): %s", attempt_id, error_detail)
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool, phase_session_id, "failed", error_detail=error_detail
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -688,6 +709,11 @@ async def _run_healing_session(
                 "Healing agent marked error as unfixable (attempt=%s); skipping PR creation",
                 attempt_id,
             )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -735,6 +761,16 @@ async def _run_healing_session(
         )
 
         if pr_error == "anonymization_failed":
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool,
+                        phase_session_id,
+                        "failed",
+                        error_detail="PR blocked: anonymization_failed",
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -752,6 +788,13 @@ async def _run_healing_session(
             return
 
         if pr_error is not None:
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool, phase_session_id, "failed", error_detail=pr_error
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
             await update_attempt_status(
                 pool,
                 attempt_id,
@@ -768,6 +811,11 @@ async def _run_healing_session(
             return
 
         # PR created successfully
+        if phase_session_id is not None:
+            try:
+                await update_phase_session_status(pool, phase_session_id, "completed")
+            except Exception as _pss_exc:
+                logger.debug("Failed to mark phase session completed: %s", _pss_exc)
         await update_attempt_status(
             pool,
             attempt_id,
@@ -787,10 +835,27 @@ async def _run_healing_session(
 
     except asyncio.CancelledError:
         # Cancelled by watchdog — watchdog sets status to "timeout"
+        if phase_session_id is not None:
+            try:
+                await update_phase_session_status(
+                    pool,
+                    phase_session_id,
+                    "timeout",
+                    error_detail="Healing session cancelled by watchdog",
+                )
+            except Exception as _pss_exc:
+                logger.debug("Failed to mark phase session timeout: %s", _pss_exc)
         raise
 
     except Exception as exc:
         logger.exception("Unexpected error in healing session (attempt=%s): %s", attempt_id, exc)
+        if phase_session_id is not None:
+            try:
+                await update_phase_session_status(
+                    pool, phase_session_id, "failed", error_detail=f"{type(exc).__name__}: {exc}"
+                )
+            except Exception as _pss_exc:
+                logger.debug("Failed to mark phase session failed: %s", _pss_exc)
         await update_attempt_status(
             pool,
             attempt_id,

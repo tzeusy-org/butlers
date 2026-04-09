@@ -55,6 +55,26 @@ class QaFinding:
     source_file:
         For log-scanner findings: the log filename where the entry was found.
         Empty string for other source types.
+    source_session_trigger_source:
+        The ``trigger_source`` value from the session record or log entry that
+        produced the error.  Nullable.
+
+        - For ``session_records`` source: read from the session row's
+          ``trigger_source`` column.
+        - For ``log_scanner`` source: extracted from the structured JSON log
+          field ``trigger_source`` if present; ``None`` if absent.
+        - For ``butler_reports`` source: derived from the source butler's
+          active session context at the time of ``report_finding``.
+
+        Used by the QA self-recursion barrier to suppress autonomous
+        investigation of failures originating from QA self-healing sessions.
+    structured_evidence:
+        Optional dict of structured diagnostic evidence.  Contains identifiers
+        and diagnostics from the discovery source without embedding raw
+        sensitive payloads (e.g. ``session_id``, ``request_id``, ``trace_id``,
+        ``runtime_type``, ``model``, ``tool_call_count``).  Investigation
+        agents reference this evidence via a persisted artifact pointer
+        rather than having it embedded directly in the prompt.
     """
 
     fingerprint: str
@@ -70,3 +90,5 @@ class QaFinding:
     timestamp: datetime
     context: str | None = None
     source_file: str = field(default="")
+    source_session_trigger_source: str | None = None
+    structured_evidence: dict | None = None

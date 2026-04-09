@@ -5,25 +5,28 @@ patrol cycles.  Each finding represents a normalized error signal discovered
 by a DiscoverySource.
 
 Schema reference (public.qa_findings):
-    id                  UUID PK
-    patrol_id           UUID FK → qa_patrols
-    fingerprint         TEXT NOT NULL
-    source_type         TEXT NOT NULL
-    source_butler       TEXT NOT NULL
-    severity            INTEGER NOT NULL
-    exception_type      TEXT NOT NULL
-    event_summary       TEXT NOT NULL
-    call_site           TEXT NOT NULL
-    occurrence_count    INTEGER NOT NULL DEFAULT 1
-    first_seen          TIMESTAMPTZ NOT NULL
-    last_seen           TIMESTAMPTZ NOT NULL
-    dedup_reason        TEXT (nullable)
-    healing_attempt_id  UUID FK → healing_attempts (nullable)
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                              UUID PK
+    patrol_id                       UUID FK → qa_patrols
+    fingerprint                     TEXT NOT NULL
+    source_type                     TEXT NOT NULL
+    source_butler                   TEXT NOT NULL
+    severity                        INTEGER NOT NULL
+    exception_type                  TEXT NOT NULL
+    event_summary                   TEXT NOT NULL
+    call_site                       TEXT NOT NULL
+    occurrence_count                INTEGER NOT NULL DEFAULT 1
+    first_seen                      TIMESTAMPTZ NOT NULL
+    last_seen                       TIMESTAMPTZ NOT NULL
+    dedup_reason                    TEXT (nullable)
+    healing_attempt_id              UUID FK → healing_attempts (nullable)
+    source_session_trigger_source   TEXT (nullable) — trigger_source of the originating session
+    structured_evidence             JSONB (nullable) — structured diagnostic evidence
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -72,15 +75,20 @@ async def insert_finding(
     uuid.UUID
         The ``id`` of the newly inserted row.
     """
+    structured_evidence_json: str | None = None
+    if finding.structured_evidence is not None:
+        structured_evidence_json = json.dumps(finding.structured_evidence)
+
     row_id = await pool.fetchval(
         """
         INSERT INTO public.qa_findings (
             patrol_id, fingerprint, source_type, source_butler,
             severity, exception_type, event_summary, call_site,
             occurrence_count, first_seen, last_seen,
-            dedup_reason, healing_attempt_id
+            dedup_reason, healing_attempt_id,
+            source_session_trigger_source, structured_evidence
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
         RETURNING id
         """,
         patrol_id,
@@ -96,6 +104,8 @@ async def insert_finding(
         finding.last_seen,
         dedup_reason,
         str(healing_attempt_id) if healing_attempt_id is not None else None,
+        finding.source_session_trigger_source,
+        structured_evidence_json,
     )
     return row_id
 
