@@ -368,7 +368,7 @@ async def connect_switchboard(daemon: Any) -> None:
             "Connected to Switchboard at %s for butler %s", url, daemon.config.name
         )
     except Exception:
-        logger.info(
+        logger.warning(
             "Switchboard not yet reachable at %s for butler %s; "
             "notify() will be unavailable until Switchboard is up",
             url,
@@ -422,7 +422,8 @@ async def switchboard_heartbeat_loop(daemon: Any) -> None:
                         )
                     except Exception:
                         logger.warning(
-                            "Switchboard heartbeat: connection dead, reconnecting"
+                            "Switchboard heartbeat: connection dead, reconnecting",
+                            exc_info=True,
                         )
                         await disconnect_switchboard(daemon)
                         await connect_switchboard(daemon)
