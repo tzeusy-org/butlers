@@ -119,19 +119,19 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
     mock_credential_store.resolve = AsyncMock(return_value=None)
 
     return {
-        "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
+        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
-            "butlers.daemon.validate_module_credentials_async",
+            "butlers.lifecycle.validate_module_credentials_async",
             new_callable=AsyncMock,
             return_value={},
         ),
-        "init_telemetry": patch("butlers.daemon.init_telemetry"),
+        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
         "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.daemon.FastMCP"),
-        "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
+        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
+        "FastMCP": patch("butlers.lifecycle.FastMCP"),
+        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
         "start_mcp_server": patch.object(
             ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock
         ),
@@ -150,8 +150,8 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
             new_callable=AsyncMock,
             return_value=mock_credential_store,
         ),
-        "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
-        "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
+        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
     }
 
 
@@ -181,7 +181,7 @@ async def _start_daemon_with_notify(
         patches["init_telemetry"],
         patches["configure_logging"],
         patches["sync_schedules"],
-        patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
         patches["Spawner"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
@@ -258,7 +258,7 @@ def _patch_db_in_patches(patches: dict, mock_pool: Any) -> None:
     mock_db.host = "localhost"
     mock_db.port = 5432
     mock_db.db_name = "butlers"
-    patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
+    patches["db_from_env"] = patch("butlers.lifecycle.Database.from_env", return_value=mock_db)
 
 
 @pytest.mark.asyncio
@@ -332,7 +332,7 @@ def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
     mock_db.port = 5432
     mock_db.db_name = "butlers"
     patches = _patch_infra()
-    patches["db_from_env"] = patch("butlers.daemon.Database.from_env", return_value=mock_db)
+    patches["db_from_env"] = patch("butlers.lifecycle.Database.from_env", return_value=mock_db)
     return patches, mock_pool, mock_db
 
 
