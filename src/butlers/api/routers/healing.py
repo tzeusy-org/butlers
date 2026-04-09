@@ -27,11 +27,8 @@ When ``_get_dispatch_fn`` returns a callable the row is created with status
 ``investigating`` and the dispatch callable is scheduled as a background task.
 
 When ``_get_dispatch_fn`` returns ``None`` the row is created with status
-``dispatch_pending`` (not ``investigating``).  This clearly distinguishes
-deferred retry-created rows from crashed-mid-investigation rows.  The butler
-daemon picks up ``dispatch_pending`` rows on its next startup via
-``recover_stale_attempts`` and re-dispatches the agent (transitioning the row
-to ``investigating`` before spawning).
+``investigating`` and the workflow deadline watchdog will handle it if no agent
+is spawned within the allotted time (``dispatch_pending`` was removed in core_066).
 
 Callers that override ``_get_dispatch_fn`` must return an async callable
 conforming to ``DispatchCallable`` (see class definition below).
@@ -57,6 +54,7 @@ from butlers.core.healing.tracking import (
     get_attempt,
     get_recent_terminal_statuses,
     list_attempts,
+    list_dispatch_events,
 )
 
 logger = logging.getLogger(__name__)
@@ -213,6 +211,18 @@ async def _count_attempts(pool, status_filter: str | None) -> int:
     return int(result)
 
 
+async def _count_dispatch_events(pool, decision_filter: str | None) -> int:
+    """Return the total count of dispatch events, optionally filtered by decision."""
+    if decision_filter is not None:
+        result: int = await pool.fetchval(
+            "SELECT COUNT(*) FROM public.healing_dispatch_events WHERE decision = $1",
+            decision_filter,
+        )
+    else:
+        result = await pool.fetchval("SELECT COUNT(*) FROM public.healing_dispatch_events")
+    return int(result)
+
+
 async def _compute_breaker_state(pool, threshold: int) -> tuple[bool, int, datetime | None]:
     """Compute circuit breaker state from the last *threshold* terminal attempts.
 
@@ -322,21 +332,19 @@ async def retry_healing_attempt(
     """Create a new healing attempt for the same fingerprint as an existing attempt
     and dispatch the healing agent.
 
-    Rejects with HTTP 409 when the attempt has a non-terminal status (dispatch_pending,
-    investigating, or pr_open), since the original investigation is still active.  Also
-    rejects with HTTP 409 if a separate active row already exists for the same fingerprint
-    (e.g. a prior retry left a dispatch_pending row), to avoid a UniqueViolationError.
+    Rejects with HTTP 409 when the attempt has a non-terminal status (investigating
+    or pr_open), since the original investigation is still active.  Also rejects with
+    HTTP 409 if a separate active row already exists for the same fingerprint, to avoid
+    a UniqueViolationError.
 
-    The new attempt is inserted directly with status ``investigating`` (when an in-process
-    dispatch hook is available) or ``dispatch_pending`` (when deferred) and an empty
+    The new attempt is inserted directly with status ``investigating`` and an empty
     session_ids array (the retry is dashboard-triggered, not linked to a failing session).
 
     After inserting the row, dispatch is attempted via the pluggable ``_get_dispatch_fn``
     dependency.  When a dispatch callable is available (in-process or test override),
     it is invoked as a background task.  When no dispatch callable is configured
-    (typical dashboard API deployment), the row is created and the butler daemon
-    will pick it up and dispatch the agent on its next startup via
-    ``recover_stale_attempts``.
+    (typical dashboard API deployment), the row remains as ``investigating`` and the
+    per-phase watchdog will time it out if no agent is spawned within the deadline.
     """
     pool = _shared_pool(db)
 
@@ -364,8 +372,8 @@ async def retry_healing_attempt(
     sanitized_msg: str | None = original.get("sanitized_msg")
 
     # Guard: reject if there is already an active row for this fingerprint.
-    # This prevents a UniqueViolationError (→ 500) when a prior retry left a
-    # dispatch_pending or investigating row for the same fingerprint.
+    # This prevents a UniqueViolationError (→ 500) when a prior retry left an
+    # investigating row for the same fingerprint.
     existing_active = await get_active_attempt(pool, fingerprint)
     if existing_active is not None:
         raise HTTPException(
@@ -377,11 +385,9 @@ async def retry_healing_attempt(
             ),
         )
 
-    # Choose the initial status based on whether an in-process dispatch callable
-    # is available.  When dispatch is deferred (no hook), use 'dispatch_pending'
-    # so the daemon can distinguish these rows from crash-orphaned 'investigating'
-    # rows on restart.
-    initial_status = "investigating" if dispatch_fn is not None else "dispatch_pending"
+    # Always insert with status 'investigating'.  The dispatch_pending status was
+    # removed in core_066 — rows are created as investigating directly or not at all.
+    initial_status = "investigating"
 
     # Insert a fresh row bypassing the partial unique index by using a direct INSERT
     # (not create_or_join_attempt which is novelty-aware).
@@ -391,9 +397,10 @@ async def retry_healing_attempt(
             """
             INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
-                exception_type, call_site, sanitized_msg, session_ids
+                exception_type, call_site, sanitized_msg, session_ids,
+                workflow_deadline_at
             )
-            VALUES ($1, $2, $7, $3, $4, $5, $6, '{}')
+            VALUES ($1, $2, 'investigating', $3, $4, $5, $6, '{}', now() + INTERVAL '60 minutes')
             RETURNING id, fingerprint, status
             """,
             fingerprint,
@@ -402,7 +409,6 @@ async def retry_healing_attempt(
             exception_type,
             call_site,
             sanitized_msg,
-            initial_status,
         )
     except Exception as exc:
         logger.error("Failed to create retry attempt for %s: %s", attempt_id, exc)
@@ -440,13 +446,13 @@ async def retry_healing_attempt(
         )
     else:
         # No in-process dispatch available (dashboard API is a separate process
-        # from the butler daemon).  The row is created with 'dispatch_pending'
-        # status; the daemon will re-dispatch on next startup via
-        # recover_stale_attempts (dispatch_pending rows → re-dispatch, not failed).
+        # from the butler daemon).  The row is created as 'investigating'; the
+        # daemon will pick it up via the per-phase watchdog if no agent is
+        # spawned within the workflow deadline.
         logger.warning(
             "No dispatch function available for retry attempt=%s; "
-            "row created with status='dispatch_pending'. "
-            "The butler daemon will re-dispatch on next startup via recover_stale_attempts. "
+            "row created with status='investigating'. "
+            "The butler daemon will handle this via the workflow deadline watchdog. "
             "Override _get_dispatch_fn dependency to enable immediate dispatch.",
             new_attempt_id,
         )
@@ -523,18 +529,23 @@ async def reset_circuit_breaker(
     # Insert a synthetic pr_merged row to break the failure streak.
     # This is the least-invasive mechanism: no schema changes needed.
     # The sentinel fingerprint is prefixed to make it identifiable in dashboards.
+    # A synthetic healing_session_id is required so the row is visible to
+    # get_recent_terminal_statuses (which filters by healing_session_id IS NOT NULL).
     sentinel_fingerprint = f"reset-sentinel-{uuid.uuid4().hex}"
+    sentinel_session_id = uuid.uuid4()
     try:
         await pool.execute(
             """
             INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
-                exception_type, call_site, session_ids, closed_at
+                exception_type, call_site, session_ids, closed_at,
+                healing_session_id
             )
             VALUES ($1, 'dashboard', 'pr_merged', 4, 'CircuitBreakerReset', 'dashboard:reset',
-                    '{}', now())
+                    '{}', now(), $2::uuid)
             """,
             sentinel_fingerprint,
+            str(sentinel_session_id),
         )
         logger.info("Circuit breaker reset via dashboard (sentinel=%s)", sentinel_fingerprint[:24])
     except Exception as exc:
@@ -549,4 +560,58 @@ async def reset_circuit_breaker(
         consecutive_failures=consecutive_failures,
         threshold=threshold,
         last_failure_at=last_failure_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/healing/dispatch-events — paginated dispatch decision list
+# ---------------------------------------------------------------------------
+
+
+class HealingDispatchEvent(BaseModel):
+    """A dispatch decision record (gate evaluation, not an execution attempt)."""
+
+    id: uuid.UUID
+    fingerprint: str
+    butler_name: str
+    decision: str
+    reason: str | None = None
+    attempt_id: uuid.UUID | None = None
+    created_at: datetime
+
+
+@router.get("/dispatch-events", response_model=PaginatedResponse[HealingDispatchEvent])
+async def list_healing_dispatch_events(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    decision: str | None = Query(default=None, description="Filter by decision value"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[HealingDispatchEvent]:
+    """Return a paginated list of healing dispatch decisions.
+
+    Dispatch events represent gate evaluations — they record why a healing
+    workflow was or was not launched.  They are distinct from healing attempts,
+    which record launched execution history.
+
+    Decision values include: ``cooldown``, ``concurrency_cap``, ``circuit_breaker``,
+    ``novelty_join``, ``no_model``, ``severity``, ``disabled``, ``accepted``.
+    """
+    pool = _shared_pool(db)
+    rows = await list_dispatch_events(pool, limit=limit, offset=offset, decision_filter=decision)
+    total = await _count_dispatch_events(pool, decision)
+    events = [
+        HealingDispatchEvent(
+            id=row["id"],
+            fingerprint=row["fingerprint"],
+            butler_name=row["butler_name"],
+            decision=row["decision"],
+            reason=row.get("reason"),
+            attempt_id=row.get("attempt_id"),
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
+    return PaginatedResponse(
+        data=events,
+        meta=PaginationMeta(limit=limit, offset=offset, total=total),
     )

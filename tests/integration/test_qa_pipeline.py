@@ -636,9 +636,16 @@ class TestSandboxEnforcement:
         env = build_sandbox_env(None)
 
         for key in (
-            "BUTLERS_DB_URL", "BUTLERS_SECRET_KEY", "BUTLERS_EMAIL_PASSWORD", "BUTLERS_API_KEY",
-            "DATABASE_URL", "PGPASSWORD", "PGHOST", "PGUSER",
-            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+            "BUTLERS_DB_URL",
+            "BUTLERS_SECRET_KEY",
+            "BUTLERS_EMAIL_PASSWORD",
+            "BUTLERS_API_KEY",
+            "DATABASE_URL",
+            "PGPASSWORD",
+            "PGHOST",
+            "PGUSER",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
         ):
             assert key not in env, f"{key} should be stripped from sandbox env"
         for key in ("PATH", "HOME", "UV_CACHE_DIR"):
@@ -745,7 +752,7 @@ class TestPatrolCrashRecovery:
             patch(
                 "butlers.modules.qa.recover_stale_attempts",
                 new_callable=AsyncMock,
-                return_value=(0, []),
+                return_value=0,
             ),
             patch("butlers.modules.qa.reap_stale_worktrees", new_callable=AsyncMock),
         ):
@@ -754,20 +761,10 @@ class TestPatrolCrashRecovery:
         # The module should have called pool.execute to update the stale patrol row
         assert pool.execute.called
 
-    async def test_dispatch_pending_attempts_requeued_on_startup(self):
-        """on_startup triggers re-dispatch of dispatch_pending healing attempts."""
+    async def test_recover_stale_attempts_called_on_startup(self):
+        """on_startup calls recover_stale_attempts and handles int return value."""
         from butlers.modules.qa import QaConfig, QaModule
 
-        pending_attempt = {
-            "id": uuid.uuid4(),
-            "fingerprint": "f" * 64,
-            "butler_name": "finance",
-            "severity": 1,
-            "exception_type": "DBError",
-            "call_site": "db.py:query",
-            "sanitized_msg": "connection refused",
-            "status": "dispatch_pending",
-        }
         pool = _make_pool()
         pool.fetch = AsyncMock(return_value=[])  # no stale patrol rows
 
@@ -777,13 +774,14 @@ class TestPatrolCrashRecovery:
             patch(
                 "butlers.modules.qa.recover_stale_attempts",
                 new_callable=AsyncMock,
-                return_value=(1, [pending_attempt]),
-            ),
+                return_value=2,  # int — new return type after dispatch_pending removal
+            ) as mock_recover,
             patch("butlers.modules.qa.reap_stale_worktrees", new_callable=AsyncMock),
         ):
             await mod.on_startup(QaConfig(), MagicMock(pool=pool))
 
         # recover_stale_attempts was called, indicating startup recovery ran
+        assert mock_recover.called
         # The module state should reflect that startup completed
         assert mod._pool is not None
 

@@ -155,7 +155,7 @@ class TestOnStartup:
             patch(
                 "butlers.modules.qa.recover_stale_attempts",
                 new_callable=AsyncMock,
-                return_value=(0, []),
+                return_value=0,
             ),
             patch("butlers.modules.qa.reap_stale_worktrees", new_callable=AsyncMock),
         ):

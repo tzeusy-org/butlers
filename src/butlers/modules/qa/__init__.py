@@ -6,7 +6,7 @@ This module is the runtime heart of the QA Staffer. It:
   - Registers discovery sources (log_scanner, session_records, butler_reports)
   - Delegates triage and dispatch to core.qa.*
   - Handles severity-0 reactive mini-patrols
-  - Recovers stale patrol rows and dispatch_pending attempts on startup
+  - Recovers stale patrol rows and stale investigating attempts on startup
 
 The QA module's tables (qa_patrols, qa_findings, qa_dismissals) are in the
 public schema and are managed by core migrations (core_051–core_055).
@@ -395,8 +395,8 @@ class QaModule(Module):
 
         Called after dependency resolution and migrations.  Stale ``running``
         patrol rows are recovered (marked as ``error`` with daemon restart
-        reason).  ``dispatch_pending`` healing attempts linked to QA patrols
-        are re-dispatched or failed depending on age.
+        reason).  Stale ``investigating`` healing attempts are recovered using
+        deadline-aware logic (core_066) — ``dispatch_pending`` was removed.
 
         Parameters
         ----------
@@ -480,9 +480,9 @@ class QaModule(Module):
         # Recover stale patrol rows
         await self._recover_stale_patrols(pool)
 
-        # Recover stale healing attempts (dispatch_pending + stale investigating)
+        # Recover stale healing attempts (stale investigating rows)
         try:
-            recovered, pending_rows = await recover_stale_attempts(
+            recovered = await recover_stale_attempts(
                 pool, timeout_minutes=self._config.log_lookback_minutes * 4
             )
             if recovered:

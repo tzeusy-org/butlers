@@ -7,44 +7,51 @@ This module provides the data backbone for the self-healing dispatcher:
 - Fingerprint collision detection for observability
 - Gate query functions (active attempt, cooldown window, concurrency cap,
   circuit breaker, dashboard listing)
-- Daemon restart recovery for stale investigating / dispatch_pending rows
+- Daemon restart recovery for stale investigating rows (deadline-aware)
+- Child session tracking via public.healing_attempt_sessions
+- Dispatch-decision recording via public.healing_dispatch_events
 
 All public functions accept an asyncpg Pool so callers can use any pool
 (per-butler pool or shared pool depending on deployment).
 
 Schema reference (public.healing_attempts):
-    id              UUID PK
-    fingerprint     TEXT NOT NULL
-    butler_name     TEXT NOT NULL
-    status          TEXT NOT NULL DEFAULT 'investigating'
-    severity        INTEGER NOT NULL
-    exception_type  TEXT NOT NULL
-    call_site       TEXT NOT NULL
-    sanitized_msg   TEXT
-    branch_name     TEXT
-    worktree_path   TEXT
-    pr_url          TEXT
-    pr_number       INTEGER
-    session_ids     UUID[] NOT NULL DEFAULT '{}'
-    healing_session_id UUID
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-    closed_at       TIMESTAMPTZ
-    error_detail    TEXT
+    id                   UUID PK
+    fingerprint          TEXT NOT NULL
+    butler_name          TEXT NOT NULL
+    status               TEXT NOT NULL DEFAULT 'investigating'
+    severity             INTEGER NOT NULL
+    exception_type       TEXT NOT NULL
+    call_site            TEXT NOT NULL
+    sanitized_msg        TEXT
+    branch_name          TEXT
+    worktree_path        TEXT
+    pr_url               TEXT
+    pr_number            INTEGER
+    session_ids          UUID[] NOT NULL DEFAULT '{}'
+    healing_session_id   UUID
+    current_phase        TEXT          (NULL for single-session attempts)
+    workflow_deadline_at TIMESTAMPTZ   (NULL for legacy rows — see recovery)
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    closed_at            TIMESTAMPTZ
+    error_detail         TEXT
 
 Status lifecycle
 ----------------
-``dispatch_pending``
-    Created by the retry endpoint when no in-process dispatch hook is
-    configured.  The row exists but no healing agent has been spawned yet.
-    On daemon restart, ``recover_stale_attempts`` picks up these rows and
-    re-dispatches the healing agent (transition → ``investigating``).
-    After 30 minutes without dispatch the row is failed instead.
-
 ``investigating``
     The healing agent is actively running.  Transitions to ``pr_open``
     (success path) or ``failed`` / ``unfixable`` / ``anonymization_failed``
     / ``timeout`` (failure paths).
+
+    Note: ``dispatch_pending`` is NOT a valid status.  The novelty claim and
+    row creation are atomic — a row either enters ``investigating`` immediately
+    (launch succeeded) or is never created (launch failed before insert).
+    Any legacy ``dispatch_pending`` rows are migrated to ``failed`` by
+    core_066.
+
+``pr_open``
+    A PR has been submitted.  Transitions to ``pr_merged`` (merged by a human)
+    or ``failed`` (PR closed without merge).
 """
 
 from __future__ import annotations
@@ -57,14 +64,19 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
+# Type aliases
+HealingAttemptSessionRow = dict[str, Any]
+HealingDispatchEventRow = dict[str, Any]
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 #: All valid status values for healing_attempts.
+#: Note: ``dispatch_pending`` was removed in core_066.  The novelty claim and
+#: row creation are atomic — rows are inserted as ``investigating`` directly.
 VALID_STATUSES = frozenset(
     {
-        "dispatch_pending",
         "investigating",
         "pr_open",
         "pr_merged",
@@ -80,14 +92,12 @@ TERMINAL_STATUSES = frozenset(
     {"pr_merged", "failed", "unfixable", "anonymization_failed", "timeout"}
 )
 
-#: Active (non-terminal) statuses — only one row per fingerprint may exist in these states
-#: (enforced by partial unique index on the database).
-ACTIVE_STATUSES = frozenset({"dispatch_pending", "investigating", "pr_open"})
+#: Active (non-terminal) statuses — only one row per fingerprint may exist in
+#: these states (enforced by partial unique index on the database).
+ACTIVE_STATUSES = frozenset({"investigating", "pr_open"})
 
 #: Valid transitions from each state (target states).
 _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
-    # dispatch_pending → investigating (agent dispatched) or failed (extended timeout)
-    "dispatch_pending": frozenset({"investigating", "failed"}),
     "investigating": frozenset(
         {"pr_open", "failed", "unfixable", "anonymization_failed", "timeout"}
     ),
@@ -99,6 +109,9 @@ _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "anonymization_failed": frozenset(),
     "timeout": frozenset(),
 }
+
+#: Valid status values for healing_attempt_sessions.
+PHASE_SESSION_STATUSES = frozenset({"running", "completed", "failed", "timeout", "cancelled"})
 
 # ---------------------------------------------------------------------------
 # Type alias
@@ -132,6 +145,7 @@ async def create_or_join_attempt(
     session_id: uuid.UUID,
     sanitized_msg: str | None = None,
     qa_patrol_id: uuid.UUID | None = None,
+    workflow_deadline_minutes: int = 60,
 ) -> tuple[uuid.UUID, bool]:
     """Atomically create a new healing attempt or join an existing active one.
 
@@ -169,6 +183,10 @@ async def create_or_join_attempt(
         When set, the ``qa_patrol_id`` column on the new row is populated,
         marking this as a QA-originated attempt.  Only applies to newly
         inserted rows — joins to existing attempts do not update this field.
+    workflow_deadline_minutes:
+        Hard limit (in minutes) for the entire workflow.  Stored as an
+        immutable ``workflow_deadline_at`` timestamp set once at row creation.
+        Defaults to 60 minutes.  Only applied to newly inserted rows.
 
     Returns
     -------
@@ -178,7 +196,7 @@ async def create_or_join_attempt(
         active attempt was joined.
     """
     # The INSERT targets the partial unique index:
-    #   UNIQUE (fingerprint) WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
+    #   UNIQUE (fingerprint) WHERE status IN ('investigating', 'pr_open')
     #
     # On conflict we:
     # 1. Append the session_id (only if not already present — idempotent).
@@ -193,11 +211,14 @@ async def create_or_join_attempt(
             INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, sanitized_msg, session_ids,
-                qa_patrol_id
+                qa_patrol_id, workflow_deadline_at
             )
-            VALUES ($1, $2, 'investigating', $3, $4, $5, $6, ARRAY[$7::uuid], $8::uuid)
+            VALUES (
+                $1, $2, 'investigating', $3, $4, $5, $6, ARRAY[$7::uuid], $8::uuid,
+                now() + ($9 * INTERVAL '1 minute')
+            )
             ON CONFLICT (fingerprint)
-            WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
+            WHERE status IN ('investigating', 'pr_open')
             DO UPDATE
                 SET session_ids = CASE
                     WHEN $7::uuid = ANY(public.healing_attempts.session_ids)
@@ -224,6 +245,7 @@ async def create_or_join_attempt(
         sanitized_msg,
         str(session_id),
         str(qa_patrol_id) if qa_patrol_id is not None else None,
+        workflow_deadline_minutes,
     )
 
     if row is None:
@@ -421,7 +443,7 @@ async def get_active_attempt(
         SELECT *
         FROM public.healing_attempts
         WHERE fingerprint = $1
-          AND status IN ('dispatch_pending', 'investigating', 'pr_open')
+          AND status IN ('investigating', 'pr_open')
         LIMIT 1
         """,
         fingerprint,
@@ -470,7 +492,7 @@ async def get_recent_attempt(
     return _decode_row(row) if row is not None else None
 
 
-async def count_active_attempts(pool: asyncpg.Pool) -> int:
+async def count_active_attempts(pool: asyncpg.Pool, *, qa_only: bool = False) -> int:
     """Return the count of rows with status ``investigating``.
 
     Used for the concurrency cap gate: the dispatcher rejects new healing
@@ -480,18 +502,32 @@ async def count_active_attempts(pool: asyncpg.Pool) -> int:
     ----------
     pool:
         asyncpg connection pool targeting the shared schema.
+    qa_only:
+        When ``True``, only count rows where ``qa_patrol_id IS NOT NULL``
+        (QA-originated investigations).  When ``False`` (default), count all
+        ``investigating`` rows regardless of origin (legacy per-butler path).
 
     Returns
     -------
     int
     """
-    result: int = await pool.fetchval(
-        """
-        SELECT COUNT(*)
-        FROM public.healing_attempts
-        WHERE status = 'investigating'
-        """
-    )
+    if qa_only:
+        result: int = await pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM public.healing_attempts
+            WHERE status = 'investigating'
+              AND qa_patrol_id IS NOT NULL
+            """
+        )
+    else:
+        result = await pool.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM public.healing_attempts
+            WHERE status = 'investigating'
+            """
+        )
     return int(result)
 
 
@@ -499,11 +535,13 @@ async def get_recent_terminal_statuses(
     pool: asyncpg.Pool,
     limit: int,
 ) -> list[str]:
-    """Return the status values of the N most recent terminal attempts.
+    """Return the status values of the N most recent terminal attempts that launched a session.
 
-    Ordered by ``closed_at DESC``.  ``unfixable`` entries are included —
-    the caller decides whether to count them as failures for circuit-breaker
-    purposes.
+    Only attempts with ``healing_session_id IS NOT NULL`` are included —
+    gate rejections (which never launch a session) are excluded from the
+    circuit-breaker signal.  Ordered by ``closed_at DESC``.  ``unfixable``
+    entries are included — the caller decides whether to count them as
+    failures for circuit-breaker purposes.
 
     Parameters
     ----------
@@ -522,6 +560,7 @@ async def get_recent_terminal_statuses(
         SELECT status
         FROM public.healing_attempts
         WHERE status = ANY($1::text[])
+          AND healing_session_id IS NOT NULL
         ORDER BY closed_at DESC
         LIMIT $2
         """,
@@ -622,51 +661,48 @@ async def list_attempts(
 async def recover_stale_attempts(
     pool: asyncpg.Pool,
     timeout_minutes: int = 30,
-    dispatch_pending_timeout_minutes: int = 30,
-) -> tuple[int, list[dict]]:
+) -> int:
     """Recover incomplete healing attempts left behind by a prior daemon crash.
 
     Called once on dispatcher startup, **before** accepting new errors.
 
-    Rules:
-    1. ``investigating`` rows with ``updated_at`` older than *timeout_minutes*
-       and a non-NULL ``healing_session_id`` → transition to ``timeout``
-       with a recovery error_detail message.
-    2. ``investigating`` rows with ``healing_session_id = NULL`` and
-       ``created_at`` older than 5 minutes → transition to ``failed``
-       (agent was never spawned before the crash).
-    3. ``dispatch_pending`` rows older than *dispatch_pending_timeout_minutes*
-       → transition to ``failed`` (dispatch never happened after extended wait).
-    4. ``dispatch_pending`` rows newer than *dispatch_pending_timeout_minutes*
-       are returned as a list for the caller to re-dispatch immediately.
+    Rules
+    -----
+    1. ``investigating`` rows with ``workflow_deadline_at IS NOT NULL`` and
+       ``now() > workflow_deadline_at`` → transition to ``timeout``.
+       (The workflow deadline is the authoritative signal — ``updated_at`` is
+       not consulted for these rows.)
 
-    Rows updated within the last 5 minutes are left alone — a still-running
-    agent may have been in the middle of work before the daemon restarted.
+    2. ``investigating`` rows with ``workflow_deadline_at IS NULL`` and
+       ``updated_at`` older than *timeout_minutes* → transition to ``timeout``
+       using the legacy heuristic.  This path exists only for rows created
+       before ``workflow_deadline_at`` was introduced (core_066).
+
+    3. ``investigating`` rows with ``healing_session_id = NULL`` and
+       ``created_at`` older than 5 minutes → transition to ``failed``
+       (agent was never spawned before the crash).  Applies regardless of
+       ``workflow_deadline_at`` — no deadline has been consumed if no agent
+       ever launched.
+
+    Rows that are within budget (``workflow_deadline_at > now()``) and have a
+    live session ID are left untouched — the per-phase watchdog will handle
+    them if the agent is truly dead.
 
     Parameters
     ----------
     pool:
         asyncpg connection pool targeting the shared schema.
     timeout_minutes:
-        How many minutes of inactivity before an ``investigating`` row is
-        considered stale.  Should match the dispatcher's ``[healing]
-        timeout_minutes`` config value.
-    dispatch_pending_timeout_minutes:
-        How many minutes before a ``dispatch_pending`` row is given up on
-        (transitioned to ``failed``).  Defaults to 30 minutes, which is
-        longer than the ``investigating`` stale check window to allow the
-        daemon time to re-dispatch on restart.
+        Fallback timeout for legacy rows where ``workflow_deadline_at IS NULL``.
+        Should match the dispatcher's ``[healing] timeout_minutes`` config.
 
     Returns
     -------
-    tuple[int, list[dict]]
-        ``(recovered_count, pending_rows)`` where ``recovered_count`` is the
-        total number of rows closed (timed-out + failed), and ``pending_rows``
-        is a list of ``dispatch_pending`` row dicts that should be re-dispatched
-        by the caller.
+    int
+        Total number of rows closed (timed-out + failed).
     """
-    # Rule 1: stale rows with a healing_session_id → timeout
-    timeout_count: int = await pool.fetchval(
+    # Rule 1: deadline-expired rows with a session_id → timeout (deadline authority)
+    deadline_timeout_count: int = await pool.fetchval(
         """
         WITH recovered AS (
             UPDATE public.healing_attempts
@@ -674,9 +710,30 @@ async def recover_stale_attempts(
                 status       = 'timeout',
                 updated_at   = now(),
                 closed_at    = now(),
-                error_detail = 'Recovered on daemon restart — investigation was interrupted'
+                error_detail = 'Recovered on daemon restart — workflow deadline exceeded'
             WHERE status = 'investigating'
               AND healing_session_id IS NOT NULL
+              AND workflow_deadline_at IS NOT NULL
+              AND now() > workflow_deadline_at
+            RETURNING id
+        )
+        SELECT COUNT(*) FROM recovered
+        """
+    )
+
+    # Rule 2: legacy rows (no deadline) with stale updated_at → timeout (fallback)
+    legacy_timeout_count: int = await pool.fetchval(
+        """
+        WITH recovered AS (
+            UPDATE public.healing_attempts
+            SET
+                status       = 'timeout',
+                updated_at   = now(),
+                closed_at    = now(),
+                error_detail = 'Recovered on daemon restart — interrupted (no deadline set)'
+            WHERE status = 'investigating'
+              AND healing_session_id IS NOT NULL
+              AND workflow_deadline_at IS NULL
               AND updated_at < now() - ($1 * INTERVAL '1 minute')
             RETURNING id
         )
@@ -685,7 +742,7 @@ async def recover_stale_attempts(
         timeout_minutes,
     )
 
-    # Rule 2: rows with no session_id and old enough → failed
+    # Rule 3: rows with no session_id and old enough → failed (agent never spawned)
     failed_count: int = await pool.fetchval(
         """
         WITH recovered AS (
@@ -701,57 +758,20 @@ async def recover_stale_attempts(
             RETURNING id
         )
         SELECT COUNT(*) FROM recovered
-        """,
-    )
-
-    # Rule 3: dispatch_pending rows past the extended timeout → failed
-    dp_failed_count: int = await pool.fetchval(
         """
-        WITH recovered AS (
-            UPDATE public.healing_attempts
-            SET
-                status       = 'failed',
-                updated_at   = now(),
-                closed_at    = now(),
-                error_detail = 'Recovered on daemon restart — dispatch never completed'
-            WHERE status = 'dispatch_pending'
-              AND created_at < now() - ($1 * INTERVAL '1 minute')
-            RETURNING id
-        )
-        SELECT COUNT(*) FROM recovered
-        """,
-        dispatch_pending_timeout_minutes,
     )
 
-    # Rule 4: dispatch_pending rows within the timeout — return them for re-dispatch
-    pending_rows_raw = await pool.fetch(
-        """
-        SELECT *
-        FROM public.healing_attempts
-        WHERE status = 'dispatch_pending'
-          AND created_at >= now() - ($1 * INTERVAL '1 minute')
-        ORDER BY created_at ASC
-        """,
-        dispatch_pending_timeout_minutes,
-    )
-    pending_rows = [_decode_row(row) for row in pending_rows_raw]
-
-    total = int(timeout_count) + int(failed_count) + int(dp_failed_count)
+    total = int(deadline_timeout_count) + int(legacy_timeout_count) + int(failed_count)
     if total > 0:
         logger.info(
             "recover_stale_attempts: recovered %d rows "
-            "(%d timeout, %d failed, %d dispatch_pending_failed)",
+            "(%d deadline-timeout, %d legacy-timeout, %d never-spawned-failed)",
             total,
-            int(timeout_count),
+            int(deadline_timeout_count),
+            int(legacy_timeout_count),
             int(failed_count),
-            int(dp_failed_count),
         )
-    if pending_rows:
-        logger.info(
-            "recover_stale_attempts: found %d dispatch_pending rows to re-dispatch",
-            len(pending_rows),
-        )
-    return total, pending_rows
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -781,3 +801,280 @@ async def get_attempt(
         attempt_id,
     )
     return _decode_row(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Dispatch event recording
+# ---------------------------------------------------------------------------
+
+
+async def create_dispatch_event(
+    pool: asyncpg.Pool,
+    fingerprint: str,
+    butler_name: str,
+    decision: str,
+    *,
+    reason: str | None = None,
+    attempt_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Record a dispatch decision in ``public.healing_dispatch_events``.
+
+    Every gate evaluation that does NOT launch a healing session (cooldown,
+    concurrency cap, circuit breaker, no-model, novelty join) should be
+    recorded here.  Gate rejections before launch MUST NOT create or mark
+    any ``healing_attempts`` row as ``failed``.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    fingerprint:
+        64-character SHA-256 hex string identifying the error.
+    butler_name:
+        Name of the butler from whose context dispatch was attempted.
+    decision:
+        The dispatch outcome label, e.g. ``"cooldown"``, ``"concurrency_cap"``,
+        ``"circuit_breaker"``, ``"novelty_join"``, ``"no_model"``, ``"accepted"``,
+        ``"severity"``, ``"disabled"``.
+    reason:
+        Optional free-form detail explaining the decision.
+    attempt_id:
+        UUID of the related ``healing_attempts`` row, if any.  For example,
+        a ``novelty_join`` decision may link to the existing active attempt that
+        was joined.
+
+    Returns
+    -------
+    uuid.UUID
+        The newly created dispatch event ID.
+    """
+    event_id = await pool.fetchval(
+        """
+        INSERT INTO public.healing_dispatch_events
+            (fingerprint, butler_name, decision, reason, attempt_id)
+        VALUES ($1, $2, $3, $4, $5::uuid)
+        RETURNING id
+        """,
+        fingerprint,
+        butler_name,
+        decision,
+        reason,
+        str(attempt_id) if attempt_id is not None else None,
+    )
+    return uuid.UUID(str(event_id))
+
+
+async def list_dispatch_events(
+    pool: asyncpg.Pool,
+    limit: int = 20,
+    offset: int = 0,
+    decision_filter: str | None = None,
+) -> list[HealingDispatchEventRow]:
+    """Return paginated dispatch-decision rows for dashboard display.
+
+    Dispatch events are distinct from healing attempts (execution records).
+    They represent gate evaluations — whether or not a healing session was
+    launched.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    limit:
+        Maximum number of rows to return.
+    offset:
+        Number of rows to skip (for pagination).
+    decision_filter:
+        If provided, only return rows with this ``decision`` value.
+
+    Returns
+    -------
+    list[HealingDispatchEventRow]
+        Rows ordered by ``created_at DESC``.
+    """
+    if decision_filter is not None:
+        rows = await pool.fetch(
+            """
+            SELECT *
+            FROM public.healing_dispatch_events
+            WHERE decision = $1
+            ORDER BY created_at DESC
+            LIMIT $2 OFFSET $3
+            """,
+            decision_filter,
+            limit,
+            offset,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT *
+            FROM public.healing_dispatch_events
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset,
+        )
+    return [_decode_row(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Phase session tracking
+# ---------------------------------------------------------------------------
+
+
+async def record_phase_session(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    phase: str,
+    session_id: uuid.UUID,
+) -> uuid.UUID:
+    """Record a newly launched runtime session for a healing workflow phase.
+
+    Inserts a row into ``public.healing_attempt_sessions`` and updates the
+    parent ``healing_attempts`` row with:
+    - ``current_phase`` set to *phase*
+    - ``healing_session_id`` set to *session_id* (backward-compat field)
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    attempt_id:
+        UUID of the parent ``healing_attempts`` row.
+    phase:
+        Workflow phase label: ``"diagnose"``, ``"implement"``, ``"verify"``,
+        or any custom label.
+    session_id:
+        UUID of the spawned runtime session.
+
+    Returns
+    -------
+    uuid.UUID
+        The newly created ``healing_attempt_sessions`` row ID.
+    """
+    # Insert child row and update parent atomically so the two writes are
+    # never observed in an inconsistent state (child recorded but parent
+    # current_phase / healing_session_id still stale).
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            child_id = await conn.fetchval(
+                """
+                INSERT INTO public.healing_attempt_sessions
+                    (attempt_id, phase, session_id, status)
+                VALUES ($1::uuid, $2, $3::uuid, 'running')
+                RETURNING id
+                """,
+                str(attempt_id),
+                phase,
+                str(session_id),
+            )
+
+            # Update parent: current_phase + healing_session_id (compat)
+            await conn.execute(
+                """
+                UPDATE public.healing_attempts
+                SET
+                    current_phase      = $2,
+                    healing_session_id = $3::uuid,
+                    updated_at         = now()
+                WHERE id = $1::uuid
+                """,
+                str(attempt_id),
+                phase,
+                str(session_id),
+            )
+
+    return uuid.UUID(str(child_id))
+
+
+async def update_phase_session_status(
+    pool: asyncpg.Pool,
+    phase_session_id: uuid.UUID,
+    new_status: str,
+    *,
+    error_detail: str | None = None,
+) -> bool:
+    """Update the status of a ``healing_attempt_sessions`` row.
+
+    Sets ``updated_at`` to now().  When *new_status* is a terminal value
+    (``completed``, ``failed``, ``timeout``, ``cancelled``), also sets
+    ``completed_at``.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    phase_session_id:
+        UUID primary key of the ``healing_attempt_sessions`` row.
+    new_status:
+        Target status.  Must be one of ``PHASE_SESSION_STATUSES``.
+    error_detail:
+        Optional error description (for failure/timeout transitions).
+
+    Returns
+    -------
+    bool
+        True if the row was updated, False if the status was invalid or the
+        row was not found.
+    """
+    if new_status not in PHASE_SESSION_STATUSES:
+        logger.warning(
+            "update_phase_session_status: invalid status %r for session %s",
+            new_status,
+            phase_session_id,
+        )
+        return False
+
+    terminal = new_status in {"completed", "failed", "timeout", "cancelled"}
+    updated = await pool.fetchval(
+        """
+        UPDATE public.healing_attempt_sessions
+        SET
+            status       = $2,
+            updated_at   = now(),
+            completed_at = CASE WHEN $3 THEN now() ELSE completed_at END,
+            error_detail = COALESCE($4, error_detail)
+        WHERE id = $1::uuid
+        RETURNING id
+        """,
+        str(phase_session_id),
+        new_status,
+        terminal,
+        error_detail,
+    )
+    if updated is None:
+        logger.warning("update_phase_session_status: session %s not found", phase_session_id)
+        return False
+    return True
+
+
+async def list_phase_sessions(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+) -> list[HealingAttemptSessionRow]:
+    """Return all phase session rows for a given healing attempt.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the shared schema.
+    attempt_id:
+        UUID of the parent ``healing_attempts`` row.
+
+    Returns
+    -------
+    list[HealingAttemptSessionRow]
+        Rows ordered by ``started_at ASC``.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT *
+        FROM public.healing_attempt_sessions
+        WHERE attempt_id = $1::uuid
+        ORDER BY started_at ASC
+        """,
+        str(attempt_id),
+    )
+    return [_decode_row(row) for row in rows]
