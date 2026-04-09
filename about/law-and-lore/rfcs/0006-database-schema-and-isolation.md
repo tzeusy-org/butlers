@@ -118,19 +118,64 @@ cross_butler_access = ["*"]   # or a list of specific agent names
   access. They communicate with other agents exclusively through Switchboard
   routing.
 
-In v1 this model is **advisory**: violations are flagged in logs but not
-enforced at the database or network level. Database-level enforcement (row
-security policies, per-role grants) is a future hardening step that the
-declarative model is designed to support without schema changes.
+This model is enforced at the database level via PostgreSQL role-based access
+control (see "Database Connection Scoping" below). Each butler's connection pool
+assumes a designated runtime role (`butler_{schema}_rw`) via `SET ROLE`, which
+constrains writes to the butler's own schema plus specifically authorized
+`public` tables (see "Public Schema Write Authorization Matrix" below). The
+declarative `[butler.permissions]` configuration remains authoritative for
+application-layer routing decisions.
 
 ### Database Connection Scoping
 
-Each butler's database connection sets `search_path` to `<butler_schema>, public`. This ensures:
+Each butler's database connection sets `search_path` to `<butler_schema>, public`. The pool's
+`setup` callback also executes `SET ROLE "butler_{schema}_rw"` on every connection acquired from
+the pool, assuming the runtime role created by the `core_001_foundation` migration. This ensures:
 
 - Unqualified queries default to the butler's own schema.
 - Schema prefix is optional for identity table reads (but SHOULD be used explicitly for clarity).
 - A butler CANNOT access another butler's schema.
-- A butler CANNOT write to `public` tables unless explicitly authorized by the module that owns those tables.
+- A butler CANNOT write to `public` tables unless explicitly authorized by the write authorization
+  matrix below (enforced by PostgreSQL role privileges, not just application convention).
+- If the runtime role does not exist (e.g., in a development environment without CREATEROLE), the
+  butler logs a warning and falls back to operating with the shared database user's privileges.
+- asyncpg's built-in `RESET ALL` on connection return restores the connecting user's role for pool
+  safety.
+
+### Public Schema Write Authorization Matrix
+
+Butler runtime roles have write access to a specific set of `public` tables. The grants are
+applied by the `core_065` migration. All other `public` tables are read-only for butler roles.
+
+| Public Table | Granted Operations | Used By |
+|---|---|---|
+| `entities` | INSERT, UPDATE, DELETE | identity module, bootstrap, memory, contacts |
+| `contacts` | INSERT, UPDATE | identity module, contacts module |
+| `contact_info` | INSERT, UPDATE, DELETE | identity module, contacts, relationship |
+| `entity_info` | INSERT, UPDATE, DELETE | google/steam credentials, entity management |
+| `google_accounts` | INSERT, UPDATE | google account registry, calendar, drive |
+| `steam_accounts` | INSERT, UPDATE, DELETE | steam account registry |
+| `user_context` | INSERT, UPDATE | context bus (RFC 0009) |
+| `model_round_robin_counters` | INSERT, UPDATE | model routing round-robin |
+| `token_usage_ledger` | INSERT | model routing token tracking |
+| `ingestion_events` | INSERT, UPDATE, DELETE | ingestion pipeline, switchboard |
+| `healing_attempts` | INSERT, UPDATE | QA/healing module |
+| `qa_dismissals` | INSERT, UPDATE, DELETE | QA module |
+| `qa_findings` | INSERT, UPDATE | QA module |
+| `qa_repo_config` | UPDATE | QA module |
+| `qa_patrols` | INSERT, UPDATE | QA module |
+| `memory_catalog` | INSERT, UPDATE | memory module |
+| `facts` | INSERT, UPDATE | finance anomaly detection |
+| `insight_candidates` | INSERT, UPDATE, DELETE | insight broker |
+| `insight_cooldowns` | INSERT, DELETE | insight broker |
+| `insight_engagement` | INSERT, UPDATE, DELETE | insight engagement tracking |
+| `insight_settings` | INSERT, UPDATE | insight delivery settings |
+
+Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
+explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers
+need write access, a subsequent core migration must add the targeted `GRANT` statements and this
+matrix must be updated. The authoritative runtime specification is in
+`openspec/specs/database-security/spec.md`.
 
 ### Multi-Chain Alembic Migrations
 
