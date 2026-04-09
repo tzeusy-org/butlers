@@ -269,11 +269,16 @@ def configure_logging(
     console_handler.setFormatter(formatter)
 
     root = logging.getLogger()
-    # Remove existing handlers and filters to avoid duplicates on reconfiguration.
-    # Close file handlers first to avoid ResourceWarning on unclosed file objects.
+
+    # Replace console handlers and filters without disturbing file handlers
+    # from other butlers.  In multi-butler processes (``butlers up``), each
+    # butler calls configure_logging() during startup; the old code closed
+    # *every* handler, destroying file handlers created by earlier butlers.
+    _existing_file_handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
     for _handler in list(root.handlers):
-        _handler.close()
-    root.handlers.clear()
+        if not isinstance(_handler, logging.FileHandler):
+            _handler.close()
+    root.handlers = _existing_file_handlers
     root.filters.clear()
     root.addHandler(console_handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -298,6 +303,16 @@ def configure_logging(
         for subdir in (_DIR_BUTLERS, _DIR_UVICORN, _DIR_CONNECTORS):
             (log_root / subdir).mkdir(parents=True, exist_ok=True)
 
+        target_butler_path = str(log_root / _DIR_BUTLERS / f"{log_name}.log")
+        target_uvicorn_path = str(log_root / _DIR_UVICORN / f"{log_name}.log")
+
+        # Close and remove any existing file handler for *this* butler only
+        # (handles reconfiguration without clobbering other butlers' handlers).
+        for h in list(root.handlers):
+            if isinstance(h, logging.FileHandler) and h.baseFilename == target_butler_path:
+                h.close()
+                root.removeHandler(h)
+
         # Butler application logs → logs/butlers/{name}.log
         butler_handler = _make_file_handler(
             log_root / _DIR_BUTLERS / f"{log_name}.log",
@@ -306,6 +321,14 @@ def configure_logging(
         root.addHandler(butler_handler)
 
         # Noise/transport logs → logs/uvicorn/{name}.log
+        # Same per-butler dedup for noise loggers.
+        for noise_name in _NOISE_LOGGERS:
+            noise_logger = logging.getLogger(noise_name)
+            for h in list(noise_logger.handlers):
+                if isinstance(h, logging.FileHandler) and h.baseFilename == target_uvicorn_path:
+                    h.close()
+                    noise_logger.removeHandler(h)
+
         uvicorn_handler = _make_file_handler(
             log_root / _DIR_UVICORN / f"{log_name}.log",
             file_processors,

@@ -36,6 +36,7 @@ VALID_CONNECTOR_TYPES = {
     "gmail",
     "google_calendar",
     "google_drive",
+    "home_assistant",
     "live_listener",
     "owntracks",
     "spotify",
