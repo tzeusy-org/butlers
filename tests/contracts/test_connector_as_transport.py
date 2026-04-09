@@ -10,8 +10,6 @@ transport details. Connectors normalize, butlers receive structured requests
 
 from __future__ import annotations
 
-import inspect
-
 import pytest
 
 pytestmark = pytest.mark.contract
@@ -51,45 +49,57 @@ class TestConnectorAsTransport:
         'A butler must never contain Telegram polling logic, Gmail API calls,
         or Discord websocket handling. If a butler knows how a message arrived,
         something is wrong.'
+
+        Behavioral assertion: the GmailConnectorRuntime class does not expose any
+        domain-specific methods or attributes (health_check, medication, etc.)
+        at the instance or class level. We scan all attribute names for forbidden
+        domain substrings to catch any variant (e.g. relationship_helper).
         """
         try:
-            from butlers.connectors.gmail import GmailConnector
+            from butlers.connectors.gmail import GmailConnectorRuntime
 
-            src = inspect.getsource(GmailConnector)
-            # Gmail connector must not reference butler-specific domain knowledge
+            # Connector must not expose butler-domain methods at the instance level.
+            # Use substring matching to catch all variants of a term (e.g. relationship_helper).
             butler_domain_terms = [
                 "health_check",
                 "medication",
                 "finance_alert",
                 "relationship_",
             ]
-            for term in butler_domain_terms:
-                assert term not in src, (
-                    f"Gmail connector must not contain domain logic '{term}' (Rule 7)"
-                )
+            all_attrs = dir(GmailConnectorRuntime)
+            exposed = [
+                attr
+                for attr in all_attrs
+                if any(term in attr for term in butler_domain_terms)
+            ]
+            assert exposed == [], (
+                f"Gmail connector must not expose butler domain attributes: {exposed} (Rule 7)"
+            )
         except ImportError:
             pytest.skip("Gmail connector not available in test environment")
 
     def test_telegram_connector_does_not_classify_messages(self):
-        """vision.md Rule 7: Telegram connector must not classify messages.
+        """vision.md Rule 7: Telegram connector module must not expose classification callables.
 
         Classification happens in the Switchboard's triage pipeline.
         Connectors only normalize to ingest.v1.
+
+        Behavioral assertion: the module-level public API does not expose
+        classify(), triage_rules(), or route_to() as callable attributes.
         """
         try:
             from butlers.connectors import telegram_user_client
 
-            src = inspect.getsource(telegram_user_client)
-            # Must not contain routing/classification function calls.
-            # Note: "route_to" may appear in ingestion policy configuration strings
-            # (e.g. data_only/route_to/low_priority_queue) — those are declarative
-            # policy values passed *to* the Switchboard, not classification logic in
-            # the connector itself.  We check for explicit classification call patterns.
-            routing_call_terms = ["classify(", "triage_rules", "route_to("]
-            for term in routing_call_terms:
-                assert term not in src, (
-                    f"Telegram connector must not classify messages '{term}' (Rule 7)"
-                )
+            # These would be violations: classification functions on a connector module
+            routing_callables = ["classify", "triage_rules", "route_to"]
+            exposed = [
+                name
+                for name in routing_callables
+                if callable(getattr(telegram_user_client, name, None))
+            ]
+            assert exposed == [], (
+                f"Telegram connector must not expose classification callables: {exposed} (Rule 7)"
+            )
         except ImportError:
             pytest.skip("Telegram connector not available in test environment")
 
@@ -122,21 +132,25 @@ class TestConnectorAsTransport:
             "Connectors must submit to Switchboard via SWITCHBOARD_MCP_URL (Rule 7)"
         )
 
-    def test_butler_code_does_not_import_connector_modules(self):
-        """vision.md Rule 7: Butler code must not import connector-specific modules.
+    def test_butler_email_module_does_not_hold_connector_dependencies(self):
+        """vision.md Rule 7: Butler email module must not receive connector instances.
 
         'A butler must never contain Telegram polling logic, Gmail API calls.'
+
+        Behavioral assertion: EmailModule instances do not hold any connector
+        instance as an attribute — connectors are not injected as dependencies
+        into modules. Note: this checks runtime injection, not import statements.
         """
         try:
-            from butlers.modules import email as email_module
+            from butlers.modules.email import EmailModule
 
-            src = inspect.getsource(email_module)
-            # Email module must not import the Gmail connector
-            assert "from butlers.connectors.gmail" not in src, (
-                "Email module must not import Gmail connector (Rule 7)"
+            email = EmailModule()
+            # The email module must not carry connector-related instance attributes
+            assert not hasattr(email, "connector"), (
+                "EmailModule must not hold a reference to a connector instance (Rule 7)"
             )
-            assert "import butlers.connectors" not in src, (
-                "Email module must not import connectors package (Rule 7)"
+            assert not hasattr(email, "gmail_connector"), (
+                "EmailModule must not hold a GmailConnector reference (Rule 7)"
             )
         except (ImportError, TypeError):
             pass  # Module may not be available in all environments

@@ -23,11 +23,21 @@ class TestSchemaTopology:
         assert "schema" in params
 
     def test_schema_name_and_core_tables(self):
-        """Schema derived from butler name; core tables documented."""
-        from butlers.db import Database
+        """Schema is stored on Database instance; core tables documented.
 
-        src = inspect.getsource(Database)
-        assert "schema" in src.lower()
+        Behavioral assertion: Database.__init__ with schema='mybutler' produces
+        an instance where db.schema == 'mybutler', confirming the schema is
+        recorded and will be used in search_path construction.
+        """
+        from butlers.db import Database, schema_search_path
+
+        db = Database("test_db", schema="mybutler")
+        assert db.schema == "mybutler", "Database must record schema on the instance (RFC 0006)"
+
+        # schema_search_path includes both the butler schema and public
+        search_path = schema_search_path("mybutler")
+        assert "mybutler" in search_path, "search_path must include butler schema (RFC 0006)"
+        assert "public" in search_path, "search_path must include public schema (RFC 0006)"
 
         core_tables = {"state_store", "sessions", "scheduled_tasks"}
         assert len(core_tables) >= 3
@@ -35,6 +45,19 @@ class TestSchemaTopology:
         # Public schema has identity tables
         public_tables = {"contacts", "contact_info", "entities"}
         assert "contacts" in public_tables
+
+    def test_schema_isolation_search_path_order(self):
+        """RFC 0006: Butler schema appears before public in search_path.
+
+        This ensures butler-specific tables shadow public tables when names
+        collide, and butler queries default to the butler schema.
+        """
+        from butlers.db import schema_search_path
+
+        path = schema_search_path("health")
+        parts = [p.strip() for p in path.split(",")]
+        assert parts[0] == "health", "Butler schema must be first in search_path (RFC 0006)"
+        assert "public" in parts, "public must be included in search_path (RFC 0006)"
 
     def test_migration_chains_and_module_revisions(self):
         """Multi-chain Alembic labels; modules return branch labels."""
@@ -44,18 +67,28 @@ class TestSchemaTopology:
         assert "migration_revisions" in Module.__abstractmethods__
 
     def test_schema_isolation_and_briefing_exception(self):
-        """No cross-butler imports; finance uses own schema; briefing uses view."""
+        """No cross-butler imports; finance uses own schema; briefing uses view.
+
+        Behavioral assertion: Database instances for different butlers have
+        distinct schema values — they cannot share the same schema context.
+        """
         import importlib.util
 
         # Finance module must be importable (stays in own schema)
         spec = importlib.util.find_spec("butlers.modules")
         assert spec is not None, "butlers.modules package must be importable"
 
-        # Finance stays in own schema: RFC 0012 documents no public-schema writes
+        # Two butler Database instances must have distinct schema values
         from butlers.db import Database
 
-        db_src = inspect.getsource(Database)
-        assert "schema" in db_src.lower(), "Database class must be schema-aware (RFC 0006)"
+        finance_db = Database("butlers", schema="finance")
+        health_db = Database("butlers", schema="health")
+
+        assert finance_db.schema != health_db.schema, (
+            "Each butler must have a distinct schema on its Database instance (RFC 0006)"
+        )
+        assert finance_db.schema == "finance", "Finance butler must use 'finance' schema (RFC 0006)"
+        assert health_db.schema == "health", "Health butler must use 'health' schema (RFC 0006)"
 
         # Briefing exception uses v_briefing_contributions view in 'general' schema
         view_schema = "general"
@@ -74,7 +107,32 @@ class TestDatabaseClassContracts:
             assert hasattr(Database, method), f"Database must have {method} method"
 
     def test_credential_store_is_schema_local(self):
-        from butlers.credential_store import CredentialStore
+        """RFC 0006: CredentialStore is schema-local via the pool's search_path.
 
-        src = inspect.getsource(CredentialStore)
-        assert "schema" in src.lower() or "butler" in src.lower()
+        Behavioral assertion: CredentialStore accepts a pool (and optionally
+        fallback_pools) but NO explicit schema parameter. Schema context is
+        inherited from the pool's search_path, which is constructed with the
+        butler's schema at startup. CredentialStore is therefore always
+        schema-scoped to its butler without needing a schema argument.
+
+        Additionally, the internal table name must NOT include a schema prefix
+        (no 'public.' or 'butler.' prefix) — it relies on search_path resolution.
+        """
+        from butlers.credential_store import _TABLE, CredentialStore
+
+        # CredentialStore accepts pool (and optionally fallback_pools),
+        # but NOT an explicit schema parameter
+        sig = inspect.signature(CredentialStore.__init__)
+        params = list(sig.parameters.keys())
+        assert "pool" in params, "CredentialStore must accept a pool (RFC 0006)"
+        assert "schema" not in params, (
+            "CredentialStore must not accept an explicit schema param — "
+            "schema context comes from pool search_path (RFC 0006)"
+        )
+
+        # The internal table name must be unqualified — schema isolation comes
+        # from the pool's search_path, not a hardcoded schema prefix
+        assert "." not in _TABLE, (
+            f"CredentialStore table '{_TABLE}' must be unqualified — "
+            "schema isolation enforced via pool search_path (RFC 0006)"
+        )

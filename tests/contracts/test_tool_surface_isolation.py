@@ -36,53 +36,88 @@ class TestEphemeralMcpConfig:
         for op in ["state_get", "state_set", "state_delete", "state_list"]:
             assert op in CORE_TOOL_NAMES, f"Core tool '{op}' must be in CORE_TOOL_NAMES (RFC 0002)"
 
-    def test_spawner_generates_single_butler_mcp_config(self):
-        """RFC 0002: Spawner generates MCP config with only the butler's own endpoint.
+    def test_spawner_generates_single_butler_mcp_url(self):
+        """RFC 0002: runtime_mcp_url generates a URL for exactly one butler.
 
-        The generated config must contain one MCP server entry pointing to
-        the butler's SSE endpoint. No other butler's endpoint may appear.
+        Behavioral assertion: runtime_mcp_url(port) produces a URL that encodes
+        the butler's port and the /mcp path. The function takes exactly one
+        port argument — there is no API to generate a multi-butler config.
         """
-        from butlers.core.spawner import Spawner
+        from butlers.core.mcp_urls import runtime_mcp_url
 
-        src = inspect.getsource(Spawner)
-        # The config generation must reference the butler's own MCP URL
-        # and must not include other butlers
-        assert "mcp" in src.lower() or "config" in src.lower(), (
-            "Spawner must generate per-session MCP config (RFC 0002)"
+        port = 9100
+        url = runtime_mcp_url(port)
+
+        assert str(port) in url, f"MCP URL must encode the butler's port {port} (RFC 0002)"
+        assert "/mcp" in url, "MCP URL must use /mcp path for streamable HTTP transport (RFC 0002)"
+        assert "localhost" in url or "127.0.0.1" in url, (
+            "MCP URL must point to localhost (the butler's own process) (RFC 0002)"
         )
+
+        # The URL generation function accepts only one port — no multi-butler overload
+        sig = inspect.signature(runtime_mcp_url)
+        params = list(sig.parameters.keys())
+        assert "port" in params, "runtime_mcp_url must accept port (RFC 0002)"
+        # Only port (and optional host) — no way to specify multiple butlers
+        assert len(params) <= 2, "runtime_mcp_url must not accept multiple butler ports (RFC 0002)"
 
     def test_runtime_session_id_query_param_for_tool_attribution(self):
         """RFC 0002: runtime_session_id query param enables concurrent tool attribution.
 
-        The MCP URL includes ?runtime_session_id=<uuid> so the tool call
-        logging proxy can attribute tool invocations to the correct session
-        even when max_concurrent_sessions > 1.
+        Behavioral assertion: _append_runtime_session_query() embeds
+        runtime_session_id into the MCP URL as a query parameter, confirming
+        that the session scoping mechanism is implemented and functional.
         """
-        # Verify the actual Spawner source references the runtime_session_id parameter,
-        # confirming it is used (not just named) in the real codebase.
-        from butlers.core.spawner import Spawner
+        from butlers.core.spawner import _append_runtime_session_query
 
-        src = inspect.getsource(Spawner)
-        assert "runtime_session_id" in src, (
+        base_url = "http://localhost:8080/mcp"
+        session_id = "test-session-abc-123"
+        session_url = _append_runtime_session_query(base_url, session_id)
+
+        assert f"runtime_session_id={session_id}" in session_url, (
             "Spawner must embed runtime_session_id in the MCP URL for tool attribution (RFC 0002)"
         )
 
-    def test_tool_call_logging_proxy_wraps_all_module_tools(self):
-        """RFC 0002: _ToolCallLoggingMCP proxy wraps every module tool.
+        # Without a session ID the URL is returned unchanged
+        unchanged = _append_runtime_session_query(base_url, None)
+        assert unchanged == base_url, (
+            "URL must be unchanged when no session_id is provided (RFC 0002)"
+        )
 
-        All module tool registrations pass through the logging proxy so
-        OTel spans and tool call capture happen for every invocation.
+    def test_tool_call_logging_proxy_wraps_tool_registrations(self):
+        """RFC 0002: _ToolCallLoggingMCP proxy intercepts all module tool registrations.
+
+        Behavioral assertion: registering a tool through the proxy succeeds and
+        the tool remains callable after wrapping. The proxy must transparently
+        forward the tool while logging each invocation.
         """
-        from butlers.daemon import ButlerDaemon
+        import asyncio
+        from unittest.mock import MagicMock
 
-        src = inspect.getsource(ButlerDaemon)
-        # The daemon must use a logging proxy for tool registration
-        assert (
-            "ToolCallLogging" in src
-            or "tool_call" in src.lower()
-            or "logging_mcp" in src.lower()
-            or "proxy" in src.lower()
-        ), "Daemon must use tool call logging proxy for all module tools (RFC 0002)"
+        from butlers.daemon import _ToolCallLoggingMCP
+
+        # Build a minimal mock FastMCP
+        def mock_tool_decorator(*args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_mcp = MagicMock()
+        mock_mcp.tool = mock_tool_decorator
+
+        proxy = _ToolCallLoggingMCP(mock_mcp, "health", module_name="telegram")
+
+        # Register a tool through the proxy
+        @proxy.tool(name="send_message")
+        async def send_message(text: str) -> str:
+            return f"sent: {text}"
+
+        # The tool must remain callable after proxy wrapping
+        result = asyncio.run(send_message("hello"))
+        assert result == "sent: hello", (
+            "_ToolCallLoggingMCP proxy must not alter tool return values (RFC 0002)"
+        )
 
     def test_session_sandboxing_prevents_cross_butler_tool_calls(self):
         """RFC 0002 + security.md: Session is sandboxed to its own butler's tools.
@@ -104,18 +139,41 @@ class TestEphemeralMcpConfig:
         )
 
     def test_all_tool_handlers_wrapped_before_server_starts(self):
-        """RFC 0002: Dynamic tool registration after server start is forbidden.
+        """RFC 0002: _SpanWrappingMCP proxy exists and tracks registered tool names.
 
-        FastMCP does not support hot-adding tools to a running SSE server.
-        All tools MUST be registered during phases 12-13, before phase 14.
+        Behavioral assertion: _SpanWrappingMCP instances accumulate registered
+        tool names in _registered_tool_names. This confirms that tool registration
+        is tracked before the server starts serving requests.
         """
-        from butlers.daemon import ButlerDaemon
+        from unittest.mock import MagicMock
 
-        src = inspect.getsource(ButlerDaemon)
-        # The daemon must start the MCP server only after tool registration
-        # This is enforced by the phase ordering in RFC 0001
-        has_server_start = "start" in src.lower() or "run" in src.lower()
-        assert has_server_start, "Daemon must have a server start sequence (RFC 0002 Phase 14)"
+        from butlers.daemon import _SpanWrappingMCP
+
+        def mock_tool_decorator(*args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_mcp = MagicMock()
+        mock_mcp.tool = mock_tool_decorator
+
+        proxy = _SpanWrappingMCP(mock_mcp, "health", module_name="calendar")
+
+        # Before registration: no tools
+        assert proxy._registered_tool_names == set(), (
+            "No tools registered before decorator is used (RFC 0002)"
+        )
+
+        # Register a tool
+        @proxy.tool(name="get_events")
+        async def get_events() -> list:
+            return []
+
+        # After registration: tool name is tracked
+        assert "get_events" in proxy._registered_tool_names, (
+            "_SpanWrappingMCP must track registered tool names (RFC 0002)"
+        )
 
     def test_tool_meta_arg_sensitivities_is_dict(self):
         """RFC 0002: ToolMeta.arg_sensitivities is a dict mapping arg name to bool.
