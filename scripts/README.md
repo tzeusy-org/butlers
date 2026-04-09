@@ -7,6 +7,10 @@ Utility scripts for repository maintenance and fixes.
 PostgreSQL provisioning script to run **before** Alembic migrations on a fresh
 database.  Must be executed by a superuser (or the database owner).
 
+**Prerequisites:** The PostgreSQL server must have the `pgvector` binary
+installed.  The standard `postgres` Docker image does not include it; use
+`pgvector/pgvector:pg16` (or later) instead, or install the extension manually.
+
 What it does:
 
 1. Installs required extensions: `pgcrypto`, `uuid-ossp`, `vector` (pgvector),

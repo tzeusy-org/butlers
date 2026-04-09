@@ -37,7 +37,7 @@
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "vector";    -- pgvector: vector similarity search
+CREATE EXTENSION IF NOT EXISTS "vector";    -- pgvector: requires pgvector binary (pgvector/pgvector image or manual install)
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";   -- trigram indexes for fuzzy text search
 
 -- ── Role membership ───────────────────────────────────────────────────────────
