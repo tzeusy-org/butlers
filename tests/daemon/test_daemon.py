@@ -898,7 +898,7 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
         patches["get_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
-        patch("butlers.daemon.MCPClient", return_value=mock_client),
+        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
@@ -922,7 +922,7 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
         patches2["get_adapter"],
         patches2["shutil_which"],
         patches2["start_mcp_server"],
-        patch("butlers.daemon.MCPClient", return_value=mock_client2),
+        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client2),
     ):
         daemon2 = ButlerDaemon(butler_dir)
         await daemon2.start()
