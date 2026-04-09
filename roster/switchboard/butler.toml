@@ -33,14 +33,6 @@ scanner_batch_size = 50
 name = "butlers"
 schema = "switchboard"
 
-[modules.telegram]
-
-[modules.telegram.user]
-enabled = false
-
-[modules.telegram.bot]
-token_env = "BUTLER_TELEGRAM_TOKEN"
-
 [modules.pipeline]
 enable_ingress_dedupe = true
 
