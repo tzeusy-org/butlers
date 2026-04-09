@@ -29,7 +29,6 @@ def _make_pool(
     owner_select_before_insert: uuid.UUID | None = None,
     entity_insert_returns: uuid.UUID | None = _OWNER_ENTITY_ID,
     owner_select_after_insert: uuid.UUID | None = None,
-    entity_select_returns: uuid.UUID | None = None,
 ) -> tuple[MagicMock, AsyncMock]:
     """Build a mock asyncpg pool that simulates public.entities state."""
     conn = AsyncMock()
@@ -40,7 +39,7 @@ def _make_pool(
     # 3. (if roles on entities) SELECT owner entity by role
     # 4. (if no owner by role) INSERT RETURNING id (entity)
     # 5. (if insert returned None) SELECT owner entity by role (again)
-    # 6. (if still none) SELECT id by canonical owner identity
+    # 6. (if still none) warning is logged; no further DB query
     fetchval_results: list = []
 
     fetchval_results.append(entities_table_exists)
@@ -53,8 +52,6 @@ def _make_pool(
                 fetchval_results.append(entity_insert_returns)
                 if entity_insert_returns is None:
                     fetchval_results.append(owner_select_after_insert)
-                    if owner_select_after_insert is None:
-                        fetchval_results.append(entity_select_returns)
 
     conn.fetchval = AsyncMock(side_effect=fetchval_results)
 
@@ -82,10 +79,23 @@ class TestEnsureOwnerEntityBehavior:
         conn.execute.assert_not_awaited()
 
         # INSERT=None → SELECT fallback
-        pool2, conn2 = _make_pool(entity_insert_returns=None, entity_select_returns=_OWNER_ENTITY_ID)
-        await _ensure_owner_entity(pool2)
+        # INSERT=None → SELECT fallback (select by role), still None → warning logged
+        pool2, conn2 = _make_pool(entity_insert_returns=None, owner_select_after_insert=None)
+        with patch("butlers.owner_bootstrap.logger") as mock_logger2:
+            await _ensure_owner_entity(pool2)
         sqls2 = [c[0][0] if c[0] else "" for c in conn2.fetchval.call_args_list]
         assert any("SELECT id FROM public.entities" in s for s in sqls2)
+        mock_logger2.warning.assert_called()
+
+        # INSERT=None → SELECT fallback finds the entity → no warning
+        pool2b, conn2b = _make_pool(
+            entity_insert_returns=None, owner_select_after_insert=_OWNER_ENTITY_ID
+        )
+        with patch("butlers.owner_bootstrap.logger") as mock_logger2b:
+            await _ensure_owner_entity(pool2b)
+        sqls2b = [c[0][0] if c[0] else "" for c in conn2b.fetchval.call_args_list]
+        assert any("SELECT id FROM public.entities" in s for s in sqls2b)
+        mock_logger2b.warning.assert_not_called()
 
         # Existing owner-role entity → no INSERT
         pool3, conn3 = _make_pool(owner_select_before_insert=_OWNER_ENTITY_ID)
@@ -106,7 +116,7 @@ class TestEnsureOwnerEntityBehavior:
         acquire_ctx.__aenter__ = AsyncMock(side_effect=RuntimeError("DB connection failed"))
         acquire_ctx.__aexit__ = AsyncMock(return_value=None)
         pool_err.acquire = MagicMock(return_value=acquire_ctx)
-        with patch("butlers.daemon.logger") as mock_logger:
+        with patch("butlers.owner_bootstrap.logger") as mock_logger:
             await _ensure_owner_entity(pool_err)
             mock_logger.warning.assert_called_once()
             warning_msg = mock_logger.warning.call_args[0][0]

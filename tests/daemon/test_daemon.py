@@ -702,7 +702,7 @@ async def test_sse_disconnect_guard(
         "query_string": b"session_id=abc123",
     }
 
-    with caplog.at_level(logging.DEBUG, logger="butlers.daemon"):
+    with caplog.at_level(logging.DEBUG, logger="butlers.guards"):
         await guard(scope, receive, send)
 
     assert any(
