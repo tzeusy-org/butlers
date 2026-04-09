@@ -249,7 +249,7 @@ async def test_wire_runtime_called_with_switchboard_client(tmp_path: Path) -> No
         patches["start_mcp_server"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patch("butlers.daemon.MCPClient", return_value=mock_client),
+        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
     ):
         # Inject switchboard_url so _connect_switchboard is attempted
         daemon = ButlerDaemon(butler_dir, registry=registry)
@@ -287,7 +287,7 @@ async def test_wire_runtime_graceful_when_no_switchboard(tmp_path: Path) -> None
         patches["start_mcp_server"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patch("butlers.daemon.MCPClient", return_value=mock_client),
+        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
     ):
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
@@ -394,7 +394,7 @@ async def test_self_healing_switchboard_client_wired_on_startup(tmp_path: Path) 
         patches["start_mcp_server"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patch("butlers.daemon.MCPClient", return_value=mock_client),
+        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
     ):
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
@@ -437,7 +437,7 @@ async def test_qa_module_switchboard_client_wired_on_startup(tmp_path: Path) -> 
         patches["start_mcp_server"],
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
-        patch("butlers.daemon.MCPClient", return_value=mock_client),
+        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
     ):
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()

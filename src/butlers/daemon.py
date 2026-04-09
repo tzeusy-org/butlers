@@ -898,9 +898,6 @@ class ButlerDaemon:
     async def _switchboard_heartbeat_loop(self) -> None:
         """Periodically check and re-establish the Switchboard connection.
 
-        Thin wrapper — implementation lives in
-        :func:`butlers.background.switchboard_heartbeat_loop`.
-
         All exceptions (except ``CancelledError``) are swallowed so that the
         heartbeat never crashes the butler.
 
