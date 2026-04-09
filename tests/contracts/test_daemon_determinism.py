@@ -20,10 +20,11 @@ class TestStartupPhaseOrder:
         """Daemon has run method; telemetry before modules; DB before migrations;
         tools before server; scheduler after server."""
         from butlers.daemon import ButlerDaemon
+        from butlers.lifecycle import run_startup
 
         assert hasattr(ButlerDaemon, "run") or hasattr(ButlerDaemon, "start")
 
-        src = inspect.getsource(ButlerDaemon)
+        src = inspect.getsource(run_startup)
         assert "telemetry" in src.lower() or "init_telemetry" in src
         assert "module" in src.lower()
         assert "provision" in src or "migration" in src
