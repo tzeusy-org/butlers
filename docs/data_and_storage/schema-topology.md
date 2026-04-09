@@ -63,6 +63,35 @@ This allows modules to reference `contacts` without schema-qualifying it -- the 
 
 ## Database Provisioning
 
+### Pre-migration setup (superuser required)
+
+Before running Alembic migrations on a fresh database, run
+`scripts/init-db.sql` as a superuser or the database owner:
+
+```bash
+psql -h <host> -U <superuser> -d <dbname> -f scripts/init-db.sql
+```
+
+This script:
+
+1. Installs required PostgreSQL extensions (`pgcrypto`, `uuid-ossp`, `vector`,
+   `pg_trgm`).
+2. Grants each butler runtime role (`butler_{schema}_rw` for all 10 schemas)
+   and `connector_writer` to the connecting user (`POSTGRES_USER`, typically
+   `butlers`).
+
+**Why role membership matters:** Butler runtime code calls `SET ROLE
+butler_{schema}_rw` before performing schema-isolated operations.  PostgreSQL
+only permits `SET ROLE` to a role that the current user is a member of.
+Without the grants in `init-db.sql`, all `SET ROLE` calls fail at runtime.
+
+The `core_065` migration also grants membership via `GRANT role TO
+CURRENT_USER`, which covers the migration-time user.  `init-db.sql` ensures
+the same membership exists for the runtime connecting user, which may be
+different.
+
+### Runtime provisioning
+
 The `Database` class handles provisioning at startup:
 
 1. Connects to the `postgres` maintenance database.

@@ -41,13 +41,38 @@ uv sync --dev
 
 This installs all Python dependencies, including dev/test extras, into a virtual environment managed by uv.
 
-### Step 2: Start PostgreSQL
+### Step 2: Provision PostgreSQL
 
-```bash
-docker compose up -d postgres
-```
+Butlers uses an **external** PostgreSQL instance (configured via `POSTGRES_HOST`
+in `.env.dev` / `.env.prod`).  There is no `postgres` service in
+`docker-compose.yml`.  Set up the database connection before proceeding:
 
-This starts a PostgreSQL container on port 5432. Default credentials are `postgres`/`postgres`. The database is used by all butlers (one database, per-butler schemas plus the public schema).
+1. Ensure your PostgreSQL server is running and that `POSTGRES_HOST`,
+   `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` are set in your
+   environment file (copy `.env.example` for a template).
+
+2. Run the provisioning script as a superuser to install extensions and grant
+   butler role membership:
+
+   ```bash
+   # Replace <POSTGRES_HOST> and <superuser> with your actual values.
+   # The script grants roles to POSTGRES_USER (defaults to 'butlers').
+   psql -h <POSTGRES_HOST> -U <superuser> -d butlers -f scripts/init-db.sql
+
+   # To target a different runtime user:
+   PGOPTIONS="-c butlers.connecting_user=$POSTGRES_USER" \
+       psql -h <POSTGRES_HOST> -U <superuser> -d butlers -f scripts/init-db.sql
+   ```
+
+The database is used by all butlers (one database, per-butler schemas plus the
+public schema).
+
+**Role membership is required for `SET ROLE` enforcement.** The Alembic
+migrations create per-butler database roles (`butler_{schema}_rw` and
+`connector_writer`), but the connecting user (`POSTGRES_USER`, typically
+`butlers`) must be granted membership in those roles before runtime `SET ROLE`
+calls can succeed.  `scripts/init-db.sql` handles this step.  If you skip it,
+runtime role switches will fail with a "permission denied to set role" error.
 
 ### Step 3: Start Butler Daemons
 
@@ -101,9 +126,11 @@ docker compose --profile dev up
 
 This starts:
 
-- PostgreSQL on port 5432
 - Dashboard API on port 41200
 - Vite dev server on port 41173
+
+PostgreSQL remains external — configure `POSTGRES_HOST` in your environment
+file before starting the compose stack.
 
 You would still need to start butler daemons separately via `butlers up`.
 
