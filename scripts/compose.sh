@@ -8,6 +8,7 @@
 #   ./scripts/compose.sh --skip-oauth-check        # skip OAuth gate
 #   ./scripts/compose.sh --skip-tailscale-check    # skip tailscale serve setup
 #   ./scripts/compose.sh --audio                   # include live-listener (needs /dev/snd)
+#   ./scripts/compose.sh --observability           # enable observability stack (Prometheus, Grafana, Tempo)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +19,7 @@ cd "$PROJECT_DIR"
 PROFILES=(dev)
 COMPOSE_ENV=()
 SKIP_TAILSCALE=false
+OBSERVABILITY=false
 BUTLERS_MODE=dev
 
 for arg in "$@"; do
@@ -25,6 +27,7 @@ for arg in "$@"; do
     --prod)                 BUTLERS_MODE=prod ;;
     --hotreload)            PROFILES+=(hotreload) ;;
     --audio)                PROFILES+=(audio) ;;
+    --observability)        OBSERVABILITY=true ;;
     --skip-oauth-check)     COMPOSE_ENV+=("SKIP_OAUTH_CHECK=true") ;;
     --skip-tailscale-check) SKIP_TAILSCALE=true ;;
     *)                      echo "Unknown flag: $arg" >&2; exit 1 ;;
@@ -191,6 +194,14 @@ PY
   else
     echo "Tailscale serve: mappings applied (could not resolve hostname)"
   fi
+  echo ""
+fi
+
+# ── Observability stack configuration ────────────────────────────────
+if [ "$OBSERVABILITY" = "true" ]; then
+  PROFILES+=(observability)
+  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+  echo "Observability stack enabled: Grafana at http://localhost:3000"
   echo ""
 fi
 
