@@ -1694,8 +1694,8 @@ async def dispatch_qa_investigation(
         # ---------------------------------------------------------------
         # Gate 8: Concurrency cap
         # ---------------------------------------------------------------
-        active_count = await count_active_attempts(pool)
-        # active_count includes the row we just inserted
+        active_count = await count_active_attempts(pool, qa_only=True)
+        # active_count includes the row we just inserted (QA-scoped only)
         if active_count > config.max_concurrent:
             logger.debug(
                 "QA dispatch skipped: concurrency cap reached (active=%d, max=%d, fingerprint=%s)",

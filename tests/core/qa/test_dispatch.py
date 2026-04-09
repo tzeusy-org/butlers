@@ -1056,3 +1056,64 @@ async def test_qa_dispatch_already_investigating_emits_event_and_dedup_reason():
     assert mock_dedup.call_args[0][2] == "already_investigating"
     mock_event.assert_awaited_once()
     assert mock_event.call_args.kwargs.get("decision") == "novelty_join"
+
+
+@pytest.mark.asyncio
+async def test_concurrency_gate_uses_qa_only_scope():
+    """Gate 8 must call count_active_attempts with qa_only=True.
+
+    Regression test: self-healing-only active attempts must not consume the
+    QA concurrency budget. Without qa_only=True the gate counted all active
+    attempts (including self-healing), blocking QA investigations even when no
+    QA slots were in use.
+    """
+    attempt_id = uuid.uuid4()
+    finding_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=10,  # above max_concurrent=2, triggers the gate
+        ) as mock_count,
+        patch(
+            "butlers.core.qa.dispatch.delete_orphaned_attempt",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("butlers.core.qa.dispatch.update_finding_dedup_reason", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=TriagedFinding(
+                finding=_make_finding(severity=1),
+                dedup_reason=None,
+                finding_id=finding_id,
+            ),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    assert result.accepted is False and result.reason == "concurrency_cap"
+    # Gate 8 must use qa_only=True so that self-healing attempts are excluded
+    # from the QA concurrency budget.
+    mock_count.assert_awaited_once()
+    _, call_kwargs = mock_count.call_args
+    assert call_kwargs.get("qa_only") is True, (
+        "count_active_attempts must be called with qa_only=True in Gate 8"
+    )
