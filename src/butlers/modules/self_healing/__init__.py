@@ -638,6 +638,7 @@ class SelfHealingModule(Module):
             trigger_source="external",  # Not a healing session
             gh_token=None,
             task_registry=self._watchdog_tasks,
+            metrics=getattr(self._spawner, "_metrics", None),
         )
 
         if result.accepted:
@@ -652,7 +653,7 @@ class SelfHealingModule(Module):
         _reason_messages: dict[str, str] = {
             "no_recursion": "Healing sessions do not trigger recursive healing",
             "disabled": "Self-healing is disabled for this butler",
-            "severity_below_threshold": "Error severity is below the configured threshold",
+            "severity_above_threshold": "Error severity is above the configured threshold",
             "already_investigating": "This error is already under investigation",
             "cooldown": "Cooldown period active — a recent investigation already occurred",
             "concurrency_cap": "Maximum concurrent investigations reached",

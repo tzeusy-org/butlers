@@ -1648,6 +1648,7 @@ class Spawner:
                             trigger_source=trigger_source,
                             gh_token=_gh_token,
                             task_registry=_task_registry,
+                            metrics=self._metrics,
                         ),
                         name=f"healing-fallback-{session_id}",
                     )

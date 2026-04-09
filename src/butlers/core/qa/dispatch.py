@@ -62,6 +62,7 @@ from butlers.core.healing.worktree import (
     create_healing_worktree,
     remove_healing_worktree,
 )
+from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model
 from butlers.core.qa.findings import update_finding_attempt, update_finding_dedup_reason
 from butlers.core.qa.models import QaFinding
@@ -558,14 +559,21 @@ async def _run_investigation_session(
     config: QaDispatchConfig,
     spawner: Any,
     gh_token: str | None,
+    metrics: ButlerMetrics | None = None,
 ) -> None:
     """Run the QA investigation agent and handle PR creation.
 
     This coroutine is scheduled as an ``asyncio.Task`` and monitored by a
     separate timeout watchdog task.
     """
+    import time as _time
+
     investigation_session_id: uuid.UUID | None = None
     phase_session_id: uuid.UUID | None = None
+    _phase_start = _time.monotonic()
+
+    if metrics is not None:
+        metrics.recovery_workflow_start(workflow="qa")
 
     # Create an independent ROOT span for this investigation (NOT a child of the patrol span).
     # Investigations are long-running, potentially outliving the patrol cycle that spawned them.
@@ -642,6 +650,19 @@ async def _run_investigation_session(
             logger.warning(
                 "QA investigation agent failed (attempt=%s): %s", attempt_id, error_detail
             )
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="qa",
+                    phase="investigate",
+                    error_class="agent_failure",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -664,6 +685,14 @@ async def _run_investigation_session(
         # Check for unfixable sentinel
         if (worktree_path / _UNFIXABLE_FILE).exists():
             logger.info("Investigation agent marked error as unfixable (attempt=%s)", attempt_id)
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="unfixable",
+                    duration_ms=_elapsed,
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(pool, phase_session_id, "completed")
@@ -694,6 +723,19 @@ async def _run_investigation_session(
         )
 
         if pr_error == "anonymization_failed":
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="anonymization_failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="qa",
+                    phase="investigate",
+                    error_class="anonymization_failed",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -717,6 +759,19 @@ async def _run_investigation_session(
             return
 
         if pr_error == "no_gh_token":
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="qa",
+                    phase="investigate",
+                    error_class="no_gh_token",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -750,6 +805,19 @@ async def _run_investigation_session(
                 wl_detail = "could not determine repository from origin remote URL"
             else:
                 wl_detail = "repository is not in the QA whitelist"
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="qa",
+                    phase="investigate",
+                    error_class="repo_not_whitelisted",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -770,6 +838,19 @@ async def _run_investigation_session(
             return
 
         if pr_error is not None:
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="qa",
+                    phase="investigate",
+                    error_class="pr_error",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -811,9 +892,32 @@ async def _run_investigation_session(
         await remove_healing_worktree(
             repo_root, branch_name, delete_branch=False, delete_remote=False
         )
+        # Record success only after DB status update and worktree cleanup succeed,
+        # so that no conflicting failure metric is emitted for the same attempt.
+        if metrics is not None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            metrics.record_recovery_phase_duration(
+                workflow="qa",
+                phase="investigate",
+                outcome="success",
+                duration_ms=_elapsed,
+            )
 
     except asyncio.CancelledError:
         # Cancelled by watchdog — watchdog sets status to "timeout"
+        if metrics is not None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            metrics.record_recovery_phase_duration(
+                workflow="qa",
+                phase="investigate",
+                outcome="timeout",
+                duration_ms=_elapsed,
+            )
+            metrics.record_recovery_execution_failure(
+                workflow="qa",
+                phase="investigate",
+                error_class="timeout",
+            )
         if phase_session_id is not None:
             try:
                 await update_phase_session_status(
@@ -832,6 +936,19 @@ async def _run_investigation_session(
         logger.exception(
             "Unexpected error in QA investigation session (attempt=%s): %s", attempt_id, exc
         )
+        if metrics is not None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            metrics.record_recovery_phase_duration(
+                workflow="qa",
+                phase="investigate",
+                outcome="failed",
+                duration_ms=_elapsed,
+            )
+            metrics.record_recovery_execution_failure(
+                workflow="qa",
+                phase="investigate",
+                error_class=type(exc).__name__,
+            )
         if phase_session_id is not None:
             try:
                 await update_phase_session_status(
@@ -853,6 +970,8 @@ async def _run_investigation_session(
             repo_root, branch_name, delete_branch=True, delete_remote=False
         )
     finally:
+        if metrics is not None:
+            metrics.recovery_workflow_end(workflow="qa")
         if _HAS_OTEL and _inv_span is not None:
             _inv_span.end()
             if _inv_span_token is not None:
@@ -1504,6 +1623,7 @@ async def dispatch_qa_investigation(
     spawner: Any,
     gh_token: str | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
+    metrics: ButlerMetrics | None = None,
 ) -> QaDispatchResult:
     """Evaluate gates and, if all pass, spawn a QA investigation agent.
 
@@ -1593,6 +1713,10 @@ async def dispatch_qa_investigation(
                 config.severity_threshold,
                 fp[:12],
             )
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(
+                    workflow="qa", decision="severity_above_threshold"
+                )
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
@@ -1643,6 +1767,8 @@ async def dispatch_qa_investigation(
                 )
             except Exception as _evt_exc:
                 logger.debug("QA dispatch: failed to record novelty_join event: %s", _evt_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(workflow="qa", decision="novelty_join")
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
@@ -1685,6 +1811,8 @@ async def dispatch_qa_investigation(
                 )
             except Exception as _evt_exc:
                 logger.debug("QA dispatch: failed to record cooldown event: %s", _evt_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(workflow="qa", decision="cooldown")
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
@@ -1721,6 +1849,8 @@ async def dispatch_qa_investigation(
                 )
             except Exception as _evt_exc:
                 logger.debug("QA dispatch: failed to record concurrency_cap event: %s", _evt_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(workflow="qa", decision="concurrency_cap")
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
@@ -1757,6 +1887,10 @@ async def dispatch_qa_investigation(
                 except Exception as _evt_exc:
                     logger.debug(
                         "QA dispatch: failed to record circuit_breaker event: %s", _evt_exc
+                    )
+                if metrics is not None:
+                    metrics.record_recovery_dispatch_decision(
+                        workflow="qa", decision="circuit_breaker"
                     )
                 return QaDispatchResult(
                     accepted=False,
@@ -1799,6 +1933,8 @@ async def dispatch_qa_investigation(
                 )
             except Exception as _evt_exc:
                 logger.debug("QA dispatch: failed to record no_model event: %s", _evt_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(workflow="qa", decision="no_model")
             return QaDispatchResult(
                 accepted=False,
                 fingerprint=fp,
@@ -1894,6 +2030,7 @@ async def dispatch_qa_investigation(
                 config=config,
                 spawner=spawner,
                 gh_token=gh_token,
+                metrics=metrics,
             ),
             name=f"qa-investigation-{attempt_id}",
         )
@@ -1948,6 +2085,7 @@ async def dispatch_novel_findings(
     spawner: Any,
     gh_token: str | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
+    metrics: ButlerMetrics | None = None,
 ) -> list[QaDispatchResult]:
     """Dispatch investigations for a list of novel findings from triage.
 
@@ -2007,6 +2145,7 @@ async def dispatch_novel_findings(
             spawner=spawner,
             gh_token=gh_token,
             task_registry=task_registry,
+            metrics=metrics,
         )
         results.append(result)
 

@@ -168,7 +168,7 @@ async def test_dispatch_healing_gate_rejections(tmp_path: Path) -> None:
             repo_root=tmp_path,
             spawner=MagicMock(),
         )
-    assert r3.accepted is False and r3.reason == "severity_below_threshold"
+    assert r3.accepted is False and r3.reason == "severity_above_threshold"
 
     # already_investigating gate
     with (

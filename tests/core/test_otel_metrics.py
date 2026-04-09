@@ -291,3 +291,259 @@ async def test_spawner_and_buffer_metrics_integration(tmp_path: Path) -> None:
         assert data3.get("butlers.buffer.process_latency_ms", [{}])[0].count == 1
     finally:
         _reset_metrics_global_state()
+
+
+def test_recovery_instruments_registered_on_ensure_registered() -> None:
+    """ensure_registered() seeds active_workflow series for both healing and qa workflows."""
+    _provider, reader = _make_in_memory_provider()
+    try:
+        m = ButlerMetrics("healer")
+        m.ensure_registered()
+
+        data = _collect_metrics(reader)
+        # Both healing and qa zero series must be present
+        wf_dps = data.get("butlers.recovery.active_workflows", [])
+        workflows_seen = {dp.attributes.get("workflow") for dp in wf_dps}
+        assert "healing" in workflows_seen, f"healing not in {workflows_seen}"
+        assert "qa" in workflows_seen, f"qa not in {workflows_seen}"
+        for dp in wf_dps:
+            assert dp.attributes.get("butler") == "healer"
+            assert dp.value == 0
+    finally:
+        _reset_metrics_global_state()
+
+
+def test_recovery_active_workflows_inc_dec() -> None:
+    """recovery_workflow_start increments, recovery_workflow_end decrements active_workflows."""
+    _provider, reader = _make_in_memory_provider()
+    try:
+        m = ButlerMetrics("healer")
+        m.recovery_workflow_start(workflow="healing")
+        m.recovery_workflow_start(workflow="healing")
+        m.recovery_workflow_end(workflow="healing")
+
+        data = _collect_metrics(reader)
+        healing_dps = [
+            dp
+            for dp in data.get("butlers.recovery.active_workflows", [])
+            if dp.attributes.get("workflow") == "healing"
+        ]
+        assert len(healing_dps) == 1
+        assert healing_dps[0].value == 1
+        assert healing_dps[0].attributes.get("butler") == "healer"
+    finally:
+        _reset_metrics_global_state()
+
+
+def test_recovery_dispatch_decisions_total() -> None:
+    """record_recovery_dispatch_decision increments counter with correct labels."""
+    _provider, reader = _make_in_memory_provider()
+    try:
+        m = ButlerMetrics("patrol")
+        m.record_recovery_dispatch_decision(workflow="healing", decision="cooldown")
+        m.record_recovery_dispatch_decision(workflow="healing", decision="cooldown")
+        m.record_recovery_dispatch_decision(workflow="qa", decision="circuit_breaker")
+
+        data = _collect_metrics(reader)
+        dps = data.get("butlers.recovery.dispatch_decisions_total", [])
+        assert len(dps) >= 2, f"expected >= 2 data points, got {len(dps)}"
+
+        cooldown_dps = [
+            dp
+            for dp in dps
+            if dp.attributes.get("workflow") == "healing"
+            and dp.attributes.get("decision") == "cooldown"
+        ]
+        assert len(cooldown_dps) == 1 and cooldown_dps[0].value == 2
+
+        cb_dps = [
+            dp
+            for dp in dps
+            if dp.attributes.get("workflow") == "qa"
+            and dp.attributes.get("decision") == "circuit_breaker"
+        ]
+        assert len(cb_dps) == 1 and cb_dps[0].value == 1
+        assert cb_dps[0].attributes.get("butler") == "patrol"
+    finally:
+        _reset_metrics_global_state()
+
+
+def test_recovery_execution_failures_total() -> None:
+    """record_recovery_execution_failure increments counter with phase and error_class labels."""
+    _provider, reader = _make_in_memory_provider()
+    try:
+        m = ButlerMetrics("analyst")
+        m.record_recovery_execution_failure(
+            workflow="healing", phase="diagnose_and_fix", error_class="agent_failure"
+        )
+        m.record_recovery_execution_failure(
+            workflow="qa", phase="investigate", error_class="anonymization_failed"
+        )
+
+        data = _collect_metrics(reader)
+        dps = data.get("butlers.recovery.execution_failures_total", [])
+        assert len(dps) >= 2
+
+        healing_dps = [
+            dp
+            for dp in dps
+            if dp.attributes.get("workflow") == "healing"
+            and dp.attributes.get("phase") == "diagnose_and_fix"
+            and dp.attributes.get("error_class") == "agent_failure"
+        ]
+        assert len(healing_dps) == 1 and healing_dps[0].value == 1
+        assert healing_dps[0].attributes.get("butler") == "analyst"
+
+        qa_dps = [
+            dp
+            for dp in dps
+            if dp.attributes.get("workflow") == "qa"
+            and dp.attributes.get("phase") == "investigate"
+            and dp.attributes.get("error_class") == "anonymization_failed"
+        ]
+        assert len(qa_dps) == 1 and qa_dps[0].value == 1
+    finally:
+        _reset_metrics_global_state()
+
+
+def test_recovery_phase_duration_ms() -> None:
+    """record_recovery_phase_duration records histogram with workflow, phase, outcome labels."""
+    _provider, reader = _make_in_memory_provider()
+    try:
+        m = ButlerMetrics("analyst")
+        m.record_recovery_phase_duration(
+            workflow="healing",
+            phase="diagnose_and_fix",
+            outcome="success",
+            duration_ms=1500.0,
+        )
+        m.record_recovery_phase_duration(
+            workflow="qa",
+            phase="investigate",
+            outcome="failed",
+            duration_ms=500.0,
+        )
+
+        data = _collect_metrics(reader)
+        dps = data.get("butlers.recovery.phase_duration_ms", [])
+        assert len(dps) >= 2
+
+        success_dps = [
+            dp
+            for dp in dps
+            if dp.attributes.get("workflow") == "healing"
+            and dp.attributes.get("phase") == "diagnose_and_fix"
+            and dp.attributes.get("outcome") == "success"
+        ]
+        assert len(success_dps) == 1
+        assert success_dps[0].sum == pytest.approx(1500.0, rel=1e-3)
+        assert success_dps[0].attributes.get("butler") == "analyst"
+
+        failed_dps = [
+            dp
+            for dp in dps
+            if dp.attributes.get("workflow") == "qa"
+            and dp.attributes.get("phase") == "investigate"
+            and dp.attributes.get("outcome") == "failed"
+        ]
+        assert len(failed_dps) == 1
+        assert failed_dps[0].sum == pytest.approx(500.0, rel=1e-3)
+    finally:
+        _reset_metrics_global_state()
+
+
+def test_healing_dispatch_emits_dispatch_decision_metric() -> None:
+    """dispatch_healing emits dispatch_decisions_total on gate rejections."""
+    import asyncio
+    import uuid
+    from pathlib import Path
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from butlers.core.healing.dispatch import HealingConfig, dispatch_healing
+    from butlers.core.healing.fingerprint import FingerprintResult
+
+    _provider, reader = _make_in_memory_provider()
+    try:
+        m = ButlerMetrics("test-butler")
+
+        fp = FingerprintResult(
+            fingerprint="a" * 64,
+            severity=2,
+            exception_type="builtins.ValueError",
+            call_site="src/module.py:func",
+            sanitized_message="error",
+        )
+        config = HealingConfig(
+            enabled=True,
+            severity_threshold=2,
+            cooldown_minutes=60,
+            max_concurrent=2,
+            circuit_breaker_threshold=5,
+            timeout_minutes=30,
+        )
+
+        pool = MagicMock()
+
+        async def fetchrow(*args, **kwargs):
+            return {"status": "pr_open"}  # simulate recent attempt → cooldown
+
+        async def fetchval(*args, **kwargs):
+            return 0
+
+        async def fetch(*args, **kwargs):
+            return []
+
+        async def execute(*args, **kwargs):
+            pass
+
+        pool.fetchrow = AsyncMock(side_effect=fetchrow)
+        pool.fetchval = AsyncMock(side_effect=fetchval)
+        pool.fetch = AsyncMock(side_effect=fetch)
+        pool.execute = AsyncMock(side_effect=execute)
+
+        # Patch create_or_join_attempt to return is_new=True, then patch get_recent_attempt
+        # to return a record so the cooldown gate triggers.
+        with (
+            patch(
+                "butlers.core.healing.dispatch.create_or_join_attempt",
+                new=AsyncMock(return_value=(uuid.uuid4(), True)),
+            ),
+            patch(
+                "butlers.core.healing.dispatch.get_recent_attempt",
+                new=AsyncMock(return_value={"status": "pr_open"}),
+            ),
+            patch("butlers.core.healing.dispatch.delete_orphaned_attempt", new=AsyncMock()),
+            patch("butlers.core.healing.dispatch.create_dispatch_event", new=AsyncMock()),
+            patch(
+                "butlers.core.healing.dispatch.session_set_healing_fingerprint",
+                new=AsyncMock(),
+            ),
+        ):
+            result = asyncio.run(
+                dispatch_healing(
+                    pool=pool,
+                    butler_name="test-butler",
+                    session_id=uuid.uuid4(),
+                    fingerprint_input=fp,
+                    config=config,
+                    repo_root=Path("/tmp"),
+                    spawner=MagicMock(),
+                    metrics=m,
+                )
+            )
+
+        assert result.reason == "cooldown"
+        assert not result.accepted
+
+        data = _collect_metrics(reader)
+        dps = data.get("butlers.recovery.dispatch_decisions_total", [])
+        cooldown_dps = [
+            dp
+            for dp in dps
+            if dp.attributes.get("workflow") == "healing"
+            and dp.attributes.get("decision") == "cooldown"
+        ]
+        assert len(cooldown_dps) == 1 and cooldown_dps[0].value == 1
+        assert cooldown_dps[0].attributes.get("butler") == "test-butler"
+    finally:
+        _reset_metrics_global_state()

@@ -61,6 +61,7 @@ from butlers.core.healing.worktree import (
     create_healing_worktree,
     remove_healing_worktree,
 )
+from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model
 from butlers.core.sessions import session_set_healing_fingerprint
 
@@ -628,14 +629,21 @@ async def _run_healing_session(
     config: HealingConfig,
     spawner,  # Spawner instance — typed as Any to avoid circular import
     gh_token: str | None,
+    metrics: ButlerMetrics | None = None,
 ) -> None:
     """Run the healing agent and handle PR creation.
 
     This coroutine is scheduled as an ``asyncio.Task`` and monitored by a
     separate timeout watchdog task.
     """
+    import time as _time
+
     healing_session_id: uuid.UUID | None = None
     phase_session_id: uuid.UUID | None = None
+    _phase_start = _time.monotonic()
+
+    if metrics is not None:
+        metrics.recovery_workflow_start(workflow="healing")
 
     try:
         prompt = _build_healing_prompt(fp, butler_name, trigger_source, agent_context)
@@ -679,6 +687,19 @@ async def _run_healing_session(
         if not result.success:
             error_detail = result.error or "Healing agent returned non-success result"
             logger.warning("Healing agent failed (attempt=%s): %s", attempt_id, error_detail)
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="healing",
+                    phase="diagnose_and_fix",
+                    outcome="failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="healing",
+                    phase="diagnose_and_fix",
+                    error_class="agent_failure",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -709,6 +730,14 @@ async def _run_healing_session(
                 "Healing agent marked error as unfixable (attempt=%s); skipping PR creation",
                 attempt_id,
             )
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="healing",
+                    phase="diagnose_and_fix",
+                    outcome="unfixable",
+                    duration_ms=_elapsed,
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(pool, phase_session_id, "completed")
@@ -761,6 +790,19 @@ async def _run_healing_session(
         )
 
         if pr_error == "anonymization_failed":
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="healing",
+                    phase="diagnose_and_fix",
+                    outcome="anonymization_failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="healing",
+                    phase="diagnose_and_fix",
+                    error_class="anonymization_failed",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -788,6 +830,19 @@ async def _run_healing_session(
             return
 
         if pr_error is not None:
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="healing",
+                    phase="diagnose_and_fix",
+                    outcome="failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="healing",
+                    phase="diagnose_and_fix",
+                    error_class="pr_error",
+                )
             if phase_session_id is not None:
                 try:
                     await update_phase_session_status(
@@ -832,9 +887,32 @@ async def _run_healing_session(
             delete_branch=False,
             delete_remote=False,
         )
+        # Record success only after DB status update and worktree cleanup succeed,
+        # so that no conflicting failure metric is emitted for the same attempt.
+        if metrics is not None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            metrics.record_recovery_phase_duration(
+                workflow="healing",
+                phase="diagnose_and_fix",
+                outcome="success",
+                duration_ms=_elapsed,
+            )
 
     except asyncio.CancelledError:
         # Cancelled by watchdog — watchdog sets status to "timeout"
+        if metrics is not None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            metrics.record_recovery_phase_duration(
+                workflow="healing",
+                phase="diagnose_and_fix",
+                outcome="timeout",
+                duration_ms=_elapsed,
+            )
+            metrics.record_recovery_execution_failure(
+                workflow="healing",
+                phase="diagnose_and_fix",
+                error_class="timeout",
+            )
         if phase_session_id is not None:
             try:
                 await update_phase_session_status(
@@ -849,6 +927,19 @@ async def _run_healing_session(
 
     except Exception as exc:
         logger.exception("Unexpected error in healing session (attempt=%s): %s", attempt_id, exc)
+        if metrics is not None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            metrics.record_recovery_phase_duration(
+                workflow="healing",
+                phase="diagnose_and_fix",
+                outcome="failed",
+                duration_ms=_elapsed,
+            )
+            metrics.record_recovery_execution_failure(
+                workflow="healing",
+                phase="diagnose_and_fix",
+                error_class=type(exc).__name__,
+            )
         if phase_session_id is not None:
             try:
                 await update_phase_session_status(
@@ -869,6 +960,9 @@ async def _run_healing_session(
             delete_branch=True,
             delete_remote=False,
         )
+    finally:
+        if metrics is not None:
+            metrics.recovery_workflow_end(workflow="healing")
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +982,7 @@ async def dispatch_healing(
     trigger_source: str = "external",
     gh_token: str | None = None,
     task_registry: list[asyncio.Task] | None = None,
+    metrics: ButlerMetrics | None = None,
 ) -> DispatchResult:
     """Evaluate gates and, if all pass, spawn a healing agent.
 
@@ -1008,10 +1103,14 @@ async def dispatch_healing(
                 config.severity_threshold,
                 butler_name,
             )
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(
+                    workflow="healing", decision="severity_above_threshold"
+                )
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
-                reason="severity_below_threshold",
+                reason="severity_above_threshold",
             )
 
         # -------------------------------------------------------------------
@@ -1047,6 +1146,10 @@ async def dispatch_healing(
                 )
             except Exception as _evt_exc:
                 logger.debug("dispatch_healing: failed to record novelty_join event: %s", _evt_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(
+                    workflow="healing", decision="novelty_join"
+                )
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
@@ -1084,6 +1187,8 @@ async def dispatch_healing(
                 )
             except Exception as _evt_exc:
                 logger.debug("dispatch_healing: failed to record cooldown event: %s", _evt_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(workflow="healing", decision="cooldown")
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
@@ -1119,6 +1224,10 @@ async def dispatch_healing(
                 logger.debug(
                     "dispatch_healing: failed to record concurrency_cap event: %s", _evt_exc
                 )
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(
+                    workflow="healing", decision="concurrency_cap"
+                )
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
@@ -1151,6 +1260,10 @@ async def dispatch_healing(
                 except Exception as _evt_exc:
                     logger.debug(
                         "dispatch_healing: failed to record circuit_breaker event: %s", _evt_exc
+                    )
+                if metrics is not None:
+                    metrics.record_recovery_dispatch_decision(
+                        workflow="healing", decision="circuit_breaker"
                     )
                 return DispatchResult(
                     accepted=False,
@@ -1187,6 +1300,8 @@ async def dispatch_healing(
                 )
             except Exception as _evt_exc:
                 logger.debug("dispatch_healing: failed to record no_model event: %s", _evt_exc)
+            if metrics is not None:
+                metrics.record_recovery_dispatch_decision(workflow="healing", decision="no_model")
             return DispatchResult(
                 accepted=False,
                 fingerprint=fp.fingerprint,
@@ -1252,6 +1367,7 @@ async def dispatch_healing(
                 config=config,
                 spawner=spawner,
                 gh_token=gh_token,
+                metrics=metrics,
             ),
             name=f"healing-{attempt_id}",
         )

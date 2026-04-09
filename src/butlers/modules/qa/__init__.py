@@ -962,6 +962,7 @@ class QaModule(Module):
                     spawner=self._spawner,
                     gh_token=gh_token,
                     task_registry=self._watchdog_tasks,
+                    metrics=getattr(self._spawner, "_metrics", None),
                 )
             except Exception as dispatch_exc:
                 if _HAS_OTEL and _dispatch_span is not None:

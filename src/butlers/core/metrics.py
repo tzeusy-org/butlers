@@ -1,9 +1,10 @@
 """OpenTelemetry metrics instruments for the butler concurrency subsystem.
 
 Emits metrics covering spawner concurrency, token usage, durable buffer health,
-route.execute accept/process phases, scheduler task dispatch, and switchboard
-ingest outcomes.  Instruments are created lazily from the global MeterProvider,
-so callers do not need to pass a Meter instance around.
+route.execute accept/process phases, scheduler task dispatch, switchboard
+ingest outcomes, and recovery/investigation workflow lifecycle.  Instruments
+are created lazily from the global MeterProvider, so callers do not need to
+pass a Meter instance around.
 
 Initialization
 --------------
@@ -71,6 +72,20 @@ Switchboard (emitted from ingestion/ingest.py):
 
   butlers.switchboard.ingest_result   Counter (labels: source, outcome)
       Ingest boundary outcomes (success, validation_error, db_error).
+
+Recovery (emitted from healing/dispatch.py and qa/dispatch.py):
+
+  butlers.recovery.active_workflows       UpDownCounter (labels: butler, workflow)
+      Currently active recovery/investigation workflows.
+
+  butlers.recovery.phase_duration_ms      Histogram (labels: butler, workflow, phase, outcome)
+      Duration of each workflow phase in milliseconds.
+
+  butlers.recovery.dispatch_decisions_total Counter (labels: butler, workflow, decision)
+      Admission-control gate decisions (cooldown, concurrency_cap, circuit_breaker, etc.).
+
+  butlers.recovery.execution_failures_total Counter (labels: butler, workflow, phase, error_class)
+      Terminal failures from launched workflow phases.
 
 All instruments carry a ``butler`` label for per-butler drill-down in Grafana.
 The ``deployment.environment`` resource attribute is set from the ``ENV``
@@ -366,6 +381,52 @@ def _switchboard_ingest_result() -> metrics.Counter:
 
 
 # ---------------------------------------------------------------------------
+# Recovery instruments
+# ---------------------------------------------------------------------------
+
+
+def _recovery_active_workflows() -> metrics.UpDownCounter:
+    """UpDownCounter: active recovery/investigation workflows (labels: butler, workflow)."""
+    return get_meter().create_up_down_counter(
+        name="butlers.recovery.active_workflows",
+        description="Number of currently active recovery or investigation workflows",
+        unit="workflows",
+    )
+
+
+def _recovery_phase_duration_ms() -> metrics.Histogram:
+    """Histogram: per-phase workflow duration in ms (labels: butler, workflow, phase, outcome)."""
+    return get_meter().create_histogram(
+        name="butlers.recovery.phase_duration_ms",
+        description="Duration of each recovery workflow phase in milliseconds",
+        unit="ms",
+    )
+
+
+def _recovery_dispatch_decisions_total() -> metrics.Counter:
+    """Counter: admission-control gate decisions (labels: butler, workflow, decision)."""
+    return get_meter().create_counter(
+        name="butlers.recovery.dispatch_decisions_total",
+        description=(
+            "Admission-control gate decisions recorded before a workflow session is launched"
+        ),
+        unit="decisions",
+    )
+
+
+def _recovery_execution_failures_total() -> metrics.Counter:
+    """Counter: terminal failures from launched workflow phases.
+
+    Labels: butler, workflow, phase, error_class.
+    """
+    return get_meter().create_counter(
+        name="butlers.recovery.execution_failures_total",
+        description="Terminal failures that occurred inside a launched recovery workflow phase",
+        unit="failures",
+    )
+
+
+# ---------------------------------------------------------------------------
 # ButlerMetrics — convenience wrapper that caches instruments per butler
 # ---------------------------------------------------------------------------
 
@@ -422,6 +483,10 @@ class ButlerMetrics:
         self.__route_process: metrics.Histogram | None = None
         self.__scheduler_tasks_dispatched: metrics.Counter | None = None
         self.__switchboard_ingest_result: metrics.Counter | None = None
+        self.__recovery_active_workflows: metrics.UpDownCounter | None = None
+        self.__recovery_phase_duration: metrics.Histogram | None = None
+        self.__recovery_dispatch_decisions: metrics.Counter | None = None
+        self.__recovery_execution_failures: metrics.Counter | None = None
 
     # -- instrument accessors (lazy init) ------------------------------------
 
@@ -527,6 +592,30 @@ class ButlerMetrics:
             self.__switchboard_ingest_result = _switchboard_ingest_result()
         return self.__switchboard_ingest_result
 
+    @property
+    def _recovery_active(self) -> metrics.UpDownCounter:
+        if self.__recovery_active_workflows is None:
+            self.__recovery_active_workflows = _recovery_active_workflows()
+        return self.__recovery_active_workflows
+
+    @property
+    def _recovery_phase_dur(self) -> metrics.Histogram:
+        if self.__recovery_phase_duration is None:
+            self.__recovery_phase_duration = _recovery_phase_duration_ms()
+        return self.__recovery_phase_duration
+
+    @property
+    def _recovery_decisions(self) -> metrics.Counter:
+        if self.__recovery_dispatch_decisions is None:
+            self.__recovery_dispatch_decisions = _recovery_dispatch_decisions_total()
+        return self.__recovery_dispatch_decisions
+
+    @property
+    def _recovery_failures(self) -> metrics.Counter:
+        if self.__recovery_execution_failures is None:
+            self.__recovery_execution_failures = _recovery_execution_failures_total()
+        return self.__recovery_execution_failures
+
     def ensure_registered(self) -> None:
         """Emit zero-value adds on key gauges so the butler appears in Prometheus.
 
@@ -536,6 +625,10 @@ class ButlerMetrics:
         """
         self._spawner_active.add(0, self._attrs)
         self._spawner_queued.add(0, self._attrs)
+        # Recovery UpDownCounters: seed with the two primary workflow types so
+        # that the series is visible even before the first recovery attempt.
+        for workflow in ("healing", "qa"):
+            self._recovery_active.add(0, {**self._attrs, "workflow": workflow})
 
     # -- spawner recording helpers ------------------------------------------
 
@@ -648,3 +741,53 @@ class ButlerMetrics:
     def record_ingest_result(self, *, source: str, outcome: str) -> None:
         """Record one ingest boundary outcome (outcome: success|validation_error|db_error)."""
         self._ingest_result.add(1, {"source": source, "outcome": outcome})
+
+    # -- recovery recording helpers -----------------------------------------
+
+    def recovery_workflow_start(self, *, workflow: str) -> None:
+        """Record that a recovery/investigation workflow has started."""
+        self._recovery_active.add(1, {**self._attrs, "workflow": workflow})
+
+    def recovery_workflow_end(self, *, workflow: str) -> None:
+        """Record that a recovery/investigation workflow has ended."""
+        self._recovery_active.add(-1, {**self._attrs, "workflow": workflow})
+
+    def record_recovery_phase_duration(
+        self, *, workflow: str, phase: str, outcome: str, duration_ms: float
+    ) -> None:
+        """Record the duration of a recovery workflow phase in milliseconds.
+
+        Args:
+            workflow: Workflow type (``"healing"`` or ``"qa"``).
+            phase: Phase name (e.g. ``"diagnose_and_fix"``, ``"investigate"``).
+            outcome: Outcome string (``"success"``, ``"failed"``, ``"timeout"``,
+                ``"unfixable"``, ``"anonymization_failed"``).
+            duration_ms: Elapsed time in milliseconds.
+        """
+        attrs = {**self._attrs, "workflow": workflow, "phase": phase, "outcome": outcome}
+        self._recovery_phase_dur.record(duration_ms, attrs)
+
+    def record_recovery_dispatch_decision(self, *, workflow: str, decision: str) -> None:
+        """Record one admission-control gate decision before a session is launched.
+
+        Args:
+            workflow: Workflow type (``"healing"`` or ``"qa"``).
+            decision: Gate decision code, e.g. ``"cooldown"``, ``"concurrency_cap"``,
+                ``"circuit_breaker"``, ``"novelty_join"``, ``"no_model"``,
+                ``"severity_above_threshold"``, ``"disabled"``, ``"no_recursion"``.
+        """
+        self._recovery_decisions.add(1, {**self._attrs, "workflow": workflow, "decision": decision})
+
+    def record_recovery_execution_failure(
+        self, *, workflow: str, phase: str, error_class: str
+    ) -> None:
+        """Record a terminal failure from a launched recovery workflow phase.
+
+        Args:
+            workflow: Workflow type (``"healing"`` or ``"qa"``).
+            phase: Phase name where the failure occurred.
+            error_class: Short error class string (e.g. exception type name,
+                ``"timeout"``, ``"anonymization_failed"``, ``"pr_error"``).
+        """
+        attrs = {**self._attrs, "workflow": workflow, "phase": phase, "error_class": error_class}
+        self._recovery_failures.add(1, attrs)
