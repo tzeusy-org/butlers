@@ -61,9 +61,7 @@ class TestStep1bLoggingConfig:
         """configure_logging creates log subdirectories and file handlers when log_root provided."""
         from butlers.core.logging import configure_logging
 
-        configure_logging(
-            level="INFO", fmt="json", log_root=tmp_path, butler_name="filetest"
-        )
+        configure_logging(level="INFO", fmt="json", log_root=tmp_path, butler_name="filetest")
 
         # Subdirectories must exist
         assert (tmp_path / "butlers").is_dir()
@@ -534,3 +532,98 @@ class TestStep13cCalendarApprovalWiring:
         call_args = mock_pool.execute.call_args
         sql = call_args[0][0]
         assert "INSERT INTO pending_actions" in sql
+
+
+# ===========================================================================
+# Step 6 — DB role wiring in lifecycle
+# ===========================================================================
+
+
+class TestStep6DbRoleWiring:
+    """Step 6: role is derived from db_schema and set on Database before connect().
+
+    Covers three sub-tasks from bu-qi2ic:
+    3.1 Role assignment after set_schema()
+    3.2 Role assignment before await daemon.db.connect()
+    3.3 Injected-db path (daemon.db is not None) leaves role untouched
+    """
+
+    def _make_config(self, *, schema: str | None) -> Any:
+        """Return a minimal config stub with the given db_schema."""
+        config = MagicMock()
+        config.db_name = "butlers"
+        config.db_schema = schema
+        return config
+
+    def test_role_set_from_schema_before_connect(self) -> None:
+        """When db_schema is set, role is butler_{schema}_rw and applied before connect.
+
+        We verify via source inspection that role assignment appears after
+        set_schema but before connect in the lifecycle source.
+        """
+        import inspect
+
+        from butlers.lifecycle import run_startup
+
+        src = inspect.getsource(run_startup)
+
+        # All three tokens must appear in order in the source
+        idx_set_schema = src.index("set_schema")
+        idx_role_assign = src.index("daemon.db.role")
+        idx_connect = src.index("daemon.db.connect")
+
+        assert idx_set_schema < idx_role_assign, (
+            "role assignment must appear after set_schema() in run_startup source"
+        )
+        assert idx_role_assign < idx_connect, (
+            "role assignment must appear before daemon.db.connect() in run_startup source"
+        )
+
+    def test_role_naming_convention(self) -> None:
+        """Role is derived as butler_{schema}_rw per core_001_foundation convention."""
+        import inspect
+
+        from butlers.lifecycle import run_startup
+
+        src = inspect.getsource(run_startup)
+
+        # The naming template must be present literally
+        assert 'f"butler_{daemon.config.db_schema}_rw"' in src, (
+            "Role must be derived as 'butler_{db_schema}_rw'"
+        )
+
+    def test_role_not_set_when_schema_is_none(self) -> None:
+        """When db_schema is None/empty, no role assignment executes on the non-injected path.
+
+        We check that the assignment is guarded by `if daemon.config.db_schema:`.
+        """
+        import inspect
+
+        from butlers.lifecycle import run_startup
+
+        src = inspect.getsource(run_startup)
+        assert "if daemon.config.db_schema:" in src, (
+            "Role assignment must be guarded by 'if daemon.config.db_schema:'"
+        )
+
+    def test_injected_db_path_skips_role_wiring(self) -> None:
+        """When daemon.db is already injected, role assignment is NOT executed.
+
+        The injected path (daemon.db is not None) goes into the else branch,
+        which must not set daemon.db.role.
+        """
+        import inspect
+
+        from butlers.lifecycle import run_startup
+
+        src = inspect.getsource(run_startup)
+
+        # Find the else branch that handles the injected path
+        # The else branch starts after the connect path
+        non_injected_block_end = src.index("else:")
+        injected_block = src[non_injected_block_end:]
+
+        # The role assignment string must NOT appear in the injected (else) block
+        assert "daemon.db.role" not in injected_block, (
+            "daemon.db.role must not be set on the injected-db (else) path"
+        )

@@ -114,6 +114,8 @@ async def run_startup(daemon: Any) -> None:
     if daemon.db is None:
         daemon.db = Database.from_env(daemon.config.db_name)
         daemon.db.set_schema(daemon.config.db_schema)
+        if daemon.config.db_schema:
+            daemon.db.role = f"butler_{daemon.config.db_schema}_rw"
         await daemon.db.provision()
         pool = await daemon.db.connect()
     else:
