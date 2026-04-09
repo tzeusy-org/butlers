@@ -45,10 +45,10 @@ jobs:
         run: uv run ruff format --check src/ tests/ roster/ conftest.py -q
 
       - name: Unit tests
-        run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
+        run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
 
       - name: Integration tests (testcontainers)
-        run: uv run pytest roster/ tests/integration/ -q --maxfail=5 --tb=short -m "integration" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
+        run: uv run pytest roster/ tests/integration/ tests/config/ tests/core/ tests/migrations/ -q --maxfail=5 --tb=short -m "integration and not nightly" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
         env:
           # Testcontainers uses the Docker socket directly — no DOCKER_HOST needed on ubuntu-latest
           TESTCONTAINERS_RYUK_DISABLED: "true"

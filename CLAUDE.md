@@ -35,7 +35,7 @@ uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
 uv run ruff format --check src/ tests/ roster/ conftest.py -q
 mkdir -p .tmp/test-logs
 PYTEST_LOG=".tmp/test-logs/pytest-$(basename "$PWD")-$(date +%Y%m%d-%H%M%S)-$$.log"
-uv run pytest tests/ --ignore=tests/test_db.py --ignore=tests/test_migrations.py -q --maxfail=1 --tb=short >"$PYTEST_LOG" 2>&1 || tail -n 120 "$PYTEST_LOG"
+uv run pytest tests/ --ignore=tests/e2e -q --maxfail=1 --tb=short >"$PYTEST_LOG" 2>&1 || tail -n 120 "$PYTEST_LOG"
 ```
 
 ## Architecture
