@@ -303,9 +303,9 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
     ),
     (
         "qa_repo_config",
-        "INSERT INTO public.qa_repo_config (repo_path, enabled)"
-        " VALUES ('/acl-probe-repo', true)"
-        " ON CONFLICT (repo_path) DO UPDATE SET enabled = EXCLUDED.enabled",
+        # qa_repo_config is only UPDATE-granted (not INSERT); the row is pre-seeded
+        # by test_set_role_allows_public_table_writes via admin before the role loop.
+        "UPDATE public.qa_repo_config SET enabled = true WHERE repo_path = '/acl-probe-repo'",
     ),
     (
         "qa_patrols",
@@ -399,11 +399,14 @@ def test_set_role_blocks_cross_schema_write(postgres_container):
 
 
 def test_set_role_allows_public_table_writes(postgres_container):
-    """SET ROLE butler_general_rw: INSERT succeeds for each table in the public write matrix.
+    """SET ROLE butler_general_rw: write succeeds for each table in the public write matrix.
 
     Iterates all 20 public tables guaranteed to exist after the core migration chain.
-    Each test row is inserted under the runtime role; success proves the write grant
+    Each test row is written under the runtime role; success proves the write grant
     is in effect.
+
+    Note: qa_repo_config is only UPDATE-granted (not INSERT), so a seed row is
+    pre-inserted via the admin connection before the role loop runs.
     """
     from butlers.migrations import run_migrations
 
@@ -411,6 +414,20 @@ def test_set_role_allows_public_table_writes(postgres_container):
     bootstrap_extensions(db_url)
     asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
+
+    # Pre-seed the qa_repo_config row that the role will UPDATE (no INSERT grant).
+    seed_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with seed_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.qa_repo_config (repo_path, enabled)"
+                    " VALUES ('/acl-probe-repo', false)"
+                    " ON CONFLICT (repo_path) DO NOTHING"
+                )
+            )
+    finally:
+        seed_engine.dispose()
 
     role = _RUNTIME_ROLES["general"]
     failed: list[tuple[str, str]] = []
@@ -423,7 +440,7 @@ def test_set_role_allows_public_table_writes(postgres_container):
 
     if failed:
         lines = "\n".join(f"  {t}: {e}" for t, e in failed)
-        pytest.fail(f"SET ROLE {role!r} INSERT failed for {len(failed)} public tables:\n{lines}")
+        pytest.fail(f"SET ROLE {role!r} write failed for {len(failed)} public tables:\n{lines}")
 
 
 def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
