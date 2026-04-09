@@ -26,10 +26,10 @@ pytestmark = pytest.mark.unit
 def _mock_route_inbox(monkeypatch):
     """Patch route_inbox functions for all tests."""
     mock_insert = AsyncMock(return_value=uuid.uuid4())
-    monkeypatch.setattr("butlers.daemon.route_inbox_insert", mock_insert)
-    monkeypatch.setattr("butlers.daemon.route_inbox_mark_processing", AsyncMock())
-    monkeypatch.setattr("butlers.daemon.route_inbox_mark_processed", AsyncMock())
-    monkeypatch.setattr("butlers.daemon.route_inbox_mark_errored", AsyncMock())
+    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
+    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_processing", AsyncMock())
+    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_processed", AsyncMock())
+    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", AsyncMock())
     return mock_insert
 
 

@@ -241,19 +241,19 @@ def _mock_route_inbox(monkeypatch):
     """Patch route_inbox DB calls so tests don't need a real DB pool."""
     fake_inbox_id = uuid.uuid4()
     monkeypatch.setattr(
-        "butlers.daemon.route_inbox_insert",
+        "butlers.core_tools._routing.route_inbox_insert",
         AsyncMock(return_value=fake_inbox_id),
     )
     monkeypatch.setattr(
-        "butlers.daemon.route_inbox_mark_processing",
+        "butlers.core_tools._routing.route_inbox_mark_processing",
         AsyncMock(),
     )
     monkeypatch.setattr(
-        "butlers.daemon.route_inbox_mark_processed",
+        "butlers.core_tools._routing.route_inbox_mark_processed",
         AsyncMock(),
     )
     monkeypatch.setattr(
-        "butlers.daemon.route_inbox_mark_errored",
+        "butlers.core_tools._routing.route_inbox_mark_errored",
         AsyncMock(),
     )
 

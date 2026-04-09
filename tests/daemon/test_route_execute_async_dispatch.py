@@ -204,7 +204,7 @@ async def test_accept_phase_and_background_dispatch(tmp_path: Path) -> None:
     # Accept phase: fast return with accepted status
     inserted_id = uuid.uuid4()
     mock_insert = AsyncMock(return_value=inserted_id)
-    with patch("butlers.daemon.route_inbox_insert", mock_insert):
+    with patch("butlers.core_tools._routing.route_inbox_insert", mock_insert):
         t0 = time.monotonic()
         result = await route_execute_fn(
             schema_version="route.v1",
@@ -228,9 +228,13 @@ async def test_accept_phase_and_background_dispatch(tmp_path: Path) -> None:
     trigger_mock = _make_trigger_mock()
     daemon.spawner.trigger = trigger_mock
     with (
-        patch("butlers.daemon.route_inbox_insert", new_callable=AsyncMock, return_value=uuid.uuid4()),
-        patch("butlers.daemon.route_inbox_mark_processing", new_callable=AsyncMock),
-        patch("butlers.daemon.route_inbox_mark_processed", new_callable=AsyncMock),
+        patch(
+            "butlers.core_tools._routing.route_inbox_insert",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch("butlers.core_tools._routing.route_inbox_mark_processing", new_callable=AsyncMock),
+        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
     ):
         await route_execute_fn(
             schema_version="route.v1",
@@ -256,9 +260,13 @@ async def test_failure_recording_and_dedup(tmp_path: Path) -> None:
     daemon.spawner.trigger = AsyncMock(side_effect=RuntimeError("spawner crash"))
     mock_errored = AsyncMock()
     with (
-        patch("butlers.daemon.route_inbox_insert", new_callable=AsyncMock, return_value=uuid.uuid4()),
-        patch("butlers.daemon.route_inbox_mark_processing", new_callable=AsyncMock),
-        patch("butlers.daemon.route_inbox_mark_errored", mock_errored),
+        patch(
+            "butlers.core_tools._routing.route_inbox_insert",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch("butlers.core_tools._routing.route_inbox_mark_processing", new_callable=AsyncMock),
+        patch("butlers.core_tools._routing.route_inbox_mark_errored", mock_errored),
     ):
         result = await route_execute_fn(
             schema_version="route.v1",
@@ -273,7 +281,7 @@ async def test_failure_recording_and_dedup(tmp_path: Path) -> None:
     existing_session_id = uuid.uuid4()
     patches["mock_pool"].fetchval.return_value = existing_session_id
     mock_insert = AsyncMock(return_value=uuid.uuid4())
-    with patch("butlers.daemon.route_inbox_insert", mock_insert):
+    with patch("butlers.core_tools._routing.route_inbox_insert", mock_insert):
         result2 = await route_execute_fn(
             schema_version="route.v1",
             request_context=_route_request_context(),
