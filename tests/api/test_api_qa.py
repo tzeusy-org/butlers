@@ -84,6 +84,8 @@ def _make_finding_row(
     last_seen: datetime | None = None,
     dedup_reason: str | None = None,
     healing_attempt_id: uuid.UUID | None = None,
+    source_session_trigger_source: str | None = None,
+    structured_evidence: dict | None = None,
     created_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a fake qa_findings row dict."""
@@ -102,6 +104,8 @@ def _make_finding_row(
         "last_seen": last_seen or _NOW,
         "dedup_reason": dedup_reason,
         "healing_attempt_id": healing_attempt_id,
+        "source_session_trigger_source": source_session_trigger_source,
+        "structured_evidence": structured_evidence,
         "created_at": created_at or _NOW,
     }
 
@@ -136,6 +140,8 @@ def _make_investigation_row(
     pr_number: int | None = None,
     healing_session_id: uuid.UUID | None = None,
     qa_patrol_id: uuid.UUID | None = None,
+    current_phase: str | None = None,
+    workflow_deadline_at: datetime | None = None,
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
     closed_at: datetime | None = None,
@@ -159,6 +165,8 @@ def _make_investigation_row(
         "pr_number": pr_number,
         "healing_session_id": healing_session_id,
         "qa_patrol_id": qa_patrol_id or uuid.uuid4(),
+        "current_phase": current_phase,
+        "workflow_deadline_at": workflow_deadline_at,
         "created_at": created_at or _NOW,
         "updated_at": updated_at or _NOW,
         "closed_at": closed_at,
@@ -1597,3 +1605,292 @@ class TestGetQaSummaryCredentialsStatus:
         # Defaults to unknown (None) on error
         creds = response.json()["data"]["credentials_status"]
         assert creds["gh_token_present"] is None
+
+
+# ---------------------------------------------------------------------------
+# Phase/deadline fields on GET /api/qa/investigations (bu-xp0x0.5)
+# ---------------------------------------------------------------------------
+
+
+class TestInvestigationPhaseFields:
+    """Investigations include current_phase and workflow_deadline_at from the phased workflow."""
+
+    async def test_phase_fields_null_when_not_set(self) -> None:
+        """Single-session investigations have null current_phase and workflow_deadline_at."""
+        row = _make_investigation_row(status="investigating")
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        inv = response.json()["data"][0]
+        assert inv["current_phase"] is None
+        assert inv["workflow_deadline_at"] is None
+
+    async def test_phase_fields_populated_when_phased_workflow(self) -> None:
+        """Multi-phase investigations expose current_phase and workflow_deadline_at."""
+        deadline = datetime(2026, 4, 9, 14, 0, 0, tzinfo=UTC)
+        row = _make_investigation_row(
+            status="investigating",
+            current_phase="diagnose",
+            workflow_deadline_at=deadline,
+        )
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        inv = response.json()["data"][0]
+        assert inv["current_phase"] == "diagnose"
+        assert inv["workflow_deadline_at"] is not None
+
+    async def test_dispatch_pending_is_not_a_valid_status_filter(self) -> None:
+        """dispatch_pending was removed in core_066 and must not be accepted as a filter."""
+        app, _ = _build_app()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/api/qa/investigations", params={"status": "dispatch_pending"}
+            )
+
+        assert response.status_code == 422
+        assert "dispatch_pending" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Structured evidence on GET /api/qa/patrols/{id}/findings (bu-xp0x0.5)
+# ---------------------------------------------------------------------------
+
+
+class TestFindingEvidenceFields:
+    """Findings include source_session_trigger_source and structured_evidence (core_067)."""
+
+    async def test_evidence_fields_null_by_default(self) -> None:
+        """Findings without evidence columns return null for both new fields."""
+        patrol_id = uuid.uuid4()
+        patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=1)
+        finding = _make_finding_row(patrol_id=patrol_id)
+        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding])
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/qa/patrols/{patrol_id}")
+
+        assert response.status_code == 200
+        f = response.json()["data"]["findings"][0]
+        assert f["source_session_trigger_source"] is None
+        assert f["structured_evidence"] is None
+
+    async def test_evidence_fields_populated_when_present(self) -> None:
+        """Findings with structured_evidence and trigger_source expose both fields."""
+        patrol_id = uuid.uuid4()
+        patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=1)
+        evidence = {"session_id": str(uuid.uuid4()), "runtime_type": "codex", "tool_call_count": 5}
+        finding = _make_finding_row(
+            patrol_id=patrol_id,
+            source_session_trigger_source="healing",
+            structured_evidence=evidence,
+        )
+        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding])
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/qa/patrols/{patrol_id}")
+
+        assert response.status_code == 200
+        f = response.json()["data"]["findings"][0]
+        assert f["source_session_trigger_source"] == "healing"
+        assert f["structured_evidence"]["runtime_type"] == "codex"
+        assert f["structured_evidence"]["tool_call_count"] == 5
+
+    async def test_evidence_fields_parsed_when_asyncpg_returns_string(self) -> None:
+        """Findings parse structured_evidence correctly when asyncpg returns JSONB as a string.
+
+        asyncpg returns JSONB columns as strings when no custom codec is registered.
+        The endpoint must handle both dict and string forms to avoid silently dropping evidence.
+        """
+        import json as _json
+
+        patrol_id = uuid.uuid4()
+        patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=1)
+        evidence = {"session_id": "abc", "runtime_type": "codex"}
+        finding = _make_finding_row(
+            patrol_id=patrol_id,
+            source_session_trigger_source="healing",
+            structured_evidence=_json.dumps(evidence),  # simulate asyncpg string form
+        )
+        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding])
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/qa/patrols/{patrol_id}")
+
+        assert response.status_code == 200
+        f = response.json()["data"]["findings"][0]
+        assert f["structured_evidence"]["runtime_type"] == "codex"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/meta-review (bu-xp0x0.5)
+# ---------------------------------------------------------------------------
+
+
+class TestListMetaReviewFindings:
+    """The meta-review lane surfaces QA-self-recursive findings for operator review."""
+
+    def _make_meta_finding_row(
+        self,
+        *,
+        source_session_trigger_source: str | None = "healing",
+        source_butler: str = "qa",
+    ) -> dict[str, Any]:
+        """Build a fake qa_findings row for a meta-review finding."""
+        return _make_finding_row(
+            source_butler=source_butler,
+            source_session_trigger_source=source_session_trigger_source,
+        )
+
+    async def test_returns_empty_list_when_no_meta_review_findings(self) -> None:
+        """When there are no QA-self-recursive findings, the list is empty."""
+        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+
+    async def test_returns_meta_review_findings_with_trigger_source(self) -> None:
+        """Findings with source_butler=qa and healing trigger_source appear in meta-review."""
+        finding = self._make_meta_finding_row(source_session_trigger_source="healing")
+        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["total"] == 1
+        assert len(body["data"]) == 1
+        f = body["data"][0]
+        assert f["source_butler"] == "qa"
+        assert f["source_session_trigger_source"] == "healing"
+
+    async def test_returns_meta_review_findings_with_qa_trigger(self) -> None:
+        """Findings with source_session_trigger_source='qa' also appear in meta-review.
+
+        QA-spawned investigation sessions use trigger_source='qa'.  This matches
+        the dispatch barrier in butlers.core.qa.dispatch which checks
+        ``trigger_src in {"healing", "qa"}``.
+        """
+        finding = self._make_meta_finding_row(source_session_trigger_source="qa")
+        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review")
+
+        assert response.status_code == 200
+        assert response.json()["data"][0]["source_session_trigger_source"] == "qa"
+
+    async def test_returns_meta_review_findings_with_null_trigger_source(self) -> None:
+        """Findings from QA butler with null trigger_source are treated as potentially recursive."""
+        finding = self._make_meta_finding_row(source_session_trigger_source=None)
+        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["total"] == 1
+        assert body["data"][0]["source_session_trigger_source"] is None
+
+    async def test_meta_review_includes_structured_evidence(self) -> None:
+        """Meta-review findings include structured_evidence when available (dict form)."""
+        evidence = {"session_id": "abc123", "runtime_type": "codex"}
+        finding = self._make_meta_finding_row()
+        finding["structured_evidence"] = evidence
+        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review")
+
+        assert response.status_code == 200
+        f = response.json()["data"][0]
+        assert f["structured_evidence"]["runtime_type"] == "codex"
+
+    async def test_meta_review_includes_structured_evidence_as_string(self) -> None:
+        """Meta-review findings parse structured_evidence when asyncpg returns it as a string.
+
+        asyncpg returns JSONB columns as strings when no custom codec is registered.
+        The endpoint must handle both dict and string forms.
+        """
+        import json as _json
+
+        evidence = {"session_id": "def456", "runtime_type": "codex", "tool_call_count": 3}
+        finding = self._make_meta_finding_row()
+        finding["structured_evidence"] = _json.dumps(evidence)  # simulate asyncpg string form
+        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review")
+
+        assert response.status_code == 200
+        f = response.json()["data"][0]
+        assert f["structured_evidence"]["runtime_type"] == "codex"
+        assert f["structured_evidence"]["tool_call_count"] == 3
+
+    async def test_pagination_parameters_accepted(self) -> None:
+        """Meta-review endpoint accepts standard pagination parameters."""
+        app, _ = _build_app(fetch_rows=[], fetchval_result=50)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review", params={"limit": 10, "offset": 5})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["meta"]["limit"] == 10
+        assert body["meta"]["offset"] == 5
+        assert body["meta"]["total"] == 50
+
+    async def test_returns_503_when_db_unavailable(self) -> None:
+        """Returns 503 when the shared pool is not available."""
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/meta-review")
+
+        assert response.status_code == 503

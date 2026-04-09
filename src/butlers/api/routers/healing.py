@@ -125,6 +125,8 @@ class HealingAttempt(BaseModel):
     pr_number: int | None = None
     session_ids: list[str] = Field(default_factory=list)
     healing_session_id: uuid.UUID | None = None
+    current_phase: str | None = None
+    workflow_deadline_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None = None
@@ -192,6 +194,8 @@ def _row_to_attempt(row: dict[str, Any]) -> HealingAttempt:
         pr_number=row.get("pr_number"),
         session_ids=session_ids,
         healing_session_id=healing_session_id,
+        current_phase=row.get("current_phase"),
+        workflow_deadline_at=row.get("workflow_deadline_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         closed_at=row.get("closed_at"),

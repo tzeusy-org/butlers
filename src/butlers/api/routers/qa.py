@@ -10,6 +10,8 @@ Endpoints:
 - GET  /api/qa/patrols/{patrolId}                   — full patrol with nested findings
 - GET  /api/qa/patrols/{patrolId}/findings          — findings for a patrol
 - GET  /api/qa/investigations                       — paginated QA-originated healing attempts
+                                                      (with current_phase and workflow_deadline_at)
+- GET  /api/qa/meta-review                          — QA-self-recursive findings (operator lane)
 - GET  /api/qa/known-issues                         — known issue tracker (by fingerprint)
 - POST /api/qa/known-issues/{fingerprint}/dismiss   — dismiss a known issue
 - DELETE /api/qa/known-issues/{fingerprint}/dismiss — un-dismiss a known issue
@@ -34,6 +36,7 @@ All reads/writes query ``public.qa_patrols``, ``public.qa_findings``,
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -146,6 +149,8 @@ class QaFindingRecord(BaseModel):
     last_seen: datetime
     dedup_reason: str | None = None
     healing_attempt_id: uuid.UUID | None = None
+    source_session_trigger_source: str | None = None
+    structured_evidence: dict | None = None
     created_at: datetime
 
 
@@ -276,6 +281,8 @@ class QaInvestigation(BaseModel):
     pr_number: int | None = None
     healing_session_id: uuid.UUID | None = None
     qa_patrol_id: uuid.UUID | None = None
+    current_phase: str | None = None
+    workflow_deadline_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     closed_at: datetime | None = None
@@ -402,6 +409,33 @@ class QaRepoSyncResponse(BaseModel):
     error: str | None = None
 
 
+class QaMetaReviewFinding(BaseModel):
+    """A QA-self-recursive finding routed to the operator meta-review lane.
+
+    These are findings where ``source_butler == "qa"`` and the originating
+    session's ``trigger_source`` identifies a QA-owned investigation.  They
+    are surfaced here rather than auto-investigated to prevent self-recursion
+    spirals.  Operators review and triage them manually.
+    """
+
+    id: uuid.UUID
+    patrol_id: uuid.UUID
+    fingerprint: str
+    source_type: str
+    source_butler: str
+    severity: int
+    exception_type: str
+    event_summary: str
+    call_site: str
+    occurrence_count: int
+    first_seen: datetime
+    last_seen: datetime
+    source_session_trigger_source: str | None = None
+    structured_evidence: dict | None = None
+    dedup_reason: str | None = None
+    created_at: datetime
+
+
 # ---------------------------------------------------------------------------
 # Helper — row conversion
 # ---------------------------------------------------------------------------
@@ -434,6 +468,20 @@ def _row_to_finding(row: Any) -> QaFindingRecord:
         except (ValueError, AttributeError):
             pass
 
+    # structured_evidence is a JSONB column.  asyncpg returns JSONB as a
+    # Python string when no custom codec is registered; parse it if needed.
+    raw_evidence = row.get("structured_evidence")
+    structured_evidence: dict | None = None
+    if isinstance(raw_evidence, dict):
+        structured_evidence = raw_evidence
+    elif isinstance(raw_evidence, str):
+        try:
+            parsed = json.loads(raw_evidence)
+            if isinstance(parsed, dict):
+                structured_evidence = parsed
+        except (ValueError, TypeError):
+            pass
+
     return QaFindingRecord(
         id=row["id"],
         patrol_id=row["patrol_id"],
@@ -447,8 +495,10 @@ def _row_to_finding(row: Any) -> QaFindingRecord:
         occurrence_count=row["occurrence_count"],
         first_seen=row["first_seen"],
         last_seen=row["last_seen"],
-        dedup_reason=row["dedup_reason"],
+        dedup_reason=row.get("dedup_reason"),
         healing_attempt_id=healing_attempt_id,
+        source_session_trigger_source=row.get("source_session_trigger_source"),
+        structured_evidence=structured_evidence,
         created_at=row["created_at"],
     )
 
@@ -494,6 +544,8 @@ def _row_to_investigation(row: Any) -> QaInvestigation:
         pr_number=row.get("pr_number"),
         healing_session_id=healing_session_id,
         qa_patrol_id=qa_patrol_id,
+        current_phase=row.get("current_phase"),
+        workflow_deadline_at=row.get("workflow_deadline_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         closed_at=row.get("closed_at"),
@@ -818,7 +870,8 @@ async def get_patrol(
         """
         SELECT id, patrol_id, fingerprint, source_type, source_butler, severity,
                exception_type, event_summary, call_site, occurrence_count,
-               first_seen, last_seen, dedup_reason, healing_attempt_id, created_at
+               first_seen, last_seen, dedup_reason, healing_attempt_id,
+               source_session_trigger_source, structured_evidence, created_at
         FROM public.qa_findings
         WHERE patrol_id = $1
         ORDER BY severity ASC, last_seen DESC
@@ -891,7 +944,8 @@ async def list_patrol_findings(
     rows = await pool.fetch(
         f"SELECT id, patrol_id, fingerprint, source_type, source_butler, severity,"
         f" exception_type, event_summary, call_site, occurrence_count,"
-        f" first_seen, last_seen, dedup_reason, healing_attempt_id, created_at"
+        f" first_seen, last_seen, dedup_reason, healing_attempt_id,"
+        f" source_session_trigger_source, structured_evidence, created_at"
         f" FROM public.qa_findings{where}"
         f" ORDER BY severity ASC, last_seen DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -912,7 +966,6 @@ async def list_patrol_findings(
 
 
 _VALID_INVESTIGATION_STATUSES = {
-    "dispatch_pending",
     "investigating",
     "pr_open",
     "pr_merged",
@@ -960,6 +1013,7 @@ async def list_investigations(
     rows = await pool.fetch(
         f"SELECT id, fingerprint, butler_name, status, severity, exception_type, call_site,"
         f" sanitized_msg, pr_url, pr_number, healing_session_id, qa_patrol_id,"
+        f" current_phase, workflow_deadline_at,"
         f" created_at, updated_at, closed_at, error_detail,"
         f" review_state, last_review_check_at, review_feedback_summary, follow_up_count"
         f" FROM public.healing_attempts{where}"
@@ -1862,3 +1916,117 @@ async def sync_repo(
             ),
             meta=ApiMeta(),
         )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/meta-review — QA-self-recursive findings operator lane
+# ---------------------------------------------------------------------------
+
+#: QA self-recursion trigger sources that gate normal investigation.
+#: Findings from QA sessions with these trigger sources are routed here
+#: instead of being auto-investigated to prevent self-recursion spirals.
+#: Must match the dispatch barrier in butlers.core.qa.dispatch
+#: (``trigger_src in {"healing", "qa"}``).
+_QA_SELF_RECURSION_TRIGGER_SOURCES = frozenset({"healing", "qa"})
+
+
+@router.get("/meta-review", response_model=PaginatedResponse[QaMetaReviewFinding])
+async def list_meta_review_findings(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[QaMetaReviewFinding]:
+    """Return QA-self-recursive findings routed to the operator meta-review lane.
+
+    These are findings where ``source_butler == 'qa'`` and the originating
+    session's ``trigger_source`` identifies a QA-owned investigation (i.e.
+    ``source_session_trigger_source`` is in ``{"healing", "qa_investigation"}``
+    or is NULL/unrecognized from a QA butler session).
+
+    Operators review and triage these manually.  They are never auto-investigated
+    to prevent self-recursion spirals.  The dispatch self-recursion barrier
+    (Gate 0) routes these findings here at dispatch time rather than suppressing
+    them silently, so operators have full visibility into QA failures that the
+    QA staffer chose not to investigate itself.
+
+    Results are ordered by ``last_seen DESC`` (most recent first).
+    """
+    pool = _shared_pool(db)
+
+    # Meta-review findings are those from source_butler == 'qa' where the
+    # trigger source identifies a QA investigation context.  Findings with
+    # NULL source_session_trigger_source from a QA butler are also included as
+    # a precaution (per spec: "treated as potentially recursive").
+    meta_review_condition = (
+        "f.source_butler = 'qa' "
+        "AND ("
+        "  f.source_session_trigger_source IS NULL "
+        "  OR f.source_session_trigger_source = ANY($1::text[])"
+        ")"
+    )
+    trigger_sources = list(_QA_SELF_RECURSION_TRIGGER_SOURCES)
+
+    total = int(
+        await pool.fetchval(
+            f"SELECT COUNT(*) FROM public.qa_findings f WHERE {meta_review_condition}",
+            trigger_sources,
+        )
+        or 0
+    )
+
+    rows = await pool.fetch(
+        f"""
+        SELECT f.id, f.patrol_id, f.fingerprint, f.source_type, f.source_butler,
+               f.severity, f.exception_type, f.event_summary, f.call_site,
+               f.occurrence_count, f.first_seen, f.last_seen,
+               f.source_session_trigger_source, f.structured_evidence,
+               f.dedup_reason, f.created_at
+        FROM public.qa_findings f
+        WHERE {meta_review_condition}
+        ORDER BY f.last_seen DESC
+        OFFSET $2 LIMIT $3
+        """,
+        trigger_sources,
+        offset,
+        limit,
+    )
+
+    data: list[QaMetaReviewFinding] = []
+    for r in rows:
+        raw_evidence = r.get("structured_evidence")
+        structured_evidence: dict | None = None
+        if isinstance(raw_evidence, dict):
+            structured_evidence = raw_evidence
+        elif isinstance(raw_evidence, str):
+            try:
+                parsed = json.loads(raw_evidence)
+                if isinstance(parsed, dict):
+                    structured_evidence = parsed
+            except (ValueError, TypeError):
+                pass
+
+        data.append(
+            QaMetaReviewFinding(
+                id=r["id"],
+                patrol_id=r["patrol_id"],
+                fingerprint=r["fingerprint"],
+                source_type=r["source_type"],
+                source_butler=r["source_butler"],
+                severity=r["severity"],
+                exception_type=r["exception_type"],
+                event_summary=r["event_summary"],
+                call_site=r["call_site"],
+                occurrence_count=r["occurrence_count"],
+                first_seen=r["first_seen"],
+                last_seen=r["last_seen"],
+                source_session_trigger_source=r.get("source_session_trigger_source"),
+                structured_evidence=structured_evidence,
+                dedup_reason=r.get("dedup_reason"),
+                created_at=r["created_at"],
+            )
+        )
+
+    return PaginatedResponse(
+        data=data,
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
