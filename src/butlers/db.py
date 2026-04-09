@@ -102,6 +102,7 @@ class Database:
         self,
         db_name: str,
         schema: str | None = None,
+        role: str | None = None,
         host: str = "localhost",
         port: int = 5432,
         user: str = "postgres",
@@ -112,6 +113,7 @@ class Database:
     ) -> None:
         self.db_name = db_name
         self.schema = _normalize_schema_name(schema)
+        self.role = role
         self.host = host
         self.port = port
         self.user = user
@@ -120,6 +122,7 @@ class Database:
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self.pool: asyncpg.Pool | None = None
+        self._role_verified: bool = False
 
     def set_schema(self, schema: str | None) -> None:
         """Set schema context for runtime query resolution."""
@@ -131,6 +134,23 @@ class Database:
         if search_path is None:
             return None
         return {"search_path": search_path}
+
+    async def _verify_role_exists(self, conn: asyncpg.Connection) -> bool:
+        """Check if the configured role exists in pg_roles."""
+        if self.role is None:
+            return False
+        exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+            self.role,
+        )
+        return bool(exists)
+
+    async def _setup_connection(self, conn: asyncpg.Connection) -> None:
+        """asyncpg setup callback: SET ROLE on every connection acquire."""
+        if not self._role_verified or self.role is None:
+            return
+        quoted_role = '"' + self.role.replace('"', '""') + '"'
+        await conn.execute(f"SET ROLE {quoted_role}")
 
     async def provision(self) -> None:
         """Create the database if it doesn't exist.
@@ -200,6 +220,61 @@ class Database:
             pool_kwargs["server_settings"] = server_settings
         if self.ssl is not None:
             pool_kwargs["ssl"] = self.ssl
+
+        # Verify role existence before pool creation
+        if self.role is not None:
+            _check_ssl = self.ssl
+
+            async def _open_check_conn(ssl: str | None) -> asyncpg.Connection:
+                return await asyncpg.connect(
+                    host=self.host,
+                    port=self.port,
+                    user=self.user,
+                    password=self.password,
+                    database=self.db_name,
+                    ssl=ssl,
+                )
+
+            try:
+                try:
+                    check_conn = await _open_check_conn(_check_ssl)
+                except Exception as exc:
+                    if not should_retry_with_ssl_disable(exc, _check_ssl):
+                        raise
+                    logger.info(
+                        "Retrying role verification connection with ssl=disable "
+                        "after SSL upgrade loss"
+                    )
+                    _check_ssl = "disable"
+                    check_conn = await _open_check_conn(_check_ssl)
+                try:
+                    self._role_verified = await self._verify_role_exists(check_conn)
+                finally:
+                    await check_conn.close()
+            except (asyncpg.PostgresError, OSError) as exc:
+                logger.warning(
+                    "Could not verify role %r existence; SET ROLE enforcement disabled for %s: %s",
+                    self.role,
+                    self.db_name,
+                    exc,
+                )
+                self._role_verified = False
+
+            if self._role_verified:
+                pool_kwargs["setup"] = self._setup_connection
+                logger.info(
+                    "SET ROLE enforcement enabled: %s (schema=%s)",
+                    self.role,
+                    self.schema,
+                )
+            else:
+                logger.warning(
+                    "Role %r not found; SET ROLE enforcement disabled. "
+                    "Butler %s runs with shared-user privileges.",
+                    self.role,
+                    self.db_name,
+                )
+
         try:
             self.pool = await asyncpg.create_pool(**pool_kwargs)
         except Exception as exc:
