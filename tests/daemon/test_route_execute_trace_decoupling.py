@@ -92,14 +92,49 @@ def _make_butler_toml(
     return tmp_path
 
 
+def _make_runtime_config_row(butler_name: str = "health") -> dict:
+    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
+    return {
+        "butler_name": butler_name,
+        "core_groups": None,
+        "model": None,
+        "runtime_type": "codex",
+        "args": "[]",
+        "max_concurrent": 3,
+        "max_queued": 10,
+        "session_timeout_s": 900,
+        "seeded_at": None,
+        "updated_at": None,
+    }
+
+
+def _make_fetchrow_side_effect(butler_name: str = "health"):
+    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
+    for runtime_config queries and None for all other queries."""
+
+    async def _fetchrow(query: str, *args, **kwargs):
+        if "runtime_config" in query:
+            return _make_runtime_config_row(butler_name)
+        return None
+
+    return _fetchrow
+
+
 def _patch_infra(butler_name: str = "health"):
     mock_conn = AsyncMock()
-    mock_pool = MagicMock()
+    mock_conn.execute = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+
+    mock_pool = AsyncMock()
+    # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     mock_pool.fetchval = AsyncMock(return_value=None)
-    acquire_ctx = AsyncMock()
-    acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
-    acquire_ctx.__aexit__ = AsyncMock(return_value=None)
-    mock_pool.acquire.return_value = acquire_ctx
+    mock_pool.execute = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect(butler_name))
+    mock_pool.fetch = AsyncMock(return_value=[])
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
