@@ -594,7 +594,10 @@ async def _run_investigation_session(
         if _HAS_OTEL and _inv_span is not None:
             sandbox_env.update(get_traceparent_env())
 
-        # Spawn the investigation agent with sandbox env override
+        # Spawn the investigation agent with sandbox env override.
+        # Pass timeout_override so the spawner uses the QA watchdog timeout
+        # instead of the butler's default session_timeout_s (which may be
+        # shorter and would kill the session before the watchdog fires).
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
@@ -602,6 +605,7 @@ async def _run_investigation_session(
             cwd=str(worktree_path),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
+            timeout_override=config.timeout_minutes * 60,
         )
 
         if result.session_id is not None:
@@ -913,9 +917,7 @@ async def check_open_pr_statuses(
             if feedback_summary:
                 _safe = anonymize(feedback_summary, repo_root)
                 _clean, _ = validate_anonymized(_safe)
-                safe_feedback_for_storage = (
-                    _safe[:_MAX_FEEDBACK_SUMMARY_LEN] if _clean else None
-                )
+                safe_feedback_for_storage = _safe[:_MAX_FEEDBACK_SUMMARY_LEN] if _clean else None
 
             # Update review tracking columns
             await pool.execute(
@@ -936,9 +938,8 @@ async def check_open_pr_statuses(
             # Trigger when review_state is explicitly actionable OR when there
             # is any feedback_summary (e.g. unresolved threads exist but
             # latestReviews is empty, so review_state is None).
-            _needs_followup = (
-                review_state in _ACTIONABLE_REVIEW_STATES
-                or (review_state is None and bool(feedback_summary))
+            _needs_followup = review_state in _ACTIONABLE_REVIEW_STATES or (
+                review_state is None and bool(feedback_summary)
             )
             if (
                 spawner is not None
@@ -1211,9 +1212,7 @@ async def _dispatch_pr_review_followup(
             )
 
         if not worktree_path.is_dir():
-            raise WorktreeCreationError(
-                f"Worktree directory not created at {worktree_path}"
-            )
+            raise WorktreeCreationError(f"Worktree directory not created at {worktree_path}")
 
         # Increment follow_up_count atomically
         await pool.execute(
@@ -1305,6 +1304,7 @@ async def _run_review_followup_session(
             cwd=str(worktree_path),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
+            timeout_override=config.timeout_minutes * 60,
         )
 
         if not result.success:

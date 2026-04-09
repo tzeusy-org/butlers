@@ -640,12 +640,15 @@ async def _run_healing_session(
         #   - CWD set to the worktree path (via spawner config or passed as cwd)
         #   - complexity=SELF_HEALING for model selection
         #   - trigger_source="healing" to block recursive healing
+        #   - timeout_override aligned with the watchdog timeout so the spawner
+        #     does not kill the session before the watchdog fires
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="healing",
             complexity=Complexity.SELF_HEALING,
             cwd=str(worktree_path),
             bypass_butler_semaphore=True,
+            timeout_override=config.timeout_minutes * 60,
         )
 
         if result.session_id is not None:

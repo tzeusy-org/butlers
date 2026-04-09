@@ -800,6 +800,7 @@ class Spawner:
         bypass_butler_semaphore: bool = False,
         max_token_budget: int | None = None,
         env_override: dict[str, str] | None = None,
+        timeout_override: int | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -846,6 +847,11 @@ class Spawner:
             When provided, replaces the automatically-built credential/env dict
             with this explicit environment map. Used by the QA dispatcher to pass
             a sandboxed environment that strips dangerous variables.
+        timeout_override:
+            When provided, overrides the runtime_config ``session_timeout_s``
+            for this invocation (in seconds).  Used by the self-healing and QA
+            dispatchers whose watchdog timeouts may differ from the butler's
+            default session timeout.
 
         Returns
         -------
@@ -946,6 +952,7 @@ class Spawner:
                         cwd=cwd,
                         max_token_budget=max_token_budget,
                         env_override=env_override,
+                        timeout_override=timeout_override,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -971,6 +978,7 @@ class Spawner:
                             cwd=cwd,
                             max_token_budget=max_token_budget,
                             env_override=env_override,
+                            timeout_override=timeout_override,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1057,6 +1065,7 @@ class Spawner:
         cwd: str | None = None,
         max_token_budget: int | None = None,
         env_override: dict[str, str] | None = None,
+        timeout_override: int | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1346,7 +1355,12 @@ class Spawner:
             }
             if merged_args:
                 invoke_kwargs["runtime_args"] = merged_args
-            timeout_s = accessor_timeout or self._config.runtime.session_timeout_s
+            if timeout_override is not None:
+                timeout_s = timeout_override
+            elif accessor_timeout is not None:
+                timeout_s = accessor_timeout
+            else:
+                timeout_s = self._config.runtime.session_timeout_s
             invoke_kwargs["timeout"] = timeout_s
             try:
                 result_text, tool_calls, usage = await asyncio.wait_for(
