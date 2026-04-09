@@ -21,6 +21,12 @@ Scope: v1-mandatory
 #### Scenario: Session timeout from accessor
 - **WHEN** `trigger()` is called
 - **THEN** the Spawner SHALL use `accessor.get().session_timeout_s` for the `asyncio.wait_for` timeout
+- **AND** the Spawner SHALL forward that same timeout value into `runtime.invoke(...)`
+
+#### Scenario: Session timeout is per invocation only
+- **WHEN** `trigger()` is called by a higher-level workflow orchestrator
+- **THEN** `session_timeout_s` limits only that spawned runtime session
+- **AND** any broader workflow deadline is enforced by the caller, not by the Spawner
 
 #### Scenario: Dashboard model change takes effect within 30s
 - **WHEN** a user changes `model` via the dashboard PATCH endpoint

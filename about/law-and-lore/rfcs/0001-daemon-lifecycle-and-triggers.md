@@ -5,7 +5,7 @@
 
 ## Summary
 
-The ButlerDaemon is the central orchestrator for a single butler instance. It manages a 17-phase startup sequence, accepts triggers from two sources (external MCP calls and the internal scheduler), and dispatches them through a Spawner that enforces two-tier concurrency control. Every session carries a UUIDv7 request_id for end-to-end tracing. Graceful shutdown drains in-flight sessions before tearing down modules in reverse topological order.
+The ButlerDaemon is the central orchestrator for a single butler instance. It manages a 17-phase startup sequence, accepts triggers from two sources (external MCP calls and the internal scheduler), and dispatches them through a Spawner that enforces two-tier concurrency control. Every session carries a UUIDv7 request_id for end-to-end tracing. Spawner timeouts are session-scoped; longer recovery workflows may chain multiple sessions under a separate orchestrator-owned deadline. Graceful shutdown drains in-flight sessions before tearing down modules in reverse topological order.
 
 ## Motivation
 
@@ -94,10 +94,18 @@ Once both semaphores are acquired:
 
 1. A session row is created in the `sessions` table with: prompt, trigger source, model, request_id, optional complexity tier.
 2. An ephemeral MCP config is generated pointing exclusively at this butler's FastMCP endpoint (see RFC 0002).
-3. The runtime adapter (Claude Code, Codex, Gemini) is invoked with the config, prompt, and system prompt.
+3. The runtime adapter (Claude Code, Codex, Gemini) is invoked with the config, prompt, system prompt, and the session-scoped timeout budget.
 4. On return, the session is marked complete with: output, tool call records, duration, token usage, success/failure status.
 5. Token usage is recorded against the model catalog for quota tracking.
 6. Concurrency slots are released.
+
+### Session Timeouts vs Workflow Deadlines
+
+`session_timeout_s` bounds exactly one runtime invocation managed by the Spawner. It does not define the total lifetime of a higher-level workflow that may orchestrate multiple runtime sessions.
+
+Recovery and investigation orchestrators (for example self-healing and QA) MAY chain multiple phases such as `diagnose`, `implement`, and `verify`. Each phase runs as its own session and is governed by `session_timeout_s`. The orchestrator is responsible for any broader workflow deadline, retry policy, and persisted phase state.
+
+Admission-control outcomes that occur before a runtime session launches (for example cooldown, concurrency cap, circuit breaker, or no-model) are dispatch decisions, not execution failures. Systems that expose recovery state MUST track these separately from launched workflow outcomes.
 
 ### Request Context
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Shared decision engine that evaluates whether an error warrants spawning a healing agent. Used by BOTH the self-healing module (primary path — butler agent calls `report_error` MCP tool) and the spawner fallback (secondary path — hard crashes where the agent couldn't self-report). Applies a multi-gate check sequence and, if all gates pass, creates a worktree, spawns a healing agent, and starts a timeout watchdog.
+Shared decision engine that evaluates whether an error warrants spawning a healing agent. Used by BOTH the self-healing module (primary path — butler agent calls `report_error` MCP tool) and the spawner fallback (secondary path — hard crashes where the agent couldn't self-report). Applies a multi-gate check sequence and, if all gates pass, creates a worktree and launches a recovery workflow. That workflow may span multiple runtime sessions under a separate overall investigation deadline.
 
 ## ADDED Requirements
 
@@ -43,7 +43,7 @@ The dispatcher SHALL evaluate gates in the following strict order. Fingerprint c
 3. **Fingerprint computation** — compute or accept pre-computed fingerprint
 4. **Fingerprint persistence** — update session record (best-effort)
 5. **Severity gate** — reject if severity below threshold
-6. **Novelty gate** — reject if active attempt exists (atomic check+insert)
+6. **Novelty gate** — reject if active attempt exists (authoritative atomic claim)
 7. **Cooldown gate** — reject if recent terminal attempt within window
 8. **Concurrency cap** — reject if too many active investigations
 9. **Circuit breaker** — reject if consecutive failures exceed threshold
@@ -100,7 +100,7 @@ The dispatcher SHALL check for active attempts matching the fingerprint. The che
 
 #### Scenario: First occurrence
 - **WHEN** no active attempt exists for this fingerprint
-- **THEN** novelty gate passes
+- **THEN** novelty gate acquires the authoritative claim to launch a new workflow for that fingerprint
 
 #### Scenario: Already under investigation
 - **WHEN** an `investigating` or `pr_open` attempt exists for this fingerprint
@@ -177,12 +177,38 @@ After all gates pass, the dispatcher creates the worktree, inserts the attempt r
 - **THEN** the env includes `GH_TOKEN` for `gh pr create`
 - **AND** no other butler-specific credentials are passed
 
-### Requirement: Healing Agent Timeout Watchdog
-A watchdog `asyncio.Task` is created alongside the healing agent. If the session doesn't complete within `timeout_minutes` (default: 30), the watchdog cancels it.
+### Requirement: Admission-Control Accounting
+Gate rejections before a healing session launches SHALL be tracked as dispatch decisions, not as failed execution attempts.
 
-#### Scenario: Exceeds timeout
-- **WHEN** healing session is still running after timeout
-- **THEN** session is cancelled, attempt transitions to `timeout`, worktree is cleaned up
+#### Scenario: Cooldown or concurrency rejection
+- **WHEN** a fingerprint is rejected by cooldown, concurrency cap, circuit breaker, or no-model before any healing session launches
+- **THEN** the system records a dispatch decision (if configured to persist decisions)
+- **AND** no launched healing attempt is marked `failed`
+- **AND** the rejection does NOT contribute to circuit-breaker execution failure counts
+
+### Requirement: Multi-Session Recovery Workflow
+A healing investigation MAY span multiple runtime sessions under one overall workflow deadline. `session_timeout_s` applies per launched session; the dispatcher owns the broader deadline.
+
+#### Scenario: Phase chaining under workflow deadline
+- **WHEN** the dispatcher needs multiple steps to complete a recovery
+- **THEN** it MAY launch separate `diagnose`, `implement`, and `verify` sessions
+- **AND** each session is governed by its own `session_timeout_s`
+- **AND** the overall recovery workflow remains active until it reaches a terminal outcome or its workflow deadline expires
+
+#### Scenario: Workflow deadline exceeded
+- **WHEN** the overall workflow deadline is exceeded before a terminal outcome is reached
+- **THEN** the healing attempt transitions to `timeout`
+- **AND** any running phase session is cancelled
+- **AND** the worktree is cleaned up
+
+### Requirement: Healing Agent Timeout Watchdog
+A watchdog `asyncio.Task` is created for each launched healing session. If the session does not complete within `session_timeout_s`, the watchdog cancels that session without changing the meaning of the workflow-wide deadline.
+
+#### Scenario: Phase session exceeds timeout
+- **WHEN** a launched healing phase session is still running after `session_timeout_s`
+- **THEN** that session is cancelled
+- **AND** the dispatcher records the phase timeout
+- **AND** the healing workflow either advances to its terminal handling or continues retry/orchestration according to its remaining workflow deadline
 
 ### Requirement: PR Creation Flow
 After the healing agent completes successfully, push branch, anonymize, validate, and create PR.

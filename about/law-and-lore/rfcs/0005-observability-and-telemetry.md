@@ -5,7 +5,7 @@
 
 ## Summary
 
-Butlers uses OpenTelemetry for distributed tracing and metrics, exported via OTLP HTTP to Grafana Alloy, which forwards traces to Tempo and metrics to Prometheus-compatible storage. Trace continuity across process boundaries is maintained through three mechanisms: `TRACEPARENT` environment variable injection into spawned LLM processes, `ContextVar`-based active session context for MCP tool span parenting, and cross-butler trace context propagation via route envelope fields. All tools are instrumented via the `tool_span` primitive. A metrics catalog of counters, histograms, and UpDownCounters covers spawner, buffer, route, scheduler, and switchboard domains with strict low-cardinality discipline.
+Butlers uses OpenTelemetry for distributed tracing and metrics, exported via OTLP HTTP to Grafana Alloy, which forwards traces to Tempo and metrics to Prometheus-compatible storage. Trace continuity across process boundaries is maintained through three mechanisms: `TRACEPARENT` environment variable injection into spawned LLM processes, `ContextVar`-based active session context for MCP tool span parenting, and cross-butler trace context propagation via route envelope fields. All tools are instrumented via the `tool_span` primitive. Higher-level recovery workflows emit phase-level spans and metrics, while admission-control decisions are tracked separately from launched execution failures. A metrics catalog of counters, histograms, and UpDownCounters covers spawner, buffer, route, scheduler, switchboard, and recovery domains with strict low-cardinality discipline.
 
 ## Motivation
 
@@ -99,6 +99,14 @@ Each span:
 
 The `tag_butler_span(span, butler_name)` helper sets the same attributes on spans created outside of `tool_span`.
 
+### Workflow and Recovery Telemetry
+
+Higher-level recovery workflows (for example self-healing and QA investigations) operate above individual runtime sessions. Each workflow phase SHOULD emit its own span with low-cardinality attributes such as `workflow` and `phase`, while higher-cardinality identifiers such as `attempt_id`, `session_id`, `request_id`, and `trace_id` MAY appear on spans or persisted evidence records.
+
+Admission-control outcomes that occur before a runtime session launches MUST be recorded distinctly from execution failures. A cooldown rejection, circuit-breaker rejection, or concurrency-cap rejection is operationally important, but it is not evidence that an investigation session failed.
+
+Structured evidence for workflow failures SHOULD be persisted outside the metrics stream. Examples include `session_id`, `request_id`, `trace_id`, runtime type, model, redacted stderr excerpts, tool-call summaries, and references to larger redacted artifacts. These identifiers and evidence bundles are appropriate for traces, logs, and API payloads, but they MUST NOT become metric labels.
+
 ### Metrics Catalog
 
 The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler wrapper around OTel instruments. All instruments are lazily created from the global `MeterProvider`, so construction before `init_metrics` is safe.
@@ -113,6 +121,15 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 | `butlers.spawner.session_duration_ms` | Histogram | `butler` | End-to-end session duration |
 | `butlers.spawner.input_tokens` | Counter | `butler`, `model` | LLM input tokens per session |
 | `butlers.spawner.output_tokens` | Counter | `butler`, `model` | LLM output tokens per session |
+
+#### Recovery Metrics
+
+| Instrument | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `butlers.recovery.active_workflows` | UpDownCounter | `butler`, `workflow` | Active recovery/investigation workflows |
+| `butlers.recovery.phase_duration_ms` | Histogram | `butler`, `workflow`, `phase`, `outcome` | Per-phase workflow duration |
+| `butlers.recovery.dispatch_decisions_total` | Counter | `butler`, `workflow`, `decision` | Admission-control decisions before session launch |
+| `butlers.recovery.execution_failures_total` | Counter | `butler`, `workflow`, `phase`, `error_class` | Terminal failures from launched workflow phases |
 
 #### Buffer Metrics
 
@@ -153,9 +170,9 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 
 ### Cardinality Discipline
 
-All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `destination_butler`.
+All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `destination_butler`, `workflow`, `phase`, `decision`.
 
-The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, UUIDs, timestamps, or any other high-cardinality identifier.
+The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, attempt IDs, trace IDs, UUIDs, timestamps, or any other high-cardinality identifier.
 
 ### Gauge Registration
 

@@ -11,7 +11,7 @@ The system SHALL maintain a `public.healing_attempts` table tracking every heali
 
 #### Scenario: Table schema
 - **WHEN** the migration creates `public.healing_attempts`
-- **THEN** the table contains: `id` (UUID PK), `fingerprint` (TEXT NOT NULL), `butler_name` (TEXT NOT NULL), `status` (TEXT NOT NULL DEFAULT 'investigating'), `severity` (INTEGER NOT NULL), `exception_type` (TEXT NOT NULL), `call_site` (TEXT NOT NULL), `sanitized_msg` (TEXT), `branch_name` (TEXT), `worktree_path` (TEXT), `pr_url` (TEXT), `pr_number` (INTEGER), `session_ids` (UUID[] NOT NULL DEFAULT '{}'), `healing_session_id` (UUID), `created_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `updated_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `closed_at` (TIMESTAMPTZ), `error_detail` (TEXT)
+- **THEN** the table contains: `id` (UUID PK), `fingerprint` (TEXT NOT NULL), `butler_name` (TEXT NOT NULL), `status` (TEXT NOT NULL DEFAULT 'investigating'), `severity` (INTEGER NOT NULL), `exception_type` (TEXT NOT NULL), `call_site` (TEXT NOT NULL), `sanitized_msg` (TEXT), `branch_name` (TEXT), `worktree_path` (TEXT), `pr_url` (TEXT), `pr_number` (INTEGER), `session_ids` (UUID[] NOT NULL DEFAULT '{}'), `healing_session_id` (UUID), `current_phase` (TEXT), `workflow_deadline_at` (TIMESTAMPTZ), `created_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `updated_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `closed_at` (TIMESTAMPTZ), `error_detail` (TEXT)
 
 #### Scenario: Fingerprint index
 - **WHEN** the table is created
@@ -26,19 +26,18 @@ The system SHALL maintain a `public.healing_attempts` table tracking every heali
 - **THEN** a partial unique index exists on `fingerprint` WHERE `status IN ('investigating', 'pr_open')`
 - **AND** this prevents two concurrent dispatchers from creating duplicate active investigations for the same fingerprint
 
-### Requirement: Atomic Attempt Creation (Novelty + Insert)
-The dispatcher's novelty check and attempt insertion MUST be atomic to prevent race conditions where two concurrent session failures with the same fingerprint both pass the novelty gate.
+### Requirement: Atomic Novelty Claim
+The dispatcher's novelty claim MUST be atomic to prevent race conditions where two concurrent failures with the same fingerprint both conclude they should launch a new recovery workflow.
 
 #### Scenario: Concurrent dispatch with same fingerprint
 - **WHEN** two sessions fail simultaneously with the same fingerprint and both dispatchers reach the novelty gate
-- **THEN** at most one `healing_attempts` row is created with status `investigating`
-- **AND** the second dispatcher's insert fails on the partial unique index
-- **AND** the second dispatcher appends its session ID to the winning attempt's `session_ids` array instead
+- **THEN** at most one dispatcher acquires the authoritative claim to launch a new workflow for that fingerprint
+- **AND** any losing dispatcher joins the already-active attempt if one exists, or records a non-launch dispatch decision
 
-#### Scenario: Insert-or-append pattern
-- **WHEN** `create_or_join_attempt(pool, fingerprint, ...)` is called
-- **THEN** it attempts `INSERT INTO public.healing_attempts ... ON CONFLICT (fingerprint) WHERE status IN ('investigating', 'pr_open') DO UPDATE SET session_ids = array_append(session_ids, $session_id)`
-- **AND** it returns `(attempt_id, is_new)` where `is_new = True` if a new row was created, `False` if an existing row was joined
+#### Scenario: Accepted dispatch creates attempt after claim
+- **WHEN** the dispatcher has acquired the novelty claim and the remaining admission gates pass
+- **THEN** it creates the `healing_attempts` row for the launched workflow
+- **AND** the accepted workflow remains uniquely associated with that fingerprint while it is active
 
 ### Requirement: Healing Attempt State Machine
 The `status` field SHALL follow a defined state machine with valid transitions.
@@ -73,6 +72,31 @@ The `status` field SHALL follow a defined state machine with valid transitions.
 #### Scenario: Terminal transition sets closed_at
 - **WHEN** a status transitions to any terminal state (`pr_merged`, `failed`, `unfixable`, `anonymization_failed`, `timeout`)
 - **THEN** `closed_at` is set to `now()`
+
+### Requirement: Healing Attempt Sessions Table
+The system SHALL maintain a child table tracking each launched runtime session within a healing workflow.
+
+#### Scenario: Child session schema
+- **WHEN** the migration creates `public.healing_attempt_sessions`
+- **THEN** the table contains: `id` (UUID PK), `attempt_id` (UUID FK to `healing_attempts.id`), `phase` (TEXT NOT NULL), `session_id` (UUID NOT NULL), `status` (TEXT NOT NULL), `started_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `updated_at` (TIMESTAMPTZ NOT NULL DEFAULT now()), `completed_at` (TIMESTAMPTZ), `error_detail` (TEXT)
+
+#### Scenario: New phase session launched
+- **WHEN** a healing workflow launches a `diagnose`, `implement`, or `verify` runtime session
+- **THEN** a `healing_attempt_sessions` row is inserted for that phase
+- **AND** the parent `healing_attempts.current_phase` is updated
+- **AND** `healing_attempts.healing_session_id` points to the most recently launched runtime session for backward compatibility
+
+### Requirement: Dispatch Decision Tracking
+The system SHALL distinguish dispatch decisions from launched execution attempts.
+
+#### Scenario: Dispatch decision schema
+- **WHEN** the migration creates `public.healing_dispatch_events`
+- **THEN** the table contains: `id` (UUID PK), `fingerprint` (TEXT NOT NULL), `butler_name` (TEXT NOT NULL), `decision` (TEXT NOT NULL), `reason` (TEXT), `attempt_id` (UUID NULL FK to `healing_attempts.id`), `created_at` (TIMESTAMPTZ NOT NULL DEFAULT now())
+
+#### Scenario: Gate rejection before launch
+- **WHEN** cooldown, concurrency cap, circuit breaker, or no-model prevents a healing workflow from launching a runtime session
+- **THEN** a `healing_dispatch_events` row is inserted describing the decision
+- **AND** no `healing_attempts` row is marked `failed` solely because of that gate rejection
 
 ### Requirement: Session ID Accumulation
 When a new session fails with a fingerprint that already has an active (non-terminal) healing attempt, the failing session's ID SHALL be appended to the existing attempt's `session_ids` array.
@@ -137,12 +161,17 @@ The system SHALL expose query functions for dispatch gate checks and dashboard d
 
 #### Scenario: Recent failures for circuit breaker
 - **WHEN** `get_recent_terminal_statuses(pool, limit)` is called
-- **THEN** it returns the `status` values of the N most recent terminal attempts, ordered by `closed_at DESC`
+- **THEN** it returns the `status` values of the N most recent terminal attempts that launched at least one healing runtime session, ordered by `closed_at DESC`
 - **AND** `unfixable` statuses are included in the result set (the caller decides whether to count them as failures)
 
 #### Scenario: List attempts for dashboard
 - **WHEN** `list_attempts(pool, limit, offset, status_filter)` is called
 - **THEN** it returns paginated healing attempt rows, optionally filtered by status, ordered by `created_at DESC`
+
+#### Scenario: List dispatch decisions for dashboard
+- **WHEN** `list_dispatch_events(pool, limit, offset, decision_filter)` is called
+- **THEN** it returns paginated dispatch-decision rows ordered by `created_at DESC`
+- **AND** each row remains distinct from healing attempt execution history
 
 ### Requirement: Dashboard API Routes
 The system SHALL expose API endpoints for healing attempt visibility.
@@ -175,3 +204,8 @@ The system SHALL expose API endpoints for healing attempt visibility.
 #### Scenario: Circuit breaker status
 - **WHEN** `GET /api/healing/circuit-breaker` is called
 - **THEN** it returns the current circuit breaker state: `tripped` (boolean), `consecutive_failures` (int), `last_success_at` (timestamp or null)
+
+#### Scenario: List dispatch decisions
+- **WHEN** `GET /api/healing/dispatch-events?limit=20&offset=0` is called
+- **THEN** it returns a paginated list of healing dispatch decisions
+- **AND** those records are not mixed into `GET /api/healing/attempts`

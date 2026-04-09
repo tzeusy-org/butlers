@@ -5,7 +5,7 @@
 
 ## Summary
 
-The Butlers dashboard is a single-pane-of-glass interface built with a FastAPI backend (port 41200) and Vite-powered frontend (port 41173 in development). Butler-specific API routes are auto-discovered from `roster/<butler>/api/router.py` files via importlib. The REST API follows a consistent envelope pattern (`ApiResponse<T>`, `PaginatedResponse<T>`) with domain-specific exceptions. The frontend provides 30+ routes organized around system core views, butler detail tabs, and domain-specific surfaces (relationship, health, memory, approvals, connectors). Data access uses TanStack Query with domain-specific polling intervals. A global command palette provides keyboard-driven navigation.
+The Butlers dashboard is a single-pane-of-glass interface built with a FastAPI backend (port 41200) and Vite-powered frontend (port 41173 in development). Butler-specific API routes are auto-discovered from `roster/<butler>/api/router.py` files via importlib. The REST API follows a consistent envelope pattern (`ApiResponse<T>`, `PaginatedResponse<T>`) with domain-specific exceptions. The frontend provides 30+ routes organized around system core views, butler detail tabs, and domain-specific surfaces (relationship, health, memory, approvals, connectors, QA). Recovery and QA surfaces distinguish admission-control decisions from launched investigations, expose workflow phase/deadline summaries, and surface structured evidence without conflating it with session lists. Data access uses TanStack Query with domain-specific polling intervals. A global command palette provides keyboard-driven navigation.
 
 ## Motivation
 
@@ -70,6 +70,8 @@ Explicit exceptions (frontend contract):
 - Relationship domain endpoints use unwrapped typed payloads.
 - Trigger endpoint returns `TriggerResponse` (unwrapped).
 
+Admission-control decisions that did not launch a runtime session (for example cooldown or circuit-breaker rejects) SHOULD be exposed as their own records. The dashboard MUST NOT present them as failed investigation executions.
+
 ### Core System Endpoints
 
 | Endpoint | Response | Description |
@@ -103,6 +105,9 @@ Explicit exceptions (frontend contract):
 | `GET /api/costs/summary` | `ApiResponse<CostSummary>` | Cost aggregates (filter: period) |
 | `GET /api/costs/daily` | `ApiResponse<DailyCost[]>` | Per-day costs |
 | `GET /api/search` | `ApiResponse<SearchResults>` | Cross-domain search (groups: sessions, state, contacts) |
+| `GET /api/qa/summary` | `ApiResponse<QaSummary>` | QA staffer status, patrol rollup, circuit breaker |
+| `GET /api/qa/investigations` | `PaginatedResponse<QaInvestigation>` | QA-originated investigations with phase/deadline/evidence summary |
+| `GET /api/healing/dispatch-events` | `PaginatedResponse<DispatchDecision>` | Admission-control decisions that did not launch a workflow |
 
 ### Butler Control Endpoints
 
@@ -129,6 +134,8 @@ Explicit exceptions (frontend contract):
 **General/Switchboard:** Collections, entities, routing log, butler registry.
 
 **Calendar:** Workspace read (user/butler views), metadata, sync, user-event and butler-event mutations.
+
+**QA:** Patrol summaries, finding history, investigation workflows with phase/deadline/evidence summary, circuit breaker controls, repository settings, and a meta-review lane for QA-self-recursive failures.
 
 **OAuth:** Google OAuth start/callback, credential status surface.
 
@@ -161,6 +168,9 @@ Explicit exceptions (frontend contract):
 | `/connectors/:type/:identity` | Connector detail with timeseries |
 | `/costs` | Cost and usage analysis |
 | `/memory` | Memory system (tier cards, browser, activity timeline) |
+| `/qa` | QA overview (status, patrols, known issues, investigations, circuit breaker) |
+| `/qa/patrols/:patrolId` | QA patrol detail |
+| `/qa/investigations/:attemptId` | QA investigation detail |
 | `/settings` | Local UI preferences |
 
 ### Butler Detail Tabs

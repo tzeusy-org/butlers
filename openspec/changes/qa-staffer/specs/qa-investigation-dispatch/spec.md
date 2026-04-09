@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Unified investigation lifecycle management for all QA-originated issues regardless of discovery source. Creates worktrees, spawns LLM agents, monitors timeouts, creates anonymized PRs, and records outcomes. Subsumes and replaces the per-butler self-healing dispatch engine, preserving its 10-gate sequence within a single QA-owned pipeline. Investigation agents operate in sandboxed worktree environments with dedicated GitHub credentials from the secrets store.
+Unified investigation lifecycle management for all QA-originated issues regardless of discovery source. Creates worktrees, spawns LLM agents, monitors phase and workflow deadlines, creates anonymized PRs, and records outcomes. Subsumes and replaces the per-butler self-healing dispatch engine, preserving its 10-gate sequence within a single QA-owned pipeline. Investigation agents operate in sandboxed worktree environments with dedicated GitHub credentials from the secrets store, and the pipeline may chain multiple runtime sessions under one investigation.
 
 ## ADDED Requirements
 
@@ -10,7 +10,7 @@ Unified investigation lifecycle management for all QA-originated issues regardle
 The QA dispatcher SHALL create investigations for novel findings, using the existing `healing_attempts` table with a QA-specific source marker. All IDs SHALL be UUIDv7 for time-ordered sortability.
 
 #### Scenario: Create investigation from finding
-- **WHEN** a novel finding is dispatched for investigation
+- **WHEN** a novel finding passes admission gates and is accepted for investigation
 - **THEN** a row is inserted in `public.healing_attempts` with: `id` (UUIDv7), `fingerprint` matching the finding, `butler_name` matching the finding's `source_butler`, `status = "investigating"`, `severity` from the finding, `exception_type` and `call_site` from the finding, `sanitized_msg` from the finding's `event_summary`
 - **AND** the row includes `qa_patrol_id` linking it to the originating patrol cycle
 - **AND** the finding's `qa_findings.healing_attempt_id` is updated with the new attempt ID
@@ -18,6 +18,7 @@ The QA dispatcher SHALL create investigations for novel findings, using the exis
 #### Scenario: Concurrency cap enforcement
 - **WHEN** the number of active investigations (status = "investigating") reaches `max_concurrent_investigations`
 - **THEN** remaining novel findings are queued (not dispatched) for the next patrol cycle
+- **AND** a dispatch-decision record is written with reason `concurrency_cap`
 - **AND** a log INFO message indicates queued findings count
 
 ### Requirement: Gate Sequence Preservation
@@ -25,8 +26,18 @@ The QA dispatcher SHALL preserve the existing 10-gate dispatch sequence from sel
 
 #### Scenario: Gates applied per-finding after triage
 - **WHEN** a novel finding passes triage (fast dedup check)
-- **THEN** the dispatcher applies the authoritative gate sequence: no-recursion guard (trigger_source), opt-in gate, fingerprint (already computed), severity gate, novelty gate (atomic check+insert — this is the authoritative claim, not a duplicate of triage's fast check), cooldown gate, concurrency cap, circuit breaker, model resolution
+- **THEN** the dispatcher applies the authoritative gate sequence: no-recursion guard (trigger_source), opt-in gate, fingerprint (already computed), severity gate, novelty gate (authoritative atomic claim — this is the authoritative check, not a duplicate of triage's fast check), cooldown gate, concurrency cap, circuit breaker, model resolution
 - **AND** findings rejected by any gate are recorded with the rejection reason in `qa_findings.dedup_reason`
+- **AND** any rejection before the first investigation session launches is tracked as a dispatch decision, not an execution failure
+
+### Requirement: Gate Rejections Do Not Count as Execution Failures
+QA admission-control outcomes SHALL remain distinct from launched investigation outcomes.
+
+#### Scenario: Circuit breaker or cooldown rejection before launch
+- **WHEN** a finding is rejected by cooldown, concurrency cap, circuit breaker, or no-model before any QA investigation session launches
+- **THEN** no investigation attempt is marked `failed` solely because of that rejection
+- **AND** the rejection does NOT contribute to the QA circuit-breaker failure streak
+- **AND** the dashboard exposes it as a dispatch decision rather than a failed execution
 
 ### Requirement: Worktree-Based Investigation
 Each investigation SHALL run in a dedicated git worktree branched off latest `main`, using shared worktree infrastructure.
@@ -78,6 +89,28 @@ The QA investigation agent SHALL receive a prompt that includes the error contex
 - **THEN** the agent's diagnostic reasoning is included in the investigation prompt (after anonymization)
 - **AND** this gives the investigation agent a head start on diagnosis
 
+### Requirement: Structured Evidence Payloads
+QA findings and investigations SHALL carry structured evidence in addition to any free-form summary text.
+
+#### Scenario: Runtime-derived finding includes structured evidence
+- **WHEN** a finding originates from session records or runtime failures
+- **THEN** the structured evidence includes available identifiers and diagnostics such as `session_id`, `request_id`, `trace_id`, `runtime_type`, `model`, redacted stderr excerpts, tool-call summaries, and source-specific metadata
+- **AND** the investigation prompt references this evidence without embedding raw sensitive payloads
+
+#### Scenario: Large evidence bundle is attached out-of-band
+- **WHEN** the available diagnostic evidence is too large for the prompt
+- **THEN** QA persists a redacted evidence artifact in the worktree
+- **AND** the prompt points the agent to that artifact for detailed inspection
+
+### Requirement: QA Self-Recursion Barrier
+QA SHALL suppress autonomous investigation of failures originating from QA self-healing sessions.
+
+#### Scenario: QA finding originated from QA self-healing session
+- **WHEN** a finding's originating session belongs to the QA butler and was itself a self-healing/investigation session
+- **THEN** normal autonomous investigation is suppressed
+- **AND** the finding is routed to a QA meta-review/operator lane
+- **AND** no standard QA investigation workflow is launched for that finding
+
 ### Requirement: Anonymized PR Pipeline
 Investigation agents SHALL create PRs through the anonymization pipeline, ensuring no sensitive data reaches the public GitHub repository. **All personal details and sensitive data MUST be anonymized.**
 
@@ -99,13 +132,28 @@ Investigation agents SHALL create PRs through the anonymization pipeline, ensuri
 - **THEN** the PR body includes a link to the investigation detail page: `<dashboard_base_url>/qa/investigations/<attempt_id>`
 - **AND** if `dashboard_base_url` is not configured, the link is omitted (the dashboard may be on a private tailnet and the link would leak the hostname to a public PR)
 
-### Requirement: Investigation Timeout Watchdog
-Each investigation SHALL have a timeout watchdog that cancels long-running agents.
+### Requirement: Phased Investigation Workflow
+Each QA investigation MAY span multiple runtime sessions under one overall investigation deadline.
 
-#### Scenario: Investigation exceeds timeout
-- **WHEN** an investigation agent has been running longer than `timeout_minutes` (default: 30)
-- **THEN** the agent process is cancelled
-- **AND** the investigation transitions to `timeout`
+#### Scenario: Diagnose, implement, and verify use separate sessions
+- **WHEN** QA investigates a finding that requires diagnosis, code changes, and verification
+- **THEN** it MAY run separate `diagnose`, `implement`, and `verify` sessions
+- **AND** each session uses its own per-session timeout budget
+- **AND** the investigation remains open across phases until it reaches a terminal result or the overall deadline expires
+
+### Requirement: Investigation Timeout Watchdog
+QA SHALL enforce both per-session timeouts and an overall investigation hard limit.
+
+#### Scenario: Individual phase session exceeds timeout
+- **WHEN** an investigation phase session runs longer than its configured session timeout
+- **THEN** that phase session is cancelled
+- **AND** QA records the phase timeout in investigation tracking
+- **AND** the overall investigation remains governed by its remaining deadline budget
+
+#### Scenario: Overall investigation deadline exceeded
+- **WHEN** the total investigation runtime exceeds the configured hard limit (default: 60 minutes)
+- **THEN** the investigation transitions to `timeout`
+- **AND** any active phase session is cancelled
 - **AND** the worktree is cleaned up
 
 ### Requirement: Investigation Outcome Recording
