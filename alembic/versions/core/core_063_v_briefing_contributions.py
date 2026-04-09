@@ -44,12 +44,38 @@ _SPECIALIST_SCHEMAS: tuple[str, ...] = (
 _GENERAL_ROLE = "butler_general_rw"
 
 
+def _ensure_role_exists(role_name: str) -> None:
+    """Create role if it doesn't exist (best-effort, matches core_001 pattern)."""
+    op.execute(f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role_name}') THEN
+                EXECUTE 'CREATE ROLE {role_name} LOGIN';
+            END IF;
+        EXCEPTION
+            WHEN insufficient_privilege THEN
+                NULL;
+        END
+        $$;
+    """)
+
+
 def upgrade() -> None:
+    # -- Step 0: Ensure the general role exists (may be missing on dev) --------
+    _ensure_role_exists(_GENERAL_ROLE)
+
     # -- Step 1: Grant SELECT on each specialist schema's state table ---------
     for schema in _SPECIALIST_SCHEMAS:
-        op.execute(
-            f"GRANT SELECT ON {schema}.state TO {_GENERAL_ROLE}"  # noqa: S608
-        )
+        op.execute(f"""
+            DO $$
+            BEGIN
+                EXECUTE 'GRANT SELECT ON {schema}.state TO {_GENERAL_ROLE}';
+            EXCEPTION
+                WHEN undefined_object THEN
+                    NULL;
+            END
+            $$;
+        """)
 
     # -- Step 2: Create the cross-schema view ---------------------------------
     union_terms = "\n    UNION ALL\n    ".join(
@@ -70,6 +96,13 @@ def downgrade() -> None:
 
     # -- Step 2: Revoke cross-schema grants -----------------------------------
     for schema in _SPECIALIST_SCHEMAS:
-        op.execute(
-            f"REVOKE SELECT ON {schema}.state FROM {_GENERAL_ROLE}"  # noqa: S608
-        )
+        op.execute(f"""
+            DO $$
+            BEGIN
+                EXECUTE 'REVOKE SELECT ON {schema}.state FROM {_GENERAL_ROLE}';
+            EXCEPTION
+                WHEN undefined_object THEN
+                    NULL;
+            END
+            $$;
+        """)
