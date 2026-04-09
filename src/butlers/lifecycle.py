@@ -2,7 +2,7 @@
 
 Extracted from daemon.py to reduce its size.  The two entry points are:
 
-* :func:`run_startup` — full startup sequence (see the :func:`run_startup` docstring for the ordered step breakdown)
+* :func:`run_startup` — full startup sequence (see :func:`run_startup` for the step breakdown)
 * :func:`run_shutdown` — graceful shutdown sequence
 
 Both functions accept a :class:`~butlers.daemon.ButlerDaemon` instance typed as
