@@ -219,7 +219,7 @@ async def test_dispatch_healing_gate_rejections(tmp_path: Path) -> None:
         )
     assert r5.accepted is False and r5.reason == "cooldown"
 
-    # no model available
+    # no model available — gate 10 rejects via delete+event, NOT update_attempt_status
     with (
         patch(
             "butlers.core.healing.dispatch.session_set_healing_fingerprint", new_callable=AsyncMock
@@ -248,10 +248,14 @@ async def test_dispatch_healing_gate_rejections(tmp_path: Path) -> None:
             "butlers.core.healing.dispatch.resolve_model", new_callable=AsyncMock, return_value=None
         ),
         patch(
-            "butlers.core.healing.dispatch.update_attempt_status",
+            "butlers.core.healing.dispatch.delete_orphaned_attempt",
             new_callable=AsyncMock,
             return_value=True,
-        ),
+        ) as mock_delete,
+        patch(
+            "butlers.core.healing.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
     ):
         r6 = await dispatch_healing(
             pool=_make_pool_all_pass(),
@@ -263,6 +267,9 @@ async def test_dispatch_healing_gate_rejections(tmp_path: Path) -> None:
             spawner=MagicMock(),
         )
     assert r6.accepted is False and r6.reason == "no_model"
+    mock_delete.assert_awaited_once()
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "no_model"
 
 
 @pytest.mark.unit
@@ -407,3 +414,211 @@ async def test_healing_session_passes_timeout_override():
     mock_spawner.trigger.assert_awaited_once()
     call_kwargs = mock_spawner.trigger.call_args.kwargs
     assert call_kwargs["timeout_override"] == 25 * 60
+
+
+# ---------------------------------------------------------------------------
+# Admission-control accounting: gate rejections use dispatch events, not
+# failed healing_attempts rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_dispatch_healing_cooldown_uses_delete_and_event(tmp_path: Path) -> None:
+    """Cooldown gate: attempt row deleted, dispatch event recorded, no update_attempt_status."""
+    attempt_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.healing.dispatch.session_set_healing_fingerprint", new_callable=AsyncMock
+        ),
+        patch(
+            "butlers.core.healing.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch(
+            "butlers.core.healing.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value={"status": "failed"},  # cooldown active
+        ),
+        patch(
+            "butlers.core.healing.dispatch.delete_orphaned_attempt",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_delete,
+        patch(
+            "butlers.core.healing.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
+        patch(
+            "butlers.core.healing.dispatch.update_attempt_status",
+            new_callable=AsyncMock,
+        ) as mock_update,
+    ):
+        result = await dispatch_healing(
+            pool=_make_pool_all_pass(),
+            butler_name="email",
+            session_id=uuid.uuid4(),
+            fingerprint_input=_make_fp(),
+            config=_make_config(),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+
+    assert result.accepted is False and result.reason == "cooldown"
+    # Must delete the orphaned row (not mark it failed)
+    mock_delete.assert_awaited_once()
+    # The second positional arg to delete_orphaned_attempt must be the attempt_id
+    assert mock_delete.call_args[0][1] == attempt_id
+    # Must record a dispatch event
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "cooldown"
+    # Must NOT call update_attempt_status for this rejection
+    mock_update.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_dispatch_healing_concurrency_cap_uses_delete_and_event(tmp_path: Path) -> None:
+    """Concurrency cap gate: attempt row deleted, dispatch event recorded."""
+    attempt_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.healing.dispatch.session_set_healing_fingerprint", new_callable=AsyncMock
+        ),
+        patch(
+            "butlers.core.healing.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch(
+            "butlers.core.healing.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.core.healing.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=10,  # way above max_concurrent=2
+        ),
+        patch(
+            "butlers.core.healing.dispatch.delete_orphaned_attempt",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_delete,
+        patch(
+            "butlers.core.healing.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
+        patch(
+            "butlers.core.healing.dispatch.update_attempt_status",
+            new_callable=AsyncMock,
+        ) as mock_update,
+    ):
+        result = await dispatch_healing(
+            pool=_make_pool_all_pass(),
+            butler_name="email",
+            session_id=uuid.uuid4(),
+            fingerprint_input=_make_fp(),
+            config=_make_config(),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+
+    assert result.accepted is False and result.reason == "concurrency_cap"
+    mock_delete.assert_awaited_once()
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "concurrency_cap"
+    mock_update.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_dispatch_healing_circuit_breaker_uses_delete_and_event(tmp_path: Path) -> None:
+    """Circuit breaker gate: attempt row deleted, dispatch event recorded."""
+    attempt_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.healing.dispatch.session_set_healing_fingerprint", new_callable=AsyncMock
+        ),
+        patch(
+            "butlers.core.healing.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch(
+            "butlers.core.healing.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.core.healing.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "butlers.core.healing.dispatch.get_recent_terminal_statuses",
+            new_callable=AsyncMock,
+            return_value=["failed", "failed", "failed", "failed", "failed"],
+        ),
+        patch(
+            "butlers.core.healing.dispatch.delete_orphaned_attempt",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_delete,
+        patch(
+            "butlers.core.healing.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
+        patch(
+            "butlers.core.healing.dispatch.update_attempt_status",
+            new_callable=AsyncMock,
+        ) as mock_update,
+    ):
+        result = await dispatch_healing(
+            pool=_make_pool_all_pass(),
+            butler_name="email",
+            session_id=uuid.uuid4(),
+            fingerprint_input=_make_fp(),
+            config=_make_config(circuit_breaker_threshold=5),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+
+    assert result.accepted is False and result.reason == "circuit_breaker"
+    mock_delete.assert_awaited_once()
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "circuit_breaker"
+    mock_update.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_dispatch_healing_novelty_join_emits_event(tmp_path: Path) -> None:
+    """Already-investigating (novelty join) emits a dispatch event, no attempt created."""
+    existing_attempt_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.healing.dispatch.session_set_healing_fingerprint", new_callable=AsyncMock
+        ),
+        patch(
+            "butlers.core.healing.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(existing_attempt_id, False),  # is_new=False → join
+        ),
+        patch(
+            "butlers.core.healing.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
+    ):
+        result = await dispatch_healing(
+            pool=_make_pool_all_pass(),
+            butler_name="email",
+            session_id=uuid.uuid4(),
+            fingerprint_input=_make_fp(),
+            config=_make_config(),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+
+    assert result.accepted is False and result.reason == "already_investigating"
+    assert result.attempt_id == existing_attempt_id
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "novelty_join"
+    assert mock_event.call_args.kwargs.get("attempt_id") == existing_attempt_id

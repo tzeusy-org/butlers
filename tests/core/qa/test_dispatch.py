@@ -876,3 +876,183 @@ async def test_review_followup_session_passes_timeout_override():
     mock_spawner.trigger.assert_awaited_once()
     call_kwargs = mock_spawner.trigger.call_args.kwargs
     assert call_kwargs["timeout_override"] == 20 * 60
+
+
+# ---------------------------------------------------------------------------
+# QA admission-control accounting: gate rejections use dispatch events and
+# dedup_reason writeback, not failed healing_attempts rows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_dispatch_cooldown_uses_delete_event_and_dedup_reason():
+    """Cooldown gate: orphaned attempt deleted, dispatch event recorded, dedup_reason written."""
+    attempt_id = uuid.uuid4()
+    finding_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value={"status": "failed"},  # cooldown active
+        ),
+        patch(
+            "butlers.core.qa.dispatch.delete_orphaned_attempt",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_delete,
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dedup_reason",
+            new_callable=AsyncMock,
+        ) as mock_dedup,
+        patch(
+            "butlers.core.qa.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status",
+            new_callable=AsyncMock,
+        ) as mock_update,
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=TriagedFinding(
+                finding=_make_finding(severity=1),
+                dedup_reason=None,
+                finding_id=finding_id,
+            ),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    assert result.accepted is False and result.reason == "cooldown"
+    # Orphaned row deleted, not failed
+    mock_delete.assert_awaited_once()
+    # Dispatch event recorded with correct decision
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "cooldown"
+    # Authoritative dedup_reason written back to the finding
+    mock_dedup.assert_awaited_once()
+    assert mock_dedup.call_args[0][2] == "cooldown"
+    # update_attempt_status NOT called (no failed row created)
+    mock_update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_qa_dispatch_concurrency_cap_uses_delete_event_and_dedup_reason():
+    """Concurrency cap gate: orphaned attempt deleted, dispatch event recorded, dedup_reason set."""
+    attempt_id = uuid.uuid4()
+    finding_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=10,  # way above max_concurrent=2
+        ),
+        patch(
+            "butlers.core.qa.dispatch.delete_orphaned_attempt",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_delete,
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dedup_reason",
+            new_callable=AsyncMock,
+        ) as mock_dedup,
+        patch(
+            "butlers.core.qa.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status",
+            new_callable=AsyncMock,
+        ) as mock_update,
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=TriagedFinding(
+                finding=_make_finding(severity=1),
+                dedup_reason=None,
+                finding_id=finding_id,
+            ),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    assert result.accepted is False and result.reason == "concurrency_cap"
+    mock_delete.assert_awaited_once()
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "concurrency_cap"
+    mock_dedup.assert_awaited_once()
+    assert mock_dedup.call_args[0][2] == "concurrency_cap"
+    mock_update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_qa_dispatch_already_investigating_emits_event_and_dedup_reason():
+    """Already-investigating (novelty join): dispatch event + dedup_reason + attempt link."""
+    existing_attempt_id = uuid.uuid4()
+    finding_id = uuid.uuid4()
+    with (
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(existing_attempt_id, False),  # is_new=False → join
+        ),
+        patch(
+            "butlers.core.qa.dispatch.update_finding_attempt",
+            new_callable=AsyncMock,
+        ) as mock_link,
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dedup_reason",
+            new_callable=AsyncMock,
+        ) as mock_dedup,
+        patch(
+            "butlers.core.qa.dispatch.create_dispatch_event",
+            new_callable=AsyncMock,
+        ) as mock_event,
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=TriagedFinding(
+                finding=_make_finding(severity=1),
+                dedup_reason=None,
+                finding_id=finding_id,
+            ),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    assert result.accepted is False and result.reason == "already_investigating"
+    assert result.attempt_id == existing_attempt_id
+    # Finding must be linked to the existing active attempt
+    mock_link.assert_awaited_once()
+    assert mock_link.call_args[0][2] == existing_attempt_id
+    mock_dedup.assert_awaited_once()
+    assert mock_dedup.call_args[0][2] == "already_investigating"
+    mock_event.assert_awaited_once()
+    assert mock_event.call_args.kwargs.get("decision") == "novelty_join"
