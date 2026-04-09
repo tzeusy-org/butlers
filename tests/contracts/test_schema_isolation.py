@@ -106,6 +106,42 @@ class TestDatabaseClassContracts:
         for method in ["provision", "connect", "close"]:
             assert hasattr(Database, method), f"Database must have {method} method"
 
+    def test_database_accepts_role_parameter(self):
+        """Database __init__ accepts role and stores it on the instance."""
+        import inspect
+
+        from butlers.db import Database
+
+        assert "role" in inspect.signature(Database.__init__).parameters, (
+            "Database.__init__ must declare an explicit 'role' parameter"
+        )
+        db = Database("test", role="butler_test_rw")
+        assert db.role == "butler_test_rw", (
+            "Database must store role on the instance when passed to __init__"
+        )
+
+    def test_database_role_none_by_default(self):
+        """Database role defaults to None when not supplied."""
+        from butlers.db import Database
+
+        db = Database("test")
+        assert db.role is None, "Database.role must be None when not specified"
+
+    def test_database_setup_connection_method_exists(self):
+        """Database instances expose _setup_connection as an asyncpg setup callback."""
+        import inspect
+
+        from butlers.db import Database
+
+        db = Database("test")
+        assert hasattr(db, "_setup_connection"), (
+            "Database must have _setup_connection method for asyncpg pool setup callback"
+        )
+        assert callable(db._setup_connection), "_setup_connection must be callable"
+        assert inspect.iscoroutinefunction(db._setup_connection), (
+            "_setup_connection must be an async callable for use as asyncpg pool setup callback"
+        )
+
     def test_credential_store_is_schema_local(self):
         """RFC 0006: CredentialStore is schema-local via the pool's search_path.
 
