@@ -109,20 +109,26 @@ class TestDatabaseClassContracts:
     def test_credential_store_is_schema_local(self):
         """RFC 0006: CredentialStore is schema-local via the pool's search_path.
 
-        Behavioral assertion: CredentialStore takes only a pool (not a schema
-        param), meaning it inherits schema context from the pool's search_path.
-        The pool is created with the butler's schema in search_path, so
-        CredentialStore is always schema-scoped to its butler.
+        Behavioral assertion: CredentialStore accepts a pool (and optionally
+        fallback_pools) but NO explicit schema parameter. Schema context is
+        inherited from the pool's search_path, which is constructed with the
+        butler's schema at startup. CredentialStore is therefore always
+        schema-scoped to its butler without needing a schema argument.
 
         Additionally, the internal table name must NOT include a schema prefix
         (no 'public.' or 'butler.' prefix) — it relies on search_path resolution.
         """
         from butlers.credential_store import _TABLE, CredentialStore
 
-        # CredentialStore takes pool (inherits search_path from pool, not schema directly)
+        # CredentialStore accepts pool (and optionally fallback_pools),
+        # but NOT an explicit schema parameter
         sig = inspect.signature(CredentialStore.__init__)
         params = list(sig.parameters.keys())
         assert "pool" in params, "CredentialStore must accept a pool (RFC 0006)"
+        assert "schema" not in params, (
+            "CredentialStore must not accept an explicit schema param — "
+            "schema context comes from pool search_path (RFC 0006)"
+        )
 
         # The internal table name must be unqualified — schema isolation comes
         # from the pool's search_path, not a hardcoded schema prefix

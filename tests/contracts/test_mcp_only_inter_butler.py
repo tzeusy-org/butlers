@@ -95,16 +95,14 @@ class TestMcpOnlyInterButler:
         assert db.schema == "finance", (
             "Database.set_schema must be generic — any schema name accepted (Vision Rule 3)"
         )
-        # Butler-specific schemas are NOT baked into the Database class
-        for butler_schema in ["health", "finance", "relationship", "travel"]:
-            sig = inspect.signature(db.set_schema)
-            params = list(sig.parameters.keys())
-            # set_schema takes a 'schema' param (generic), not butler-named params
-            assert "schema" in params or len(params) == 1, (
-                "Database.set_schema must accept a generic schema param, "
-                "not butler-specific names (Vision Rule 3)"
-            )
-            break  # Only need to check once
+        # set_schema must take exactly one generic 'schema' parameter —
+        # not butler-specific named parameters
+        sig = inspect.signature(db.set_schema)
+        params = list(sig.parameters.keys())
+        assert params == ["schema"], (
+            "Database.set_schema must accept exactly one generic 'schema' param, "
+            "not butler-specific names (Vision Rule 3)"
+        )
 
     def test_core_notify_tool_routes_through_switchboard(self):
         """RFC 0002 + Vision Rule 3: notify() routes via Switchboard, not direct calls.
@@ -337,27 +335,53 @@ class TestMcpOnlyInterButler:
         assert "SELECT" == view_sql_fragment  # View is read-only by construction
 
     def test_no_direct_butler_to_butler_function_calls_in_registry(self):
-        """Vision Rule 3: ModuleRegistry instantiates modules without cross-butler wiring.
+        """Vision Rule 3: ModuleRegistry is generic — it has no hard-coded butler names.
 
-        Behavioral assertion: ModuleRegistry.load_from_config() produces module
-        instances where each module only has its own name — no module receives
-        another module's instance or resources. The registry does not hold
-        references to butler-specific names like 'health' or 'finance'.
+        Behavioral assertion: ModuleRegistry accepts any module, including
+        synthetic ones with arbitrary names. The registry does not filter,
+        reject, or special-case module names — it is a generic container.
+        This confirms no butler-specific cross-wiring is baked into the class.
         """
+        from butlers.modules.base import Module
         from butlers.modules.registry import ModuleRegistry
 
-        registry = ModuleRegistry()
+        # Build a minimal synthetic module with an arbitrary name
+        class _SyntheticModule(Module):
+            @property
+            def name(self) -> str:
+                return "test_synthetic_module_xyzzy"
 
-        # The registry available_modules list contains generic module names,
-        # not butler-specific names like 'health' or 'finance'
-        available = registry.available_modules
-        # A fresh registry has no modules registered
-        assert "health" not in available, (
-            "ModuleRegistry must not pre-register a 'health' butler-specific module (Vision Rule 3)"
+            @property
+            def config_schema(self):
+                return None
+
+            @property
+            def dependencies(self) -> list[str]:
+                return []
+
+            def migration_revisions(self) -> str | None:
+                return None
+
+            async def register_tools(self, mcp, config, db) -> None:
+                pass
+
+            async def on_startup(self, config, db) -> None:
+                pass
+
+            async def on_shutdown(self) -> None:
+                pass
+
+        registry = ModuleRegistry()
+        registry.register(_SyntheticModule)
+        assert "test_synthetic_module_xyzzy" in registry.available_modules, (
+            "ModuleRegistry must accept any module name — it is a generic container (Vision Rule 3)"
         )
-        assert "finance" not in available, (
-            "ModuleRegistry must not pre-register a 'finance' butler-specific module "
-            "(Vision Rule 3)"
+
+        # The registry has no hard-coded module filtering by butler name
+        # (i.e. it does not reject or prefer modules based on name patterns)
+        assert "health" not in registry.available_modules, (
+            "A freshly created ModuleRegistry must not pre-wire butler-specific modules"
+            " (Vision Rule 3)"
         )
 
     def test_switchboard_heartbeat_is_separate_from_inter_butler_data_flow(self):

@@ -50,22 +50,28 @@ class TestConnectorAsTransport:
         or Discord websocket handling. If a butler knows how a message arrived,
         something is wrong.'
 
-        Behavioral assertion: the GmailConnector class does not expose any
+        Behavioral assertion: the GmailConnectorRuntime class does not expose any
         domain-specific methods or attributes (health_check, medication, etc.)
-        at the instance level.
+        at the instance or class level. We scan all attribute names for forbidden
+        domain substrings to catch any variant (e.g. relationship_helper).
         """
         try:
-            from butlers.connectors.gmail import GmailConnector
+            from butlers.connectors.gmail import GmailConnectorRuntime
 
-            connector = GmailConnector.__new__(GmailConnector)
             # Connector must not expose butler-domain methods at the instance level.
-            butler_domain_attrs = [
+            # Use substring matching to catch all variants of a term (e.g. relationship_helper).
+            butler_domain_terms = [
                 "health_check",
                 "medication",
                 "finance_alert",
                 "relationship_",
             ]
-            exposed = [a for a in butler_domain_attrs if hasattr(connector, a)]
+            all_attrs = dir(GmailConnectorRuntime)
+            exposed = [
+                attr
+                for attr in all_attrs
+                if any(term in attr for term in butler_domain_terms)
+            ]
             assert exposed == [], (
                 f"Gmail connector must not expose butler domain attributes: {exposed} (Rule 7)"
             )
@@ -126,20 +132,20 @@ class TestConnectorAsTransport:
             "Connectors must submit to Switchboard via SWITCHBOARD_MCP_URL (Rule 7)"
         )
 
-    def test_butler_email_module_does_not_import_connector_modules(self):
-        """vision.md Rule 7: Butler email module must not import connector-specific modules.
+    def test_butler_email_module_does_not_hold_connector_dependencies(self):
+        """vision.md Rule 7: Butler email module must not receive connector instances.
 
         'A butler must never contain Telegram polling logic, Gmail API calls.'
 
-        Behavioral assertion: EmailModule instances do not expose any connector
-        package attributes at the instance level — connectors are not injected
-        as dependencies.
+        Behavioral assertion: EmailModule instances do not hold any connector
+        instance as an attribute — connectors are not injected as dependencies
+        into modules. Note: this checks runtime injection, not import statements.
         """
         try:
             from butlers.modules.email import EmailModule
 
             email = EmailModule()
-            # The email module must not have connector-related attributes
+            # The email module must not carry connector-related instance attributes
             assert not hasattr(email, "connector"), (
                 "EmailModule must not hold a reference to a connector instance (Rule 7)"
             )
