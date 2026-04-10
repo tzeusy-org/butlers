@@ -21,6 +21,7 @@ openspec/changes/qa-staffer/tasks.md (6.5–6.8)
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -39,6 +40,8 @@ from butlers.core.qa.dispatch import (
     check_open_pr_statuses,
     dispatch_novel_findings,
 )
+from butlers.core.qa.findings import get_dispatch_queued_findings
+from butlers.core.qa.models import QaFinding
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
@@ -993,6 +996,33 @@ class QaModule(Module):
             if _HAS_OTEL and _patrol_span is not None:
                 _patrol_span.set_attribute("qa.sources_polled", len(sources_polled))
 
+            # Phase 1b: Inject queued findings from previous patrol cycles.
+            # Findings skipped due to concurrency pressure in a prior patrol are
+            # stored with dispatch_queued=TRUE.  Load them now, clear the flag
+            # atomically, and reconstitute them as QaFinding objects so that
+            # triage applies fresh novelty/cooldown/dismissal checks before any
+            # dispatch attempt.  A bounded limit prevents a large backlog from
+            # overwhelming one patrol cycle.
+            try:
+                queued_rows = await get_dispatch_queued_findings(pool)
+                if queued_rows:
+                    logger.info(
+                        "QaModule patrol %s: loading %d queued finding(s) from previous cycles",
+                        patrol_id,
+                        len(queued_rows),
+                    )
+                    queued_findings = [_qa_finding_from_row(row) for row in queued_rows]
+                    # Prepend so queued findings are processed before new discoveries
+                    # (they have already been waiting at least one cycle).
+                    all_findings = queued_findings + all_findings
+            except Exception as _q_exc:
+                logger.warning(
+                    "QaModule patrol %s: failed to load queued findings (non-fatal): %s",
+                    patrol_id,
+                    _q_exc,
+                    exc_info=True,
+                )
+
             # Phase 2: Triage
             _triage_span = None
             _triage_span_token = None
@@ -1594,3 +1624,66 @@ class QaModule(Module):
     def managed_clone(self) -> ManagedRepoClone | None:
         """Return the managed repo clone instance, if initialized."""
         return self._managed_clone
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _qa_finding_from_row(row: dict) -> QaFinding:
+    """Reconstitute a QaFinding from a qa_findings DB row dict.
+
+    Used to rebuild QaFinding objects from rows loaded via
+    :func:`get_dispatch_queued_findings` so that queued findings can be
+    injected back into the triage batch in a subsequent patrol cycle.
+
+    Parameters
+    ----------
+    row:
+        A ``qa_findings`` row dict (as returned by asyncpg ``fetch`` + ``dict()``).
+
+    Returns
+    -------
+    QaFinding
+        Reconstituted finding.  The ``timestamp`` field is set to ``last_seen``
+        since the original value is not stored separately.
+    """
+    structured_evidence: dict | None = None
+    if row.get("structured_evidence") is not None:
+        raw = row["structured_evidence"]
+        if isinstance(raw, dict):
+            structured_evidence = raw
+        elif isinstance(raw, str):
+            try:
+                structured_evidence = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning(
+                    "_qa_finding_from_row: structured_evidence is a non-JSON string for "
+                    "fingerprint=%s; discarding",
+                    row.get("fingerprint"),
+                )
+        # else: unexpected type — leave as None
+
+    last_seen = row.get("last_seen")
+    if last_seen is None:
+        logger.warning(
+            "_qa_finding_from_row: last_seen is None for fingerprint=%s; timestamp will be None",
+            row.get("fingerprint"),
+        )
+
+    return QaFinding(
+        fingerprint=row["fingerprint"],
+        source_type=row["source_type"],
+        source_butler=row["source_butler"],
+        severity=row["severity"],
+        exception_type=row["exception_type"],
+        event_summary=row["event_summary"],
+        call_site=row["call_site"],
+        occurrence_count=row["occurrence_count"],
+        first_seen=row["first_seen"],
+        last_seen=last_seen,
+        timestamp=last_seen,
+        source_session_trigger_source=row.get("source_session_trigger_source"),
+        structured_evidence=structured_evidence,
+    )
