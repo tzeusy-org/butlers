@@ -18,10 +18,9 @@ sensitive payloads:
   ``source``: always ``"session_records"``.
   ``status``: the session failure status (``"error"`` | ``"timeout"`` | ``"crash"``).
 
-Investigation agents reference this evidence via a persisted artifact pointer
-rather than having it embedded directly in the investigation prompt.  The prompt
-builder emits a ``## Structured Evidence`` section pointing agents at the
-available identifiers.
+The prompt builder emits a ``## Structured Evidence`` section rendering the
+identifiers inline for the investigation agent (Phase 1).  Out-of-band artifact
+persistence for large evidence bundles is deferred to Phase 2.
 
 Spec reference
 --------------
@@ -155,6 +154,8 @@ class SessionRecordsSource:
 
         # fingerprint -> aggregation state
         aggregated: dict[str, _SessionFindingAccumulator] = {}
+        # Track seen session IDs per fingerprint to avoid duplicates in structured evidence
+        seen_session_ids: dict[str, set[str]] = {}
 
         for row in rows:
             result = self._process_row(row, now)
@@ -176,6 +177,7 @@ class SessionRecordsSource:
                     source_session_trigger_source=finding.source_session_trigger_source,
                     status=status,
                 )
+                seen_session_ids[fp] = set()
             else:
                 acc = aggregated[fp]
                 acc.occurrence_count += 1
@@ -186,10 +188,15 @@ class SessionRecordsSource:
                     # Always take trigger_source from the most recent session row,
                     # even when it is None, so recency semantics remain consistent.
                     acc.source_session_trigger_source = finding.source_session_trigger_source
-            # Collect session IDs up to the cap for structured evidence
+            # Collect unique session IDs up to the cap for structured evidence
             acc = aggregated[fp]
-            if session_id_str and len(acc.session_ids) < _MAX_EVIDENCE_SESSION_IDS:
+            if (
+                session_id_str
+                and session_id_str not in seen_session_ids[fp]
+                and len(acc.session_ids) < _MAX_EVIDENCE_SESSION_IDS
+            ):
                 acc.session_ids.append(session_id_str)
+                seen_session_ids[fp].add(session_id_str)
 
         return [acc.to_finding(now) for acc in aggregated.values()]
 

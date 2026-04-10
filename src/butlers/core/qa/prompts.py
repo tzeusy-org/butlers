@@ -122,11 +122,10 @@ def _format_evidence_lines(evidence: dict[str, Any]) -> str:
     Renders each key-value pair as a bullet point.  Lists (e.g. ``session_ids``)
     are rendered as a comma-separated value.  ``None`` values are omitted.
 
-    This function does NOT apply ``_escape()`` — callers must wrap the result in
-    the evidence section template which is not passed through ``str.format()``
-    on user-controlled strings.  The evidence dict values come from trusted
-    internal sources (session IDs, log file names, log levels) and do not
-    contain user data.
+    This function does NOT apply ``_escape()`` — evidence dict values come from
+    trusted internal sources (session IDs, log file stems, log levels) that do
+    not contain ``{`` or ``}`` characters, so escaping is unnecessary and would
+    introduce double-braces in the rendered prompt.
     """
     lines = []
     for key, value in evidence.items():

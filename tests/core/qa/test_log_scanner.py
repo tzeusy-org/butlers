@@ -564,7 +564,7 @@ async def test_structured_evidence_populated(tmp_path):
     ev = findings[0].structured_evidence
     assert ev is not None
     assert ev["source"] == "log_scanner"
-    assert ev["log_file"] == "finance.log"
+    assert ev["log_file"] == "finance"
     assert ev["level"] == "error"
     # trigger_source absent from this log line — key should be missing or None
     assert ev.get("trigger_source") is None

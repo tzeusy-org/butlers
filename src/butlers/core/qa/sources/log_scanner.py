@@ -24,10 +24,9 @@ the raw JSON log entry without embedding sensitive payloads:
   ``trigger_source``: the ``trigger_source`` field from the log entry's JSON
                       if present; ``None`` if absent.
 
-Investigation agents reference this evidence via a persisted artifact pointer
-rather than having it embedded directly in the investigation prompt.  The prompt
-builder emits a ``## Structured Evidence`` section pointing agents at the
-available identifiers.
+The prompt builder emits a ``## Structured Evidence`` section rendering the
+identifiers inline for the investigation agent (Phase 1).  Out-of-band artifact
+persistence for large evidence bundles is deferred to Phase 2.
 
 Spec reference
 --------------
@@ -621,7 +620,7 @@ class _FindingAccumulator:
         """Build an aggregated QaFinding with structured evidence."""
         structured_evidence: dict = {
             "source": "log_scanner",
-            "log_file": self.source_file,
+            "log_file": Path(self.source_file).stem,
             "level": self.log_level,
         }
         if self.trigger_source is not None:
