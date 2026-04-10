@@ -45,7 +45,11 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
-from butlers.core.qa.sources.log_scanner import LogScannerSource
+from butlers.core.qa.sources.log_scanner import (
+    DEFAULT_MAX_SCAN_SECONDS,
+    DEFAULT_MAX_TOTAL_LINES,
+    LogScannerSource,
+)
 from butlers.core.qa.sources.session_records import SessionRecordsSource
 from butlers.core.qa.triage import triage_findings
 from butlers.modules.base import Module, ToolMeta
@@ -257,6 +261,11 @@ class QaConfig(BaseModel):
         scan.  Default 100.
     dashboard_base_url:
         Optional URL for inclusion in investigation prompts.
+    log_scanner_max_total_lines:
+        Hard cap on total lines parsed (including benign lines) per log scanner
+        ``discover()`` call.  Default 200_000.
+    log_scanner_max_scan_seconds:
+        Wall-clock cap in seconds per log scanner ``discover()`` call.  Default 30.
     """
 
     enabled: bool = True
@@ -273,6 +282,8 @@ class QaConfig(BaseModel):
     log_scanner_max_entries: int = 10_000
     log_scanner_max_findings: int = 100
     dashboard_base_url: str | None = None
+    log_scanner_max_total_lines: int = DEFAULT_MAX_TOTAL_LINES
+    log_scanner_max_scan_seconds: float = DEFAULT_MAX_SCAN_SECONDS
     model_config = ConfigDict(extra="forbid")
 
     @field_validator("patrol_interval_minutes", "log_lookback_minutes")
@@ -502,6 +513,8 @@ class QaModule(Module):
                 repo_root=self._repo_root,
                 max_entries_per_scan=self._config.log_scanner_max_entries,
                 max_findings_per_scan=self._config.log_scanner_max_findings,
+                max_total_lines=self._config.log_scanner_max_total_lines,
+                max_scan_seconds=self._config.log_scanner_max_scan_seconds,
             )
             self._sources.append(self._log_scanner_source)
             logger.info("QaModule: registered log_scanner source")

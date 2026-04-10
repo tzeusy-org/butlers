@@ -11,6 +11,7 @@ Covers:
 - Fingerprint stability and compute_fingerprint_from_log_entry compatibility
 - Finding aggregation: occurrence_count, first_seen, last_seen
 - Performance caps: max_entries_per_scan, max_findings_per_scan emit WARNING
+- New caps: max_total_lines, max_scan_seconds — partial results + telemetry
 """
 
 from __future__ import annotations
@@ -327,7 +328,7 @@ async def test_benign_volume_does_not_starve_errors(tmp_path):
     assert len(findings) == 1
     assert "connector failure" in findings[0].event_summary.lower()
     # No truncation: only 1 candidate entry (the error), well under budget of 5.
-    assert not source.last_truncated
+    assert source.last_truncated is None
 
 
 @pytest.mark.asyncio
@@ -387,6 +388,37 @@ async def test_later_file_not_starved(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_max_total_lines_cap(tmp_path, caplog):
+    """max_total_lines cap returns partial results, emits WARNING, and sets truncation telemetry."""
+    now = datetime.now(UTC)
+    # Write 20 lines: mix of INFO (benign) and ERROR lines, all recent
+    lines = []
+    for i in range(20):
+        level = "error" if i % 5 == 0 else "info"
+        lines.append(_line(level=level, event=f"Event {i}", ts=now, exception=f"Err{i}"))
+    _write(tmp_path / "butlers" / "noisy.log", lines)
+
+    source = LogScannerSource(log_root=tmp_path, max_total_lines=5)
+    assert source.last_truncated is None
+    assert source.last_truncated_reason is None
+
+    with caplog.at_level(logging.WARNING):
+        findings = await source.discover(lookback_minutes=15)
+
+    # Should have returned gracefully with partial results
+    assert isinstance(findings, list)
+    # Cap was hit — truncation telemetry updated
+    assert source.last_truncated is not None
+    assert source.last_truncated_reason == "max_total_lines"
+    # WARNING log emitted
+    assert any(
+        "total-lines" in r.message.lower() or "max_total_lines" in r.message.lower()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
+
+
+@pytest.mark.asyncio
 async def test_truncation_telemetry(tmp_path):
     """last_truncated and last_truncated_reason reflect cap-hit state after discover()."""
     now = datetime.now(UTC)
@@ -398,7 +430,7 @@ async def test_truncation_telemetry(tmp_path):
         [_line(ts=now)],
     )
     await source_clean.discover(lookback_minutes=15)
-    assert not source_clean.last_truncated
+    assert source_clean.last_truncated is None
     assert source_clean.last_truncated_reason is None
 
     # Entry cap hit
@@ -409,11 +441,110 @@ async def test_truncation_telemetry(tmp_path):
     _write(tmp_path / "butlers" / "busy.log", lines)
     source_entry_cap = LogScannerSource(log_root=tmp_path, max_entries_per_scan=3)
     await source_entry_cap.discover(lookback_minutes=15)
-    assert source_entry_cap.last_truncated
-    assert source_entry_cap.last_truncated_reason in ("entries", "entries_and_findings")
+    assert source_entry_cap.last_truncated is not None
+    assert source_entry_cap.last_truncated_reason == "max_entries_per_scan"
 
     # Finding cap hit
     source_finding_cap = LogScannerSource(log_root=tmp_path, max_findings_per_scan=2)
     await source_finding_cap.discover(lookback_minutes=15)
-    assert source_finding_cap.last_truncated
-    assert source_finding_cap.last_truncated_reason in ("findings", "entries_and_findings")
+    assert source_finding_cap.last_truncated is not None
+    assert source_finding_cap.last_truncated_reason == "max_findings_per_scan"
+
+
+@pytest.mark.asyncio
+async def test_max_scan_seconds_cap(tmp_path, caplog):
+    """max_scan_seconds wall-clock cap returns partial results and sets truncation telemetry."""
+    now = datetime.now(UTC)
+    # Write enough error lines that the scanner would normally process them all
+    lines = [
+        _line(event=f"Error {i}", exception=f"Err{i}", ts=now, logger_name=f"mod.sub{i}")
+        for i in range(20)
+    ]
+    _write(tmp_path / "butlers" / "finance.log", lines)
+
+    # Patch time.monotonic so the cap fires on the first line
+    call_count = 0
+    original_monotonic = __import__("time").monotonic
+    start_time = original_monotonic()
+
+    def _fast_clock():
+        nonlocal call_count
+        call_count += 1
+        # First call returns start_time; subsequent calls return start_time + 60s
+        # so the cap fires as soon as the loop checks it after the first line
+        if call_count == 1:
+            return start_time
+        return start_time + 60.0
+
+    source = LogScannerSource(log_root=tmp_path, max_scan_seconds=30.0)
+    assert source.last_truncated is None
+
+    with patch("butlers.core.qa.sources.log_scanner.time.monotonic", side_effect=_fast_clock):
+        with caplog.at_level(logging.WARNING):
+            findings = await source.discover(lookback_minutes=15)
+
+    assert isinstance(findings, list)
+    assert source.last_truncated is not None
+    assert source.last_truncated_reason == "max_scan_seconds"
+    assert any(
+        "wall-clock" in r.message.lower() or "max_scan_seconds" in r.message.lower()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
+
+
+@pytest.mark.asyncio
+async def test_max_total_lines_does_not_break_candidate_budget(tmp_path):
+    """max_total_lines cap is independent of max_entries_per_scan (candidate budget).
+
+    A large benign log should not starve the candidate budget when max_total_lines
+    fires first.  If max_total_lines is generous, the candidate budget still applies.
+    """
+    now = datetime.now(UTC)
+    # 5 error lines mixed with 5 info lines (10 total)
+    lines = []
+    for i in range(5):
+        lines.append(_line(level="info", event=f"Info {i}", ts=now))
+        lines.append(
+            _line(
+                level="error",
+                event=f"DB down {i}",
+                exception="ConnErr",
+                ts=now,
+                logger_name=f"mod{i}",
+            )
+        )
+    _write(tmp_path / "butlers" / "mixed.log", lines)
+
+    # Generous total-lines cap: does not interfere; candidate budget applies
+    source = LogScannerSource(
+        log_root=tmp_path,
+        max_total_lines=1_000,
+        max_entries_per_scan=3,
+    )
+    findings = await source.discover(lookback_minutes=15)
+    # candidate entries cap fired — partial results with ≤3 unique findings
+    assert len(findings) <= 3
+    assert source.last_truncated_reason == "max_entries_per_scan"
+
+
+@pytest.mark.asyncio
+async def test_truncation_telemetry_updated_across_scans(tmp_path):
+    """last_truncated is updated on each scan that hits the cap."""
+    now = datetime.now(UTC)
+    lines = [
+        _line(event=f"E{i}", exception=f"Er{i}", ts=now, logger_name=f"m{i}") for i in range(10)
+    ]
+    _write(tmp_path / "butlers" / "f.log", lines)
+
+    source = LogScannerSource(log_root=tmp_path, max_total_lines=3)
+    await source.discover(lookback_minutes=15)
+    first_truncated = source.last_truncated
+
+    assert first_truncated is not None
+    assert source.last_truncated_reason == "max_total_lines"
+
+    # Run again — telemetry should be refreshed (not stale from first scan)
+    await source.discover(lookback_minutes=15)
+    assert source.last_truncated is not None
+    assert source.last_truncated_reason == "max_total_lines"

@@ -25,6 +25,7 @@ import logging
 import os
 import random
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -49,6 +50,13 @@ DEFAULT_MAX_ENTRIES_PER_SCAN = 10_000
 
 #: Default maximum number of unique findings per scan.
 DEFAULT_MAX_FINDINGS_PER_SCAN = 100
+
+#: Default hard cap on total lines parsed (including benign INFO/DEBUG lines) per scan.
+#: Prevents unbounded CPU/latency under extremely noisy-but-benign log traffic.
+DEFAULT_MAX_TOTAL_LINES = 200_000
+
+#: Default wall-clock cap in seconds per ``discover()`` call.
+DEFAULT_MAX_SCAN_SECONDS = 30.0
 
 #: Maximum length of event_summary stored in QaFinding.
 _MAX_SUMMARY_LEN = 200
@@ -325,9 +333,29 @@ class LogScannerSource:
         Repository root used by the anonymizer for path normalization.
         Defaults to CWD if not provided.
     max_entries_per_scan:
-        Hard cap on log entries processed per ``discover()`` call.
+        Hard cap on candidate log entries (error/critical/qualifying-warning)
+        processed per ``discover()`` call.  Protects against starvation of
+        real errors under noisy benign traffic.
     max_findings_per_scan:
         Hard cap on unique findings produced per ``discover()`` call.
+    max_total_lines:
+        Hard cap on total lines parsed (including benign INFO/DEBUG lines) per
+        ``discover()`` call.  Bounds CPU and latency under extremely
+        noisy-but-benign log traffic.  Default ``200_000``.
+    max_scan_seconds:
+        Wall-clock cap in seconds for a single ``discover()`` call.  Scan
+        stops gracefully and returns findings collected so far.  Default 30.
+
+    Attributes
+    ----------
+    last_truncated:
+        ``datetime`` of the most recent scan that was cut short by any cap,
+        or ``None`` if no truncation has occurred.
+    last_truncated_reason:
+        Short reason string for the most recent truncation, e.g.
+        ``"max_total_lines"``, ``"max_scan_seconds"``,
+        ``"max_entries_per_scan"``, or ``"max_findings_per_scan"``.
+        ``None`` if no truncation has occurred.
     """
 
     def __init__(
@@ -336,29 +364,24 @@ class LogScannerSource:
         repo_root: Path | None = None,
         max_entries_per_scan: int = DEFAULT_MAX_ENTRIES_PER_SCAN,
         max_findings_per_scan: int = DEFAULT_MAX_FINDINGS_PER_SCAN,
+        max_total_lines: int = DEFAULT_MAX_TOTAL_LINES,
+        max_scan_seconds: float = DEFAULT_MAX_SCAN_SECONDS,
     ) -> None:
         self._log_root = log_root
         self._repo_root = (repo_root or Path.cwd()).resolve()
         self._max_entries = max_entries_per_scan
         self._max_findings = max_findings_per_scan
-        # Telemetry: set after each discover() call.
-        self._last_truncated: bool = False
-        self._last_truncated_reason: str | None = None
+        self._max_total_lines = max_total_lines
+        self._max_scan_seconds = max_scan_seconds
+
+        # Truncation telemetry — updated each time a cap is hit during discover()
+        self.last_truncated: datetime | None = None
+        self.last_truncated_reason: str | None = None
 
     @property
     def name(self) -> str:
         """Source identifier: ``"log_scanner"``."""
         return "log_scanner"
-
-    @property
-    def last_truncated(self) -> bool:
-        """True if the most recent discover() call hit an entry or finding cap."""
-        return self._last_truncated
-
-    @property
-    def last_truncated_reason(self) -> str | None:
-        """Reason string for the most recent truncation, or None."""
-        return self._last_truncated_reason
 
     async def discover(self, lookback_minutes: int) -> list[QaFinding]:
         """Scan log files and return aggregated findings.
@@ -376,18 +399,18 @@ class LogScannerSource:
         now = datetime.now(UTC)
         cutoff = now - timedelta(minutes=lookback_minutes)
         log_root = _get_log_root(self._log_root)
+        scan_start = time.monotonic()
 
         # fingerprint -> aggregation state
         aggregated: dict[str, _FindingAccumulator] = {}
 
-        # candidate_count tracks only error/warning entries that pass
-        # _should_include_entry(); benign INFO/DEBUG lines are parsed for
-        # temporal filtering but do NOT consume the entry budget.  This
-        # prevents high-volume benign traffic from starving real findings.
-        candidate_count = 0
+        total_lines_parsed = 0
+        entries_processed = 0
         malformed_count = 0
         truncated_entries = False
         truncated_findings = False
+        truncated_total_lines = False
+        truncated_time = False
 
         for subdir_name in _LOG_SUBDIRS:
             subdir = log_root / subdir_name
@@ -409,12 +432,26 @@ class LogScannerSource:
                 raw_lines = _read_file_tail(log_file, cutoff)
 
                 for line in raw_lines:
-                    if candidate_count >= self._max_entries:
+                    # Wall-clock cap — checked on every line to bound latency.
+                    if time.monotonic() - scan_start >= self._max_scan_seconds:
+                        truncated_time = True
+                        break
+
+                    # Total-lines cap — counts every parsed line regardless of level.
+                    if total_lines_parsed >= self._max_total_lines:
+                        truncated_total_lines = True
+                        break
+
+                    # Candidate-entries cap — counts only temporally-valid entries.
+                    if entries_processed >= self._max_entries:
                         truncated_entries = True
                         break
+
                     if len(aggregated) >= self._max_findings:
                         truncated_findings = True
                         break
+
+                    total_lines_parsed += 1
 
                     entry = _parse_log_line(line, butler_name)
                     if entry is None:
@@ -430,7 +467,7 @@ class LogScannerSource:
                     if not _should_include_entry(entry):
                         continue
 
-                    candidate_count += 1
+                    entries_processed += 1
 
                     # Build finding fields
                     exception_type = entry.exception or "unknown"
@@ -470,35 +507,55 @@ class LogScannerSource:
                         if entry.timestamp > acc.last_seen:
                             acc.last_seen = entry.timestamp
 
-                if truncated_entries or truncated_findings:
+                hit_cap = (
+                    truncated_entries
+                    or truncated_findings
+                    or truncated_total_lines
+                    or truncated_time
+                )
+                if hit_cap:
                     break
-            if truncated_entries or truncated_findings:
+            if truncated_entries or truncated_findings or truncated_total_lines or truncated_time:
                 break
 
         if malformed_count > 0:
             logger.debug("LogScannerSource: skipped %d malformed JSON lines", malformed_count)
-        if truncated_entries:
+        if truncated_time:
+            logger.warning(
+                "LogScannerSource: scan wall-clock limit reached after %.1fs"
+                " (max_scan_seconds=%.1f); %d lines parsed, %d candidate entries,"
+                " returning partial results",
+                time.monotonic() - scan_start,
+                self._max_scan_seconds,
+                total_lines_parsed,
+                entries_processed,
+            )
+            self.last_truncated = now
+            self.last_truncated_reason = "max_scan_seconds"
+        elif truncated_total_lines:
+            logger.warning(
+                "LogScannerSource: total-lines cap reached (%d lines;"
+                " max_total_lines=%d); returning partial results",
+                total_lines_parsed,
+                self._max_total_lines,
+            )
+            self.last_truncated = now
+            self.last_truncated_reason = "max_total_lines"
+        elif truncated_entries:
             logger.warning(
                 "LogScannerSource: truncated at %d candidate entries (max_entries_per_scan=%d)",
-                candidate_count,
+                entries_processed,
                 self._max_entries,
             )
-        if truncated_findings:
+            self.last_truncated = now
+            self.last_truncated_reason = "max_entries_per_scan"
+        elif truncated_findings:
             logger.warning(
                 "LogScannerSource: finding cap reached (%d); some findings may be missed",
                 self._max_findings,
             )
-
-        # Update truncation telemetry for status surfaces.
-        self._last_truncated = truncated_entries or truncated_findings
-        if truncated_entries and truncated_findings:
-            self._last_truncated_reason = "entries_and_findings"
-        elif truncated_entries:
-            self._last_truncated_reason = "entries"
-        elif truncated_findings:
-            self._last_truncated_reason = "findings"
-        else:
-            self._last_truncated_reason = None
+            self.last_truncated = now
+            self.last_truncated_reason = "max_findings_per_scan"
 
         findings = [acc.to_finding(now) for acc in aggregated.values()]
         return findings
