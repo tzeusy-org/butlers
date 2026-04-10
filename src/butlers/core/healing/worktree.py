@@ -215,11 +215,14 @@ async def create_healing_worktree(
     butler_name: str,
     fingerprint: str,
     prefix: str = _BRANCH_PREFIX,
+    base_ref: str | None = None,
 ) -> tuple[Path, str]:
     """Create a git branch and worktree for a healing or QA investigation.
 
-    Branches from the current ``main`` HEAD.  The branch and worktree path
-    are both derived from *butler_name*, *fingerprint*, and *prefix*.
+    Branches from *base_ref* when provided, otherwise from the local ``main``
+    HEAD.  Callers should prefer passing ``"origin/main"`` after a successful
+    ``git fetch`` so that long-lived daemon worktrees branch from the freshest
+    available remote ref rather than a potentially stale local copy.
 
     Parameters
     ----------
@@ -235,6 +238,11 @@ async def create_healing_worktree(
         self-healing.  Pass ``"qa"`` for QA staffer investigations.
         The worktree path follows the pattern:
         ``{repo_root}/.healing-worktrees/{prefix}/{butler_name}/{fp_short}-{epoch}/``
+    base_ref:
+        Git ref to branch from.  Pass ``"origin/main"`` when the caller has
+        just performed a successful ``git fetch origin main`` so the new
+        investigation branch starts from the freshest available commit.
+        When ``None`` (the default), falls back to local ``"main"``.
 
     Returns
     -------
@@ -251,17 +259,23 @@ async def create_healing_worktree(
         (e.g. disk full, permissions, git lock).  Partial state is cleaned up
         before the exception propagates.
     """
+    resolved_base = base_ref if base_ref is not None else "main"
     branch = _branch_name(butler_name, fingerprint, prefix=prefix)
     wt_path = _worktree_path(repo_root, branch)
 
     # Ensure parent directory exists
     wt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: Create branch from main HEAD
+    # Step 1: Create branch from the resolved base ref
+    logger.info(
+        "Creating investigation branch %r from base_ref=%r",
+        branch,
+        resolved_base,
+    )
     rc, _, stderr = await _run_git(
         "branch",
         branch,
-        "main",
+        resolved_base,
         cwd=repo_root,
     )
     if rc != 0:
@@ -298,10 +312,11 @@ async def create_healing_worktree(
         )
 
     logger.info(
-        "Created investigation worktree: path=%s branch=%s prefix=%s",
+        "Created investigation worktree: path=%s branch=%s prefix=%s base_ref=%s",
         wt_path,
         branch,
         prefix,
+        resolved_base,
     )
     return wt_path, branch
 

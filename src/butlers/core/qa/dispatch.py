@@ -2043,7 +2043,10 @@ async def dispatch_qa_investigation(
         # All gates passed — create worktree
         # ---------------------------------------------------------------
 
-        # Fetch latest main before creating the worktree branch
+        # Fetch latest main before creating the worktree branch.
+        # On success, branch from origin/main so long-lived daemon worktrees
+        # always start from the freshest available remote ref.
+        _fetch_ok = False
         try:
             fetch_proc = await asyncio.create_subprocess_exec(
                 "git",
@@ -2057,11 +2060,18 @@ async def dispatch_qa_investigation(
             _, fetch_stderr = await fetch_proc.communicate()
             if fetch_proc.returncode != 0:
                 logger.warning(
-                    "git fetch origin main failed (non-fatal): %s",
+                    "git fetch origin main failed (non-fatal): %s — falling back to local main",
                     fetch_stderr.decode("utf-8", errors="replace").strip(),
                 )
+            else:
+                _fetch_ok = True
         except Exception as fetch_exc:
-            logger.warning("git fetch origin main failed (non-fatal): %s", fetch_exc)
+            logger.warning(
+                "git fetch origin main failed (non-fatal): %s — falling back to local main",
+                fetch_exc,
+            )
+
+        _base_ref = "origin/main" if _fetch_ok else "main"
 
         try:
             worktree_path, branch_name = await create_healing_worktree(
@@ -2069,6 +2079,7 @@ async def dispatch_qa_investigation(
                 finding.source_butler,
                 fp,
                 prefix=_QA_PREFIX,
+                base_ref=_base_ref,
             )
         except WorktreeCreationError as wt_exc:
             logger.warning(

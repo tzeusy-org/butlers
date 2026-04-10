@@ -121,6 +121,48 @@ class TestCreateHealingWorktree:
         assert ".healing-worktrees/self-healing/" in str(sh_path)
         assert qa_path.parent.exists()
 
+    async def test_base_ref_parameter(self, tmp_path: Path) -> None:
+        """base_ref is forwarded to git branch creation; None falls back to 'main'."""
+        fp = _make_fingerprint("abc123def456")
+        captured: list[tuple] = []
+
+        async def mock_run_git(*args, cwd, capture_stderr=True):
+            captured.append(args)
+            return 0, "", ""
+
+        # Explicit base_ref=origin/main
+        with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
+            await create_healing_worktree(tmp_path, "email", fp, base_ref="origin/main")
+        branch_calls = [c for c in captured if c[0] == "branch" and len(c) == 3]
+        assert len(branch_calls) == 1
+        assert branch_calls[0][2] == "origin/main"
+
+        # Default (no base_ref) falls back to "main"
+        captured.clear()
+        with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
+            await create_healing_worktree(tmp_path, "email", fp)
+        branch_calls_default = [c for c in captured if c[0] == "branch" and len(c) == 3]
+        assert len(branch_calls_default) == 1
+        assert branch_calls_default[0][2] == "main"
+
+    async def test_base_ref_logged(self, tmp_path: Path, caplog) -> None:
+        """base_ref selection is visible in INFO logs for postmortem analysis."""
+        fp = _make_fingerprint("abc123def456")
+
+        async def mock_run_git(*args, cwd, capture_stderr=True):
+            return 0, "", ""
+
+        import logging
+
+        with (
+            patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git),
+            caplog.at_level(logging.INFO, logger="butlers.core.healing.worktree"),
+        ):
+            await create_healing_worktree(tmp_path, "email", fp, base_ref="origin/main")
+
+        log_messages = " ".join(r.message for r in caplog.records)
+        assert "origin/main" in log_messages
+
     async def test_failure_cases(self, tmp_path: Path) -> None:
         """Branch collision, worktree add failure (cleanup), and git lock all raise WorktreeCreationError."""
         fp = _make_fingerprint()
