@@ -31,6 +31,7 @@ import {
 } from "@/api/index.ts";
 import type {
   CreateEntityInfoRequest,
+  EntityDetailParams,
   EntityParams,
   EpisodeParams,
   FactParams,
@@ -121,10 +122,10 @@ export function useEntities(params?: EntityParams) {
 }
 
 /** Fetch a single entity by ID. */
-export function useEntity(entityId: string | undefined) {
+export function useEntity(entityId: string | undefined, params?: EntityDetailParams) {
   return useQuery({
-    queryKey: ["memory-entity", entityId],
-    queryFn: () => getEntity(entityId!),
+    queryKey: ["memory-entity", entityId, params],
+    queryFn: () => getEntity(entityId!, params),
     enabled: !!entityId,
   });
 }

@@ -135,3 +135,82 @@ async def test_memory_activity_returns_list(app):
         resp = await client.get("/api/memory/activity")
     assert resp.status_code == 200
     assert isinstance(resp.json()["data"], list)
+
+
+async def test_get_entity_paginates_recent_facts_and_includes_session_id(app):
+    """GET /api/memory/entities/{id} returns paged fact rows with provenance."""
+    entity_id = "d2521b5f-02f5-46b2-8eff-8c9f71dff688"
+    session_id = "2e513477-a432-4d68-952b-b95226df0aa1"
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(
+        return_value={
+            "id": entity_id,
+            "canonical_name": "Test Entity",
+            "entity_type": "person",
+            "aliases": [],
+            "metadata": {},
+            "created_at": "2025-06-01T12:00:00",
+            "updated_at": "2025-06-01T12:00:00",
+            "unidentified": False,
+            "linked_contact_id": None,
+            "linked_contact_name": None,
+            "linked_contact_roles": [],
+        }
+    )
+    mock_pool.fetchval = AsyncMock(return_value=2)
+
+    async def _fetch(sql, *args):
+        if "FROM facts f" in sql:
+            return [
+                {
+                    "id": "fact-001",
+                    "subject": "user",
+                    "predicate": "prefers",
+                    "content": "coffee",
+                    "importance": 5.0,
+                    "confidence": 0.9,
+                    "decay_rate": 0.008,
+                    "permanence": "standard",
+                    "source_butler": "general",
+                    "source_episode_id": "ep-001",
+                    "session_id": session_id,
+                    "supersedes_id": None,
+                    "entity_id": entity_id,
+                    "object_entity_id": None,
+                    "validity": "active",
+                    "scope": "global",
+                    "reference_count": 1,
+                    "created_at": "2025-06-01T12:00:00",
+                    "last_referenced_at": None,
+                    "last_confirmed_at": None,
+                    "tags": [],
+                    "metadata": {},
+                }
+            ]
+        if "FROM public.entity_info" in sql:
+            return []
+        if "FROM public.entities WHERE id = ANY($1)" in sql:
+            return [{"id": entity_id, "canonical_name": "Test Entity"}]
+        return []
+
+    mock_pool.fetch = AsyncMock(side_effect=_fetch)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool.return_value = mock_pool
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/entities/{entity_id}?facts_limit=1")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["recent_facts_total"] == 2
+    assert data["recent_facts_limit"] == 1
+    assert data["recent_facts_has_more"] is True
+    assert len(data["recent_facts"]) == 1
+    assert data["recent_facts"][0]["source_butler"] == "general"
+    assert data["recent_facts"][0]["session_id"] == session_id

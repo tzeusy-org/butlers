@@ -894,6 +894,8 @@ async def list_entities(
 @router.get("/entities/{entity_id}", response_model=ApiResponse[EntityDetail])
 async def get_entity(
     entity_id: str,
+    facts_offset: int = Query(0, ge=0, description="Facts page offset"),
+    facts_limit: int = Query(20, ge=1, le=200, description="Facts page size"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[EntityDetail]:
     """Return a single entity with recent facts and linked contact info."""
@@ -923,6 +925,8 @@ async def get_entity(
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Facts live in per-butler schemas — fan out across all memory pools.
+    row_limit = facts_offset + facts_limit
+
     async def _query_entity_facts(_: str, fpool: object) -> tuple[int, list[object]]:
         count = (
             await fpool.fetchval(
@@ -934,16 +938,21 @@ async def get_entity(
             or 0
         )
         rows = await fpool.fetch(
-            "SELECT id, subject, predicate, content, importance, confidence,"
-            " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-            " entity_id, object_entity_id, validity, scope, reference_count,"
-            " created_at, last_referenced_at,"
-            " last_confirmed_at, tags, metadata"
-            " FROM facts"
-            " WHERE (entity_id = $1 OR object_entity_id = $1)"
-            " AND validity = 'active'"
-            " ORDER BY created_at DESC LIMIT 20",
+            "SELECT f.id, f.subject, f.predicate, f.content, f.importance, f.confidence,"
+            " f.decay_rate, f.permanence, f.source_butler, f.source_episode_id,"
+            " ep.session_id, f.supersedes_id,"
+            " f.entity_id, f.object_entity_id, f.validity, f.scope, f.reference_count,"
+            " f.created_at, f.last_referenced_at,"
+            " f.last_confirmed_at, f.tags, f.metadata"
+            " FROM facts f"
+            " LEFT JOIN episodes ep ON ep.id = f.source_episode_id"
+            " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
+            " AND f.validity = 'active'"
+            " ORDER BY f.created_at DESC"
+            " OFFSET $2 LIMIT $3",
             eid,
+            0,
+            row_limit,
         )
         return count, list(rows)
 
@@ -954,7 +963,8 @@ async def get_entity(
     merged_fact_rows: list[object] = []
     for _, frows in per_pool:
         merged_fact_rows.extend(frows)
-    merged_fact_rows = _sort_rows_by_created_at(merged_fact_rows)[:20]
+    merged_fact_rows = _sort_rows_by_created_at(merged_fact_rows)
+    merged_fact_rows = merged_fact_rows[facts_offset : facts_offset + facts_limit]
 
     try:
         info_rows = await pool.fetch(
@@ -996,6 +1006,10 @@ async def get_entity(
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         recent_facts=recent_facts,
+        recent_facts_total=fact_count,
+        recent_facts_offset=facts_offset,
+        recent_facts_limit=facts_limit,
+        recent_facts_has_more=(facts_offset + facts_limit) < fact_count,
         entity_info=entity_info,
     )
 
@@ -1521,6 +1535,7 @@ def _row_to_fact(r) -> Fact:
         permanence=r["permanence"],
         source_butler=r["source_butler"],
         source_episode_id=str(r["source_episode_id"]) if r["source_episode_id"] else None,
+        session_id=str(r["session_id"]) if r.get("session_id") else None,
         supersedes_id=str(r["supersedes_id"]) if r["supersedes_id"] else None,
         entity_id=str(r["entity_id"]) if r.get("entity_id") else None,
         object_entity_id=str(r["object_entity_id"]) if r.get("object_entity_id") else None,

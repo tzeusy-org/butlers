@@ -53,6 +53,13 @@ import {
   entityInfoTypeLabel,
 } from "@/lib/user-secret-templates";
 
+const FACTS_PAGE_SIZE = 20;
+
+function sessionDetailHref(sessionId: string, butler: string | null): string {
+  const query = butler ? `?butler=${encodeURIComponent(butler)}` : "";
+  return `/sessions/${encodeURIComponent(sessionId)}${query}`;
+}
+
 // ---------------------------------------------------------------------------
 // SecuredInfoEntry — masked value with click-to-reveal
 // ---------------------------------------------------------------------------
@@ -1024,7 +1031,10 @@ function LinkedContactSection({
 
 export default function EntityDetailPage() {
   const { entityId } = useParams<{ entityId: string }>();
-  const { data, isLoading, error } = useEntity(entityId);
+  const [factsLimit, setFactsLimit] = useState(FACTS_PAGE_SIZE);
+  const { data, isLoading, isFetching, error } = useEntity(entityId, {
+    facts_limit: factsLimit,
+  });
   const entity = data?.data;
   const updateEntity = useUpdateEntity();
   const promoteEntity = usePromoteEntity();
@@ -1491,6 +1501,8 @@ export default function EntityDetailPage() {
                         <th className="pb-2 pr-4 font-medium">Scope</th>
                         <th className="pb-2 pr-4 font-medium">Predicate</th>
                         <th className="pb-2 pr-4 font-medium">Content</th>
+                        <th className="pb-2 pr-4 font-medium">Source Butler</th>
+                        <th className="pb-2 pr-4 font-medium">Session</th>
                         <th className="pb-2 pr-4 font-medium text-right">
                           Confidence
                         </th>
@@ -1503,6 +1515,9 @@ export default function EntityDetailPage() {
                         const isIncoming =
                           fact.object_entity_id === entity.id &&
                           fact.entity_id !== entity.id;
+                        const createdAt = new Date(fact.created_at);
+                        const createdDate = createdAt.toLocaleDateString();
+                        const createdTimestamp = createdAt.toLocaleString();
                         return (
                         <tr
                           key={fact.id}
@@ -1541,11 +1556,30 @@ export default function EntityDetailPage() {
                               fact.content
                             )}
                           </td>
+                          <td className="py-2 pr-4 text-muted-foreground">
+                            {fact.source_butler ?? <span className="italic">—</span>}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {fact.session_id ? (
+                              <Link
+                                to={sessionDetailHref(fact.session_id, fact.source_butler)}
+                                className="text-primary hover:underline"
+                                title={fact.session_id}
+                              >
+                                {fact.session_id.slice(0, 8)}
+                              </Link>
+                            ) : (
+                              <span className="text-muted-foreground italic">—</span>
+                            )}
+                          </td>
                           <td className="py-2 pr-4 text-right tabular-nums">
                             {(fact.confidence * 100).toFixed(0)}%
                           </td>
-                          <td className="py-2 text-muted-foreground">
-                            {new Date(fact.created_at).toLocaleDateString()}
+                          <td
+                            className="py-2 text-muted-foreground"
+                            title={createdTimestamp}
+                          >
+                            {createdDate}
                           </td>
                         </tr>
                         );
@@ -1554,6 +1588,21 @@ export default function EntityDetailPage() {
                   </table>
                 </div>
               )}
+              <div className="mt-4 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                <span>
+                  Showing {entity.recent_facts.length} of {entity.recent_facts_total}
+                </span>
+                {entity.recent_facts_has_more && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFactsLimit((current) => current + FACTS_PAGE_SIZE)}
+                    disabled={isFetching}
+                  >
+                    {isFetching ? "Loading..." : "Load more"}
+                  </Button>
+                )}
+              </div>
             </CardContent>
           </Card>
 

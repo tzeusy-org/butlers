@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EntityDetailPage from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
@@ -56,6 +57,10 @@ const BASE_ENTITY: EntityDetail = {
   archived: false,
   metadata: {},
   recent_facts: [],
+  recent_facts_total: 0,
+  recent_facts_offset: 0,
+  recent_facts_limit: 20,
+  recent_facts_has_more: false,
   entity_info: [],
 };
 
@@ -69,10 +74,13 @@ function setEntityState(entity: EntityDetail | null, opts: Partial<UseEntityResu
 }
 
 function renderPage(): string {
+  const queryClient = new QueryClient();
   return renderToStaticMarkup(
-    <MemoryRouter>
-      <EntityDetailPage />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <EntityDetailPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -152,5 +160,52 @@ describe("EntityDetailPage — google_oauth_refresh visibility", () => {
 
     // The Google OAuth note should not appear for plain entities
     expect(html).not.toContain("Google OAuth tokens are managed on companion");
+  });
+
+  it("shows fact provenance columns, session link, and load-more affordance", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      fact_count: 2,
+      recent_facts_total: 2,
+      recent_facts_limit: 1,
+      recent_facts_has_more: true,
+      recent_facts: [
+        {
+          id: "fact-1",
+          subject: "user",
+          predicate: "prefers",
+          content: "coffee",
+          importance: 5,
+          confidence: 0.9,
+          decay_rate: 0.008,
+          permanence: "standard",
+          source_butler: "general",
+          source_episode_id: "episode-1",
+          session_id: "2e513477-a432-4d68-952b-b95226df0aa1",
+          supersedes_id: null,
+          entity_id: "entity-001",
+          entity_name: "Test Owner",
+          object_entity_id: null,
+          object_entity_name: null,
+          validity: "active",
+          scope: "global",
+          reference_count: 1,
+          created_at: "2025-01-01T12:34:56Z",
+          last_referenced_at: null,
+          last_confirmed_at: null,
+          tags: [],
+          metadata: {},
+        },
+      ],
+    });
+
+    const html = renderPage();
+
+    expect(html).toContain("Source Butler");
+    expect(html).toContain("Session");
+    expect(html).toContain("general");
+    expect(html).toContain("/sessions/2e513477-a432-4d68-952b-b95226df0aa1?butler=general");
+    expect(html).toContain("Load more");
+    expect(html).toContain("Showing 1 of 2");
   });
 });

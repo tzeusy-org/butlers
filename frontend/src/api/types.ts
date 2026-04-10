@@ -1177,6 +1177,7 @@ export interface Fact {
   permanence: string;
   source_butler: string | null;
   source_episode_id: string | null;
+  session_id: string | null;
   supersedes_id: string | null;
   entity_id: string | null;
   entity_name: string | null;
@@ -1352,8 +1353,18 @@ export interface UpdateEntityRequest {
 export interface EntityDetail extends EntitySummary {
   metadata: Record<string, unknown>;
   recent_facts: Fact[];
+  recent_facts_total: number;
+  recent_facts_offset: number;
+  recent_facts_limit: number;
+  recent_facts_has_more: boolean;
   linked_contact_name: string | null;
   entity_info: EntityInfoEntry[];
+}
+
+/** Query parameters for entity detail endpoints. */
+export interface EntityDetailParams {
+  facts_offset?: number;
+  facts_limit?: number;
 }
 
 /** Response from GET /relationship/owner/entity-info. */

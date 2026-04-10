@@ -95,6 +95,7 @@ import type {
   CreateEntityInfoRequest,
   CreateEntityInfoResponse,
   EntityDetail,
+  EntityDetailParams,
   EntityInfoEntry,
   EntityParams,
   EntitySummary,
@@ -1280,9 +1281,16 @@ export function getEntities(
 /** Fetch a single entity by ID. */
 export function getEntity(
   entityId: string,
+  params?: EntityDetailParams,
 ): Promise<ApiResponse<EntityDetail>> {
+  const qs = new URLSearchParams();
+  if (params?.facts_offset != null) qs.set("facts_offset", String(params.facts_offset));
+  if (params?.facts_limit != null) qs.set("facts_limit", String(params.facts_limit));
+  const path = qs.size
+    ? `/memory/entities/${encodeURIComponent(entityId)}?${qs.toString()}`
+    : `/memory/entities/${encodeURIComponent(entityId)}`;
   return apiFetch<ApiResponse<EntityDetail>>(
-    `/memory/entities/${encodeURIComponent(entityId)}`,
+    path,
   );
 }
 

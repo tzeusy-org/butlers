@@ -45,6 +45,7 @@ class Fact(BaseModel):
     permanence: str = "standard"
     source_butler: str | None = None
     source_episode_id: str | None = None
+    session_id: str | None = None
     supersedes_id: str | None = None
     entity_id: str | None = None
     entity_name: str | None = None
@@ -146,6 +147,10 @@ class EntityDetail(EntitySummary):
 
     metadata: dict = {}
     recent_facts: list[Fact] = []
+    recent_facts_total: int = 0
+    recent_facts_offset: int = 0
+    recent_facts_limit: int = 20
+    recent_facts_has_more: bool = False
     linked_contact_name: str | None = None
     entity_info: list[EntityInfoEntry] = []
 
