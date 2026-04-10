@@ -66,7 +66,11 @@ from butlers.core.healing.worktree import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model
-from butlers.core.qa.findings import update_finding_attempt, update_finding_dedup_reason
+from butlers.core.qa.findings import (
+    update_finding_attempt,
+    update_finding_dedup_reason,
+    update_finding_dispatch_queued,
+)
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.repo_whitelist import RepoWhitelist, parse_repo_url
@@ -2353,6 +2357,12 @@ async def dispatch_qa_investigation(
             except Exception as _dr_exc:
                 logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
             try:
+                await update_finding_dispatch_queued(pool, finding_id, True)
+            except Exception as _dq_exc:
+                logger.debug(
+                    "QA dispatch: failed to mark finding dispatch_queued (gate 8): %s", _dq_exc
+                )
+            try:
                 await create_dispatch_event(
                     pool,
                     fingerprint=fp,
@@ -2661,6 +2671,22 @@ async def dispatch_novel_findings(
                 )
             )
             cap_skipped += 1
+            # Record authoritative suppression reason and queue finding for retry
+            # in the next patrol cycle.  Without this the qa_findings row stays
+            # with dedup_reason=NULL (misleading) and the finding is silently lost
+            # for one-shot errors that won't be re-discovered by a source.
+            try:
+                await update_finding_dedup_reason(pool, triaged.finding_id, "concurrency_cap")
+            except Exception as _dr_exc:
+                logger.debug(
+                    "QA dispatch: failed to update finding dedup_reason (cap skip): %s", _dr_exc
+                )
+            try:
+                await update_finding_dispatch_queued(pool, triaged.finding_id, True)
+            except Exception as _dq_exc:
+                logger.debug(
+                    "QA dispatch: failed to mark finding dispatch_queued (cap skip): %s", _dq_exc
+                )
             continue
 
         result = await dispatch_qa_investigation(

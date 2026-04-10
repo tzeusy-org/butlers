@@ -4,6 +4,8 @@ Covers:
 - insert_finding: all dedup_reason variants; returns UUID; passes patrol_id;
   healing_attempt_id passed as str when set, None otherwise
 - update_finding_attempt: runs UPDATE with finding_id and attempt_id
+- update_finding_dispatch_queued: runs UPDATE with finding_id and bool
+- get_dispatch_queued_findings: clears flag atomically; returns list of dicts; empty when none
 - get_findings_by_patrol: returns list of dicts; empty list
 - get_findings_by_fingerprint: respects limit; default limit=20; returns list of dicts
 """
@@ -17,10 +19,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.core.qa.findings import (
+    get_dispatch_queued_findings,
     get_findings_by_fingerprint,
     get_findings_by_patrol,
     insert_finding,
     update_finding_attempt,
+    update_finding_dispatch_queued,
 )
 from butlers.core.qa.models import QaFinding
 
@@ -129,3 +133,84 @@ async def test_get_findings_by_fingerprint():
     pool2 = _pool(fetch=[])
     await get_findings_by_fingerprint(pool2, fp, limit=5)
     assert 5 in pool2.fetch.call_args.args
+
+
+@pytest.mark.asyncio
+async def test_update_finding_dispatch_queued():
+    """update_finding_dispatch_queued runs UPDATE with finding_id and bool."""
+    pool = _pool()
+    finding_id = uuid.uuid4()
+
+    await update_finding_dispatch_queued(pool, finding_id, True)
+    pool.execute.assert_called_once()
+    args = pool.execute.call_args.args
+    assert True in args
+    assert finding_id in args
+
+    pool2 = _pool()
+    await update_finding_dispatch_queued(pool2, finding_id, False)
+    pool2.execute.assert_called_once()
+    args2 = pool2.execute.call_args.args
+    assert False in args2
+
+
+@pytest.mark.asyncio
+async def test_get_dispatch_queued_findings_empty():
+    """Returns empty list and runs no UPDATE when no queued rows exist."""
+    # Build a mock connection + transaction context manager
+    mock_conn = MagicMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock()
+    mock_conn.transaction = MagicMock(return_value=_AsyncCM(None))
+    mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_AsyncCM(mock_conn))
+
+    result = await get_dispatch_queued_findings(pool)
+    assert result == []
+    mock_conn.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_dispatch_queued_findings_clears_flag():
+    """Returns rows as dicts and runs UPDATE to clear dispatch_queued on returned IDs."""
+    id1, id2 = uuid.uuid4(), uuid.uuid4()
+    row1 = FakeRecord({"id": id1, "severity": 0, "fingerprint": "a" * 64})
+    row2 = FakeRecord({"id": id2, "severity": 1, "fingerprint": "b" * 64})
+
+    mock_conn = MagicMock()
+    mock_conn.fetch = AsyncMock(return_value=[row1, row2])
+    mock_conn.execute = AsyncMock()
+    mock_conn.transaction = MagicMock(return_value=_AsyncCM(None))
+    mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_conn.__aexit__ = AsyncMock(return_value=False)
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(return_value=_AsyncCM(mock_conn))
+
+    result = await get_dispatch_queued_findings(pool)
+    assert len(result) == 2
+    assert result[0]["id"] == id1
+    assert result[1]["id"] == id2
+
+    # Must UPDATE to clear the flag
+    mock_conn.execute.assert_called_once()
+    update_sql, ids_arg = mock_conn.execute.call_args.args
+    assert "dispatch_queued = FALSE" in update_sql
+    assert id1 in ids_arg
+    assert id2 in ids_arg
+
+
+class _AsyncCM:
+    """Minimal async context manager that yields a fixed value."""
+
+    def __init__(self, value):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, *args):
+        return False

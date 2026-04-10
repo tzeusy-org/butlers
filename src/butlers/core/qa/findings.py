@@ -21,6 +21,7 @@ Schema reference (public.qa_findings):
     healing_attempt_id              UUID FK → healing_attempts (nullable)
     source_session_trigger_source   TEXT (nullable) — trigger_source of the originating session
     structured_evidence             JSONB (nullable) — structured diagnostic evidence
+    dispatch_queued                 BOOLEAN NOT NULL DEFAULT FALSE — queued for retry after cap skip
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
 """
 
@@ -173,6 +174,93 @@ async def update_finding_dedup_reason(
         dedup_reason,
         finding_id,
     )
+
+
+async def update_finding_dispatch_queued(
+    pool: asyncpg.Pool,
+    finding_id: uuid.UUID,
+    queued: bool,
+) -> None:
+    """Set or clear the dispatch_queued flag on a qa_findings row.
+
+    Set to ``True`` by the dispatcher for findings that were skipped due to
+    concurrency pressure.  Set back to ``False`` once the finding is loaded
+    for re-triage in a later patrol cycle.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the public schema.
+    finding_id:
+        UUID of the qa_findings row to update.
+    queued:
+        ``True`` to mark the finding as queued for retry; ``False`` to clear.
+    """
+    await pool.execute(
+        """
+        UPDATE public.qa_findings
+        SET dispatch_queued = $1
+        WHERE id = $2
+        """,
+        queued,
+        finding_id,
+    )
+
+
+async def get_dispatch_queued_findings(
+    pool: asyncpg.Pool,
+    limit: int = 50,
+) -> list[QaFindingRow]:
+    """Return findings queued for retry dispatch and atomically clear the flag.
+
+    Fetches rows with ``dispatch_queued = TRUE``, ordered by severity (critical
+    first) and occurrence_count descending.  Immediately clears
+    ``dispatch_queued`` on all returned rows so that a concurrent patrol cycle
+    cannot pick up the same rows.
+
+    The caller is responsible for passing the reconstituted findings back
+    through triage so that freshness checks (active investigation, dismissal,
+    cooldown) are re-applied before any dispatch attempt.
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool targeting the public schema.
+    limit:
+        Maximum number of queued rows to return per call.  Acts as a
+        concurrency-pressure relief valve: bounded batch size prevents a
+        large backlog from overwhelming the next patrol.
+
+    Returns
+    -------
+    list[QaFindingRow]
+        Rows ordered by severity ASC, occurrence_count DESC.  Empty list
+        when no findings are queued.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM public.qa_findings
+                WHERE dispatch_queued = TRUE
+                ORDER BY severity ASC, occurrence_count DESC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+                """,
+                limit,
+            )
+            if rows:
+                ids = [row["id"] for row in rows]
+                await conn.execute(
+                    """
+                    UPDATE public.qa_findings
+                    SET dispatch_queued = FALSE
+                    WHERE id = ANY($1::uuid[])
+                    """,
+                    ids,
+                )
+    return [dict(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------

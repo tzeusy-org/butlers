@@ -394,6 +394,99 @@ async def test_dispatch_novel_findings():
     assert all(r.reason == "concurrency_cap" for r in results3)
 
 
+@pytest.mark.asyncio
+async def test_dispatch_novel_findings_cap_skipped_get_dedup_reason_and_queued():
+    """Findings synthetically skipped due to concurrency cap get dedup_reason and queued updates.
+
+    When a patrol hits the concurrency cap mid-batch, findings beyond the first
+    cap result must have their qa_findings rows updated with:
+      - dedup_reason = "concurrency_cap" (accurate suppression reason)
+      - dispatch_queued = True (durable retry queue)
+
+    This prevents one-shot findings from being silently lost after cap pressure.
+    """
+    pool = _make_pool()
+
+    # 3 findings; first hits cap, remaining 2 are synthetically skipped
+    triaged_list = [_make_triaged() for _ in range(3)]
+
+    async def cap_side_effect(*args, **kwargs):
+        return QaDispatchResult(accepted=False, fingerprint="x" * 64, reason="concurrency_cap")
+
+    with (
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=cap_side_effect),
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dedup_reason", new_callable=AsyncMock
+        ) as mock_dedup,
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dispatch_queued", new_callable=AsyncMock
+        ) as mock_queued,
+    ):
+        results = await dispatch_novel_findings(
+            pool=pool,
+            novel_findings=triaged_list,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    assert len(results) == 3
+    assert all(r.reason == "concurrency_cap" for r in results)
+
+    # The two synthetically-skipped findings (index 1 and 2) must have been
+    # marked with dedup_reason and dispatch_queued.  The first finding went
+    # through dispatch_qa_investigation which is responsible for its own updates.
+    assert mock_dedup.call_count == 2
+    assert mock_queued.call_count == 2
+
+    # Verify the correct finding_ids were passed
+    skipped_ids = {triaged_list[1].finding_id, triaged_list[2].finding_id}
+    dedup_call_ids = {call.args[1] for call in mock_dedup.call_args_list}
+    queued_call_ids = {call.args[1] for call in mock_queued.call_args_list}
+    assert dedup_call_ids == skipped_ids
+    assert queued_call_ids == skipped_ids
+
+    # dedup_reason must be "concurrency_cap"; dispatch_queued must be True
+    assert all(call.args[2] == "concurrency_cap" for call in mock_dedup.call_args_list)
+    assert all(call.args[2] is True for call in mock_queued.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_novel_findings_no_queued_updates_without_cap():
+    """No dedup_reason or queued updates when concurrency cap is never hit."""
+    pool = _make_pool()
+    findings = [_make_triaged() for _ in range(3)]
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation",
+            new_callable=AsyncMock,
+            return_value=QaDispatchResult(accepted=True, fingerprint="a" * 64, reason="dispatched"),
+        ),
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dedup_reason", new_callable=AsyncMock
+        ) as mock_dedup,
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dispatch_queued", new_callable=AsyncMock
+        ) as mock_queued,
+    ):
+        results = await dispatch_novel_findings(
+            pool=pool,
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    assert len(results) == 3
+    assert all(r.accepted for r in results)
+    # No synthetic skips → no dedup/queued updates from batch layer
+    mock_dedup.assert_not_called()
+    mock_queued.assert_not_called()
+
+
 def _make_pr_row(
     *,
     attempt_id: uuid.UUID | None = None,
