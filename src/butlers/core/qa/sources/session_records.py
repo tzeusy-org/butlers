@@ -6,9 +6,28 @@ all butler ``sessions`` tables (RFC 0010 sanctioned cross-schema exception).
 
 The source does NOT query butler schemas directly — only the view.
 
+Structured evidence
+-------------------
+Each aggregated finding carries a ``structured_evidence`` dict with the
+available session identifiers and diagnostics from the view.  The evidence
+dict is populated from columns exposed by the view without embedding raw
+sensitive payloads:
+
+  ``session_ids``: list of up to ``_MAX_EVIDENCE_SESSION_IDS`` session UUIDs
+                   (as strings) that share this fingerprint.
+  ``source``: always ``"session_records"``.
+  ``status``: the session failure status (``"error"`` | ``"timeout"`` | ``"crash"``).
+
+Investigation agents reference this evidence via a persisted artifact pointer
+rather than having it embedded directly in the investigation prompt.  The prompt
+builder emits a ``## Structured Evidence`` section pointing agents at the
+available identifiers.
+
 Spec reference
 --------------
 openspec/changes/qa-staffer/specs/staffer-qa/spec.md (V1 Discovery Sources)
+openspec/changes/qa-staffer/specs/qa-investigation-dispatch/spec.md
+  §Requirement: Structured Evidence Payloads
 """
 
 from __future__ import annotations
@@ -40,6 +59,9 @@ _VIEW_NAME = "public.v_qa_recent_failures"
 
 #: Maximum length of event_summary stored in QaFinding.
 _MAX_SUMMARY_LEN = 200
+
+#: Maximum number of session IDs collected per fingerprint for structured evidence.
+_MAX_EVIDENCE_SESSION_IDS = 5
 
 #: Health-check query — validates view accessibility before processing rows.
 _HEALTH_CHECK_SQL = f"SELECT 1 FROM {_VIEW_NAME} LIMIT 0"
@@ -135,10 +157,11 @@ class SessionRecordsSource:
         aggregated: dict[str, _SessionFindingAccumulator] = {}
 
         for row in rows:
-            finding = self._process_row(row, now)
-            if finding is None:
+            result = self._process_row(row, now)
+            if result is None:
                 continue
 
+            finding, session_id_str, status = result
             fp = finding.fingerprint
             if fp not in aggregated:
                 aggregated[fp] = _SessionFindingAccumulator(
@@ -151,6 +174,7 @@ class SessionRecordsSource:
                     first_seen=finding.first_seen,
                     last_seen=finding.last_seen,
                     source_session_trigger_source=finding.source_session_trigger_source,
+                    status=status,
                 )
             else:
                 acc = aggregated[fp]
@@ -162,13 +186,24 @@ class SessionRecordsSource:
                     # Always take trigger_source from the most recent session row,
                     # even when it is None, so recency semantics remain consistent.
                     acc.source_session_trigger_source = finding.source_session_trigger_source
+            # Collect session IDs up to the cap for structured evidence
+            acc = aggregated[fp]
+            if session_id_str and len(acc.session_ids) < _MAX_EVIDENCE_SESSION_IDS:
+                acc.session_ids.append(session_id_str)
 
         return [acc.to_finding(now) for acc in aggregated.values()]
 
-    def _process_row(self, row: asyncpg.Record, now: datetime) -> QaFinding | None:
-        """Convert one v_qa_recent_failures row to a QaFinding.
+    def _process_row(
+        self,
+        row: asyncpg.Record,
+        now: datetime,
+    ) -> tuple[QaFinding, str | None, str] | None:
+        """Convert one v_qa_recent_failures row to a (QaFinding, session_id, status) tuple.
 
         Returns None if the row lacks enough data to build a useful finding.
+        The returned ``session_id`` is a string representation of the session UUID
+        (or ``None`` if unavailable), used to populate ``structured_evidence``.
+        The returned ``status`` is the session failure status string.
         """
         source_butler: str = row["source_butler"] or "unknown"
         error_text: str | None = row["error"]
@@ -177,6 +212,8 @@ class SessionRecordsSource:
         started_at: datetime | None = row["started_at"]
         status: str = row["status"] or "error"
         trigger_source: str | None = row["trigger_source"]
+        raw_session_id = row["session_id"]
+        session_id_str: str | None = str(raw_session_id) if raw_session_id is not None else None
 
         # Use completed_at as timestamp; fall back to now
         ts = completed_at or now
@@ -209,7 +246,7 @@ class SessionRecordsSource:
 
         severity = _score_severity(exception_type, call_site)
 
-        return QaFinding(
+        finding = QaFinding(
             fingerprint=fingerprint,
             source_type="session_records",
             source_butler=source_butler,
@@ -223,6 +260,7 @@ class SessionRecordsSource:
             timestamp=now,
             source_session_trigger_source=trigger_source,
         )
+        return finding, session_id_str, status
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +293,11 @@ def _status_to_exception_type(status: str, error_text: str | None) -> str:
 
 
 class _SessionFindingAccumulator:
-    """Internal state for aggregating session rows with the same fingerprint."""
+    """Internal state for aggregating session rows with the same fingerprint.
+
+    Collects session IDs across all rows sharing a fingerprint so that the
+    aggregated ``QaFinding`` carries structured evidence for investigation agents.
+    """
 
     def __init__(
         self,
@@ -268,6 +310,7 @@ class _SessionFindingAccumulator:
         first_seen: datetime,
         last_seen: datetime,
         source_session_trigger_source: str | None = None,
+        status: str = "error",
     ) -> None:
         self.fingerprint = fingerprint
         self.source_butler = source_butler
@@ -279,8 +322,17 @@ class _SessionFindingAccumulator:
         self.last_seen = last_seen
         self.occurrence_count = 1
         self.source_session_trigger_source = source_session_trigger_source
+        self.status = status
+        # Collect session IDs up to _MAX_EVIDENCE_SESSION_IDS for structured evidence
+        self.session_ids: list[str] = []
 
     def to_finding(self, now: datetime) -> QaFinding:
+        """Build an aggregated QaFinding with structured evidence."""
+        structured_evidence: dict = {
+            "source": "session_records",
+            "status": self.status,
+            "session_ids": self.session_ids,
+        }
         return QaFinding(
             fingerprint=self.fingerprint,
             source_type="session_records",
@@ -294,4 +346,5 @@ class _SessionFindingAccumulator:
             last_seen=self.last_seen,
             timestamp=now,
             source_session_trigger_source=self.source_session_trigger_source,
+            structured_evidence=structured_evidence,
         )

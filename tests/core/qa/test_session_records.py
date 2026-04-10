@@ -228,3 +228,68 @@ async def test_postgres_error_and_anonymization():
     )
     assert len(findings2) == 1
     assert "user@test.example.com" not in findings2[0].event_summary
+
+
+@pytest.mark.asyncio
+async def test_structured_evidence_populated():
+    """structured_evidence is populated with source, status, and session_ids."""
+    now = datetime.now(UTC)
+    sid1 = uuid.uuid4()
+    sid2 = uuid.uuid4()
+    shared_fp = "c" * 64
+
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    rows = [
+        _make_asyncpg_record(
+            session_id=sid1,
+            healing_fingerprint=shared_fp,
+            status="error",
+            completed_at=now - timedelta(minutes=5),
+        ),
+        _make_asyncpg_record(
+            session_id=sid2,
+            healing_fingerprint=shared_fp,
+            status="error",
+            completed_at=now,
+        ),
+    ]
+    pool.fetch = AsyncMock(return_value=rows)
+    source = SessionRecordsSource(pool=pool, repo_root=Path("/tmp"))
+    findings = await source.discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    ev = findings[0].structured_evidence
+    assert ev is not None
+    assert ev["source"] == "session_records"
+    assert ev["status"] == "error"
+    # Both session IDs collected (within the cap of 5)
+    assert str(sid1) in ev["session_ids"]
+    assert str(sid2) in ev["session_ids"]
+
+
+@pytest.mark.asyncio
+async def test_structured_evidence_session_id_cap():
+    """session_ids in structured_evidence is capped at _MAX_EVIDENCE_SESSION_IDS (5)."""
+    from butlers.core.qa.sources.session_records import _MAX_EVIDENCE_SESSION_IDS
+
+    shared_fp = "d" * 64
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    now = datetime.now(UTC)
+    rows = [
+        _make_asyncpg_record(
+            session_id=uuid.uuid4(),
+            healing_fingerprint=shared_fp,
+            completed_at=now - timedelta(minutes=i),
+        )
+        for i in range(_MAX_EVIDENCE_SESSION_IDS + 3)  # more than cap
+    ]
+    pool.fetch = AsyncMock(return_value=rows)
+    source = SessionRecordsSource(pool=pool, repo_root=Path("/tmp"))
+    findings = await source.discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    ev = findings[0].structured_evidence
+    assert ev is not None
+    assert len(ev["session_ids"]) == _MAX_EVIDENCE_SESSION_IDS

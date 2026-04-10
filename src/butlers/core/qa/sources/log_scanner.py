@@ -13,9 +13,27 @@ Log root structure (relative to BUTLERS_LOG_ROOT or ``logs/``)::
 
 Findings are aggregated by fingerprint within a single scan cycle.
 
+Structured evidence
+-------------------
+Each aggregated finding carries a ``structured_evidence`` dict populated from
+the raw JSON log entry without embedding sensitive payloads:
+
+  ``source``: always ``"log_scanner"``.
+  ``log_file``: the log filename (stem) where the fingerprint was first seen.
+  ``level``: the log level of the first occurrence (e.g. ``"error"``).
+  ``trigger_source``: the ``trigger_source`` field from the log entry's JSON
+                      if present; ``None`` if absent.
+
+Investigation agents reference this evidence via a persisted artifact pointer
+rather than having it embedded directly in the investigation prompt.  The prompt
+builder emits a ``## Structured Evidence`` section pointing agents at the
+available identifiers.
+
 Spec reference
 --------------
 openspec/changes/qa-staffer/specs/qa-log-scanner/spec.md
+openspec/changes/qa-staffer/specs/qa-investigation-dispatch/spec.md
+  §Requirement: Structured Evidence Payloads
 """
 
 from __future__ import annotations
@@ -491,6 +509,8 @@ class LogScannerSource:
                             truncated_findings = True
                             break
                         severity = _level_to_severity(entry.level, exception_type, call_site)
+                        # Extract trigger_source from raw log JSON for structured evidence
+                        entry_trigger_source = entry.raw.get("trigger_source") or None
                         aggregated[fingerprint] = _FindingAccumulator(
                             fingerprint=fingerprint,
                             source_butler=entry.butler_name,
@@ -501,7 +521,8 @@ class LogScannerSource:
                             source_file=log_file.name,
                             first_seen=entry.timestamp,
                             last_seen=entry.timestamp,
-                            source_session_trigger_source=entry.trigger_source,
+                            log_level=entry.level,
+                            trigger_source=entry_trigger_source,
                         )
                     else:
                         acc = aggregated[fingerprint]
@@ -512,7 +533,7 @@ class LogScannerSource:
                             acc.last_seen = entry.timestamp
                             # Always take trigger_source from the most recent log entry,
                             # even when it is None, so recency semantics remain consistent.
-                            acc.source_session_trigger_source = entry.trigger_source
+                            acc.trigger_source = entry.trigger_source
 
                 hit_cap = (
                     truncated_entries
@@ -575,7 +596,12 @@ class LogScannerSource:
 
 @dataclass
 class _FindingAccumulator:
-    """Internal state for aggregating log entries with the same fingerprint."""
+    """Internal state for aggregating log entries with the same fingerprint.
+
+    Retains the log level and trigger_source from the first occurrence so that
+    the aggregated ``QaFinding`` carries structured evidence for investigation
+    agents.
+    """
 
     fingerprint: str
     source_butler: str
@@ -587,9 +613,19 @@ class _FindingAccumulator:
     first_seen: datetime
     last_seen: datetime
     occurrence_count: int = 1
-    source_session_trigger_source: str | None = None
+    # Structured evidence fields — set from the first matching log entry
+    log_level: str = field(default="")
+    trigger_source: str | None = field(default=None)
 
     def to_finding(self, now: datetime) -> QaFinding:
+        """Build an aggregated QaFinding with structured evidence."""
+        structured_evidence: dict = {
+            "source": "log_scanner",
+            "log_file": self.source_file,
+            "level": self.log_level,
+        }
+        if self.trigger_source is not None:
+            structured_evidence["trigger_source"] = self.trigger_source
         return QaFinding(
             fingerprint=self.fingerprint,
             source_type="log_scanner",
@@ -603,5 +639,5 @@ class _FindingAccumulator:
             last_seen=self.last_seen,
             timestamp=now,
             source_file=self.source_file,
-            source_session_trigger_source=self.source_session_trigger_source,
+            structured_evidence=structured_evidence,
         )

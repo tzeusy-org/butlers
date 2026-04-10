@@ -93,13 +93,33 @@ The QA investigation agent SHALL receive a prompt that includes the error contex
 ### Requirement: Structured Evidence Payloads
 QA findings and investigations SHALL carry structured evidence in addition to any free-form summary text.
 
-#### Scenario: Runtime-derived finding includes structured evidence
-- **WHEN** a finding originates from session records or runtime failures
-- **THEN** the structured evidence includes available identifiers and diagnostics such as `session_id`, `request_id`, `trace_id`, `runtime_type`, `model`, redacted stderr excerpts, tool-call summaries, and source-specific metadata
-- **AND** the investigation prompt references this evidence without embedding raw sensitive payloads
+The evidence set is bounded by what each discovery source exposes through its
+sanctioned access path (RFC 0010).  The current implementation delivers Phase 1
+evidence (identifiers and source-specific metadata available without additional
+DB migrations).  Richer evidence fields (`request_id`, `trace_id`, `runtime_type`,
+`model`, tool-call summaries) are deferred to a future Phase 2 that extends the
+`v_qa_recent_failures` view.
 
-#### Scenario: Large evidence bundle is attached out-of-band
-- **WHEN** the available diagnostic evidence is too large for the prompt
+#### Scenario: Session-records finding includes structured evidence (Phase 1)
+- **WHEN** a finding originates from the `session_records` source
+- **THEN** `structured_evidence` contains:
+  - `source`: `"session_records"`
+  - `status`: the session failure status (`"error"` | `"timeout"` | `"crash"`)
+  - `session_ids`: a list of up to 5 session UUIDs (as strings) that share this fingerprint, drawn from the `v_qa_recent_failures` view
+- **AND** the investigation prompt includes a `## Structured Evidence` section listing the available identifiers without embedding raw sensitive payloads
+
+#### Scenario: Log-scanner finding includes structured evidence (Phase 1)
+- **WHEN** a finding originates from the `log_scanner` source
+- **THEN** `structured_evidence` contains:
+  - `source`: `"log_scanner"`
+  - `log_file`: the filename (stem) of the log file where the fingerprint was first seen
+  - `level`: the log level of the first occurrence (e.g. `"error"`, `"critical"`)
+  - `trigger_source`: the `trigger_source` field from the structured JSON log entry if present; omitted if absent
+- **AND** the investigation prompt includes a `## Structured Evidence` section listing the available identifiers without embedding raw sensitive payloads
+
+#### Scenario: Large evidence bundle attached out-of-band (Phase 2 — not yet implemented)
+- **NOTE** Out-of-band worktree artifact persistence for large evidence bundles is deferred to Phase 2.
+- **WHEN** the available diagnostic evidence is too large for the prompt (Phase 2 only)
 - **THEN** QA persists a redacted evidence artifact in the worktree
 - **AND** the prompt points the agent to that artifact for detailed inspection
 
