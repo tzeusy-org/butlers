@@ -133,3 +133,39 @@ class TestMemoryFetchGating:
                 config=_make_config(modules={}), config_dir=tmp_path, runtime=adapter_off
             ).trigger(prompt="do task", trigger_source="trigger")
         assert adapter_off.calls[0]["system_prompt"] == "Base prompt."
+
+
+class TestQaMcpGating:
+    async def test_qa_trigger_receives_empty_mcp_servers(self, tmp_path: Path):
+        """QA-triggered sessions pass empty mcp_servers to prevent Codex retry on bash-only runs."""
+        adapter = MockAdapter()
+        await Spawner(config=_make_config(), config_dir=tmp_path, runtime=adapter).trigger(
+            prompt="investigate bug",
+            trigger_source="qa",
+        )
+        assert adapter.calls[0]["mcp_servers"] == {}, (
+            "QA sessions must receive empty mcp_servers to suppress MCP-discovery retry"
+        )
+
+    async def test_healing_trigger_receives_empty_mcp_servers(self, tmp_path: Path):
+        """Healing-triggered sessions pass empty mcp_servers (existing behaviour, guarded)."""
+        adapter = MockAdapter()
+        await Spawner(config=_make_config(), config_dir=tmp_path, runtime=adapter).trigger(
+            prompt="heal the branch",
+            trigger_source="healing",
+        )
+        assert adapter.calls[0]["mcp_servers"] == {}, (
+            "Healing sessions must receive empty mcp_servers"
+        )
+
+    async def test_non_qa_trigger_receives_butler_mcp_server(self, tmp_path: Path):
+        """Non-QA/non-healing triggers still receive the butler MCP server."""
+        adapter = MockAdapter()
+        await Spawner(config=_make_config(), config_dir=tmp_path, runtime=adapter).trigger(
+            prompt="do normal work",
+            trigger_source="schedule",
+        )
+        mcp_servers = adapter.calls[0]["mcp_servers"]
+        assert "test-butler" in mcp_servers, (
+            "Non-QA triggers must receive the butler MCP server for tool access"
+        )

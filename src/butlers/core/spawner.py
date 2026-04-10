@@ -1324,10 +1324,13 @@ class Spawner:
                 )
 
             # Build MCP server config for the adapter.
-            # Healing sessions run in an isolated worktree with shell tools only —
+            # Healing and QA sessions run in isolated worktrees with shell tools only —
             # they must NOT have access to the butler's MCP tools (which operate on
-            # live production state).  An empty dict disables all MCP servers.
-            if trigger_source == "healing":
+            # live production state).  An empty dict disables all MCP servers and
+            # prevents the Codex adapter from triggering its MCP-discovery retry path,
+            # which would re-run the full subprocess when QA sessions make zero MCP
+            # calls (QA workflows are bash/git-only by design).
+            if trigger_source in ("healing", "qa"):
                 mcp_servers: dict[str, Any] = {}
             else:
                 mcp_url = runtime_mcp_url(self._config.port)
