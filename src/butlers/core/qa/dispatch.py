@@ -1651,6 +1651,7 @@ async def _run_review_followup_session(
     success or failure.
     Cleans up the local worktree after completion (branch is kept for the PR).
     """
+    followup_session_id: uuid.UUID | None = None
     try:
         result = await spawner.trigger(
             prompt=prompt,
@@ -1662,7 +1663,7 @@ async def _run_review_followup_session(
             timeout_override=config.timeout_minutes * 60,
         )
 
-        followup_session_id: uuid.UUID | None = getattr(result, "session_id", None)
+        followup_session_id = getattr(result, "session_id", None)
 
         if not result.success:
             error_msg = (result.error or "non-success result")[:_MAX_FOLLOWUP_ERROR_LEN]
@@ -1759,12 +1760,14 @@ async def _run_review_followup_session(
             await pool.execute(
                 """
                 UPDATE public.healing_attempts
-                SET last_follow_up_status = 'failed',
-                    last_follow_up_error  = $2,
-                    updated_at            = now()
+                SET last_follow_up_status     = 'failed',
+                    last_follow_up_session_id = $2,
+                    last_follow_up_error      = $3,
+                    updated_at                = now()
                 WHERE id = $1
                 """,
                 attempt_id,
+                followup_session_id,
                 error_msg[:_MAX_FOLLOWUP_ERROR_LEN],
             )
         except Exception as _db_exc:
