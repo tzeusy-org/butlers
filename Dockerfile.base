@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     gnupg \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 22 (for LLM runtime CLIs)
