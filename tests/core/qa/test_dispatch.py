@@ -1277,3 +1277,144 @@ async def test_concurrency_gate_uses_qa_only_scope():
     assert call_kwargs.get("qa_only") is True, (
         "count_active_attempts must be called with qa_only=True in Gate 8"
     )
+
+
+# ---------------------------------------------------------------------------
+# base_ref selection: QA dispatch uses origin/main when fetch succeeds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_qa_uses_origin_main_after_successful_fetch():
+    """When git fetch succeeds, dispatch_qa_investigation passes base_ref='origin/main'."""
+    attempt_id = uuid.uuid4()
+    worktree_path = Path("/tmp/qa-worktree")
+    branch_name = "qa/finance/abcdef123456"
+
+    mock_proc_ok = MagicMock()
+    mock_proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc_ok.returncode = 0
+
+    create_wt_mock = AsyncMock(return_value=(worktree_path, branch_name))
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None
+        ),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1
+        ),
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.resolve_model",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_proc_ok,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.create_healing_worktree",
+            create_wt_mock,
+        ),
+        patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    assert result.accepted is True
+    _, call_kwargs = create_wt_mock.call_args
+    assert call_kwargs.get("base_ref") == "origin/main", (
+        "QA dispatch must pass base_ref='origin/main' after a successful fetch"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_qa_falls_back_to_local_main_when_fetch_fails(caplog):
+    """When git fetch fails, dispatch_qa_investigation falls back to base_ref='main' with a warning."""
+    import logging
+
+    attempt_id = uuid.uuid4()
+    worktree_path = Path("/tmp/qa-worktree")
+    branch_name = "qa/finance/abcdef123456"
+
+    mock_proc_fail = MagicMock()
+    mock_proc_fail.communicate = AsyncMock(return_value=(b"", b"fetch failed"))
+    mock_proc_fail.returncode = 1
+
+    create_wt_mock = AsyncMock(return_value=(worktree_path, branch_name))
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
+        patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None
+        ),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1
+        ),
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.resolve_model",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_proc_fail,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.create_healing_worktree",
+            create_wt_mock,
+        ),
+        patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
+        caplog.at_level(logging.WARNING, logger="butlers.core.qa.dispatch"),
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+
+    assert result.accepted is True
+    _, call_kwargs = create_wt_mock.call_args
+    assert call_kwargs.get("base_ref") == "main", (
+        "QA dispatch must fall back to base_ref='main' when fetch fails"
+    )
+    # Warning must include the chosen base ref for postmortem visibility
+    log_text = " ".join(r.message for r in caplog.records)
+    assert "main" in log_text, "Warning must name the fallback base ref"
