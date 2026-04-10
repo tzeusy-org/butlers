@@ -135,6 +135,24 @@ async def test_record_transaction_positive_amount_is_credit(pool):
     assert Decimal(str(result["amount"])) == Decimal("100.00")
 
 
+async def test_record_transaction_explicit_debit_overrides_positive_amount(pool):
+    """Explicit debit direction coerces a positive amount into money-out semantics."""
+    from butlers.tools.finance.transactions import record_transaction
+
+    result = await record_transaction(
+        pool=pool,
+        posted_at=_utcnow(),
+        merchant="Nutrition Kitchen SG",
+        amount=162.00,
+        direction="debit",
+        currency="SGD",
+        category="subscriptions",
+    )
+
+    assert result["direction"] == "debit"
+    assert Decimal(str(result["amount"])) == Decimal("162.00")
+
+
 async def test_record_transaction_negative_amount_is_debit(pool):
     """Negative amount infers debit direction (money out)."""
     from butlers.tools.finance.transactions import record_transaction

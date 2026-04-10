@@ -146,6 +146,30 @@ def _infer_direction(amount: Decimal | float | int) -> str:
     return "credit" if Decimal(str(amount)) >= 0 else "debit"
 
 
+def _normalize_direction(direction: str | None) -> str | None:
+    """Normalize an explicit direction value and reject invalid inputs."""
+    if direction is None:
+        return None
+    normalized = direction.strip().lower()
+    if normalized not in {"debit", "credit"}:
+        raise ValueError("direction must be 'debit' or 'credit'")
+    return normalized
+
+
+def _coerce_signed_amount(
+    amount: Decimal | float | int,
+    direction: str | None = None,
+) -> tuple[Decimal, str]:
+    """Return a signed Decimal amount plus its effective debit/credit direction."""
+    decimal_amount = Decimal(str(amount))
+    normalized_direction = _normalize_direction(direction)
+    if normalized_direction == "debit":
+        return (-abs(decimal_amount), normalized_direction)
+    if normalized_direction == "credit":
+        return (abs(decimal_amount), normalized_direction)
+    return (decimal_amount, _infer_direction(decimal_amount))
+
+
 def _normalize_amount(amount: Decimal | float | int) -> Decimal:
     """Return absolute value of amount as Decimal(14,2)."""
     return abs(Decimal(str(amount)))
@@ -385,6 +409,7 @@ async def record_transaction(
     amount: Decimal | float | int,
     currency: str,
     category: str,
+    direction: str | None = None,
     description: str | None = None,
     payment_method: str | None = None,
     account_id: str | None = None,
@@ -399,6 +424,9 @@ async def record_transaction(
     Direction is inferred from the amount sign when not provided:
     - Negative amount  -> debit  (money out)
     - Positive amount  -> credit (money in / refund)
+
+    When ``direction`` is provided, it overrides the amount sign and coerces the
+    transaction into the requested debit/credit semantics.
 
     Deduplication is checked via a tiered key hierarchy in priority order:
     1. (account_id, external_id) — for bank APIs with stable IDs
@@ -421,6 +449,9 @@ async def record_transaction(
     amount:
         Transaction amount. Negative means debit, positive means credit.
         Stored as absolute value in NUMERIC(14,2).
+    direction:
+        Optional explicit direction override: ``"debit"`` or ``"credit"``.
+        When provided, it takes precedence over the amount sign.
     currency:
         ISO-4217 currency code (e.g. ``"USD"``).
     category:
@@ -451,8 +482,8 @@ async def record_transaction(
     # Resolve human-readable account identifiers to UUID.
     account_id = await _resolve_account_id(pool, account_id)
 
-    direction = _infer_direction(amount)
-    stored_amount = _normalize_amount(amount)
+    signed_amount, effective_direction = _coerce_signed_amount(amount, direction)
+    stored_amount = _normalize_amount(signed_amount)
 
     # --- Tiered deduplication via _deduplicate() ---
     txn_dict: dict[str, Any] = {
@@ -460,7 +491,7 @@ async def record_transaction(
         "account_id": account_id,
         "source_message_id": source_message_id,
         "posted_at": posted_at,
-        "amount": amount,
+        "amount": signed_amount,
         "merchant": merchant,
     }
     existing_id = await _deduplicate(pool, txn_dict)
@@ -547,7 +578,7 @@ async def record_transaction(
             description,
             stored_amount,
             currency.upper(),
-            direction,
+            effective_direction,
             effective_category,
             payment_method,
             account_id,
@@ -588,7 +619,10 @@ async def record_transaction(
     await _log_activity(
         pool,
         "transaction_recorded",
-        f"Recorded {direction} transaction: {merchant} {stored_amount} {currency.upper()}",
+        (
+            f"Recorded {effective_direction} transaction: "
+            f"{merchant} {stored_amount} {currency.upper()}"
+        ),
         entity_type="transaction",
         entity_id=str(row["id"]),
     )
@@ -600,7 +634,7 @@ async def record_transaction(
             pool=pool,
             posted_at=posted_at,
             merchant=merchant,
-            amount=amount,
+            amount=signed_amount,
             currency=currency,
             category=effective_category,
             description=description,
@@ -1624,6 +1658,7 @@ async def bulk_record_transactions(
         category = txn.get("category") or "uncategorized"
         description = txn.get("description")
         payment_method = txn.get("payment_method")
+        direction = txn.get("direction")
         source_message_id = txn.get("source_message_id")
         receipt_url = txn.get("receipt_url")
         external_ref = txn.get("external_ref")
@@ -1643,6 +1678,7 @@ async def bulk_record_transactions(
                 amount=amount_decimal,
                 currency=currency,
                 category=category,
+                direction=direction,
                 description=description,
                 payment_method=payment_method,
                 account_id=effective_account_id,

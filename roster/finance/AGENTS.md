@@ -82,7 +82,7 @@ Choose the appropriate response mode based on the message type and action taken:
 **User message**: "Coffee and lunch at Blue Bottle — $23.50"
 
 **Actions**:
-1. `record_transaction(posted_at=now, merchant="Blue Bottle Coffee", amount=23.50, currency="USD", category="dining")`
+1. `record_transaction(posted_at=now, merchant="Blue Bottle Coffee", amount=-23.50, currency="USD", category="dining")`
 2. `notify(channel="telegram", message="Logged: $23.50 at Blue Bottle Coffee (dining).", intent="reply", request_context=...)`
 
 ---
@@ -104,7 +104,7 @@ Choose the appropriate response mode based on the message type and action taken:
 
 **Actions**:
 1. `track_subscription(service="Netflix", amount=15.49, currency="USD", frequency="monthly", next_renewal=<+1 month>, status="active", auto_renew=true, source_message_id=<email_id>)`
-2. `record_transaction(posted_at=now, merchant="Netflix", amount=15.49, currency="USD", category="subscriptions", source_message_id=<email_id>)`
+2. `record_transaction(posted_at=now, merchant="Netflix", amount=-15.49, currency="USD", category="subscriptions", source_message_id=<email_id>)`
 3. `calendar_create_event(title="Netflix renewal", start_time=<next_renewal - 7 days>, notes="Auto-renews $15.49/month")`
 4. `notify(channel="telegram", message="Netflix renewed: $15.49/month. Next renewal in 30 days — reminder set.", intent="reply", request_context=...)`
 

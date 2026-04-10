@@ -169,9 +169,8 @@ async def test_spo_mirror_called_with_correct_predicate_for_debit():
     pool = AsyncMock()
     # fetchrow calls in order:
     # 1. Priority-2 dedup (source_message_id) → None
-    # 2. Priority-3 cross-source dedup (posted_at+amount+merchant) → None
-    # 3. INSERT RETURNING → row
-    pool.fetchrow = AsyncMock(side_effect=[None, None, _make_asyncpg_record(inserted_row)])
+    # 2. INSERT RETURNING → row
+    pool.fetchrow = AsyncMock(side_effect=[None, _make_asyncpg_record(inserted_row)])
     pool.fetchval = AsyncMock(return_value=0)
 
     mirror_mock = AsyncMock()
@@ -306,6 +305,40 @@ async def test_bulk_record_transactions_routes_through_record_transaction():
     assert len(record_calls) == 2
     merchants = {c["merchant"] for c in record_calls}
     assert merchants == {"Amazon", "Netflix"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_record_transactions_preserves_explicit_direction():
+    """Bulk rows with explicit direction pass that intent through to record_transaction."""
+    from butlers.tools.finance.transactions import bulk_record_transactions
+
+    record_calls = []
+
+    async def _fake_record_transaction(*args, **kwargs):
+        record_calls.append(kwargs)
+        return {"id": "fake-id", "merchant": kwargs["merchant"]}
+
+    with patch(
+        "butlers.tools.finance.transactions.record_transaction",
+        side_effect=_fake_record_transaction,
+    ):
+        result = await bulk_record_transactions(
+            pool=MagicMock(),
+            transactions=[
+                {
+                    "posted_at": _utcnow().isoformat(),
+                    "merchant": "BUS/MRT",
+                    "amount": "2.15",
+                    "direction": "debit",
+                    "currency": "SGD",
+                    "category": "transport",
+                }
+            ],
+        )
+
+    assert result["imported"] == 1
+    assert len(record_calls) == 1
+    assert record_calls[0]["direction"] == "debit"
 
 
 @pytest.mark.asyncio(loop_scope="session")

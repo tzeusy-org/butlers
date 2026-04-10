@@ -75,6 +75,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         amount: float,
         currency: str,
         category: str,
+        direction: str | None = None,
         description: str | None = None,
         payment_method: str | None = None,
         account_id: str | None = None,
@@ -90,6 +91,8 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         amount: Transaction amount as a decimal number.
         currency: ISO-4217 code (e.g. "USD", "EUR"). Never assume USD without clear signal.
         category: Spending category (e.g. "dining", "groceries", "subscriptions", "transport").
+        direction: Optional explicit direction override: "debit" or "credit".
+          When provided, it takes precedence over the amount sign.
         description: Optional transaction description or memo.
         payment_method: Card or payment method label (e.g. "Amex", "Chase Sapphire").
         account_id: Account identifier (e.g. "chase-checking").
@@ -108,6 +111,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             amount=amount,
             currency=currency,
             category=category,
+            direction=direction,
             description=description,
             payment_method=payment_method,
             account_id=account_id,
@@ -574,6 +578,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
           - merchant: string (required)
           - amount: string-encoded decimal (required); negative=debit, positive=credit
           Optional per row:
+          - direction: explicit "debit" or "credit" override for amount sign
           - currency: ISO-4217 code (default "USD")
           - category: string (default "uncategorized")
           - description: string
