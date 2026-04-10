@@ -21,6 +21,7 @@ openspec/changes/qa-staffer/tasks.md (6.5–6.8)
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -1651,7 +1652,25 @@ def _qa_finding_from_row(row: dict) -> QaFinding:
     structured_evidence: dict | None = None
     if row.get("structured_evidence") is not None:
         raw = row["structured_evidence"]
-        structured_evidence = raw if isinstance(raw, dict) else None
+        if isinstance(raw, dict):
+            structured_evidence = raw
+        elif isinstance(raw, str):
+            try:
+                structured_evidence = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning(
+                    "_qa_finding_from_row: structured_evidence is a non-JSON string for "
+                    "fingerprint=%s; discarding",
+                    row.get("fingerprint"),
+                )
+        # else: unexpected type — leave as None
+
+    last_seen = row.get("last_seen")
+    if last_seen is None:
+        logger.warning(
+            "_qa_finding_from_row: last_seen is None for fingerprint=%s; timestamp will be None",
+            row.get("fingerprint"),
+        )
 
     return QaFinding(
         fingerprint=row["fingerprint"],
@@ -1663,8 +1682,8 @@ def _qa_finding_from_row(row: dict) -> QaFinding:
         call_site=row["call_site"],
         occurrence_count=row["occurrence_count"],
         first_seen=row["first_seen"],
-        last_seen=row["last_seen"],
-        timestamp=row["last_seen"],
+        last_seen=last_seen,
+        timestamp=last_seen,
         source_session_trigger_source=row.get("source_session_trigger_source"),
         structured_evidence=structured_evidence,
     )

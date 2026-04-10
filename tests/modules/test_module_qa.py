@@ -15,11 +15,14 @@ Covers:
 - report_finding: canonicalizes fingerprint (ignores caller-supplied)
 - report_finding: normalizes out-of-range severity values
 - report_finding: stable dedup fingerprint across repeated reports of same error
+- _qa_finding_from_row: handles structured_evidence as dict, JSON string, or None
+- _qa_finding_from_row: uses None for timestamp when last_seen is None
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,7 +33,7 @@ from pydantic import BaseModel, ValidationError
 
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
-from butlers.modules.qa import QaConfig, QaModule
+from butlers.modules.qa import QaConfig, QaModule, _qa_finding_from_row
 
 pytestmark = pytest.mark.unit
 
@@ -845,3 +848,57 @@ class TestRunPatrolBodyNotifyOnMissingToken:
 
         # Only one notification for the same patrol_id
         assert len(notify_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# _qa_finding_from_row helpers
+# ---------------------------------------------------------------------------
+
+_BASE_ROW = {
+    "fingerprint": "a" * 64,
+    "source_type": "log_scanner",
+    "source_butler": "qa-staffer",
+    "severity": 1,
+    "exception_type": "ValueError",
+    "event_summary": "something broke",
+    "call_site": "module.py:42",
+    "occurrence_count": 3,
+    "first_seen": datetime(2026, 1, 1, tzinfo=UTC),
+    "last_seen": datetime(2026, 1, 2, tzinfo=UTC),
+    "source_session_trigger_source": None,
+    "structured_evidence": None,
+}
+
+
+class TestQaFindingFromRow:
+    def test_happy_path_no_evidence(self):
+        """Reconstitutes a finding when structured_evidence is None."""
+        finding = _qa_finding_from_row({**_BASE_ROW})
+        assert finding.fingerprint == "a" * 64
+        assert finding.structured_evidence is None
+        assert finding.timestamp == _BASE_ROW["last_seen"]
+
+    def test_structured_evidence_dict(self):
+        """structured_evidence is preserved when asyncpg already decoded it as a dict."""
+        row = {**_BASE_ROW, "structured_evidence": {"key": "value"}}
+        finding = _qa_finding_from_row(row)
+        assert finding.structured_evidence == {"key": "value"}
+
+    def test_structured_evidence_json_string(self):
+        """structured_evidence is parsed when asyncpg returns it as a JSON string."""
+        row = {**_BASE_ROW, "structured_evidence": json.dumps({"key": "value"})}
+        finding = _qa_finding_from_row(row)
+        assert finding.structured_evidence == {"key": "value"}
+
+    def test_structured_evidence_invalid_string_discarded(self):
+        """Non-JSON string for structured_evidence is silently discarded (logged)."""
+        row = {**_BASE_ROW, "structured_evidence": "not-json"}
+        finding = _qa_finding_from_row(row)
+        assert finding.structured_evidence is None
+
+    def test_last_seen_none_yields_none_timestamp(self):
+        """When last_seen is None, timestamp is None (not datetime.now())."""
+        row = {**_BASE_ROW, "last_seen": None}
+        finding = _qa_finding_from_row(row)
+        assert finding.timestamp is None
+        assert finding.last_seen is None
