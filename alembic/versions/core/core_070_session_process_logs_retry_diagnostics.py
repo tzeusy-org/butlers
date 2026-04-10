@@ -1,7 +1,7 @@
 """session_process_logs: add retry diagnostics and result provenance columns.
 
-Revision ID: core_069
-Revises: core_068
+Revision ID: core_070
+Revises: core_069
 Create Date: 2026-04-11 00:00:00.000000
 
 Adds four nullable columns to ``session_process_logs`` so that the Codex
@@ -37,8 +37,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_069"
-down_revision = "core_068"
+revision = "core_070"
+down_revision = "core_069"
 branch_labels = None
 depends_on = None
 
