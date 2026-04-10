@@ -84,7 +84,7 @@ The existing `modules/self_healing/` retains its MCP tools (`report_error`, `get
 **What moves where:**
 - `core/healing/dispatch.py` gate logic → `core/qa/dispatch.py` (with QA-specific additions)
 - `core/healing/worktree.py`, `anonymizer.py`, `fingerprint.py`, `tracking.py` → shared utilities imported by both `core/qa/` and legacy fallback path
-- `modules/self_healing/` → thin relay via Switchboard `notify()`, plus fallback dispatch
+- `modules/self_healing/` → thin relay via Switchboard `route()`, plus fallback dispatch
 
 ### D3.5: Session records source via sanctioned SQL view (RFC 0010 pattern)
 

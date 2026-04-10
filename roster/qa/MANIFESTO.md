@@ -72,7 +72,7 @@ All source filtering is tool-based (zero LLM invocations during discovery).
 ## Issue Triage Policy
 
 Findings are deduplicated against (in order):
-1. Active `healing_attempts` rows (status: `dispatch_pending`, `investigating`, `pr_open`)
+1. Active `healing_attempts` rows (status: `investigating`, `pr_open`) — `dispatch_pending` is not a valid status; novelty claim and row insertion are atomic
 2. Active `qa_dismissals` (not yet expired)
 3. Per-fingerprint cooldown window (recent terminal attempts within `cooldown_minutes`)
 
