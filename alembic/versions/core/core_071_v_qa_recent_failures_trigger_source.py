@@ -32,7 +32,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "core_071"
-down_revision = "core_067"
+down_revision = "core_070"
 branch_labels = None
 depends_on = None
 
@@ -113,11 +113,15 @@ def _grant_best_effort(table_or_view_fqn: str, privilege: str, role: str) -> Non
 
 def upgrade() -> None:
     # Recreate the view with trigger_source added.
-    # CREATE OR REPLACE preserves existing grants on PostgreSQL views.
+    # DROP + CREATE (instead of CREATE OR REPLACE) avoids PostgreSQL's
+    # "cannot add columns to view" restriction when the view is re-run in a
+    # schema-scoped Alembic context where core_055 may have already restored
+    # the 7-column definition before this migration runs.
     union_terms = "\n        UNION ALL".join(_union_term(s) for s in _SESSION_SCHEMAS)
 
+    op.execute(f"DROP VIEW IF EXISTS {_VIEW_FQN} CASCADE")
     op.execute(f"""
-        CREATE OR REPLACE VIEW {_VIEW_FQN} AS
+        CREATE VIEW {_VIEW_FQN} AS
         {union_terms}
     """)
 
@@ -128,6 +132,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Restore the original view definition without trigger_source.
+    # DROP + CREATE avoids the "cannot drop columns from view" error that
+    # CREATE OR REPLACE raises when removing a column.
     union_terms_without_trigger = "\n        UNION ALL".join(
         f"""
         SELECT
@@ -148,8 +154,9 @@ def downgrade() -> None:
         for schema in _SESSION_SCHEMAS
     )
 
+    op.execute(f"DROP VIEW IF EXISTS {_VIEW_FQN} CASCADE")
     op.execute(f"""
-        CREATE OR REPLACE VIEW {_VIEW_FQN} AS
+        CREATE VIEW {_VIEW_FQN} AS
         {union_terms_without_trigger}
     """)
 
