@@ -372,6 +372,44 @@ async def test_no_retry_without_mcp_servers():
     assert call_count == 1, "Should NOT retry when no MCP servers configured"
 
 
+async def test_qa_context_single_execution_bash_only():
+    """QA sessions (empty mcp_servers) execute exactly one subprocess even with bash-only output.
+
+    This guards against the regression where QA investigation/review-follow-up sessions
+    were retried because the adapter saw zero non-bash MCP tool calls.  When the spawner
+    correctly passes mcp_servers={} for trigger_source='qa', the adapter must not retry.
+    """
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 42
+        # Bash-only output (no MCP tool calls) — the typical QA session output
+        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+        return proc
+
+    # Pass empty mcp_servers — simulates the qa-gated spawner path
+    with patch(_EXEC, side_effect=_mock_exec):
+        result_text, tool_calls, _ = await adapter.invoke(
+            prompt="investigate the failure in the worktree",
+            system_prompt="",
+            mcp_servers={},  # empty — as spawner sets for trigger_source='qa'
+            env={},
+        )
+
+    assert call_count == 1, (
+        "QA sessions must execute exactly one subprocess — "
+        "MCP-discovery retry must not trigger when mcp_servers is empty"
+    )
+    # Only bash tool calls, no MCP tool calls
+    assert all(tc.get("name") == "command_execution" for tc in tool_calls)
+
+
 async def test_no_retry_on_nonzero_exit():
     """No retry when CLI exits with non-zero code (real error, not MCP flake)."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
