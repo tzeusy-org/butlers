@@ -48,7 +48,7 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 - **WHEN** the QA module's `register_tools()` is called
 - **THEN** it registers: `report_finding` (receives findings from butler relay via Switchboard route), `force_patrol` (triggers immediate patrol), `get_qa_status` (returns QA staffer operational summary)
 - **AND** `report_finding` is the tool called by butlers' self-healing modules via `switchboard_client.call_tool("route", {"target_butler": "qa", "tool_name": "report_finding", "args": ...})`
-- **AND** `report_finding` accepts: `fingerprint` (str — treated as a hint; the QA module recomputes the canonical fingerprint via `compute_fingerprint_from_report` and logs a debug warning on mismatch), `exception_type` (str), `call_site` (str), `severity` (int 0–4 — clamped to range with a WARNING if out-of-range; authoritative canonical scoring overrides caller intent for critical/high errors), `event_summary` (str), `context` (str, optional), `source_butler` (str), `trigger_source` (str, optional — the calling session's `trigger_source` value, e.g. `"healing"` or `"qa"` (QA investigation sessions use `trigger_source="qa"`); used to populate `source_session_trigger_source` for QA self-recursion suppression)
+- **AND** `report_finding` accepts: `fingerprint` (str — treated as a hint; the QA module recomputes the canonical fingerprint via `compute_fingerprint_from_report` and logs a debug warning on mismatch), `exception_type` (str), `call_site` (str), `severity` (int 0–4 — clamped to range with a WARNING if out-of-range; authoritative canonical scoring overrides caller intent for critical/high errors), `event_summary` (str), `context` (str, optional), `source_butler` (str)
 - **AND** `report_finding` queues the finding (with canonical fingerprint and severity) in the `butler_reports` source buffer and returns `{"accepted": true}` synchronously
 - **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agent reasoning about user-related errors)
 
@@ -192,7 +192,7 @@ The QA Staffer SHALL operate with a least-privilege security model: dedicated cr
 - **WHEN** an investigation agent is spawned in a worktree
 - **THEN** its environment contains only: `BUTLERS_QA_GH_TOKEN` (injected from secrets store as `GH_TOKEN` for `gh` CLI compatibility), `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
 - **AND** it does NOT have access to: butler DB connection strings, API keys, OAuth tokens, user data, or any `BUTLERS_*` env vars
-- **AND** it does NOT have MCP server connections (spawner invoked with `mcp_servers={}` — an explicit empty dict, not absent; this is required to suppress MCP-discovery retry in the Codex adapter)
+- **AND** it does NOT have MCP server connections (the spawner automatically sets empty MCP server config when `trigger_source="qa"`, preventing access to live production state and suppressing the Codex adapter's MCP-discovery retry path)
 - **AND** its filesystem access is limited to the worktree directory
 
 #### Scenario: Log scanner reads are local-only

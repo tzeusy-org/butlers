@@ -62,7 +62,7 @@ Investigation agents SHALL operate in a sandboxed environment with minimal crede
 - **THEN** the QA staffer resolves `BUTLERS_QA_GH_TOKEN` from `CredentialStore` and injects it as `GH_TOKEN` in the agent's environment (the `gh` CLI requires the env var name `GH_TOKEN` specifically)
 - **AND** the agent's environment contains only: `GH_TOKEN`, `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
 - **AND** it does NOT have: butler DB connection strings, API keys, OAuth tokens, user data, or any `BUTLERS_*` env vars
-- **AND** it does NOT have MCP server connections (spawner invoked with `mcp_servers={}` — an explicit empty dict, not absent; this is required to suppress MCP-discovery retry in the Codex adapter)
+- **AND** it does NOT have MCP server connections (the spawner automatically sets empty MCP server config when `trigger_source="qa"`, preventing access to live production state and suppressing the Codex adapter's MCP-discovery retry path)
 - **AND** its filesystem scope is the worktree directory only
 
 #### Scenario: GitHub credentials from secrets store
@@ -151,11 +151,12 @@ Investigation agents SHALL create PRs through the anonymization pipeline, ensuri
 - **AND** if `dashboard_base_url` is not configured, the link is omitted (the dashboard may be on a private tailnet and the link would leak the hostname to a public PR)
 
 ### Requirement: Phased Investigation Workflow
-Each QA investigation SHALL support spanning multiple runtime sessions under one overall investigation deadline, enabling separate diagnose, implement, and verify phases.
+The QA investigation infrastructure SHALL support phase-session tracking for investigations. Phase sessions are recorded and tracked via `record_phase_session` and `update_phase_session_status`. The v1 implementation uses a single combined `investigate` phase; separate diagnose, implement, and verify phases are a future extension enabled by this infrastructure.
 
 #### Scenario: Diagnose, implement, and verify use separate sessions
 - **WHEN** QA investigates a finding that requires diagnosis, code changes, and verification
-- **THEN** it MAY run separate `diagnose`, `implement`, and `verify` sessions
+- **THEN** it SHALL record at least one phase session (currently a single `investigate` phase) to track the session with lineage for audit and recovery
+- **AND** each session uses its own per-session timeout budget
 - **AND** each session uses its own per-session timeout budget
 - **AND** the investigation remains open across phases until it reaches a terminal result or the overall deadline expires
 
