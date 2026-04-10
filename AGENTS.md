@@ -1015,6 +1015,8 @@ For more details, see README.md and docs/QUICKSTART.md.
 
 ## Notes to self
 
+- Memory entity merge tombstones the source with `metadata.merged_into`, excludes it from entity list/search/`entity_resolve`, and re-links `public.contacts.entity_id` from source to target.
+- Memory entity merge only unions the source entity's `aliases` onto the target; it does not automatically add the source `canonical_name` as a target alias, so old-name lookups only keep working if that string already exists in aliases or another resolver path still matches.
 - Witness patrol wisps created by `gt patrol new` / `gt patrol report` are `hooked` (not `pinned`), so `gt mol attach <wisp> mol-witness-patrol` fails with "not pinned". Run patrol steps directly and roll cycles with `gt patrol report`.
 - `gt patrol report --steps` for witness cycles expects the canonical patrol step keys (`inbox-check`, `process-cleanups`, `check-refinery`, `survey-workers`, `check-timer-gates`, `check-swarm-completion`, `patrol-cleanup`, `context-check`, `loop-or-exit`); custom labels are recorded as `SKIP`.
 - `gt hook --json` may expose the current hooked wisp under `pinned_bead`; rely on each issue `status` field (`hooked` vs `pinned`) for truth.
@@ -1023,3 +1025,5 @@ For more details, see README.md and docs/QUICKSTART.md.
 - Witness loop step command to resolve `role_type: witness` agent bead can return zero results in this rig; if no witness agent bead exists, skip `gt mol step await-signal` and continue patrol roll with `gt patrol report` while flagging the missing bead.
 - For polecat hook inspection, use full agent paths like `gt hook show butlers/polecats/<name> --json`; shorthand `butlers/<name>` may incorrectly report `status":"empty"`.
 - `gt patrol report` can rotate the hooked patrol wisp without updating `/home/tze/gt/butlers/witness/state.json`; treat the hooked patrol bead and polecat agent beads as the source of truth for current-cycle state.
+- Finance transaction ingestion is split: `POST /api/finance/transactions/bulk` writes facts directly via `roster/finance/tools/facts.py::bulk_record_transactions`, while the finance module/MCP `bulk_record_transactions` routes through `roster/finance/tools/transactions.py::record_transaction` and then mirrors to facts. Their dedupe semantics differ; the direct facts bulk path still dedupes `source_message_id` per predicate and hashes signed amounts, so opposite-sign imports of the same event can persist as both `transaction_debit` and `transaction_credit`.
+- `GET /api/memory/entities/{entity_id}` now accepts `facts_offset` / `facts_limit`; the response includes `recent_facts_total`, `recent_facts_offset`, `recent_facts_limit`, `recent_facts_has_more`, and each fact row may carry `session_id` resolved via its `source_episode_id`.

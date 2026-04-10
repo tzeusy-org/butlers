@@ -950,6 +950,13 @@ async def entity_merge(
 
             # Merge aliases (deduplicated, case-insensitive)
             src_aliases: list[str] = list(src_row["aliases"]) if src_row["aliases"] else []
+            src_canonical_name = (src_row["canonical_name"] or "").strip()
+            tgt_canonical_name = (tgt_row["canonical_name"] or "").strip()
+            if (
+                src_canonical_name
+                and src_canonical_name.lower() != tgt_canonical_name.lower()
+            ):
+                src_aliases.append(src_canonical_name)
             tgt_aliases: list[str] = list(tgt_row["aliases"]) if tgt_row["aliases"] else []
             tgt_alias_set = {a.lower() for a in tgt_aliases}
             new_aliases: list[str] = list(tgt_aliases)

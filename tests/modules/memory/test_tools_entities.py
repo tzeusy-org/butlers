@@ -267,6 +267,19 @@ class TestEntityMerge:
         assert "unidentified" not in merged
         assert merged.get("src_key") == "v"
 
+    async def test_source_canonical_name_added_to_target_aliases(self) -> None:
+        src = _entity_mock_row(SOURCE_UUID, canonical_name="tzeusii", aliases=[])
+        tgt = _entity_mock_row(TARGET_UUID, canonical_name="Tze How Lee", aliases=[])
+        pool, conn = _merge_pool(src, tgt)
+        await entity_merge(pool, SOURCE_ID, TARGET_ID)
+        updates = [
+            c
+            for c in conn.execute.call_args_list
+            if "UPDATE public.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
+        ]
+        merged_aliases = updates[0][0][1]
+        assert "tzeusii" in merged_aliases
+
 
 # ---------------------------------------------------------------------------
 # entity_neighbors
