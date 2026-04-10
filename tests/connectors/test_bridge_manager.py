@@ -55,6 +55,18 @@ def _fake_process(returncode: int | None = None, pid: int = 1234) -> MagicMock:
     return proc
 
 
+def _fake_process_exits_later(exit_code: int, pid: int = 1234) -> MagicMock:
+    proc = _fake_process(returncode=None, pid=pid)
+
+    async def _wait():
+        await asyncio.sleep(0)
+        proc.returncode = exit_code
+        return exit_code
+
+    proc.wait = _wait
+    return proc
+
+
 def test_backoff_attempt_zero_is_bounded() -> None:
     """Attempt 0 should be within ±25% of initial value (5s)."""
     delay = _jittered_backoff(0)
@@ -158,3 +170,25 @@ async def test_start_fails_fast_on_pair_required_by_default(
         await mgr.start()
 
     assert mgr._process is None
+
+
+@pytest.mark.asyncio
+async def test_start_fails_fast_when_process_exits_during_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Early no-restart exits during startup should not surface as generic timeouts."""
+    mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=30.0))
+    mgr._STARTUP_POLL_INTERVAL_S = 0.0
+
+    async def _fake_spawn() -> None:
+        mgr._process = _fake_process_exits_later(exit_code=1)
+
+    monkeypatch.setattr(mgr, "_spawn", _fake_spawn)
+    monkeypatch.setattr(
+        bridge_manager,
+        "_http_get_unix",
+        AsyncMock(side_effect=ConnectionError("socket unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="Pairing timeout"):
+        await mgr.start()

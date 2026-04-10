@@ -296,7 +296,9 @@ class BridgeSubprocessManager:
         """Start the bridge subprocess and wait until it reports 'connected'.
 
         Raises:
-            RuntimeError: If the binary is not found in $PATH.
+            RuntimeError: If the binary is not found in $PATH, startup reaches
+                a configured failure state, or the subprocess exits terminally
+                before becoming ready.
             TimeoutError: If the bridge does not reach 'connected' within
                 ``config.startup_timeout_s`` seconds.
         """
@@ -524,6 +526,9 @@ class BridgeSubprocessManager:
 
             should_restart = self._classify_exit(rc)
             if not should_restart:
+                if not self._connected_event.is_set():
+                    reason = self._degraded_reason or f"Bridge exited during startup (rc={rc})"
+                    self._set_startup_failure(reason)
                 break
 
             # Compute and wait for backoff delay
