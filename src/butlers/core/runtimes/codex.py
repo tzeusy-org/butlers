@@ -461,6 +461,31 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _create_isolated_home_tempdir(real_home: str | None):
+    """Create a per-invocation home dir, preferring a Codex-owned temp root.
+
+    Current Codex CLI builds warn when ``codex_home`` lives under ``/tmp`` and
+    refuse to create helper binaries there. When a real HOME exists, place
+    ephemeral session homes under ``~/.codex/.tmp`` instead, and fall back to
+    the platform default temp dir only if that root cannot be created.
+    """
+    import tempfile as _tempfile  # noqa: PLC0415
+
+    if isinstance(real_home, str) and real_home.strip():
+        preferred_root = Path(real_home) / ".codex" / ".tmp"
+        try:
+            preferred_root.mkdir(parents=True, exist_ok=True)
+            return _tempfile.TemporaryDirectory(dir=str(preferred_root))
+        except OSError:
+            logger.warning(
+                "Could not create Codex temp root at %s; falling back to default tempdir",
+                preferred_root,
+                exc_info=True,
+            )
+
+    return _tempfile.TemporaryDirectory()
+
+
 class CodexAdapter(RuntimeAdapter):
     """Runtime adapter for the OpenAI Codex CLI.
 
@@ -570,8 +595,6 @@ class CodexAdapter(RuntimeAdapter):
         TimeoutError
             If the Codex process exceeds the timeout.
         """
-        import tempfile as _tempfile  # noqa: PLC0415
-
         binary = self._get_binary()
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
 
@@ -599,7 +622,10 @@ class CodexAdapter(RuntimeAdapter):
         # applied after the MCP client has already initialised with an empty
         # server list.  Writing a config file and pointing HOME at its parent
         # ensures the CLI discovers MCP servers during its earliest init phase.
-        tmp_dir_obj = _tempfile.TemporaryDirectory()
+        import os as _os  # noqa: PLC0415
+
+        real_home = _os.environ.get("HOME", "")
+        tmp_dir_obj = _create_isolated_home_tempdir(real_home)
         tmp_dir = Path(tmp_dir_obj.name)
 
         codex_config_dir = tmp_dir / ".codex"
@@ -614,9 +640,6 @@ class CodexAdapter(RuntimeAdapter):
         # CLI are written back to the canonical location and survive temp-dir
         # cleanup.  This also prevents the "refresh_token_reused" error that
         # occurred when concurrent invocations each copied a stale token.
-        import os as _os  # noqa: PLC0415
-
-        real_home = _os.environ.get("HOME", "")
         if real_home:
             real_auth = Path(real_home) / ".codex" / "auth.json"
             tmp_auth = codex_config_dir / "auth.json"

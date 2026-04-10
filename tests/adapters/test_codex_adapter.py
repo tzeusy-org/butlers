@@ -214,6 +214,25 @@ async def test_invoke_behaviors():
     assert "MCP transport diagnostics" in str(exc_info.value)
 
 
+async def test_invoke_prefers_home_scoped_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """invoke() should avoid /tmp-backed HOME when a real home directory is available."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    isolated_home = Path(mock_sub.call_args[1]["env"]["HOME"])
+    assert isolated_home.parent == codex_dir / ".tmp"
+
+
 def test_has_mcp_tool_calls():
     """_has_mcp_tool_calls distinguishes MCP tools from bash-only sessions."""
     assert not _has_mcp_tool_calls([])
