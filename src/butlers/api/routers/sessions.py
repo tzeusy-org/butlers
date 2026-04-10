@@ -313,7 +313,9 @@ async def get_butler_session(
     try:
         plog_row = await pool.fetchrow(
             """
-            SELECT pid, exit_code, command, stderr, runtime_type, created_at, expires_at
+            SELECT pid, exit_code, command, stderr, runtime_type,
+                   retry_attempted, retry_succeeded, result_source, attempt_count,
+                   created_at, expires_at
             FROM session_process_logs
             WHERE session_id = $1 AND expires_at >= now()
             """,

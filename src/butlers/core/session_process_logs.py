@@ -31,6 +31,10 @@ async def write(
     command: str | None = None,
     stderr: str | None = None,
     runtime_type: str | None = None,
+    retry_attempted: bool | None = None,
+    retry_succeeded: bool | None = None,
+    result_source: str | None = None,
+    attempt_count: int | None = None,
     ttl_days: int = _DEFAULT_TTL_DAYS,
 ) -> None:
     """Write process-level diagnostics for a session (one row per session).
@@ -40,6 +44,10 @@ async def write(
     by ``cleanup()``.
 
     Stderr is capped at 32 KiB to bound storage per row.
+
+    The ``retry_attempted``, ``retry_succeeded``, ``result_source``, and
+    ``attempt_count`` fields capture Codex MCP-discovery retry provenance.
+    They are NULL for runtimes that do not retry.
     """
     max_stderr = 32 * 1024
     if stderr and len(stderr) > max_stderr:
@@ -48,15 +56,22 @@ async def write(
     await pool.execute(
         """
         INSERT INTO session_process_logs
-            (session_id, pid, exit_code, command, stderr, runtime_type, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(days => $7))
+            (session_id, pid, exit_code, command, stderr, runtime_type,
+             retry_attempted, retry_succeeded, result_source, attempt_count,
+             expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                now() + make_interval(days => $11))
         ON CONFLICT (session_id) DO UPDATE SET
-            pid          = EXCLUDED.pid,
-            exit_code    = EXCLUDED.exit_code,
-            command      = EXCLUDED.command,
-            stderr       = EXCLUDED.stderr,
-            runtime_type = EXCLUDED.runtime_type,
-            expires_at   = EXCLUDED.expires_at
+            pid              = EXCLUDED.pid,
+            exit_code        = EXCLUDED.exit_code,
+            command          = EXCLUDED.command,
+            stderr           = EXCLUDED.stderr,
+            runtime_type     = EXCLUDED.runtime_type,
+            retry_attempted  = EXCLUDED.retry_attempted,
+            retry_succeeded  = EXCLUDED.retry_succeeded,
+            result_source    = EXCLUDED.result_source,
+            attempt_count    = EXCLUDED.attempt_count,
+            expires_at       = EXCLUDED.expires_at
         """,
         session_id,
         pid,
@@ -64,6 +79,10 @@ async def write(
         command,
         stderr,
         runtime_type,
+        retry_attempted,
+        retry_succeeded,
+        result_source,
+        attempt_count,
         ttl_days,
     )
     logger.debug("Process log written for session %s (pid=%s, exit=%s)", session_id, pid, exit_code)
@@ -76,7 +95,9 @@ async def get(
     """Return the process log for a session, or None if not found / expired."""
     row = await pool.fetchrow(
         """
-        SELECT pid, exit_code, command, stderr, runtime_type, created_at, expires_at
+        SELECT pid, exit_code, command, stderr, runtime_type,
+               retry_attempted, retry_succeeded, result_source, attempt_count,
+               created_at, expires_at
         FROM session_process_logs
         WHERE session_id = $1 AND expires_at >= now()
         """,

@@ -66,7 +66,6 @@ from butlers.core.telemetry import (
 from butlers.core.tool_call_capture import (
     clear_runtime_session_routing_context,
     consume_runtime_session_tool_calls,
-    discard_runtime_session_tool_calls,
     ensure_runtime_session_capture,
     set_runtime_session_routing_context,
 )
@@ -1429,6 +1428,10 @@ class Spawner:
                             command=proc_info.get("command"),
                             stderr=proc_info.get("stderr"),
                             runtime_type=proc_info.get("runtime_type"),
+                            retry_attempted=proc_info.get("retry_attempted"),
+                            retry_succeeded=proc_info.get("retry_succeeded"),
+                            result_source=proc_info.get("result_source"),
+                            attempt_count=proc_info.get("attempt_count"),
                         )
                     except Exception:
                         logger.debug(
@@ -1511,8 +1514,11 @@ class Spawner:
             # The traceback object is live only until cleanup clears the frame.
             _exc_type, _exc_value, _exc_tb = sys.exc_info()
 
+            # Collect any tool calls captured before the failure (best-effort).
+            # consume rather than discard so we preserve what ran before the error.
+            captured_on_failure: list[dict[str, Any]] = []
             if runtime_session_id:
-                discard_runtime_session_tool_calls(runtime_session_id)
+                captured_on_failure = consume_runtime_session_tool_calls(runtime_session_id)
             duration_ms = int((time.monotonic() - t0) * 1000)
             error_msg = f"{type(exc).__name__}: {exc}"
             logger.error("Runtime invocation failed: %s", error_msg, exc_info=True)
@@ -1529,13 +1535,14 @@ class Spawner:
                 session_id=session_id,
             )
 
-            # Log failed session
+            # Log failed session — persist any captured tool calls so operators
+            # can see what ran before the failure rather than always writing [].
             if self._pool is not None and session_id is not None:
                 await session_complete(
                     self._pool,
                     session_id,
                     output=None,
-                    tool_calls=[],
+                    tool_calls=captured_on_failure,
                     duration_ms=duration_ms,
                     success=False,
                     error=error_msg,
@@ -1553,6 +1560,10 @@ class Spawner:
                             command=proc_info.get("command"),
                             stderr=proc_info.get("stderr"),
                             runtime_type=proc_info.get("runtime_type"),
+                            retry_attempted=proc_info.get("retry_attempted"),
+                            retry_succeeded=proc_info.get("retry_succeeded"),
+                            result_source=proc_info.get("result_source"),
+                            attempt_count=proc_info.get("attempt_count"),
                         )
                     except Exception:
                         logger.debug(
