@@ -33,6 +33,8 @@ scanner_batch_size = 50
 name = "butlers"
 schema = "switchboard"
 
+[modules.memory]
+groups = ["core", "entity"]
 [modules.pipeline]
 enable_ingress_dedupe = true
 

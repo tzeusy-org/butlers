@@ -35,7 +35,7 @@ groups = ["butler_events"]
 policy = "suggest"
 
 [modules.memory]
-groups = ["core"]
+groups = ["core", "entity"]
 
 [modules.finance]
 groups = ["core", "subscriptions", "bills", "analytics", "bulk", "intelligence", "budgets"]

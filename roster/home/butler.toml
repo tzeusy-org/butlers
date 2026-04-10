@@ -21,7 +21,7 @@ url = "http://localhost:41100/mcp"
 [modules.home_assistant]
 
 [modules.memory]
-groups = ["core", "preferences"]
+groups = ["core", "preferences", "entity"]
 
 [modules.contacts]
 provider = "google"

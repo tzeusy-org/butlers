@@ -28,7 +28,7 @@ groups = ["core", "butler_events"]
 policy = "suggest"
 
 [modules.memory]
-groups = ["core"]
+groups = ["core", "entity"]
 
 [modules.travel]
 

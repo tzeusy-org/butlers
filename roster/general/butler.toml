@@ -99,7 +99,7 @@ job_name = "collect_briefing_contributions"
 [modules.general]
 
 [modules.memory]
-groups = ["core", "preferences"]
+groups = ["core", "preferences", "entity"]
 
 [modules.steam]
 

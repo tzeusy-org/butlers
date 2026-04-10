@@ -60,7 +60,7 @@ If there are no notable highlights this week, exit silently without sending.
 """
 
 [modules.memory]
-groups = ["core", "preferences"]
+groups = ["core", "preferences", "entity"]
 
 [modules.calendar]
 provider = "google"
