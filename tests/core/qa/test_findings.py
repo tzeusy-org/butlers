@@ -33,10 +33,19 @@ class FakeRecord(dict):
 
 def _make_finding(**kwargs) -> QaFinding:
     now = datetime.now(UTC)
-    defaults = dict(fingerprint="a" * 64, source_type="log_scanner", source_butler="finance",
-                    severity=1, exception_type="ValueError", event_summary="Bad value",
-                    call_site="finance.jobs:42", occurrence_count=3,
-                    first_seen=now, last_seen=now, timestamp=now)
+    defaults = dict(
+        fingerprint="a" * 64,
+        source_type="log_scanner",
+        source_butler="finance",
+        severity=1,
+        exception_type="ValueError",
+        event_summary="Bad value",
+        call_site="finance.jobs:42",
+        occurrence_count=3,
+        first_seen=now,
+        last_seen=now,
+        timestamp=now,
+    )
     defaults.update(kwargs)
     return QaFinding(**defaults)
 
@@ -68,7 +77,9 @@ async def test_insert_finding():
 
     # healing_attempt_id passed as str
     pool2 = _pool(fetchval=expected_id)
-    await insert_finding(pool2, patrol_id, finding, dedup_reason=None, healing_attempt_id=attempt_id)
+    await insert_finding(
+        pool2, patrol_id, finding, dedup_reason=None, healing_attempt_id=attempt_id
+    )
     assert str(attempt_id) in pool2.fetchval.call_args.args
 
     # healing_attempt_id=None passes None

@@ -29,7 +29,9 @@ def test_capture_consume_ignored_and_outcome():
         reset_current_runtime_session_id(token)
 
     calls = consume_runtime_session_tool_calls("sess-1")
-    assert calls == [{"name": "route_to_butler", "module": "core", "input": {"butler": "relationship"}}]
+    assert calls == [
+        {"name": "route_to_butler", "module": "core", "input": {"butler": "relationship"}}
+    ]
 
     # Ignored without session
     capture_tool_call(tool_name="route_to_butler", module_name="core", input_payload={})

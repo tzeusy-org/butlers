@@ -31,8 +31,7 @@ def _make_module(switchboard_client: object | None = None) -> SelfHealingModule:
     return mod
 
 
-def _make_call_tool_mock(list_result=None, route_result=None, route_raises=None,
-                          list_raises=None):
+def _make_call_tool_mock(list_result=None, route_result=None, route_raises=None, list_raises=None):
     """Build a mock call_tool function tracking route calls."""
     route_calls: list[dict] = []
 
@@ -55,8 +54,13 @@ def _make_call_tool_mock(list_result=None, route_result=None, route_raises=None,
 
 def _report_error_args(**overrides):
     base = dict(
-        error_type="ValueError", error_message="oops", traceback_str=None,
-        call_site="foo.py:bar", context=None, tool_name=None, severity_hint=None,
+        error_type="ValueError",
+        error_message="oops",
+        traceback_str=None,
+        call_site="foo.py:bar",
+        context=None,
+        tool_name=None,
+        severity_hint=None,
     )
     base.update(overrides)
     return base
@@ -88,10 +92,15 @@ class TestQaRelayPrimaryPath:
         mod = _make_module(switchboard_client=client)
         mod._pool = None
 
-        result = await mod._handle_report_error(**_report_error_args(
-            error_type="RuntimeError", error_message="something broke",
-            call_site="module.py:func", context="agent context here", severity_hint="high",
-        ))
+        result = await mod._handle_report_error(
+            **_report_error_args(
+                error_type="RuntimeError",
+                error_message="something broke",
+                call_site="module.py:func",
+                context="agent context here",
+                severity_hint="high",
+            )
+        )
         assert result["accepted"] is True
         assert len(route_calls) == 1
         ra = route_calls[0]

@@ -26,10 +26,6 @@ def test_memory_maintenance_schedules_use_job_mode_for_memory_enabled_butlers() 
             "memory_consolidation": "memory_consolidation",
             "memory_episode_cleanup": "memory_episode_cleanup",
         },
-        "switchboard": {
-            "memory_consolidation": "memory_consolidation",
-            "memory_episode_cleanup": "memory_episode_cleanup",
-        },
     }
 
     repo_root = Path(__file__).resolve().parents[2]

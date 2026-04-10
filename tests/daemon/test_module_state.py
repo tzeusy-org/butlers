@@ -210,9 +210,7 @@ def _patch_infra(mock_pool: AsyncMock | None = None):
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(
-            ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock
-        ),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
@@ -330,14 +328,18 @@ async def test_init_module_states_startup_behavior(tmp_path: Path) -> None:
     d3.mkdir()
     butler_dir3 = _make_butler_toml(d3, modules={"stub_a": {}})
     store_failure = {"module::stub_a::enabled": False, "module::stub_a::disabled_by": "failure"}
-    daemon4 = await _start_daemon(butler_dir3, registry=_make_registry(StubModuleA), state_store=store_failure)
+    daemon4 = await _start_daemon(
+        butler_dir3, registry=_make_registry(StubModuleA), state_store=store_failure
+    )
     assert daemon4.get_module_states()["stub_a"].enabled is True  # heals
 
     d4 = tmp_path / "d4"
     d4.mkdir()
     butler_dir4 = _make_butler_toml(d4, modules={"stub_a": {}})
     store_user = {"module::stub_a::enabled": False, "module::stub_a::disabled_by": "user"}
-    daemon5 = await _start_daemon(butler_dir4, registry=_make_registry(StubModuleA), state_store=store_user)
+    daemon5 = await _start_daemon(
+        butler_dir4, registry=_make_registry(StubModuleA), state_store=store_user
+    )
     assert daemon5.get_module_states()["stub_a"].enabled is False  # stays disabled
 
 
@@ -357,7 +359,9 @@ async def test_get_module_states_behavior(tmp_path: Path) -> None:
         ) -> None:
             raise RuntimeError("db connection refused")
 
-    daemon = await _start_daemon(butler_dir, registry=_make_registry(FailingModuleA), state_store={})
+    daemon = await _start_daemon(
+        butler_dir, registry=_make_registry(FailingModuleA), state_store={}
+    )
     states = daemon.get_module_states()
     states.clear()
     assert len(daemon.get_module_states()) == 1

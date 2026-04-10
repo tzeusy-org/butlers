@@ -227,7 +227,9 @@ class TestRouteExecuteAuthz:
         # Messenger rejects rogue-caller
         patches = _patch_infra()
         daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
+            _make_butler_toml(
+                tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+            ),
             patches,
         )
         assert route_execute_fn is not None
@@ -265,7 +267,9 @@ class TestRouteExecuteAuthz:
         patches_ok = _patch_infra()
         (tmp_path / "mess2").mkdir(exist_ok=True)
         daemon_ok, fn_ok = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path / "mess2", butler_name="messenger", modules={"telegram": {}, "email": {}}),
+            _make_butler_toml(
+                tmp_path / "mess2", butler_name="messenger", modules={"telegram": {}, "email": {}}
+            ),
             patches_ok,
         )
         tg_mod = next(m for m in daemon_ok._modules if m.name == "telegram")
@@ -294,7 +298,9 @@ class TestRouteExecuteCustomTrustedCallers:
         d1 = tmp_path / "c1"
         d1.mkdir()
         daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(d1, butler_name="health", trusted_route_callers=["switchboard", "heartbeat"]),
+            _make_butler_toml(
+                d1, butler_name="health", trusted_route_callers=["switchboard", "heartbeat"]
+            ),
             patches,
         )
         mock_tr = MagicMock(output="ok", success=True, error=None, duration_ms=10)
@@ -354,18 +360,28 @@ class TestTrustedRouteCallersConfig:
         from butlers.config import ConfigError, load_config
 
         # Default
-        assert load_config(_make_butler_toml(tmp_path, butler_name="test_butler")).trusted_route_callers == ("switchboard",)
+        assert load_config(
+            _make_butler_toml(tmp_path, butler_name="test_butler")
+        ).trusted_route_callers == ("switchboard",)
 
         # Custom list
         d2 = tmp_path / "c2"
         d2.mkdir()
-        cfg2 = load_config(_make_butler_toml(d2, butler_name="test_butler", trusted_route_callers=["switchboard", "heartbeat", "admin"]))
+        cfg2 = load_config(
+            _make_butler_toml(
+                d2,
+                butler_name="test_butler",
+                trusted_route_callers=["switchboard", "heartbeat", "admin"],
+            )
+        )
         assert cfg2.trusted_route_callers == ("switchboard", "heartbeat", "admin")
 
         # Empty list
         d3 = tmp_path / "c3"
         d3.mkdir()
-        cfg3 = load_config(_make_butler_toml(d3, butler_name="test_butler", trusted_route_callers=[]))
+        cfg3 = load_config(
+            _make_butler_toml(d3, butler_name="test_butler", trusted_route_callers=[])
+        )
         assert cfg3.trusted_route_callers == ()
 
         # Non-list raises ConfigError
@@ -390,5 +406,7 @@ name = "daily-check"
 cron = "0 9 * * *"
 prompt = "Do the daily check"
 """)
-        with pytest.raises(ConfigError, match=r"butler\.security\.trusted_route_callers must be a list of strings"):
+        with pytest.raises(
+            ConfigError, match=r"butler\.security\.trusted_route_callers must be a list of strings"
+        ):
             load_config(d4)

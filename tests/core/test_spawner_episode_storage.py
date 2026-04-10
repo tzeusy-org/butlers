@@ -116,22 +116,46 @@ class TestSpawnerEpisodeStorageIntegration:
         # Memory enabled + success → stored
         config = _make_config(modules={"memory": {}})
         with (
-            patch("butlers.core.spawner.fetch_memory_context", new_callable=AsyncMock, return_value=None),
-            patch("butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True) as mock_store,
+            patch(
+                "butlers.core.spawner.fetch_memory_context",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner.store_session_episode",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_store,
         ):
-            result = await Spawner(config=config, config_dir=config_dir, runtime=_MockAdapter(result_text="Task completed")).trigger(prompt="do task", trigger_source="trigger")
+            result = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                runtime=_MockAdapter(result_text="Task completed"),
+            ).trigger(prompt="do task", trigger_source="trigger")
         assert result.success is True
         mock_store.assert_awaited_once_with(None, "test-butler", "Task completed", session_id=None)
 
         # Memory disabled → not stored
         config2 = _make_config(modules={})
-        with patch("butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True) as mock_store2:
-            result2 = await Spawner(config=config2, config_dir=config_dir, runtime=_MockAdapter(result_text="Task completed")).trigger(prompt="do task", trigger_source="trigger")
+        with patch(
+            "butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True
+        ) as mock_store2:
+            result2 = await Spawner(
+                config=config2,
+                config_dir=config_dir,
+                runtime=_MockAdapter(result_text="Task completed"),
+            ).trigger(prompt="do task", trigger_source="trigger")
         assert result2.success is True
         mock_store2.assert_not_called()
 
         # Memory enabled + failure → not stored
-        with patch("butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True) as mock_store3:
-            result3 = await Spawner(config=config, config_dir=config_dir, runtime=_MockAdapter(error="invocation failure")).trigger(prompt="do task", trigger_source="trigger")
+        with patch(
+            "butlers.core.spawner.store_session_episode", new_callable=AsyncMock, return_value=True
+        ) as mock_store3:
+            result3 = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                runtime=_MockAdapter(error="invocation failure"),
+            ).trigger(prompt="do task", trigger_source="trigger")
         assert result3.success is False
         mock_store3.assert_not_called()

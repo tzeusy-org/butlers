@@ -25,10 +25,15 @@ class TestIngestEnvelopeFormat:
 
         envelope = {
             "schema_version": "ingest.v1",
-            "source": {"channel": "telegram_bot", "provider": "telegram",
-                       "endpoint_identity": "bot_test"},
-            "event": {"external_event_id": str(uuid.uuid4()),
-                      "observed_at": datetime.now(UTC).isoformat()},
+            "source": {
+                "channel": "telegram_bot",
+                "provider": "telegram",
+                "endpoint_identity": "bot_test",
+            },
+            "event": {
+                "external_event_id": str(uuid.uuid4()),
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
             "sender": {"identity": "user123"},
             "payload": {"raw": {"text": "hello"}, "normalized_text": "hello"},
         }

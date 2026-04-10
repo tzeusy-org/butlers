@@ -76,16 +76,32 @@ def test_context_start_ingestion_tier_full(context_start_env: dict[str, Any]) ->
 
 def test_context_start_idempotency_key_deterministic() -> None:
     e1 = build_context_start_envelope(
-        endpoint_identity=_ENDPOINT, spotify_user_id=_SPOTIFY_USER_ID,
-        track_id="t1", track_name="S", artist_names=[], album_name="A",
-        duration_ms=0, context_uri="spotify:playlist:x", device_name=None,
-        timestamp_ms=111, raw_payload={}, observed_at=_OBSERVED,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        track_id="t1",
+        track_name="S",
+        artist_names=[],
+        album_name="A",
+        duration_ms=0,
+        context_uri="spotify:playlist:x",
+        device_name=None,
+        timestamp_ms=111,
+        raw_payload={},
+        observed_at=_OBSERVED,
     )
     e2 = build_context_start_envelope(
-        endpoint_identity=_ENDPOINT, spotify_user_id=_SPOTIFY_USER_ID,
-        track_id="t1", track_name="S", artist_names=[], album_name="A",
-        duration_ms=0, context_uri="spotify:playlist:x", device_name=None,
-        timestamp_ms=111, raw_payload={}, observed_at=_OBSERVED,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        track_id="t1",
+        track_name="S",
+        artist_names=[],
+        album_name="A",
+        duration_ms=0,
+        context_uri="spotify:playlist:x",
+        device_name=None,
+        timestamp_ms=111,
+        raw_payload={},
+        observed_at=_OBSERVED,
     )
     assert e1["control"]["idempotency_key"] == e2["control"]["idempotency_key"]
 
@@ -161,7 +177,9 @@ def test_draining_resume_returns_to_active(tracker: ListeningSessionTracker) -> 
     assert tracker.state == "draining"
 
     events, closed = tracker.process_playback(
-        track_id="t1", track_name="A", context_uri="ctx",
+        track_id="t1",
+        track_name="A",
+        context_uri="ctx",
         now=_NOW + timedelta(seconds=30),
     )
     assert tracker.state == "active"
@@ -180,7 +198,9 @@ def test_context_change_does_not_split_active_session(tracker: ListeningSessionT
     """Different context_uri during active playback: accumulate, don't split."""
     tracker.process_playback(track_id="t1", track_name="A", context_uri="ctx:1", now=_NOW)
     events, closed = tracker.process_playback(
-        track_id="t2", track_name="B", context_uri="ctx:2",
+        track_id="t2",
+        track_name="B",
+        context_uri="ctx:2",
         now=_NOW + timedelta(minutes=5),
     )
     assert closed == [], "context change must not close session during continuous playback"
@@ -196,7 +216,9 @@ def test_null_context_does_not_split_session(tracker: ListeningSessionTracker) -
         track_id="t1", track_name="Rain 1", context_uri="spotify:playlist:rain", now=_NOW
     )
     events, closed = tracker.process_playback(
-        track_id="t2", track_name="Rain 2", context_uri=None,
+        track_id="t2",
+        track_name="Rain 2",
+        context_uri=None,
         now=_NOW + timedelta(minutes=4),
     )
     assert closed == []
@@ -219,7 +241,9 @@ def test_overnight_rain_sounds_single_session(tracker: ListeningSessionTracker) 
     contexts = [None, "spotify:artist:abc", None, "spotify:album:xyz", "spotify:artist:def"]
     for i, ctx in enumerate(contexts, start=2):
         events, closed = tracker.process_playback(
-            track_id=f"t{i}", track_name=f"Rain {i}", context_uri=ctx,
+            track_id=f"t{i}",
+            track_name=f"Rain {i}",
+            context_uri=ctx,
             now=_NOW + timedelta(minutes=4 * i),
         )
         assert closed == [], f"track {i} should not close session"
@@ -234,7 +258,9 @@ def test_session_ends_on_playback_gap_not_context(tracker: ListeningSessionTrack
     """Session ends when playback stops + drain timeout, not on context change."""
     tracker.process_playback(track_id="t1", track_name="A", context_uri="ctx:1", now=_NOW)
     tracker.process_playback(
-        track_id="t2", track_name="B", context_uri="ctx:2",
+        track_id="t2",
+        track_name="B",
+        context_uri="ctx:2",
         now=_NOW + timedelta(minutes=5),
     )
     # Playback stops
@@ -257,7 +283,9 @@ def test_draining_resume_with_different_context_continues(
 
     # Resume with different context (e.g. user switched playlists during brief pause)
     events, closed = tracker.process_playback(
-        track_id="t2", track_name="B", context_uri="ctx:2",
+        track_id="t2",
+        track_name="B",
+        context_uri="ctx:2",
         now=_NOW + timedelta(seconds=30),
     )
     assert tracker.state == "active"
@@ -277,7 +305,9 @@ def test_new_session_after_full_drain(tracker: ListeningSessionTracker) -> None:
 
     # New session starts
     events, closed = tracker.process_playback(
-        track_id="t2", track_name="B", context_uri="ctx:2",
+        track_id="t2",
+        track_name="B",
+        context_uri="ctx:2",
         now=_NOW + timedelta(seconds=80),
     )
     assert tracker.state == "active"

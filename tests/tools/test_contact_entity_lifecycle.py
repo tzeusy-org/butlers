@@ -189,13 +189,11 @@ async def test_contact_merge_and_entity_merge_validation():
         await contact_merge(
             pool, source_id=CONTACT_UUID, target_id=CONTACT_UUID2, memory_pool=memory_pool
         )
-        mock_entity_merge.assert_awaited_once_with(
-            memory_pool, str(ENTITY_UUID), str(ENTITY_UUID2)        )
+        mock_entity_merge.assert_awaited_once_with(memory_pool, str(ENTITY_UUID), str(ENTITY_UUID2))
 
     # entity_merge validation: same ID raises
     with pytest.raises(ValueError, match="different"):
-        await entity_merge(
-            AsyncMock(), str(ENTITY_UUID), str(ENTITY_UUID)        )
+        await entity_merge(AsyncMock(), str(ENTITY_UUID), str(ENTITY_UUID))
 
     # Missing entity raises
     def _mock_missing_src():
@@ -211,5 +209,4 @@ async def test_contact_merge_and_entity_merge_validation():
         return p
 
     with pytest.raises(ValueError):
-        await entity_merge(
-            _mock_missing_src(), str(ENTITY_UUID), str(ENTITY_UUID2)        )
+        await entity_merge(_mock_missing_src(), str(ENTITY_UUID), str(ENTITY_UUID2))

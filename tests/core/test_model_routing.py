@@ -160,7 +160,13 @@ async def _insert_catalog_entry(
         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
         RETURNING id
         """,
-        alias, runtime_type, model_id, extra_json, complexity_tier, enabled, priority,
+        alias,
+        runtime_type,
+        model_id,
+        extra_json,
+        complexity_tier,
+        enabled,
+        priority,
     )
     return str(row["id"])
 
@@ -180,7 +186,11 @@ async def _insert_override(
             (butler_name, catalog_entry_id, enabled, priority, complexity_tier)
         VALUES ($1, $2, $3, $4, $5)
         """,
-        butler_name, uuid.UUID(catalog_entry_id), enabled, priority, complexity_tier,
+        butler_name,
+        uuid.UUID(catalog_entry_id),
+        enabled,
+        priority,
+        complexity_tier,
     )
 
 
@@ -203,8 +213,11 @@ async def test_resolve_basic_catalog(postgres_container: Any) -> None:
     async with _make_pool(postgres_container) as pool:
         # Matching tier found
         entry_id = await _insert_catalog_entry(
-            pool, alias="sonnet", model_id="claude-sonnet-4",
-            complexity_tier="medium", priority=10,
+            pool,
+            alias="sonnet",
+            model_id="claude-sonnet-4",
+            complexity_tier="medium",
+            priority=10,
         )
         result = await resolve_model(pool, "general", Complexity.MEDIUM)
         assert result is not None
@@ -230,8 +243,11 @@ async def test_resolve_override_behaviors(postgres_container: Any) -> None:
     async with _make_pool(postgres_container) as pool:
         # Override disable
         entry_id = await _insert_catalog_entry(
-            pool, alias="sonnet", model_id="claude-sonnet-4",
-            complexity_tier="medium", priority=10,
+            pool,
+            alias="sonnet",
+            model_id="claude-sonnet-4",
+            complexity_tier="medium",
+            priority=10,
         )
         await _insert_override(pool, butler_name="health", catalog_entry_id=entry_id, enabled=False)
         assert await resolve_model(pool, "health", Complexity.MEDIUM) is None
@@ -239,8 +255,11 @@ async def test_resolve_override_behaviors(postgres_container: Any) -> None:
 
         # Override remap: medium → high for relationship butler
         await _insert_override(
-            pool, butler_name="relationship", catalog_entry_id=entry_id,
-            enabled=True, complexity_tier="high",
+            pool,
+            butler_name="relationship",
+            catalog_entry_id=entry_id,
+            enabled=True,
+            complexity_tier="high",
         )
         assert await resolve_model(pool, "relationship", Complexity.MEDIUM) is None
         high_r = await resolve_model(pool, "relationship", Complexity.HIGH)
@@ -249,18 +268,28 @@ async def test_resolve_override_behaviors(postgres_container: Any) -> None:
     async with _make_pool(postgres_container) as pool:
         # Priority override: two global entries, one boosted for messenger
         haiku_id = await _insert_catalog_entry(
-            pool, alias="haiku", model_id="claude-haiku-4",
-            complexity_tier="medium", priority=5,
+            pool,
+            alias="haiku",
+            model_id="claude-haiku-4",
+            complexity_tier="medium",
+            priority=5,
         )
         await _insert_catalog_entry(
-            pool, alias="sonnet2", model_id="claude-sonnet-4",
-            complexity_tier="medium", priority=20,
+            pool,
+            alias="sonnet2",
+            model_id="claude-sonnet-4",
+            complexity_tier="medium",
+            priority=20,
         )
         global_r = await resolve_model(pool, "general", Complexity.MEDIUM)
         assert global_r is not None and global_r[1] == "claude-sonnet-4"
 
         await _insert_override(
-            pool, butler_name="messenger", catalog_entry_id=haiku_id, enabled=True, priority=100,
+            pool,
+            butler_name="messenger",
+            catalog_entry_id=haiku_id,
+            enabled=True,
+            priority=100,
         )
         messenger_r = await resolve_model(pool, "messenger", Complexity.MEDIUM)
         assert messenger_r is not None and messenger_r[1] == "claude-haiku-4"
@@ -330,8 +359,13 @@ async def test_resolve_discretion_and_self_healing_tiers(postgres_container: Any
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
-            "discretion-model", "opencode", "ollama/qwen3.5:9b", json.dumps([]),
-            "discretion", True, 10,
+            "discretion-model",
+            "opencode",
+            "ollama/qwen3.5:9b",
+            json.dumps([]),
+            "discretion",
+            True,
+            10,
         )
         await pool.execute(
             """
@@ -339,8 +373,13 @@ async def test_resolve_discretion_and_self_healing_tiers(postgres_container: Any
                 (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
             VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
-            "healing-model", "claude", "claude-sonnet-4-6", json.dumps([]),
-            "self_healing", True, 10,
+            "healing-model",
+            "claude",
+            "claude-sonnet-4-6",
+            json.dumps([]),
+            "self_healing",
+            True,
+            10,
         )
 
         # Discretion tier resolves; medium does not match it

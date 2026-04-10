@@ -125,7 +125,10 @@ class TestSpawnerMemoryContextInjection:
             return_value="Remembered: user prefers concise answers.",
         ) as mock_fetch:
             await spawner.trigger(prompt="do task", trigger_source="trigger")
-        assert adapter.captured_system_prompts[-1] == "Base prompt.\n\nRemembered: user prefers concise answers."
+        assert (
+            adapter.captured_system_prompts[-1]
+            == "Base prompt.\n\nRemembered: user prefers concise answers."
+        )
         mock_fetch.assert_awaited_once_with(None, "test-butler", "do task", token_budget=1234)
 
         # Disabled: fetch not called
@@ -135,6 +138,8 @@ class TestSpawnerMemoryContextInjection:
         config2 = _make_config(modules={})
         adapter2 = _CapturingAdapter()
         spawner2 = Spawner(config=config2, config_dir=config_dir2, runtime=adapter2)
-        with patch("butlers.core.spawner.fetch_memory_context", new_callable=AsyncMock) as mock_fetch2:
+        with patch(
+            "butlers.core.spawner.fetch_memory_context", new_callable=AsyncMock
+        ) as mock_fetch2:
             await spawner2.trigger(prompt="do task", trigger_source="trigger")
         mock_fetch2.assert_not_called()

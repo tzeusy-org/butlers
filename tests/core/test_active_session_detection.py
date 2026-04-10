@@ -93,7 +93,10 @@ class TestSpawnerResultSessionId:
         ):
             mock_create.return_value = fake_session_id
             result = await Spawner(
-                config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter(result_text="ok")
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=MockAdapter(result_text="ok"),
             ).trigger("test", "tick")
         assert result.session_id == fake_session_id and result.success is True
 
@@ -104,7 +107,10 @@ class TestSpawnerResultSessionId:
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000043")
             result2 = await Spawner(
-                config=config, config_dir=config_dir, pool=mock_pool, runtime=MockAdapter(error="boom")
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=MockAdapter(error="boom"),
             ).trigger("test", "tick")
         assert result2.session_id is not None and result2.success is False
 

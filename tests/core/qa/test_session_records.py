@@ -70,6 +70,7 @@ def _make_source(pool: AsyncMock | None = None) -> SessionRecordsSource:
 async def test_health_check_and_query_behavior():
     """Protocol compliance; health check runs before main query; failure propagates; lookback passed correctly; empty view returns []."""
     import inspect
+
     mock_pool = MagicMock()
     source0 = SessionRecordsSource(pool=mock_pool)
     assert isinstance(source0, DiscoverySource)
@@ -118,7 +119,12 @@ async def test_finding_construction_fingerprint_and_aggregation():
     pool = AsyncMock(spec=asyncpg.Pool)
     pool.execute = AsyncMock(return_value=None)
     now = datetime.now(UTC)
-    row = _make_asyncpg_record(source_butler="travel", error="ConnectionError: failed to reach API", status="error", completed_at=now)
+    row = _make_asyncpg_record(
+        source_butler="travel",
+        error="ConnectionError: failed to reach API",
+        status="error",
+        completed_at=now,
+    )
     pool.fetch = AsyncMock(return_value=[row])
     source = SessionRecordsSource(pool=pool, repo_root=Path("/tmp"))
     findings = await source.discover(lookback_minutes=15)
@@ -134,7 +140,9 @@ async def test_finding_construction_fingerprint_and_aggregation():
     pool2 = AsyncMock(spec=asyncpg.Pool)
     pool2.execute = AsyncMock(return_value=None)
     known_fp = "a" * 64
-    pool2.fetch = AsyncMock(return_value=[_make_asyncpg_record(healing_fingerprint=known_fp, error="some error")])
+    pool2.fetch = AsyncMock(
+        return_value=[_make_asyncpg_record(healing_fingerprint=known_fp, error="some error")]
+    )
     findings2 = await SessionRecordsSource(pool=pool2).discover(lookback_minutes=15)
     assert len(findings2) == 1
     assert findings2[0].fingerprint == known_fp
@@ -143,7 +151,11 @@ async def test_finding_construction_fingerprint_and_aggregation():
     for bad_fp in (None, "short"):
         pool3 = AsyncMock(spec=asyncpg.Pool)
         pool3.execute = AsyncMock(return_value=None)
-        pool3.fetch = AsyncMock(return_value=[_make_asyncpg_record(healing_fingerprint=bad_fp, error="ValueError: test")])
+        pool3.fetch = AsyncMock(
+            return_value=[
+                _make_asyncpg_record(healing_fingerprint=bad_fp, error="ValueError: test")
+            ]
+        )
         findings3 = await SessionRecordsSource(pool=pool3).discover(lookback_minutes=15)
         assert len(findings3) == 1
         assert len(findings3[0].fingerprint) == 64
@@ -153,8 +165,12 @@ async def test_finding_construction_fingerprint_and_aggregation():
     pool4.execute = AsyncMock(return_value=None)
     shared_fp = "b" * 64
     rows4 = [
-        _make_asyncpg_record(healing_fingerprint=shared_fp, completed_at=now - timedelta(minutes=10)),
-        _make_asyncpg_record(healing_fingerprint=shared_fp, completed_at=now - timedelta(minutes=5)),
+        _make_asyncpg_record(
+            healing_fingerprint=shared_fp, completed_at=now - timedelta(minutes=10)
+        ),
+        _make_asyncpg_record(
+            healing_fingerprint=shared_fp, completed_at=now - timedelta(minutes=5)
+        ),
         _make_asyncpg_record(healing_fingerprint=shared_fp, completed_at=now),
     ]
     pool4.fetch = AsyncMock(return_value=rows4)
@@ -165,18 +181,25 @@ async def test_finding_construction_fingerprint_and_aggregation():
     # Different fingerprints → separate findings
     pool5 = AsyncMock(spec=asyncpg.Pool)
     pool5.execute = AsyncMock(return_value=None)
-    pool5.fetch = AsyncMock(return_value=[
-        _make_asyncpg_record(healing_fingerprint="a" * 64, error="error A"),
-        _make_asyncpg_record(healing_fingerprint="b" * 64, error="error B"),
-    ])
+    pool5.fetch = AsyncMock(
+        return_value=[
+            _make_asyncpg_record(healing_fingerprint="a" * 64, error="error A"),
+            _make_asyncpg_record(healing_fingerprint="b" * 64, error="error B"),
+        ]
+    )
     findings5 = await SessionRecordsSource(pool=pool5).discover(lookback_minutes=15)
     assert len(findings5) == 2
 
     # Status maps to synthetic exception_type
-    for status, expected_type in [("timeout", "SessionTimeoutError"), ("crash", "SessionCrashError")]:
+    for status, expected_type in [
+        ("timeout", "SessionTimeoutError"),
+        ("crash", "SessionCrashError"),
+    ]:
         pool6 = AsyncMock(spec=asyncpg.Pool)
         pool6.execute = AsyncMock(return_value=None)
-        pool6.fetch = AsyncMock(return_value=[_make_asyncpg_record(status=status, error=None, healing_fingerprint=None)])
+        pool6.fetch = AsyncMock(
+            return_value=[_make_asyncpg_record(status=status, error=None, healing_fingerprint=None)]
+        )
         findings6 = await SessionRecordsSource(pool=pool6).discover(lookback_minutes=15)
         assert findings6[0].exception_type == expected_type
 
@@ -194,8 +217,12 @@ async def test_postgres_error_and_anonymization():
     # Anonymization
     pool2 = AsyncMock(spec=asyncpg.Pool)
     pool2.execute = AsyncMock(return_value=None)
-    row2 = _make_asyncpg_record(error="Failed to process message from user@test.example.com", healing_fingerprint=None)
+    row2 = _make_asyncpg_record(
+        error="Failed to process message from user@test.example.com", healing_fingerprint=None
+    )
     pool2.fetch = AsyncMock(return_value=[row2])
-    findings2 = await SessionRecordsSource(pool=pool2, repo_root=Path("/tmp")).discover(lookback_minutes=15)
+    findings2 = await SessionRecordsSource(pool=pool2, repo_root=Path("/tmp")).discover(
+        lookback_minutes=15
+    )
     assert len(findings2) == 1
     assert "user@test.example.com" not in findings2[0].event_summary

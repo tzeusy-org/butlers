@@ -28,6 +28,7 @@ def _now() -> datetime:
 @pytest.fixture
 async def engagement_pool(provisioned_postgres_pool):
     from butlers.tools.switchboard.insight.broker import create_insight_tables
+
     async with provisioned_postgres_pool() as pool:
         await create_insight_tables(pool)
         yield pool
@@ -73,7 +74,9 @@ class TestCheckAndUpdateEngagementIntegration:
     async def _insert(self, pool, insight_id, delivered_at, engaged=False):
         await pool.execute(
             "INSERT INTO insight_engagement (insight_id, delivered_at, engaged) VALUES ($1, $2, $3)",
-            insight_id, delivered_at, engaged,
+            insight_id,
+            delivered_at,
+            engaged,
         )
 
     async def test_engagement_window_logic(self, engagement_pool):
@@ -89,7 +92,9 @@ class TestCheckAndUpdateEngagementIntegration:
         id1 = uuid.uuid4()
         await self._insert(engagement_pool, id1, ref_now - timedelta(minutes=30))
         assert await check_and_update_engagement(engagement_pool, now=ref_now) == 1
-        row = await engagement_pool.fetchrow("SELECT engaged FROM insight_engagement WHERE insight_id = $1", id1)
+        row = await engagement_pool.fetchrow(
+            "SELECT engaged FROM insight_engagement WHERE insight_id = $1", id1
+        )
         assert row["engaged"] is True
 
         # Outside window (90 min ago)
@@ -97,7 +102,9 @@ class TestCheckAndUpdateEngagementIntegration:
         await self._insert(engagement_pool, id2, ref_now - timedelta(minutes=90))
         updated = await check_and_update_engagement(engagement_pool, now=ref_now)
         assert updated == 0  # id1 already engaged, id2 outside window
-        row2 = await engagement_pool.fetchrow("SELECT engaged FROM insight_engagement WHERE insight_id = $1", id2)
+        row2 = await engagement_pool.fetchrow(
+            "SELECT engaged FROM insight_engagement WHERE insight_id = $1", id2
+        )
         assert row2["engaged"] is False
 
         # Batch: multiple unengaged in window
@@ -118,8 +125,11 @@ _MOCK_BUTLERS = [{"name": "general", "description": "General purpose butler."}]
 
 
 class TestPipelineEngagementDetection:
-    @patch("butlers.tools.switchboard.routing.classify._load_available_butlers",
-           new_callable=AsyncMock, return_value=_MOCK_BUTLERS)
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
     async def test_engagement_called_per_process_and_exception_nonfatal(self, _mock_load):
         """check_and_update_engagement called once per process(); exception doesn't block routing."""
         from butlers.modules.pipeline import MessagePipeline
@@ -132,13 +142,21 @@ class TestPipelineEngagementDetection:
             return 0
 
         async def mock_dispatch(**kwargs):
-            return FakeSpawnerResult(output="ok", tool_calls=[
-                {"name": "route_to_butler", "args": {"butler": "general", "prompt": "hi"},
-                 "result": {"status": "ok", "butler": "general"}},
-            ])
+            return FakeSpawnerResult(
+                output="ok",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "general", "prompt": "hi"},
+                        "result": {"status": "ok", "butler": "general"},
+                    },
+                ],
+            )
 
-        with patch("butlers.tools.switchboard.insight.broker.check_and_update_engagement",
-                   side_effect=mock_engagement):
+        with patch(
+            "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
+            side_effect=mock_engagement,
+        ):
             pipeline = MessagePipeline(switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch)
             await pipeline.process("msg one")
             await pipeline.process("msg two")
@@ -148,8 +166,10 @@ class TestPipelineEngagementDetection:
         async def mock_raise(pool, **kwargs):
             raise RuntimeError("DB down")
 
-        with patch("butlers.tools.switchboard.insight.broker.check_and_update_engagement",
-                   side_effect=mock_raise):
+        with patch(
+            "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
+            side_effect=mock_raise,
+        ):
             pipeline2 = MessagePipeline(switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch)
             result = await pipeline2.process("hello")
         assert result.target_butler == "general"

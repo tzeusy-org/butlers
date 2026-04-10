@@ -51,6 +51,7 @@ class TestValidationRules:
 
         # Expires must be in future
         from datetime import UTC, datetime, timedelta
+
         assert (datetime.now(UTC) + timedelta(hours=1)) > datetime.now(UTC)
 
         # Verbosity off returns filtered
@@ -122,8 +123,13 @@ class TestPriorityScoringConvention:
     """RFC 0011: Standardized priority ranges and dedup/delivery behavior."""
 
     def test_priority_ranges_dedup_cron_and_status(self):
-        ranges = {"time_critical": (90, 100), "actionable_soon": (70, 89),
-                  "informational": (50, 69), "low_urgency": (30, 49), "background": (1, 29)}
+        ranges = {
+            "time_critical": (90, 100),
+            "actionable_soon": (70, 89),
+            "informational": (50, 69),
+            "low_urgency": (30, 49),
+            "background": (1, 29),
+        }
         assert len(ranges) == 5
         assert ranges["time_critical"][0] > ranges["actionable_soon"][1]
 

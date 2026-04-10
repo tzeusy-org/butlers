@@ -61,10 +61,16 @@ def _make_account_row(
     metadata: dict | None = None,
 ) -> MagicMock:
     data = {
-        "id": id, "entity_id": entity_id, "steam_id": steam_id,
-        "display_name": display_name, "profile_url": profile_url,
-        "avatar_url": avatar_url, "is_primary": is_primary, "status": status,
-        "connected_at": connected_at, "last_poll_at": last_poll_at,
+        "id": id,
+        "entity_id": entity_id,
+        "steam_id": steam_id,
+        "display_name": display_name,
+        "profile_url": profile_url,
+        "avatar_url": avatar_url,
+        "is_primary": is_primary,
+        "status": status,
+        "connected_at": connected_at,
+        "last_poll_at": last_poll_at,
         "metadata": metadata or {},
     }
     row = MagicMock()
@@ -137,17 +143,29 @@ class TestResolveSteamAccount:
         "kwargs,setup_row,check",
         [
             # by steam_id
-            ({"steam_id": _STEAM_ID}, _make_account_row(steam_id=_STEAM_ID),
-             lambda a, sql: a.steam_id == _STEAM_ID and "steam_id = $1" in sql),
+            (
+                {"steam_id": _STEAM_ID},
+                _make_account_row(steam_id=_STEAM_ID),
+                lambda a, sql: a.steam_id == _STEAM_ID and "steam_id = $1" in sql,
+            ),
             # by UUID string
-            ({"account": str(_ACCOUNT_ID)}, _make_account_row(id=_ACCOUNT_ID),
-             lambda a, sql: a.id == _ACCOUNT_ID and "id = $1" in sql),
+            (
+                {"account": str(_ACCOUNT_ID)},
+                _make_account_row(id=_ACCOUNT_ID),
+                lambda a, sql: a.id == _ACCOUNT_ID and "id = $1" in sql,
+            ),
             # by UUID object
-            ({"account": _ACCOUNT_ID}, _make_account_row(id=_ACCOUNT_ID),
-             lambda a, sql: a.id == _ACCOUNT_ID),
+            (
+                {"account": _ACCOUNT_ID},
+                _make_account_row(id=_ACCOUNT_ID),
+                lambda a, sql: a.id == _ACCOUNT_ID,
+            ),
             # default returns primary
-            ({}, _make_account_row(is_primary=True),
-             lambda a, sql: a.is_primary is True and "is_primary = true" in sql),
+            (
+                {},
+                _make_account_row(is_primary=True),
+                lambda a, sql: a.is_primary is True and "is_primary = true" in sql,
+            ),
         ],
         ids=["by-steam-id", "by-uuid-str", "by-uuid-obj", "default-primary"],
     )
@@ -197,9 +215,14 @@ class TestCreateSteamAccount:
     async def test_first_account_is_primary(self) -> None:
         conn = _FakeConn()
         pool = _make_pool(conn)
-        conn.fetchrow = AsyncMock(side_effect=[
-            None, None, _make_id_row(_ENTITY_ID), _make_account_row(is_primary=True),
-        ])
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                _make_id_row(_ENTITY_ID),
+                _make_account_row(is_primary=True),
+            ]
+        )
         assert (await create_steam_account(pool, steam_id=_STEAM_ID)).is_primary is True
 
     async def test_subsequent_account_not_primary(self) -> None:
@@ -207,10 +230,14 @@ class TestCreateSteamAccount:
         pool = _make_pool(conn)
         existing_primary = MagicMock()
         existing_primary.__getitem__ = MagicMock(return_value=True)
-        conn.fetchrow = AsyncMock(side_effect=[
-            None, existing_primary, _make_id_row(_ENTITY_ID_2),
-            _make_account_row(id=_ACCOUNT_ID_2, steam_id=_STEAM_ID_2, is_primary=False),
-        ])
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                None,
+                existing_primary,
+                _make_id_row(_ENTITY_ID_2),
+                _make_account_row(id=_ACCOUNT_ID_2, steam_id=_STEAM_ID_2, is_primary=False),
+            ]
+        )
         assert (await create_steam_account(pool, steam_id=_STEAM_ID_2)).is_primary is False
 
     @pytest.mark.parametrize("status", ["active", "suspended"])
@@ -233,7 +260,9 @@ class TestCreateSteamAccount:
             revoked = MagicMock()
             revoked.__getitem__ = MagicMock(
                 side_effect=lambda k: {
-                    "id": _ACCOUNT_ID, "entity_id": _ENTITY_ID, "status": "revoked",
+                    "id": _ACCOUNT_ID,
+                    "entity_id": _ENTITY_ID,
+                    "status": "revoked",
                 }[k]
             )
             conn.fetchrow = AsyncMock(side_effect=[revoked, _make_account_row(status="active")])
@@ -253,9 +282,14 @@ class TestCreateSteamAccount:
         meta = {"poll_intervals": {"recently_played": 60}}
         conn = _FakeConn()
         pool = _make_pool(conn)
-        conn.fetchrow = AsyncMock(side_effect=[
-            None, None, _make_id_row(_ENTITY_ID), _make_account_row(metadata=meta),
-        ])
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                _make_id_row(_ENTITY_ID),
+                _make_account_row(metadata=meta),
+            ]
+        )
         account = await create_steam_account(
             pool, steam_id=_STEAM_ID, api_key="ABC123KEY", metadata=meta
         )
@@ -279,10 +313,12 @@ class TestListAndGet:
         assert await list_steam_accounts(pool) == []
 
         # Ordered
-        conn.fetch = AsyncMock(return_value=[
-            _make_account_row(id=_ACCOUNT_ID, is_primary=True),
-            _make_account_row(id=_ACCOUNT_ID_2, is_primary=False),
-        ])
+        conn.fetch = AsyncMock(
+            return_value=[
+                _make_account_row(id=_ACCOUNT_ID, is_primary=True),
+                _make_account_row(id=_ACCOUNT_ID_2, is_primary=False),
+            ]
+        )
         accounts = await list_steam_accounts(pool)
         assert len(accounts) == 2 and accounts[0].is_primary is True
 
@@ -313,9 +349,12 @@ class TestSetPrimaryAccount:
     async def test_sets_primary_atomically(self) -> None:
         conn = _FakeConn()
         pool = _make_pool(conn)
-        conn.fetchrow = AsyncMock(side_effect=[
-            _make_id_row(_ACCOUNT_ID), _make_account_row(is_primary=True),
-        ])
+        conn.fetchrow = AsyncMock(
+            side_effect=[
+                _make_id_row(_ACCOUNT_ID),
+                _make_account_row(is_primary=True),
+            ]
+        )
         assert (await set_primary_account(pool, _ACCOUNT_ID)).is_primary is True
         execute_calls = [str(c[0][0]) for c in conn.execute.call_args_list]
         assert any("is_primary = false" in c for c in execute_calls)
@@ -335,8 +374,12 @@ class TestSetPrimaryAccount:
 
 class TestDisconnectAccount:
     def _make_data_row(self, *, was_primary: bool = True) -> MagicMock:
-        data = {"id": _ACCOUNT_ID, "entity_id": _ENTITY_ID,
-                "is_primary": was_primary, "status": "active"}
+        data = {
+            "id": _ACCOUNT_ID,
+            "entity_id": _ENTITY_ID,
+            "is_primary": was_primary,
+            "status": "active",
+        }
         row = MagicMock()
         row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
         return row

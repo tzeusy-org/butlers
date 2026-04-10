@@ -40,14 +40,20 @@ class TestWriteAuditEntry:
         # Complex nested summary
         pool.execute.reset_mock()
         complex_summary = {"nested": {"list": [1, 2, 3]}, "flag": True}
-        await write_audit_entry(pool, butler="b", operation="session", request_summary=complex_summary)
+        await write_audit_entry(
+            pool, butler="b", operation="session", request_summary=complex_summary
+        )
         assert json.loads(pool.execute.call_args[0][3]) == complex_summary
 
         # Error result
         pool.execute.reset_mock()
         await write_audit_entry(
-            pool, butler="b", operation="session", request_summary={},
-            result="error", error="RuntimeError: boom",
+            pool,
+            butler="b",
+            operation="session",
+            request_summary={},
+            result="error",
+            error="RuntimeError: boom",
         )
         err_args = pool.execute.call_args[0]
         assert err_args[4] == "error"
@@ -62,5 +68,7 @@ class TestWriteAuditEntry:
         pool = MagicMock()
         pool.execute = AsyncMock(side_effect=RuntimeError("connection lost"))
         with patch("butlers.core.audit.logger") as mock_logger:
-            await write_audit_entry(pool, butler="my-butler", operation="session", request_summary={"key": "value"})
+            await write_audit_entry(
+                pool, butler="my-butler", operation="session", request_summary={"key": "value"}
+            )
             mock_logger.warning.assert_called_once()

@@ -246,7 +246,11 @@ async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
     set_runtime_session_routing_context(
         runtime_session_id,
         {
-            "source_metadata": {"channel": "telegram_bot", "identity": "telegram:bot-main", "tool_name": "ingest"},
+            "source_metadata": {
+                "channel": "telegram_bot",
+                "identity": "telegram:bot-main",
+                "tool_name": "ingest",
+            },
             "request_context": {
                 "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
                 "source_channel": "telegram_bot",

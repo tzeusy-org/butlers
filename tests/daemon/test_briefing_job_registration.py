@@ -26,7 +26,10 @@ _HOME_DETERMINISTIC_JOBS = (
 class TestBriefingJobRegistration:
     def test_briefing_handlers_registered_callable_and_resolvable(self):
         """All 7 briefing handlers registered, callable, and resolvable via resolve function."""
-        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY, _resolve_deterministic_schedule_job_name
+        from butlers.daemon import (
+            _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
+            _resolve_deterministic_schedule_job_name,
+        )
 
         # All specialist butlers have daily_briefing_contribution
         missing = [
@@ -73,7 +76,10 @@ class TestBriefingJobRegistration:
 class TestHomeJobRegistration:
     def test_home_jobs_registered_callable_and_resolve(self):
         """All four home jobs registered, callable, existing entries intact, and resolve correctly."""
-        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY, _resolve_deterministic_schedule_job_name
+        from butlers.daemon import (
+            _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
+            _resolve_deterministic_schedule_job_name,
+        )
 
         home_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("home", {})
 
@@ -102,7 +108,9 @@ class TestHomeJobRegistration:
             "memory_purge_superseded",
         }
         missing_existing = expected_existing - home_jobs.keys()
-        assert not missing_existing, f"Pre-existing home registry entries were removed: {missing_existing}"
+        assert not missing_existing, (
+            f"Pre-existing home registry entries were removed: {missing_existing}"
+        )
 
         # Resolvable via resolve function
         for job_name in _HOME_DETERMINISTIC_JOBS:

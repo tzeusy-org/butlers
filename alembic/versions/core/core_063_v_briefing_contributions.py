@@ -22,6 +22,8 @@ Columns exposed:
 
 from __future__ import annotations
 
+import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "core_063"
@@ -60,12 +62,36 @@ def _ensure_role_exists(role_name: str) -> None:
     """)
 
 
+def _schema_exists(schema_name: str) -> bool:
+    bind = op.get_bind()
+    return (
+        bind.execute(
+            sa.text("SELECT 1 FROM information_schema.schemata WHERE schema_name = :schema"),
+            {"schema": schema_name},
+        ).scalar()
+        is not None
+    )
+
+
+def _state_table_exists(schema_name: str) -> bool:
+    bind = op.get_bind()
+    relname = f"{schema_name}.state"
+    return (
+        bind.execute(sa.text("SELECT to_regclass(:relname)"), {"relname": relname}).scalar()
+        is not None
+    )
+
+
 def upgrade() -> None:
     # -- Step 0: Ensure the general role exists (may be missing on dev) --------
     _ensure_role_exists(_GENERAL_ROLE)
 
+    available_schemas = tuple(
+        schema for schema in _SPECIALIST_SCHEMAS if _state_table_exists(schema)
+    )
+
     # -- Step 1: Grant SELECT on each specialist schema's state table ---------
-    for schema in _SPECIALIST_SCHEMAS:
+    for schema in available_schemas:
         op.execute(f"""
             DO $$
             BEGIN
@@ -78,12 +104,21 @@ def upgrade() -> None:
         """)
 
     # -- Step 2: Create the cross-schema view ---------------------------------
-    union_terms = "\n    UNION ALL\n    ".join(
-        f"SELECT '{schema}' AS butler, key, value "
-        f"FROM {schema}.state "
-        f"WHERE key LIKE 'briefing/daily/%'"
-        for schema in _SPECIALIST_SCHEMAS
-    )
+    if not _schema_exists("general"):
+        return
+
+    if available_schemas:
+        union_terms = "\n    UNION ALL\n    ".join(
+            f"SELECT '{schema}' AS butler, key, value "
+            f"FROM {schema}.state "
+            f"WHERE key LIKE 'briefing/daily/%'"
+            for schema in available_schemas
+        )
+    else:
+        union_terms = (
+            "SELECT NULL::text AS butler, NULL::text AS key, NULL::jsonb AS value "
+            "WHERE FALSE"
+        )
     op.execute(f"""
         CREATE OR REPLACE VIEW general.v_briefing_contributions AS
         {union_terms}
@@ -92,10 +127,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # -- Step 1: Drop the view ------------------------------------------------
-    op.execute("DROP VIEW IF EXISTS general.v_briefing_contributions")
+    if _schema_exists("general"):
+        op.execute("DROP VIEW IF EXISTS general.v_briefing_contributions")
 
     # -- Step 2: Revoke cross-schema grants -----------------------------------
     for schema in _SPECIALIST_SCHEMAS:
+        if not _state_table_exists(schema):
+            continue
         op.execute(f"""
             DO $$
             BEGIN

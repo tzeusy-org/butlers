@@ -169,8 +169,13 @@ class TestMailboxCRUD:
 
         mod = MailboxModule()
         result = await mod._mailbox_post(
-            mailbox_pool, sender="alice", sender_channel="telegram_bot",
-            body="Hello", subject="Greetings", priority=1, metadata='{"trace_id": "abc123"}',
+            mailbox_pool,
+            sender="alice",
+            sender_channel="telegram_bot",
+            body="Hello",
+            subject="Greetings",
+            priority=1,
+            metadata='{"trace_id": "abc123"}',
         )
         msg_id = uuid.UUID(result["message_id"])
         row = await mailbox_pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", msg_id)
@@ -178,7 +183,9 @@ class TestMailboxCRUD:
 
         # Defaults
         r2 = await mod._mailbox_post(mailbox_pool, "system", "scheduler", "Scheduled check")
-        row2 = await mailbox_pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", uuid.UUID(r2["message_id"]))
+        row2 = await mailbox_pool.fetchrow(
+            "SELECT * FROM mailbox WHERE id = $1", uuid.UUID(r2["message_id"])
+        )
         assert row2["priority"] == 2 and row2["subject"] is None and row2["read_at"] is None
 
     async def test_list_ordering_filter_pagination_empty(self, mailbox_pool):
@@ -221,8 +228,15 @@ class TestMailboxCRUD:
         from butlers.modules.mailbox import MailboxModule
 
         mod = MailboxModule()
-        result = await mod._mailbox_post(mailbox_pool, "health-butler", "mcp", "Daily report",
-                                         subject="Report", priority=1, metadata='{"type": "daily"}')
+        result = await mod._mailbox_post(
+            mailbox_pool,
+            "health-butler",
+            "mcp",
+            "Daily report",
+            subject="Report",
+            priority=1,
+            metadata='{"type": "daily"}',
+        )
         msg_id = result["message_id"]
 
         msg = await mod._mailbox_read(mailbox_pool, msg_id)
@@ -257,7 +271,8 @@ class TestMailboxCRUD:
         result2 = await mod._mailbox_post(mailbox_pool, "s", "mcp", "ts test")
         await mod._mailbox_update_status(mailbox_pool, result2["message_id"], "read")
         row = await mailbox_pool.fetchrow(
-            "SELECT read_at, actioned_at FROM mailbox WHERE id = $1", uuid.UUID(result2["message_id"])
+            "SELECT read_at, actioned_at FROM mailbox WHERE id = $1",
+            uuid.UUID(result2["message_id"]),
         )
         assert row["read_at"] is not None and row["actioned_at"] is None
 
@@ -297,17 +312,28 @@ class TestPostMail:
         """post_mail routes to target butler, returns message_id, logs correctly."""
         from butlers.tools.switchboard import post_mail, register_butler
 
-        await register_butler(switchboard_pool, "inbox-butler", "http://localhost:9500/sse",
-                               "Butler with mailbox", ["mailbox"])
+        await register_butler(
+            switchboard_pool,
+            "inbox-butler",
+            "http://localhost:9500/sse",
+            "Butler with mailbox",
+            ["mailbox"],
+        )
         call_log: list[dict] = []
 
         async def mock_call(endpoint_url, tool_name, args):
             call_log.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
             return {"message_id": "fake-uuid-123"}
 
-        result = await post_mail(switchboard_pool, target_butler="inbox-butler",
-                                 sender="relationship", sender_channel="mcp",
-                                 body="Check on user", subject="Follow-up", call_fn=mock_call)
+        result = await post_mail(
+            switchboard_pool,
+            target_butler="inbox-butler",
+            sender="relationship",
+            sender_channel="mcp",
+            body="Check on user",
+            subject="Follow-up",
+            call_fn=mock_call,
+        )
 
         assert result["result"]["message_id"] == "fake-uuid-123"
         assert call_log[0]["tool_name"] == "mailbox_post"
@@ -320,29 +346,52 @@ class TestPostMail:
         await switchboard_pool.execute("DELETE FROM butler_registry")
 
         # Not found
-        result = await post_mail(switchboard_pool, target_butler="nonexistent",
-                                 sender="system", sender_channel="scheduler", body="Hello")
+        result = await post_mail(
+            switchboard_pool,
+            target_butler="nonexistent",
+            sender="system",
+            sender_channel="scheduler",
+            body="Hello",
+        )
         assert "error" in result and "not found" in result["error"].lower()
 
         # No mailbox module
-        await register_butler(switchboard_pool, "no-mailbox", "http://localhost:9600/sse",
-                               "No mailbox", ["email", "telegram"])
-        result2 = await post_mail(switchboard_pool, target_butler="no-mailbox",
-                                  sender="alice", sender_channel="telegram_bot", body="fail")
+        await register_butler(
+            switchboard_pool,
+            "no-mailbox",
+            "http://localhost:9600/sse",
+            "No mailbox",
+            ["email", "telegram"],
+        )
+        result2 = await post_mail(
+            switchboard_pool,
+            target_butler="no-mailbox",
+            sender="alice",
+            sender_channel="telegram_bot",
+            body="fail",
+        )
         assert "error" in result2 and "mailbox" in result2["error"].lower()
 
         # Sender identity preserved
-        await register_butler(switchboard_pool, "target-butler", "http://localhost:9700/sse",
-                               "Target", ["mailbox"])
+        await register_butler(
+            switchboard_pool, "target-butler", "http://localhost:9700/sse", "Target", ["mailbox"]
+        )
         received: dict = {}
 
         async def capture_call(endpoint_url, tool_name, args):
             received.update(args)
             return {"message_id": "captured-uuid"}
 
-        await post_mail(switchboard_pool, target_butler="target-butler",
-                        sender="alice", sender_channel="telegram_bot",
-                        body="Hello from Alice", subject="Hi", priority=1,
-                        metadata={"correlation_id": "xyz"}, call_fn=capture_call)
+        await post_mail(
+            switchboard_pool,
+            target_butler="target-butler",
+            sender="alice",
+            sender_channel="telegram_bot",
+            body="Hello from Alice",
+            subject="Hi",
+            priority=1,
+            metadata={"correlation_id": "xyz"},
+            call_fn=capture_call,
+        )
         assert received["sender"] == "alice" and received["sender_channel"] == "telegram_bot"
         assert "correlation_id" in json.loads(received["metadata"])

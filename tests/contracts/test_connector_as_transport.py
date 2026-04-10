@@ -68,9 +68,7 @@ class TestConnectorAsTransport:
             ]
             all_attrs = dir(GmailConnectorRuntime)
             exposed = [
-                attr
-                for attr in all_attrs
-                if any(term in attr for term in butler_domain_terms)
+                attr for attr in all_attrs if any(term in attr for term in butler_domain_terms)
             ]
             assert exposed == [], (
                 f"Gmail connector must not expose butler domain attributes: {exposed} (Rule 7)"

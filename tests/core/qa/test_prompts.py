@@ -48,9 +48,14 @@ def test_prompt_required_fields():
     """All required fields appear in the prompt output."""
     fp = "deadbeef" * 8
     finding = _make_finding(
-        fingerprint=fp, exception_type="AttributeError", call_site="travel.jobs:99",
-        severity=0, event_summary="Unexpected null in pipeline",
-        source_butler="travel", source_type="butler_reports", occurrence_count=42,
+        fingerprint=fp,
+        exception_type="AttributeError",
+        call_site="travel.jobs:99",
+        severity=0,
+        event_summary="Unexpected null in pipeline",
+        source_butler="travel",
+        source_type="butler_reports",
+        occurrence_count=42,
     )
     prompt = build_investigation_prompt(finding, uuid.uuid4())
     assert fp in prompt
@@ -65,12 +70,15 @@ def test_prompt_required_fields():
     assert finding.last_seen.isoformat() in prompt
 
 
-@pytest.mark.parametrize("context,expected_present", [
-    ("Root cause likely in the pagination logic.", True),
-    (None, False),
-    ("", False),
-    ("   \n  ", False),
-])
+@pytest.mark.parametrize(
+    "context,expected_present",
+    [
+        ("Root cause likely in the pagination logic.", True),
+        (None, False),
+        ("", False),
+        ("   \n  ", False),
+    ],
+)
 def test_prompt_context_section(context, expected_present):
     """Diagnostic context section included when non-empty, omitted otherwise."""
     finding = _make_finding(context=context)
@@ -88,13 +96,17 @@ def test_prompt_dashboard_section():
     attempt_id = uuid.uuid4()
 
     # With base URL (no trailing slash)
-    prompt = build_investigation_prompt(finding, attempt_id, dashboard_base_url="https://dash.example.com")
+    prompt = build_investigation_prompt(
+        finding, attempt_id, dashboard_base_url="https://dash.example.com"
+    )
     assert "Investigation Dashboard" in prompt
     expected_url = f"https://dash.example.com/qa/investigations/{attempt_id}"
     assert expected_url in prompt
 
     # With trailing slash — stripped
-    prompt2 = build_investigation_prompt(finding, attempt_id, dashboard_base_url="https://dash.example.com/")
+    prompt2 = build_investigation_prompt(
+        finding, attempt_id, dashboard_base_url="https://dash.example.com/"
+    )
     assert expected_url in prompt2
 
     # Without base URL

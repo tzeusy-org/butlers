@@ -48,8 +48,10 @@ def test_fingerprint_result_fields_sanitization_and_parity():
     with pytest.raises((AttributeError, TypeError)):
         result.fingerprint = "modified"  # type: ignore[misc]
     result2 = compute_fingerprint_from_report(
-        error_type=result.exception_type, error_message="some error",
-        call_site=result.call_site, traceback_str=None,
+        error_type=result.exception_type,
+        error_message="some error",
+        call_site=result.call_site,
+        traceback_str=None,
     )
     assert result.fingerprint == result2.fingerprint and result.severity == result2.severity
 
@@ -61,7 +63,9 @@ def test_fingerprint_result_fields_sanitization_and_parity():
     assert "<ID>" in _sanitize_message('relation "foo_123" does not exist')
     assert _sanitize_message("") == "<empty>"
     assert len(_sanitize_message("x" * 600)) == 500
-    assert _sanitize_message('relation "foo_123" does not exist') == _sanitize_message('relation "foo_456" does not exist')
+    assert _sanitize_message('relation "foo_123" does not exist') == _sanitize_message(
+        'relation "foo_456" does not exist'
+    )
 
 
 def test_exception_type_and_call_site():
@@ -89,17 +93,35 @@ def test_exception_type_and_call_site():
 
 def test_severity_scoring():
     """Error type and call site map to expected severity tier."""
+
     def s(error_type: str, call_site: str) -> int:
         return compute_fingerprint_from_report(error_type, "error", call_site, None).severity
 
-    assert s("asyncpg.exceptions.UndefinedTableError", "src/butlers/modules/email.py:send") == SEVERITY_CRITICAL
+    assert (
+        s("asyncpg.exceptions.UndefinedTableError", "src/butlers/modules/email.py:send")
+        == SEVERITY_CRITICAL
+    )
     assert s("asyncpg.InterfaceError", "src/butlers/modules/email.py:send") == SEVERITY_CRITICAL
-    assert s("butlers.credentials.CredentialStoreError", "src/butlers/core/spawner.py:_init") == SEVERITY_CRITICAL
-    assert s("builtins.RuntimeError", "src/butlers/core/runtimes/claude_code.py:invoke") == SEVERITY_HIGH
-    assert s("builtins.FileNotFoundError", "src/butlers/core/spawner.py:read_system_prompt") == SEVERITY_HIGH
+    assert (
+        s("butlers.credentials.CredentialStoreError", "src/butlers/core/spawner.py:_init")
+        == SEVERITY_CRITICAL
+    )
+    assert (
+        s("builtins.RuntimeError", "src/butlers/core/runtimes/claude_code.py:invoke")
+        == SEVERITY_HIGH
+    )
+    assert (
+        s("builtins.FileNotFoundError", "src/butlers/core/spawner.py:read_system_prompt")
+        == SEVERITY_HIGH
+    )
     assert s("builtins.KeyError", "src/butlers/core/spawner.py:_build_env") == SEVERITY_HIGH
-    assert s("builtins.TypeError", "src/butlers/modules/calendar.py:create_event") == SEVERITY_MEDIUM
-    assert s("builtins.RuntimeError", "src/butlers/core/spawner.py:fetch_memory_context") == SEVERITY_LOW
+    assert (
+        s("builtins.TypeError", "src/butlers/modules/calendar.py:create_event") == SEVERITY_MEDIUM
+    )
+    assert (
+        s("builtins.RuntimeError", "src/butlers/core/spawner.py:fetch_memory_context")
+        == SEVERITY_LOW
+    )
     assert s("asyncio.CancelledError", "<unknown>:<unknown>") == SEVERITY_INFO
     assert s("builtins.KeyboardInterrupt", "<unknown>:<unknown>") == SEVERITY_INFO
 
@@ -114,14 +136,21 @@ def test_severity_hint_and_hash():
 
     # Specific rule wins over hint (postgres error in module → critical despite low hint)
     r2 = compute_fingerprint_from_report(
-        "asyncpg.exceptions.PostgresError", "lost", "src/butlers/modules/email.py:send",
-        None, severity_hint="low",
+        "asyncpg.exceptions.PostgresError",
+        "lost",
+        "src/butlers/modules/email.py:send",
+        None,
+        severity_hint="low",
     )
     assert r2.severity == SEVERITY_CRITICAL
 
     # Invalid hint falls back to auto
     r3 = compute_fingerprint_from_report(
-        "builtins.AttributeError", "attr missing", "<unknown>:<unknown>", None, severity_hint="urgent"
+        "builtins.AttributeError",
+        "attr missing",
+        "<unknown>:<unknown>",
+        None,
+        severity_hint="urgent",
     )
     assert r3.severity == SEVERITY_MEDIUM
 

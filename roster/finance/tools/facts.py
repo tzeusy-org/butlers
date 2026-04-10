@@ -238,9 +238,7 @@ async def record_transaction_fact(
             if existing is not None:
                 # Use the direction from the already-stored fact, not the caller's.
                 existing_direction = (
-                    "debit"
-                    if existing["predicate"] == _PREDICATE_TRANSACTION_DEBIT
-                    else "credit"
+                    "debit" if existing["predicate"] == _PREDICATE_TRANSACTION_DEBIT else "credit"
                 )
                 return _transaction_fact_to_dict(
                     fact_id=str(existing["id"]),

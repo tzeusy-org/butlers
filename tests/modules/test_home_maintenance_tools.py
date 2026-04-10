@@ -78,8 +78,12 @@ class TestMaintenanceToolRegistration:
             await module.register_tools(mcp, config={}, db=MagicMock())
 
         registered = set(mcp._registered_tools.keys())
-        for name in ["ha_maintenance_create", "ha_maintenance_complete",
-                      "ha_maintenance_list", "ha_maintenance_remove"]:
+        for name in [
+            "ha_maintenance_create",
+            "ha_maintenance_complete",
+            "ha_maintenance_list",
+            "ha_maintenance_remove",
+        ]:
             assert name in registered
 
 
@@ -94,13 +98,22 @@ class TestMaintenanceCreate:
     ) -> None:
         """Create new item with notes; returns expected fields."""
         item_id = uuid.uuid4()
-        mock_pool.fetchrow = AsyncMock(side_effect=[
-            None,  # duplicate check
-            {"id": item_id, "name": "HVAC filter", "category": "filter",
-             "interval_days": 90, "next_due_at": None},
-        ])
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                None,  # duplicate check
+                {
+                    "id": item_id,
+                    "name": "HVAC filter",
+                    "category": "filter",
+                    "interval_days": 90,
+                    "next_due_at": None,
+                },
+            ]
+        )
         result = await module_with_pool._maintenance_create(
-            name="HVAC filter", category="filter", interval_days=90,
+            name="HVAC filter",
+            category="filter",
+            interval_days=90,
             notes="Replace quarterly",
         )
         assert result["name"] == "HVAC filter"
@@ -145,10 +158,16 @@ class TestMaintenanceComplete:
         item_id = uuid.uuid4()
         now = datetime.now(UTC)
         next_due = datetime(2026, 6, 23, tzinfo=UTC)
-        mock_pool.fetchrow = AsyncMock(return_value={
-            "id": item_id, "name": name, "category": "filter",
-            "interval_days": 90, "last_completed_at": now, "next_due_at": next_due,
-        })
+        mock_pool.fetchrow = AsyncMock(
+            return_value={
+                "id": item_id,
+                "name": name,
+                "category": "filter",
+                "interval_days": 90,
+                "last_completed_at": now,
+                "next_due_at": next_due,
+            }
+        )
         return next_due
 
     async def test_complete_default_and_explicit_timestamp(
@@ -213,39 +232,55 @@ class TestMaintenanceComplete:
 
 class TestMaintenanceList:
     def _make_row(self, name="Test", category="general", status="ok", **kw) -> dict:
-        return {"id": uuid.uuid4(), "name": name, "category": category,
-                "interval_days": kw.get("interval_days", 30),
-                "last_completed_at": None, "next_due_at": None,
-                "notes": None, "status": status}
+        return {
+            "id": uuid.uuid4(),
+            "name": name,
+            "category": category,
+            "interval_days": kw.get("interval_days", 30),
+            "last_completed_at": None,
+            "next_due_at": None,
+            "notes": None,
+            "status": status,
+        }
 
     async def test_list_all_and_empty(
         self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock
     ) -> None:
-        mock_pool.fetch = AsyncMock(return_value=[
-            self._make_row("Filter 1", "filter", "due"),
-            self._make_row("HVAC", "hvac", "ok"),
-        ])
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                self._make_row("Filter 1", "filter", "due"),
+                self._make_row("HVAC", "hvac", "ok"),
+            ]
+        )
         result = await module_with_pool._maintenance_list()
         assert len(result) == 2
 
         mock_pool.fetch = AsyncMock(return_value=[])
         assert await module_with_pool._maintenance_list() == []
 
-    @pytest.mark.parametrize("filter_key,filter_val", [
-        ("status", "due"), ("status", "upcoming"), ("category", "hvac"),
-    ])
+    @pytest.mark.parametrize(
+        "filter_key,filter_val",
+        [
+            ("status", "due"),
+            ("status", "upcoming"),
+            ("category", "hvac"),
+        ],
+    )
     async def test_list_with_valid_filter(
-        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock,
-        filter_key, filter_val
+        self, module_with_pool: HomeAssistantModule, mock_pool: MagicMock, filter_key, filter_val
     ) -> None:
         mock_pool.fetch = AsyncMock(return_value=[self._make_row(status=filter_val)])
         result = await module_with_pool._maintenance_list(**{filter_key: filter_val})
         assert len(result) == 1
         assert filter_val in mock_pool.fetch.call_args.args
 
-    @pytest.mark.parametrize("filter_key,filter_val", [
-        ("status", "invalid_status"), ("category", "unknown"),
-    ])
+    @pytest.mark.parametrize(
+        "filter_key,filter_val",
+        [
+            ("status", "invalid_status"),
+            ("category", "unknown"),
+        ],
+    )
     async def test_list_invalid_filter(
         self, module_with_pool: HomeAssistantModule, filter_key, filter_val
     ) -> None:
@@ -268,7 +303,8 @@ class TestMaintenanceRemove:
     ) -> None:
         mock_pool.execute = AsyncMock(return_value="DELETE 1")
         assert (await module_with_pool._maintenance_remove(name="HVAC filter")) == {
-            "deleted": True, "name": "HVAC filter"
+            "deleted": True,
+            "name": "HVAC filter",
         }
 
         mock_pool.execute = AsyncMock(return_value="DELETE 0")

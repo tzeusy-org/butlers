@@ -29,9 +29,11 @@ class TestPendingActionModel:
     def test_create_minimal_and_full(self):
         """Minimal and full PendingAction construction and field defaults."""
         action = PendingAction(
-            id=uuid.uuid4(), tool_name="email_send",
+            id=uuid.uuid4(),
+            tool_name="email_send",
             tool_args={"to": "alice@example.com", "body": "hello"},
-            status=ActionStatus.PENDING, requested_at=datetime.now(UTC),
+            status=ActionStatus.PENDING,
+            requested_at=datetime.now(UTC),
         )
         assert action.tool_name == "email_send"
         assert action.status == ActionStatus.PENDING
@@ -41,12 +43,18 @@ class TestPendingActionModel:
         now = datetime.now(UTC)
         rule_id = uuid.uuid4()
         full = PendingAction(
-            id=uuid.uuid4(), tool_name="telegram_send",
+            id=uuid.uuid4(),
+            tool_name="telegram_send",
             tool_args={"chat_id": 123, "text": "hi"},
-            agent_summary="Send telegram", session_id=uuid.uuid4(),
-            status=ActionStatus.APPROVED, requested_at=now, expires_at=now,
-            decided_by="user:alice", decided_at=now,
-            execution_result={"ok": True}, approval_rule_id=rule_id,
+            agent_summary="Send telegram",
+            session_id=uuid.uuid4(),
+            status=ActionStatus.APPROVED,
+            requested_at=now,
+            expires_at=now,
+            decided_by="user:alice",
+            decided_at=now,
+            execution_result={"ok": True},
+            approval_rule_id=rule_id,
         )
         assert full.status == ActionStatus.APPROVED
         assert full.approval_rule_id == rule_id
@@ -54,12 +62,18 @@ class TestPendingActionModel:
     def test_to_dict_and_round_trip(self):
         """to_dict() is JSON-serialisable; from_dict() round-trips."""
         original = PendingAction(
-            id=uuid.uuid4(), tool_name="calendar_create",
-            tool_args={"title": "meeting"}, agent_summary="Create a meeting",
-            session_id=uuid.uuid4(), status=ActionStatus.EXECUTED,
-            requested_at=datetime.now(UTC), expires_at=datetime.now(UTC),
-            decided_by="rule:auto", decided_at=datetime.now(UTC),
-            execution_result={"event_id": "abc"}, approval_rule_id=uuid.uuid4(),
+            id=uuid.uuid4(),
+            tool_name="calendar_create",
+            tool_args={"title": "meeting"},
+            agent_summary="Create a meeting",
+            session_id=uuid.uuid4(),
+            status=ActionStatus.EXECUTED,
+            requested_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC),
+            decided_by="rule:auto",
+            decided_at=datetime.now(UTC),
+            execution_result={"event_id": "abc"},
+            approval_rule_id=uuid.uuid4(),
         )
         d = original.to_dict()
         assert isinstance(json.dumps(d), str)
@@ -73,8 +87,11 @@ class TestPendingActionModel:
 
     def test_status_enum_values(self):
         assert set(ActionStatus) == {
-            ActionStatus.PENDING, ActionStatus.APPROVED, ActionStatus.REJECTED,
-            ActionStatus.EXPIRED, ActionStatus.EXECUTED,
+            ActionStatus.PENDING,
+            ActionStatus.APPROVED,
+            ActionStatus.REJECTED,
+            ActionStatus.EXPIRED,
+            ActionStatus.EXECUTED,
         }
         assert ActionStatus.PENDING.value == "pending"
 
@@ -83,7 +100,8 @@ class TestPendingActionModel:
 class TestApprovalRuleModel:
     def test_create_minimal_and_full(self):
         rule = ApprovalRule(
-            id=uuid.uuid4(), tool_name="email_send",
+            id=uuid.uuid4(),
+            tool_name="email_send",
             arg_constraints={"to": "alice@example.com"},
             description="Auto-approve emails to Alice",
             created_at=datetime.now(UTC),
@@ -94,21 +112,31 @@ class TestApprovalRuleModel:
 
         now = datetime.now(UTC)
         full = ApprovalRule(
-            id=uuid.uuid4(), tool_name="telegram_send",
+            id=uuid.uuid4(),
+            tool_name="telegram_send",
             arg_constraints={"chat_id": 123},
             description="Auto-approve telegram to chat 123",
-            created_from=uuid.uuid4(), created_at=now, expires_at=now,
-            max_uses=10, use_count=3, active=False,
+            created_from=uuid.uuid4(),
+            created_at=now,
+            expires_at=now,
+            max_uses=10,
+            use_count=3,
+            active=False,
         )
         assert full.max_uses == 10 and full.active is False
 
     def test_to_dict_and_round_trip(self):
         original = ApprovalRule(
-            id=uuid.uuid4(), tool_name="calendar_create",
+            id=uuid.uuid4(),
+            tool_name="calendar_create",
             arg_constraints={"title": "standup"},
             description="Auto-approve standup creation",
-            created_from=uuid.uuid4(), created_at=datetime.now(UTC),
-            expires_at=datetime.now(UTC), max_uses=5, use_count=2, active=True,
+            created_from=uuid.uuid4(),
+            created_at=datetime.now(UTC),
+            expires_at=datetime.now(UTC),
+            max_uses=5,
+            use_count=2,
+            active=True,
         )
         d = original.to_dict()
         assert isinstance(json.dumps(d), str)
@@ -154,10 +182,13 @@ def _table_exists(db_url: str, table_name: str) -> bool:
 
     engine = create_engine(db_url)
     with engine.connect() as conn:
-        result = conn.execute(text(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables"
-            " WHERE table_schema='public' AND table_name=:t)"
-        ), {"t": table_name})
+        result = conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables"
+                " WHERE table_schema='public' AND table_name=:t)"
+            ),
+            {"t": table_name},
+        )
         exists = result.scalar()
     engine.dispose()
     return bool(exists)
@@ -168,9 +199,10 @@ def _index_exists(db_url: str, index_name: str) -> bool:
 
     engine = create_engine(db_url)
     with engine.connect() as conn:
-        result = conn.execute(text(
-            "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname=:idx)"
-        ), {"idx": index_name})
+        result = conn.execute(
+            text("SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname=:idx)"),
+            {"idx": index_name},
+        )
         exists = result.scalar()
     engine.dispose()
     return bool(exists)
@@ -193,9 +225,12 @@ class TestApprovalsMigration:
         for tbl in ["pending_actions", "approval_rules", "approval_events"]:
             assert _table_exists(db_url, tbl), f"{tbl} should exist"
         for idx in [
-            "idx_pending_actions_status_requested", "idx_pending_actions_session_id",
-            "idx_approval_rules_tool_active", "idx_approval_events_action_id",
-            "idx_approval_events_rule_id", "idx_approval_events_occurred_at",
+            "idx_pending_actions_status_requested",
+            "idx_pending_actions_session_id",
+            "idx_approval_rules_tool_active",
+            "idx_approval_events_action_id",
+            "idx_approval_events_rule_id",
+            "idx_approval_events_occurred_at",
             "idx_approval_events_event_type",
         ]:
             assert _index_exists(db_url, idx), f"{idx} should exist"
@@ -223,29 +258,40 @@ class TestApprovalsMigration:
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
-            conn.execute(text(
-                "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
-                " VALUES (:id, :tn, :ta, :s, :r)"
-            ), {"id": str(action_id), "tn": "email_send", "ta": "{}", "s": "pending",
-                "r": datetime.now(UTC)})
-            conn.execute(text(
-                "INSERT INTO approval_events (action_id, event_type, actor, reason)"
-                " VALUES (:a, :e, :ac, :re)"
-            ), {"a": str(action_id), "e": "action_queued", "ac": "system:test",
-                "re": "queued"})
+            conn.execute(
+                text(
+                    "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
+                    " VALUES (:id, :tn, :ta, :s, :r)"
+                ),
+                {
+                    "id": str(action_id),
+                    "tn": "email_send",
+                    "ta": "{}",
+                    "s": "pending",
+                    "r": datetime.now(UTC),
+                },
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO approval_events (action_id, event_type, actor, reason)"
+                    " VALUES (:a, :e, :ac, :re)"
+                ),
+                {"a": str(action_id), "e": "action_queued", "ac": "system:test", "re": "queued"},
+            )
             conn.commit()
 
         with pytest.raises(exc.DBAPIError):
             with engine.connect() as conn:
-                conn.execute(text(
-                    "UPDATE approval_events SET reason=:r WHERE action_id=:a"
-                ), {"r": "mutated", "a": str(action_id)})
+                conn.execute(
+                    text("UPDATE approval_events SET reason=:r WHERE action_id=:a"),
+                    {"r": "mutated", "a": str(action_id)},
+                )
                 conn.commit()
         with pytest.raises(exc.DBAPIError):
             with engine.connect() as conn:
-                conn.execute(text(
-                    "DELETE FROM approval_events WHERE action_id=:a"
-                ), {"a": str(action_id)})
+                conn.execute(
+                    text("DELETE FROM approval_events WHERE action_id=:a"), {"a": str(action_id)}
+                )
                 conn.commit()
         engine.dispose()
 
@@ -263,16 +309,29 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         action_id = uuid.uuid4()
         with engine.connect() as conn:
-            conn.execute(text(
-                "INSERT INTO pending_actions"
-                " (id, tool_name, tool_args, agent_summary, status, requested_at)"
-                " VALUES (:id, :tn, :ta, :s, :st, :r)"
-            ), {"id": str(action_id), "tn": "email_send",
-                "ta": json.dumps({"to": "alice@example.com"}),
-                "s": "Send email", "st": "pending", "r": datetime.now(UTC)})
+            conn.execute(
+                text(
+                    "INSERT INTO pending_actions"
+                    " (id, tool_name, tool_args, agent_summary, status, requested_at)"
+                    " VALUES (:id, :tn, :ta, :s, :st, :r)"
+                ),
+                {
+                    "id": str(action_id),
+                    "tn": "email_send",
+                    "ta": json.dumps({"to": "alice@example.com"}),
+                    "s": "Send email",
+                    "st": "pending",
+                    "r": datetime.now(UTC),
+                },
+            )
             conn.commit()
-            row = conn.execute(text("SELECT * FROM pending_actions WHERE id=:id"),
-                               {"id": str(action_id)}).mappings().one()
+            row = (
+                conn.execute(
+                    text("SELECT * FROM pending_actions WHERE id=:id"), {"id": str(action_id)}
+                )
+                .mappings()
+                .one()
+            )
         engine.dispose()
         restored = PendingAction.from_row(row)
         assert restored.id == action_id and restored.tool_name == "email_send"
@@ -291,17 +350,30 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         rule_id = uuid.uuid4()
         with engine.connect() as conn:
-            conn.execute(text(
-                "INSERT INTO approval_rules (id, tool_name, arg_constraints, description,"
-                " created_at, max_uses, active)"
-                " VALUES (:id, :tn, :ac, :d, :c, :m, :a)"
-            ), {"id": str(rule_id), "tn": "telegram_send",
-                "ac": json.dumps({"chat_id": 123}),
-                "d": "Auto-approve telegram", "c": datetime.now(UTC),
-                "m": 10, "a": True})
+            conn.execute(
+                text(
+                    "INSERT INTO approval_rules (id, tool_name, arg_constraints, description,"
+                    " created_at, max_uses, active)"
+                    " VALUES (:id, :tn, :ac, :d, :c, :m, :a)"
+                ),
+                {
+                    "id": str(rule_id),
+                    "tn": "telegram_send",
+                    "ac": json.dumps({"chat_id": 123}),
+                    "d": "Auto-approve telegram",
+                    "c": datetime.now(UTC),
+                    "m": 10,
+                    "a": True,
+                },
+            )
             conn.commit()
-            row = conn.execute(text("SELECT * FROM approval_rules WHERE id=:id"),
-                               {"id": str(rule_id)}).mappings().one()
+            row = (
+                conn.execute(
+                    text("SELECT * FROM approval_rules WHERE id=:id"), {"id": str(rule_id)}
+                )
+                .mappings()
+                .one()
+            )
         engine.dispose()
         restored = ApprovalRule.from_row(row)
         assert restored.id == rule_id and restored.max_uses == 10
@@ -320,10 +392,18 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with pytest.raises(exc.IntegrityError):
             with engine.connect() as conn:
-                conn.execute(text(
-                    "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
-                    " VALUES (:id, :tn, :ta, :s, :r)"
-                ), {"id": str(uuid.uuid4()), "tn": "test", "ta": "{}",
-                    "s": "invalid_status", "r": datetime.now(UTC)})
+                conn.execute(
+                    text(
+                        "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)"
+                        " VALUES (:id, :tn, :ta, :s, :r)"
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "tn": "test",
+                        "ta": "{}",
+                        "s": "invalid_status",
+                        "r": datetime.now(UTC),
+                    },
+                )
                 conn.commit()
         engine.dispose()

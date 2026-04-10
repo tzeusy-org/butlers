@@ -142,6 +142,9 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Core migration optional-schema guard contract
+- Core-chain migrations must tolerate fresh/core-only databases where specialist schema tables are absent; cross-schema `ALTER/UPDATE/GRANT` statements should guard with `to_regclass(...)` / information_schema checks instead of assuming `education.*`, `general.*`, etc. always exist.
+
 ### Runtime timeout propagation contract
 - `Spawner._run()` must forward the effective `session_timeout_s` into `runtime.invoke(timeout=...)`, not just wrap the call in outer `asyncio.wait_for(...)`; otherwise adapter-specific inner timeouts can drift from session records and produce misleading mixed timeout behavior (observed in QA self-healing Codex runs).
 

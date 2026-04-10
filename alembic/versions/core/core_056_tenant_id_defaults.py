@@ -17,6 +17,8 @@ Changes:
   3. UPDATE any remaining tenant_id='owner' rows to 'shared'.
 """
 
+import sqlalchemy as sa
+
 from alembic import op
 
 revision = "core_056"
@@ -38,10 +40,40 @@ _SCHEMAS = [
 ]
 
 
+def _table_exists(schema: str, table: str) -> bool:
+    bind = op.get_bind()
+    relname = f"{schema}.{table}"
+    return (
+        bind.execute(sa.text("SELECT to_regclass(:relname)"), {"relname": relname}).scalar()
+        is not None
+    )
+
+
+def _column_exists(schema: str, table: str, column: str) -> bool:
+    bind = op.get_bind()
+    return (
+        bind.execute(
+            sa.text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = :schema
+                  AND table_name = :table
+                  AND column_name = :column
+                """
+            ),
+            {"schema": schema, "table": table, "column": column},
+        ).scalar()
+        is not None
+    )
+
+
 def upgrade() -> None:
     # 1. Fix schema defaults on all butler schemas
     for schema in _SCHEMAS:
         for table in ("episodes", "facts", "rules"):
+            if not _table_exists(schema, table) or not _column_exists(schema, table, "tenant_id"):
+                continue
             op.execute(
                 f'ALTER TABLE "{schema}"."{table}" '
                 "ALTER COLUMN tenant_id SET DEFAULT 'shared'"
@@ -61,6 +93,8 @@ def upgrade() -> None:
 
     for source_id, target_id in _merge_pairs:
         for schema in _SCHEMAS:
+            if not _table_exists(schema, "facts"):
+                continue
             # Delete source property facts that would collide with existing
             # target facts on the partial unique index
             # (entity_id, scope, predicate) WHERE object_entity_id IS NULL
@@ -137,21 +171,26 @@ def upgrade() -> None:
     # 3. Flip any remaining tenant_id='owner' rows to 'shared'
     for schema in _SCHEMAS:
         for table in ("episodes", "facts", "rules"):
+            if not _table_exists(schema, table) or not _column_exists(schema, table, "tenant_id"):
+                continue
             op.execute(
                 f'UPDATE "{schema}"."{table}" '
                 "SET tenant_id = 'shared' WHERE tenant_id = 'owner'"
             )
 
     # Also fix any entities with tenant_id='owner' that weren't in the merge pairs
-    op.execute(
-        "UPDATE public.entities SET tenant_id = 'shared' WHERE tenant_id = 'owner'"
-    )
+    if _table_exists("public", "entities") and _column_exists("public", "entities", "tenant_id"):
+        op.execute(
+            "UPDATE public.entities SET tenant_id = 'shared' WHERE tenant_id = 'owner'"
+        )
 
 
 def downgrade() -> None:
     # Restore old defaults (data migration is not reversed)
     for schema in _SCHEMAS:
         for table in ("episodes", "facts", "rules"):
+            if not _table_exists(schema, table) or not _column_exists(schema, table, "tenant_id"):
+                continue
             op.execute(
                 f'ALTER TABLE "{schema}"."{table}" '
                 "ALTER COLUMN tenant_id SET DEFAULT 'owner'"

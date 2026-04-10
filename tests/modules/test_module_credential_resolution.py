@@ -82,8 +82,11 @@ class TestEmailModuleCredentialStore:
     async def test_empty_store_raises(self) -> None:
         store = _make_credential_store()
         mod = EmailModule()
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("BUTLER_EMAIL_ADDRESS", "BUTLER_EMAIL_PASSWORD")}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("BUTLER_EMAIL_ADDRESS", "BUTLER_EMAIL_PASSWORD")
+        }
         with patch.dict(os.environ, env, clear=True):
             await mod.on_startup(config=None, db=None, credential_store=store)
             with pytest.raises(RuntimeError, match="modules.email.bot"):
@@ -153,11 +156,16 @@ class TestCalendarModuleCredentialStore:
         db.pool = MagicMock()
         mod = CalendarModule()
         with (
-            patch("butlers.google_credentials._resolve_account_entity_id",
-                  new_callable=AsyncMock,
-                  return_value=uuid.UUID("00000000-0000-0000-0000-000000000001")),
-            patch("butlers.google_credentials._resolve_entity_refresh_token",
-                  new_callable=AsyncMock, return_value="cs-refresh-token"),
+            patch(
+                "butlers.google_credentials._resolve_account_entity_id",
+                new_callable=AsyncMock,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            patch(
+                "butlers.google_credentials._resolve_entity_refresh_token",
+                new_callable=AsyncMock,
+                return_value="cs-refresh-token",
+            ),
         ):
             await mod.on_startup({"provider": "google"}, db=db, credential_store=store)
         assert mod._provider is not None

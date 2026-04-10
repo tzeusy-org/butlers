@@ -122,12 +122,27 @@ async def test_realtime_history_basic(switchboard_dsn):
         thread = f"chat:{uuid.uuid4().hex[:8]}"
         thread_b = f"chat:{uuid.uuid4().hex[:8]}"
 
-        await _insert_message(pool, text="hello", sender="user1", thread_identity=thread,
-                              received_at=now - timedelta(minutes=5))
-        await _insert_message(pool, text="world", sender="user2", thread_identity=thread,
-                              received_at=now - timedelta(minutes=3))
-        await _insert_message(pool, text="other thread", sender="u2", thread_identity=thread_b,
-                              received_at=now - timedelta(minutes=2))
+        await _insert_message(
+            pool,
+            text="hello",
+            sender="user1",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=5),
+        )
+        await _insert_message(
+            pool,
+            text="world",
+            sender="user2",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=3),
+        )
+        await _insert_message(
+            pool,
+            text="other thread",
+            sender="u2",
+            thread_identity=thread_b,
+            received_at=now - timedelta(minutes=2),
+        )
 
         messages = await _load_realtime_history(pool, thread, now)
         assert len(messages) == 2
@@ -292,11 +307,20 @@ async def test_conversation_history_channels(switchboard_dsn):
         now = datetime.now(UTC)
         thread = f"chat:{uuid.uuid4().hex[:8]}"
 
-        await _insert_message(pool, text="previous message", sender="user42",
-                               thread_identity=thread, received_at=now - timedelta(minutes=5))
+        await _insert_message(
+            pool,
+            text="previous message",
+            sender="user42",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=5),
+        )
 
         result = await _load_conversation_history(pool, "telegram_bot", thread, now)
-        assert "## Recent Conversation History" in result and "previous message" in result and "user42" in result
+        assert (
+            "## Recent Conversation History" in result
+            and "previous message" in result
+            and "user42" in result
+        )
 
         # API channel returns empty string
         api_result = await _load_conversation_history(pool, "api", "some-thread", now)
@@ -359,11 +383,20 @@ async def test_realtime_history_outbound_messages_and_formatted(switchboard_dsn)
         now = datetime.now(UTC)
         thread = f"chat:{uuid.uuid4().hex[:8]}"
 
-        await _insert_message(pool, text="So does da pe pe", sender="user42",
-                               thread_identity=thread, received_at=now - timedelta(minutes=3))
-        await _insert_outbound_message(pool, text="Got it! I've stored da pe pe's address too.",
-                                       origin_butler="relationship", thread_identity=thread,
-                                       received_at=now - timedelta(minutes=2))
+        await _insert_message(
+            pool,
+            text="So does da pe pe",
+            sender="user42",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=3),
+        )
+        await _insert_outbound_message(
+            pool,
+            text="Got it! I've stored da pe pe's address too.",
+            origin_butler="relationship",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=2),
+        )
 
         messages = await _load_realtime_history(pool, thread, now)
         assert len(messages) == 2

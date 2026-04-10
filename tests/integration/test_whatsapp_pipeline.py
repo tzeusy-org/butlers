@@ -114,9 +114,15 @@ class TestConnectorBridgeAndIngest:
         """Events buffered per-chat JID; last_event_id tracks latest message_id."""
         connector = _make_connector()
 
-        event1 = _make_bridge_sse_event(message_id="msg-1", chat_jid="100@s.whatsapp.net", text="Test")
-        event2 = _make_bridge_sse_event(message_id="msg-2", chat_jid="200@s.whatsapp.net", text="Hey")
-        event3 = _make_bridge_sse_event(message_id="msg-3", chat_jid="100@s.whatsapp.net", text="More")
+        event1 = _make_bridge_sse_event(
+            message_id="msg-1", chat_jid="100@s.whatsapp.net", text="Test"
+        )
+        event2 = _make_bridge_sse_event(
+            message_id="msg-2", chat_jid="200@s.whatsapp.net", text="Hey"
+        )
+        event3 = _make_bridge_sse_event(
+            message_id="msg-3", chat_jid="100@s.whatsapp.net", text="More"
+        )
 
         for ev in [event1, event2, event3]:
             await connector._handle_bridge_event(ev)
@@ -143,16 +149,20 @@ class TestConnectorBridgeAndIngest:
         connector._save_checkpoint = AsyncMock()
         connector._flush_and_drain = AsyncMock()
 
-        await connector._handle_bridge_event(_make_bridge_sse_event(
-            message_id="msg-flush-1", chat_jid="200@s.whatsapp.net", text="Hello"
-        ))
+        await connector._handle_bridge_event(
+            _make_bridge_sse_event(
+                message_id="msg-flush-1", chat_jid="200@s.whatsapp.net", text="Hello"
+            )
+        )
         await connector._flush_chat_buffer("200@s.whatsapp.net")
 
         mock_mcp.call_tool.assert_awaited_once()
         call_args = mock_mcp.call_tool.call_args
         tool_name = call_args.args[0] if call_args.args else call_args.kwargs.get("tool_name")
         assert tool_name == "ingest"
-        payload_arg = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("arguments")
+        payload_arg = (
+            call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("arguments")
+        )
         envelope = payload_arg.get("envelope") if isinstance(payload_arg, dict) else None
         if envelope is None and isinstance(payload_arg, dict):
             envelope = payload_arg
@@ -185,14 +195,18 @@ class TestModuleToolRegistration:
         await module.register_tools(mcp=mcp, config=None, db=None)
         assert len(tools) == 0
 
-        await module.register_tools(mcp=mcp, config={"send_tools": False, "send_enabled": False}, db=None)
+        await module.register_tools(
+            mcp=mcp, config={"send_tools": False, "send_enabled": False}, db=None
+        )
         assert len(tools) == 0
 
     async def test_tools_registered_when_send_tools_true(self):
         """send_tools=true (disabled/enabled): tools registered; disabled returns error, enabled executes."""
         module = WhatsAppModule()
         mcp, tools = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={"send_tools": True, "send_enabled": False}, db=None)
+        await module.register_tools(
+            mcp=mcp, config={"send_tools": True, "send_enabled": False}, db=None
+        )
         assert "whatsapp_send_message" in tools and "whatsapp_reply_to_message" in tools
 
         send_result = await tools["whatsapp_send_message"](recipient="+15551234567", text="hello")
@@ -202,7 +216,9 @@ class TestModuleToolRegistration:
         # Re-register with send_enabled=true
         module2 = WhatsAppModule()
         mcp2, tools2 = _make_mock_mcp()
-        await module2.register_tools(mcp=mcp2, config={"send_tools": True, "send_enabled": True}, db=None)
+        await module2.register_tools(
+            mcp=mcp2, config={"send_tools": True, "send_enabled": True}, db=None
+        )
         mock_send = AsyncMock(return_value={"message_id": "wa-msg-123", "status": "sent"})
         module2._send_message = mock_send
         result = await tools2["whatsapp_send_message"](recipient="+15551234567", text="hello")
@@ -353,7 +369,9 @@ class TestWhatsAppJIDResolution:
         pool = self._make_pool_with_rows(
             {"contact_id": contact_id, "name": "Alice", "roles": [], "entity_id": None}
         )
-        result = await resolve_contact_by_channel(pool, "whatsapp_jid", "15551234567@s.whatsapp.net")
+        result = await resolve_contact_by_channel(
+            pool, "whatsapp_jid", "15551234567@s.whatsapp.net"
+        )
         assert result is not None and result.contact_id == contact_id
         pool.fetchrow.assert_called_once()
 
@@ -363,7 +381,9 @@ class TestWhatsAppJIDResolution:
             None,
             {"contact_id": owner_id, "name": "Owner", "roles": ["owner"], "entity_id": None},
         )
-        result2 = await resolve_contact_by_channel(pool2, "whatsapp_jid", "15550001111@s.whatsapp.net")
+        result2 = await resolve_contact_by_channel(
+            pool2, "whatsapp_jid", "15550001111@s.whatsapp.net"
+        )
         assert result2 is not None and "owner" in result2.roles and pool2.fetchrow.call_count == 2
 
         # Group JID → no phone fallback, returns None
@@ -375,7 +395,9 @@ class TestWhatsAppJIDResolution:
     async def test_both_lookups_miss_returns_none(self):
         """Returns None when both direct JID and phone fallback find no contact."""
         pool = self._make_pool_with_rows(None, None)
-        result = await resolve_contact_by_channel(pool, "whatsapp_jid", "99999999999@s.whatsapp.net")
+        result = await resolve_contact_by_channel(
+            pool, "whatsapp_jid", "99999999999@s.whatsapp.net"
+        )
         assert result is None and pool.fetchrow.call_count == 2
 
 
@@ -403,8 +425,15 @@ class TestDashboardPairAPI:
     async def test_pair_start_success_and_bridge_down(self, client):
         """POST /pair/start returns QR data URI and expiry; 503 when bridge is unreachable."""
         expires = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
-        with patch("butlers.api.routers.whatsapp._bridge_post",
-                   new=AsyncMock(return_value={"qr_data_uri": "data:image/png;base64,iVBORw0KGgo=", "expires_at": expires})):
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_post",
+            new=AsyncMock(
+                return_value={
+                    "qr_data_uri": "data:image/png;base64,iVBORw0KGgo=",
+                    "expires_at": expires,
+                }
+            ),
+        ):
             response = await client.post("/api/connectors/whatsapp/pair/start")
         assert response.status_code == 200
         data = response.json()
@@ -418,19 +447,33 @@ class TestDashboardPairAPI:
     async def test_pair_poll_states(self, client):
         """GET /pair/poll returns correct state for waiting/paired/expired/bridge-down."""
         # Waiting
-        with patch("butlers.api.routers.whatsapp._bridge_get", new=AsyncMock(return_value={"status": "waiting"})):
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(return_value={"status": "waiting"}),
+        ):
             r = await client.get("/api/connectors/whatsapp/pair/poll")
-        assert r.status_code == 200 and r.json()["status"] == "waiting" and r.json()["phone"] is None
+        assert (
+            r.status_code == 200 and r.json()["status"] == "waiting" and r.json()["phone"] is None
+        )
 
         # Paired with masked phone
-        with patch("butlers.api.routers.whatsapp._bridge_get",
-                   new=AsyncMock(return_value={"status": "paired", "phone": "+12345677890"})):
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(return_value={"status": "paired", "phone": "+12345677890"}),
+        ):
             r = await client.get("/api/connectors/whatsapp/pair/poll")
         data = r.json()
-        assert data["status"] == "paired" and "7890" in data["phone"] and data["phone"] != "+12345677890"
+        assert (
+            data["status"] == "paired"
+            and "7890" in data["phone"]
+            and data["phone"] != "+12345677890"
+        )
 
         # Expired
-        with patch("butlers.api.routers.whatsapp._bridge_get", new=AsyncMock(return_value={"status": "expired"})):
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(return_value={"status": "expired"}),
+        ):
             r = await client.get("/api/connectors/whatsapp/pair/poll")
         assert r.json()["status"] == "expired"
 
@@ -452,7 +495,10 @@ class TestDashboardPairAPI:
         ({"type": "image", "content": {"caption": "Check this out"}}, "Check this out"),
         ({"type": "image", "content": {}}, "[image]"),
         ({"type": "voice_note", "content": {}}, "[voice message]"),
-        ({"type": "message_deleted", "content": {"deleted_message_id": "msg-789"}}, "[message deleted: msg-789]"),
+        (
+            {"type": "message_deleted", "content": {"deleted_message_id": "msg-789"}},
+            "[message deleted: msg-789]",
+        ),
         ({"type": "SomeNewType", "content": {}}, "[SomeNewType]"),
     ],
 )
@@ -463,7 +509,10 @@ def test_normalize_message_text(event, expected):
 
 def test_normalize_message_text_location_and_reaction():
     """Location and reaction messages include expected content in normalized text."""
-    location = {"type": "location", "content": {"latitude": 37.7749, "longitude": -122.4194, "name": "San Francisco"}}
+    location = {
+        "type": "location",
+        "content": {"latitude": 37.7749, "longitude": -122.4194, "name": "San Francisco"},
+    }
     result = normalize_message_text(location)
     assert "San Francisco" in result and "[location:" in result
 

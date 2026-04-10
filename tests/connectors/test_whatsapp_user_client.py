@@ -84,8 +84,7 @@ def test_single_event_idempotency_key_format(connector: WhatsAppUserClientConnec
 def test_batch_envelope_schema_version(connector: WhatsAppUserClientConnector) -> None:
     """Batch envelope must carry schema_version='ingest.v1'."""
     events: list[dict[str, Any]] = [
-        {"message_id": f"m{i}", "chat_jid": "ch1", "text": f"msg {i}"}
-        for i in range(3)
+        {"message_id": f"m{i}", "chat_jid": "ch1", "text": f"msg {i}"} for i in range(3)
     ]
     env = connector._build_batch_envelope("ch1", events, "batch-001")
     assert env["schema_version"] == "ingest.v1"

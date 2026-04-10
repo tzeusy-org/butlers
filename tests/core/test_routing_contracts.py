@@ -170,8 +170,7 @@ def test_ingest_attachment_contract():
 
 
 def test_channel_provider_pairing_and_registry():
-    """Valid channel/provider pairs accepted; invalid rejected; allowed providers registry correct.
-    """
+    """Valid channel/provider pairs accepted; invalid rejected; allowed providers registry correct."""
     # Valid pairs
     valid_pairs = [
         ("voice", "live-listener", "live-listener:mic:kitchen", "mic-user"),

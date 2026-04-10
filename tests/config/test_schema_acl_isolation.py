@@ -245,19 +245,21 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
     ),
     (
         "entity_info",
-        "INSERT INTO public.entity_info (entity_id, key, value)"
+        "INSERT INTO public.entity_info (entity_id, type, value)"
         " SELECT id, 'acl-probe-key', 'acl-probe-val' FROM public.entities"
         " WHERE canonical_name = 'acl-probe-entity' LIMIT 1",
     ),
     (
         "google_accounts",
-        "INSERT INTO public.google_accounts (google_user_id, email)"
-        " VALUES ('acl-probe-gid', 'acl-probe-google@example.com')",
+        "INSERT INTO public.google_accounts (entity_id, email)"
+        " SELECT id, 'acl-probe-google@example.com' FROM public.entities"
+        " WHERE canonical_name = 'acl-probe-entity' LIMIT 1",
     ),
     (
         "steam_accounts",
-        "INSERT INTO public.steam_accounts (steam_id, account_name)"
-        " VALUES ('76561198000000001', 'acl-probe-steam')",
+        "INSERT INTO public.steam_accounts (entity_id, steam_id, display_name)"
+        " SELECT id, 76561198000000001, 'acl-probe-steam' FROM public.entities"
+        " WHERE canonical_name = 'acl-probe-entity' LIMIT 1",
     ),
     (
         "user_context",
@@ -272,9 +274,12 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
     ),
     (
         "token_usage_ledger",
-        "INSERT INTO public.token_usage_ledger (session_id, butler_name, model_alias,"
-        " input_tokens, output_tokens, total_tokens)"
-        " VALUES (gen_random_uuid(), 'general', 'acl-probe', 10, 10, 20)",
+        "INSERT INTO public.token_usage_ledger"
+        " (catalog_entry_id, session_id, butler_name, input_tokens, output_tokens)"
+        " SELECT id, gen_random_uuid(), 'general', 10, 10"
+        " FROM public.model_catalog"
+        " ORDER BY created_at"
+        " LIMIT 1",
     ),
     (
         "ingestion_events",
@@ -292,24 +297,32 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
     ),
     (
         "qa_dismissals",
-        "INSERT INTO public.qa_dismissals (fingerprint, dismissed_by, reason)"
-        " VALUES ('acl-probe-fp', 'general', 'acl probe test')",
+        "INSERT INTO public.qa_dismissals (fingerprint, dismissed_until, dismissed_by)"
+        " VALUES ('acl-probe-fp', now() + interval '1 day', 'general')",
     ),
     (
         "qa_findings",
-        "INSERT INTO public.qa_findings"
-        " (butler_name, fingerprint, severity, category, message)"
-        " VALUES ('general', 'acl-probe-fp', 'warning', 'acl', 'probe')",
+        "WITH patrol AS ("
+        "  INSERT INTO public.qa_patrols (status) VALUES ('running') RETURNING id"
+        ")"
+        " INSERT INTO public.qa_findings"
+        " (patrol_id, fingerprint, source_type, source_butler, severity,"
+        "  exception_type, event_summary, call_site, first_seen, last_seen)"
+        " SELECT id, 'acl-probe-fp', 'log_scanner', 'general', 3,"
+        "  'AclProbeError', 'probe', 'probe.py:1', now(), now()"
+        " FROM patrol",
     ),
     (
         "qa_repo_config",
         # qa_repo_config is only UPDATE-granted (not INSERT); the row is pre-seeded
         # by test_set_role_allows_public_table_writes via admin before the role loop.
-        "UPDATE public.qa_repo_config SET enabled = true WHERE repo_path = '/acl-probe-repo'",
+        "UPDATE public.qa_repo_config"
+        " SET repo_url = 'https://example.com/acl-probe-updated.git'"
+        " WHERE singleton = true",
     ),
     (
         "qa_patrols",
-        "INSERT INTO public.qa_patrols (butler_name, status) VALUES ('general', 'running')",
+        "INSERT INTO public.qa_patrols (status) VALUES ('running')",
     ),
     (
         "memory_catalog",
@@ -325,21 +338,20 @@ _PUBLIC_WRITE_MATRIX_INSERTS: list[tuple[str, str]] = [
     ),
     (
         "insight_cooldowns",
-        "INSERT INTO public.insight_cooldowns (dedup_key, expires_at)"
+        "INSERT INTO public.insight_cooldowns (dedup_key, cooldown_until)"
         " VALUES ('acl-cooldown-probe', now() + interval '1 day')"
         " ON CONFLICT (dedup_key) DO NOTHING",
     ),
     (
         "insight_engagement",
         "INSERT INTO public.insight_engagement"
-        " (insight_id, contact_id, action)"
-        " VALUES (gen_random_uuid(), gen_random_uuid(), 'viewed')",
+        " (insight_id, engaged)"
+        " SELECT id, true FROM public.insight_candidates"
+        " WHERE dedup_key = 'acl-probe-dk' LIMIT 1",
     ),
     (
         "insight_settings",
-        "INSERT INTO public.insight_settings (contact_id, channel, enabled)"
-        " VALUES (gen_random_uuid(), 'acl-probe', true)"
-        " ON CONFLICT (contact_id, channel) DO NOTHING",
+        "UPDATE public.insight_settings SET verbosity = 'normal' WHERE id = 1",
     ),
 ]
 
@@ -356,7 +368,7 @@ def _require_connector_writer(db_url: str) -> None:
 
 
 def test_set_role_enforces_own_schema_write(postgres_container):
-    """SET ROLE butler_general_rw: INSERT into general.state succeeds."""
+    """SET ROLE butler_general_rw: INSERT into an own-schema table succeeds."""
     from butlers.migrations import run_migrations
 
     db_url = _create_db(postgres_container, _unique_db_name())
@@ -364,24 +376,36 @@ def test_set_role_enforces_own_schema_write(postgres_container):
     asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
-    # state table lives in every butler schema; created by core_001_foundation.
+    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with setup_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS general.acl_probe_own_write "
+                    "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
+                )
+            )
+    finally:
+        setup_engine.dispose()
+
     _execute_as_role(
         db_url,
         _RUNTIME_ROLES["general"],
-        "INSERT INTO general.state (key, value) VALUES ('acl-probe-own', '\"ok\"'::jsonb)",
+        "INSERT INTO general.acl_probe_own_write (key, value)"
+        " VALUES ('acl-probe-own', '\"ok\"'::jsonb)",
     )
 
     note = _execute_as_role(
         db_url,
         _RUNTIME_ROLES["general"],
-        "SELECT value FROM general.state WHERE key = 'acl-probe-own'",
+        "SELECT value FROM general.acl_probe_own_write WHERE key = 'acl-probe-own'",
         scalar=True,
     )
-    assert note == '"ok"'
+    assert note == "ok"
 
 
 def test_set_role_blocks_cross_schema_write(postgres_container):
-    """SET ROLE butler_general_rw: INSERT into health.state raises permission denied."""
+    """SET ROLE butler_general_rw: INSERT into another schema table is denied."""
     from butlers.migrations import run_migrations
 
     db_url = _create_db(postgres_container, _unique_db_name())
@@ -389,11 +413,23 @@ def test_set_role_blocks_cross_schema_write(postgres_container):
     asyncio.run(run_migrations(db_url, chain="core"))
     _require_runtime_acl(db_url)
 
+    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with setup_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS health.acl_probe_cross_write "
+                    "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
+                )
+            )
+    finally:
+        setup_engine.dispose()
+
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
             db_url,
             _RUNTIME_ROLES["general"],
-            "INSERT INTO health.state (key, value)"
+            "INSERT INTO health.acl_probe_cross_write (key, value)"
             " VALUES ('acl-probe-cross', '\"blocked\"'::jsonb)",
         )
 
@@ -421,9 +457,9 @@ def test_set_role_allows_public_table_writes(postgres_container):
         with seed_engine.connect() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO public.qa_repo_config (repo_path, enabled)"
-                    " VALUES ('/acl-probe-repo', false)"
-                    " ON CONFLICT (repo_path) DO NOTHING"
+                    "INSERT INTO public.qa_repo_config (repo_url)"
+                    " VALUES ('https://example.com/acl-probe.git')"
+                    " ON CONFLICT DO NOTHING"
                 )
             )
     finally:
@@ -444,10 +480,10 @@ def test_set_role_allows_public_table_writes(postgres_container):
 
 
 def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
-    """SET ROLE butler_general_rw: INSERT into public.model_catalog raises permission denied.
+    """SET ROLE butler_general_rw: INSERT into protected public table is denied.
 
-    model_catalog is a read-only table for butler runtime roles; it is managed
-    exclusively by migrations and the dashboard.
+    alembic_version is migration-owned metadata and must not be writable by
+    runtime roles.
     """
     from butlers.migrations import run_migrations
 
@@ -460,8 +496,7 @@ def test_set_role_blocks_public_table_not_in_matrix(postgres_container):
         _execute_as_role(
             db_url,
             _RUNTIME_ROLES["general"],
-            "INSERT INTO public.model_catalog (alias, runtime_type, model_id)"
-            " VALUES ('acl-probe', 'sdk', 'claude-probe')",
+            "INSERT INTO public.alembic_version (version_num) VALUES ('acl-probe-version')",
         )
 
 
@@ -491,11 +526,10 @@ def test_connector_writer_role_enforcement(postgres_container):
         db_url,
         "connector_writer",
         "INSERT INTO connectors.filtered_events"
-        " (connector_type, endpoint_identity, event_payload, received_at,"
-        "  status, dedupe_key)"
-        " VALUES ('probe', 'ep-connector', '{}'::jsonb, now(),"
-        "  'accepted', 'acl-connector-dk-1')"
-        " ON CONFLICT DO NOTHING",
+        " (connector_type, endpoint_identity, external_message_id,"
+        "  source_channel, sender_identity, filter_reason, full_payload)"
+        " VALUES ('probe', 'ep-connector', 'ext-connector-1',"
+        "  'acl', 'sender-1', 'acl-probe', '{}'::jsonb)",
     )
 
     # connector_writer can INSERT into public.ingestion_events (in the write matrix).
@@ -509,12 +543,24 @@ def test_connector_writer_role_enforcement(postgres_container):
         "  'ext-2', 'dk-connector-probe-1', 'hash', 'full', 'standard')",
     )
 
+    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with setup_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS general.acl_probe_connector_block "
+                    "(key TEXT PRIMARY KEY, value JSONB NOT NULL)"
+                )
+            )
+    finally:
+        setup_engine.dispose()
+
     # connector_writer cannot INSERT into a butler runtime schema.
     with pytest.raises(ProgrammingError, match="permission denied"):
         _execute_as_role(
             db_url,
             "connector_writer",
-            "INSERT INTO general.state (key, value)"
+            "INSERT INTO general.acl_probe_connector_block (key, value)"
             " VALUES ('connector-probe-blocked', '\"blocked\"'::jsonb)",
         )
 
@@ -547,25 +593,27 @@ def test_role_fallback_when_absent(postgres_container, caplog):
         max_pool_size=2,
     )
 
-    with caplog.at_level(logging.WARNING, logger="butlers.db"):
-        pool = asyncio.run(db.connect())
+    async def _exercise() -> tuple[int | None, bool]:
+        pool = await db.connect()
+        try:
+            result = await pool.fetchval("SELECT 1")
+            return result, db._role_verified
+        finally:
+            await db.close()
 
-    try:
-        # Pool was created; basic queries still work.
-        result = asyncio.run(pool.fetchval("SELECT 1"))
-        assert result == 1
-        # Role verification failed; _role_verified must be False.
-        assert not db._role_verified
-        # A warning about the missing role should have been logged.
-        assert any(
-            "butler_nonexistent_role_xyz" in record.message
-            for record in caplog.records
-            if record.levelno >= logging.WARNING
-        ), "Expected a warning about the absent role, got: " + str(
-            [r.message for r in caplog.records]
-        )
-    finally:
-        asyncio.run(db.close())
+    with caplog.at_level(logging.WARNING, logger="butlers.db"):
+        result, role_verified = asyncio.run(_exercise())
+
+    # Pool was created; basic queries still work.
+    assert result == 1
+    # Role verification failed; _role_verified must be False.
+    assert not role_verified
+    # A warning about the missing role should have been logged.
+    assert any(
+        "butler_nonexistent_role_xyz" in record.message
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    ), "Expected a warning about the absent role, got: " + str([r.message for r in caplog.records])
 
 
 def test_role_reset_on_connection_return(postgres_container):

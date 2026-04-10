@@ -94,9 +94,9 @@ class TestSpawnerMcpServers:
             "butlers.core.spawner.fetch_memory_context",
             new_callable=AsyncMock,
         ):
-            await Spawner(config=config_no_mem, config_dir=tmp_path, runtime=adapter_no_mem).trigger(
-                prompt="test", trigger_source="trigger"
-            )
+            await Spawner(
+                config=config_no_mem, config_dir=tmp_path, runtime=adapter_no_mem
+            ).trigger(prompt="test", trigger_source="trigger")
         mcp_url_no_mem = adapter_no_mem.calls[0]["mcp_servers"]["test-butler"]["url"]
         assert mcp_url_no_mem.startswith("http://localhost:9100/mcp")
         assert "trigger_source=trigger" in mcp_url_no_mem
@@ -115,9 +115,13 @@ class TestMemoryFetchGating:
             return_value="Remembered: user likes TDD.",
         ):
             await Spawner(
-                config=_make_config(modules={"memory": {}}), config_dir=tmp_path, runtime=adapter_sys
+                config=_make_config(modules={"memory": {}}),
+                config_dir=tmp_path,
+                runtime=adapter_sys,
             ).trigger(prompt="do task", trigger_source="trigger")
-        assert adapter_sys.calls[0]["system_prompt"] == "Base prompt.\n\nRemembered: user likes TDD."
+        assert (
+            adapter_sys.calls[0]["system_prompt"] == "Base prompt.\n\nRemembered: user likes TDD."
+        )
 
         # Memory disabled → prompt unchanged (fetch not called)
         adapter_off = MockAdapter()

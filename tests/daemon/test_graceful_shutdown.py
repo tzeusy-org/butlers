@@ -260,7 +260,9 @@ def _patch_infra():
     mock_spawner.drain = AsyncMock()
 
     return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory),
+        "db_from_env": patch(
+            "butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory
+        ),
         "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
@@ -416,9 +418,7 @@ class TestSpawnerDraining:
 class TestDaemonGracefulShutdown:
     """Test the daemon's graceful shutdown sequence."""
 
-    async def _start_daemon(
-        self, butler_dir: Path, patches: dict, registry=None
-    ) -> ButlerDaemon:
+    async def _start_daemon(self, butler_dir: Path, patches: dict, registry=None) -> ButlerDaemon:
         """Start a daemon with all infra patched, return the daemon."""
         with (
             patches["db_from_env"],
@@ -456,7 +456,9 @@ class TestDaemonGracefulShutdown:
         subdir = tmp_path / "t2"
         subdir.mkdir()
         patches2 = _patch_infra()
-        daemon2 = await self._start_daemon(_make_butler_toml(subdir, shutdown_timeout_s=15.0), patches2)
+        daemon2 = await self._start_daemon(
+            _make_butler_toml(subdir, shutdown_timeout_s=15.0), patches2
+        )
         await daemon2.shutdown()
         patches2["mock_spawner"].drain.assert_awaited_once_with(timeout=15.0)
 
@@ -476,9 +478,11 @@ class TestDaemonGracefulShutdown:
         daemon3 = await self._start_daemon(butler_dir3, patches3, registry=registry)
         for mod in daemon3._modules:
             original = mod.on_shutdown
+
             async def make_tracker(name, orig=original):
                 call_order.append(f"module_shutdown:{name}")
                 await orig()
+
             mod.on_shutdown = lambda n=mod.name, o=original: make_tracker(n, o)
         patches3["mock_db"].close = AsyncMock(side_effect=lambda: call_order.append("db_close"))
         await daemon3.shutdown()

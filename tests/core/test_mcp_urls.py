@@ -23,12 +23,16 @@ def test_mcp_url_and_transport():
     assert runtime_mcp_transport_from_url("http://localhost:41103/mcp") == "http"
 
     # Explicit transport takes priority; streamable-http alias maps to http
-    assert resolve_runtime_mcp_transport(
-        {"url": "http://localhost:41103/sse", "transport": "streamable-http"}
-    ) == "http"
-    assert resolve_runtime_mcp_transport(
-        {"url": "http://localhost:41103/mcp", "transport": "sse"}
-    ) == "sse"
+    assert (
+        resolve_runtime_mcp_transport(
+            {"url": "http://localhost:41103/sse", "transport": "streamable-http"}
+        )
+        == "http"
+    )
+    assert (
+        resolve_runtime_mcp_transport({"url": "http://localhost:41103/mcp", "transport": "sse"})
+        == "sse"
+    )
 
     # Falls back to URL inference
     assert resolve_runtime_mcp_transport({"url": "http://localhost:41103/sse"}) == "sse"

@@ -53,6 +53,13 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _disable_file_logging(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep daemon tests independent from workspace log directory permissions."""
+    monkeypatch.delenv("BUTLERS_LOG_ROOT", raising=False)
+    monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "1")
+
+
 class StubConfigA(BaseModel):
     """Config schema for StubModuleA."""
 
@@ -567,7 +574,6 @@ async def test_module_lifecycle(butler_dir_with_modules: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-
 async def test_shutdown_stops_mcp_server(butler_dir: Path) -> None:
     """shutdown() signals uvicorn to exit, awaits server task; reverse-topological module shutdown."""
     # MCP server shutdown: signals uvicorn and awaits task
@@ -597,8 +603,7 @@ async def test_shutdown_stops_mcp_server(butler_dir: Path) -> None:
     registry = _make_registry(StubModuleA, StubModuleB)
     shutdown_mods_dir = butler_dir.parent / "shutdown_mods"
     shutdown_mods_dir.mkdir(exist_ok=True)
-    butler_dir_m = _make_butler_toml(shutdown_mods_dir,
-                                     modules={"stub_a": {}, "stub_b": {}})
+    butler_dir_m = _make_butler_toml(shutdown_mods_dir, modules={"stub_a": {}, "stub_b": {}})
     patches2 = _patch_infra()
     mock_db2 = patches2["mock_db"]
     shutdown_order: list[str] = []
@@ -625,14 +630,18 @@ async def test_shutdown_stops_mcp_server(butler_dir: Path) -> None:
     for mod in daemon2._modules:
         original = mod.on_shutdown
         if mod.name == "stub_b":
+
             async def failing_shutdown():
                 shutdown_order.append("stub_b")
                 raise RuntimeError("shutdown failed")
+
             mod.on_shutdown = failing_shutdown
         else:
+
             async def make_tracker(name=mod.name, orig=original):
                 shutdown_order.append(name)
                 await orig()
+
             mod.on_shutdown = make_tracker  # type: ignore[method-assign]
 
     await daemon2.shutdown()
@@ -1142,7 +1151,9 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path) -> None:
     m1 = tmp_path / "m1"
     m1.mkdir()
     patches = _patch_infra()
-    butler_dir = _make_butler_toml(m1, butler_name="messenger", modules={"telegram": {}, "email": {}})
+    butler_dir = _make_butler_toml(
+        m1, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
     _, fn = await _start_daemon_with_route_execute(butler_dir, patches)
     assert fn is not None
 
@@ -1159,7 +1170,9 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path) -> None:
     m2 = tmp_path / "m2"
     m2.mkdir()
     patches2 = _patch_infra()
-    butler_dir2 = _make_butler_toml(m2, butler_name="messenger", modules={"telegram": {}, "email": {}})
+    butler_dir2 = _make_butler_toml(
+        m2, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
     daemon2, fn2 = await _start_daemon_with_route_execute(butler_dir2, patches2)
     assert fn2 is not None
     telegram_module = next(m for m in daemon2._modules if m.name == "telegram")
@@ -1193,7 +1206,9 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path) -> None:
     m3 = tmp_path / "m3"
     m3.mkdir()
     patches3 = _patch_infra()
-    butler_dir3 = _make_butler_toml(m3, butler_name="messenger", modules={"telegram": {}, "email": {}})
+    butler_dir3 = _make_butler_toml(
+        m3, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
     _, fn3 = await _start_daemon_with_route_execute(butler_dir3, patches3)
     assert fn3 is not None
 

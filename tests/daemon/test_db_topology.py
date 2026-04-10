@@ -23,7 +23,10 @@ def test_build_db_url(tmp_path):
         password="secret",
     )
     url = daemon._build_db_url()
-    assert url == "postgresql://alice:secret@db.internal:5432/butlers?options=-csearch_path%3Dgeneral%2Cpublic"
+    assert (
+        url
+        == "postgresql://alice:secret@db.internal:5432/butlers?options=-csearch_path%3Dgeneral%2Cpublic"
+    )
 
     # Legacy mode: no schema, no search_path options
     daemon2 = ButlerDaemon(tmp_path)
@@ -47,5 +50,7 @@ def test_build_db_url(tmp_path):
         password="s ec/re:t@#",
     )
     url3 = daemon3._build_db_url()
-    assert url3.startswith("postgresql://alice%2Bops:s%20ec%2Fre%3At%40%23@db.internal:5432/butlers%20prod")
+    assert url3.startswith(
+        "postgresql://alice%2Bops:s%20ec%2Fre%3At%40%23@db.internal:5432/butlers%20prod"
+    )
     assert url3.endswith("?options=-csearch_path%3Dgeneral%2Cpublic")

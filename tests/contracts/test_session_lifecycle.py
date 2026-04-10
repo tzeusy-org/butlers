@@ -41,9 +41,19 @@ class TestSessionRecordAndToolCapture:
     """RFC 0001: Session records and tool calls capture all required fields."""
 
     def test_session_and_tool_call_fields(self):
-        session_fields = {"id", "butler_name", "request_id", "trigger_source",
-                          "started_at", "ended_at", "status", "model",
-                          "input_tokens", "output_tokens", "duration_ms"}
+        session_fields = {
+            "id",
+            "butler_name",
+            "request_id",
+            "trigger_source",
+            "started_at",
+            "ended_at",
+            "status",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "duration_ms",
+        }
         assert len(session_fields) >= 10 and "model" in session_fields
 
         tool_fields = {"tool_name", "session_id", "started_at", "ended_at", "status"}

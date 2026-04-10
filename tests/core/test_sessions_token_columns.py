@@ -126,7 +126,9 @@ class TestSessionTokenColumns:
         # Update with token counts
         await pool_with_migrations.execute(
             "UPDATE sessions SET input_tokens = $2, output_tokens = $3 WHERE id = $1",
-            parent_id, 1500, 2500,
+            parent_id,
+            1500,
+            2500,
         )
         updated = await pool_with_migrations.fetchrow(
             "SELECT input_tokens, output_tokens FROM sessions WHERE id = $1", parent_id
@@ -141,7 +143,10 @@ class TestSessionTokenColumns:
             VALUES ($1, $2, $3, $4)
             RETURNING id
             """,
-            "Child prompt", "external", parent_id, str(uuid.uuid4()),
+            "Child prompt",
+            "external",
+            parent_id,
+            str(uuid.uuid4()),
         )
         child_row = await pool_with_migrations.fetchrow(
             "SELECT parent_session_id FROM sessions WHERE id = $1", child_id

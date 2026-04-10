@@ -30,12 +30,18 @@ class TestResolvedContact:
         assert {"contact_id", "name", "roles", "entity_id"}.issubset(fields)
 
         owner = ResolvedContact(
-            contact_id=uuid.uuid4(), name="Owner", roles=["owner"], entity_id=uuid.uuid4(),
+            contact_id=uuid.uuid4(),
+            name="Owner",
+            roles=["owner"],
+            entity_id=uuid.uuid4(),
         )
         assert "owner" in owner.roles
 
         no_entity = ResolvedContact(
-            contact_id=uuid.uuid4(), name="Linked", roles=[], entity_id=None,
+            contact_id=uuid.uuid4(),
+            name="Linked",
+            roles=[],
+            entity_id=None,
         )
         assert no_entity.entity_id is None
 
@@ -99,8 +105,15 @@ class TestResolveContactFunction:
         assert "pool" in params and "channel_type" in params and "channel_value" in params
 
         src = inspect.getsource(resolve_contact_by_channel)
-        for token in ["contact_info", "contacts", "entities", "type", "value",
-                       "return None", "except"]:
+        for token in [
+            "contact_info",
+            "contacts",
+            "entities",
+            "type",
+            "value",
+            "return None",
+            "except",
+        ]:
             assert token in src
 
         assert callable(create_temp_contact)

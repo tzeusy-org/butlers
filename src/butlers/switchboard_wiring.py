@@ -364,9 +364,7 @@ async def connect_switchboard(daemon: Any) -> None:
         client = MCPClient(url, name=f"butler-{daemon.config.name}")
         await client.__aenter__()
         daemon.switchboard_client = client
-        logger.info(
-            "Connected to Switchboard at %s for butler %s", url, daemon.config.name
-        )
+        logger.info("Connected to Switchboard at %s for butler %s", url, daemon.config.name)
     except Exception:
         logger.warning(
             "Switchboard not yet reachable at %s for butler %s; "
@@ -411,15 +409,11 @@ async def switchboard_heartbeat_loop(daemon: Any) -> None:
             await asyncio.sleep(_SWITCHBOARD_HEARTBEAT_INTERVAL_S)
             try:
                 if daemon.switchboard_client is None:
-                    logger.debug(
-                        "Switchboard heartbeat: client is None, attempting reconnect"
-                    )
+                    logger.debug("Switchboard heartbeat: client is None, attempting reconnect")
                     await connect_switchboard(daemon)
                 else:
                     try:
-                        await asyncio.wait_for(
-                            daemon.switchboard_client.list_tools(), timeout=5.0
-                        )
+                        await asyncio.wait_for(daemon.switchboard_client.list_tools(), timeout=5.0)
                     except Exception:
                         logger.warning(
                             "Switchboard heartbeat: connection dead, reconnecting",

@@ -59,11 +59,15 @@ async def test_healing_trigger_sources_create_and_fingerprint() -> None:
 
     # session_create accepts 'healing'; rejects invalid
     pool = _FakePool()
-    result = await session_create(pool, prompt="Healing agent", trigger_source="healing", request_id=str(uuid.uuid4()))
+    result = await session_create(
+        pool, prompt="Healing agent", trigger_source="healing", request_id=str(uuid.uuid4())
+    )
     assert result == pool._return_id
     assert len(pool.fetchval_calls) == 1
     with pytest.raises(ValueError, match="healing"):
-        await session_create(pool, prompt="Test", trigger_source="not_valid", request_id=str(uuid.uuid4()))
+        await session_create(
+            pool, prompt="Test", trigger_source="not_valid", request_id=str(uuid.uuid4())
+        )
 
     # session_set_healing_fingerprint issues UPDATE; no raise on zero rows
     pool2 = _FakePool()

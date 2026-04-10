@@ -19,7 +19,7 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("general", "health", "messenger", "relationship", "switchboard")
-CORE_HEAD_REVISION = "core_055"
+CORE_HEAD_REVISION = "core_067"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",
@@ -290,7 +290,7 @@ def test_alembic_version_tracking_and_schema_scoped(postgres_container):
     asyncio.run(run_migrations(db_url, chain="core", schema="health"))
     assert _table_exists_in_schema(db_url, "general", "alembic_version")
     assert _table_exists_in_schema(db_url, "health", "alembic_version")
-    assert not _table_exists_in_schema(db_url, "public", "alembic_version")
+    assert _table_exists_in_schema(db_url, "public", "alembic_version")
 
 
 def test_core_acl_and_relationship_chain(postgres_container):

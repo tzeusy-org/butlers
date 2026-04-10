@@ -429,8 +429,8 @@ async def test_buffer_daemon_integration(tmp_path: Any) -> None:
     sw_dir = Path(tmp_path / "sw")
     sw_dir.mkdir(exist_ok=True)
     (sw_dir / "butler.toml").write_text(
-        "[butler]\nname = \"switchboard\"\nport = 41100\n\n"
-        "[butler.db]\nname = \"butlers\"\nschema = \"switchboard\"\n"
+        '[butler]\nname = "switchboard"\nport = 41100\n\n'
+        '[butler.db]\nname = "butlers"\nschema = "switchboard"\n'
     )
     with (
         common_patches["db_from_env"],

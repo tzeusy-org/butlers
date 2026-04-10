@@ -15,6 +15,33 @@ from butlers.daemon import ButlerDaemon
 pytestmark = pytest.mark.unit
 
 
+def _make_runtime_config_row(butler_name: str = "test-butler") -> dict[str, Any]:
+    """Return a dict-like runtime_config row for mocked asyncpg fetchrow calls."""
+    return {
+        "butler_name": butler_name,
+        "core_groups": None,
+        "model": None,
+        "runtime_type": "codex",
+        "args": "[]",
+        "max_concurrent": 3,
+        "max_queued": 10,
+        "session_timeout_s": 900,
+        "seeded_at": None,
+        "updated_at": None,
+    }
+
+
+def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
+    """Return runtime_config rows for runtime-config queries; None otherwise."""
+
+    async def _fetchrow(query: str, *args, **kwargs):  # noqa: ARG001
+        if "runtime_config" in query:
+            return _make_runtime_config_row(butler_name)
+        return None
+
+    return _fetchrow
+
+
 def _make_butler_toml(tmp_path: Path) -> Path:
     """Write a minimal butler.toml and return the directory."""
     toml_lines = [
@@ -38,7 +65,16 @@ def _make_butler_toml(tmp_path: Path) -> Path:
 
 def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+
     mock_pool = AsyncMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -133,7 +169,9 @@ async def test_remind_scheduling(tmp_path):
 
     task_id = uuid4()
     with patch(
-        "butlers.daemon._schedule_create", new_callable=AsyncMock, return_value=task_id
+        "butlers.core_tools._notifications._schedule_create",
+        new_callable=AsyncMock,
+        return_value=task_id,
     ) as mock_create:
         result = await tools["remind"](
             message="Take medication", channel="telegram", delay_minutes=30
@@ -150,7 +188,9 @@ async def test_remind_scheduling(tmp_path):
     # remind_at variant
     future_time = datetime.now(UTC) + timedelta(hours=2)
     with patch(
-        "butlers.daemon._schedule_create", new_callable=AsyncMock, return_value=uuid4()
+        "butlers.core_tools._notifications._schedule_create",
+        new_callable=AsyncMock,
+        return_value=uuid4(),
     ) as mc:
         result2 = await tools["remind"](message="Meeting", channel="email", remind_at=future_time)
     assert result2["status"] == "scheduled"

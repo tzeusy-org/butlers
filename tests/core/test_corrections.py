@@ -168,6 +168,7 @@ async def test_handler_failure_cases():
     assert result["status"] == "failed"
 
     from unittest.mock import AsyncMock as AsyncMockLocal
+
     pool2 = _make_pool(session_row={"id": uuid.uuid4(), "ingestion_event_id": str(uuid.uuid4())})
     result2 = await handle_misroute(
         pool2,
@@ -258,9 +259,17 @@ def test_static_contracts():
         assert param in desc
 
     expected_keys = {
-        "session_not_found", "state_key_not_found", "memory_already_retracted",
-        "memory_superseded", "butler_not_registered", "ingestion_event_expired",
-        "action_not_reversible", "unknown_correction_type", "missing_required_parameter",
-        "session_no_ingestion_event", "memory_not_found", "switchboard_unreachable",
+        "session_not_found",
+        "state_key_not_found",
+        "memory_already_retracted",
+        "memory_superseded",
+        "butler_not_registered",
+        "ingestion_event_expired",
+        "action_not_reversible",
+        "unknown_correction_type",
+        "missing_required_parameter",
+        "session_no_ingestion_event",
+        "memory_not_found",
+        "switchboard_unreachable",
     }
     assert set(FAILURE_MESSAGES.keys()) >= expected_keys

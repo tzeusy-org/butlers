@@ -170,9 +170,25 @@ class TestHeuristic:
 
     def test_sensitive_set_contents(self):
         expected = {
-            "to", "recipient", "recipients", "email", "address", "url", "uri",
-            "amount", "price", "cost", "account", "password", "token", "secret",
-            "key", "api_key", "auth", "credential", "credentials",
+            "to",
+            "recipient",
+            "recipients",
+            "email",
+            "address",
+            "url",
+            "uri",
+            "amount",
+            "price",
+            "cost",
+            "account",
+            "password",
+            "token",
+            "secret",
+            "key",
+            "api_key",
+            "auth",
+            "credential",
+            "credentials",
         }
         assert SENSITIVE_ARG_NAMES == expected
 
@@ -206,9 +222,14 @@ class TestResolutionOrder:
             ("core_tool", "body", lambda: None, False),
         ],
         ids=[
-            "explicit-true", "explicit-false", "heuristic-fallback-no-override",
-            "heuristic-unknown-tool", "heuristic-unlisted-arg", "default-not-sensitive",
-            "no-module-heuristic", "no-module-default",
+            "explicit-true",
+            "explicit-false",
+            "heuristic-fallback-no-override",
+            "heuristic-unknown-tool",
+            "heuristic-unlisted-arg",
+            "default-not-sensitive",
+            "no-module-heuristic",
+            "no-module-default",
         ],
     )
     def test_resolution(self, tool, arg, module_factory, expected):

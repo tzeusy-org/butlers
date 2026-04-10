@@ -24,9 +24,14 @@ class TestCredentialTierModel:
             assert hasattr(CredentialStore, method)
 
         # Tier 0 env vars (bootstrap, before DB)
-        tier_0 = {"POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER",
-                   "POSTGRES_PASSWORD", "SWITCHBOARD_MCP_URL",
-                   "OTEL_EXPORTER_OTLP_ENDPOINT"}
+        tier_0 = {
+            "POSTGRES_HOST",
+            "POSTGRES_PORT",
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD",
+            "SWITCHBOARD_MCP_URL",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+        }
         assert len(tier_0) >= 6
 
         # Tier 1 (butler_secrets), Tier 2 (entity_info)

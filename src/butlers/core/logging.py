@@ -36,6 +36,8 @@ from pathlib import Path
 import structlog
 from opentelemetry import trace
 
+logger = logging.getLogger(__name__)
+
 # Suppress websockets deprecation warnings emitted by uvicorn's legacy WS handler.
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets\.legacy")
 warnings.filterwarnings("ignore", message=r"websockets\.server\.WebSocketServerProtocol")
@@ -298,43 +300,49 @@ def configure_logging(
         log_root = Path(log_root)
         file_processors = _build_processors(time_fmt="iso")
         log_name = butler_name or "butlers"
+        try:
+            # Create all subdirectories upfront
+            for subdir in (_DIR_BUTLERS, _DIR_UVICORN, _DIR_CONNECTORS):
+                (log_root / subdir).mkdir(parents=True, exist_ok=True)
 
-        # Create all subdirectories upfront
-        for subdir in (_DIR_BUTLERS, _DIR_UVICORN, _DIR_CONNECTORS):
-            (log_root / subdir).mkdir(parents=True, exist_ok=True)
+            target_butler_path = str(log_root / _DIR_BUTLERS / f"{log_name}.log")
+            target_uvicorn_path = str(log_root / _DIR_UVICORN / f"{log_name}.log")
 
-        target_butler_path = str(log_root / _DIR_BUTLERS / f"{log_name}.log")
-        target_uvicorn_path = str(log_root / _DIR_UVICORN / f"{log_name}.log")
-
-        # Close and remove any existing file handler for *this* butler only
-        # (handles reconfiguration without clobbering other butlers' handlers).
-        for h in list(root.handlers):
-            if isinstance(h, logging.FileHandler) and h.baseFilename == target_butler_path:
-                h.close()
-                root.removeHandler(h)
-
-        # Butler application logs → logs/butlers/{name}.log
-        butler_handler = _make_file_handler(
-            log_root / _DIR_BUTLERS / f"{log_name}.log",
-            file_processors,
-        )
-        root.addHandler(butler_handler)
-
-        # Noise/transport logs → logs/uvicorn/{name}.log
-        # Same per-butler dedup for noise loggers.
-        for noise_name in _NOISE_LOGGERS:
-            noise_logger = logging.getLogger(noise_name)
-            for h in list(noise_logger.handlers):
-                if isinstance(h, logging.FileHandler) and h.baseFilename == target_uvicorn_path:
+            # Close and remove any existing file handler for *this* butler only
+            # (handles reconfiguration without clobbering other butlers' handlers).
+            for h in list(root.handlers):
+                if isinstance(h, logging.FileHandler) and h.baseFilename == target_butler_path:
                     h.close()
-                    noise_logger.removeHandler(h)
+                    root.removeHandler(h)
 
-        uvicorn_handler = _make_file_handler(
-            log_root / _DIR_UVICORN / f"{log_name}.log",
-            file_processors,
-        )
-        for name in _NOISE_LOGGERS:
-            logging.getLogger(name).addHandler(uvicorn_handler)
+            # Butler application logs → logs/butlers/{name}.log
+            butler_handler = _make_file_handler(
+                log_root / _DIR_BUTLERS / f"{log_name}.log",
+                file_processors,
+            )
+            root.addHandler(butler_handler)
+
+            # Noise/transport logs → logs/uvicorn/{name}.log
+            # Same per-butler dedup for noise loggers.
+            for noise_name in _NOISE_LOGGERS:
+                noise_logger = logging.getLogger(noise_name)
+                for h in list(noise_logger.handlers):
+                    if isinstance(h, logging.FileHandler) and h.baseFilename == target_uvicorn_path:
+                        h.close()
+                        noise_logger.removeHandler(h)
+
+            uvicorn_handler = _make_file_handler(
+                log_root / _DIR_UVICORN / f"{log_name}.log",
+                file_processors,
+            )
+            for name in _NOISE_LOGGERS:
+                logging.getLogger(name).addHandler(uvicorn_handler)
+        except OSError as exc:
+            logger.warning(
+                "Failed to initialize file logging under %s; continuing with console-only logs: %s",
+                log_root,
+                exc,
+            )
 
     # Configure structlog itself (for direct structlog.get_logger() usage)
     structlog.configure(

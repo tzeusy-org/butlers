@@ -132,9 +132,7 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(
-            ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock
-        ),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
@@ -283,7 +281,9 @@ class TestNotifyContactIdResolution:
             result = await notify_fn(channel="email", message="Test", contact_id=contact_id)
         assert result["status"] == "ok"
         mock_resolver.assert_awaited_once_with(contact_id=contact_id, channel="email")
-        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]["delivery"]
+        delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
+            "delivery"
+        ]
         assert delivery["recipient"] == "contact@example.com"
 
         # DB resolver queries contact_info with primary preference; None when not found
@@ -292,7 +292,9 @@ class TestNotifyContactIdResolution:
         _patch_db_in_patches(patches2, mock_pool)
         daemon2, _ = await _start_daemon_with_notify(butler_dir, patches2)
         cid = uuid.UUID("00000000-0000-0000-0000-000000000020")
-        result2 = await daemon2._resolve_contact_channel_identifier(contact_id=cid, channel="telegram")
+        result2 = await daemon2._resolve_contact_channel_identifier(
+            contact_id=cid, channel="telegram"
+        )
         assert result2 == "123456789"
         query = mock_conn.fetchrow.await_args.args[0]
         assert "public.contact_info" in query and "is_primary DESC" in query
@@ -301,9 +303,12 @@ class TestNotifyContactIdResolution:
         patches3 = _patch_infra()
         _patch_db_in_patches(patches3, mock_pool3)
         daemon3, _ = await _start_daemon_with_notify(butler_dir, patches3)
-        assert await daemon3._resolve_contact_channel_identifier(
-            contact_id=uuid.UUID("00000000-0000-0000-0000-000000000022"), channel="email"
-        ) is None
+        assert (
+            await daemon3._resolve_contact_channel_identifier(
+                contact_id=uuid.UUID("00000000-0000-0000-0000-000000000022"), channel="email"
+            )
+            is None
+        )
 
 
 def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
@@ -352,10 +357,18 @@ class TestNotifyMissingIdentifierAndOwner:
         mock_client = _make_mock_client()
         daemon.switchboard_client = mock_client
         with (
-            patch.object(daemon, "_resolve_contact_channel_identifier", new=AsyncMock(return_value=None)),
-            patch.object(daemon, "_resolve_default_notify_recipient", new=AsyncMock(return_value="owner@example.com")),
+            patch.object(
+                daemon, "_resolve_contact_channel_identifier", new=AsyncMock(return_value=None)
+            ),
+            patch.object(
+                daemon,
+                "_resolve_default_notify_recipient",
+                new=AsyncMock(return_value="owner@example.com"),
+            ),
         ):
-            result = await notify_fn(channel="email", message="Hello contact", contact_id=contact_id)
+            result = await notify_fn(
+                channel="email", message="Hello contact", contact_id=contact_id
+            )
         assert result["status"] == "pending_missing_identifier"
         assert result["contact_id"] == str(contact_id)
         mock_client.call_tool.assert_awaited_once()
@@ -364,10 +377,16 @@ class TestNotifyMissingIdentifierAndOwner:
         mock_client2 = _make_mock_client()
         daemon.switchboard_client = mock_client2
         with (
-            patch.object(daemon, "_resolve_contact_channel_identifier", new=AsyncMock(return_value=None)),
-            patch.object(daemon, "_resolve_default_notify_recipient", new=AsyncMock(return_value=None)),
+            patch.object(
+                daemon, "_resolve_contact_channel_identifier", new=AsyncMock(return_value=None)
+            ),
+            patch.object(
+                daemon, "_resolve_default_notify_recipient", new=AsyncMock(return_value=None)
+            ),
         ):
-            result2 = await notify_fn(channel="email", message="Cannot deliver", contact_id=contact_id)
+            result2 = await notify_fn(
+                channel="email", message="Cannot deliver", contact_id=contact_id
+            )
         assert result2["status"] == "pending_missing_identifier"
         mock_client2.call_tool.assert_not_awaited()
 
@@ -390,16 +409,23 @@ class TestNotifyMissingIdentifierAndOwner:
         # contact_id wins over explicit recipient
         daemon3.switchboard_client = _make_mock_client()
         with (
-            patch.object(daemon3, "_resolve_contact_channel_identifier", new=AsyncMock(return_value="contact-resolved@example.com")),
+            patch.object(
+                daemon3,
+                "_resolve_contact_channel_identifier",
+                new=AsyncMock(return_value="contact-resolved@example.com"),
+            ),
             _known_contact_patch("contact-resolved@example.com"),
         ):
             r4 = await notify_fn3(
-                channel="email", message="Hello",
+                channel="email",
+                message="Hello",
                 contact_id=uuid.UUID("00000000-0000-0000-0000-000000000040"),
                 recipient="explicit@example.com",
             )
         assert r4["status"] == "ok"
-        delivery = daemon3.switchboard_client.call_tool.await_args.args[1]["notify_request"]["delivery"]
+        delivery = daemon3.switchboard_client.call_tool.await_args.args[1]["notify_request"][
+            "delivery"
+        ]
         assert delivery["recipient"] == "contact-resolved@example.com"
 
 
@@ -416,23 +442,32 @@ class TestNotifyEmailRecipientValidation:
         # Unknown email → parked as pending_approval
         daemon.switchboard_client = _make_mock_client()
         with patch("butlers.identity.resolve_contact_by_channel", new=AsyncMock(return_value=None)):
-            result = await notify_fn(channel="email", message="Hello stranger", recipient="hallucinated@example.com")
+            result = await notify_fn(
+                channel="email", message="Hello stranger", recipient="hallucinated@example.com"
+            )
         assert result["status"] == "pending_approval"
 
         # Known email → delivered
         daemon.switchboard_client = _make_mock_client()
         with _known_contact_patch():
-            result2 = await notify_fn(channel="email", message="Hello known", recipient="known@example.com")
+            result2 = await notify_fn(
+                channel="email", message="Hello known", recipient="known@example.com"
+            )
         assert result2["status"] == "ok"
 
         # contact_id path still validates email
         daemon.switchboard_client = _make_mock_client()
         with (
-            patch.object(daemon, "_resolve_contact_channel_identifier", new=AsyncMock(return_value="contact-email@example.com")),
+            patch.object(
+                daemon,
+                "_resolve_contact_channel_identifier",
+                new=AsyncMock(return_value="contact-email@example.com"),
+            ),
             patch("butlers.identity.resolve_contact_by_channel", new=AsyncMock(return_value=None)),
         ):
             result3 = await notify_fn(
-                channel="email", message="Hello via contact_id",
+                channel="email",
+                message="Hello via contact_id",
                 contact_id=uuid.UUID("00000000-0000-0000-0000-000000000099"),
             )
         assert result3["status"] == "pending_approval"

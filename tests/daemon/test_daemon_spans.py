@@ -248,7 +248,9 @@ class TestSpanWrappingMCP:
 
         with pytest.raises(ValueError, match="module error"):
             await fns2["failing_tool"]()
-        error_spans = [s for s in otel_provider.get_finished_spans() if s.name == "butler.tool.failing_tool"]
+        error_spans = [
+            s for s in otel_provider.get_finished_spans() if s.name == "butler.tool.failing_tool"
+        ]
         assert len(error_spans) == 1
         assert error_spans[0].status.status_code == trace.StatusCode.ERROR
 

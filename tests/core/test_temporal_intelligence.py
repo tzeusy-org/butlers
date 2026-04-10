@@ -299,10 +299,10 @@ def test_is_period_active():
     def active(name, sm, sd, em, ed, today, enabled=True) -> bool:
         return is_period_active(_make_period(name, sm, sd, em, ed, enabled=enabled), today=today)
 
-    assert active("tax", 1, 1, 4, 15, date(2026, 3, 15)) is True   # same-year active
-    assert active("tax", 1, 1, 4, 15, date(2026, 6, 1)) is False   # outside range
+    assert active("tax", 1, 1, 4, 15, date(2026, 3, 15)) is True  # same-year active
+    assert active("tax", 1, 1, 4, 15, date(2026, 6, 1)) is False  # outside range
     assert active("winter", 11, 15, 1, 10, date(2026, 12, 20)) is True  # cross-year Dec
-    assert active("winter", 11, 15, 1, 10, date(2026, 1, 5)) is True   # cross-year Jan
+    assert active("winter", 11, 15, 1, 10, date(2026, 1, 5)) is True  # cross-year Jan
     assert active("winter", 11, 15, 1, 10, date(2026, 2, 1)) is False  # cross-year inactive
     assert active("disabled", 1, 1, 4, 15, date(2026, 3, 15), enabled=False) is False
 
@@ -367,20 +367,35 @@ def test_quiet_hours_is_in_and_priority_defer():
 
     # Priority: high bypasses; medium/low deferred inside quiet hours; None prefs never defers
     prefs = _make_prefs()
-    assert should_defer_notification(priority="high", current_time=time(23, 30), prefs=prefs) is False
-    assert should_defer_notification(priority="medium", current_time=time(1, 0), prefs=prefs) is True
+    assert (
+        should_defer_notification(priority="high", current_time=time(23, 30), prefs=prefs) is False
+    )
+    assert (
+        should_defer_notification(priority="medium", current_time=time(1, 0), prefs=prefs) is True
+    )
     assert should_defer_notification(priority="low", current_time=time(3, 30), prefs=prefs) is True
-    assert should_defer_notification(priority="medium", current_time=time(14, 0), prefs=prefs) is False
-    assert should_defer_notification(priority="medium", current_time=time(2, 0), prefs=None) is False
+    assert (
+        should_defer_notification(priority="medium", current_time=time(14, 0), prefs=prefs) is False
+    )
+    assert (
+        should_defer_notification(priority="medium", current_time=time(2, 0), prefs=None) is False
+    )
 
     # Per-channel overrides
-    prefs_ov = {**prefs, "override_channels": {"email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}}}
+    prefs_ov = {
+        **prefs,
+        "override_channels": {"email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}},
+    }
     eff = resolve_effective_quiet_hours(channel="email", prefs=prefs_ov)
     assert eff["quiet_hours_start"] == "20:00"
     eff2 = resolve_effective_quiet_hours(channel="telegram", prefs=prefs_ov)
     assert eff2["quiet_hours_start"] == "22:00"
-    assert should_defer_notification(priority="medium", current_time=time(21, 0), prefs=prefs_ov, channel="email")
-    assert not should_defer_notification(priority="medium", current_time=time(21, 0), prefs=prefs_ov, channel="telegram")
+    assert should_defer_notification(
+        priority="medium", current_time=time(21, 0), prefs=prefs_ov, channel="email"
+    )
+    assert not should_defer_notification(
+        priority="medium", current_time=time(21, 0), prefs=prefs_ov, channel="telegram"
+    )
 
     # compute_deliver_at: batch today/tomorrow; invalid tz and naive raise
     r1 = compute_deliver_at(prefs=_make_prefs("UTC"), now=datetime(2026, 1, 15, 23, 0, tzinfo=UTC))
@@ -388,7 +403,9 @@ def test_quiet_hours_is_in_and_priority_defer():
     r2 = compute_deliver_at(prefs=_make_prefs("UTC"), now=datetime(2026, 1, 15, 4, 0, tzinfo=UTC))
     assert r2.date() == date(2026, 1, 15) and r2.hour == 7
     with pytest.raises(ValueError, match="Unknown timezone"):
-        compute_deliver_at(prefs=_make_prefs(tz="Invalid/Zone"), now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC))
+        compute_deliver_at(
+            prefs=_make_prefs(tz="Invalid/Zone"), now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+        )
     with pytest.raises(ValueError, match="timezone-aware"):
         compute_deliver_at(prefs=_make_prefs(), now=datetime(2026, 1, 15, 12, 0))
 
@@ -427,14 +444,24 @@ def test_notification_due_expiry_and_delivery_result():
     now = datetime.now(UTC)
 
     # is_notification_due: past pending → due; future/delivered/expired → not due
-    assert is_notification_due(_make_deferred("pending", deliver_at=now - timedelta(minutes=1)), now=now)
-    assert not is_notification_due(_make_deferred("pending", deliver_at=now + timedelta(hours=2)), now=now)
-    assert not is_notification_due(_make_deferred("delivered", deliver_at=now - timedelta(minutes=1)), now=now)
-    assert not is_notification_due(_make_deferred("expired", deliver_at=now - timedelta(hours=2)), now=now)
+    assert is_notification_due(
+        _make_deferred("pending", deliver_at=now - timedelta(minutes=1)), now=now
+    )
+    assert not is_notification_due(
+        _make_deferred("pending", deliver_at=now + timedelta(hours=2)), now=now
+    )
+    assert not is_notification_due(
+        _make_deferred("delivered", deliver_at=now - timedelta(minutes=1)), now=now
+    )
+    assert not is_notification_due(
+        _make_deferred("expired", deliver_at=now - timedelta(hours=2)), now=now
+    )
 
     # is_notification_expired: >24h past → expired; <24h → not
     assert is_notification_expired(_make_deferred(deliver_at=now - timedelta(hours=25)), now=now)
-    assert not is_notification_expired(_make_deferred(deliver_at=now - timedelta(hours=23)), now=now)
+    assert not is_notification_expired(
+        _make_deferred(deliver_at=now - timedelta(hours=23)), now=now
+    )
 
     # compute_delivery_result
     assert compute_delivery_result(delivery_succeeded=False)["status"] == "pending"
@@ -635,7 +662,10 @@ class TestTickIntegration:
                  'pending', '[]', $4, true)
             RETURNING id
             """,
-            "test-deadline", "Review visa renewal checklist", target, now,
+            "test-deadline",
+            "Review visa renewal checklist",
+            target,
+            now,
         )
 
         dispatched_calls = []
@@ -655,7 +685,9 @@ class TestTickIntegration:
         assert attrs["deadline_dispatched"] > 0
 
         # Expired deadline → disabled + expired status
-        async def noop(**kwargs): pass
+        async def noop(**kwargs):
+            pass
+
         await pool.execute(
             """
             INSERT INTO scheduled_tasks
@@ -666,7 +698,8 @@ class TestTickIntegration:
                     30, '[{"days_before": 30, "severity": "info"}]',
                     'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
             """,
-            _past_date(1), now,
+            _past_date(1),
+            now,
         )
         await tick(pool, noop)
         row = await pool.fetchrow(
@@ -691,7 +724,9 @@ class TestTickIntegration:
 
         now = datetime.now(UTC)
         env_json = json.dumps({"schema_version": "notify.v1", "delivery": {"channel": "telegram"}})
-        async def noop(**kwargs): pass
+
+        async def noop(**kwargs):
+            pass
 
         notif_id = await pool.fetchval(
             """
@@ -700,7 +735,8 @@ class TestTickIntegration:
             VALUES ('test-butler', 'telegram', 'Queued', 'medium', $2::jsonb, $1, 'pending')
             RETURNING id
             """,
-            now - timedelta(minutes=5), env_json,
+            now - timedelta(minutes=5),
+            env_json,
         )
 
         notify_calls = []
@@ -732,9 +768,9 @@ class TestTickIntegration:
             now - timedelta(hours=25),
         )
         await tick(pool, noop)
-        assert (await pool.fetchrow(
-            "SELECT status FROM deferred_notifications WHERE id = $1", old_id
-        ))["status"] == "expired"
+        assert (
+            await pool.fetchrow("SELECT status FROM deferred_notifications WHERE id = $1", old_id)
+        )["status"] == "expired"
 
         # notify_fn failure → pending
         fail_id = await pool.fetchval(
@@ -752,9 +788,9 @@ class TestTickIntegration:
             raise RuntimeError("DB down")
 
         await tick(pool, noop, notify_fn=failing_notify)
-        assert (await pool.fetchrow(
-            "SELECT status FROM deferred_notifications WHERE id = $1", fail_id
-        ))["status"] == "pending"
+        assert (
+            await pool.fetchrow("SELECT status FROM deferred_notifications WHERE id = $1", fail_id)
+        )["status"] == "pending"
 
     async def test_tick_event_chains(self, pool):
         """tick() fires: calendar_event_end, deadline_passed (expired+completed),
@@ -784,7 +820,9 @@ class TestTickIntegration:
                 (butler_name, event_id, title, start_at, end_at, chain_triggered)
             VALUES ('test-butler', $1, 'Dentist', $2, $3, false)
             """,
-            event_id, now - timedelta(hours=1), now - timedelta(minutes=2),
+            event_id,
+            now - timedelta(hours=1),
+            now - timedelta(minutes=2),
         )
         await pool.execute(
             """
@@ -797,9 +835,9 @@ class TestTickIntegration:
             event_id,
         )
         await tick(pool, noop)
-        assert (await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = 'post-dentist'"
-        ))["status"] == "fired"
+        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-dentist'"))[
+            "status"
+        ] == "fired"
         spans = exporter.get_finished_spans()
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)
         assert tick_span is not None and "chains_fired" in dict(tick_span.attributes or {})
@@ -816,7 +854,8 @@ class TestTickIntegration:
                     'alerted', '[{"days_before": 30, "severity": "info"}]', $2, true)
             RETURNING id
             """,
-            _past_date(1), now,
+            _past_date(1),
+            now,
         )
         await pool.execute(
             """
@@ -829,12 +868,14 @@ class TestTickIntegration:
             str(past_dl_id),
         )
         await tick(pool, noop)
-        assert (await pool.fetchrow(
-            "SELECT deadline_status FROM scheduled_tasks WHERE name = 'tax-filing'"
-        ))["deadline_status"] == "expired"
-        assert (await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = 'post-tax'"
-        ))["status"] == "fired"
+        assert (
+            await pool.fetchrow(
+                "SELECT deadline_status FROM scheduled_tasks WHERE name = 'tax-filing'"
+            )
+        )["deadline_status"] == "expired"
+        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-tax'"))[
+            "status"
+        ] == "fired"
         task_row = await pool.fetchrow(
             "SELECT source FROM scheduled_tasks WHERE name = 'chain:post-tax:0'"
         )
@@ -852,7 +893,8 @@ class TestTickIntegration:
                     'completed', '[{"days_before": 30, "severity": "info"}]', $2, false)
             RETURNING id
             """,
-            _future_date(10), now,
+            _future_date(10),
+            now,
         )
         await pool.execute(
             """
@@ -865,9 +907,9 @@ class TestTickIntegration:
             str(comp_dl_id),
         )
         await tick(pool, noop)
-        assert (await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = 'post-visa'"
-        ))["status"] == "fired"
+        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-visa'"))[
+            "status"
+        ] == "fired"
 
         # Already-fired chain NOT refired
         already_id = await pool.fetchval(
@@ -880,7 +922,8 @@ class TestTickIntegration:
                     30, '[]', 'expired', '[]', $2, false)
             RETURNING id
             """,
-            _past_date(1), now,
+            _past_date(1),
+            now,
         )
         await pool.execute(
             """
@@ -893,12 +936,15 @@ class TestTickIntegration:
             str(already_id),
         )
         await tick(pool, noop)
-        assert (await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = 'already-fired'"
-        ))["status"] == "fired"
-        assert await pool.fetchval(
-            "SELECT COUNT(*) FROM scheduled_tasks WHERE name = 'chain:already-fired:0'"
-        ) == 0
+        assert (
+            await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'already-fired'")
+        )["status"] == "fired"
+        assert (
+            await pool.fetchval(
+                "SELECT COUNT(*) FROM scheduled_tasks WHERE name = 'chain:already-fired:0'"
+            )
+            == 0
+        )
 
         # deadline_threshold chain fires for matching severity
         threshold_dl_id = await pool.fetchval(
@@ -912,7 +958,8 @@ class TestTickIntegration:
                     'escalated', '[{"days_before": 7, "severity": "critical"}]', $2, true)
             RETURNING id
             """,
-            _future_date(5), now,
+            _future_date(5),
+            now,
         )
         await pool.execute(
             """
@@ -925,9 +972,9 @@ class TestTickIntegration:
             f"{threshold_dl_id}:critical",
         )
         await tick(pool, noop)
-        assert (await pool.fetchrow(
-            "SELECT status FROM event_chains WHERE name = 'on-critical'"
-        ))["status"] == "fired"
+        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'on-critical'"))[
+            "status"
+        ] == "fired"
 
     async def test_tick_cron_and_sync_schedules(self, pool):
         """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; validates required fields."""
@@ -950,21 +997,31 @@ class TestTickIntegration:
         assert result >= 1 and any("morning summary" in c.get("prompt", "") for c in dispatch_calls)
 
         target = _future_date(60)
-        await sync_schedules(pool, [
-            {
-                "name": "visa-renewal", "cron": "0 9 * * *", "task_type": "deadline",
-                "prompt": "Check visa", "dispatch_mode": "prompt",
-                "target_date": target.isoformat(), "lead_time_days": 60,
-                "alert_thresholds": [
-                    {"days_before": 60, "severity": "info"},
-                    {"days_before": 30, "severity": "warning"},
-                ],
-            },
-            {
-                "name": "morning-summary", "cron": "0 8 * * *", "task_type": "cron",
-                "prompt": "Morning briefing", "dispatch_mode": "prompt",
-            },
-        ])
+        await sync_schedules(
+            pool,
+            [
+                {
+                    "name": "visa-renewal",
+                    "cron": "0 9 * * *",
+                    "task_type": "deadline",
+                    "prompt": "Check visa",
+                    "dispatch_mode": "prompt",
+                    "target_date": target.isoformat(),
+                    "lead_time_days": 60,
+                    "alert_thresholds": [
+                        {"days_before": 60, "severity": "info"},
+                        {"days_before": 30, "severity": "warning"},
+                    ],
+                },
+                {
+                    "name": "morning-summary",
+                    "cron": "0 8 * * *",
+                    "task_type": "cron",
+                    "prompt": "Morning briefing",
+                    "dispatch_mode": "prompt",
+                },
+            ],
+        )
         dl_row = await pool.fetchrow(
             "SELECT task_type, target_date, lead_time_days, alert_thresholds "
             "FROM scheduled_tasks WHERE name = 'visa-renewal'"
@@ -977,19 +1034,27 @@ class TestTickIntegration:
             thresholds = json.loads(thresholds)
         assert len(thresholds) == 2
 
-        assert (await pool.fetchrow(
-            "SELECT task_type FROM scheduled_tasks WHERE name = 'morning-summary'"
-        ))["task_type"] == "cron"
+        assert (
+            await pool.fetchrow(
+                "SELECT task_type FROM scheduled_tasks WHERE name = 'morning-summary'"
+            )
+        )["task_type"] == "cron"
 
         with pytest.raises(ValueError, match="target_date"):
-            await sync_schedules(pool, [
-                {
-                    "name": "bad-dl", "cron": "0 9 * * *", "task_type": "deadline",
-                    "prompt": "Missing target", "dispatch_mode": "prompt",
-                    "lead_time_days": 30,
-                    "alert_thresholds": [{"days_before": 30, "severity": "info"}],
-                }
-            ])
+            await sync_schedules(
+                pool,
+                [
+                    {
+                        "name": "bad-dl",
+                        "cron": "0 9 * * *",
+                        "task_type": "deadline",
+                        "prompt": "Missing target",
+                        "dispatch_mode": "prompt",
+                        "lead_time_days": 30,
+                        "alert_thresholds": [{"days_before": 30, "severity": "info"}],
+                    }
+                ],
+            )
 
     async def test_tick_deadline_seasonal_context_injection(self, pool):
         """tick() injects active_seasons into deadline prompt when butler_name provided;
@@ -1018,7 +1083,10 @@ class TestTickIntegration:
                     '[{"days_before": 30, "severity": "info"}]',
                     'pending', '[]', $4, true)
             """,
-            "seasonal-task", "Check deadlines", target, now,
+            "seasonal-task",
+            "Check deadlines",
+            target,
+            now,
         )
 
         dispatched_calls: list[dict] = []
@@ -1037,7 +1105,8 @@ class TestTickIntegration:
             "UPDATE scheduled_tasks "
             "SET fired_thresholds='[]', deadline_status='pending', next_run_at=$1 "
             "WHERE name=$2",
-            now, "seasonal-task",
+            now,
+            "seasonal-task",
         )
         dispatched_calls.clear()
         await tick(pool, capture_dispatch)

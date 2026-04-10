@@ -16,7 +16,7 @@ pytestmark = [
 
 
 def _today() -> date:
-    return date.today()
+    return datetime.now(UTC).date()
 
 
 def _utcnow() -> datetime:

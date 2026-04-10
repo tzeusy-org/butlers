@@ -133,8 +133,12 @@ async def test_overflow_drops_oldest_with_warning_and_successive(caplog):
     # Context field: stored when provided; None when not
     source3 = ButlerReportsSource()
     await source3.accept(
-        fingerprint=_fp(0), exception_type="ValueError", call_site="mod:func",
-        severity=2, event_summary="some error", source_butler="finance",
+        fingerprint=_fp(0),
+        exception_type="ValueError",
+        call_site="mod:func",
+        severity=2,
+        event_summary="some error",
+        source_butler="finance",
         context="agent reasoning context here",
     )
     ctx_findings = await source3.discover(lookback_minutes=15)
@@ -142,5 +146,3 @@ async def test_overflow_drops_oldest_with_warning_and_successive(caplog):
     await _accept(source3, i=1)
     ctx_findings2 = await source3.discover(lookback_minutes=15)
     assert ctx_findings2[0].context is None
-
-

@@ -217,8 +217,12 @@ async def test_tick_dispatch_prompt_and_job(pool):
 
     # Job task
     t2 = await schedule_create(
-        pool, "due-job", "*/1 * * * *",
-        dispatch_mode="job", job_name="eligibility_sweep", job_args={"batch_size": 25},
+        pool,
+        "due-job",
+        "*/1 * * * *",
+        dispatch_mode="job",
+        job_name="eligibility_sweep",
+        job_args={"batch_size": 25},
     )
     await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t2, _past())
     dispatch2 = _Dispatch()
@@ -249,7 +253,9 @@ async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
     t3 = await schedule_create(pool, "advance-task2", "*/5 * * * *", "advance")
     await pool.execute("UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t3, _past(10))
     await tick(pool, _Dispatch())
-    row = await pool.fetchrow("SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1", t3)
+    row = await pool.fetchrow(
+        "SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1", t3
+    )
     assert row["next_run_at"] > datetime.now(UTC) - timedelta(seconds=5)
     assert row["last_run_at"] is not None
 
@@ -273,8 +279,13 @@ async def test_schedule_create_and_list(pool):
 
     # Prompt task with optional fields
     task_id = await schedule_create(
-        pool, "list-task", "0 9 * * *", "list me",
-        complexity="high", timezone="America/New_York", display_title="List Task",
+        pool,
+        "list-task",
+        "0 9 * * *",
+        "list me",
+        complexity="high",
+        timezone="America/New_York",
+        display_title="List Task",
     )
     assert task_id is not None
     tasks = await schedule_list(pool)
@@ -284,8 +295,14 @@ async def test_schedule_create_and_list(pool):
     assert task["last_result"] is None
 
     # Job task
-    await schedule_create(pool, "job-list-task", "*/10 * * * *",
-                          dispatch_mode="job", job_name="my_job", job_args={"dry_run": True})
+    await schedule_create(
+        pool,
+        "job-list-task",
+        "*/10 * * * *",
+        dispatch_mode="job",
+        job_name="my_job",
+        job_args={"dry_run": True},
+    )
     tasks2 = await schedule_list(pool)
     jt = next(t for t in tasks2 if t["name"] == "job-list-task")
     assert jt["dispatch_mode"] == "job" and jt["job_name"] == "my_job" and jt["prompt"] is None
@@ -333,7 +350,9 @@ async def test_schedule_validation(pool):
         await schedule_create(pool, "bad-complexity", "0 9 * * *", "work", complexity="ultra")
 
     # Complexity: valid accepted
-    t2 = await schedule_create(pool, "good-complexity", "0 9 * * *", "work", complexity="extra_high")
+    t2 = await schedule_create(
+        pool, "good-complexity", "0 9 * * *", "work", complexity="extra_high"
+    )
     row = await pool.fetchrow("SELECT complexity FROM scheduled_tasks WHERE id = $1", t2)
     assert row["complexity"] == "extra_high"
 
@@ -433,19 +452,25 @@ def test_check_notify_reference(tmp_path, caplog) -> None:
 
     # Present: no warning
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-        _check_notify_reference(task_name="report", prompt="Call notify() to send.", skills_dir=None)
+        _check_notify_reference(
+            task_name="report", prompt="Call notify() to send.", skills_dir=None
+        )
     assert "does not reference notify" not in caplog.text
 
     # Case-insensitive: no warning
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-        _check_notify_reference(task_name="task", prompt="Call NOTIFY() when done.", skills_dir=None)
+        _check_notify_reference(
+            task_name="task", prompt="Call NOTIFY() when done.", skills_dir=None
+        )
     assert "does not reference notify" not in caplog.text
 
     # Absent: warning with task name
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-        _check_notify_reference(task_name="cleanup-task", prompt="Delete old temp files.", skills_dir=None)
+        _check_notify_reference(
+            task_name="cleanup-task", prompt="Delete old temp files.", skills_dir=None
+        )
     assert "does not reference notify" in caplog.text and "cleanup-task" in caplog.text
 
     # Skill with notify suppresses warning
@@ -454,13 +479,17 @@ def test_check_notify_reference(tmp_path, caplog) -> None:
     (skill1 / "SKILL.md").write_text("# Daily Digest\nCall notify() to send it.", encoding="utf-8")
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-        _check_notify_reference(task_name="digest", prompt="Run the daily-digest skill.", skills_dir=tmp_path / "skills")
+        _check_notify_reference(
+            task_name="digest", prompt="Run the daily-digest skill.", skills_dir=tmp_path / "skills"
+        )
     assert "does not reference notify" not in caplog.text
 
     # Missing dir: safe
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
-        _check_notify_reference(task_name="task", prompt="Run some-skill.", skills_dir=tmp_path / "nonexistent")
+        _check_notify_reference(
+            task_name="task", prompt="Run some-skill.", skills_dir=tmp_path / "nonexistent"
+        )
     assert "does not reference notify" in caplog.text
 
 
@@ -471,10 +500,18 @@ async def test_sync_schedules_notify_validation(pool, caplog) -> None:
     from butlers.core.scheduler import sync_schedules
 
     schedules = [
-        {"name": "good-prompt", "cron": "0 8 * * *", "dispatch_mode": "prompt",
-         "prompt": "Do something and notify(channel='telegram')."},
-        {"name": "bad-prompt", "cron": "0 9 * * *", "dispatch_mode": "prompt",
-         "prompt": "Do something quietly without alerting anyone."},
+        {
+            "name": "good-prompt",
+            "cron": "0 8 * * *",
+            "dispatch_mode": "prompt",
+            "prompt": "Do something and notify(channel='telegram').",
+        },
+        {
+            "name": "bad-prompt",
+            "cron": "0 9 * * *",
+            "dispatch_mode": "prompt",
+            "prompt": "Do something quietly without alerting anyone.",
+        },
         {"name": "job-task", "cron": "0 10 * * *", "dispatch_mode": "job", "job_name": "some-job"},
     ]
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):

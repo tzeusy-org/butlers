@@ -97,8 +97,11 @@ class TestInsightCandidateModel:
 
         # Optional fields omitted when None
         c2 = InsightCandidate(
-            priority=50, category="health", dedup_key="health:bp-log:2026-w13",
-            message="No BP", expires_at=_future(),
+            priority=50,
+            category="health",
+            dedup_key="health:bp-log:2026-w13",
+            message="No BP",
+            expires_at=_future(),
         )
         args2 = c2.to_mcp_args()
         assert "cooldown_days" not in args2
@@ -117,9 +120,13 @@ class TestInsightCandidateModel:
     def test_validation_errors(self, kwargs, match):
         from butlers.tools.switchboard.insight.models import InsightCandidate
 
-        base = {"priority": 50, "category": "birthday",
-                "dedup_key": "birthday:entity-123:2026", "message": "test",
-                "expires_at": _future()}
+        base = {
+            "priority": 50,
+            "category": "birthday",
+            "dedup_key": "birthday:entity-123:2026",
+            "message": "test",
+            "expires_at": _future(),
+        }
         base.update(kwargs)
         with pytest.raises(ValueError, match=match):
             InsightCandidate(**base)
@@ -128,8 +135,11 @@ class TestInsightCandidateModel:
         from butlers.tools.switchboard.insight.models import InsightCandidate
 
         c = InsightCandidate(
-            priority=50, category="health", dedup_key="health:bp:user-1:2026-w13",
-            message="Butler-specific insight", expires_at=_future(),
+            priority=50,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="Butler-specific insight",
+            expires_at=_future(),
         )
         assert c.dedup_key == "health:bp:user-1:2026-w13"
 
@@ -733,10 +743,10 @@ class TestQuietHours:
     @pytest.mark.parametrize(
         "start,end,hour,expected",
         [
-            (22, 8, 23, True),   # midnight wrap, inside
+            (22, 8, 23, True),  # midnight wrap, inside
             (22, 8, 12, False),  # midnight wrap, outside
-            (9, 17, 12, True),   # same-day, inside
-            (9, 17, 8, False),   # same-day, before
+            (9, 17, 12, True),  # same-day, inside
+            (9, 17, 8, False),  # same-day, before
             (9, 17, 18, False),  # same-day, after
         ],
         ids=["wrap-inside", "wrap-outside", "same-inside", "same-before", "same-after"],
@@ -776,7 +786,8 @@ class TestQuietHours:
 
         notify_mock = AsyncMock(return_value={"status": "sent"})
         result = await delivery_cycle(
-            insight_pool, notify_fn=notify_mock,
+            insight_pool,
+            notify_fn=notify_mock,
             now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC),
         )
         assert result["skipped"] is True
@@ -1368,7 +1379,8 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, TRUE)""",
-            str(uuid.uuid4()), today_midnight - timedelta(hours=12),
+            str(uuid.uuid4()),
+            today_midnight - timedelta(hours=12),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
 
@@ -1429,7 +1441,8 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()), today_midnight + timedelta(hours=1),
+            str(uuid.uuid4()),
+            today_midnight + timedelta(hours=1),
         )
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
         assert triggered is True
@@ -1450,7 +1463,8 @@ class TestAutoOffTotalDisengagement:
         await insight_pool.execute(
             """INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
             VALUES ($1::uuid, $2, FALSE)""",
-            str(uuid.uuid4()), today_midnight + timedelta(hours=2),
+            str(uuid.uuid4()),
+            today_midnight + timedelta(hours=2),
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
         assert (await get_insight_settings(insight_pool))["verbosity"] != "off"
@@ -1467,8 +1481,12 @@ class TestProposeInsightCandidateUnit:
     def _make_mock_pool(self, verbosity: str = "minimal", custom_budget=None) -> AsyncMock:
         pool = AsyncMock()
         pool.fetchrow.return_value = {
-            "id": 1, "verbosity": verbosity, "custom_budget": custom_budget,
-            "quiet_start": None, "quiet_end": None, "quiet_timezone": None,
+            "id": 1,
+            "verbosity": verbosity,
+            "custom_budget": custom_budget,
+            "quiet_start": None,
+            "quiet_end": None,
+            "quiet_timezone": None,
             "updated_at": datetime.now(UTC),
         }
         pool.execute.return_value = "INSERT 0 1"
@@ -1485,16 +1503,26 @@ class TestProposeInsightCandidateUnit:
             ({"message": "   "}, "message must be non-empty"),
             ({"expires_at": "not-a-datetime"}, "ISO 8601"),
         ],
-        ids=["priority-0", "priority-101", "empty-dedup", "bad-dedup",
-             "empty-msg", "whitespace-msg", "invalid-expires"],
+        ids=[
+            "priority-0",
+            "priority-101",
+            "empty-dedup",
+            "bad-dedup",
+            "empty-msg",
+            "whitespace-msg",
+            "invalid-expires",
+        ],
     )
     async def test_validation_errors(self, overrides, match):
         from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
         pool = AsyncMock()
         base = {
-            "origin_butler": "health", "priority": 70, "category": "health",
-            "dedup_key": "health:bp:user-1:2026-w13", "message": "test",
+            "origin_butler": "health",
+            "priority": 70,
+            "category": "health",
+            "dedup_key": "health:bp:user-1:2026-w13",
+            "message": "test",
             "expires_at": datetime.now(UTC) + timedelta(days=7),
         }
         base.update(overrides)
@@ -1508,8 +1536,12 @@ class TestProposeInsightCandidateUnit:
 
         pool = self._make_mock_pool()
         result = await propose_insight_candidate(
-            pool, origin_butler="health", priority=70, category="health",
-            dedup_key="health:bp:user-1:2026-w13", message="valid",
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="valid",
             expires_at=datetime.now(UTC) - timedelta(hours=1),
         )
         assert result["status"] == "error"
@@ -1526,8 +1558,12 @@ class TestProposeInsightCandidateUnit:
 
         pool = self._make_mock_pool(verbosity=verbosity, custom_budget=custom_budget)
         result = await propose_insight_candidate(
-            pool, origin_butler="health", priority=70, category="health",
-            dedup_key="health:bp:user-1:2026-w13", message="No BP logged",
+            pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key="health:bp:user-1:2026-w13",
+            message="No BP logged",
             expires_at=datetime.now(UTC) + timedelta(days=7),
         )
         assert result["status"] == "filtered"
@@ -1540,11 +1576,16 @@ class TestProposeInsightCandidateUnit:
 
         pool = self._make_mock_pool(verbosity="normal")
         result = await propose_insight_candidate(
-            pool, origin_butler="finance", priority=55, category="spending",
+            pool,
+            origin_butler="finance",
+            priority=55,
+            category="spending",
             dedup_key="finance:spending:overage:2026-w13",
             message="Over budget this week",
             expires_at=datetime.now(UTC) + timedelta(days=7),
-            cooldown_days=3, channel="telegram", metadata={"amount_over": 150},
+            cooldown_days=3,
+            channel="telegram",
+            metadata={"amount_over": 150},
         )
         assert result["status"] == "accepted"
         pool.execute.assert_called_once()
@@ -1555,8 +1596,12 @@ class TestProposeInsightCandidateUnit:
         # 3-segment dedup_key also valid
         pool2 = self._make_mock_pool()
         r2 = await propose_insight_candidate(
-            pool2, origin_butler="relationship", priority=75, category="birthday",
-            dedup_key="birthday:entity-123:2026", message="Alice's birthday",
+            pool2,
+            origin_butler="relationship",
+            priority=75,
+            category="birthday",
+            dedup_key="birthday:entity-123:2026",
+            message="Alice's birthday",
             expires_at=datetime.now(UTC) + timedelta(days=7),
         )
         assert r2["status"] == "accepted"

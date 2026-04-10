@@ -30,6 +30,7 @@ from butlers.core.route_inbox import (
 )
 from butlers.core.spawner import Spawner
 from butlers.core.telemetry import extract_trace_context, tag_butler_span
+from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.modules.pipeline import _routing_ctx_var
 from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
@@ -750,6 +751,92 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         )
                 else:
                     raise ValueError(f"Unsupported telegram intent: {intent}")
+
+            elif channel == "email":
+                email_module = modules_by_name.get("email")
+                if email_module is None:
+                    raise RuntimeError("Messenger email adapter is unavailable.")
+
+                # route.execute calls module methods directly (not MCP tools),
+                # so MCP-level approval wrappers are not in the path.
+                # Enforce role-based email delivery gating here.
+                email_target: str | None = None
+                if intent == "send":
+                    email_target = notify_request.delivery.recipient
+                elif notify_context is not None:
+                    email_target = notify_context.source_sender_identity
+
+                if email_target:
+                    approval_pool = daemon.db.pool if daemon.db is not None else None
+                    if approval_pool is not None:
+                        from butlers.modules.approvals.email_guard import check_email_recipient
+
+                        gate_tool_name = (
+                            "email_send_message" if intent == "send" else "email_reply_to_thread"
+                        )
+                        decision = await check_email_recipient(
+                            approval_pool,
+                            email_target=email_target,
+                            rule_tool_name=gate_tool_name,
+                            rule_match_args={"to": email_target},
+                            park_tool_name=gate_tool_name,
+                            park_tool_args={
+                                "to": email_target,
+                                "channel": channel,
+                                "intent": intent,
+                                "message": message_text,
+                                "subject": (
+                                    notify_request.delivery.subject
+                                    if notify_request.delivery.subject
+                                    else None
+                                ),
+                                "origin_butler": origin,
+                            },
+                            park_summary=(
+                                f"route.execute blocked: email to {email_target!r}. "
+                                f"Message: {message_text!r}"
+                            ),
+                            session_id=get_current_runtime_session_id(),
+                        )
+                        if not decision.allowed:
+                            raise ValueError(
+                                f"Delivery blocked: email target '{email_target}' is a "
+                                f"{decision.contact_desc} and no standing approval rule matches. "
+                                f"Parked for owner review on the approval dashboard "
+                                f"(action_id={decision.action_id})."
+                            )
+
+                raw_subject = notify_request.delivery.subject or "Notification"
+                normalized_subject = (
+                    raw_subject
+                    if notify_prefix.lower() in raw_subject.lower()
+                    else f"{notify_prefix} {raw_subject}"
+                )
+                if intent == "send":
+                    recipient = notify_request.delivery.recipient
+                    if not recipient:
+                        raise ValueError(
+                            "notify_request.delivery.recipient is required for send intent."
+                        )
+                    adapter_result = await email_module._send_email(
+                        recipient,
+                        normalized_subject,
+                        message_text,
+                    )
+                elif intent == "reply":
+                    if notify_context is None:
+                        raise ValueError(
+                            "notify_request.request_context is required for reply intent."
+                        )
+                    thread_id = notify_context.source_thread_identity or notify_request_id
+                    adapter_result = await email_module._reply_to_thread(
+                        notify_context.source_sender_identity,
+                        thread_id,
+                        message_text,
+                        normalized_subject,
+                    )
+                else:
+                    raise ValueError(f"Unsupported email intent: {intent}")
 
             elif channel == "whatsapp":
                 whatsapp_module = modules_by_name.get("whatsapp")

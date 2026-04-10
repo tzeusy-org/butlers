@@ -80,7 +80,9 @@ class TestSpawnerRequestIdMinting:
         """Internal triggers mint valid unique UUIDs; connector request_id passed unchanged; pool=None works."""
         # Internal triggers mint a valid UUID per session
         pool = _fake_pool()
-        spawner = Spawner(config=_make_config(), config_dir=tmp_path, pool=pool, runtime=_OkAdapter())
+        spawner = Spawner(
+            config=_make_config(), config_dir=tmp_path, pool=pool, runtime=_OkAdapter()
+        )
         collected: list[str] = []
         side_effects = [uuid.UUID(f"00000000-0000-0000-0000-{i:012d}") for i in range(1, 4)]
         with (
@@ -99,18 +101,24 @@ class TestSpawnerRequestIdMinting:
 
         # Connector-supplied request_id passed through unchanged
         pool2 = _fake_pool()
-        spawner2 = Spawner(config=_make_config(), config_dir=tmp_path, pool=pool2, runtime=_OkAdapter())
+        spawner2 = Spawner(
+            config=_make_config(), config_dir=tmp_path, pool=pool2, runtime=_OkAdapter()
+        )
         connector_request_id = "0195f3a2-1234-7000-8000-abcdef012345"
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create2,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
         ):
             mock_create2.return_value = uuid.UUID("00000000-0000-0000-0000-000000000004")
-            await spawner2.trigger(prompt="routed message", trigger_source="route", request_id=connector_request_id)
+            await spawner2.trigger(
+                prompt="routed message", trigger_source="route", request_id=connector_request_id
+            )
             _, kwargs2 = mock_create2.call_args
             assert kwargs2.get("request_id") == connector_request_id
 
         # pool=None does not raise
-        spawner3 = Spawner(config=_make_config(), config_dir=tmp_path, pool=None, runtime=_OkAdapter())
+        spawner3 = Spawner(
+            config=_make_config(), config_dir=tmp_path, pool=None, runtime=_OkAdapter()
+        )
         result = await spawner3.trigger(prompt="no pool tick", trigger_source="tick")
         assert result.success is True

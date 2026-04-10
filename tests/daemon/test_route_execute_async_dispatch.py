@@ -111,9 +111,7 @@ def _patch_infra(butler_name: str = "health"):
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(
-            ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock
-        ),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
@@ -330,7 +328,9 @@ async def test_crash_recovery_on_startup(tmp_path: Path) -> None:
 
     # Staffer does NOT schedule recovery
     patches2 = _patch_infra("infratool")
-    butler_dir2 = _make_butler_toml(tmp_path, butler_name="infratool", port=9302, butler_type="staffer")
+    butler_dir2 = _make_butler_toml(
+        tmp_path, butler_name="infratool", port=9302, butler_type="staffer"
+    )
     mock_mcp2 = MagicMock()
     mock_mcp2.tool = lambda *a, **kw: lambda fn: fn
     with (

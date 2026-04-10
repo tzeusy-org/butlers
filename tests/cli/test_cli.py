@@ -157,7 +157,7 @@ class TestDiscoverConfigs:
         bad.mkdir(parents=True)
         (bad / "butler.toml").write_text("not valid [[[ toml content")
         configs2 = _discover_configs(base)
-        assert configs2 == {}
+        assert configs2 == {"test_butler": base / "test_butler"}
 
 
 class TestUpCommand:

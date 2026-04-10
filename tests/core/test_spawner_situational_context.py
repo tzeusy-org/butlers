@@ -73,9 +73,7 @@ class TestFetchSituationalContextPreamble:
         assert result2 is None
 
         # Pool is None → None, get_active_context not called
-        with patch(
-            "butlers.context_bus.get_active_context", new_callable=AsyncMock
-        ) as mock_get:
+        with patch("butlers.context_bus.get_active_context", new_callable=AsyncMock) as mock_get:
             result3 = await fetch_situational_context_preamble(None, "general")
         assert result3 is None
         mock_get.assert_not_called()
@@ -95,7 +93,6 @@ class TestFetchSituationalContextPreamble:
         warning_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
         assert any("situational context preamble" in m for m in warning_msgs)
         assert any("my-butler" in m for m in warning_msgs)
-
 
 
 # ---------------------------------------------------------------------------

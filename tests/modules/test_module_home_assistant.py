@@ -140,7 +140,6 @@ class TestHomeAssistantConfig:
             HomeAssistantConfig(unknown_field="boom")
 
 
-
 # ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
@@ -232,7 +231,6 @@ class TestShutdown:
         assert ha_module._client is None
         assert ha_module._url is None
         assert ha_module._token is None
-
 
 
 # ---------------------------------------------------------------------------

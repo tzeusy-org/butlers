@@ -24,10 +24,13 @@ REPO_ROOT = Path("/home/tze/gt/butlers/mayor/rig")
 
 def test_credential_redaction():
     """API keys, DB URLs, JWTs, Bearer and Telegram tokens are redacted."""
+
     def r(text: str) -> str:
         return anonymize(text, REPO_ROOT)
 
-    assert "sk-ant-api03-abc123XYZ_extra-long-token" not in r("key sk-ant-api03-abc123XYZ_extra-long-token here")
+    assert "sk-ant-api03-abc123XYZ_extra-long-token" not in r(
+        "key sk-ant-api03-abc123XYZ_extra-long-token here"
+    )
     assert "[REDACTED-API-KEY]" in r("key sk-ant-api03-abc123XYZ_extra-long-token here")
     assert "AKIA1234567890ABCDEF" not in r("AWS key: AKIA1234567890ABCDEF")
     assert "[REDACTED-API-KEY]" in r("AWS key: AKIA1234567890ABCDEF")
@@ -37,9 +40,11 @@ def test_credential_redaction():
     assert "s3cr3t" not in r("mysql://admin:s3cr3t@db.internal:3306/app")
     assert "supersecretvalue123456" not in r("api_key=supersecretvalue123456")
     # JWT redaction
-    jwt = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-           ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
-           ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+    jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        ".eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
     r_jwt = r(f"token: {jwt}")
     assert jwt not in r_jwt and "[REDACTED-JWT]" in r_jwt
     # Telegram bot token redacted
@@ -52,6 +57,7 @@ def test_credential_redaction():
 
 def test_pii_scrubbing():
     """Emails, phone numbers, and IPs (v4/v6) are scrubbed; localhost preserved."""
+
     def r(text: str) -> str:
         return anonymize(text, REPO_ROOT)
 
@@ -67,7 +73,9 @@ def test_pii_scrubbing():
     assert "555) 123-4567" not in r("Contact: (555) 123-4567")
     assert "555.123.4567" not in r("fax: 555.123.4567")
     # IPv4/IPv6
-    assert "192.168.1.100" not in r("Connection from 192.168.1.100") and "[REDACTED-IP]" in r("Connection from 192.168.1.100")
+    assert "192.168.1.100" not in r("Connection from 192.168.1.100") and "[REDACTED-IP]" in r(
+        "Connection from 192.168.1.100"
+    )
     assert "203.0.113.42" not in r("Remote host: 203.0.113.42")
     assert "2001:db8" not in r("Remote: 2001:db8::1")
     # Localhost preserved

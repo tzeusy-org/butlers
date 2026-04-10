@@ -141,7 +141,9 @@ def _patch_infra():
     mock_spawner.drain = AsyncMock()
 
     return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory),
+        "db_from_env": patch(
+            "butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory
+        ),
         "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(

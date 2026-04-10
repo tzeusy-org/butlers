@@ -35,9 +35,14 @@ def test_validate_month_day() -> None:
         validate_month_day(m, d)  # should not raise
 
     invalid_cases = [
-        (2, 30, "February"), (2, 29, "February"), (4, 31, "April"),
-        (11, 31, "November"), (0, 1, "month"), (13, 1, "month"),
-        (3, 0, "day"), (5, -1, "day"),
+        (2, 30, "February"),
+        (2, 29, "February"),
+        (4, 31, "April"),
+        (11, 31, "November"),
+        (0, 1, "month"),
+        (13, 1, "month"),
+        (3, 0, "day"),
+        (5, -1, "day"),
     ]
     for month, day, match in invalid_cases:
         with pytest.raises(ValueError, match=match):
@@ -49,17 +54,17 @@ def test_validate_month_day() -> None:
     "month,day,sm,sd,em,ed,expected",
     [
         # Same-year (Jan 1 – Apr 15)
-        (3, 15, 1, 1, 4, 15, True),   # mid season
-        (1, 1,  1, 1, 4, 15, True),   # start boundary
-        (4, 15, 1, 1, 4, 15, True),   # end boundary
-        (6, 1,  1, 1, 4, 15, False),  # outside
+        (3, 15, 1, 1, 4, 15, True),  # mid season
+        (1, 1, 1, 1, 4, 15, True),  # start boundary
+        (4, 15, 1, 1, 4, 15, True),  # end boundary
+        (6, 1, 1, 1, 4, 15, False),  # outside
         # Cross-year (Nov 15 – Jan 10)
-        (12, 20, 11, 15, 1, 10, True),   # December
-        (1,  5,  11, 15, 1, 10, True),   # January
-        (11, 15, 11, 15, 1, 10, True),   # start boundary
-        (1,  10, 11, 15, 1, 10, True),   # end boundary
-        (6,  15, 11, 15, 1, 10, False),  # mid-year
-        (1,  11, 11, 15, 1, 10, False),  # just past end
+        (12, 20, 11, 15, 1, 10, True),  # December
+        (1, 5, 11, 15, 1, 10, True),  # January
+        (11, 15, 11, 15, 1, 10, True),  # start boundary
+        (1, 10, 11, 15, 1, 10, True),  # end boundary
+        (6, 15, 11, 15, 1, 10, False),  # mid-year
+        (1, 11, 11, 15, 1, 10, False),  # just past end
         (11, 14, 11, 15, 1, 10, False),  # just before start
     ],
 )
@@ -75,8 +80,11 @@ def test_seasonal_presets() -> None:
     from butlers.core.seasonal import SEASONAL_PRESETS, _is_date_in_range, validate_month_day
 
     expected = {
-        "us-tax-season", "year-end-holidays", "back-to-school",
-        "spring-semester", "fall-semester",
+        "us-tax-season",
+        "year-end-holidays",
+        "back-to-school",
+        "spring-semester",
+        "fall-semester",
     }
     assert set(SEASONAL_PRESETS.keys()) == expected
 
@@ -223,16 +231,34 @@ async def test_get_active_seasons_filtering(pool):
 
     butler = f"butler-{uuid.uuid4().hex[:8]}"
     await seasonal_period_create(
-        pool, butler, "tax-season", "fiscal",
-        start_month=1, start_day=1, end_month=4, end_day=15,
+        pool,
+        butler,
+        "tax-season",
+        "fiscal",
+        start_month=1,
+        start_day=1,
+        end_month=4,
+        end_day=15,
     )
     await seasonal_period_create(
-        pool, butler, "winter", "annual",
-        start_month=11, start_day=15, end_month=1, end_day=10,
+        pool,
+        butler,
+        "winter",
+        "annual",
+        start_month=11,
+        start_day=15,
+        end_month=1,
+        end_day=10,
     )
     await seasonal_period_create(
-        pool, butler, "disabled", "annual",
-        start_month=1, start_day=1, end_month=12, end_day=31,
+        pool,
+        butler,
+        "disabled",
+        "annual",
+        start_month=1,
+        start_day=1,
+        end_month=12,
+        end_day=31,
         enabled=False,
     )
 
@@ -256,49 +282,79 @@ async def test_get_active_seasons_filtering(pool):
 async def test_seasonal_period_crud(pool):
     """create/update/list/delete operations; validation; preset creation."""
     from butlers.core.seasonal import (
+        get_active_seasons,
         seasonal_period_create,
         seasonal_period_create_preset,
         seasonal_period_delete,
         seasonal_period_list,
         seasonal_period_update,
-        get_active_seasons,
     )
 
     butler = f"butler-{uuid.uuid4().hex[:8]}"
 
     # Create
     period_id = await seasonal_period_create(
-        pool, butler, "my-season", "annual",
-        start_month=1, start_day=1, end_month=3, end_day=31,
+        pool,
+        butler,
+        "my-season",
+        "annual",
+        start_month=1,
+        start_day=1,
+        end_month=3,
+        end_day=31,
     )
     assert period_id is not None
 
     # Duplicate same butler raises
     with pytest.raises(ValueError, match="already exists"):
         await seasonal_period_create(
-            pool, butler, "my-season", "annual",
-            start_month=6, start_day=1, end_month=8, end_day=31,
+            pool,
+            butler,
+            "my-season",
+            "annual",
+            start_month=6,
+            start_day=1,
+            end_month=8,
+            end_day=31,
         )
 
     # Different butler same name OK
     id2 = await seasonal_period_create(
-        pool, "other-butler", "my-season", "annual",
-        start_month=1, start_day=1, end_month=3, end_day=31,
+        pool,
+        "other-butler",
+        "my-season",
+        "annual",
+        start_month=1,
+        start_day=1,
+        end_month=3,
+        end_day=31,
     )
     assert id2 != period_id
 
     # Invalid date raises
     with pytest.raises(ValueError, match="February"):
         await seasonal_period_create(
-            pool, "b-b", "bad", "annual",
-            start_month=2, start_day=30, end_month=3, end_day=15,
+            pool,
+            "b-b",
+            "bad",
+            "annual",
+            start_month=2,
+            start_day=30,
+            end_month=3,
+            end_day=15,
         )
 
     # Update (enable/disable)
     butler2 = f"butler-{uuid.uuid4().hex[:8]}"
     year_round_id = await seasonal_period_create(
-        pool, butler2, "year-round", "annual",
-        start_month=1, start_day=1, end_month=12, end_day=31,
+        pool,
+        butler2,
+        "year-round",
+        "annual",
+        start_month=1,
+        start_day=1,
+        end_month=12,
+        end_day=31,
     )
     assert len(await get_active_seasons(pool, butler2, today=date(2025, 6, 15))) == 1
     await seasonal_period_update(pool, butler2, year_round_id, enabled=False)
@@ -309,8 +365,14 @@ async def test_seasonal_period_crud(pool):
     # List includes is_active field
     butler3 = f"butler-{uuid.uuid4().hex[:8]}"
     del_id = await seasonal_period_create(
-        pool, butler3, "delete-me", "annual",
-        start_month=3, start_day=1, end_month=5, end_day=31,
+        pool,
+        butler3,
+        "delete-me",
+        "annual",
+        start_month=3,
+        start_day=1,
+        end_month=5,
+        end_day=31,
     )
     periods = await seasonal_period_list(pool, butler3)
     assert len(periods) == 1 and "is_active" in periods[0]
@@ -354,8 +416,14 @@ async def test_tick_seasonal_context_injection(scheduler_pool):
         f"task-{uuid.uuid4().hex[:8]}",
     )
     await seasonal_period_create(
-        scheduler_pool, butler, "year-round", "annual",
-        start_month=1, start_day=1, end_month=12, end_day=31,
+        scheduler_pool,
+        butler,
+        "year-round",
+        "annual",
+        start_month=1,
+        start_day=1,
+        end_month=12,
+        end_day=31,
     )
     d = _Dispatch()
     d.calls = []

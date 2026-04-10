@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module, ToolGroupMixin, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin
 
 logger = logging.getLogger(__name__)
 

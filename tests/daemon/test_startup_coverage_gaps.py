@@ -73,14 +73,23 @@ class TestStep1bLoggingConfig:
         assert butler_log.exists(), f"Expected {butler_log} to exist"
 
     def test_configure_logging_no_file_handlers_without_log_root(self) -> None:
-        """configure_logging does not create file handlers when log_root is None."""
+        """configure_logging with log_root=None does not add new file handlers."""
         from butlers.core.logging import configure_logging
 
+        root = logging.getLogger()
+        before_file_handler_ids = {
+            id(h) for h in root.handlers if isinstance(h, logging.FileHandler)
+        }
         configure_logging(level="INFO", fmt="text", log_root=None, butler_name="nofile")
 
-        root = logging.getLogger()
-        file_handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
-        assert not file_handlers, "No FileHandler should be attached when log_root=None"
+        after_file_handlers = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+        after_file_handler_ids = {id(h) for h in after_file_handlers}
+        assert after_file_handler_ids == before_file_handler_ids, (
+            "log_root=None must not add FileHandler entries"
+        )
+        assert not any(h.baseFilename.endswith("/nofile.log") for h in after_file_handlers), (
+            "log_root=None should not create a per-butler file log"
+        )
 
     def test_credential_redaction_filter_scrubs_telegram_token(self) -> None:
         """CredentialRedactionFilter redacts Telegram bot tokens in log messages."""

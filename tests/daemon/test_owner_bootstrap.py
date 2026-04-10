@@ -132,7 +132,8 @@ class TestEnsureOwnerEntityBehavior:
             nonlocal call_count
             if "INSERT INTO public.entities" in sql:
                 raise Exception("constraint violation")
-            idx = call_count; call_count += 1
+            idx = call_count
+            call_count += 1
             return results[idx] if idx < len(results) else None
 
         conn4.fetchval = AsyncMock(side_effect=failing_on_insert)

@@ -20,8 +20,17 @@ class TestContextSignalVocabulary:
         from butlers.context_bus import ContextSignal
 
         expected = {
-            "traveling", "sleeping", "meeting", "focused", "exercising",
-            "sick", "socializing", "commuting", "at_home", "away", "dnd",
+            "traveling",
+            "sleeping",
+            "meeting",
+            "focused",
+            "exercising",
+            "sick",
+            "socializing",
+            "commuting",
+            "at_home",
+            "away",
+            "dnd",
         }
         assert {s.value for s in ContextSignal} == expected
         assert ContextSignal.traveling == "traveling"
@@ -37,11 +46,17 @@ class TestWritePermissionsMatrix:
         from butlers.context_bus import _check_write_permission
 
         allowed = [
-            ("travel", "traveling"), ("general", "traveling"),
-            ("health", "exercising"), ("general", "meeting"),
-            ("general", "dnd"), ("switchboard", "dnd"),
-            ("health", "sleeping"), ("general", "sleeping"),
-            ("travel", "at_home"), ("home", "at_home"), ("general", "at_home"),
+            ("travel", "traveling"),
+            ("general", "traveling"),
+            ("health", "exercising"),
+            ("general", "meeting"),
+            ("general", "dnd"),
+            ("switchboard", "dnd"),
+            ("health", "sleeping"),
+            ("general", "sleeping"),
+            ("travel", "at_home"),
+            ("home", "at_home"),
+            ("general", "at_home"),
         ]
         for butler, signal in allowed:
             _check_write_permission(butler, signal)
@@ -50,9 +65,13 @@ class TestWritePermissionsMatrix:
         from butlers.context_bus import _check_write_permission
 
         denied = [
-            ("health", "traveling"), ("finance", "traveling"),
-            ("general", "exercising"), ("health", "meeting"),
-            ("health", "dnd"), ("travel", "sleeping"), ("health", "at_home"),
+            ("health", "traveling"),
+            ("finance", "traveling"),
+            ("general", "exercising"),
+            ("health", "meeting"),
+            ("health", "dnd"),
+            ("travel", "sleeping"),
+            ("health", "at_home"),
         ]
         for butler, signal in denied:
             with pytest.raises(PermissionError):
@@ -108,8 +127,9 @@ class TestContextSignalValidation:
         pool = AsyncMock()
         # Invalid signal type
         with pytest.raises(ValueError, match="[Ii]nvalid signal type"):
-            await set_context(pool, "health", "invalid_xyz",
-                              expires_at=datetime.now(tz=UTC) + timedelta(hours=1))
+            await set_context(
+                pool, "health", "invalid_xyz", expires_at=datetime.now(tz=UTC) + timedelta(hours=1)
+            )
         # Confidence too high
         with pytest.raises(ValueError, match="confidence"):
             await set_context(pool, "health", "exercising", confidence=1.5)
@@ -135,8 +155,12 @@ class TestContextEntryDataclass:
 
         now = datetime.now(tz=UTC)
         entry = ContextEntry(
-            signal_type="traveling", value="Paris", set_by_butler="travel",
-            set_at=now, expires_at=now + timedelta(hours=1), confidence=1.0,
+            signal_type="traveling",
+            value="Paris",
+            set_by_butler="travel",
+            set_at=now,
+            expires_at=now + timedelta(hours=1),
+            confidence=1.0,
         )
         assert entry.metadata is None
 
@@ -166,7 +190,11 @@ class TestContextBusFunctions:
 
         now = datetime.now(tz=UTC)
         entry = ContextEntry(
-            signal_type="traveling", value="Paris", set_by_butler="travel",
-            set_at=now, expires_at=now + timedelta(hours=1), confidence=1.0,
+            signal_type="traveling",
+            value="Paris",
+            set_by_butler="travel",
+            set_at=now,
+            expires_at=now + timedelta(hours=1),
+            confidence=1.0,
         )
         assert format_context_preamble([entry]).startswith("[User Context:")

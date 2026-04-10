@@ -254,14 +254,15 @@ class TestButlerStartupIntegration:
 
         native_result = {"evaluated": 2, "skipped": 1, "transitioned": 1, "transitions": []}
         mock_native_job = AsyncMock(return_value=native_result)
-        with patch(
-            "butlers.daemon._load_switchboard_eligibility_sweep_job",
-            return_value=mock_native_job,
+        with patch.dict(
+            "butlers.background._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+            {"switchboard": {"eligibility_sweep": mock_native_job}},
+            clear=False,
         ):
             dispatched = await tick(pool, daemon._dispatch_scheduled_task)
 
         assert dispatched == 1
-        mock_native_job.assert_awaited_once_with(pool)
+        mock_native_job.assert_awaited_once_with(pool, {"dry_run": True})
         daemon.spawner.trigger.assert_not_awaited()
 
         final_session_count = await pool.fetchval("SELECT COUNT(*) FROM sessions")
@@ -350,7 +351,11 @@ class TestButlerStartupIntegration:
         """Verify that the daemon registers the expected set of core tools."""
         from unittest.mock import MagicMock
 
-        from butlers.daemon import CORE_TOOL_NAMES, ButlerDaemon
+        from butlers.daemon import (
+            CORE_TOOL_NAMES,
+            MESSENGER_CORE_TOOL_NAMES,
+            ButlerDaemon,
+        )
 
         # We cannot easily call daemon.start() without extensive mocking,
         # but we can test _register_core_tools by setting up the daemon's
@@ -360,6 +365,9 @@ class TestButlerStartupIntegration:
         daemon.config.name = "test-butler"
         daemon.config.description = "A test butler"
         daemon.config.port = 9100
+        daemon.config.type = MagicMock(value="staffer")
+        daemon.config.runtime = MagicMock()
+        daemon.config.runtime.core_groups = None
         daemon._modules = []
         daemon._started_at = 1000.0
         daemon.spawner = MagicMock()
@@ -386,7 +394,7 @@ class TestButlerStartupIntegration:
 
         daemon._register_core_tools()
 
-        expected_tools = CORE_TOOL_NAMES
+        expected_tools = CORE_TOOL_NAMES - MESSENGER_CORE_TOOL_NAMES
         assert set(registered_tools) == expected_tools
 
 
@@ -585,7 +593,9 @@ class TestSwitchboardRoutingIntegration:
         """Register butlers; list returns all; route() calls with correct endpoint/tool/args and logs success."""
         from butlers.tools.switchboard import list_butlers, register_butler, route
 
-        await register_butler(pool, "health", "http://localhost:41101/sse", "Health butler", ["email"])
+        await register_butler(
+            pool, "health", "http://localhost:41101/sse", "Health butler", ["email"]
+        )
         await register_butler(pool, "target-butler", "http://localhost:9200/sse")
 
         butlers = await list_butlers(pool)
@@ -620,7 +630,11 @@ class TestSwitchboardRoutingIntegration:
 
         await route(pool, "ghost-butler", "anything", {})
         rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'ghost-butler'")
-        assert len(rows) == 1 and rows[0]["success"] is False and "not found" in rows[0]["error"].lower()
+        assert (
+            len(rows) == 1
+            and rows[0]["success"] is False
+            and "not found" in rows[0]["error"].lower()
+        )
 
     async def test_route_failure_logs_error(self, pool):
         """When call_fn raises, route() logs the error and returns error dict."""
@@ -765,4 +779,3 @@ class TestTraceContextPropagation:
         # Env var format matches
         assert "TRACEPARENT" in env
         assert env["TRACEPARENT"].startswith("00-")
-

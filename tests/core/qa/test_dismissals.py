@@ -41,14 +41,22 @@ def _pool(fetchrow=None, fetchval=None, fetch=None):
 async def test_upsert_and_is_dismissed():
     """upsert returns correct fields; is_dismissed True/False/None; list returns rows; custom duration."""
     fp = "a" * 64
-    row = FakeRecord({"fingerprint": fp, "dismissed_until": "2099-01-01T00:00:00+00:00", "dismissed_by": "dashboard"})
+    row = FakeRecord(
+        {
+            "fingerprint": fp,
+            "dismissed_until": "2099-01-01T00:00:00+00:00",
+            "dismissed_by": "dashboard",
+        }
+    )
     pool = _pool(fetchrow=row)
     result = await upsert_dismissal(pool, fp, "dashboard")
     assert result["fingerprint"] == fp and result["dismissed_by"] == "dashboard"
     assert fp in pool.fetchrow.call_args.args and "dashboard" in pool.fetchrow.call_args.args
 
     # Custom duration
-    await upsert_dismissal(_pool(fetchrow=FakeRecord({"fingerprint": fp})), fp, "owner", duration_hours=48.0)
+    await upsert_dismissal(
+        _pool(fetchrow=FakeRecord({"fingerprint": fp})), fp, "owner", duration_hours=48.0
+    )
     pool.fetchrow.assert_called_once()
 
     # is_dismissed

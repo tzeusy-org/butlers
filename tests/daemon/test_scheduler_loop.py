@@ -96,7 +96,9 @@ def _patch_infra():
     mock_spawner.drain = AsyncMock()
 
     return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory),
+        "db_from_env": patch(
+            "butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory
+        ),
         "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
         "validate_module_credentials": patch(
@@ -120,9 +122,7 @@ def _patch_infra():
             ),
         ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(
-            ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock
-        ),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
@@ -222,9 +222,7 @@ class TestSchedulerLoopBehavior:
             tick_calls.append((stagger_key, butler_name))
             return 0
 
-        daemon2 = _make_daemon_with_loop(
-            _make_butler_toml(tmp_path), name="health", interval=1
-        )
+        daemon2 = _make_daemon_with_loop(_make_butler_toml(tmp_path), name="health", interval=1)
         with (
             patch("butlers.daemon._tick", side_effect=capturing_tick),
             patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),

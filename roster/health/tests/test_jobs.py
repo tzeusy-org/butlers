@@ -19,7 +19,7 @@ def _utcnow() -> datetime:
 
 
 def _today() -> date:
-    return date.today()
+    return datetime.now(UTC).date()
 
 
 # ---------------------------------------------------------------------------

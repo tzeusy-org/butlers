@@ -45,8 +45,9 @@ async def test_session_create_validation_and_return() -> None:
 
     expected_id = uuid.uuid4()
     pool2 = _FakePool(return_id=expected_id)
-    result = await session_create(pool2, prompt="Test", trigger_source="tick",
-                                  request_id=str(uuid.uuid4()))
+    result = await session_create(
+        pool2, prompt="Test", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
     assert result == expected_id
 
 
@@ -65,6 +66,3 @@ async def test_session_create_invalid_trigger_source_raises(trigger_source: str)
             trigger_source=trigger_source,
             request_id=str(uuid.uuid4()),
         )
-
-
-

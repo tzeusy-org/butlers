@@ -171,7 +171,8 @@ async def _insert_catalog_entry(
         VALUES ($1, 'claude', 'test-model', 'medium', $2, 0)
         RETURNING id
         """,
-        alias, enabled,
+        alias,
+        enabled,
     )
     return row["id"]
 
@@ -191,7 +192,11 @@ async def _insert_limits(
             (catalog_entry_id, limit_24h, limit_30d, reset_24h_at, reset_30d_at)
         VALUES ($1, $2, $3, $4, $5)
         """,
-        catalog_entry_id, limit_24h, limit_30d, reset_24h_at, reset_30d_at,
+        catalog_entry_id,
+        limit_24h,
+        limit_30d,
+        reset_24h_at,
+        reset_30d_at,
     )
 
 
@@ -213,7 +218,12 @@ async def _insert_ledger_row(
             (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens, recorded_at)
         VALUES ($1, $2, $3, $4, $5, $6)
         """,
-        catalog_entry_id, butler_name, session_id, input_tokens, output_tokens, recorded_at,
+        catalog_entry_id,
+        butler_name,
+        session_id,
+        input_tokens,
+        output_tokens,
+        recorded_at,
     )
 
 
@@ -279,11 +289,11 @@ async def test_quota_reset_and_window_exclusion(postgres_container: Any) -> None
         # reset_24h_at: old row excluded, recent row counted
         eid = await _insert_catalog_entry(pool, alias="reset-24h")
         reset_time = datetime.now(UTC) - timedelta(hours=1)
-        await _insert_limits(
-            pool, catalog_entry_id=eid, limit_24h=100, reset_24h_at=reset_time
-        )
+        await _insert_limits(pool, catalog_entry_id=eid, limit_24h=100, reset_24h_at=reset_time)
         await _insert_ledger_row(
-            pool, catalog_entry_id=eid, input_tokens=80,
+            pool,
+            catalog_entry_id=eid,
+            input_tokens=80,
             recorded_at=datetime.now(UTC) - timedelta(hours=12),  # before reset
         )
         await _insert_ledger_row(pool, catalog_entry_id=eid, input_tokens=20)  # after reset
@@ -294,7 +304,9 @@ async def test_quota_reset_and_window_exclusion(postgres_container: Any) -> None
         eid2 = await _insert_catalog_entry(pool, alias="old-30d")
         await _insert_limits(pool, catalog_entry_id=eid2, limit_30d=500)
         await _insert_ledger_row(
-            pool, catalog_entry_id=eid2, input_tokens=400,
+            pool,
+            catalog_entry_id=eid2,
+            input_tokens=400,
             recorded_at=datetime.now(UTC) - timedelta(days=31),
         )
         await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=50)

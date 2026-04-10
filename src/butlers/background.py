@@ -361,5 +361,3 @@ async def liveness_reporter_loop(
                     return
         except asyncio.CancelledError:
             logger.info("Liveness reporter cancelled for butler %s", butler_name)
-
-

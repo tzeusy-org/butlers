@@ -17,8 +17,10 @@ class TestSoftDeleteContract:
     def test_soft_delete_mechanism_and_design_principles(self):
         """All deletes use UPDATE SET deleted_at; version for optimistic locking;
         merge/split/roster jobs all use soft delete."""
-        soft_sql = ("UPDATE finance.transactions SET deleted_at = now(), "
-                    "updated_at = now(), version = version + 1 WHERE id = $1")
+        soft_sql = (
+            "UPDATE finance.transactions SET deleted_at = now(), "
+            "updated_at = now(), version = version + 1 WHERE id = $1"
+        )
         assert "DELETE FROM" not in soft_sql and "deleted_at" in soft_sql
         assert "version" in soft_sql
 
@@ -56,6 +58,10 @@ class TestMonetaryPrecisionAndAudit:
             assert "NUMERIC" in typ and "float" not in typ.lower()
         assert len("USD") == 3  # ISO 4217
 
-        correction_sources = {"owner_edit", "butler_reconciliation",
-                              "import_correction", "duplicate_merge"}
+        correction_sources = {
+            "owner_edit",
+            "butler_reconciliation",
+            "import_correction",
+            "duplicate_merge",
+        }
         assert len(correction_sources) == 4

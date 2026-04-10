@@ -43,9 +43,7 @@ class TestApprovalGateContracts:
         # Approval module supports cross-channel notifications via roles
         mod_src = inspect.getsource(ApprovalsModule)
         has_role_targeting = (
-            "role" in mod_src.lower()
-            or "owner" in mod_src.lower()
-            or "actor" in mod_src.lower()
+            "role" in mod_src.lower() or "owner" in mod_src.lower() or "actor" in mod_src.lower()
         )
         assert has_role_targeting, (
             "ApprovalsModule must use role/owner/actor for notification targeting"

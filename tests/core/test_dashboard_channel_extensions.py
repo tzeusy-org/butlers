@@ -69,20 +69,24 @@ class TestSourceChannelContainsDashboard:
         envelope = IngestEnvelopeV1.model_validate(_dashboard_ingest_payload())
         assert envelope.source.channel == "dashboard"
 
-        ctx = RouteRequestContextV1.model_validate({
-            "request_id": _VALID_UUID7,
-            "received_at": _now_iso(),
-            "source_channel": "dashboard",
-            "source_endpoint_identity": "dashboard:butler:general",
-            "source_sender_identity": "owner",
-        })
+        ctx = RouteRequestContextV1.model_validate(
+            {
+                "request_id": _VALID_UUID7,
+                "received_at": _now_iso(),
+                "source_channel": "dashboard",
+                "source_endpoint_identity": "dashboard:butler:general",
+                "source_sender_identity": "owner",
+            }
+        )
         assert ctx.source_channel == "dashboard"
 
-        meta = RouteSourceMetadataV1.model_validate({
-            "channel": "dashboard",
-            "identity": "dashboard:butler:general",
-            "tool_name": "ingest.v1",
-        })
+        meta = RouteSourceMetadataV1.model_validate(
+            {
+                "channel": "dashboard",
+                "identity": "dashboard:butler:general",
+                "tool_name": "ingest.v1",
+            }
+        )
         assert meta.channel == "dashboard"
 
 
@@ -95,8 +99,8 @@ class TestAllowedProvidersByChannelDashboard:
     def test_dashboard_provider_validation(self) -> None:
         """dashboard+internal accepted; dashboard+telegram and dashboard+gmail rejected."""
         from butlers.tools.switchboard.routing.contracts import (
-            IngestEnvelopeV1,
             _ALLOWED_PROVIDERS_BY_CHANNEL,
+            IngestEnvelopeV1,
         )
 
         assert "dashboard" in _ALLOWED_PROVIDERS_BY_CHANNEL
@@ -133,13 +137,17 @@ class TestTriggerSourcesDashboard:
 
         pool = _FakePool()
         result = await session_create(
-            pool, prompt="Dashboard-triggered session",
-            trigger_source="dashboard", request_id=str(uuid.uuid4()),
+            pool,
+            prompt="Dashboard-triggered session",
+            trigger_source="dashboard",
+            request_id=str(uuid.uuid4()),
         )
         assert isinstance(result, uuid.UUID)
 
         with pytest.raises(ValueError, match="Invalid trigger_source"):
             await session_create(
-                pool, prompt="Bad trigger",
-                trigger_source="web", request_id=str(uuid.uuid4()),
+                pool,
+                prompt="Bad trigger",
+                trigger_source="web",
+                request_id=str(uuid.uuid4()),
             )

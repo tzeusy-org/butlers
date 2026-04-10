@@ -48,20 +48,33 @@ class TestModuleABCAndConfig:
             def decorator(fn):
                 registered_tools[fn.__name__] = fn
                 return fn
+
             return decorator
 
         mcp.tool.side_effect = capture_tool
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        expected = {"mailbox_post", "mailbox_list", "mailbox_read",
-                    "mailbox_update_status", "mailbox_stats"}
+        expected = {
+            "mailbox_post",
+            "mailbox_list",
+            "mailbox_read",
+            "mailbox_update_status",
+            "mailbox_stats",
+        }
         assert set(registered_tools.keys()) == expected
         for fn in registered_tools.values():
             assert asyncio.iscoroutinefunction(fn)
 
     def test_known_channels_and_no_pool_guard(self):
-        expected = {"mcp", "telegram_bot", "telegram_user_client",
-                    "email", "api", "scheduler", "system"}
+        expected = {
+            "mcp",
+            "telegram_bot",
+            "telegram_user_client",
+            "email",
+            "api",
+            "scheduler",
+            "system",
+        }
         assert KNOWN_CHANNELS == expected
 
         mod = MailboxModule()
@@ -163,8 +176,12 @@ class TestMailboxPostAndRead:
     async def test_post_full_fields_and_defaults(self, mailbox: MailboxModule, pool):
         """post with all fields stores correctly; minimal post uses defaults."""
         result = await mailbox._post(
-            sender="butler-b", sender_channel="telegram_bot", body="Full body",
-            subject="Subject", priority=5, metadata={"tag": "urgent"},
+            sender="butler-b",
+            sender_channel="telegram_bot",
+            body="Full body",
+            subject="Subject",
+            priority=5,
+            metadata={"tag": "urgent"},
         )
         msg_id = uuid.UUID(result["id"])
         row = await pool.fetchrow("SELECT * FROM mailbox WHERE id = $1", msg_id)
@@ -172,6 +189,7 @@ class TestMailboxPostAndRead:
         meta = row["metadata"]
         if isinstance(meta, str):
             import json
+
             meta = json.loads(meta)
         assert meta == {"tag": "urgent"}
 
@@ -183,6 +201,7 @@ class TestMailboxPostAndRead:
     async def test_post_unknown_channel_warns(self, mailbox: MailboxModule, caplog):
         """Unknown sender_channel is accepted with a warning log; known channel does not warn."""
         import logging
+
         with caplog.at_level(logging.WARNING):
             result = await mailbox._post(sender="ext", sender_channel="sms", body="text")
         assert "id" in result and "Unknown sender_channel" in caplog.text

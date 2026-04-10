@@ -183,7 +183,9 @@ def test_init_metrics_and_all_instruments(monkeypatch: pytest.MonkeyPatch) -> No
                 _os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
         finally:
             metrics.set_meter_provider = original_set
-            _metrics_mod._meter_provider_installed = False  # restore to avoid leaking into later tests
+            _metrics_mod._meter_provider_installed = (
+                False  # restore to avoid leaking into later tests
+            )
         assert set_count == 0 and meter2 is not None
     finally:
         _reset_metrics_global_state()

@@ -117,7 +117,9 @@ class TestReactForIngestParsing:
         # Invalid: None → noop; non-integer message_id → noop
         for bad_thread in (None, "123:abc"):
             mod3, calls3 = _make_capturing_mod()
-            await mod3.react_for_ingest(external_thread_id=bad_thread, reaction=REACTION_IN_PROGRESS)
+            await mod3.react_for_ingest(
+                external_thread_id=bad_thread, reaction=REACTION_IN_PROGRESS
+            )
             assert calls3 == [], f"Expected noop for thread_id={bad_thread!r}"
 
 
@@ -146,7 +148,9 @@ class TestReactForIngestBehavior:
         mod_email, calls_email = _make_capturing_mod()
         channel = "email"
         if channel == "telegram_bot":
-            await mod_email.react_for_ingest(external_thread_id="123:456", reaction=REACTION_IN_PROGRESS)
+            await mod_email.react_for_ingest(
+                external_thread_id="123:456", reaction=REACTION_IN_PROGRESS
+            )
         assert calls_email == []
 
         # Success sequence

@@ -344,7 +344,9 @@ async def test_note_create_idempotency(pool):
     old = await note_create(pool, c["id"], "Old note content")
     assert "skipped" not in old
     two_hours_ago = datetime.now(UTC) - timedelta(hours=2)
-    await pool.execute("UPDATE facts SET created_at = $1 WHERE id = $2", two_hours_ago, _extract_fact_id(old))
+    await pool.execute(
+        "UPDATE facts SET created_at = $1 WHERE id = $2", two_hours_ago, _extract_fact_id(old)
+    )
     after_window = await note_create(pool, c["id"], "Old note content")
     assert "skipped" not in after_window and "id" in after_window
 
@@ -363,11 +365,15 @@ async def test_life_event_log_idempotency(pool):
     ts2 = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
 
     # First call inserts
-    first = await life_event_log(pool, c["id"], "promotion", description="Got promoted", occurred_at=ts)
+    first = await life_event_log(
+        pool, c["id"], "promotion", description="Got promoted", occurred_at=ts
+    )
     assert "id" in first and first["type_name"] == "promotion" and "skipped" not in first
 
     # Duplicate → skip
-    second = await life_event_log(pool, c["id"], "promotion", description="Different desc", occurred_at=ts)
+    second = await life_event_log(
+        pool, c["id"], "promotion", description="Different desc", occurred_at=ts
+    )
     assert second["skipped"] == "duplicate"
     assert second["existing_id"] == str(_extract_fact_id(first))
 

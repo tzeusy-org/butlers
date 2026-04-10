@@ -82,14 +82,24 @@ def test_play_session_duration_minutes_only() -> None:
 def test_play_session_idempotency_key_deterministic() -> None:
     """Same inputs produce the same idempotency key."""
     e1 = build_play_session_envelope(
-        steam_id=_STEAM_ID, endpoint_identity=_ENDPOINT, app_id=730,
-        game_name="CS2", playtime_2weeks=0, playtime_delta=30,
-        poll_ts=_POLL_TS, raw={},
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        app_id=730,
+        game_name="CS2",
+        playtime_2weeks=0,
+        playtime_delta=30,
+        poll_ts=_POLL_TS,
+        raw={},
     )
     e2 = build_play_session_envelope(
-        steam_id=_STEAM_ID, endpoint_identity=_ENDPOINT, app_id=730,
-        game_name="CS2", playtime_2weeks=0, playtime_delta=30,
-        poll_ts=_POLL_TS, raw={},
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        app_id=730,
+        game_name="CS2",
+        playtime_2weeks=0,
+        playtime_delta=30,
+        poll_ts=_POLL_TS,
+        raw={},
     )
     assert e1["control"]["idempotency_key"] == e2["control"]["idempotency_key"]
 
