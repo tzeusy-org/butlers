@@ -25,12 +25,15 @@
 #
 # DATABASE PROVISIONING:
 #   Before first use, run scripts/init-db.sql against your PostgreSQL server
-#   as a superuser to install extensions and grant butler role membership:
+#   as a superuser to install extensions, create/grant managed schemas + roles,
+#   and configure default privileges for the migration user:
 #
 #     psql -h <POSTGRES_HOST> -U <superuser> -d butlers \
 #         -f scripts/init-db.sql
 #
-#   This is required for SET ROLE enforcement — see scripts/README.md.
+#   This is the one privileged bootstrap step; afterwards docker-compose
+#   migrations can continue running as POSTGRES_USER (typically "butlers").
+#   See scripts/README.md for details.
 #   backend   (internal) — inter-service communication
 #   frontend  (internal) — Vite dev server <-> dashboard-api
 #   egress    (bridge)   — outbound internet for LLM APIs, Google OAuth, etc.

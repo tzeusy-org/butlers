@@ -67,7 +67,9 @@ in `.env.dev` / `.env.prod`).  There is no `postgres` service in
 The database is used by all butlers (one database, per-butler schemas plus the
 public schema).
 
-**Role membership is required for `SET ROLE` enforcement.** The Alembic
+**Role membership is required for `SET ROLE` enforcement.** On PostgreSQL 16+,
+the membership also needs the role-membership `SET` option; a plain membership
+row can still fail with `permission denied to set role`. The Alembic
 migrations create per-butler database roles (`butler_{schema}_rw` and
 `connector_writer`), but the connecting user (`POSTGRES_USER`, typically
 `butlers`) must be granted membership in those roles before runtime `SET ROLE`

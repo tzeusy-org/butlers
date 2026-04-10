@@ -231,6 +231,15 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - No runtime env-var fallback; all credential resolution is DB-only.
 - `dev.sh` gate and runtime code both read from `public.contact_info` so shell gating and runtime behavior cannot drift.
 
+### compose.sh dev DB role-grant contract
+- `scripts/compose.sh` can clear Tailscale/OAuth gates and still fail at `butlers-up` if the target DB user lacks runtime role membership/ACLs; the signature is repeated `InsufficientPrivilegeError: permission denied for schema public` plus per-butler failures like `permission denied for schema <butler>` or `permission denied to set role "butler_<name>_rw"`.
+- Fix the target dev DB before retrying by ensuring the connecting user has the expected role grants from `scripts/init-db.sql` (or equivalent grants done as a sufficiently privileged Postgres role); otherwise the switchboard health endpoint never comes up and all connectors remain blocked behind `butlers-up`.
+- On PostgreSQL 16+, `pg_has_role(user, role, 'MEMBER')` is not enough to guarantee `SET ROLE role` works; the `pg_auth_members` row also needs `set_option = true`. `scripts/init-db.sql` should re-grant runtime roles with explicit `WITH SET TRUE`/`WITH INHERIT TRUE` so reruns repair older memberships instead of skipping them.
+
+### init-db privileged bootstrap contract
+- `scripts/init-db.sql` is the single privileged bootstrap entrypoint: it must create managed schemas/runtime roles when missing, grant role membership to the migration user (default `butlers`), grant runtime DB/schema ACLs, and set `ALTER DEFAULT PRIVILEGES FOR ROLE <migration user>` so later Alembic runs by `butlers` do not require a post-migration privileged grant pass.
+- The script intentionally grants broad DML defaults on `public` objects created by the migration user to all runtime roles (`butler_*_rw`, `butler_qa_rw`, `connector_writer`) as the operational tradeoff that keeps the bootstrap to one privileged step; rerun it only when the managed schema/role surface changes.
+
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
 - `src/butlers/modules/` — base.py (ABC), registry.py, telegram.py, email.py

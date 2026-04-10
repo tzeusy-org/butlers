@@ -4,8 +4,10 @@ Utility scripts for repository maintenance and fixes.
 
 ## init-db.sql
 
-PostgreSQL provisioning script to run **before** Alembic migrations on a fresh
-database.  Must be executed by a superuser (or the database owner).
+Privileged PostgreSQL bootstrap script to run **before** the first Alembic
+migration on a fresh database. Must be executed by a superuser (or the
+database owner). It is safe to re-run later if the managed schema/role surface
+expands.
 
 **Prerequisites:** The PostgreSQL server must have the `pgvector` binary
 installed.  The standard `postgres` Docker image does not include it; use
@@ -15,15 +17,20 @@ What it does:
 
 1. Installs required extensions: `pgcrypto`, `uuid-ossp`, `vector` (pgvector),
    and `pg_trgm`.
-2. Grants each butler runtime role (`butler_{schema}_rw` for the 10 butler
-   schemas) and `connector_writer` to the connecting user (`POSTGRES_USER`,
-   typically `butlers`).
+2. Creates the managed schemas and runtime roles if they do not already exist.
+3. Grants each runtime role (`butler_{schema}_rw`, `butler_qa_rw`,
+   `connector_writer`) to the connecting user (`POSTGRES_USER`, typically
+   `butlers`) so `SET ROLE` works at runtime.
+4. Grants database/schema ACLs to runtime roles.
+5. Grants schema `USAGE, CREATE` to the migration/runtime user so Alembic can
+   create future objects without a second privileged follow-up step.
+6. Configures `ALTER DEFAULT PRIVILEGES FOR ROLE <connecting user>` so objects
+   created later by Alembic inherit the runtime ACLs immediately.
 
-**Why the role grants are required:** The core Alembic migrations create the
-runtime roles and ACLs, but they cannot grant role *membership* to the
-connecting user on your behalf.  Role membership is required so that
-`SET ROLE butler_{schema}_rw` works at runtime for schema-isolated DB
-operations.
+**Why this is privileged:** Database-level grants, schema ownership/ACLs, and
+`ALTER DEFAULT PRIVILEGES FOR ROLE <connecting user>` require a privileged
+bootstrap role. After this script runs once, normal `docker compose` /
+Alembic flows can continue using the lower-privilege `butlers` user.
 
 ### Usage
 
@@ -42,8 +49,9 @@ The script is idempotent — safe to re-run on an already-provisioned database.
 - Run `init-db.sql` **after** the database and connecting user exist.
 - Run Alembic migrations next: `butlers db migrate` (or `docker compose run
   migrations`).
-- If you run `init-db.sql` before migrations create the roles, it will log
-  notices for missing roles.  Re-run the script after migrations complete.
+- You should not need a post-migration privileged grant pass for new objects
+  created by the connecting user; re-run the bootstrap only when the managed
+  schema/role surface itself changes.
 
 ## dev.sh
 
