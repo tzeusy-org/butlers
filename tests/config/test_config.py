@@ -334,7 +334,7 @@ def test_messenger_and_switchboard_and_memory_config(tmp_path: Path):
     assert cfg_sw.switchboard_url is None
 
     cfg_gen = load_config(_write_toml(tmp_path, '[butler]\nname = "general"\nport = 41101\n'))
-    assert cfg_gen.switchboard_url == "http://localhost:41100/sse"
+    assert cfg_gen.switchboard_url == "http://localhost:41100/mcp"
 
     # Memory module config
     mem_toml = (

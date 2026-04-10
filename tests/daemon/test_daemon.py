@@ -907,11 +907,12 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
         patches["get_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
-        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
+        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client) as mock_ctor,
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
     assert daemon.switchboard_client is mock_client
+    mock_ctor.assert_called_once_with("http://localhost:41100/mcp", name="butler-test-butler")
     await daemon.shutdown()
     assert daemon.switchboard_client is None
 

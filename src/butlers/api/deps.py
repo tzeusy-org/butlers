@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from butlers.api.db import DatabaseManager
 from butlers.api.pricing import PricingConfig, load_pricing
 from butlers.config import ConfigError, load_config
+from butlers.core.mcp_urls import canonical_runtime_mcp_url
 from butlers.credential_store import (
     ensure_secrets_schema,
     shared_db_name_from_env,
@@ -58,6 +59,11 @@ class ButlerConnectionInfo:
         """
         host = os.environ.get("BUTLERS_HOST", "localhost")
         return f"http://{host}:{self.port}/sse"
+
+    @property
+    def mcp_url(self) -> str:
+        """Canonical MCP endpoint URL for internal clients."""
+        return canonical_runtime_mcp_url(self.sse_url)
 
 
 class ButlerNotFoundError(KeyError):
@@ -172,10 +178,10 @@ class MCPClientManager:
             )
 
         try:
-            client = MCPClient(info.sse_url, name=f"dashboard-{butler_name}")
+            client = MCPClient(info.mcp_url, name=f"dashboard-{butler_name}")
             await client.__aenter__()
             self._clients[butler_name] = client
-            logger.info("Connected to butler %s at %s", butler_name, info.sse_url)
+            logger.info("Connected to butler %s at %s", butler_name, info.mcp_url)
             return client
         except Exception as exc:
             raise ButlerUnreachableError(butler_name, cause=exc) from exc

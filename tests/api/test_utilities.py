@@ -67,11 +67,29 @@ class TestDependencies:
     def test_butler_connection_info_sse_url(self):
         info = ButlerConnectionInfo("switchboard", 41100)
         assert info.sse_url == "http://localhost:41100/sse"
+        assert info.mcp_url == "http://localhost:41100/mcp"
 
     async def test_mcp_manager_get_client_raises_for_unregistered(self):
         mgr = MCPClientManager()
         with pytest.raises(ButlerUnreachableError):
             await mgr.get_client("nonexistent")
+
+    @patch("butlers.api.deps.MCPClient")
+    async def test_mcp_manager_uses_canonical_runtime_url(self, mock_client_cls):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client_cls.return_value = mock_client
+
+        mgr = MCPClientManager()
+        mgr.register("switchboard", ButlerConnectionInfo("switchboard", 41100))
+
+        client = await mgr.get_client("switchboard")
+
+        assert client is mock_client
+        mock_client_cls.assert_called_once_with(
+            "http://localhost:41100/mcp",
+            name="dashboard-switchboard",
+        )
 
     def test_mcp_manager_register_and_list(self):
         mgr = MCPClientManager()

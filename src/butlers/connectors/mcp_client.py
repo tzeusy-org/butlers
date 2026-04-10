@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 import httpx
 from fastmcp import Client as MCPClient
 
+from butlers.core.mcp_urls import canonical_runtime_mcp_url
+
 logger = logging.getLogger(__name__)
 
 # Readiness probe defaults
@@ -140,7 +142,9 @@ class CachedMCPClient:
     """
 
     def __init__(self, endpoint_url: str, *, client_name: str = "connector") -> None:
-        self._endpoint_url = endpoint_url
+        # Internal connectors should prefer the canonical runtime MCP endpoint
+        # even when older config still points at the legacy /sse path.
+        self._endpoint_url = canonical_runtime_mcp_url(endpoint_url)
         self._client_name = client_name
         self._lock = asyncio.Lock()
         self._client_ctx: MCPClient | None = None

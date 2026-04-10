@@ -21,6 +21,7 @@ from fastmcp import Client as MCPClient
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 
+from butlers.core.mcp_urls import canonical_runtime_mcp_url
 from butlers.core.route_inbox import (
     route_inbox_mark_errored,
     route_inbox_mark_processed,
@@ -352,13 +353,14 @@ async def connect_switchboard(daemon: Any) -> None:
     This is the implementation extracted from
     :meth:`~butlers.daemon.ButlerDaemon._connect_switchboard`.
     """
-    url = daemon.config.switchboard_url
-    if url is None:
+    raw_url = daemon.config.switchboard_url
+    if raw_url is None:
         logger.debug(
             "No switchboard_url configured for %s; skipping Switchboard connection",
             daemon.config.name,
         )
         return
+    url = canonical_runtime_mcp_url(raw_url)
 
     try:
         client = MCPClient(url, name=f"butler-{daemon.config.name}")
