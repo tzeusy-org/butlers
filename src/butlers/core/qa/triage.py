@@ -223,7 +223,11 @@ async def triage_findings(
         # ------------------------------------------------------------------
         # Persist the finding
         # ------------------------------------------------------------------
-        finding_id = await insert_finding(pool, patrol_id, finding, dedup_reason, None)
+        # Pass linked_attempt_id so that findings deduplicated against an
+        # active investigation record the existing attempt FK immediately.
+        # For novel findings (dedup_reason is None) this is also None; the
+        # dispatcher updates it after create_or_join_attempt succeeds.
+        finding_id = await insert_finding(pool, patrol_id, finding, dedup_reason, linked_attempt_id)
 
         triaged = TriagedFinding(
             finding=finding,

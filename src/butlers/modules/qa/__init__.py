@@ -633,6 +633,7 @@ class QaModule(Module):
             event_summary: str,
             source_butler: str,
             context: str | None = None,
+            trigger_source: str | None = None,
         ) -> dict:
             """Accept an error finding relayed from a butler via Switchboard.
 
@@ -668,6 +669,11 @@ class QaModule(Module):
             context:
                 Optional context string (declared sensitive; may contain agent
                 reasoning about user-related errors).
+            trigger_source:
+                Optional ``trigger_source`` value from the calling session
+                (e.g. ``"healing"`` or ``"qa"``).  Propagated as
+                ``source_session_trigger_source`` for QA self-recursion
+                suppression.
             """
             return await module._handle_report_finding(
                 fingerprint=fingerprint,
@@ -677,6 +683,7 @@ class QaModule(Module):
                 event_summary=event_summary,
                 source_butler=source_butler,
                 context=context,
+                trigger_source=trigger_source,
             )
 
         @mcp.tool()
@@ -713,6 +720,7 @@ class QaModule(Module):
         event_summary: str,
         source_butler: str,
         context: str | None,
+        trigger_source: str | None = None,
     ) -> dict:
         """Handle the report_finding MCP tool call.
 
@@ -797,6 +805,7 @@ class QaModule(Module):
             event_summary=event_summary,
             source_butler=source_butler,
             context=context,
+            trigger_source=trigger_source,
         )
         logger.debug(
             "QaModule.report_finding: accepted fingerprint=%s butler=%s severity=%d",
