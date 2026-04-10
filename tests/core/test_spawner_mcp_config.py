@@ -163,7 +163,7 @@ class TestQaMcpGating:
         adapter = MockAdapter()
         await Spawner(config=_make_config(), config_dir=tmp_path, runtime=adapter).trigger(
             prompt="do normal work",
-            trigger_source="schedule",
+            trigger_source="schedule:test-task",
         )
         mcp_servers = adapter.calls[0]["mcp_servers"]
         assert "test-butler" in mcp_servers, (
