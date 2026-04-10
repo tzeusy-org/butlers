@@ -287,11 +287,18 @@ class QaInvestigation(BaseModel):
     updated_at: datetime
     closed_at: datetime | None = None
     error_detail: str | None = None
-    # PR review conversation tracking fields (added in core_057)
+    # PR review conversation tracking fields (added in core_057/core_058)
     review_state: str | None = None
     last_review_check_at: datetime | None = None
     review_feedback_summary: str | None = None
     follow_up_count: int = 0
+    # Per-cycle follow-up budgeting and outcome fields (added in core_068)
+    follow_up_cycle_patrol_id: uuid.UUID | None = None
+    follow_up_cycle_count: int = 0
+    last_follow_up_status: str | None = None
+    last_follow_up_session_id: uuid.UUID | None = None
+    last_follow_up_error: str | None = None
+    last_follow_up_at: datetime | None = None
 
 
 class QaTrendsDay(BaseModel):
@@ -554,6 +561,12 @@ def _row_to_investigation(row: Any) -> QaInvestigation:
         last_review_check_at=row.get("last_review_check_at"),
         review_feedback_summary=row.get("review_feedback_summary"),
         follow_up_count=row.get("follow_up_count") or 0,
+        follow_up_cycle_patrol_id=row.get("follow_up_cycle_patrol_id"),
+        follow_up_cycle_count=row.get("follow_up_cycle_count") or 0,
+        last_follow_up_status=row.get("last_follow_up_status"),
+        last_follow_up_session_id=row.get("last_follow_up_session_id"),
+        last_follow_up_error=row.get("last_follow_up_error"),
+        last_follow_up_at=row.get("last_follow_up_at"),
     )
 
 
@@ -1051,7 +1064,10 @@ async def list_investigations(
         f" sanitized_msg, pr_url, pr_number, healing_session_id, qa_patrol_id,"
         f" current_phase, workflow_deadline_at,"
         f" created_at, updated_at, closed_at, error_detail,"
-        f" review_state, last_review_check_at, review_feedback_summary, follow_up_count"
+        f" review_state, last_review_check_at, review_feedback_summary, follow_up_count,"
+        f" follow_up_cycle_patrol_id, follow_up_cycle_count,"
+        f" last_follow_up_status, last_follow_up_session_id,"
+        f" last_follow_up_error, last_follow_up_at"
         f" FROM public.healing_attempts{where}"
         f" ORDER BY created_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",

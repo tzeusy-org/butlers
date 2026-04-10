@@ -105,6 +105,9 @@ _MAX_FOLLOW_UP_PER_CYCLE = 1
 #: Maximum characters to store in review_feedback_summary.
 _MAX_FEEDBACK_SUMMARY_LEN = 2000
 
+#: Maximum characters to store in last_follow_up_error.
+_MAX_FOLLOWUP_ERROR_LEN = 500
+
 #: Review states that require a follow-up agent dispatch.
 #: ``commented`` is included so unresolved review threads (even without an
 #: explicit CHANGES_REQUESTED decision) also trigger follow-up dispatch.
@@ -1082,6 +1085,7 @@ async def check_open_pr_statuses(
     spawner: Any = None,
     config: QaDispatchConfig | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
+    patrol_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     """Check GitHub status of all pr_open QA healing attempts.
 
@@ -1092,7 +1096,8 @@ async def check_open_pr_statuses(
     When ``spawner`` and ``config`` are provided, also checks for unresolved
     review threads or "changes_requested" state and dispatches a follow-up
     agent to address reviewer feedback (rate-limited to
-    ``_MAX_FOLLOW_UP_PER_CYCLE`` per PR per patrol cycle).
+    ``_MAX_FOLLOW_UP_PER_CYCLE`` per PR per patrol cycle, tracked via
+    ``follow_up_cycle_patrol_id`` and ``follow_up_cycle_count``).
 
     Parameters
     ----------
@@ -1110,6 +1115,10 @@ async def check_open_pr_statuses(
         follow-up dispatch.
     task_registry:
         Optional list to which watchdog tasks will be appended.
+    patrol_id:
+        UUID of the current patrol cycle.  When provided and ``spawner`` is
+        set, the cycle-scoped follow-up counter (``follow_up_cycle_count``) is
+        used for rate-limiting instead of the lifetime ``follow_up_count``.
 
     Returns
     -------
@@ -1131,7 +1140,8 @@ async def check_open_pr_statuses(
     # Fetch all QA pr_open attempts (have qa_patrol_id set)
     rows = await pool.fetch(
         """
-        SELECT id, pr_url, pr_number, fingerprint, butler_name, follow_up_count, branch_name
+        SELECT id, pr_url, pr_number, fingerprint, butler_name, follow_up_count,
+               branch_name, follow_up_cycle_patrol_id, follow_up_cycle_count
         FROM public.healing_attempts
         WHERE status = 'pr_open'
           AND qa_patrol_id IS NOT NULL
@@ -1152,6 +1162,8 @@ async def check_open_pr_statuses(
         butler_name: str = row["butler_name"]
         follow_up_count: int = row["follow_up_count"] or 0
         pr_branch_name: str | None = row["branch_name"]
+        follow_up_cycle_patrol_id: uuid.UUID | None = row["follow_up_cycle_patrol_id"]
+        follow_up_cycle_count: int = row["follow_up_cycle_count"] or 0
 
         if pr_number is None:
             continue
@@ -1239,11 +1251,24 @@ async def check_open_pr_statuses(
             _needs_followup = review_state in _ACTIONABLE_REVIEW_STATES or (
                 review_state is None and bool(feedback_summary)
             )
+            # Compute the effective cycle count for rate-limiting.  When a
+            # patrol_id is provided we use the per-cycle counter, which resets
+            # automatically when the cycle changes.  Fallback to the lifetime
+            # follow_up_count only when no patrol_id was threaded in (e.g.
+            # standalone callers or tests that predate per-cycle tracking).
+            if patrol_id is not None:
+                # A fresh patrol_id means the cycle has rolled over.
+                if follow_up_cycle_patrol_id != patrol_id:
+                    _effective_cycle_count = 0
+                else:
+                    _effective_cycle_count = follow_up_cycle_count
+            else:
+                _effective_cycle_count = follow_up_count
             if (
                 spawner is not None
                 and config is not None
                 and _needs_followup
-                and follow_up_count < _MAX_FOLLOW_UP_PER_CYCLE
+                and _effective_cycle_count < _MAX_FOLLOW_UP_PER_CYCLE
                 and feedback_summary
             ):
                 dispatched = await _dispatch_pr_review_followup(
@@ -1260,6 +1285,7 @@ async def check_open_pr_statuses(
                     spawner=spawner,
                     gh_token=gh_token,
                     task_registry=task_registry,
+                    patrol_id=patrol_id,
                 )
                 if dispatched:
                     counts["follow_ups_dispatched"] += 1
@@ -1372,6 +1398,7 @@ async def _dispatch_pr_review_followup(
     spawner: Any,
     gh_token: str | None,
     task_registry: list[asyncio.Task[Any]] | None = None,
+    patrol_id: uuid.UUID | None = None,
 ) -> bool:
     """Dispatch a follow-up agent to address PR reviewer feedback.
 
@@ -1379,7 +1406,11 @@ async def _dispatch_pr_review_followup(
     follow-up agent with the reviewer feedback as context, and pushes the
     resulting changes to the same PR branch so the open PR is updated.
 
-    Rate-limited: increments ``follow_up_count`` on the healing_attempts row.
+    Rate-limited per patrol cycle: increments ``follow_up_cycle_count`` (reset
+    when ``patrol_id`` changes) and the lifetime ``follow_up_count`` telemetry
+    counter on the healing_attempts row.  Outcome is persisted via
+    ``last_follow_up_status``, ``last_follow_up_session_id``,
+    ``last_follow_up_error``, and ``last_follow_up_at``.
     Anonymization validation is applied before the agent runs.
 
     Parameters
@@ -1411,6 +1442,10 @@ async def _dispatch_pr_review_followup(
         GitHub token.
     task_registry:
         Optional list for background task references.
+    patrol_id:
+        UUID of the current patrol cycle.  Used to scope the cycle follow-up
+        counter: the counter resets to 1 when a new patrol_id is seen.
+        ``None`` disables per-cycle tracking (lifetime counter used instead).
 
     Returns
     -------
@@ -1513,15 +1548,33 @@ async def _dispatch_pr_review_followup(
         if not worktree_path.is_dir():
             raise WorktreeCreationError(f"Worktree directory not created at {worktree_path}")
 
-        # Increment follow_up_count atomically
+        # Update follow-up counters and record dispatch start.
+        # - follow_up_count: lifetime monotonic telemetry (always increments)
+        # - follow_up_cycle_patrol_id / follow_up_cycle_count: per-cycle budget
+        #   (cycle_count resets to 1 when patrol_id changes)
+        # - last_follow_up_status / last_follow_up_at: outcome markers (set to
+        #   'dispatched' here; overwritten with 'succeeded'/'failed' by the
+        #   background session task)
         await pool.execute(
             """
             UPDATE public.healing_attempts
-            SET follow_up_count = follow_up_count + 1,
-                updated_at      = now()
+            SET follow_up_count           = follow_up_count + 1,
+                follow_up_cycle_patrol_id = COALESCE($2, follow_up_cycle_patrol_id),
+                follow_up_cycle_count     = CASE
+                    WHEN $2 IS NOT NULL AND follow_up_cycle_patrol_id IS DISTINCT FROM $2
+                        THEN 1
+                    WHEN $2 IS NOT NULL
+                        THEN follow_up_cycle_count + 1
+                    ELSE follow_up_cycle_count
+                END,
+                last_follow_up_status     = 'dispatched',
+                last_follow_up_at         = now(),
+                last_follow_up_error      = NULL,
+                updated_at                = now()
             WHERE id = $1
             """,
             attempt_id,
+            patrol_id,
         )
 
         sandbox_env = build_sandbox_env(gh_token)
@@ -1592,9 +1645,13 @@ async def _run_review_followup_session(
     """Run the PR review follow-up agent session.
 
     Spawns the agent in the follow-up worktree, then pushes any new commits
-    to the origin branch (which backs the open PR).
+    to the origin branch (which backs the open PR).  Persists the outcome
+    (``last_follow_up_status``, ``last_follow_up_session_id``,
+    ``last_follow_up_error``) on the healing_attempts row regardless of
+    success or failure.
     Cleans up the local worktree after completion (branch is kept for the PR).
     """
+    followup_session_id: uuid.UUID | None = None
     try:
         result = await spawner.trigger(
             prompt=prompt,
@@ -1606,11 +1663,27 @@ async def _run_review_followup_session(
             timeout_override=config.timeout_minutes * 60,
         )
 
+        followup_session_id = getattr(result, "session_id", None)
+
         if not result.success:
+            error_msg = (result.error or "non-success result")[:_MAX_FOLLOWUP_ERROR_LEN]
             logger.warning(
                 "QA review follow-up agent failed (attempt=%s): %s",
                 attempt_id,
-                result.error or "non-success result",
+                error_msg,
+            )
+            await pool.execute(
+                """
+                UPDATE public.healing_attempts
+                SET last_follow_up_status     = 'failed',
+                    last_follow_up_session_id = $2,
+                    last_follow_up_error      = $3,
+                    updated_at                = now()
+                WHERE id = $1
+                """,
+                attempt_id,
+                followup_session_id,
+                error_msg,
             )
             await remove_healing_worktree(
                 repo_root, followup_branch, delete_branch=True, delete_remote=False
@@ -1631,11 +1704,25 @@ async def _run_review_followup_session(
         )
         _, push_stderr = await push_proc.communicate()
         if push_proc.returncode != 0:
-            err = push_stderr.decode("utf-8", errors="replace").strip()
+            push_err = push_stderr.decode("utf-8", errors="replace").strip()
+            classified = _classify_git_push_error(push_err)
             logger.warning(
                 "QA review follow-up: %s (attempt=%s)",
-                _classify_git_push_error(err),
+                classified,
                 attempt_id,
+            )
+            await pool.execute(
+                """
+                UPDATE public.healing_attempts
+                SET last_follow_up_status     = 'failed',
+                    last_follow_up_session_id = $2,
+                    last_follow_up_error      = $3,
+                    updated_at                = now()
+                WHERE id = $1
+                """,
+                attempt_id,
+                followup_session_id,
+                classified[:_MAX_FOLLOWUP_ERROR_LEN],
             )
         else:
             logger.info(
@@ -1644,6 +1731,18 @@ async def _run_review_followup_session(
                 attempt_id,
                 pr_number,
             )
+            await pool.execute(
+                """
+                UPDATE public.healing_attempts
+                SET last_follow_up_status     = 'succeeded',
+                    last_follow_up_session_id = $2,
+                    last_follow_up_error      = NULL,
+                    updated_at                = now()
+                WHERE id = $1
+                """,
+                attempt_id,
+                followup_session_id,
+            )
 
         # Clean up the local worktree; keep the branch for the PR
         await remove_healing_worktree(
@@ -1651,11 +1750,32 @@ async def _run_review_followup_session(
         )
 
     except Exception as exc:
+        error_msg = f"{type(exc).__name__}: {exc}"
         logger.exception(
             "Unexpected error in QA review follow-up session (attempt=%s): %s",
             attempt_id,
             exc,
         )
+        try:
+            await pool.execute(
+                """
+                UPDATE public.healing_attempts
+                SET last_follow_up_status     = 'failed',
+                    last_follow_up_session_id = $2,
+                    last_follow_up_error      = $3,
+                    updated_at                = now()
+                WHERE id = $1
+                """,
+                attempt_id,
+                followup_session_id,
+                error_msg[:_MAX_FOLLOWUP_ERROR_LEN],
+            )
+        except Exception as _db_exc:
+            logger.debug(
+                "Failed to persist follow-up error state for attempt=%s: %s",
+                attempt_id,
+                _db_exc,
+            )
         await remove_healing_worktree(
             repo_root, followup_branch, delete_branch=True, delete_remote=False
         )

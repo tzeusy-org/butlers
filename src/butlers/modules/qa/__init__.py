@@ -1061,7 +1061,7 @@ class QaModule(Module):
             dispatched_count = sum(1 for r in dispatch_results if r.accepted)
 
             # Phase 4: PR status check
-            await self._check_pr_statuses(pool, gh_token)
+            await self._check_pr_statuses(pool, gh_token, patrol_id=patrol_id)
 
             # Phase 5: Metric snapshots (non-fatal)
             await self._record_investigation_metrics(pool)
@@ -1414,7 +1414,12 @@ class QaModule(Module):
     # PR status check
     # ------------------------------------------------------------------
 
-    async def _check_pr_statuses(self, pool: Any, gh_token: str | None) -> None:
+    async def _check_pr_statuses(
+        self,
+        pool: Any,
+        gh_token: str | None,
+        patrol_id: uuid.UUID | None = None,
+    ) -> None:
         """Check GitHub status of open PR investigations.
 
         Wraps check_open_pr_statuses from core.qa.dispatch with error
@@ -1423,6 +1428,9 @@ class QaModule(Module):
         When the module's spawner is wired (``wire_runtime`` was called), also
         enables PR review conversation tracking: detects "changes requested"
         or unresolved review threads and dispatches follow-up agents.
+
+        ``patrol_id`` is threaded through to enable per-cycle follow-up
+        budgeting (``follow_up_cycle_count`` resets when the cycle changes).
         """
         from butlers.core.qa.dispatch import QaDispatchConfig
 
@@ -1443,6 +1451,7 @@ class QaModule(Module):
                 spawner=self._spawner,
                 config=dispatch_config,
                 task_registry=self._watchdog_tasks,
+                patrol_id=patrol_id,
             )
         except Exception:
             logger.warning("QaModule: check_open_pr_statuses failed (non-fatal)", exc_info=True)
