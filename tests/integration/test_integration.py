@@ -610,7 +610,7 @@ class TestSwitchboardRoutingIntegration:
 
         result = await route(pool, "target-butler", "state_get", {"key": "test"}, call_fn=mock_call)
         assert len(call_log) == 1
-        assert call_log[0]["endpoint_url"] == "http://localhost:9200/sse"
+        assert call_log[0]["endpoint_url"] == "http://localhost:9200/mcp"
         assert call_log[0]["args"]["key"] == "test"
         assert "trace_context" in call_log[0]["args"]
         assert result == {"result": {"status": "ok"}}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from butlers.core.mcp_urls import (
+    canonical_runtime_mcp_url,
     resolve_runtime_mcp_transport,
     runtime_mcp_transport_from_url,
     runtime_mcp_url,
@@ -36,3 +37,16 @@ def test_mcp_url_and_transport():
 
     # Falls back to URL inference
     assert resolve_runtime_mcp_transport({"url": "http://localhost:41103/sse"}) == "sse"
+
+
+def test_canonical_runtime_mcp_url():
+    """Known legacy runtime SSE URLs are normalized to the canonical /mcp path."""
+    assert canonical_runtime_mcp_url("http://localhost:41103/sse") == "http://localhost:41103/mcp"
+    assert (
+        canonical_runtime_mcp_url("http://localhost:41103/sse?session_id=abc")
+        == "http://localhost:41103/mcp?session_id=abc"
+    )
+    assert (
+        canonical_runtime_mcp_url("http://localhost:41103/mcp/sse")
+        == "http://localhost:41103/mcp/sse"
+    )

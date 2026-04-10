@@ -12,6 +12,7 @@ import asyncpg
 from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
+from butlers.core.mcp_urls import canonical_runtime_mcp_url
 from butlers.core.telemetry import inject_trace_context
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
@@ -280,7 +281,7 @@ async def route(
                 )
                 return {"error": error_msg}
 
-            endpoint_url = target_row["endpoint_url"]
+            endpoint_url = canonical_runtime_mcp_url(str(target_row["endpoint_url"]))
 
             # Inject trace context into args
             trace_context = inject_trace_context()
