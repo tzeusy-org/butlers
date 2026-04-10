@@ -195,7 +195,11 @@ async def test_create_qa_pr_allowed_repo_proceeds_to_push():
             proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
             proc.returncode = 0
         elif call_index == 1:
-            # Second call: git push → fail so we don't continue to gh pr create
+            # Second call: git log (no-op detection) → has commits, so push proceeds
+            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+            proc.returncode = 0
+        elif call_index == 2:
+            # Third call: git push → fail so we don't continue to gh pr create
             proc.communicate = AsyncMock(return_value=(b"", b"push failed"))
             proc.returncode = 1
         else:
@@ -221,8 +225,8 @@ async def test_create_qa_pr_allowed_repo_proceeds_to_push():
     # The whitelist passed; we got to git push which failed.
     assert error is not None
     assert "git push failed" in error
-    # There were at least 2 subprocess calls (get-url + push)
-    assert call_index >= 2
+    # There were at least 3 subprocess calls (get-url + no-op detection + push)
+    assert call_index >= 3
 
 
 @pytest.mark.asyncio
@@ -236,9 +240,15 @@ async def test_create_qa_pr_push_uses_git_askpass_env():
         calls.append((args, kwargs))
         proc = MagicMock()
         if len(calls) == 1:
+            # git remote get-url
             proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
             proc.returncode = 0
+        elif len(calls) == 2:
+            # git log (no-op detection) — return a commit line so push is not blocked
+            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+            proc.returncode = 0
         else:
+            # git push → fail
             proc.communicate = AsyncMock(return_value=(b"", b"push failed"))
             proc.returncode = 1
         return proc
@@ -258,7 +268,7 @@ async def test_create_qa_pr_push_uses_git_askpass_env():
         )
 
     assert error is not None
-    push_kwargs = calls[1][1]
+    push_kwargs = calls[2][1]
     env = push_kwargs["env"]
     assert env["GH_TOKEN"] == "ghtoken"
     assert env["BUTLERS_QA_GIT_TOKEN"] == "ghtoken"
@@ -277,9 +287,15 @@ async def test_create_qa_pr_classifies_git_auth_failures():
         nonlocal call_index
         proc = MagicMock()
         if call_index == 0:
+            # git remote get-url
             proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
             proc.returncode = 0
+        elif call_index == 1:
+            # git log (no-op detection) — return a commit line so push is attempted
+            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+            proc.returncode = 0
         else:
+            # git push → auth failure
             proc.communicate = AsyncMock(
                 return_value=(
                     b"",
@@ -321,6 +337,10 @@ async def test_create_qa_pr_ssh_url_allowed():
         if call_index == 0:
             # git remote get-url → SSH URL
             proc.communicate = AsyncMock(return_value=(b"git@github.com:acme/repo.git", b""))
+            proc.returncode = 0
+        elif call_index == 1:
+            # git log (no-op detection) — return a commit line so push is attempted
+            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
             proc.returncode = 0
         else:
             # git push → fail

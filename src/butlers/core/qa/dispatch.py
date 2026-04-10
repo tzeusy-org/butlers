@@ -322,16 +322,23 @@ def build_git_auth_env(
     return env
 
 
+_AUTH_ERROR_MARKERS: tuple[str, ...] = (
+    "could not read username",
+    "authentication failed",
+    "repository not found",
+    "access denied",
+)
+"""Lowercase substrings that identify authentication-related git/gh errors.
+
+Shared by :func:`_classify_git_push_error` and the ``gh pr create`` error
+classifier so that both code paths remain consistent without duplication.
+"""
+
+
 def _classify_git_push_error(push_err: str) -> str:
     """Return a stable error code prefix for git push failures."""
     lowered = push_err.lower()
-    auth_markers = (
-        "could not read username",
-        "authentication failed",
-        "repository not found",
-        "access denied",
-    )
-    if any(marker in lowered for marker in auth_markers):
+    if any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
         return f"git_auth_failed: {push_err}"
     return f"git push failed: {push_err}"
 
@@ -366,6 +373,94 @@ async def _get_remote_owner_repo(repo_root: Path, env: dict[str, str]) -> str | 
     except Exception:  # noqa: BLE001
         logger.warning("_get_remote_owner_repo: failed to get origin URL", exc_info=True)
         return None
+
+
+async def _detect_no_op_branch(
+    repo_root: Path,
+    branch_name: str,
+    env: dict[str, str],
+    base: str = "main",
+) -> bool:
+    """Return True if *branch_name* has no commits ahead of *base*.
+
+    Uses ``git log <base>..<branch_name> --oneline`` to count ahead commits.
+    Returns False on any subprocess failure (safe: lets push proceed).
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "log",
+            f"{base}..{branch_name}",
+            "--oneline",
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return False
+        # No lines → no commits ahead → this is a no-op branch
+        return stdout.strip() == b""
+    except Exception:  # noqa: BLE001
+        logger.debug("_detect_no_op_branch: subprocess failed, assuming not a no-op", exc_info=True)
+        return False
+
+
+async def _resolve_pr_by_head(
+    repo_root: Path,
+    branch_name: str,
+    env: dict[str, str],
+) -> tuple[str | None, int | None]:
+    """Look up an open PR by head branch using ``gh pr list``.
+
+    Returns ``(pr_url, pr_number)`` if exactly one open PR is found for the
+    given head branch, ``(None, None)`` otherwise.
+    """
+    import json as _json
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            branch_name,
+            "--state",
+            "open",
+            "--json",
+            "number,url",
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None, None
+        data = _json.loads(stdout.decode("utf-8", errors="replace"))
+        if isinstance(data, list) and len(data) == 1:
+            entry = data[0]
+            if not isinstance(entry, dict):
+                return None, None
+            url = entry.get("url")
+            number_raw = entry.get("number")
+            if not isinstance(url, str):
+                return None, None
+            if isinstance(number_raw, bool) or number_raw is None:
+                return None, None
+            if isinstance(number_raw, int):
+                number = number_raw
+            else:
+                try:
+                    number = int(number_raw)
+                except (TypeError, ValueError):
+                    return None, None
+            return url, number
+        return None, None
+    except Exception:  # noqa: BLE001
+        logger.debug("_resolve_pr_by_head: lookup failed for branch %r", branch_name, exc_info=True)
+        return None, None
 
 
 async def _create_qa_pr(
@@ -422,6 +517,19 @@ async def _create_qa_pr(
         )
         # Return a reason code that the caller can use for owner notification.
         return None, None, f"repo_not_whitelisted:{wl_reason}:{owner_repo}"
+
+    # Step 0.5: No-op detection — abort before pushing an empty branch.
+    # An investigation that produced no commits should not create a remote branch
+    # or open a PR; classify explicitly so the caller can transition to unfixable
+    # rather than leaving a leaked remote branch.
+    if await _detect_no_op_branch(repo_root, branch_name, env):
+        logger.info(
+            "_create_qa_pr: branch %r has no commits ahead of main — no-op investigation "
+            "(attempt=%s); skipping push and PR creation",
+            branch_name,
+            attempt_id,
+        )
+        return None, None, "no_op_branch"
 
     # Step 1: git push
     push_proc = await asyncio.create_subprocess_exec(
@@ -544,8 +652,49 @@ async def _create_qa_pr(
     )
     gh_stdout, gh_stderr = await gh_proc.communicate()
     if gh_proc.returncode != 0:
-        err = gh_stderr.decode("utf-8", errors="replace").strip()
-        return None, None, f"gh pr create failed: {err}"
+        raw_err = gh_stderr.decode("utf-8", errors="replace").strip()
+        # Classify the error to a stable prefix rather than exposing raw stderr.
+        # Auth errors get the git_auth_failed prefix (shared with push errors);
+        # other failures use a stable "gh_pr_create_failed" prefix.
+        lowered = raw_err.lower()
+        if any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
+            classified_err = f"git_auth_failed: {raw_err}"
+        else:
+            classified_err = f"gh_pr_create_failed: {raw_err}"
+        # Best-effort remote branch cleanup: push succeeded but PR creation failed,
+        # so we now own a leaked remote branch.  Clean it up before returning.
+        try:
+            del_proc = await asyncio.create_subprocess_exec(
+                "git",
+                "push",
+                "origin",
+                "--delete",
+                branch_name,
+                cwd=str(repo_root),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            _, del_stderr = await del_proc.communicate()
+            if del_proc.returncode != 0:
+                logger.warning(
+                    "_create_qa_pr: best-effort branch cleanup after PR creation failure "
+                    "could not delete remote branch %r: %s",
+                    branch_name,
+                    del_stderr.decode("utf-8", errors="replace").strip(),
+                )
+            else:
+                logger.debug(
+                    "_create_qa_pr: cleaned up remote branch %r after PR creation failure",
+                    branch_name,
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "_create_qa_pr: branch cleanup subprocess raised (attempt=%s)",
+                attempt_id,
+                exc_info=True,
+            )
+        return None, None, classified_err
 
     pr_url = gh_stdout.decode("utf-8", errors="replace").strip()
     pr_number: int | None = None
@@ -553,6 +702,34 @@ async def _create_qa_pr(
         pr_number = int(pr_url.rstrip("/").split("/")[-1])
     except (ValueError, IndexError):
         pass
+
+    # Fallback: if URL parsing did not yield a valid pr_number, query gh directly
+    # using the head branch so that non-canonical stdout (e.g. extra lines from
+    # hooks or warnings) does not strand the attempt with pr_number=NULL.
+    if pr_number is None:
+        logger.debug(
+            "_create_qa_pr: pr_number parse failed from stdout %r; "
+            "falling back to head-branch lookup (attempt=%s)",
+            pr_url,
+            attempt_id,
+        )
+        fallback_url, fallback_number = await _resolve_pr_by_head(repo_root, branch_name, env)
+        if fallback_number is not None:
+            pr_url = fallback_url or pr_url
+            pr_number = fallback_number
+            logger.info(
+                "_create_qa_pr: resolved PR identity via head-branch fallback "
+                "(attempt=%s pr_number=%s)",
+                attempt_id,
+                pr_number,
+            )
+        else:
+            logger.warning(
+                "_create_qa_pr: could not resolve pr_number for attempt=%s "
+                "(stdout=%r); persisting pr_url without pr_number",
+                attempt_id,
+                pr_url,
+            )
 
     return pr_url, pr_number, None
 
@@ -932,6 +1109,39 @@ async def _run_investigation_session(
             )
             return
 
+        if pr_error == "no_op_branch":
+            # The investigation agent produced no commits — classify as unfixable
+            # so the fingerprint is not left in an active state and a future
+            # investigation cycle will not re-attempt the same finding.
+            logger.info(
+                "Investigation agent produced no commits (no-op) (attempt=%s); marking unfixable",
+                attempt_id,
+            )
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="unfixable",
+                    duration_ms=_elapsed,
+                )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "unfixable",
+                error_detail="no_op_branch: investigation agent produced no code changes",
+                healing_session_id=investigation_session_id,
+            )
+            await remove_healing_worktree(
+                repo_root, branch_name, delete_branch=True, delete_remote=False
+            )
+            return
+
         if pr_error is not None:
             if metrics is not None:
                 _elapsed = (_time.monotonic() - _phase_start) * 1000
@@ -1166,7 +1376,95 @@ async def check_open_pr_statuses(
         follow_up_cycle_count: int = row["follow_up_cycle_count"] or 0
 
         if pr_number is None:
-            continue
+            # pr_number is missing — the attempt was persisted without it (e.g.
+            # non-canonical gh stdout at PR creation time).  Attempt a repair via
+            # head-branch lookup before giving up.  Fall through to full PR state
+            # polling when repair succeeds; transition to failed deterministically
+            # when it does not.
+            if pr_branch_name:
+                repaired_url, repaired_number = await _resolve_pr_by_head(
+                    repo_root, pr_branch_name, env
+                )
+                if repaired_number is not None:
+                    logger.info(
+                        "check_open_pr_statuses: repaired missing pr_number=%s for "
+                        "attempt=%s via head-branch lookup",
+                        repaired_number,
+                        attempt_id,
+                    )
+                    pr_number = repaired_number
+                    if repaired_url:
+                        pr_url = repaired_url
+                    # Persist the repaired values so future cycles don't re-repair.
+                    try:
+                        await pool.execute(
+                            """
+                            UPDATE public.healing_attempts
+                            SET pr_number = $2,
+                                pr_url    = $3,
+                                updated_at = now()
+                            WHERE id = $1
+                            """,
+                            attempt_id,
+                            pr_number,
+                            pr_url,
+                        )
+                    except Exception as _rep_exc:
+                        logger.warning(
+                            "check_open_pr_statuses: failed to persist repaired PR metadata "
+                            "for attempt=%s: %s",
+                            attempt_id,
+                            _rep_exc,
+                        )
+                else:
+                    logger.warning(
+                        "check_open_pr_statuses: pr_number missing and head-branch lookup "
+                        "failed for attempt=%s branch=%r; transitioning to failed",
+                        attempt_id,
+                        pr_branch_name,
+                    )
+                    try:
+                        await update_attempt_status(
+                            pool,
+                            attempt_id,
+                            "failed",
+                            error_detail=(
+                                "pr_number_missing: PR identity could not be resolved from "
+                                f"head branch {pr_branch_name!r}"
+                            ),
+                        )
+                    except Exception as _trans_exc:
+                        logger.warning(
+                            "check_open_pr_statuses: failed to transition attempt=%s to failed: %s",
+                            attempt_id,
+                            _trans_exc,
+                        )
+                        counts["errors"] += 1
+                    continue
+            else:
+                # No branch_name either — cannot repair; transition to failed.
+                logger.warning(
+                    "check_open_pr_statuses: pr_number and branch_name both missing for "
+                    "attempt=%s; transitioning to failed",
+                    attempt_id,
+                )
+                try:
+                    await update_attempt_status(
+                        pool,
+                        attempt_id,
+                        "failed",
+                        error_detail=(
+                            "pr_number_missing: no branch_name available for repair lookup"
+                        ),
+                    )
+                except Exception as _trans_exc:
+                    logger.warning(
+                        "check_open_pr_statuses: failed to transition attempt=%s to failed: %s",
+                        attempt_id,
+                        _trans_exc,
+                    )
+                    counts["errors"] += 1
+                continue
 
         try:
             # Fetch state + review info in one call

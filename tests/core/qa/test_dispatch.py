@@ -26,9 +26,12 @@ import pytest
 from butlers.core.qa.dispatch import (
     QaDispatchConfig,
     QaDispatchResult,
+    _create_qa_pr,
+    _detect_no_op_branch,
     _dispatch_pr_review_followup,
     _extract_review_state,
     _is_circuit_breaker_tripped,
+    _resolve_pr_by_head,
     _run_investigation_session,
     _run_review_followup_session,
     build_git_auth_env,
@@ -1732,3 +1735,439 @@ async def test_dispatch_qa_falls_back_to_local_main_when_fetch_fails(caplog):
     # Warning must include the chosen base ref for postmortem visibility
     log_text = " ".join(r.message for r in caplog.records)
     assert "main" in log_text, "Warning must name the fallback base ref"
+
+
+# ---------------------------------------------------------------------------
+# AC1/AC5: PR creation — non-canonical gh output triggers fallback lookup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_qa_pr_pr_number_fallback_on_non_canonical_stdout():
+    """Non-canonical gh stdout (e.g. extra lines) falls back to head-branch lookup."""
+    finding = _make_finding()
+    repo_root = Path("/tmp/repo")
+    branch_name = "qa/finance/abc123"
+    attempt_id = uuid.uuid4()
+
+    # Simulate non-standard gh pr create stdout that contains neither a PR number
+    # nor a PR URL, forcing the code down the fallback head-branch lookup path.
+    unparseable_stdout = b"some-unexpected-output\n"
+
+    def _make_ok_proc(stdout: bytes):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(stdout, b""))
+        proc.returncode = 0
+        return proc
+
+    # gh pr list returns a single PR result for the fallback
+    fallback_json = _test_json.dumps(
+        [{"number": 77, "url": "https://github.com/org/repo/pull/77"}]
+    ).encode()
+
+    # Subprocess call order inside _create_qa_pr:
+    #   1. git remote get-url origin (whitelist check, returns a valid origin)
+    #   2. git log main..branch --oneline (no-op check, returns one line = has commits)
+    #   3. git push origin branch_name (push OK)
+    #   4. gh pr create (returns unparseable stdout)
+    #   5. gh pr list --head branch_name (fallback lookup)
+    procs = [
+        _make_ok_proc(b"https://github.com/org/repo.git"),  # remote get-url
+        _make_ok_proc(b"abc1234 fix: something\n"),  # git log (has commits)
+        _make_ok_proc(b""),  # git push
+        _make_ok_proc(unparseable_stdout),  # gh pr create
+        _make_ok_proc(fallback_json),  # gh pr list fallback
+    ]
+    proc_iter = iter(procs)
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            side_effect=lambda *a, **kw: next(proc_iter),
+        ),
+        patch("butlers.core.qa.dispatch.anonymize", side_effect=lambda text, _root: text),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+    ):
+        pr_url, pr_number, error = await _create_qa_pr(
+            repo_root=repo_root,
+            branch_name=branch_name,
+            finding=finding,
+            attempt_id=attempt_id,
+            labels=[],
+            gh_token="ghtoken",
+            whitelist=MagicMock(
+                ensure_loaded=AsyncMock(),
+                is_allowed=MagicMock(return_value=(True, "allowed")),
+            ),
+        )
+
+    assert error is None
+    assert pr_number == 77
+    assert pr_url == "https://github.com/org/repo/pull/77"
+
+
+# ---------------------------------------------------------------------------
+# AC3/AC5: No-op detection — empty branch blocked before push
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detect_no_op_branch_returns_true_when_no_commits():
+    """_detect_no_op_branch returns True when git log emits no output."""
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"", b""))
+    proc.returncode = 0
+
+    with patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc):
+        result = await _detect_no_op_branch(Path("/tmp/repo"), "qa/test/abc", {})
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_detect_no_op_branch_returns_false_when_commits_exist():
+    """_detect_no_op_branch returns False when git log emits commit lines."""
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+    proc.returncode = 0
+
+    with patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc):
+        result = await _detect_no_op_branch(Path("/tmp/repo"), "qa/test/abc", {})
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_detect_no_op_branch_returns_false_on_subprocess_failure():
+    """_detect_no_op_branch returns False (safe: let push proceed) when git fails."""
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"", b"error"))
+    proc.returncode = 128
+
+    with patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc):
+        result = await _detect_no_op_branch(Path("/tmp/repo"), "qa/test/abc", {})
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_run_investigation_session_no_op_branch_marks_unfixable():
+    """no_op_branch error from _create_qa_pr → attempt transitions to unfixable, not failed."""
+    pool = _make_pool()
+    config = QaDispatchConfig(timeout_minutes=30)
+    mock_spawner = MagicMock()
+    mock_spawner.trigger = AsyncMock(
+        return_value=MagicMock(success=True, error=None, session_id=uuid.uuid4())
+    )
+    attempt_id = uuid.uuid4()
+
+    with (
+        patch("butlers.core.qa.dispatch.build_sandbox_env", return_value={}),
+        patch("butlers.core.qa.dispatch.build_investigation_prompt", return_value="prompt"),
+        patch("butlers.core.qa.dispatch.record_phase_session", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock
+        ) as mock_update,
+        patch("butlers.core.qa.dispatch.update_phase_session_status", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._create_qa_pr",
+            new_callable=AsyncMock,
+            return_value=(None, None, "no_op_branch"),
+        ),
+        # unfixable sentinel file must NOT exist (so the sentinel check doesn't fire first)
+        patch("pathlib.Path.exists", return_value=False),
+    ):
+        await _run_investigation_session(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name="qa/finance/abc123",
+            worktree_path=Path("/tmp/qa-wt"),
+            finding=_make_finding(),
+            config=config,
+            spawner=mock_spawner,
+            gh_token="ghtoken",
+        )
+
+    # Must transition to unfixable, NOT failed
+    mock_update.assert_awaited_once()
+    call_args = mock_update.call_args
+    assert call_args[0][2] == "unfixable"
+    assert "no_op_branch" in (call_args[1].get("error_detail") or "")
+
+
+# ---------------------------------------------------------------------------
+# AC4/AC5: Push succeeded, gh pr create failed — remote branch cleanup attempted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_qa_pr_gh_create_failure_cleans_up_remote_branch():
+    """If push succeeds but gh pr create fails, best-effort remote branch delete is attempted."""
+    finding = _make_finding()
+    repo_root = Path("/tmp/repo")
+    branch_name = "qa/finance/abc123"
+
+    def _make_ok_proc(stdout: bytes = b""):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(stdout, b""))
+        proc.returncode = 0
+        return proc
+
+    def _make_fail_proc(stderr: bytes):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"", stderr))
+        proc.returncode = 1
+        return proc
+
+    # Call order:
+    #   1. git remote get-url origin
+    #   2. git log (has commits)
+    #   3. git push origin branch → succeeds
+    #   4. gh pr create → fails with non-auth error
+    #   5. git push origin --delete branch → best-effort cleanup
+    procs = [
+        _make_ok_proc(b"https://github.com/org/repo.git"),  # remote get-url
+        _make_ok_proc(b"abc1234 fix: something\n"),  # git log
+        _make_ok_proc(b""),  # git push
+        _make_fail_proc(b"GraphQL: something went wrong"),  # gh pr create fails
+        _make_ok_proc(b""),  # git push --delete cleanup
+    ]
+    proc_iter = iter(procs)
+
+    subprocess_calls: list[tuple] = []
+
+    def _capture_proc(*args, **kwargs):
+        subprocess_calls.append(args)
+        return next(proc_iter)
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            side_effect=_capture_proc,
+        ),
+        patch("butlers.core.qa.dispatch.anonymize", side_effect=lambda text, _root: text),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+    ):
+        pr_url, pr_number, error = await _create_qa_pr(
+            repo_root=repo_root,
+            branch_name=branch_name,
+            finding=finding,
+            attempt_id=uuid.uuid4(),
+            labels=[],
+            gh_token="ghtoken",
+            whitelist=MagicMock(
+                ensure_loaded=AsyncMock(),
+                is_allowed=MagicMock(return_value=(True, "allowed")),
+            ),
+        )
+
+    assert pr_url is None
+    assert pr_number is None
+    assert error is not None and "gh_pr_create_failed" in error
+
+    # Verify the cleanup delete was attempted (5th subprocess call)
+    assert len(subprocess_calls) == 5
+    cleanup_args = subprocess_calls[4]
+    assert "--delete" in cleanup_args
+
+
+# ---------------------------------------------------------------------------
+# AC2/AC5: check_open_pr_statuses — pr_number=None triggers repair or transition
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_repairs_missing_pr_number():
+    """pr_number=NULL → head-branch lookup resolves and patches DB; polling continues normally."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    # Row with pr_number=None but branch_name present
+    row = {
+        "id": attempt_id,
+        "pr_url": "https://github.com/org/repo/pull/55",
+        "pr_number": None,
+        "fingerprint": "a" * 64,
+        "butler_name": "general",
+        "follow_up_count": 0,
+        "branch_name": "qa/general/abcdef",
+        "follow_up_cycle_patrol_id": None,
+        "follow_up_cycle_count": 0,
+    }
+    pool.fetch = AsyncMock(return_value=[row])
+
+    # Subprocess calls:
+    #   1. gh pr list --head branch → returns repaired PR identity
+    #   2. gh pr view 55 --json ... → OPEN, no reviews
+    repaired_list_json = _test_json.dumps(
+        [{"number": 55, "url": "https://github.com/org/repo/pull/55"}]
+    ).encode()
+    pr_view_data = {"state": "OPEN", "reviews": [], "latestReviews": [], "reviewThreads": []}
+
+    def _make_ok_proc(stdout: bytes):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(stdout, b""))
+        proc.returncode = 0
+        return proc
+
+    procs = [
+        _make_ok_proc(repaired_list_json),  # gh pr list (repair)
+        _make_ok_proc(_test_json.dumps(pr_view_data).encode()),  # gh pr view (polling)
+    ]
+    proc_iter = iter(procs)
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            side_effect=lambda *a, **kw: next(proc_iter),
+        ),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+    ):
+        counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+
+    assert counts["errors"] == 0
+    # DB repair was executed
+    pool.execute.assert_awaited()
+    repair_call = pool.execute.call_args_list[0]
+    assert "pr_number" in repair_call[0][0]
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_transitions_to_failed_when_repair_fails():
+    """pr_number=NULL and head-branch lookup returns nothing → attempt transitions to failed."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    row = {
+        "id": attempt_id,
+        "pr_url": "https://github.com/org/repo/pull/55",
+        "pr_number": None,
+        "fingerprint": "a" * 64,
+        "butler_name": "general",
+        "follow_up_count": 0,
+        "branch_name": "qa/general/abcdef",
+        "follow_up_cycle_patrol_id": None,
+        "follow_up_cycle_count": 0,
+    }
+    pool.fetch = AsyncMock(return_value=[row])
+
+    # gh pr list returns empty → no PR found for head branch
+    empty_list_json = _test_json.dumps([]).encode()
+
+    def _make_ok_proc(stdout: bytes):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(stdout, b""))
+        proc.returncode = 0
+        return proc
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=_make_ok_proc(empty_list_json),
+        ),
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock
+        ) as mock_update,
+    ):
+        counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+
+    # No errors incremented; but attempt was transitioned to failed
+    assert counts["errors"] == 0
+    mock_update.assert_awaited_once()
+    call_args = mock_update.call_args
+    assert call_args[0][2] == "failed"
+    assert "pr_number_missing" in (call_args[1].get("error_detail") or "")
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_transitions_to_failed_when_no_branch():
+    """pr_number=NULL and branch_name=NULL → cannot repair, transitions to failed."""
+    attempt_id = uuid.uuid4()
+    pool = _make_pool()
+    row = {
+        "id": attempt_id,
+        "pr_url": "https://github.com/org/repo/pull/55",
+        "pr_number": None,
+        "fingerprint": "a" * 64,
+        "butler_name": "general",
+        "follow_up_count": 0,
+        "branch_name": None,  # branch_name also missing
+        "follow_up_cycle_patrol_id": None,
+        "follow_up_cycle_count": 0,
+    }
+    pool.fetch = AsyncMock(return_value=[row])
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock
+        ) as mock_update,
+    ):
+        await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
+
+    mock_update.assert_awaited_once()
+    call_args = mock_update.call_args
+    assert call_args[0][2] == "failed"
+    assert "pr_number_missing" in (call_args[1].get("error_detail") or "")
+
+
+# ---------------------------------------------------------------------------
+# AC5: _resolve_pr_by_head helper unit tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_pr_by_head_returns_url_and_number():
+    """Single open PR for head branch → (url, number) returned."""
+    import json as _json
+
+    result_json = _json.dumps(
+        [{"number": 42, "url": "https://github.com/org/repo/pull/42"}]
+    ).encode()
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(result_json, b""))
+    proc.returncode = 0
+
+    with patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc):
+        url, number = await _resolve_pr_by_head(Path("/tmp/repo"), "qa/general/abc", {})
+
+    assert url == "https://github.com/org/repo/pull/42"
+    assert number == 42
+
+
+@pytest.mark.asyncio
+async def test_resolve_pr_by_head_returns_none_when_multiple_prs():
+    """Multiple PRs for same head branch → (None, None) — ambiguous result."""
+    import json as _json
+
+    result_json = _json.dumps(
+        [
+            {"number": 42, "url": "https://github.com/org/repo/pull/42"},
+            {"number": 43, "url": "https://github.com/org/repo/pull/43"},
+        ]
+    ).encode()
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(result_json, b""))
+    proc.returncode = 0
+
+    with patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc):
+        url, number = await _resolve_pr_by_head(Path("/tmp/repo"), "qa/general/abc", {})
+
+    assert url is None
+    assert number is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_pr_by_head_returns_none_on_empty_list():
+    """No open PRs for head branch → (None, None)."""
+    import json as _json
+
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(_json.dumps([]).encode(), b""))
+    proc.returncode = 0
+
+    with patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=proc):
+        url, number = await _resolve_pr_by_head(Path("/tmp/repo"), "qa/general/abc", {})
+
+    assert url is None
+    assert number is None
