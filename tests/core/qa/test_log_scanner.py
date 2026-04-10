@@ -19,6 +19,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -282,61 +283,73 @@ async def test_performance_caps(tmp_path, caplog):
 async def test_benign_volume_does_not_starve_errors(tmp_path):
     """Entry budget is NOT consumed by benign INFO lines; real errors are still found.
 
-    A log file with 10 000 INFO lines followed by a single ERROR must still
-    produce a finding when max_entries_per_scan is set to a small value (e.g. 5),
-    because INFO lines do not count against the budget.
+    The error line is written at the TOP of the file (oldest position) and
+    benign INFO lines follow it.  _read_file_tail() reads from the END of the
+    file, so benign lines are encountered before the error.  With the old
+    fixed-budget approach, 5 INFO entries would exhaust the budget and the
+    error at the top would never be reached.  With the new candidate-only
+    budget, INFO lines do not count against max_entries_per_scan, so the error
+    is always found.
     """
     now = datetime.now(UTC)
+    # All benign lines within the 30-minute lookback window (ts varies between
+    # 1 s and 100 s ago — well within the 1800 s cutoff).
     benign_lines = [
         json.dumps(
             {
                 "level": "info",
                 "event": f"Request processed {i}",
-                "timestamp": (now - timedelta(seconds=i)).isoformat(),
+                "timestamp": (now - timedelta(seconds=i + 1)).isoformat(),
                 "butler_name": "finance",
                 "logger": "butlers.http",
             }
         )
-        for i in range(10_000)
+        for i in range(100)
     ]
     error_line = _line(
         level="error",
         event="Critical connector failure",
         exception="ConnectionRefusedError",
-        ts=now,
+        # Oldest timestamp so it ends up at the top of the file.
+        ts=now - timedelta(seconds=101),
     )
-    _write(tmp_path / "butlers" / "finance.log", benign_lines + [error_line])
+    # Error at TOP (beginning of file), benign lines at BOTTOM (end of file).
+    # _read_file_tail reads from the end, so benign lines are processed before
+    # the error — exercising that they do not consume the candidate budget.
+    _write(tmp_path / "butlers" / "finance.log", [error_line] + benign_lines)
 
-    # Even with a tiny candidate budget (5), the error must be discovered
-    # because INFO lines are not counted.
+    # With a budget of 5, the old code would be exhausted by INFO lines before
+    # reaching the error.  With the new code, INFO lines are free and the error
+    # must always be found.
     source = LogScannerSource(log_root=tmp_path, max_entries_per_scan=5)
     findings = await source.discover(lookback_minutes=30)
 
     assert len(findings) == 1
     assert "connector failure" in findings[0].event_summary.lower()
-    # No truncation should have occurred (only 1 candidate entry)
+    # No truncation: only 1 candidate entry (the error), well under budget of 5.
     assert not source.last_truncated
 
 
 @pytest.mark.asyncio
 async def test_later_file_not_starved(tmp_path):
-    """Errors in a later-sorted log file must be discoverable despite an earlier
-    file containing many error entries.
+    """Errors in a later-sorted log file must be discoverable when shuffle puts it first.
 
-    The scanner shuffles file order, so we run multiple times and assert that
-    the later file's finding is discovered in at least some runs (i.e. it is not
-    systematically excluded).  With a budget cap of 3 and 4 errors in the first
-    file (alphabetically), the second file would never be reached under the old
-    deterministic ordering.
+    With a candidate budget of 3 and 4 distinct errors in aaa.log, the budget
+    is exhausted before zzz.log is reached when files are processed in
+    alphabetical order.  The scanner randomises file order; this test uses
+    monkeypatching to exercise both orderings deterministically, verifying:
+
+    - zzz-first: zzz.log error is found (budget not yet exhausted).
+    - aaa-first: zzz.log error is not found (budget exhausted by aaa.log).
     """
     now = datetime.now(UTC)
 
-    # "aaa.log" — has 4 distinct errors (fills a budget of 3)
+    # "aaa.log" — has 4 distinct errors (exceeds a budget of 3)
     aaa_lines = [
         _line(event=f"Error aaa {i}", exception=f"ErrA{i}", ts=now, logger_name=f"mod.a{i}")
         for i in range(4)
     ]
-    # "zzz.log" — has a unique error that should be reachable
+    # "zzz.log" — has a unique error that should be reachable when ordered first
     zzz_lines = [
         _line(
             event="ZZZ unique transport error",
@@ -345,24 +358,31 @@ async def test_later_file_not_starved(tmp_path):
             logger_name="mod.transport",
         )
     ]
-    _write(tmp_path / "butlers" / "aaa.log", aaa_lines)
-    _write(tmp_path / "butlers" / "zzz.log", zzz_lines)
+    subdir = tmp_path / "butlers"
+    _write(subdir / "aaa.log", aaa_lines)
+    _write(subdir / "zzz.log", zzz_lines)
 
-    # Run 20 iterations: with random shuffle, zzz.log must appear first sometimes.
+    aaa_path = subdir / "aaa.log"
+    zzz_path = subdir / "zzz.log"
+
     source = LogScannerSource(log_root=tmp_path, max_entries_per_scan=3)
-    zzz_found_count = 0
-    for _ in range(20):
-        findings = await source.discover(lookback_minutes=15)
-        if any(
-            "zzz" in f.event_summary.lower() or "transport" in f.event_summary.lower()
-            for f in findings
-        ):
-            zzz_found_count += 1
 
-    # At least 1 of 20 runs must find the zzz error (probability of never
-    # picking zzz first in 20 shuffles is (1/2)^20 ≈ 1e-6; acceptable).
-    assert zzz_found_count > 0, (
-        "zzz.log error was never discovered in 20 runs — file ordering is likely deterministic"
+    # --- zzz-first: zzz.log scanned before aaa.log exhausts the budget ---
+    with patch("butlers.core.qa.sources.log_scanner.random.shuffle") as mock_shuffle:
+        mock_shuffle.side_effect = lambda lst: lst.__setitem__(slice(None), [zzz_path, aaa_path])
+        findings_zzz_first = await source.discover(lookback_minutes=15)
+
+    assert any("transport" in f.event_summary.lower() for f in findings_zzz_first), (
+        "zzz.log error must be found when zzz.log is scanned first"
+    )
+
+    # --- aaa-first: aaa.log exhausts the budget before zzz.log is reached ---
+    with patch("butlers.core.qa.sources.log_scanner.random.shuffle") as mock_shuffle:
+        mock_shuffle.side_effect = lambda lst: lst.__setitem__(slice(None), [aaa_path, zzz_path])
+        findings_aaa_first = await source.discover(lookback_minutes=15)
+
+    assert not any("transport" in f.event_summary.lower() for f in findings_aaa_first), (
+        "zzz.log error must NOT be found when aaa.log exhausts the budget first"
     )
 
 

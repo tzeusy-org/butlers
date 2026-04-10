@@ -483,6 +483,7 @@ class QaModule(Module):
         # Register discovery sources
         self._sources = []
         self._butler_reports_source = None
+        self._log_scanner_source = None
 
         enabled = set(self._config.enabled_sources)
 
@@ -495,6 +496,7 @@ class QaModule(Module):
 
         if "log_scanner" in enabled:
             self._log_scanner_source = LogScannerSource(
+                repo_root=self._repo_root,
                 max_entries_per_scan=self._config.log_scanner_max_entries,
                 max_findings_per_scan=self._config.log_scanner_max_findings,
             )
