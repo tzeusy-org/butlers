@@ -76,10 +76,6 @@ def _make_asyncpg_record(
         "status": status,
         "trigger_source": trigger_source,
     }[key]
-    # asyncpg records support .get() for optional fields
-    record.get = lambda key, default=None: {
-        "trigger_source": trigger_source,
-    }.get(key, default)
     return record
 
 
@@ -139,7 +135,8 @@ async def test_butler_reports_trigger_source_qa_investigation():
     assert findings[0].source_session_trigger_source == "qa"
 
 
-def test_butler_reports_accept_sync_trigger_source():
+@pytest.mark.asyncio
+async def test_butler_reports_accept_sync_trigger_source():
     """accept_sync() with trigger_source propagates to source_session_trigger_source."""
     source = ButlerReportsSource()
     source.accept_sync(
@@ -151,9 +148,7 @@ def test_butler_reports_accept_sync_trigger_source():
         source_butler="home",
         trigger_source="healing",
     )
-    import asyncio
-
-    findings = asyncio.get_event_loop().run_until_complete(source.discover(lookback_minutes=15))
+    findings = await source.discover(lookback_minutes=15)
     assert findings[0].source_session_trigger_source == "healing"
 
 

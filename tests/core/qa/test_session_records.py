@@ -38,6 +38,7 @@ def _make_asyncpg_record(
     started_at: datetime | None = None,
     completed_at: datetime | None = None,
     status: str = "error",
+    trigger_source: str | None = None,
 ) -> MagicMock:
     """Build a mock asyncpg Record for v_qa_recent_failures."""
     record = MagicMock()
@@ -49,6 +50,7 @@ def _make_asyncpg_record(
         "started_at": started_at or (datetime.now(UTC) - timedelta(minutes=5)),
         "completed_at": completed_at or datetime.now(UTC),
         "status": status,
+        "trigger_source": trigger_source,
     }[key]
     return record
 

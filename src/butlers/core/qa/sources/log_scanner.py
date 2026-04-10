@@ -510,9 +510,9 @@ class LogScannerSource:
                             acc.first_seen = entry.timestamp
                         if entry.timestamp > acc.last_seen:
                             acc.last_seen = entry.timestamp
-                            # Prefer the trigger_source from the most recent log entry.
-                            if entry.trigger_source is not None:
-                                acc.source_session_trigger_source = entry.trigger_source
+                            # Always take trigger_source from the most recent log entry,
+                            # even when it is None, so recency semantics remain consistent.
+                            acc.source_session_trigger_source = entry.trigger_source
 
                 hit_cap = (
                     truncated_entries

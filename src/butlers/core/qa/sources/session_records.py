@@ -159,9 +159,9 @@ class SessionRecordsSource:
                     acc.first_seen = finding.first_seen
                 if finding.last_seen > acc.last_seen:
                     acc.last_seen = finding.last_seen
-                    # Prefer the trigger_source from the most recent session row.
-                    if finding.source_session_trigger_source is not None:
-                        acc.source_session_trigger_source = finding.source_session_trigger_source
+                    # Always take trigger_source from the most recent session row,
+                    # even when it is None, so recency semantics remain consistent.
+                    acc.source_session_trigger_source = finding.source_session_trigger_source
 
         return [acc.to_finding(now) for acc in aggregated.values()]
 
@@ -176,7 +176,7 @@ class SessionRecordsSource:
         completed_at: datetime | None = row["completed_at"]
         started_at: datetime | None = row["started_at"]
         status: str = row["status"] or "error"
-        trigger_source: str | None = row.get("trigger_source") or None
+        trigger_source: str | None = row["trigger_source"]
 
         # Use completed_at as timestamp; fall back to now
         ts = completed_at or now
