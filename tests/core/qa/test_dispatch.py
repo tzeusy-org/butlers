@@ -766,12 +766,12 @@ async def test_dispatch_pr_review_followup_missing_branch():
 
 @pytest.mark.asyncio
 async def test_dispatch_pr_review_followup_success():
-    """Successful anonymization + existing-branch worktree → True, follow_up_count incremented."""
+    """Successful anonymization + worktree anchored to origin → True, follow_up_count incremented."""
     pool = _make_pool()
     attempt_id = uuid.uuid4()
     branch_name = "qa/general/abcdef-1234"
 
-    # Mock git subprocess (fetch + show-ref + worktree add all succeed)
+    # Mock git subprocess (fetch + worktree add both succeed)
     mock_proc_ok = MagicMock()
     mock_proc_ok.communicate = AsyncMock(return_value=(b"", b""))
     mock_proc_ok.returncode = 0
@@ -806,6 +806,123 @@ async def test_dispatch_pr_review_followup_success():
     pool.execute.assert_awaited_once()
     call_sql = pool.execute.call_args[0][0]
     assert "follow_up_count" in call_sql
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_branch_prep_uses_auth_env():
+    """Branch prep subprocesses (fetch + worktree add) receive authenticated git env."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    branch_name = "qa/general/abcdef-1234"
+    gh_token = "ghp_testtoken"
+    fake_auth_env = {"GIT_TERMINAL_PROMPT": "0", "GH_TOKEN": gh_token, "SENTINEL": "auth"}
+
+    mock_proc_ok = MagicMock()
+    mock_proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc_ok.returncode = 0
+
+    captured_envs: list[dict[str, str] | None] = []
+
+    async def _capture_exec(*args: object, **kwargs: object) -> MagicMock:
+        captured_envs.append(kwargs.get("env"))
+        return mock_proc_ok
+
+    with (
+        patch("butlers.core.qa.dispatch.anonymize", return_value="safe feedback"),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+        patch("butlers.core.qa.dispatch.build_git_auth_env", return_value=fake_auth_env),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            side_effect=_capture_exec,
+        ),
+        patch("pathlib.Path.mkdir"),
+        patch("pathlib.Path.is_dir", return_value=True),
+        patch("butlers.core.qa.dispatch._run_review_followup_session", new_callable=AsyncMock),
+    ):
+        result = await _dispatch_pr_review_followup(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name=branch_name,
+            feedback_summary="reviewer comment",
+            config=QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token=gh_token,
+        )
+    assert result is True
+    # Both fetch and worktree-add must have received the authenticated env
+    assert len(captured_envs) == 2, f"expected 2 git calls, got {len(captured_envs)}"
+    for env in captured_envs:
+        assert env is not None, "git subprocess called without env"
+        assert env.get("SENTINEL") == "auth", "git subprocess did not receive auth env"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_worktree_anchored_to_origin():
+    """Worktree is created with -B and origin/<branch> regardless of local branch existence.
+
+    This prevents stale local-branch state from driving the follow-up session.
+    The show-ref check has been removed; ``-B`` resets any existing local branch
+    to ``origin/<branch>`` atomically.
+    """
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    branch_name = "qa/general/stale-local"
+
+    mock_proc_ok = MagicMock()
+    mock_proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc_ok.returncode = 0
+
+    captured_calls: list[tuple[str, ...]] = []
+
+    async def _capture_exec(*args: str, **kwargs: object) -> MagicMock:
+        captured_calls.append(args)
+        return mock_proc_ok
+
+    with (
+        patch("butlers.core.qa.dispatch.anonymize", return_value="safe feedback"),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            side_effect=_capture_exec,
+        ),
+        patch("pathlib.Path.mkdir"),
+        patch("pathlib.Path.is_dir", return_value=True),
+        patch("butlers.core.qa.dispatch._run_review_followup_session", new_callable=AsyncMock),
+    ):
+        await _dispatch_pr_review_followup(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name=branch_name,
+            feedback_summary="reviewer comment",
+            config=QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token="token",
+        )
+
+    # There must be exactly 2 git subprocess calls: fetch + worktree add
+    assert len(captured_calls) == 2, (
+        f"expected 2 git calls, got {len(captured_calls)}: {captured_calls}"
+    )
+    # show-ref must NOT appear — we no longer check for local branch existence
+    assert not any("show-ref" in " ".join(call) for call in captured_calls), (
+        "show-ref call found; local-branch reuse check should have been removed"
+    )
+    # worktree add must use -B and origin/<branch> to anchor to remote head
+    worktree_call = captured_calls[1]
+    assert "-B" in worktree_call, "worktree add must use -B to create-or-reset the local branch"
+    assert f"origin/{branch_name}" in worktree_call, (
+        "worktree add must anchor to origin/<branch> to prevent stale-local-branch reuse"
+    )
 
 
 @pytest.mark.asyncio

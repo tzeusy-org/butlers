@@ -294,8 +294,8 @@ def _git_askpass_script() -> Path:
         "#!/bin/sh\n"
         'prompt="${1:-}"\n'
         'case "$prompt" in\n'
-        '  *Username*|*username*) printf \'%s\\n\' "x-access-token" ;;\n'
-        f'  *) printf \'%s\\n\' "${{{_GIT_AUTH_TOKEN_ENV_VAR}:-}}" ;;\n'
+        "  *Username*|*username*) printf '%s\\n' \"x-access-token\" ;;\n"
+        f"  *) printf '%s\\n' \"${{{_GIT_AUTH_TOKEN_ENV_VAR}:-}}\" ;;\n"
         "esac\n",
         encoding="ascii",
     )
@@ -1460,6 +1460,11 @@ async def _dispatch_pr_review_followup(
         )
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Build authenticated git env for all branch-prep subprocesses so that
+        # private HTTPS remotes don't reject fetch/worktree commands before the
+        # agent even runs.
+        git_prep_env = build_git_auth_env(gh_token)
+
         async def _run_git_here(*args: str) -> tuple[int, str]:
             proc = await asyncio.create_subprocess_exec(
                 "git",
@@ -1467,6 +1472,7 @@ async def _dispatch_pr_review_followup(
                 cwd=str(repo_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=git_prep_env,
             )
             stdout, _ = await proc.communicate()
             return proc.returncode, stdout.decode("utf-8", errors="replace")
@@ -1484,25 +1490,20 @@ async def _dispatch_pr_review_followup(
                 f"git fetch failed for branch {followup_branch}: {fetch_out.strip()}"
             )
 
-        # Check if a local tracking branch already exists
-        branch_check_rc, _ = await _run_git_here(
-            "show-ref", "--verify", "--quiet", f"refs/heads/{followup_branch}"
+        # Always anchor the worktree to origin/<branch> so that a stale or
+        # diverged local branch of the same name cannot drive the follow-up
+        # session.  ``-B`` creates the local tracking branch if it does not
+        # exist, or resets it to the specified commit-ish if it does — giving
+        # us remote-head semantics in both cases without a separate show-ref
+        # check.
+        add_rc, add_out = await _run_git_here(
+            "worktree",
+            "add",
+            "-B",
+            followup_branch,
+            str(worktree_path),
+            f"origin/{followup_branch}",
         )
-
-        if branch_check_rc == 0:
-            add_rc, add_out = await _run_git_here(
-                "worktree", "add", str(worktree_path), followup_branch
-            )
-        else:
-            add_rc, add_out = await _run_git_here(
-                "worktree",
-                "add",
-                "-b",
-                followup_branch,
-                "--track",
-                str(worktree_path),
-                f"origin/{followup_branch}",
-            )
 
         if add_rc != 0:
             raise WorktreeCreationError(
