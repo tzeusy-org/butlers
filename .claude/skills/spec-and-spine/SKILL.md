@@ -12,11 +12,12 @@ description: >
 
 The `openspec/` directory is the WHAT pillar of the Butlers knowledge architecture. Capability specs are the single source of truth for what the system does and what it promises. Every feature should trace back to a spec.
 
-## Four-Pillar Model
+## Five-Pillar Model
 
 | Pillar | Directory | Answers |
 |--------|-----------|---------|
 | Doctrine | `about/heart-and-soul/` | WHY -- vision, principles, scope |
+| Engineering Standards | `about/craft-and-care/` | HOW SHOULD WORK BE EXECUTED WELL -- testing, verification, review, maintainability |
 | Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | **Capability Specs** | `openspec/` | WHAT -- normative requirements |
 | Topology | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |

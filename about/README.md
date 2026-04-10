@@ -6,15 +6,16 @@ domain — health, relationships, finance, education, travel, home, lifestyle �
 and acts autonomously on schedules and in response to incoming messages. One
 user. One instance. Full sovereignty over data, credentials, and LLM keys.
 
-## The Four-Pillar Knowledge Architecture
+## The Five-Pillar Knowledge Architecture
 
-The project's self-knowledge is organized into four pillars. Three live here
+The project's self-knowledge is organized into five pillars. Four live here
 under `about/` with poetic names; capability specs live at `openspec/` with
 their own structure and tooling.
 
 | Pillar | Directory | Question | Content | Start here |
 |--------|-----------|----------|---------|------------|
 | **Heart and Soul** | `about/heart-and-soul/` | **WHY** does this exist? | Vision, 7 non-negotiable rules, scope boundaries, anti-patterns | [vision.md](heart-and-soul/vision.md) |
+| **Craft and Care** | `about/craft-and-care/` | **HOW SHOULD WORK BE EXECUTED WELL?** | Engineering bar, testing discipline, review expectations, observability, security, maintainability | [README.md](craft-and-care/README.md) |
 | **Law and Lore** | `about/law-and-lore/` | **HOW** will it work? | 12 RFCs defining wire contracts, state machines, data models | [README.md](law-and-lore/README.md) |
 | **Spec and Spine** | `openspec/` | **WHAT** exactly must be built? | 141 capability specs with WHEN/THEN scenarios | `openspec/specs/` |
 | **Lay and Land** | `about/lay-and-land/` | **WHERE** does everything live? | Component maps, data flow, dependencies, deployment topology | [README.md](lay-and-land/README.md) |
@@ -28,7 +29,10 @@ Doctrine principle → RFC design decision → Spec requirement → Code → Tes
 ```
 
 Topology cross-cuts all layers — it shows where the doctrine is embodied,
-where the design contracts apply, and where the specs are implemented.
+where the design contracts apply, and where the specs are implemented. Craft
+and Care cross-cuts the same chain as the execution-quality layer: it defines
+how changes to any part of the chain must be implemented, verified, reviewed,
+and documented.
 
 ## Reading Order
 
@@ -38,15 +42,18 @@ where the design contracts apply, and where the specs are implemented.
    what it is not, and the seven non-negotiable architectural rules.
 2. **[v1.md](heart-and-soul/v1.md)** — What v1 ships and what it defers.
    Scope debates end here.
-3. **[Law and Lore README](law-and-lore/README.md)** — Index of 12 RFCs in
+3. **[Craft and Care README](craft-and-care/README.md)** — The engineering bar:
+   testing, verification, review, observability, security, and maintainability.
+4. **[Law and Lore README](law-and-lore/README.md)** — Index of 12 RFCs in
    recommended data-flow reading order.
-4. **[components.md](lay-and-land/components.md)** — Every runtime piece,
+5. **[components.md](lay-and-land/components.md)** — Every runtime piece,
    what it owns, and its stability level.
-5. **`openspec/specs/`** — Browse by capability domain for detailed
+6. **`openspec/specs/`** — Browse by capability domain for detailed
    requirements.
 
 **Already familiar?** Jump to the pillar that answers your question:
 - *"Can I do X?"* → Heart and Soul (check the non-negotiable rules)
+- *"What quality bar must this change meet?"* → Craft and Care
 - *"How does X work at the wire level?"* → Law and Lore (find the RFC)
 - *"What exactly must X do?"* → Spec and Spine (find the spec)
 - *"Where does X live in the codebase?"* → Lay and Land (check components)

@@ -13,11 +13,12 @@ description: >
 
 The `about/heart-and-soul/` directory is the WHY pillar of the Butlers knowledge architecture. It governs design decisions, scope arguments, and feature debates. When in doubt, start here.
 
-## Four-Pillar Model
+## Five-Pillar Model
 
 | Pillar | Directory | Answers |
 |--------|-----------|---------|
 | **Doctrine** | `about/heart-and-soul/` | WHY -- vision, principles, scope |
+| Engineering Standards | `about/craft-and-care/` | HOW SHOULD WORK BE EXECUTED WELL -- testing, verification, review, maintainability |
 | Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | Capability Specs | `openspec/` | WHAT -- normative requirements |
 | Topology | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |

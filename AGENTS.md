@@ -1015,6 +1015,7 @@ For more details, see README.md and docs/QUICKSTART.md.
 
 ## Notes to self
 
+- `about/craft-and-care/` is the canonical fifth project-shape pillar for repository engineering standards; keep testing, verification, review, observability, interface/dependency, security, and performance guidance there instead of scattering new standards across ad hoc docs.
 - Memory entity merge tombstones the source with `metadata.merged_into`, excludes it from entity list/search/`entity_resolve`, and re-links `public.contacts.entity_id` from source to target.
 - Memory entity merge only unions the source entity's `aliases` onto the target; it does not automatically add the source `canonical_name` as a target alias, so old-name lookups only keep working if that string already exists in aliases or another resolver path still matches.
 - Witness patrol wisps created by `gt patrol new` / `gt patrol report` are `hooked` (not `pinned`), so `gt mol attach <wisp> mol-witness-patrol` fails with "not pinned". Run patrol steps directly and roll cycles with `gt patrol report`.

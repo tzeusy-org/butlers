@@ -128,16 +128,19 @@ Multi-user support, mobile app, voice interface, self-hosting installer, plugin 
 
 ## Navigating the Documentation
 
-This project's knowledge is organized into four pillars, each answering a different question:
+This project's knowledge is organized into five pillars, each answering a different question:
 
 | Pillar | Location | What You'll Find |
 |--------|----------|-----------------|
 | **Heart and Soul** | [`about/heart-and-soul/`](../about/heart-and-soul/) | Vision, principles, scope boundaries — the WHY |
+| **Craft and Care** | [`about/craft-and-care/`](../about/craft-and-care/) | Engineering bar, testing discipline, review expectations, observability, security, maintainability — HOW WORK SHOULD BE EXECUTED WELL |
 | **Law and Lore** | [`about/law-and-lore/`](../about/law-and-lore/) | Numbered RFCs defining technical contracts — the HOW |
 | **Spec and Spine** | [`openspec/`](../openspec/) | Detailed feature requirements with testable scenarios — the WHAT |
 | **Lay and Land** | [`about/lay-and-land/`](../about/lay-and-land/) | Component maps, data flow diagrams, deployment topology — the WHERE |
 
 **Start with** [`about/heart-and-soul/vision.md`](../about/heart-and-soul/vision.md) for the full thesis and non-negotiable rules.
+
+**Use** [`about/craft-and-care/`](../about/craft-and-care/) when you need the execution-quality layer: what testing, verification, review, documentation, observability, and security bar a change must meet.
 
 **Read** [`about/law-and-lore/`](../about/law-and-lore/) when you need to understand a technical design decision — each RFC covers a subsystem (daemon lifecycle, MCP tools, routing, identity, observability, database schema, dashboard).
 
