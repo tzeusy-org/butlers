@@ -294,8 +294,8 @@ def _git_askpass_script() -> Path:
         "#!/bin/sh\n"
         'prompt="${1:-}"\n'
         'case "$prompt" in\n'
-        '  *Username*|*username*) printf \'%s\\n\' "x-access-token" ;;\n'
-        f'  *) printf \'%s\\n\' "${{{_GIT_AUTH_TOKEN_ENV_VAR}:-}}" ;;\n'
+        "  *Username*|*username*) printf '%s\\n' \"x-access-token\" ;;\n"
+        f"  *) printf '%s\\n' \"${{{_GIT_AUTH_TOKEN_ENV_VAR}:-}}\" ;;\n"
         "esac\n",
         encoding="ascii",
     )
