@@ -638,5 +638,6 @@ class _FindingAccumulator:
             last_seen=self.last_seen,
             timestamp=now,
             source_file=self.source_file,
+            source_session_trigger_source=self.trigger_source,
             structured_evidence=structured_evidence,
         )
