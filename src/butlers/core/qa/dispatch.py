@@ -2072,14 +2072,6 @@ async def dispatch_qa_investigation(
             )
 
         _base_ref = "origin/main" if _fetch_ok else "main"
-        if not _fetch_ok:
-            logger.warning(
-                "QA investigation branch will be created from base_ref=%r"
-                " (origin/main unavailable)",
-                _base_ref,
-            )
-        else:
-            logger.info("QA investigation branch will be created from base_ref=%r", _base_ref)
 
         try:
             worktree_path, branch_name = await create_healing_worktree(
