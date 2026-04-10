@@ -226,6 +226,89 @@ async def test_create_qa_pr_allowed_repo_proceeds_to_push():
 
 
 @pytest.mark.asyncio
+async def test_create_qa_pr_push_uses_git_askpass_env():
+    """Allowed repo push uses explicit non-interactive git auth env."""
+    whitelist = _make_loaded_whitelist(["acme/repo"])
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def _fake_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        proc = MagicMock()
+        if len(calls) == 1:
+            proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
+            proc.returncode = 0
+        else:
+            proc.communicate = AsyncMock(return_value=(b"", b"push failed"))
+            proc.returncode = 1
+        return proc
+
+    with patch(
+        "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+        side_effect=_fake_subprocess,
+    ):
+        _, _, error = await _create_qa_pr(
+            repo_root=Path("/tmp/repo"),
+            branch_name="qa/test-branch",
+            finding=_make_finding(),
+            attempt_id=uuid.uuid4(),
+            labels=[],
+            gh_token="ghtoken",
+            whitelist=whitelist,
+        )
+
+    assert error is not None
+    push_kwargs = calls[1][1]
+    env = push_kwargs["env"]
+    assert env["GH_TOKEN"] == "ghtoken"
+    assert env["BUTLERS_QA_GIT_TOKEN"] == "ghtoken"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["GIT_ASKPASS"]
+
+
+@pytest.mark.asyncio
+async def test_create_qa_pr_classifies_git_auth_failures():
+    """Username/auth prompt failures return a dedicated git_auth_failed code."""
+    whitelist = _make_loaded_whitelist(["acme/repo"])
+
+    call_index = 0
+
+    async def _fake_subprocess(*args, **kwargs):
+        nonlocal call_index
+        proc = MagicMock()
+        if call_index == 0:
+            proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
+            proc.returncode = 0
+        else:
+            proc.communicate = AsyncMock(
+                return_value=(
+                    b"",
+                    b"fatal: could not read Username for 'https://github.com': No such device or address",
+                )
+            )
+            proc.returncode = 128
+        call_index += 1
+        return proc
+
+    with patch(
+        "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+        side_effect=_fake_subprocess,
+    ):
+        _, _, error = await _create_qa_pr(
+            repo_root=Path("/tmp/repo"),
+            branch_name="qa/test-branch",
+            finding=_make_finding(),
+            attempt_id=uuid.uuid4(),
+            labels=[],
+            gh_token="ghtoken",
+            whitelist=whitelist,
+        )
+
+    assert error is not None
+    assert error.startswith("git_auth_failed:")
+
+
+@pytest.mark.asyncio
 async def test_create_qa_pr_ssh_url_allowed():
     """SSH remote URLs are correctly parsed and matched against the whitelist."""
     whitelist = _make_loaded_whitelist(["acme/repo"])

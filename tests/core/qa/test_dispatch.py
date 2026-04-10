@@ -31,6 +31,7 @@ from butlers.core.qa.dispatch import (
     _is_circuit_breaker_tripped,
     _run_investigation_session,
     _run_review_followup_session,
+    build_git_auth_env,
     build_sandbox_env,
     check_open_pr_statuses,
     dispatch_novel_findings,
@@ -96,6 +97,25 @@ def test_sandbox_env_filtering_and_injection(monkeypatch):
 
     # Empty string gh_token not injected
     assert "GH_TOKEN" not in build_sandbox_env("")
+
+
+@pytest.mark.unit
+def test_git_auth_env_configures_noninteractive_push(monkeypatch):
+    """Git auth env adds askpass and disables terminal prompts when token is present."""
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setenv("HOME", "/home/user")
+
+    env = build_git_auth_env("mytoken123")
+
+    assert env["GH_TOKEN"] == "mytoken123"
+    assert env["BUTLERS_QA_GIT_TOKEN"] == "mytoken123"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["GIT_ASKPASS"]
+
+    env_without_token = build_git_auth_env(None)
+    assert env_without_token["GIT_TERMINAL_PROMPT"] == "0"
+    assert "GIT_ASKPASS" not in env_without_token
+    assert "BUTLERS_QA_GIT_TOKEN" not in env_without_token
 
 
 @pytest.mark.unit

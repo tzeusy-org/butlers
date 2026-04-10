@@ -35,8 +35,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +115,9 @@ _DEFAULT_PR_LABELS = ["self-healing", "automated"]
 
 #: CredentialStore key for the GitHub token used by QA investigations.
 QA_GH_TOKEN_KEY = "BUTLERS_QA_GH_TOKEN"
+
+#: Temporary environment variable consumed by the git askpass helper.
+_GIT_AUTH_TOKEN_ENV_VAR = "BUTLERS_QA_GIT_TOKEN"
 
 #: Sentinel file placed by investigation agent to signal unfixable error.
 _UNFIXABLE_FILE = UNFIXABLE_SENTINEL_FILENAME
@@ -280,6 +285,54 @@ def build_sandbox_env(gh_token: str | None) -> dict[str, str]:
     return env
 
 
+@lru_cache(maxsize=1)
+def _git_askpass_script() -> Path:
+    """Create and cache a minimal askpass helper for git HTTPS auth."""
+    script_dir = Path(tempfile.mkdtemp(prefix="butlers-qa-git-askpass-"))
+    script_path = script_dir / "git-askpass.sh"
+    script_path.write_text(
+        "#!/bin/sh\n"
+        'prompt="${1:-}"\n'
+        'case "$prompt" in\n'
+        '  *Username*|*username*) printf \'%s\\n\' "x-access-token" ;;\n'
+        f'  *) printf \'%s\\n\' "${{{_GIT_AUTH_TOKEN_ENV_VAR}:-}}" ;;\n'
+        "esac\n",
+        encoding="ascii",
+    )
+    script_path.chmod(0o700)
+    return script_path
+
+
+def build_git_auth_env(
+    gh_token: str | None, *, base_env: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Build subprocess env for non-interactive git-over-HTTPS commands."""
+    env = dict(base_env) if base_env is not None else build_sandbox_env(gh_token)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if gh_token:
+        env["GH_TOKEN"] = gh_token
+        env[_GIT_AUTH_TOKEN_ENV_VAR] = gh_token
+        env["GIT_ASKPASS"] = str(_git_askpass_script())
+    else:
+        env.pop("GIT_ASKPASS", None)
+        env.pop(_GIT_AUTH_TOKEN_ENV_VAR, None)
+    return env
+
+
+def _classify_git_push_error(push_err: str) -> str:
+    """Return a stable error code prefix for git push failures."""
+    lowered = push_err.lower()
+    auth_markers = (
+        "could not read username",
+        "authentication failed",
+        "repository not found",
+        "access denied",
+    )
+    if any(marker in lowered for marker in auth_markers):
+        return f"git_auth_failed: {push_err}"
+    return f"git push failed: {push_err}"
+
+
 # ---------------------------------------------------------------------------
 # PR creation
 # ---------------------------------------------------------------------------
@@ -342,7 +395,7 @@ async def _create_qa_pr(
     if not gh_token:
         return None, None, "no_gh_token"
 
-    env: dict[str, str] = build_sandbox_env(gh_token)
+    env: dict[str, str] = build_git_auth_env(gh_token)
 
     # Step 0: Whitelist enforcement — check before git push
     # Fail-closed: if whitelist is None, create a no-pool instance (blocks all).
@@ -381,7 +434,7 @@ async def _create_qa_pr(
     _, push_stderr = await push_proc.communicate()
     if push_proc.returncode != 0:
         push_err = push_stderr.decode("utf-8", errors="replace").strip()
-        return None, None, f"git push failed: {push_err}"
+        return None, None, _classify_git_push_error(push_err)
 
     # Step 2: Build PR content
     fp_short = finding.fingerprint[:12]
@@ -784,6 +837,45 @@ async def _run_investigation_session(
                 attempt_id,
                 "failed",
                 error_detail="no_gh_token: BUTLERS_QA_GH_TOKEN not found in CredentialStore",
+                healing_session_id=investigation_session_id,
+            )
+            await remove_healing_worktree(
+                repo_root, branch_name, delete_branch=True, delete_remote=False
+            )
+            return
+
+        if pr_error is not None and pr_error.startswith("git_auth_failed:"):
+            if metrics is not None:
+                _elapsed = (_time.monotonic() - _phase_start) * 1000
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="failed",
+                    duration_ms=_elapsed,
+                )
+                metrics.record_recovery_execution_failure(
+                    workflow="qa",
+                    phase="investigate",
+                    error_class="git_auth_failed",
+                )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(
+                        pool,
+                        phase_session_id,
+                        "failed",
+                        error_detail=pr_error,
+                    )
+                except Exception as _pss_exc:
+                    logger.debug("Failed to mark phase session failed: %s", _pss_exc)
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "failed",
+                error_detail=(
+                    "git_auth_failed: QA GitHub token is present but git-over-HTTPS "
+                    "authentication is not configured for subprocess pushes"
+                ),
                 healing_session_id=investigation_session_id,
             )
             await remove_healing_worktree(
@@ -1525,6 +1617,7 @@ async def _run_review_followup_session(
             return
 
         # Push the follow-up commits to origin
+        git_env = build_git_auth_env(sandbox_env.get("GH_TOKEN"), base_env=sandbox_env)
         push_proc = await asyncio.create_subprocess_exec(
             "git",
             "push",
@@ -1533,15 +1626,15 @@ async def _run_review_followup_session(
             cwd=str(repo_root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=sandbox_env,
+            env=git_env,
         )
         _, push_stderr = await push_proc.communicate()
         if push_proc.returncode != 0:
             err = push_stderr.decode("utf-8", errors="replace").strip()
             logger.warning(
-                "QA review follow-up: git push failed (attempt=%s): %s",
+                "QA review follow-up: %s (attempt=%s)",
+                _classify_git_push_error(err),
                 attempt_id,
-                err,
             )
         else:
             logger.info(
