@@ -400,6 +400,8 @@ def _make_pr_row(
     butler_name: str = "general",
     follow_up_count: int = 0,
     branch_name: str | None = "qa/general/abcdef",
+    follow_up_cycle_patrol_id: uuid.UUID | None = None,
+    follow_up_cycle_count: int = 0,
 ) -> dict:
     return {
         "id": attempt_id or uuid.uuid4(),
@@ -409,6 +411,8 @@ def _make_pr_row(
         "butler_name": butler_name,
         "follow_up_count": follow_up_count,
         "branch_name": branch_name,
+        "follow_up_cycle_patrol_id": follow_up_cycle_patrol_id,
+        "follow_up_cycle_count": follow_up_cycle_count,
     }
 
 
@@ -536,11 +540,21 @@ async def test_check_open_pr_statuses_changes_requested_dispatches_followup():
 
 @pytest.mark.asyncio
 async def test_check_open_pr_statuses_rate_limit_respected():
-    """follow_up_count >= _MAX_FOLLOW_UP_PER_CYCLE → no follow-up dispatched."""
+    """Per-cycle follow_up_cycle_count >= _MAX_FOLLOW_UP_PER_CYCLE → no follow-up dispatched."""
     attempt_id = uuid.uuid4()
+    patrol_id = uuid.uuid4()
     pool = _make_pool()
-    # follow_up_count=1 equals the limit (_MAX_FOLLOW_UP_PER_CYCLE=1)
-    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id, follow_up_count=1)])
+    # Same patrol_id and cycle_count=1 equals the limit (_MAX_FOLLOW_UP_PER_CYCLE=1)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_pr_row(
+                attempt_id=attempt_id,
+                follow_up_count=1,
+                follow_up_cycle_patrol_id=patrol_id,
+                follow_up_cycle_count=1,
+            )
+        ]
+    )
     pr_data = {
         "state": "OPEN",
         "reviews": [],
@@ -568,6 +582,7 @@ async def test_check_open_pr_statuses_rate_limit_respected():
             gh_token="ghtoken",
             spawner=spawner,
             config=config,
+            patrol_id=patrol_id,
         )
     assert counts["follow_ups_dispatched"] == 0
     mock_followup.assert_not_called()
@@ -596,6 +611,305 @@ async def test_check_open_pr_statuses_no_spawner_no_followup():
         # No spawner or config → review tracking only
         counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
     assert counts["follow_ups_dispatched"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-cycle follow-up budgeting tests (bu-0025a.4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_cycle_reset_allows_followup():
+    """New patrol_id resets the cycle counter: follow-up dispatched even when lifetime count > 0."""
+    attempt_id = uuid.uuid4()
+    old_patrol_id = uuid.uuid4()
+    new_patrol_id = uuid.uuid4()
+    pool = _make_pool()
+    # Simulates a PR that had a follow-up in the prior cycle (cycle_count=1 under old patrol)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_pr_row(
+                attempt_id=attempt_id,
+                follow_up_count=1,  # lifetime counter: already dispatched once
+                follow_up_cycle_patrol_id=old_patrol_id,
+                follow_up_cycle_count=1,  # used up in the old cycle
+            )
+        ]
+    )
+    pr_data = {
+        "state": "OPEN",
+        "reviews": [],
+        "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}],
+        "reviewThreads": [],
+    }
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
+    mock_proc.returncode = 0
+    spawner = MagicMock()
+    config = QaDispatchConfig()
+
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._dispatch_pr_review_followup",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_followup,
+    ):
+        counts = await check_open_pr_statuses(
+            pool,
+            Path("/tmp/repo"),
+            gh_token="ghtoken",
+            spawner=spawner,
+            config=config,
+            patrol_id=new_patrol_id,  # new cycle!
+        )
+    # The new patrol_id means cycle_count effectively resets to 0, so follow-up is allowed
+    assert counts["follow_ups_dispatched"] == 1
+    mock_followup.assert_awaited_once()
+    # patrol_id should be forwarded to _dispatch_pr_review_followup
+    call_kwargs = mock_followup.call_args.kwargs
+    assert call_kwargs["patrol_id"] == new_patrol_id
+
+
+@pytest.mark.asyncio
+async def test_check_open_pr_statuses_same_cycle_blocks_second_followup():
+    """Same patrol_id with cycle_count=1 blocks a second follow-up in the same cycle."""
+    attempt_id = uuid.uuid4()
+    patrol_id = uuid.uuid4()
+    pool = _make_pool()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_pr_row(
+                attempt_id=attempt_id,
+                follow_up_count=1,
+                follow_up_cycle_patrol_id=patrol_id,
+                follow_up_cycle_count=1,  # already dispatched this cycle
+            )
+        ]
+    )
+    pr_data = {
+        "state": "OPEN",
+        "reviews": [],
+        "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}],
+        "reviewThreads": [],
+    }
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
+    mock_proc.returncode = 0
+    spawner = MagicMock()
+    config = QaDispatchConfig()
+
+    with (
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._dispatch_pr_review_followup",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_followup,
+    ):
+        counts = await check_open_pr_statuses(
+            pool,
+            Path("/tmp/repo"),
+            gh_token="ghtoken",
+            spawner=spawner,
+            config=config,
+            patrol_id=patrol_id,  # same cycle
+        )
+    assert counts["follow_ups_dispatched"] == 0
+    mock_followup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pr_review_followup_persists_cycle_counter():
+    """_dispatch_pr_review_followup UPDATE sets cycle fields and last_follow_up_status."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    patrol_id = uuid.uuid4()
+    branch_name = "qa/general/abcdef-1234"
+
+    mock_proc_ok = MagicMock()
+    mock_proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc_ok.returncode = 0
+
+    with (
+        patch("butlers.core.qa.dispatch.anonymize", return_value="safe feedback"),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_proc_ok,
+        ),
+        patch("pathlib.Path.mkdir"),
+        patch("pathlib.Path.is_dir", return_value=True),
+        patch("butlers.core.qa.dispatch._run_review_followup_session", new_callable=AsyncMock),
+    ):
+        result = await _dispatch_pr_review_followup(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name=branch_name,
+            feedback_summary="reviewer comment",
+            config=QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token="token",
+            patrol_id=patrol_id,
+        )
+    assert result is True
+    pool.execute.assert_awaited_once()
+    call_sql = pool.execute.call_args[0][0]
+    # Cycle fields are updated
+    assert "follow_up_cycle_patrol_id" in call_sql
+    assert "follow_up_cycle_count" in call_sql
+    # Dispatch marker set
+    assert "last_follow_up_status" in call_sql
+    assert "last_follow_up_at" in call_sql
+    # patrol_id was passed as $2
+    assert pool.execute.call_args[0][2] == patrol_id
+
+
+@pytest.mark.asyncio
+async def test_run_review_followup_session_persists_failure():
+    """Failed agent run → last_follow_up_status='failed' + error persisted on the row."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    mock_spawner = MagicMock()
+    mock_spawner.trigger = AsyncMock(
+        return_value=MagicMock(
+            success=False,
+            error="agent_timeout",
+            session_id=None,
+        )
+    )
+
+    with patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock):
+        await _run_review_followup_session(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            followup_branch="qa/general/abcdef-1234",
+            worktree_path=Path("/tmp/qa-followup-wt"),
+            prompt="review prompt",
+            config=QaDispatchConfig(),
+            spawner=mock_spawner,
+            sandbox_env={},
+        )
+
+    pool.execute.assert_awaited_once()
+    call_sql = pool.execute.call_args[0][0]
+    assert "last_follow_up_status" in call_sql
+    # Check that 'failed' is the value being set
+    assert "failed" in call_sql
+    # Error arg passed
+    call_args = pool.execute.call_args[0]
+    assert "agent_timeout" in (call_args[3] or "")
+
+
+@pytest.mark.asyncio
+async def test_run_review_followup_session_persists_success():
+    """Successful agent run + push → last_follow_up_status='succeeded' + session_id persisted."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    mock_spawner = MagicMock()
+    mock_spawner.trigger = AsyncMock(
+        return_value=MagicMock(
+            success=True,
+            error=None,
+            session_id=session_id,
+        )
+    )
+
+    # Mock successful push
+    mock_push_proc = MagicMock()
+    mock_push_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_push_proc.returncode = 0
+
+    with (
+        patch("butlers.core.qa.dispatch.build_git_auth_env", return_value={}),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_push_proc,
+        ),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+    ):
+        await _run_review_followup_session(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            followup_branch="qa/general/abcdef-1234",
+            worktree_path=Path("/tmp/qa-followup-wt"),
+            prompt="review prompt",
+            config=QaDispatchConfig(),
+            spawner=mock_spawner,
+            sandbox_env={},
+        )
+
+    pool.execute.assert_awaited_once()
+    call_sql = pool.execute.call_args[0][0]
+    assert "last_follow_up_status" in call_sql
+    assert "succeeded" in call_sql
+    # session_id forwarded
+    call_args = pool.execute.call_args[0]
+    assert call_args[2] == session_id
+
+
+@pytest.mark.asyncio
+async def test_run_review_followup_session_persists_push_failure():
+    """Successful agent but push failure → last_follow_up_status='failed'."""
+    pool = _make_pool()
+    attempt_id = uuid.uuid4()
+    mock_spawner = MagicMock()
+    mock_spawner.trigger = AsyncMock(
+        return_value=MagicMock(
+            success=True,
+            error=None,
+            session_id=None,
+        )
+    )
+
+    # Mock push failure
+    mock_push_proc = MagicMock()
+    mock_push_proc.communicate = AsyncMock(return_value=(b"", b"error: rejected"))
+    mock_push_proc.returncode = 1
+
+    with (
+        patch("butlers.core.qa.dispatch.build_git_auth_env", return_value={}),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            return_value=mock_push_proc,
+        ),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._classify_git_push_error",
+            return_value="push_rejected",
+        ),
+    ):
+        await _run_review_followup_session(
+            pool=pool,
+            repo_root=Path("/tmp/repo"),
+            attempt_id=attempt_id,
+            pr_number=42,
+            followup_branch="qa/general/abcdef-1234",
+            worktree_path=Path("/tmp/qa-followup-wt"),
+            prompt="review prompt",
+            config=QaDispatchConfig(),
+            spawner=mock_spawner,
+            sandbox_env={},
+        )
+
+    pool.execute.assert_awaited_once()
+    call_sql = pool.execute.call_args[0][0]
+    assert "failed" in call_sql
+    call_args = pool.execute.call_args[0]
+    assert "push_rejected" in (call_args[3] or "")
 
 
 # ---------------------------------------------------------------------------

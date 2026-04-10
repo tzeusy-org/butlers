@@ -150,6 +150,12 @@ def _make_investigation_row(
     last_review_check_at: datetime | None = None,
     review_feedback_summary: str | None = None,
     follow_up_count: int = 0,
+    follow_up_cycle_patrol_id: uuid.UUID | None = None,
+    follow_up_cycle_count: int = 0,
+    last_follow_up_status: str | None = None,
+    last_follow_up_session_id: uuid.UUID | None = None,
+    last_follow_up_error: str | None = None,
+    last_follow_up_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build a fake healing_attempts row dict."""
     return {
@@ -175,6 +181,12 @@ def _make_investigation_row(
         "last_review_check_at": last_review_check_at,
         "review_feedback_summary": review_feedback_summary,
         "follow_up_count": follow_up_count,
+        "follow_up_cycle_patrol_id": follow_up_cycle_patrol_id,
+        "follow_up_cycle_count": follow_up_cycle_count,
+        "last_follow_up_status": last_follow_up_status,
+        "last_follow_up_session_id": last_follow_up_session_id,
+        "last_follow_up_error": last_follow_up_error,
+        "last_follow_up_at": last_follow_up_at,
     }
 
 
@@ -931,6 +943,61 @@ class TestListInvestigations:
         assert inv["follow_up_count"] == 0
         assert inv["review_feedback_summary"] is None
         assert inv["last_review_check_at"] is None
+
+    async def test_returns_followup_cycle_and_outcome_fields(self) -> None:
+        """Investigation rows expose per-cycle follow-up and outcome fields (core_068)."""
+        cycle_patrol_id = uuid.uuid4()
+        followup_session_id = uuid.uuid4()
+        followup_at = _NOW
+        row = _make_investigation_row(
+            status="pr_open",
+            pr_url="https://github.com/foo/bar/pull/8",
+            pr_number=8,
+            follow_up_count=2,
+            follow_up_cycle_patrol_id=cycle_patrol_id,
+            follow_up_cycle_count=1,
+            last_follow_up_status="succeeded",
+            last_follow_up_session_id=followup_session_id,
+            last_follow_up_error=None,
+            last_follow_up_at=followup_at,
+        )
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        inv = response.json()["data"][0]
+        assert inv["follow_up_count"] == 2
+        assert inv["follow_up_cycle_patrol_id"] == str(cycle_patrol_id)
+        assert inv["follow_up_cycle_count"] == 1
+        assert inv["last_follow_up_status"] == "succeeded"
+        assert inv["last_follow_up_session_id"] == str(followup_session_id)
+        assert inv["last_follow_up_error"] is None
+        assert inv["last_follow_up_at"] is not None
+
+    async def test_followup_cycle_fields_default_to_null_when_absent(self) -> None:
+        """Investigation rows without follow-up data return null/0 for cycle fields."""
+        row = _make_investigation_row(
+            status="investigating",
+        )
+        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/investigations")
+
+        assert response.status_code == 200
+        inv = response.json()["data"][0]
+        assert inv["follow_up_cycle_patrol_id"] is None
+        assert inv["follow_up_cycle_count"] == 0
+        assert inv["last_follow_up_status"] is None
+        assert inv["last_follow_up_session_id"] is None
+        assert inv["last_follow_up_error"] is None
+        assert inv["last_follow_up_at"] is None
 
 
 # ---------------------------------------------------------------------------
