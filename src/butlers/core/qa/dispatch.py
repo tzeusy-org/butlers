@@ -1584,9 +1584,10 @@ async def _is_circuit_breaker_tripped(
     if any of the last N terminal attempts was a success (e.g., ``pr_merged``),
     the breaker stays open.
 
-    Only launched executions (``healing_session_id IS NOT NULL``) are counted.
+    Only launched executions (``healing_session_id IS NOT NULL``) are counted,
+    plus synthetic QA dashboard reset rows (``status = 'manual_reset'``).
     Gate rejections that were cleaned up as dispatch events do not have a
-    ``healing_session_id`` and are excluded from the circuit-breaker signal.
+    ``healing_session_id`` and remain excluded from the circuit-breaker signal.
     """
     # Check only QA-originated terminal attempts where an investigation actually
     # launched (healing_session_id IS NOT NULL).  Admission-control rejections
@@ -1598,7 +1599,10 @@ async def _is_circuit_breaker_tripped(
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
           AND closed_at IS NOT NULL
-          AND healing_session_id IS NOT NULL
+          AND (
+                healing_session_id IS NOT NULL
+                OR status = 'manual_reset'
+              )
         ORDER BY closed_at DESC
         LIMIT $1
         """,

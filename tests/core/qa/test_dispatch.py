@@ -28,6 +28,7 @@ from butlers.core.qa.dispatch import (
     QaDispatchResult,
     _dispatch_pr_review_followup,
     _extract_review_state,
+    _is_circuit_breaker_tripped,
     _run_investigation_session,
     _run_review_followup_session,
     build_sandbox_env,
@@ -108,6 +109,28 @@ def test_qa_dispatch_config_defaults():
     assert config.timeout_minutes == 30
     assert config.dashboard_base_url is None
     assert "self-healing" in config.pr_labels and "automated" in config.pr_labels
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_helper_counts_manual_reset_without_session() -> None:
+    """manual_reset rows must break the QA failure chain even without healing_session_id."""
+
+    async def _fetch(query: str, threshold: int):
+        assert threshold == 5
+        if "status = 'manual_reset'" in query:
+            return [
+                {"status": "failed"},
+                {"status": "failed"},
+                {"status": "failed"},
+                {"status": "failed"},
+                {"status": "manual_reset"},
+            ]
+        return [{"status": "failed"} for _ in range(5)]
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=_fetch)
+
+    assert await _is_circuit_breaker_tripped(pool, 5) is False
 
 
 @pytest.mark.asyncio

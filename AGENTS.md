@@ -171,6 +171,10 @@ git push                # Push to remote
 - Recovery/session timeout semantics are split: `session_timeout_s` bounds one spawned runtime session, while higher-level healing/QA workflows own any broader investigation deadline.
 - Pre-launch gate rejects (cooldown, concurrency cap, circuit breaker, no-model) should be tracked as dispatch decisions, not written as failed `healing_attempts`, or breaker state and operator history become polluted.
 
+### QA circuit breaker reset contract
+- QA circuit-breaker state must use the same launched-attempt filter everywhere: count rows with `healing_session_id IS NOT NULL` plus the synthetic dashboard reset sentinel `status = 'manual_reset'`, while still excluding orphaned gate-rejection rows.
+- The dashboard summary, `/api/qa/circuit-breaker`, `/api/qa/circuit-breaker/reset`, and `src/butlers/core/qa/dispatch.py::_is_circuit_breaker_tripped` must stay aligned or the UI can report a reset while dispatch still suppresses new QA investigations.
+
 ### PR merge from worktree contract
 - In this repo's multi-worktree setup, `gh pr merge` from a non-main worktree can fail with `fatal: 'main' is already checked out at '/home/tze/GitHub/butlers'`; reviewer workers should merge via GitHub API (`PUT /repos/{owner}/{repo}/pulls/{number}/merge`) and delete the head ref separately when needed.
 

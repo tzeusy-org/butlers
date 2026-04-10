@@ -564,6 +564,55 @@ def _row_to_investigation(row: Any) -> QaInvestigation:
 # ---------------------------------------------------------------------------
 
 _CIRCUIT_BREAKER_THRESHOLD = 5
+_QA_CIRCUIT_BREAKER_WHERE_CLAUSE = """
+FROM public.healing_attempts
+WHERE qa_patrol_id IS NOT NULL
+  AND closed_at IS NOT NULL
+  AND (
+        healing_session_id IS NOT NULL
+        OR status = 'manual_reset'
+      )
+"""
+
+
+async def _fetch_recent_circuit_breaker_rows(
+    pool: asyncpg.Pool,
+    *,
+    limit: int,
+    include_ids: bool = False,
+) -> list[asyncpg.Record]:
+    """Fetch recent QA breaker rows using the same filter as dispatch admission control."""
+
+    select_cols = "id, status, closed_at" if include_ids else "status"
+    return await pool.fetch(
+        f"""
+        SELECT {select_cols}
+        {_QA_CIRCUIT_BREAKER_WHERE_CLAUSE}
+        ORDER BY closed_at DESC
+        LIMIT $1
+        """,
+        limit,
+    )
+
+
+def _compute_circuit_breaker_state(
+    rows: list[asyncpg.Record],
+    *,
+    threshold: int,
+) -> tuple[list[str], int, bool]:
+    """Return statuses, consecutive failure count, and tripped state."""
+
+    statuses = [row["status"] for row in rows]
+    consecutive_failures = 0
+    for status in statuses:
+        if status in CIRCUIT_BREAKER_FAILURE_STATUSES:
+            consecutive_failures += 1
+            continue
+        break
+    tripped = len(statuses) >= threshold and all(
+        status in CIRCUIT_BREAKER_FAILURE_STATUSES for status in statuses
+    )
+    return statuses, consecutive_failures, tripped
 
 
 # ---------------------------------------------------------------------------
@@ -678,29 +727,16 @@ async def get_qa_summary(
         success_rate=round(success_rate, 4),
     )
 
-    # Circuit breaker — mirrors the exact query used by the QA dispatch gate
-    # in butlers.core.qa.dispatch._is_circuit_breaker_tripped so dashboard
-    # reporting matches actual dispatcher semantics.
-    cb_rows = await pool.fetch(
-        """
-        SELECT status
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND closed_at IS NOT NULL
-        ORDER BY closed_at DESC
-        LIMIT $1
-        """,
-        _CIRCUIT_BREAKER_THRESHOLD,
+    # Circuit breaker — mirror the exact launched-attempt + manual_reset
+    # sentinel filter used by the QA dispatch gate so dashboard reporting
+    # matches actual dispatcher semantics.
+    cb_rows = await _fetch_recent_circuit_breaker_rows(
+        pool,
+        limit=_CIRCUIT_BREAKER_THRESHOLD,
     )
-    cb_statuses = [row["status"] for row in cb_rows]
-    consecutive_failures = 0
-    for s in cb_statuses:
-        if s in CIRCUIT_BREAKER_FAILURE_STATUSES:
-            consecutive_failures += 1
-        else:
-            break
-    cb_tripped = len(cb_statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
-        s in CIRCUIT_BREAKER_FAILURE_STATUSES for s in cb_statuses
+    cb_statuses, consecutive_failures, cb_tripped = _compute_circuit_breaker_state(
+        cb_rows,
+        threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
     circuit_breaker = QaCircuitBreaker(
         tripped=cb_tripped,
@@ -1699,21 +1735,14 @@ async def get_circuit_breaker_status(
     """Return the current QA dispatch circuit breaker state."""
     pool = _shared_pool(db)
 
-    rows = await pool.fetch(
-        """
-        SELECT id, status, closed_at
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND closed_at IS NOT NULL
-        ORDER BY closed_at DESC
-        LIMIT $1
-        """,
-        _CIRCUIT_BREAKER_THRESHOLD,
+    rows = await _fetch_recent_circuit_breaker_rows(
+        pool,
+        limit=_CIRCUIT_BREAKER_THRESHOLD,
+        include_ids=True,
     )
-
-    statuses = [row["status"] for row in rows]
-    tripped = len(statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
-        s in CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
+    statuses, _, tripped = _compute_circuit_breaker_state(
+        rows,
+        threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
 
     return ApiResponse(
@@ -1745,20 +1774,13 @@ async def reset_circuit_breaker(
     pool = _shared_pool(db)
 
     # Verify it's actually tripped before resetting
-    rows = await pool.fetch(
-        """
-        SELECT status
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND closed_at IS NOT NULL
-        ORDER BY closed_at DESC
-        LIMIT $1
-        """,
-        _CIRCUIT_BREAKER_THRESHOLD,
+    rows = await _fetch_recent_circuit_breaker_rows(
+        pool,
+        limit=_CIRCUIT_BREAKER_THRESHOLD,
     )
-    statuses = [row["status"] for row in rows]
-    tripped = len(statuses) >= _CIRCUIT_BREAKER_THRESHOLD and all(
-        s in CIRCUIT_BREAKER_FAILURE_STATUSES for s in statuses
+    _, _, tripped = _compute_circuit_breaker_state(
+        rows,
+        threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
 
     if not tripped:

@@ -397,6 +397,41 @@ class TestGetQaSummary:
         assert body["data"]["circuit_breaker"]["tripped"] is True
         assert body["data"]["circuit_breaker"]["consecutive_failures"] == 5
 
+    async def test_summary_uses_manual_reset_aware_breaker_filter(self) -> None:
+        """Summary must mirror dispatch semantics: launched attempts plus manual_reset sentinel."""
+
+        def _fetch_side_effect(query: str, *_args: Any):
+            if "status = 'manual_reset'" in query and "healing_session_id IS NOT NULL" in query:
+                return [
+                    _mock_record({"status": "failed"}),
+                    _mock_record({"status": "failed"}),
+                    _mock_record({"status": "failed"}),
+                    _mock_record({"status": "failed"}),
+                    _mock_record({"status": "manual_reset"}),
+                ]
+            return [_mock_record({"sources_polled": []})]
+
+        app, _ = _build_app(
+            fetchrow_side_effect=[
+                None,
+                _mock_record(_make_stats_row()),
+                _mock_record(_make_stats_row()),
+                _mock_record(_make_pr_stats_row()),
+            ],
+            fetchval_side_effect=[0],
+            fetch_side_effect=_fetch_side_effect,
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/summary")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["circuit_breaker"]["tripped"] is False
+        assert body["data"]["circuit_breaker"]["consecutive_failures"] == 4
+
     async def test_summary_includes_prs_opened_24h(self) -> None:
         """stats_24h.prs_opened should reflect the fetchval result."""
         app, _ = _build_summary_app(prs_opened_24h=3)
@@ -500,6 +535,69 @@ class TestListPatrols:
 
         assert response.status_code == 422
         assert "not_valid" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/circuit-breaker
+# ---------------------------------------------------------------------------
+
+
+class TestGetCircuitBreakerStatus:
+    async def test_counts_manual_reset_without_session_as_chain_break(self) -> None:
+        """Status endpoint must match dispatch semantics for QA breaker reset rows."""
+
+        def _fetch_side_effect(query: str, *_args: Any):
+            if "status = 'manual_reset'" in query and "healing_session_id IS NOT NULL" in query:
+                return [
+                    _mock_record(
+                        {
+                            "id": uuid.uuid4(),
+                            "status": "failed",
+                            "closed_at": _NOW,
+                        }
+                    ),
+                    _mock_record(
+                        {
+                            "id": uuid.uuid4(),
+                            "status": "failed",
+                            "closed_at": _NOW,
+                        }
+                    ),
+                    _mock_record(
+                        {
+                            "id": uuid.uuid4(),
+                            "status": "failed",
+                            "closed_at": _NOW,
+                        }
+                    ),
+                    _mock_record(
+                        {
+                            "id": uuid.uuid4(),
+                            "status": "failed",
+                            "closed_at": _NOW,
+                        }
+                    ),
+                    _mock_record(
+                        {
+                            "id": uuid.uuid4(),
+                            "status": "manual_reset",
+                            "closed_at": _NOW,
+                        }
+                    ),
+                ]
+            return [_mock_record({"status": "failed"}) for _ in range(5)]
+
+        app, _ = _build_app(fetch_side_effect=_fetch_side_effect)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/circuit-breaker")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["tripped"] is False
+        assert body["data"]["recent_statuses"][-1] == "manual_reset"
 
     async def test_pagination_parameters_accepted(self) -> None:
         app, _ = _build_app(fetch_rows=[], fetchval_result=100)
