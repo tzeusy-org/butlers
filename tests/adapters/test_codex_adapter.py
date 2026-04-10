@@ -429,3 +429,95 @@ async def test_no_retry_on_nonzero_exit():
                 mcp_servers=_MCP_SERVERS,
                 env={},
             )
+
+
+async def test_retry_provenance_result_source_retry():
+    """retry succeeded: result_source='retry', attempt_count=2."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 100 + call_count
+        proc.communicate = AsyncMock(
+            return_value=(
+                _make_bash_only_stdout() if call_count == 1 else _make_mcp_stdout(),
+                b"",
+            )
+        )
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+    ):
+        await adapter.invoke(
+            prompt="route this",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    info = adapter.last_process_info
+    assert info["result_source"] == "retry"
+    assert info["attempt_count"] == 2
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is True
+
+
+async def test_retry_provenance_result_source_first():
+    """Both attempts fail MCP discovery: result_source='first', attempt_count=2."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+    ):
+        await adapter.invoke(
+            prompt="route this",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    info = adapter.last_process_info
+    assert info["result_source"] == "first"
+    assert info["attempt_count"] == 2
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is False
+
+
+async def test_no_retry_sets_attempt_count_one():
+    """Single-attempt execution (no MCP flake): attempt_count=1, no retry fields."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(_make_mcp_stdout(), b""))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        await adapter.invoke(
+            prompt="route this",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    info = adapter.last_process_info
+    assert info["attempt_count"] == 1
+    assert info.get("retry_attempted") is None
+    assert info.get("result_source") is None

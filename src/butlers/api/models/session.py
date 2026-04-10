@@ -21,6 +21,10 @@ class ProcessLog(BaseModel):
     command: str | None = None
     stderr: str | None = None
     runtime_type: str | None = None
+    retry_attempted: bool | None = None
+    retry_succeeded: bool | None = None
+    result_source: str | None = None
+    attempt_count: int | None = None
     created_at: datetime | None = None
     expires_at: datetime | None = None
 

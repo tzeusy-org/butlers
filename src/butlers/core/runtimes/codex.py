@@ -679,6 +679,11 @@ class CodexAdapter(RuntimeAdapter):
             # to discover them (intermittent MCP connection failure).
             mcp_failed = mcp_servers and not _has_mcp_tool_calls(tool_calls)
             if mcp_failed:
+                # Snapshot first-attempt process info before the retry overwrites it.
+                # When retry fails we restore the first-attempt metadata so the
+                # persisted process log accurately reflects the subprocess whose
+                # output was actually used.
+                first_info = dict(self._last_process_info) if self._last_process_info else None
                 diag = (self._last_process_info or {}).get("stderr", "")
                 diag_short = diag.strip()[:500] if diag else "(no stderr)"
                 logger.warning(
@@ -703,17 +708,31 @@ class CodexAdapter(RuntimeAdapter):
                 if retry_has_mcp:
                     logger.info("MCP retry succeeded — MCP tools discovered on second attempt")
                     result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
-                else:
-                    logger.warning("MCP retry also produced 0 MCP tool calls — using first result")
 
                 # Record diagnostics for session monitoring
                 if self._last_process_info:
+                    # When we fall back to the first result, restore its metadata
+                    # (pid, exit_code, stderr, etc.) so the process log matches
+                    # the subprocess whose output was actually used.
+                    if not retry_has_mcp and first_info:
+                        self._last_process_info.update(first_info)
+
                     self._last_process_info["mcp_connection_failed"] = True
                     self._last_process_info["retry_attempted"] = True
                     self._last_process_info["retry_succeeded"] = retry_has_mcp
+                    self._last_process_info["attempt_count"] = 2
+                    # result_source: 'retry' when retry produced MCP calls,
+                    # 'first' when retry also failed and we fell back to the
+                    # first subprocess output.
+                    self._last_process_info["result_source"] = "retry" if retry_has_mcp else "first"
+                    if not retry_has_mcp:
+                        logger.warning(
+                            "MCP retry also produced 0 MCP tool calls — using first result"
+                        )
             else:
                 if self._last_process_info:
                     self._last_process_info["mcp_connection_failed"] = not mcp_servers
+                    self._last_process_info["attempt_count"] = 1
 
             return result_text, tool_calls, usage
         finally:

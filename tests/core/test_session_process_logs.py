@@ -132,3 +132,91 @@ async def test_cleanup_count(count: int) -> None:
     deleted = await cleanup(pool)
     assert isinstance(deleted, int)
     assert deleted == count
+
+
+# ---------------------------------------------------------------------------
+# write() — retry provenance fields
+# ---------------------------------------------------------------------------
+
+
+async def test_write_retry_provenance_fields() -> None:
+    """write() passes retry_attempted, retry_succeeded, result_source, attempt_count to DB."""
+    from butlers.core.session_process_logs import write
+
+    # Retry attempted and succeeded
+    pool = _FakePool()
+    await write(
+        pool,
+        uuid.uuid4(),
+        retry_attempted=True,
+        retry_succeeded=True,
+        result_source="retry",
+        attempt_count=2,
+    )
+    args = pool.execute_calls[0][1]
+    # retry_attempted=$7, retry_succeeded=$8, result_source=$9, attempt_count=$10
+    assert args[6] is True  # retry_attempted
+    assert args[7] is True  # retry_succeeded
+    assert args[8] == "retry"  # result_source
+    assert args[9] == 2  # attempt_count
+
+    # Retry attempted but failed, fell back to first result
+    pool2 = _FakePool()
+    await write(
+        pool2,
+        uuid.uuid4(),
+        retry_attempted=True,
+        retry_succeeded=False,
+        result_source="first",
+        attempt_count=2,
+    )
+    args2 = pool2.execute_calls[0][1]
+    assert args2[6] is True
+    assert args2[7] is False
+    assert args2[8] == "first"
+    assert args2[9] == 2
+
+    # No retry (single attempt, MCP not configured)
+    pool3 = _FakePool()
+    await write(pool3, uuid.uuid4(), attempt_count=1)
+    args3 = pool3.execute_calls[0][1]
+    assert args3[6] is None  # retry_attempted
+    assert args3[7] is None  # retry_succeeded
+    assert args3[8] is None  # result_source
+    assert args3[9] == 1  # attempt_count
+
+    # All defaults None when not specified
+    pool4 = _FakePool()
+    await write(pool4, uuid.uuid4())
+    args4 = pool4.execute_calls[0][1]
+    assert args4[6] is None
+    assert args4[7] is None
+    assert args4[8] is None
+    assert args4[9] is None
+
+
+async def test_get_includes_retry_provenance_fields() -> None:
+    """get() returns retry provenance fields from the DB row."""
+    from butlers.core.session_process_logs import get
+
+    now = datetime.now(tz=UTC)
+    row = {
+        "pid": 1234,
+        "exit_code": 0,
+        "command": "codex exec ...",
+        "stderr": "",
+        "runtime_type": "codex",
+        "retry_attempted": True,
+        "retry_succeeded": False,
+        "result_source": "first",
+        "attempt_count": 2,
+        "created_at": now,
+        "expires_at": now + timedelta(days=14),
+    }
+    pool = _FakePool(fetchrow_result=row)
+    result = await get(pool, uuid.uuid4())
+    assert result is not None
+    assert result["retry_attempted"] is True
+    assert result["retry_succeeded"] is False
+    assert result["result_source"] == "first"
+    assert result["attempt_count"] == 2
