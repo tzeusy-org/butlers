@@ -115,9 +115,10 @@ SLAs, failure modes, dependency graph, and escalation procedures. The same scope
 governance applies: a new capability proposed for a staffer must be evaluated
 against the contract and may require a formal amendment.
 
-The current staffers are the Switchboard (message routing and ingestion) and
-Messenger (outbound channel delivery). Future infrastructure agents --- log
-inspection, QA, billing --- follow the same pattern without requiring engine
+The current staffers are the Switchboard (message routing and ingestion),
+Messenger (outbound channel delivery), and QA (system-wide error patrol,
+triage, and automated investigation). Future infrastructure agents --- log
+aggregation, billing --- follow the same pattern without requiring engine
 changes.
 
 **Why a shared engine matters:** A separate `StafferDaemon` class would duplicate

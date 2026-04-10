@@ -17,11 +17,10 @@ The QA dispatcher SHALL create investigations for novel findings, using the exis
 
 #### Scenario: Concurrency cap enforcement
 - **WHEN** the number of QA-originated active investigations (`count_active_attempts(pool, qa_only=True)`) reaches `max_concurrent_investigations`
-- **THEN** remaining novel findings in this patrol cycle are skipped (not dispatched)
-- **AND** a dispatch-decision record is written for each skipped finding with reason `concurrency_cap`
+- **THEN** remaining novel findings in this patrol cycle are skipped (not dispatched immediately)
+- **AND** skipped findings are recorded with `dedup_reason = "concurrency_cap"` and `dispatch_queued = TRUE` in their `qa_findings` rows — this is a durable backlog that survives daemon restart
+- **AND** at the start of each subsequent patrol cycle, `get_dispatch_queued_findings()` atomically fetches and clears queued rows (using `FOR UPDATE SKIP LOCKED`) and prepends them to the triage batch, giving cap-skipped findings a guaranteed future dispatch opportunity
 - **AND** a log INFO message indicates skipped findings count
-- **AND** skipped findings are NOT placed in a durable queue — they will be rediscovered by `session_records` or `log_scanner` on the next patrol cycle within `log_lookback_minutes`
-- **AND** triage on the next patrol will treat them as novel again if no active investigation exists for their fingerprints
 
 ### Requirement: Gate Sequence Preservation
 The QA dispatcher SHALL preserve the existing 10-gate dispatch sequence from self-healing, applied to each novel finding before investigation. Note: triage performs a fast dedup check (non-atomic) to filter obvious duplicates early; the dispatch gates perform the authoritative atomic claim. Cooldown appears in both layers intentionally — triage's check is a fast-path optimization, dispatch's is the atomic guarantee.
@@ -63,7 +62,7 @@ Investigation agents SHALL operate in a sandboxed environment with minimal crede
 - **THEN** the QA staffer resolves `BUTLERS_QA_GH_TOKEN` from `CredentialStore` and injects it as `GH_TOKEN` in the agent's environment (the `gh` CLI requires the env var name `GH_TOKEN` specifically)
 - **AND** the agent's environment contains only: `GH_TOKEN`, `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
 - **AND** it does NOT have: butler DB connection strings, API keys, OAuth tokens, user data, or any `BUTLERS_*` env vars
-- **AND** it does NOT have MCP server connections (empty `mcp_servers` config)
+- **AND** it does NOT have MCP server connections (the spawner automatically sets empty MCP server config when `trigger_source="qa"`, preventing access to live production state and suppressing the Codex adapter's MCP-discovery retry path)
 - **AND** its filesystem scope is the worktree directory only
 
 #### Scenario: GitHub credentials from secrets store
@@ -116,13 +115,13 @@ QA SHALL suppress autonomous investigation of failures originating from QA self-
 - **AND** `source_session_trigger_source` is stored in the `qa_findings` row for auditing
 
 #### Scenario: QA finding originated from QA self-healing session
-- **WHEN** a finding's `source_butler == "qa"` AND `source_session_trigger_source` is in `{"healing", "qa_investigation"}`
+- **WHEN** a finding's `source_butler == "qa"` AND `source_session_trigger_source` is in `{"healing", "qa"}` (QA investigation sessions use `trigger_source="qa"`; healing sessions use `trigger_source="healing"`)
 - **THEN** normal autonomous investigation is suppressed
 - **AND** the finding is routed to a QA meta-review/operator lane (visible at `GET /api/qa/meta-review`)
 - **AND** no standard QA investigation workflow is launched for that finding
 
 #### Scenario: QA finding with unknown trigger source
-- **WHEN** a finding's `source_butler == "qa"` AND `source_session_trigger_source` is null or not in `{"healing", "qa_investigation"}`
+- **WHEN** a finding's `source_butler == "qa"` AND `source_session_trigger_source` is null or not in `{"healing", "qa"}`
 - **THEN** the finding is treated as potentially recursive and routed to the meta-review/operator lane as a precaution
 - **AND** a log WARNING is emitted: "QA finding from QA butler with unrecognized trigger_source; routing to meta-review"
 
@@ -152,11 +151,12 @@ Investigation agents SHALL create PRs through the anonymization pipeline, ensuri
 - **AND** if `dashboard_base_url` is not configured, the link is omitted (the dashboard may be on a private tailnet and the link would leak the hostname to a public PR)
 
 ### Requirement: Phased Investigation Workflow
-Each QA investigation MAY span multiple runtime sessions under one overall investigation deadline.
+The QA investigation infrastructure SHALL support phase-session tracking for investigations. Phase sessions are recorded and tracked via `record_phase_session` and `update_phase_session_status`. The v1 implementation uses a single combined `investigate` phase; separate diagnose, implement, and verify phases are a future extension enabled by this infrastructure.
 
 #### Scenario: Diagnose, implement, and verify use separate sessions
 - **WHEN** QA investigates a finding that requires diagnosis, code changes, and verification
-- **THEN** it MAY run separate `diagnose`, `implement`, and `verify` sessions
+- **THEN** it SHALL record at least one phase session (currently a single `investigate` phase) to track the session with lineage for audit and recovery
+- **AND** each session uses its own per-session timeout budget
 - **AND** each session uses its own per-session timeout budget
 - **AND** the investigation remains open across phases until it reaches a terminal result or the overall deadline expires
 
