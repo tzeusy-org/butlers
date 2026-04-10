@@ -276,3 +276,124 @@ async def test_performance_caps(tmp_path, caplog):
         for r in caplog.records
         if r.levelno == logging.WARNING
     )
+
+
+@pytest.mark.asyncio
+async def test_benign_volume_does_not_starve_errors(tmp_path):
+    """Entry budget is NOT consumed by benign INFO lines; real errors are still found.
+
+    A log file with 10 000 INFO lines followed by a single ERROR must still
+    produce a finding when max_entries_per_scan is set to a small value (e.g. 5),
+    because INFO lines do not count against the budget.
+    """
+    now = datetime.now(UTC)
+    benign_lines = [
+        json.dumps(
+            {
+                "level": "info",
+                "event": f"Request processed {i}",
+                "timestamp": (now - timedelta(seconds=i)).isoformat(),
+                "butler_name": "finance",
+                "logger": "butlers.http",
+            }
+        )
+        for i in range(10_000)
+    ]
+    error_line = _line(
+        level="error",
+        event="Critical connector failure",
+        exception="ConnectionRefusedError",
+        ts=now,
+    )
+    _write(tmp_path / "butlers" / "finance.log", benign_lines + [error_line])
+
+    # Even with a tiny candidate budget (5), the error must be discovered
+    # because INFO lines are not counted.
+    source = LogScannerSource(log_root=tmp_path, max_entries_per_scan=5)
+    findings = await source.discover(lookback_minutes=30)
+
+    assert len(findings) == 1
+    assert "connector failure" in findings[0].event_summary.lower()
+    # No truncation should have occurred (only 1 candidate entry)
+    assert not source.last_truncated
+
+
+@pytest.mark.asyncio
+async def test_later_file_not_starved(tmp_path):
+    """Errors in a later-sorted log file must be discoverable despite an earlier
+    file containing many error entries.
+
+    The scanner shuffles file order, so we run multiple times and assert that
+    the later file's finding is discovered in at least some runs (i.e. it is not
+    systematically excluded).  With a budget cap of 3 and 4 errors in the first
+    file (alphabetically), the second file would never be reached under the old
+    deterministic ordering.
+    """
+    now = datetime.now(UTC)
+
+    # "aaa.log" — has 4 distinct errors (fills a budget of 3)
+    aaa_lines = [
+        _line(event=f"Error aaa {i}", exception=f"ErrA{i}", ts=now, logger_name=f"mod.a{i}")
+        for i in range(4)
+    ]
+    # "zzz.log" — has a unique error that should be reachable
+    zzz_lines = [
+        _line(
+            event="ZZZ unique transport error",
+            exception="TransportError",
+            ts=now,
+            logger_name="mod.transport",
+        )
+    ]
+    _write(tmp_path / "butlers" / "aaa.log", aaa_lines)
+    _write(tmp_path / "butlers" / "zzz.log", zzz_lines)
+
+    # Run 20 iterations: with random shuffle, zzz.log must appear first sometimes.
+    source = LogScannerSource(log_root=tmp_path, max_entries_per_scan=3)
+    zzz_found_count = 0
+    for _ in range(20):
+        findings = await source.discover(lookback_minutes=15)
+        if any(
+            "zzz" in f.event_summary.lower() or "transport" in f.event_summary.lower()
+            for f in findings
+        ):
+            zzz_found_count += 1
+
+    # At least 1 of 20 runs must find the zzz error (probability of never
+    # picking zzz first in 20 shuffles is (1/2)^20 ≈ 1e-6; acceptable).
+    assert zzz_found_count > 0, (
+        "zzz.log error was never discovered in 20 runs — file ordering is likely deterministic"
+    )
+
+
+@pytest.mark.asyncio
+async def test_truncation_telemetry(tmp_path):
+    """last_truncated and last_truncated_reason reflect cap-hit state after discover()."""
+    now = datetime.now(UTC)
+
+    # No truncation case
+    source_clean = LogScannerSource(log_root=tmp_path, max_entries_per_scan=100)
+    _write(
+        tmp_path / "butlers" / "clean.log",
+        [_line(ts=now)],
+    )
+    await source_clean.discover(lookback_minutes=15)
+    assert not source_clean.last_truncated
+    assert source_clean.last_truncated_reason is None
+
+    # Entry cap hit
+    lines = [
+        _line(event=f"Error {i}", exception=f"Err{i}", ts=now, logger_name=f"mod.x{i}")
+        for i in range(10)
+    ]
+    _write(tmp_path / "butlers" / "busy.log", lines)
+    source_entry_cap = LogScannerSource(log_root=tmp_path, max_entries_per_scan=3)
+    await source_entry_cap.discover(lookback_minutes=15)
+    assert source_entry_cap.last_truncated
+    assert source_entry_cap.last_truncated_reason in ("entries", "entries_and_findings")
+
+    # Finding cap hit
+    source_finding_cap = LogScannerSource(log_root=tmp_path, max_findings_per_scan=2)
+    await source_finding_cap.discover(lookback_minutes=15)
+    assert source_finding_cap.last_truncated
+    assert source_finding_cap.last_truncated_reason in ("findings", "entries_and_findings")

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -340,11 +341,24 @@ class LogScannerSource:
         self._repo_root = (repo_root or Path.cwd()).resolve()
         self._max_entries = max_entries_per_scan
         self._max_findings = max_findings_per_scan
+        # Telemetry: set after each discover() call.
+        self._last_truncated: bool = False
+        self._last_truncated_reason: str | None = None
 
     @property
     def name(self) -> str:
         """Source identifier: ``"log_scanner"``."""
         return "log_scanner"
+
+    @property
+    def last_truncated(self) -> bool:
+        """True if the most recent discover() call hit an entry or finding cap."""
+        return self._last_truncated
+
+    @property
+    def last_truncated_reason(self) -> str | None:
+        """Reason string for the most recent truncation, or None."""
+        return self._last_truncated_reason
 
     async def discover(self, lookback_minutes: int) -> list[QaFinding]:
         """Scan log files and return aggregated findings.
@@ -366,7 +380,11 @@ class LogScannerSource:
         # fingerprint -> aggregation state
         aggregated: dict[str, _FindingAccumulator] = {}
 
-        entries_processed = 0
+        # candidate_count tracks only error/warning entries that pass
+        # _should_include_entry(); benign INFO/DEBUG lines are parsed for
+        # temporal filtering but do NOT consume the entry budget.  This
+        # prevents high-volume benign traffic from starving real findings.
+        candidate_count = 0
         malformed_count = 0
         truncated_entries = False
         truncated_findings = False
@@ -377,7 +395,11 @@ class LogScannerSource:
                 logger.debug("LogScannerSource: skipping missing directory %s", subdir)
                 continue
 
-            log_files = sorted(subdir.glob("*.log"))
+            # Shuffle file order to avoid deterministic starvation of later
+            # files/subdirectories under sustained benign load.
+            log_files = list(subdir.glob("*.log"))
+            random.shuffle(log_files)
+
             for log_file in log_files:
                 # Exclude QA staffer's own log
                 if log_file.name == _QA_LOG_EXCLUDE:
@@ -387,7 +409,7 @@ class LogScannerSource:
                 raw_lines = _read_file_tail(log_file, cutoff)
 
                 for line in raw_lines:
-                    if entries_processed >= self._max_entries:
+                    if candidate_count >= self._max_entries:
                         truncated_entries = True
                         break
                     if len(aggregated) >= self._max_findings:
@@ -403,10 +425,12 @@ class LogScannerSource:
                     if entry.timestamp < cutoff:
                         continue
 
-                    entries_processed += 1
-
+                    # Budget only covers candidate error/warning entries;
+                    # benign entries are skipped without consuming quota.
                     if not _should_include_entry(entry):
                         continue
+
+                    candidate_count += 1
 
                     # Build finding fields
                     exception_type = entry.exception or "unknown"
@@ -455,8 +479,8 @@ class LogScannerSource:
             logger.debug("LogScannerSource: skipped %d malformed JSON lines", malformed_count)
         if truncated_entries:
             logger.warning(
-                "LogScannerSource: truncated at %d entries (max_entries_per_scan=%d)",
-                entries_processed,
+                "LogScannerSource: truncated at %d candidate entries (max_entries_per_scan=%d)",
+                candidate_count,
                 self._max_entries,
             )
         if truncated_findings:
@@ -464,6 +488,17 @@ class LogScannerSource:
                 "LogScannerSource: finding cap reached (%d); some findings may be missed",
                 self._max_findings,
             )
+
+        # Update truncation telemetry for status surfaces.
+        self._last_truncated = truncated_entries or truncated_findings
+        if truncated_entries and truncated_findings:
+            self._last_truncated_reason = "entries_and_findings"
+        elif truncated_entries:
+            self._last_truncated_reason = "entries"
+        elif truncated_findings:
+            self._last_truncated_reason = "findings"
+        else:
+            self._last_truncated_reason = None
 
         findings = [acc.to_finding(now) for acc in aggregated.values()]
         return findings
