@@ -19,6 +19,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -276,3 +277,143 @@ async def test_performance_caps(tmp_path, caplog):
         for r in caplog.records
         if r.levelno == logging.WARNING
     )
+
+
+@pytest.mark.asyncio
+async def test_benign_volume_does_not_starve_errors(tmp_path):
+    """Entry budget is NOT consumed by benign INFO lines; real errors are still found.
+
+    The error line is written at the TOP of the file (oldest position) and
+    benign INFO lines follow it.  _read_file_tail() reads from the END of the
+    file, so benign lines are encountered before the error.  With the old
+    fixed-budget approach, 5 INFO entries would exhaust the budget and the
+    error at the top would never be reached.  With the new candidate-only
+    budget, INFO lines do not count against max_entries_per_scan, so the error
+    is always found.
+    """
+    now = datetime.now(UTC)
+    # All benign lines within the 30-minute lookback window (ts varies between
+    # 1 s and 100 s ago — well within the 1800 s cutoff).
+    benign_lines = [
+        json.dumps(
+            {
+                "level": "info",
+                "event": f"Request processed {i}",
+                "timestamp": (now - timedelta(seconds=i + 1)).isoformat(),
+                "butler_name": "finance",
+                "logger": "butlers.http",
+            }
+        )
+        for i in range(100)
+    ]
+    error_line = _line(
+        level="error",
+        event="Critical connector failure",
+        exception="ConnectionRefusedError",
+        # Oldest timestamp so it ends up at the top of the file.
+        ts=now - timedelta(seconds=101),
+    )
+    # Error at TOP (beginning of file), benign lines at BOTTOM (end of file).
+    # _read_file_tail reads from the end, so benign lines are processed before
+    # the error — exercising that they do not consume the candidate budget.
+    _write(tmp_path / "butlers" / "finance.log", [error_line] + benign_lines)
+
+    # With a budget of 5, the old code would be exhausted by INFO lines before
+    # reaching the error.  With the new code, INFO lines are free and the error
+    # must always be found.
+    source = LogScannerSource(log_root=tmp_path, max_entries_per_scan=5)
+    findings = await source.discover(lookback_minutes=30)
+
+    assert len(findings) == 1
+    assert "connector failure" in findings[0].event_summary.lower()
+    # No truncation: only 1 candidate entry (the error), well under budget of 5.
+    assert not source.last_truncated
+
+
+@pytest.mark.asyncio
+async def test_later_file_not_starved(tmp_path):
+    """Errors in a later-sorted log file must be discoverable when shuffle puts it first.
+
+    With a candidate budget of 3 and 4 distinct errors in aaa.log, the budget
+    is exhausted before zzz.log is reached when files are processed in
+    alphabetical order.  The scanner randomises file order; this test uses
+    monkeypatching to exercise both orderings deterministically, verifying:
+
+    - zzz-first: zzz.log error is found (budget not yet exhausted).
+    - aaa-first: zzz.log error is not found (budget exhausted by aaa.log).
+    """
+    now = datetime.now(UTC)
+
+    # "aaa.log" — has 4 distinct errors (exceeds a budget of 3)
+    aaa_lines = [
+        _line(event=f"Error aaa {i}", exception=f"ErrA{i}", ts=now, logger_name=f"mod.a{i}")
+        for i in range(4)
+    ]
+    # "zzz.log" — has a unique error that should be reachable when ordered first
+    zzz_lines = [
+        _line(
+            event="ZZZ unique transport error",
+            exception="TransportError",
+            ts=now,
+            logger_name="mod.transport",
+        )
+    ]
+    subdir = tmp_path / "butlers"
+    _write(subdir / "aaa.log", aaa_lines)
+    _write(subdir / "zzz.log", zzz_lines)
+
+    aaa_path = subdir / "aaa.log"
+    zzz_path = subdir / "zzz.log"
+
+    source = LogScannerSource(log_root=tmp_path, max_entries_per_scan=3)
+
+    # --- zzz-first: zzz.log scanned before aaa.log exhausts the budget ---
+    with patch("butlers.core.qa.sources.log_scanner.random.shuffle") as mock_shuffle:
+        mock_shuffle.side_effect = lambda lst: lst.__setitem__(slice(None), [zzz_path, aaa_path])
+        findings_zzz_first = await source.discover(lookback_minutes=15)
+
+    assert any("transport" in f.event_summary.lower() for f in findings_zzz_first), (
+        "zzz.log error must be found when zzz.log is scanned first"
+    )
+
+    # --- aaa-first: aaa.log exhausts the budget before zzz.log is reached ---
+    with patch("butlers.core.qa.sources.log_scanner.random.shuffle") as mock_shuffle:
+        mock_shuffle.side_effect = lambda lst: lst.__setitem__(slice(None), [aaa_path, zzz_path])
+        findings_aaa_first = await source.discover(lookback_minutes=15)
+
+    assert not any("transport" in f.event_summary.lower() for f in findings_aaa_first), (
+        "zzz.log error must NOT be found when aaa.log exhausts the budget first"
+    )
+
+
+@pytest.mark.asyncio
+async def test_truncation_telemetry(tmp_path):
+    """last_truncated and last_truncated_reason reflect cap-hit state after discover()."""
+    now = datetime.now(UTC)
+
+    # No truncation case
+    source_clean = LogScannerSource(log_root=tmp_path, max_entries_per_scan=100)
+    _write(
+        tmp_path / "butlers" / "clean.log",
+        [_line(ts=now)],
+    )
+    await source_clean.discover(lookback_minutes=15)
+    assert not source_clean.last_truncated
+    assert source_clean.last_truncated_reason is None
+
+    # Entry cap hit
+    lines = [
+        _line(event=f"Error {i}", exception=f"Err{i}", ts=now, logger_name=f"mod.x{i}")
+        for i in range(10)
+    ]
+    _write(tmp_path / "butlers" / "busy.log", lines)
+    source_entry_cap = LogScannerSource(log_root=tmp_path, max_entries_per_scan=3)
+    await source_entry_cap.discover(lookback_minutes=15)
+    assert source_entry_cap.last_truncated
+    assert source_entry_cap.last_truncated_reason in ("entries", "entries_and_findings")
+
+    # Finding cap hit
+    source_finding_cap = LogScannerSource(log_root=tmp_path, max_findings_per_scan=2)
+    await source_finding_cap.discover(lookback_minutes=15)
+    assert source_finding_cap.last_truncated
+    assert source_finding_cap.last_truncated_reason in ("findings", "entries_and_findings")

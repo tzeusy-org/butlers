@@ -244,6 +244,14 @@ class QaConfig(BaseModel):
     max_reactive_buffer:
         Max buffered reactive findings in the butler_reports source.
         Default 50.
+    log_scanner_max_entries:
+        Hard cap on candidate error/warning entries processed per log-scanner
+        scan.  Only entries that pass the severity filter (error/critical/
+        crash-warning) count against this budget; benign INFO/DEBUG lines do
+        not.  Default 10 000.
+    log_scanner_max_findings:
+        Hard cap on unique fingerprinted findings produced per log-scanner
+        scan.  Default 100.
     dashboard_base_url:
         Optional URL for inclusion in investigation prompts.
     """
@@ -259,6 +267,8 @@ class QaConfig(BaseModel):
         "butler_reports",
     ]
     max_reactive_buffer: int = _DEFAULT_MAX_REACTIVE_BUFFER
+    log_scanner_max_entries: int = 10_000
+    log_scanner_max_findings: int = 100
     dashboard_base_url: str | None = None
     model_config = ConfigDict(extra="forbid")
 
@@ -272,6 +282,13 @@ class QaConfig(BaseModel):
     @field_validator("max_concurrent_investigations")
     @classmethod
     def _min_one(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Must be at least 1")
+        return v
+
+    @field_validator("log_scanner_max_entries", "log_scanner_max_findings")
+    @classmethod
+    def _scanner_caps_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Must be at least 1")
         return v
@@ -333,6 +350,7 @@ class QaModule(Module):
 
         # Discovery sources — registered at startup
         self._butler_reports_source: ButlerReportsSource | None = None
+        self._log_scanner_source: LogScannerSource | None = None
         self._sources: list[Any] = []
 
         # Patrol state
@@ -465,6 +483,7 @@ class QaModule(Module):
         # Register discovery sources
         self._sources = []
         self._butler_reports_source = None
+        self._log_scanner_source = None
 
         enabled = set(self._config.enabled_sources)
 
@@ -476,7 +495,12 @@ class QaModule(Module):
             logger.info("QaModule: registered butler_reports source")
 
         if "log_scanner" in enabled:
-            self._sources.append(LogScannerSource())
+            self._log_scanner_source = LogScannerSource(
+                repo_root=self._repo_root,
+                max_entries_per_scan=self._config.log_scanner_max_entries,
+                max_findings_per_scan=self._config.log_scanner_max_findings,
+            )
+            self._sources.append(self._log_scanner_source)
             logger.info("QaModule: registered log_scanner source")
 
         if "session_records" in enabled:
@@ -829,6 +853,18 @@ class QaModule(Module):
                 self._butler_reports_source.buffer_size
                 if self._butler_reports_source is not None
                 else 0
+            ),
+            "log_scanner_max_entries": self._config.log_scanner_max_entries,
+            "log_scanner_max_findings": self._config.log_scanner_max_findings,
+            "log_scanner_last_truncated": (
+                self._log_scanner_source.last_truncated
+                if self._log_scanner_source is not None
+                else False
+            ),
+            "log_scanner_last_truncated_reason": (
+                self._log_scanner_source.last_truncated_reason
+                if self._log_scanner_source is not None
+                else None
             ),
         }
 
