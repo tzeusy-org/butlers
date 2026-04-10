@@ -12,6 +12,9 @@ Covers:
 - _notify_missing_gh_token: rate-limits to once per patrol cycle
 - _notify_missing_gh_token: no-op when notify_fn is None
 - _run_patrol_body: calls _notify_missing_gh_token when gh_token is None
+- report_finding: canonicalizes fingerprint (ignores caller-supplied)
+- report_finding: normalizes out-of-range severity values
+- report_finding: stable dedup fingerprint across repeated reports of same error
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
 from butlers.modules.qa import QaConfig, QaModule
 
@@ -242,6 +246,119 @@ class TestReportFinding:
             context=None,
         )
         assert scheduled is should_schedule
+
+    async def test_fingerprint_canonicalization_ignores_caller_value(self):
+        """Caller-supplied fingerprint is replaced by canonical computation."""
+        mod = _make_module()
+        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+
+        bogus_fingerprint = "b" * 64
+        canonical = compute_fingerprint_from_report(
+            error_type="ValueError",
+            error_message="something went wrong",
+            call_site="mod.py:do_work",
+            traceback_str=None,
+            severity_hint="medium",
+        )
+
+        await mod._handle_report_finding(
+            fingerprint=bogus_fingerprint,
+            exception_type="ValueError",
+            call_site="mod.py:do_work",
+            severity=2,
+            event_summary="something went wrong",
+            source_butler="finance",
+            context=None,
+        )
+
+        findings = await mod._butler_reports_source.discover(lookback_minutes=15)
+        assert len(findings) == 1
+        assert findings[0].fingerprint == canonical.fingerprint
+        assert findings[0].fingerprint != bogus_fingerprint
+
+    async def test_stable_dedup_fingerprint_across_repeated_reports(self):
+        """Same error reported twice always produces the same canonical fingerprint."""
+        mod = _make_module()
+        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+
+        common_args = dict(
+            exception_type="asyncpg.PostgresError",
+            call_site="src/butlers/core/db.py:connect",
+            severity=2,
+            event_summary="connection refused",
+            source_butler="finance",
+            context=None,
+        )
+
+        await mod._handle_report_finding(fingerprint="x" * 64, **common_args)
+        await mod._handle_report_finding(fingerprint="y" * 64, **common_args)
+
+        findings = await mod._butler_reports_source.discover(lookback_minutes=15)
+        assert len(findings) == 2
+        # Both findings should share the same canonical fingerprint
+        assert findings[0].fingerprint == findings[1].fingerprint
+
+    @pytest.mark.parametrize(
+        "bad_severity,expected_accepted",
+        [
+            (-1, True),
+            (5, True),
+            (99, True),
+            (-100, True),
+        ],
+    )
+    async def test_out_of_range_severity_clamped(self, bad_severity, expected_accepted, caplog):
+        """Out-of-range severity is clamped; report is still accepted and no crash occurs."""
+        import logging
+
+        mod = _make_module()
+        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+
+        with caplog.at_level(logging.WARNING):
+            result = await mod._handle_report_finding(
+                fingerprint="a" * 64,
+                exception_type="ValueError",
+                call_site="mod.py:func",
+                severity=bad_severity,
+                event_summary="some error",
+                source_butler="general",
+                context=None,
+            )
+
+        assert result["accepted"] is expected_accepted
+        # A warning must be logged for out-of-range values
+        warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("out-of-range" in m.lower() or "clamping" in m.lower() for m in warn_msgs)
+
+        # The persisted severity must be within the valid DB range 0–4
+        findings = await mod._butler_reports_source.discover(lookback_minutes=15)
+        assert len(findings) == 1
+        assert 0 <= findings[0].severity <= 4
+
+    async def test_canonical_severity_drives_mini_patrol_not_caller_severity(self):
+        """When canonical severity is 0 (critical), mini-patrol fires even if caller passed higher severity."""
+        mod = _make_module()
+        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        scheduled_fps = []
+
+        def mock_schedule(fp: str) -> None:
+            scheduled_fps.append(fp)
+
+        mod._schedule_mini_patrol = mock_schedule
+
+        # asyncpg errors are auto-scored as critical (0) regardless of hint
+        await mod._handle_report_finding(
+            fingerprint="z" * 64,
+            exception_type="asyncpg.PostgresError",
+            call_site="src/butlers/core/db.py:connect",
+            severity=2,  # caller says medium
+            event_summary="connection refused",
+            source_butler="general",
+            context=None,
+        )
+
+        # canonical severity for asyncpg is 0 → mini-patrol must have been scheduled
+        assert len(scheduled_fps) == 1
 
 
 class TestForcePatrol:

@@ -32,6 +32,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from butlers.core.healing import reap_stale_worktrees, recover_stale_attempts
+from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.dispatch import (
     QA_GH_TOKEN_KEY,
     QaDispatchConfig,
@@ -192,6 +193,22 @@ _DEFAULT_MAX_REACTIVE_BUFFER = 50
 
 #: Known source names (for config validation).
 _KNOWN_SOURCES = frozenset({"log_scanner", "session_records", "butler_reports"})
+
+#: Maps caller-supplied integer severity (0–4) to the hint string accepted by
+#: ``compute_fingerprint_from_report``.  Used when canonicalizing report_finding
+#: caller payloads so that caller severity acts only as a *hint* to the canonical
+#: auto-scorer, not as the authoritative severity.
+_SEVERITY_INT_TO_HINT: dict[int, str] = {
+    0: "critical",
+    1: "high",
+    2: "medium",
+    3: "low",
+    4: "info",
+}
+
+#: Valid severity range enforced before passing to canonical computation.
+_SEVERITY_MIN = 0
+_SEVERITY_MAX = 4
 
 #: Valid patrol status values that should be recovered on startup.
 _STALE_PATROL_STATUSES = frozenset({"running"})
@@ -591,13 +608,19 @@ class QaModule(Module):
             Parameters
             ----------
             fingerprint:
-                Pre-computed SHA-256 hex fingerprint from the reporting butler.
+                Caller-supplied fingerprint hint.  The handler ignores this
+                value as the authoritative dedup key and recomputes a canonical
+                fingerprint from the structured report fields instead.  Pass a
+                best-effort value; any string is accepted.
             exception_type:
                 Fully qualified exception class name.
             call_site:
                 ``<file>:<function>`` call site string.
             severity:
-                Integer severity score (0=critical, 1=high, 2=medium, 3=low).
+                Caller-supplied severity hint (0=critical, 1=high, 2=medium,
+                3=low, 4=info).  Out-of-range values are clamped.  The handler
+                passes this as a hint to canonical scoring; authoritative rules
+                may override the caller value.
             event_summary:
                 Sanitized error event summary.
             source_butler:
@@ -653,38 +676,98 @@ class QaModule(Module):
     ) -> dict:
         """Handle the report_finding MCP tool call.
 
+        Canonicalizes the caller-supplied fingerprint and severity before
+        enqueueing, so that dedup keys are stable and severity constraints
+        cannot be violated by malformed caller payloads.
+
+        Fingerprint:
+            The caller-supplied ``fingerprint`` is ignored as the authoritative
+            dedup key.  A canonical fingerprint is recomputed from
+            ``exception_type``, ``call_site``, and ``event_summary`` via
+            ``compute_fingerprint_from_report``, ensuring that semantically
+            identical reports from different callers or sessions always produce
+            the same dedup key regardless of what fingerprint the caller sent.
+
+        Severity:
+            The caller-supplied ``severity`` integer is validated against the
+            allowed range (0–4).  Out-of-range values are clamped and logged
+            as a warning.  The clamped value is passed as a *hint* to
+            ``compute_fingerprint_from_report``, which uses it only as a
+            tiebreaker when the auto-scorer returns medium — ensuring that
+            authoritative severity rules (critical DB errors, high runtime
+            adapter errors, etc.) always take precedence.
+
         Enqueues the finding in the butler_reports source buffer and returns
-        immediately.  For severity == 0 (critical), schedules an immediate
-        mini-patrol.
+        immediately.  For canonical severity == 0 (critical), schedules an
+        immediate mini-patrol.
         """
         if self._butler_reports_source is None:
             logger.warning(
                 "QaModule.report_finding: butler_reports source not registered "
                 "(fingerprint=%s butler=%s)",
-                fingerprint[:12],
+                fingerprint[:12] if len(fingerprint) >= 12 else fingerprint,
                 source_butler,
             )
             return {"accepted": False, "reason": "butler_reports_disabled"}
 
+        # ------------------------------------------------------------------
+        # Severity validation: clamp to valid range 0–4
+        # ------------------------------------------------------------------
+        if not isinstance(severity, int) or severity < _SEVERITY_MIN or severity > _SEVERITY_MAX:
+            raw_int = int(severity) if isinstance(severity, int) else _SEVERITY_MAX
+            clamped = max(_SEVERITY_MIN, min(_SEVERITY_MAX, raw_int))
+            logger.warning(
+                "QaModule.report_finding: out-of-range severity=%r from butler=%s; clamping to %d",
+                severity,
+                source_butler,
+                clamped,
+            )
+            severity = clamped
+
+        # ------------------------------------------------------------------
+        # Fingerprint canonicalization: recompute from structured payload fields.
+        # Caller-supplied fingerprint is used only for the pre-source-check log
+        # message above; the canonical fingerprint drives dedup and dispatch.
+        # ------------------------------------------------------------------
+        severity_hint = _SEVERITY_INT_TO_HINT.get(severity)
+        fp_result = compute_fingerprint_from_report(
+            error_type=exception_type,
+            error_message=event_summary,
+            call_site=call_site,
+            traceback_str=None,
+            severity_hint=severity_hint,
+        )
+        canonical_fingerprint = fp_result.fingerprint
+        canonical_severity = fp_result.severity
+
+        if canonical_fingerprint != fingerprint:
+            logger.debug(
+                "QaModule.report_finding: fingerprint mismatch — "
+                "caller=%s canonical=%s butler=%s; using canonical",
+                fingerprint[:12] if len(fingerprint) >= 12 else fingerprint,
+                canonical_fingerprint[:12],
+                source_butler,
+            )
+
         await self._butler_reports_source.accept(
-            fingerprint=fingerprint,
+            fingerprint=canonical_fingerprint,
             exception_type=exception_type,
             call_site=call_site,
-            severity=severity,
+            severity=canonical_severity,
             event_summary=event_summary,
             source_butler=source_butler,
             context=context,
         )
         logger.debug(
             "QaModule.report_finding: accepted fingerprint=%s butler=%s severity=%d",
-            fingerprint[:12],
+            canonical_fingerprint[:12],
             source_butler,
-            severity,
+            canonical_severity,
         )
 
         # Schedule immediate mini-patrol for critical findings (severity == 0)
-        if severity == 0:
-            self._schedule_mini_patrol(fingerprint)
+        if canonical_severity == 0:
+            self._schedule_mini_patrol(canonical_fingerprint)
 
         return {"accepted": True}
 

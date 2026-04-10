@@ -89,13 +89,17 @@ class ButlerReportsSource:
         Parameters
         ----------
         fingerprint:
-            Pre-computed fingerprint from the reporting butler.
+            Canonical fingerprint computed by the QA module handler via
+            ``compute_fingerprint_from_report``.  Always authoritative; the
+            caller-supplied hint has already been discarded before this point.
         exception_type:
             Fully qualified exception class name.
         call_site:
             ``<file>:<function>`` call site.
         severity:
-            Integer severity score (0=critical … 3=low).
+            Canonical integer severity score (0=critical, 1=high, 2=medium,
+            3=low, 4=info).  Already validated and clamped to 0–4 by the
+            QA module handler before this call.
         event_summary:
             Sanitized error event summary (already passed through
             ``anonymize()`` at the module tool layer — the ``context``
