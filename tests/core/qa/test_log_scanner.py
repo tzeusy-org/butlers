@@ -548,3 +548,50 @@ async def test_truncation_telemetry_updated_across_scans(tmp_path):
     await source.discover(lookback_minutes=15)
     assert source.last_truncated is not None
     assert source.last_truncated_reason == "max_total_lines"
+
+
+@pytest.mark.asyncio
+async def test_structured_evidence_populated(tmp_path):
+    """structured_evidence is populated with source, log_file, and level for log_scanner findings."""
+    now = datetime.now(UTC)
+    line = _line(level="error", event="Database connection refused", ts=now)
+    _write(tmp_path / "butlers" / "finance.log", [line])
+
+    source = LogScannerSource(log_root=tmp_path)
+    findings = await source.discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    ev = findings[0].structured_evidence
+    assert ev is not None
+    assert ev["source"] == "log_scanner"
+    assert ev["log_file"] == "finance"
+    assert ev["level"] == "error"
+    # trigger_source absent from this log line — key should be missing or None
+    assert ev.get("trigger_source") is None
+
+
+@pytest.mark.asyncio
+async def test_structured_evidence_with_trigger_source(tmp_path):
+    """trigger_source from raw log JSON is captured in structured_evidence."""
+    import json as _json
+
+    now = datetime.now(UTC)
+    log_data = {
+        "level": "error",
+        "event": "Task failed unexpectedly",
+        "timestamp": now.isoformat(),
+        "butler_name": "travel",
+        "logger": "butlers.travel.jobs",
+        "exception": "RuntimeError",
+        "trigger_source": "schedule",
+    }
+    log_line = _json.dumps(log_data)
+    _write(tmp_path / "butlers" / "travel.log", [log_line])
+
+    source = LogScannerSource(log_root=tmp_path)
+    findings = await source.discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    ev = findings[0].structured_evidence
+    assert ev is not None
+    assert ev.get("trigger_source") == "schedule"

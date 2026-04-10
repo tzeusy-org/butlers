@@ -16,6 +16,7 @@ openspec/changes/qa-staffer/specs/qa-investigation-dispatch/spec.md
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from butlers.core.qa.models import QaFinding
 
@@ -39,7 +40,7 @@ been spawned to investigate the root cause and propose a fix.
 **Discovery source:** {source_type}
 **Occurrences:** {occurrence_count} (first seen: {first_seen}, last seen: {last_seen})
 
-{context_section}{dashboard_section}\
+{evidence_section}{context_section}{dashboard_section}\
 ## Your Task
 
 1. Read the relevant source code (your CWD is an isolated worktree branched \
@@ -82,6 +83,17 @@ not by a live user session — the error context above is all the information \
 available.
 """
 
+_EVIDENCE_SECTION_TEMPLATE = """\
+## Structured Evidence
+
+The QA patrol recorded the following diagnostic identifiers from the discovery \
+source.  These do not contain raw log content or user data.  Use them to \
+correlate with session logs and metrics:
+
+{evidence_lines}
+
+"""
+
 _CONTEXT_SECTION_TEMPLATE = """\
 ## Diagnostic Context
 
@@ -98,6 +110,36 @@ _DASHBOARD_SECTION_TEMPLATE = """\
 View investigation details at: {dashboard_url}
 
 """
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _format_evidence_lines(evidence: dict[str, Any]) -> str:
+    """Format a structured evidence dict into human-readable prompt lines.
+
+    Renders each key-value pair as a bullet point.  Lists (e.g. ``session_ids``)
+    are rendered as a comma-separated value.  ``None`` values are omitted.
+
+    This function does NOT apply ``_escape()`` — evidence dict values come from
+    trusted internal sources (session IDs, log file stems, log levels) that do
+    not contain ``{`` or ``}`` characters, so escaping is unnecessary and would
+    introduce double-braces in the rendered prompt.
+    """
+    lines = []
+    for key, value in evidence.items():
+        if value is None:
+            continue
+        if isinstance(value, list):
+            if not value:
+                continue
+            rendered = ", ".join(str(v) for v in value)
+        else:
+            rendered = str(value)
+        lines.append(f"- **{key}**: {rendered}")
+    return "\n".join(lines)
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -142,6 +184,15 @@ def build_investigation_prompt(
         """
         return s.replace("{", "{{").replace("}", "}}")
 
+    # Build optional structured evidence section
+    evidence_section = ""
+    if finding.structured_evidence:
+        evidence_lines = _format_evidence_lines(finding.structured_evidence)
+        if evidence_lines:
+            evidence_section = _EVIDENCE_SECTION_TEMPLATE.format(
+                evidence_lines=evidence_lines,
+            )
+
     # Build optional context section (diagnostic reasoning from butler_reports source)
     context_section = ""
     if finding.context and finding.context.strip():
@@ -164,6 +215,7 @@ def build_investigation_prompt(
         occurrence_count=finding.occurrence_count,
         first_seen=finding.first_seen.isoformat(),
         last_seen=finding.last_seen.isoformat(),
+        evidence_section=evidence_section,
         context_section=context_section,
         dashboard_section=dashboard_section,
     )

@@ -233,3 +233,71 @@ def test_review_followup_prompt_no_pr_instruction():
     prompt = _make_followup_prompt()
     lower = prompt.lower()
     assert "not push" in lower or "do not" in lower or "don't" in lower
+
+
+# ---------------------------------------------------------------------------
+# Structured evidence section tests
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_evidence_section_present_when_structured_evidence_set():
+    """## Structured Evidence section appears when finding has structured_evidence."""
+    finding = _make_finding(
+        structured_evidence={
+            "source": "session_records",
+            "status": "error",
+            "session_ids": ["abc-123", "def-456"],
+        }
+    )
+    prompt = build_investigation_prompt(finding, uuid.uuid4())
+    assert "Structured Evidence" in prompt
+    assert "session_ids" in prompt
+    assert "abc-123" in prompt
+    assert "session_records" in prompt
+
+
+def test_prompt_evidence_section_absent_when_no_structured_evidence():
+    """## Structured Evidence section is absent when structured_evidence is None."""
+    finding = _make_finding(structured_evidence=None)
+    prompt = build_investigation_prompt(finding, uuid.uuid4())
+    assert "Structured Evidence" not in prompt
+
+
+def test_prompt_evidence_section_absent_when_empty_structured_evidence():
+    """## Structured Evidence section is absent when structured_evidence is an empty dict."""
+    finding = _make_finding(structured_evidence={})
+    prompt = build_investigation_prompt(finding, uuid.uuid4())
+    assert "Structured Evidence" not in prompt
+
+
+def test_prompt_evidence_section_omits_none_values():
+    """None values in structured_evidence dict are not rendered in the prompt."""
+    finding = _make_finding(
+        structured_evidence={
+            "source": "log_scanner",
+            "log_file": "finance.log",
+            "level": "error",
+            "trigger_source": None,
+        }
+    )
+    prompt = build_investigation_prompt(finding, uuid.uuid4())
+    assert "Structured Evidence" in prompt
+    assert "log_scanner" in prompt
+    assert "finance.log" in prompt
+    # None value for trigger_source should not appear as "None" in the prompt
+    assert "trigger_source" not in prompt
+
+
+def test_prompt_evidence_section_renders_list_values():
+    """List values in structured_evidence are rendered as comma-separated strings."""
+    session_ids = ["id-1", "id-2", "id-3"]
+    finding = _make_finding(
+        structured_evidence={
+            "source": "session_records",
+            "session_ids": session_ids,
+        }
+    )
+    prompt = build_investigation_prompt(finding, uuid.uuid4())
+    assert "id-1" in prompt
+    assert "id-2" in prompt
+    assert "id-3" in prompt
