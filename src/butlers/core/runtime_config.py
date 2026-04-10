@@ -177,4 +177,4 @@ class RuntimeConfigAccessor:
 
     def invalidate_cache(self) -> None:
         """Force the next ``get()`` call to query the database."""
-        self._cache_time = 0.0
+        self._cache_time = float("-inf")

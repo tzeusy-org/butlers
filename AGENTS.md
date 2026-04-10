@@ -161,6 +161,12 @@ git push                # Push to remote
 - `[butler.runtime].args` now accepts an ordered array of non-empty strings and is stored on `RuntimeConfig.args` as a tuple.
 - `Spawner` forwards non-empty runtime args into adapter invocation as `runtime_args`, and `CodexAdapter` appends them to `codex exec` before the `--` prompt delimiter (supports flags like `--config model_reasoning_effort="high"`).
 
+### Runtime config cache invalidation contract
+- `RuntimeConfigAccessor.invalidate_cache()` must set `_cache_time` to an always-expired value (for example `float("-inf")`), not `0.0`; `0.0` only invalidates once process uptime exceeds the TTL and can leak stale config on fresh processes/CI workers.
+
+### Finance transaction dedup provenance contract
+- In `roster/finance/tools/transactions.py`, composite same-day dedup should only run when there is additional provenance (`account_id` or `source_message_id`); source-less manual rows must remain insertable as distinct transactions to avoid false-positive collapse.
+
 ### Recovery workflow accounting contract
 - Recovery/session timeout semantics are split: `session_timeout_s` bounds one spawned runtime session, while higher-level healing/QA workflows own any broader investigation deadline.
 - Pre-launch gate rejects (cooldown, concurrency cap, circuit breaker, no-model) should be tracked as dispatch decisions, not written as failed `healing_attempts`, or breaker state and operator history become polluted.
@@ -337,6 +343,9 @@ make test-qg
 
 ### Dashboard health endpoint alias contract
 - `src/butlers/api/app.py` must expose both `GET /api/health` and `GET /health` with the same `{"status":"ok"}` payload so direct infra probes and `/api`-prefixed clients both work.
+
+### Switchboard message_inbox test partition contract
+- Switchboard integration fixtures that create partitioned `message_inbox` tables must provision partitions dynamically for `now()` (and typically the next month) via a helper, not hard-coded calendar months; otherwise conformance tests start failing once wall-clock time moves past the fixed partition range.
 
 ### Health meals API facts contract
 - `GET /api/health/meals` in `roster/health/api/router.py` must query `facts` with `predicate = ANY(meal predicates)`, `scope = 'health'`, and `validity = 'active'`, applying `since/until` filters to `valid_at`.
@@ -1029,3 +1038,5 @@ For more details, see README.md and docs/QUICKSTART.md.
 - Finance transaction ingestion is split: `POST /api/finance/transactions/bulk` writes facts directly via `roster/finance/tools/facts.py::bulk_record_transactions`, while the finance module/MCP `bulk_record_transactions` routes through `roster/finance/tools/transactions.py::record_transaction` and then mirrors to facts. Their dedupe semantics differ; the direct facts bulk path still dedupes `source_message_id` per predicate and hashes signed amounts, so opposite-sign imports of the same event can persist as both `transaction_debit` and `transaction_credit`.
 - Finance transaction retries can leave `finance.transactions` soft-deleted duplicates while their mirrored `finance.facts` rows remain `validity='active'`; cleanup/reconciliation should retract active transaction facts that exactly match a deleted ledger row on `merchant`, `amount`, `currency`, `posted_at`, and `direction`.
 - `GET /api/memory/entities/{entity_id}` now accepts `facts_offset` / `facts_limit`; the response includes `recent_facts_total`, `recent_facts_offset`, `recent_facts_limit`, `recent_facts_has_more`, and each fact row may carry `session_id` resolved via its `source_episode_id`.
+- `frontend/src/components/settings/QASettingsCard.tsx` must avoid mirroring `useQaRepoConfig()` data into local state via `useEffect`; the current frontend lint config treats `react-hooks/set-state-in-effect` as a hard error, so the repo URL field should stay query-backed until a local draft exists.
+- In the current frontend toolchain, Recharts `Tooltip` formatter callbacks should accept `value: string | number | undefined`; narrower signatures can fail `npm run build` under TypeScript even when the plotted data is numeric.

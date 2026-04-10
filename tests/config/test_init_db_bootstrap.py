@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, text
 
-
 docker_available = shutil.which("docker") is not None
 psql_available = shutil.which("psql") is not None
 pytestmark = [
@@ -113,17 +112,21 @@ def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_c
     engine = create_engine(butlers_url)
     try:
         with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT "
-                    "  has_schema_privilege('connector_writer', 'switchboard', 'USAGE') AS schema_usage,"
-                    "  has_table_privilege("
-                    "    'connector_writer',"
-                    "    'switchboard.connector_registry',"
-                    "    'SELECT,INSERT,UPDATE,DELETE'"
-                    "  ) AS registry_dml"
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT "
+                        "  has_schema_privilege('connector_writer', 'switchboard', 'USAGE') AS schema_usage,"
+                        "  has_table_privilege("
+                        "    'connector_writer',"
+                        "    'switchboard.connector_registry',"
+                        "    'SELECT,INSERT,UPDATE,DELETE'"
+                        "  ) AS registry_dml"
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
     finally:
         engine.dispose()
 
@@ -171,19 +174,23 @@ def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_contain
     engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT "
-                    "  am.inherit_option,"
-                    "  am.set_option "
-                    "FROM pg_auth_members am "
-                    "JOIN pg_roles role_r ON role_r.oid = am.roleid "
-                    "JOIN pg_roles member_r ON member_r.oid = am.member "
-                    "WHERE role_r.rolname = 'butler_qa_rw' "
-                    "  AND member_r.rolname = 'butlers' "
-                    "  AND am.set_option IS TRUE"
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT "
+                        "  am.inherit_option,"
+                        "  am.set_option "
+                        "FROM pg_auth_members am "
+                        "JOIN pg_roles role_r ON role_r.oid = am.roleid "
+                        "JOIN pg_roles member_r ON member_r.oid = am.member "
+                        "WHERE role_r.rolname = 'butler_qa_rw' "
+                        "  AND member_r.rolname = 'butlers' "
+                        "  AND am.set_option IS TRUE"
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
             conn.execute(text('SET ROLE "butler_qa_rw"'))
             current_user = conn.execute(text("SELECT current_user")).scalar_one()
             conn.execute(text("RESET ROLE"))

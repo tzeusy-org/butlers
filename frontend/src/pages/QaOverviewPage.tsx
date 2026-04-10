@@ -559,7 +559,7 @@ function SuccessRateTrendChart({ trends }: { trends: QaTrends }) {
           axisLine={false}
           width={40}
         />
-        <Tooltip formatter={(v: number | string) => [`${v}%`, "Success rate"]} />
+        <Tooltip formatter={(value: number | string | undefined) => [`${value ?? 0}%`, "Success rate"]} />
         <Area
           type="monotone"
           dataKey="success_rate"
