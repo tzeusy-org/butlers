@@ -200,7 +200,9 @@ class TestFullPatrolCycle:
         pool = _make_pool()
         created_branches: list[str] = []
 
-        async def capture_worktree(repo_root, butler_name, fingerprint, prefix="healing"):
+        async def capture_worktree(
+            repo_root, butler_name, fingerprint, prefix="healing", base_ref=None
+        ):
             branch = f"{prefix}/{butler_name}/{fingerprint[:12]}"
             created_branches.append(branch)
             return Path("/tmp/qa-worktree"), branch
