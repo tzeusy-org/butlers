@@ -25,6 +25,19 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
+def _normalize_session_id(session_id: str | uuid.UUID | None) -> uuid.UUID | None:
+    """Return a UUID-shaped session id or ``None`` for unparsable inputs."""
+    if session_id is None:
+        return None
+    if isinstance(session_id, uuid.UUID):
+        return session_id
+    try:
+        return uuid.UUID(session_id)
+    except (ValueError, TypeError, AttributeError):
+        logger.warning("email guard: ignoring non-UUID session_id %r", session_id)
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class EmailGuardDecision:
     """Result of an email recipient guard check."""
@@ -45,7 +58,7 @@ async def check_email_recipient(
     park_tool_name: str,
     park_tool_args: dict[str, Any],
     park_summary: str,
-    session_id: str | None = None,
+    session_id: str | uuid.UUID | None = None,
     expiry_hours: int = 72,
 ) -> EmailGuardDecision:
     """Check whether an outbound email to *email_target* is permitted.
@@ -125,6 +138,7 @@ async def check_email_recipient(
     action_id = uuid.uuid4()
     now = datetime.now(UTC)
     expires_at = now + timedelta(hours=expiry_hours)
+    normalized_session_id = _normalize_session_id(session_id)
 
     try:
         await pool.execute(
@@ -136,7 +150,7 @@ async def check_email_recipient(
             park_tool_name,
             json.dumps(park_tool_args),
             park_summary,
-            session_id,
+            normalized_session_id,
             ActionStatus.PENDING.value,
             now,
             expires_at,

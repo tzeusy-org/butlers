@@ -7,7 +7,7 @@
  * 3. Allowed Repositories — whitelist for PR creation
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import {
   Eye,
@@ -35,6 +35,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { resolveQaRepoUrlInputValue } from "@/components/settings/qa-settings-state";
 import {
   useAddQaAllowedRepo,
   useDeleteQaAllowedRepo,
@@ -64,16 +65,13 @@ export function QASettingsCard() {
   const updateRepo = useUpdateQaRepoConfig();
   const syncRepo = useSyncQaRepo();
 
-  const [repoUrl, setRepoUrl] = useState("");
+  const [repoUrl, setRepoUrl] = useState<string | null>(null);
   const [repoUrlDirty, setRepoUrlDirty] = useState(false);
-  const [repoInitialized, setRepoInitialized] = useState(false);
-
-  useEffect(() => {
-    if (repoConfig && !repoInitialized) {
-      setRepoUrl(repoConfig.repo_url ?? "");
-      setRepoInitialized(true);
-    }
-  }, [repoConfig, repoInitialized]);
+  const repoUrlValue = resolveQaRepoUrlInputValue({
+    draft: repoUrl,
+    isDirty: repoUrlDirty,
+    repoConfig,
+  });
 
   // --- GH Token ---
   const queryClient = useQueryClient();
@@ -114,8 +112,10 @@ export function QASettingsCard() {
 
   async function handleSaveRepoUrl() {
     try {
-      await updateRepo.mutateAsync({ repo_url: repoUrl.trim() });
+      const nextRepoUrl = repoUrlValue.trim();
+      await updateRepo.mutateAsync({ repo_url: nextRepoUrl });
       toast.success("Repository URL updated");
+      setRepoUrl(nextRepoUrl);
       setRepoUrlDirty(false);
     } catch (err) {
       toast.error(`Failed to save: ${err instanceof Error ? err.message : "Unknown error"}`);
@@ -205,7 +205,7 @@ export function QASettingsCard() {
             <Label htmlFor="qa-repo-url">Repository URL</Label>
             <Input
               id="qa-repo-url"
-              value={repoUrl}
+              value={repoUrlValue}
               onChange={(e) => {
                 setRepoUrl(e.target.value);
                 setRepoUrlDirty(true);

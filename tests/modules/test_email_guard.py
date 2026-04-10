@@ -90,6 +90,7 @@ class TestCheckEmailRecipient:
 
     async def test_non_owner_without_rule_parks(self) -> None:
         pool = AsyncMock()
+        session_id = uuid.uuid4()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
@@ -101,7 +102,7 @@ class TestCheckEmailRecipient:
             ),
         ):
             decision = await check_email_recipient(
-                pool, session_id="test-session-123", **_COMMON_KWARGS
+                pool, session_id=str(session_id), **_COMMON_KWARGS
             )
 
         assert decision.allowed is False
@@ -112,7 +113,27 @@ class TestCheckEmailRecipient:
         pool.execute.assert_awaited_once()
         insert_call = pool.execute.call_args
         assert "pending_actions" in insert_call.args[0]
-        assert insert_call.args[5] == "test-session-123"  # session_id
+        assert insert_call.args[5] == session_id
+
+    async def test_invalid_session_id_is_not_written_to_pending_action(self) -> None:
+        pool = AsyncMock()
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            decision = await check_email_recipient(pool, session_id="not-a-uuid", **_COMMON_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
+        insert_call = pool.execute.call_args
+        assert "pending_actions" in insert_call.args[0]
+        assert insert_call.args[5] is None
 
     async def test_unknown_contact_without_rule_parks(self) -> None:
         pool = AsyncMock()

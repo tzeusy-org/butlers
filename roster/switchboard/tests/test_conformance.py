@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
@@ -64,15 +65,35 @@ async def switchboard_pool(provisioned_postgres_pool):
         # Create partitions covering test date range
         await pool.execute(
             """
-            CREATE TABLE message_inbox_p202602 PARTITION OF message_inbox
-            FOR VALUES FROM ('2026-02-01') TO ('2026-03-01')
+            CREATE OR REPLACE FUNCTION switchboard_message_inbox_ensure_partition(
+                reference_ts TIMESTAMPTZ DEFAULT now()
+            ) RETURNS TEXT
+            LANGUAGE plpgsql
+            AS $$
+            DECLARE
+                month_start TIMESTAMPTZ;
+                month_end TIMESTAMPTZ;
+                partition_name TEXT;
+            BEGIN
+                month_start := date_trunc('month', reference_ts);
+                month_end := month_start + INTERVAL '1 month';
+                partition_name := format('message_inbox_p%s', to_char(month_start, 'YYYYMM'));
+                EXECUTE format(
+                    'CREATE TABLE IF NOT EXISTS %I PARTITION OF message_inbox '
+                    'FOR VALUES FROM (%L) TO (%L)',
+                    partition_name, month_start, month_end
+                );
+                RETURN partition_name;
+            END;
+            $$
             """
         )
+
+        reference_now = datetime.now(UTC)
+        await pool.execute("SELECT switchboard_message_inbox_ensure_partition($1)", reference_now)
         await pool.execute(
-            """
-            CREATE TABLE message_inbox_p202603 PARTITION OF message_inbox
-            FOR VALUES FROM ('2026-03-01') TO ('2026-04-01')
-            """
+            "SELECT switchboard_message_inbox_ensure_partition($1::timestamptz + INTERVAL '1 month')",
+            reference_now,
         )
 
         await pool.execute(

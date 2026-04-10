@@ -167,10 +167,13 @@ async def test_spo_mirror_called_with_correct_predicate_for_debit():
 
     inserted_row = _make_row(merchant="Starbucks", direction="debit")
     pool = AsyncMock()
-    # fetchrow calls in order:
-    # 1. Priority-2 dedup (source_message_id) → None
-    # 2. INSERT RETURNING → row
-    pool.fetchrow = AsyncMock(side_effect=[None, _make_asyncpg_record(inserted_row)])
+
+    async def _fetchrow(query, *args):
+        if "INSERT INTO transactions" in query:
+            return _make_asyncpg_record(inserted_row)
+        return None
+
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.fetchval = AsyncMock(return_value=0)
 
     mirror_mock = AsyncMock()

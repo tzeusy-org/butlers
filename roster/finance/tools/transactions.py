@@ -193,12 +193,14 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
         produce two distinct transactions in the ledger.
         Requires ``source_message_id`` to be non-None in *txn*.
 
-    **Priority 3 — composite fallback** (cross-source / CSV / manual entry)
+    **Priority 3 — composite fallback** (cross-source / account-scoped entry)
         Always attempted as a last resort when Priorities 1–2 found no match.
-        Matches on (``posted_at``, ``amount``, ``merchant``) plus
-        ``account_id`` when available.  Catches cross-source duplicates where
-        the same real-world transaction arrives from different channels with
-        different ``source_message_id`` values.
+        Matches on transaction day, ``amount``, and ``merchant``; when
+        ``account_id`` is available it is included to keep the match scoped to
+        one account. This catches cross-source duplicates where the same
+        real-world transaction arrives from different channels with different
+        ``source_message_id`` values without collapsing repeated manual entries
+        that have no provenance key or account linkage.
 
     Parameters
     ----------
@@ -271,16 +273,18 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
             return str(row["id"])
 
     # ------------------------------------------------------------------
-    # Priority 3: composite fallback (posted_at + amount + merchant)
-    # Only runs when BOTH external_id AND source_message_id are absent —
-    # i.e. transactions with no provenance key at all (CSV imports, manual
-    # entries).  When source_message_id was present, P2's verdict is final.
+    # Priority 3: composite fallback (same-day posted_at + amount + merchant)
+    # Runs when P1/P2 did not find a match and we still have enough provenance
+    # to avoid collapsing user-entered duplicates. That means either:
+    # - account_id is present (CSV/bank-import style matching), or
+    # - source_message_id is present (cross-source duplicates with different
+    #   message ids but the same real-world transaction).
     # ------------------------------------------------------------------
     if (
-        source_message_id is None
-        and posted_at is not None
+        posted_at is not None
         and stored_amount is not None
         and merchant is not None
+        and (account_id is not None or source_message_id is not None)
     ):
         row = None
         if account_id is not None:
@@ -288,7 +292,8 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
                 """
                 SELECT id FROM transactions
                 WHERE account_id = $1::uuid
-                  AND posted_at = $2
+                  AND posted_at >= date_trunc('day', $2::timestamptz)
+                  AND posted_at < date_trunc('day', $2::timestamptz) + INTERVAL '1 day'
                   AND amount = $3
                   AND merchant = $4
                 """,
@@ -297,7 +302,20 @@ async def _deduplicate(pool: asyncpg.Pool, txn: dict[str, Any]) -> str | None:
                 stored_amount,
                 merchant,
             )
-        # Without account_id, composite matching is too loose — skip P3.
+        elif source_message_id is not None:
+            row = await pool.fetchrow(
+                """
+                SELECT id FROM transactions
+                WHERE account_id IS NULL
+                  AND posted_at >= date_trunc('day', $1::timestamptz)
+                  AND posted_at < date_trunc('day', $1::timestamptz) + INTERVAL '1 day'
+                  AND amount = $2
+                  AND merchant = $3
+                """,
+                posted_at,
+                stored_amount,
+                merchant,
+            )
         if row is not None:
             return str(row["id"])
 
