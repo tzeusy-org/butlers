@@ -14,8 +14,10 @@ from urllib.parse import parse_qs
 from starlette.requests import ClientDisconnect
 
 from butlers.core.tool_call_capture import (
+    reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
     reset_current_runtime_trigger_source,
+    set_current_runtime_butler_name,
     set_current_runtime_session_id,
     set_current_runtime_trigger_source,
 )
@@ -87,8 +89,9 @@ class _McpRuntimeSessionGuard:
 
     _MAX_SESSION_MAP_SIZE = 4096
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, butler_name: str) -> None:
         self._app = app
+        self._butler_name = butler_name
         self._mcp_session_to_runtime_session: dict[str, str] = {}
 
     def __getattr__(self, name: str) -> Any:
@@ -125,8 +128,10 @@ class _McpRuntimeSessionGuard:
         runtime_session_id, trigger_source = self._resolve_session_params(scope)
         session_token = set_current_runtime_session_id(runtime_session_id)
         trigger_token = set_current_runtime_trigger_source(trigger_source)
+        butler_token = set_current_runtime_butler_name(self._butler_name)
         try:
             await self._app(scope, receive, send)
         finally:
+            reset_current_runtime_butler_name(butler_token)
             reset_current_runtime_trigger_source(trigger_token)
             reset_current_runtime_session_id(session_token)

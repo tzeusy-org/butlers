@@ -7,8 +7,11 @@ from butlers.core.tool_call_capture import (
     clear_runtime_session_routing_context,
     consume_runtime_session_tool_calls,
     ensure_runtime_session_capture,
+    get_current_runtime_butler_name,
     get_current_runtime_session_routing_context,
+    reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
+    set_current_runtime_butler_name,
     set_current_runtime_session_id,
     set_runtime_session_routing_context,
 )
@@ -84,3 +87,13 @@ def test_runtime_session_routing_context_roundtrip():
     assert isinstance(ctx, dict)
     assert ctx["source_metadata"]["channel"] == "telegram_bot"
     assert ctx["request_context"]["source_sender_identity"] == "user-123"
+
+
+def test_current_runtime_butler_name_roundtrip():
+    token = set_current_runtime_butler_name("health")
+    try:
+        assert get_current_runtime_butler_name() == "health"
+    finally:
+        reset_current_runtime_butler_name(token)
+
+    assert get_current_runtime_butler_name() is None

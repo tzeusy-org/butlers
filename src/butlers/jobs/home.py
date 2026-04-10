@@ -460,6 +460,7 @@ async def _store_device_fact(
             importance=importance,
             permanence="volatile",
             tags=tags,
+            source_butler="home",
         )
     except Exception:
         logger.exception("device_health_check: failed to store memory fact for subject=%r", subject)
@@ -1487,6 +1488,7 @@ async def run_energy_digest(
                 importance=5.0,
                 permanence="standard",
                 tags=["energy", "baseline", "weekly"],
+                source_butler="home",
             )
             baseline_updated = True
             logger.info(
@@ -1507,6 +1509,7 @@ async def run_energy_digest(
                     importance=4.0,
                     permanence="standard",
                     tags=["energy", "baseline", "weekly", "per-device"],
+                    source_butler="home",
                 )
             except Exception:
                 logger.warning(
@@ -1532,6 +1535,7 @@ async def run_energy_digest(
                     importance=7.0 if anomaly["severity"] == "high" else 6.0,
                     permanence="volatile",
                     tags=["energy", "spike", anomaly["severity"]],
+                    source_butler="home",
                 )
             except Exception:
                 logger.warning(
@@ -1884,6 +1888,7 @@ async def run_environment_report(
                         importance=importance,
                         permanence="volatile",
                         tags=["comfort", "deviation", sensor_type, area_name],
+                        source_butler="home",
                     )
                     logger.info(
                         "run_environment_report: stored comfort_deviation fact "

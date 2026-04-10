@@ -232,13 +232,15 @@ async def test_run_energy_digest_full_run_with_anomalies():
             new_callable=AsyncMock,
             return_value={"anomaly_pct": 20.0, "high_severity_pct": 100.0},
         ),
-        patch("butlers.jobs.home.store_fact", new_callable=AsyncMock),
+        patch("butlers.jobs.home.store_fact", new_callable=AsyncMock) as mock_store,
     ):
         result = await run_energy_digest(pool, None)
 
     assert "error" not in result
     assert result["total_kwh"] == pytest.approx(320.0, abs=0.1)
     assert result["devices_ranked"] == 2 and result["anomalies_found"] == 2
+    assert mock_store.await_count == 5
+    assert all(call.kwargs["source_butler"] == "home" for call in mock_store.await_args_list)
 
 
 def test_all_home_deterministic_jobs_registered():

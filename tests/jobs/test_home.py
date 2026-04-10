@@ -406,6 +406,23 @@ async def test_run_device_health_check_battery_and_non_battery():
     assert result_nb["issues_found"] == 0
 
 
+async def test_store_device_fact_sets_home_source_butler():
+    """Device health facts are tagged with the home butler provenance."""
+    pool = MagicMock()
+    with patch("butlers.jobs.home.store_fact", new_callable=AsyncMock) as mock_store:
+        from butlers.jobs.home import _store_device_fact
+
+        await _store_device_fact(
+            pool,
+            subject="sensor-garage-battery",
+            content="Garage Battery: battery at 8% — critical severity",
+            importance=8.0,
+            tags=["maintenance", "battery"],
+        )
+
+    assert mock_store.await_args.kwargs["source_butler"] == "home"
+
+
 # ---------------------------------------------------------------------------
 # Daemon registry
 # ---------------------------------------------------------------------------

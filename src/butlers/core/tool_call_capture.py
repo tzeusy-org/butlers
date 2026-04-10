@@ -19,6 +19,9 @@ _runtime_session_id_var: contextvars.ContextVar[str | None] = contextvars.Contex
 _runtime_trigger_source_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_runtime_trigger_source_var", default=None
 )
+_runtime_butler_name_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_runtime_butler_name_var", default=None
+)
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
@@ -54,6 +57,23 @@ def reset_current_runtime_trigger_source(token: contextvars.Token[str | None]) -
 def get_current_runtime_trigger_source() -> str | None:
     """Return trigger_source bound to the current MCP request context."""
     return _runtime_trigger_source_var.get()
+
+
+def set_current_runtime_butler_name(
+    butler_name: str | None,
+) -> contextvars.Token[str | None]:
+    """Set current executing butler name for the request/task context."""
+    return _runtime_butler_name_var.set(butler_name)
+
+
+def reset_current_runtime_butler_name(token: contextvars.Token[str | None]) -> None:
+    """Restore current executing butler name for the request/task context."""
+    _runtime_butler_name_var.reset(token)
+
+
+def get_current_runtime_butler_name() -> str | None:
+    """Return current executing butler name bound to the request/task context."""
+    return _runtime_butler_name_var.get()
 
 
 def ensure_runtime_session_capture(session_id: str) -> None:

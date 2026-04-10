@@ -21,6 +21,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.tool_call_capture import (
+    get_current_runtime_butler_name,
+    get_current_runtime_session_id,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -48,6 +53,7 @@ tsvector_sql = _search_mod.tsvector_sql
 
 # Default episode time-to-live.
 _DEFAULT_EPISODE_TTL_DAYS = 7
+_RUNTIME_PROVENANCE_PLACEHOLDER = "[runtime session provenance placeholder]"
 
 # ---------------------------------------------------------------------------
 # Permanence -> decay-rate mapping (from butler.toml)
@@ -420,28 +426,108 @@ async def store_episode(
     Returns:
         The UUID of the newly created episode row.
     """
-    episode_id = uuid.uuid4()
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
     ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
     expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
+    meta_json = json.dumps(metadata or {})
+    async with pool.acquire() as conn:
+        existing_episode_id = None
+        if session_id is not None:
+            existing_episode_id = await _find_existing_session_episode_id(
+                conn,
+                butler=butler,
+                session_id=session_id,
+                tenant_id=tenant_id,
+            )
 
+        if existing_episode_id is not None:
+            await _update_episode_record(
+                conn,
+                episode_id=existing_episode_id,
+                content=content,
+                embedding=embedding,
+                search_text=search_text,
+                importance=importance,
+                expires_at=expires_at,
+                meta_json=meta_json,
+                request_id=request_id,
+                retention_class=retention_class,
+                sensitivity=sensitivity,
+            )
+            return existing_episode_id
+
+        episode_id = uuid.uuid4()
+        await _insert_episode_record(
+            conn,
+            episode_id=episode_id,
+            butler=butler,
+            session_id=session_id,
+            content=content,
+            embedding=embedding,
+            search_text=search_text,
+            importance=importance,
+            expires_at=expires_at,
+            meta_json=meta_json,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            retention_class=retention_class,
+            sensitivity=sensitivity,
+        )
+        return episode_id
+
+
+async def _find_existing_session_episode_id(
+    conn,
+    *,
+    butler: str,
+    session_id: uuid.UUID,
+    tenant_id: str,
+) -> uuid.UUID | None:
+    """Return the canonical episode row for a runtime session when one exists."""
+    row = await conn.fetchrow(
+        "SELECT id FROM episodes"
+        " WHERE butler = $1 AND session_id = $2 AND tenant_id = $3"
+        " ORDER BY created_at DESC LIMIT 1",
+        butler,
+        session_id,
+        tenant_id,
+    )
+    if row is None:
+        return None
+    return row["id"]
+
+
+async def _insert_episode_record(
+    conn,
+    *,
+    episode_id: uuid.UUID,
+    butler: str,
+    session_id: uuid.UUID | None,
+    content: str,
+    embedding: list[float],
+    search_text: str,
+    importance: float,
+    expires_at: datetime,
+    meta_json: str,
+    tenant_id: str,
+    request_id: str | None,
+    retention_class: str,
+    sensitivity: str,
+) -> None:
     sql = f"""
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
                               importance, expires_at, metadata, tenant_id, request_id,
                               retention_class, sensitivity)
         VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13)
     """
-
-    meta_json = json.dumps(metadata or {})
-
-    await pool.execute(
+    await conn.execute(
         sql,
         episode_id,
         butler,
         session_id,
         content,
-        str(embedding),  # pgvector accepts string format '[1.0, 2.0, ...]'
+        str(embedding),
         search_text,
         importance,
         expires_at,
@@ -452,7 +538,129 @@ async def store_episode(
         sensitivity,
     )
 
-    return episode_id
+
+async def _update_episode_record(
+    conn,
+    *,
+    episode_id: uuid.UUID,
+    content: str,
+    embedding: list[float],
+    search_text: str,
+    importance: float,
+    expires_at: datetime,
+    meta_json: str,
+    request_id: str | None,
+    retention_class: str,
+    sensitivity: str,
+) -> None:
+    sql = f"""
+        UPDATE episodes
+        SET content = $2,
+            embedding = $3,
+            search_vector = {tsvector_sql("$4")},
+            importance = $5,
+            expires_at = $6,
+            metadata = $7,
+            request_id = COALESCE($8, request_id),
+            retention_class = $9,
+            sensitivity = $10
+        WHERE id = $1
+    """
+    await conn.execute(
+        sql,
+        episode_id,
+        content,
+        str(embedding),
+        search_text,
+        importance,
+        expires_at,
+        meta_json,
+        request_id,
+        retention_class,
+        sensitivity,
+    )
+
+
+async def _resolve_write_provenance_with_conn(
+    conn,
+    embedding_engine: EmbeddingEngine,
+    *,
+    source_butler: str | None,
+    source_episode_id: uuid.UUID | None,
+    tenant_id: str,
+    request_id: str | None,
+    now: datetime | None = None,
+) -> tuple[str | None, uuid.UUID | None]:
+    """Infer butler/session provenance for runtime-backed writes."""
+    effective_source_butler = source_butler or get_current_runtime_butler_name()
+    effective_source_episode_id = source_episode_id
+
+    if effective_source_episode_id is not None:
+        return effective_source_butler, effective_source_episode_id
+
+    runtime_session_id = get_current_runtime_session_id()
+    if not effective_source_butler or not runtime_session_id:
+        return effective_source_butler, None
+
+    try:
+        session_uuid = uuid.UUID(runtime_session_id)
+    except (TypeError, ValueError):
+        return effective_source_butler, None
+
+    existing_episode_id = await _find_existing_session_episode_id(
+        conn,
+        butler=effective_source_butler,
+        session_id=session_uuid,
+        tenant_id=tenant_id,
+    )
+    if existing_episode_id is not None:
+        return effective_source_butler, existing_episode_id
+
+    placeholder_now = now or datetime.now(UTC)
+    ttl_days = _DEFAULT_EPISODE_TTL_DAYS
+    expires_at = placeholder_now + timedelta(days=ttl_days)
+    placeholder_metadata = json.dumps({"provenance_placeholder": True})
+    placeholder_embedding = embedding_engine.embed(_RUNTIME_PROVENANCE_PLACEHOLDER)
+    placeholder_search_text = preprocess_text(_RUNTIME_PROVENANCE_PLACEHOLDER)
+    episode_id = uuid.uuid4()
+    await _insert_episode_record(
+        conn,
+        episode_id=episode_id,
+        butler=effective_source_butler,
+        session_id=session_uuid,
+        content=_RUNTIME_PROVENANCE_PLACEHOLDER,
+        embedding=placeholder_embedding,
+        search_text=placeholder_search_text,
+        importance=0.0,
+        expires_at=expires_at,
+        meta_json=placeholder_metadata,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        retention_class="transient",
+        sensitivity="normal",
+    )
+    return effective_source_butler, episode_id
+
+
+async def resolve_write_provenance(
+    pool: Pool,
+    embedding_engine: EmbeddingEngine,
+    *,
+    source_butler: str | None = None,
+    source_episode_id: uuid.UUID | None = None,
+    tenant_id: str = "shared",
+    request_id: str | None = None,
+) -> tuple[str | None, uuid.UUID | None]:
+    """Resolve write provenance using current runtime context when available."""
+    async with pool.acquire() as conn:
+        return await _resolve_write_provenance_with_conn(
+            conn,
+            embedding_engine,
+            source_butler=source_butler,
+            source_episode_id=source_episode_id,
+            tenant_id=tenant_id,
+            request_id=request_id,
+        )
 
 
 async def _insert_fact_record(
@@ -672,31 +880,40 @@ async def store_fact(
     tags_json = json.dumps(tags or [])
     meta_json = json.dumps(metadata or {})
 
-    # Determine idempotency_key for temporal facts.
-    # Property facts (valid_at IS NULL) must NOT get an idempotency key —
-    # they use the existing supersession mechanism instead.
-    effective_idempotency_key: str | None = None
-    if fact_valid_at is not None:
-        if idempotency_key is not None:
-            # Caller provided an explicit key — use it as-is.
-            effective_idempotency_key = idempotency_key
-        else:
-            # Auto-generate a deterministic key from the canonical fact tuple.
-            effective_idempotency_key = _generate_temporal_idempotency_key(
-                entity_id,
-                object_entity_id,
-                scope,
-                predicate,
-                fact_valid_at,
-                source_episode_id,
-            )
-
     # Lifecycle warning populated inside the transaction block when the predicate
     # is deprecated; included in the return dict after the block exits.
     _deprecation_warning: str | None = None
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            source_butler, source_episode_id = await _resolve_write_provenance_with_conn(
+                conn,
+                embedding_engine,
+                source_butler=source_butler,
+                source_episode_id=source_episode_id,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                now=now,
+            )
+
+            # Determine idempotency_key for temporal facts after provenance is
+            # finalized, since source_episode_id participates in the tuple.
+            # Property facts (valid_at IS NULL) must NOT get an idempotency key —
+            # they use the existing supersession mechanism instead.
+            effective_idempotency_key: str | None = None
+            if fact_valid_at is not None:
+                if idempotency_key is not None:
+                    effective_idempotency_key = idempotency_key
+                else:
+                    effective_idempotency_key = _generate_temporal_idempotency_key(
+                        entity_id,
+                        object_entity_id,
+                        scope,
+                        predicate,
+                        fact_valid_at,
+                        source_episode_id,
+                    )
+
             # Validate entity_id when provided.
             # D7: fetch entity_type in the same query as the existence check — no extra round-trip.
             _subject_entity_type: str | None = None

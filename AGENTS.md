@@ -287,6 +287,10 @@ Memory is a **common module** (`[modules.memory]`) enabled per butler, not a ded
 - `src/butlers/api/routers/memory.py` must not require `db.pool("memory")`; `/api/memory/*` reads fan out across available butler DB pools and aggregate results.
 - Pools without memory tables should be skipped gracefully so no-dedicated-memory deployments return zero/empty payloads (or 404 for ID lookups) instead of 503.
 
+### Fact provenance write contract
+- `src/butlers/modules/memory/storage.py::store_fact` now auto-fills `source_butler` from runtime context and creates/reuses a canonical `episodes` row for the current runtime session when `source_episode_id` is omitted.
+- Any direct fact writer that bypasses `store_fact` (for example bulk SQL insert paths or scheduled jobs without runtime context) must either pass `source_butler` explicitly or call `resolve_write_provenance(...)` before inserting, or the entity facts UI will show blank provenance/session columns.
+
 ### Memory OpenSpec alignment contract
 - `openspec/changes/memory-system/specs/*` now aligns to target-state module semantics: per-butler memory module integration, tenant-bounded operations by default, canonical fact soft-delete state `retracted` (legacy `forgotten` alias only), required `memory_events` audit stream, deterministic tokenizer-based `memory_context` budgeting/tie-breakers, consolidation terminal states (`consolidated|failed|dead_letter`) with retry metadata, and explicit `anti_pattern` rule maturity.
 

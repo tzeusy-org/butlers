@@ -168,6 +168,7 @@ async def _store_fact(
         valid_at=valid_at,
         metadata=metadata or {},
         idempotency_key=idempotency_key,
+        source_butler="finance",
     )
 
 
@@ -1439,8 +1440,16 @@ async def bulk_record_transactions(
 
     owner_entity_id = await _get_owner_entity_id(pool)
 
-    # Lazy-load search_vector helpers (avoids import-time side effects)
+    # Lazy-load helpers (avoids import-time side effects)
     from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
+    from butlers.modules.memory.storage import resolve_write_provenance
+
+    source_butler, source_episode_id = await resolve_write_provenance(
+        pool,
+        _get_embedding_engine(),
+        source_butler="finance",
+        tenant_id="owner",
+    )
 
     imported = 0
     skipped = 0
@@ -1656,8 +1665,8 @@ async def bulk_record_transactions(
                 )
                 VALUES (
                     $1, $2, $3, $4, NULL, {tsvector_sql("$5")},
-                    5.0, 1.0, 0.002, 'stable', NULL,
-                    NULL, NULL, 'active', 'finance',
+                    5.0, 1.0, 0.002, 'stable', $11,
+                    $12, NULL, 'active', 'finance',
                     $6, $6, '[]'::jsonb, $7::jsonb, $8,
                     $9, 'owner', $10, $6,
                     'operational', 'normal'
@@ -1676,6 +1685,8 @@ async def bulk_record_transactions(
                 owner_entity_id,  # $8 entity_id (may be None)
                 posted_at,  # $9 valid_at
                 idempotency_key,  # $10
+                source_butler,  # $11
+                source_episode_id,  # $12
             )
             imported += 1
         except asyncpg.UniqueViolationError:

@@ -217,6 +217,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
         result3 = await run_environment_report(pool_crit, None)
     assert result3["deviations_found"] >= 1
     mock_store.assert_awaited()
+    assert mock_store.await_args.kwargs["source_butler"] == "home"
 
 
 # ---------------------------------------------------------------------------

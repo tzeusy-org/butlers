@@ -99,6 +99,24 @@ CREATE TABLE IF NOT EXISTS facts (
     sensitivity         TEXT NOT NULL DEFAULT 'normal'
 )
 """
+_DDL_EPISODES = """
+CREATE TABLE IF NOT EXISTS episodes (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    butler           TEXT NOT NULL,
+    session_id       UUID,
+    content          TEXT NOT NULL,
+    embedding        TEXT,
+    search_vector    TSVECTOR,
+    importance       FLOAT NOT NULL DEFAULT 5.0,
+    expires_at       TIMESTAMPTZ NOT NULL,
+    metadata         JSONB DEFAULT '{}'::jsonb,
+    tenant_id        TEXT NOT NULL DEFAULT 'shared',
+    request_id       TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    retention_class  TEXT NOT NULL DEFAULT 'operational',
+    sensitivity      TEXT NOT NULL DEFAULT 'normal'
+)
+"""
 _DDL_MEMORY_LINKS = """
 CREATE TABLE IF NOT EXISTS memory_links (
     id          BIGSERIAL PRIMARY KEY,
@@ -137,6 +155,7 @@ async def pool(provisioned_postgres_pool):
     async with provisioned_postgres_pool() as p:
         await p.execute(_DDL_SHARED_ENTITIES)
         await p.execute(_DDL_PREDICATE_REGISTRY)
+        await p.execute(_DDL_EPISODES)
         await p.execute(_DDL_FACTS)
         await p.execute(_DDL_MEMORY_LINKS)
         for ddl in _DDL_INDEXES:
@@ -2235,6 +2254,51 @@ class TestBulkRecordTransactions:
             "SELECT COUNT(*) FROM facts WHERE metadata->>'merchant' = 'Whole Foods Market'"
         )
         assert count == 1
+
+    async def test_runtime_provenance_populates_source_fields(self, idem_pool):
+        """Bulk imports preserve finance/session provenance when runtime context exists."""
+        from butlers.tools.finance.facts import bulk_record_transactions
+
+        session_id = "2e513477-a432-4d68-952b-b95226df0aa1"
+        with (
+            patch(
+                "butlers.modules.memory.storage.get_current_runtime_butler_name",
+                return_value="finance",
+            ),
+            patch(
+                "butlers.modules.memory.storage.get_current_runtime_session_id",
+                return_value=session_id,
+            ),
+            patch(
+                "butlers.tools.finance.facts._get_embedding_engine",
+                return_value=_mock_embedding_engine(),
+            ),
+        ):
+            await bulk_record_transactions(
+                pool=idem_pool,
+                transactions=[
+                    {
+                        "posted_at": "2026-02-10T15:30:00Z",
+                        "merchant": "Whole Foods Market",
+                        "amount": "-87.50",
+                        "currency": "USD",
+                        "category": "groceries",
+                    }
+                ],
+            )
+
+        row = await idem_pool.fetchrow(
+            """
+            SELECT f.source_butler, f.source_episode_id, e.session_id
+            FROM facts f
+            LEFT JOIN episodes e ON e.id = f.source_episode_id
+            WHERE f.metadata->>'merchant' = 'Whole Foods Market'
+            """
+        )
+        assert row is not None
+        assert row["source_butler"] == "finance"
+        assert row["source_episode_id"] is not None
+        assert str(row["session_id"]) == session_id
 
     # ------------------------------------------------------------------
     # Idempotency: same batch twice → second batch all skipped

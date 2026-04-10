@@ -646,7 +646,7 @@ class ButlerDaemon:
         if not cls._attach_route_via_public_api(streamable_app, health_route):
             streamable_app.routes.append(health_route)
 
-        guarded_app = _McpRuntimeSessionGuard(streamable_app)
+        guarded_app = _McpRuntimeSessionGuard(streamable_app, butler_name=butler_name)
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
