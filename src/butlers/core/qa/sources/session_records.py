@@ -53,7 +53,8 @@ _QUERY_SQL = f"""
         healing_fingerprint,
         started_at,
         completed_at,
-        status
+        status,
+        trigger_source
     FROM {_VIEW_NAME}
     WHERE completed_at >= $1::timestamptz
     ORDER BY completed_at DESC
@@ -149,6 +150,7 @@ class SessionRecordsSource:
                     call_site=finding.call_site,
                     first_seen=finding.first_seen,
                     last_seen=finding.last_seen,
+                    source_session_trigger_source=finding.source_session_trigger_source,
                 )
             else:
                 acc = aggregated[fp]
@@ -157,6 +159,9 @@ class SessionRecordsSource:
                     acc.first_seen = finding.first_seen
                 if finding.last_seen > acc.last_seen:
                     acc.last_seen = finding.last_seen
+                    # Always take trigger_source from the most recent session row,
+                    # even when it is None, so recency semantics remain consistent.
+                    acc.source_session_trigger_source = finding.source_session_trigger_source
 
         return [acc.to_finding(now) for acc in aggregated.values()]
 
@@ -171,6 +176,7 @@ class SessionRecordsSource:
         completed_at: datetime | None = row["completed_at"]
         started_at: datetime | None = row["started_at"]
         status: str = row["status"] or "error"
+        trigger_source: str | None = row["trigger_source"]
 
         # Use completed_at as timestamp; fall back to now
         ts = completed_at or now
@@ -215,6 +221,7 @@ class SessionRecordsSource:
             first_seen=first_seen,
             last_seen=ts,
             timestamp=now,
+            source_session_trigger_source=trigger_source,
         )
 
 
@@ -260,6 +267,7 @@ class _SessionFindingAccumulator:
         call_site: str,
         first_seen: datetime,
         last_seen: datetime,
+        source_session_trigger_source: str | None = None,
     ) -> None:
         self.fingerprint = fingerprint
         self.source_butler = source_butler
@@ -270,6 +278,7 @@ class _SessionFindingAccumulator:
         self.first_seen = first_seen
         self.last_seen = last_seen
         self.occurrence_count = 1
+        self.source_session_trigger_source = source_session_trigger_source
 
     def to_finding(self, now: datetime) -> QaFinding:
         return QaFinding(
@@ -284,4 +293,5 @@ class _SessionFindingAccumulator:
             first_seen=self.first_seen,
             last_seen=self.last_seen,
             timestamp=now,
+            source_session_trigger_source=self.source_session_trigger_source,
         )

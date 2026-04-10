@@ -76,6 +76,7 @@ class ButlerReportsSource:
         event_summary: str,
         source_butler: str,
         context: str | None = None,
+        trigger_source: str | None = None,
     ) -> None:
         """Enqueue a finding relayed from a butler via the report_finding tool.
 
@@ -109,6 +110,11 @@ class ButlerReportsSource:
         context:
             Optional context string (declared sensitive; not stored in
             ``event_summary``).
+        trigger_source:
+            Optional ``trigger_source`` value from the calling session (e.g.
+            ``"healing"`` or ``"qa"``).  Stored as
+            ``source_session_trigger_source`` on the finding for QA
+            self-recursion suppression.
         """
         now = datetime.now(UTC)
         finding = QaFinding(
@@ -124,6 +130,7 @@ class ButlerReportsSource:
             last_seen=now,
             timestamp=now,
             context=context,
+            source_session_trigger_source=trigger_source,
         )
 
         async with self._lock:
@@ -169,6 +176,7 @@ class ButlerReportsSource:
         event_summary: str,
         source_butler: str,
         context: str | None = None,
+        trigger_source: str | None = None,
     ) -> None:
         """Synchronous variant of ``accept()`` for use in non-async contexts.
 
@@ -189,6 +197,7 @@ class ButlerReportsSource:
             last_seen=now,
             timestamp=now,
             context=context,
+            source_session_trigger_source=trigger_source,
         )
         if len(self._buffer) >= self._max_buffer:
             self._buffer.popleft()

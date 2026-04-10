@@ -278,8 +278,9 @@ def upgrade() -> None:
     # ----------------------------------------------------------------------- #
     union_terms = "\n        UNION ALL".join(_union_term(s) for s in _SESSION_SCHEMAS)
 
+    op.execute(f"DROP VIEW IF EXISTS {_VIEW_FQN} CASCADE")
     op.execute(f"""
-        CREATE OR REPLACE VIEW {_VIEW_FQN} AS
+        CREATE VIEW {_VIEW_FQN} AS
         {union_terms}
     """)
 

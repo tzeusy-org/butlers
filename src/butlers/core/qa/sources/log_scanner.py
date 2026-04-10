@@ -106,6 +106,7 @@ class LogEntry:
     logger: str = ""
     exception: str | None = None
     traceback: str | None = None
+    trigger_source: str | None = None
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -186,6 +187,7 @@ def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
     logger_name = data.get("logger") or data.get("module") or ""
     exception = data.get("exception") or data.get("exc_type") or None
     traceback = data.get("traceback") or data.get("exc_info") or None
+    trigger_source = data.get("trigger_source") or None
 
     return LogEntry(
         level=level,
@@ -195,6 +197,7 @@ def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
         logger=str(logger_name),
         exception=str(exception) if exception else None,
         traceback=str(traceback) if traceback else None,
+        trigger_source=str(trigger_source) if trigger_source else None,
         raw=data,
     )
 
@@ -498,6 +501,7 @@ class LogScannerSource:
                             source_file=log_file.name,
                             first_seen=entry.timestamp,
                             last_seen=entry.timestamp,
+                            source_session_trigger_source=entry.trigger_source,
                         )
                     else:
                         acc = aggregated[fingerprint]
@@ -506,6 +510,9 @@ class LogScannerSource:
                             acc.first_seen = entry.timestamp
                         if entry.timestamp > acc.last_seen:
                             acc.last_seen = entry.timestamp
+                            # Always take trigger_source from the most recent log entry,
+                            # even when it is None, so recency semantics remain consistent.
+                            acc.source_session_trigger_source = entry.trigger_source
 
                 hit_cap = (
                     truncated_entries
@@ -580,6 +587,7 @@ class _FindingAccumulator:
     first_seen: datetime
     last_seen: datetime
     occurrence_count: int = 1
+    source_session_trigger_source: str | None = None
 
     def to_finding(self, now: datetime) -> QaFinding:
         return QaFinding(
@@ -595,4 +603,5 @@ class _FindingAccumulator:
             last_seen=self.last_seen,
             timestamp=now,
             source_file=self.source_file,
+            source_session_trigger_source=self.source_session_trigger_source,
         )
