@@ -322,16 +322,23 @@ def build_git_auth_env(
     return env
 
 
+_AUTH_ERROR_MARKERS: tuple[str, ...] = (
+    "could not read username",
+    "authentication failed",
+    "repository not found",
+    "access denied",
+)
+"""Lowercase substrings that identify authentication-related git/gh errors.
+
+Shared by :func:`_classify_git_push_error` and the ``gh pr create`` error
+classifier so that both code paths remain consistent without duplication.
+"""
+
+
 def _classify_git_push_error(push_err: str) -> str:
     """Return a stable error code prefix for git push failures."""
     lowered = push_err.lower()
-    auth_markers = (
-        "could not read username",
-        "authentication failed",
-        "repository not found",
-        "access denied",
-    )
-    if any(marker in lowered for marker in auth_markers):
+    if any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
         return f"git_auth_failed: {push_err}"
     return f"git push failed: {push_err}"
 
@@ -434,7 +441,22 @@ async def _resolve_pr_by_head(
         data = _json.loads(stdout.decode("utf-8", errors="replace"))
         if isinstance(data, list) and len(data) == 1:
             entry = data[0]
-            return entry.get("url"), entry.get("number")
+            if not isinstance(entry, dict):
+                return None, None
+            url = entry.get("url")
+            number_raw = entry.get("number")
+            if not isinstance(url, str):
+                return None, None
+            if isinstance(number_raw, bool) or number_raw is None:
+                return None, None
+            if isinstance(number_raw, int):
+                number = number_raw
+            else:
+                try:
+                    number = int(number_raw)
+                except (TypeError, ValueError):
+                    return None, None
+            return url, number
         return None, None
     except Exception:  # noqa: BLE001
         logger.debug("_resolve_pr_by_head: lookup failed for branch %r", branch_name, exc_info=True)
@@ -635,13 +657,7 @@ async def _create_qa_pr(
         # Auth errors get the git_auth_failed prefix (shared with push errors);
         # other failures use a stable "gh_pr_create_failed" prefix.
         lowered = raw_err.lower()
-        auth_markers = (
-            "could not read username",
-            "authentication failed",
-            "repository not found",
-            "access denied",
-        )
-        if any(marker in lowered for marker in auth_markers):
+        if any(marker in lowered for marker in _AUTH_ERROR_MARKERS):
             classified_err = f"git_auth_failed: {raw_err}"
         else:
             classified_err = f"gh_pr_create_failed: {raw_err}"
