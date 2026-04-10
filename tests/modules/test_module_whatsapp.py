@@ -14,7 +14,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -86,3 +86,33 @@ class TestSendDisabled:
         # _SEND_DISABLED_ERROR is an actionable string message (not a dict)
         assert isinstance(_SEND_DISABLED_ERROR, str)
         assert "send_enabled" in _SEND_DISABLED_ERROR or "disabled" in _SEND_DISABLED_ERROR.lower()
+
+
+class TestStartup:
+    async def test_startup_allows_pair_required_bridge_state(
+        self, whatsapp_module: WhatsAppModule
+    ) -> None:
+        class FakeBridgeManager:
+            def __init__(self, config: Any) -> None:
+                self.config = config
+
+            async def start(self) -> None:
+                return None
+
+        db = MagicMock()
+        db.dsn = "postgresql://example"
+
+        with (
+            patch(
+                "butlers.modules.whatsapp.resolve_owner_entity_info",
+                AsyncMock(return_value=None),
+            ),
+            patch("butlers.modules.whatsapp.BridgeSubprocessManager", FakeBridgeManager),
+        ):
+            await whatsapp_module.on_startup(config={}, db=db)
+
+        assert whatsapp_module._bridge_manager is not None
+        assert whatsapp_module._bridge_manager.config.startup_success_states == (
+            "connected",
+            "pair_required",
+        )

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.connectors import bridge_manager
 from butlers.connectors.bridge_manager import (
     BridgeConfig,
     BridgeSubprocessManager,
@@ -105,3 +106,55 @@ def test_not_running_with_exited_process() -> None:
     mgr = BridgeSubprocessManager(_make_config())
     mgr._process = _fake_process(returncode=0)
     assert not mgr.is_running
+
+
+@pytest.mark.asyncio
+async def test_start_accepts_pair_required_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configured startup success states can treat pair_required as ready-for-pairing."""
+    mgr = BridgeSubprocessManager(
+        _make_config(startup_success_states=("connected", "pair_required"))
+    )
+    mgr._STARTUP_POLL_INTERVAL_S = 0.0
+
+    async def _fake_spawn() -> None:
+        mgr._process = _fake_process(returncode=None)
+
+    monkeypatch.setattr(mgr, "_spawn", _fake_spawn)
+    monkeypatch.setattr(mgr, "_monitor_loop", AsyncMock(return_value=None))
+    monkeypatch.setattr(mgr, "_health_poll_loop", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        bridge_manager,
+        "_http_get_unix",
+        AsyncMock(return_value={"state": "pair_required"}),
+    )
+
+    await mgr.start()
+
+    assert mgr.is_degraded
+    assert mgr.degraded_reason == "Bridge startup state: pair_required"
+
+
+@pytest.mark.asyncio
+async def test_start_fails_fast_on_pair_required_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default startup rules should fail immediately on pair_required and clean up."""
+    mgr = BridgeSubprocessManager(_make_config())
+    mgr._STARTUP_POLL_INTERVAL_S = 0.0
+
+    async def _fake_spawn() -> None:
+        mgr._process = _fake_process(returncode=None)
+
+    monkeypatch.setattr(mgr, "_spawn", _fake_spawn)
+    monkeypatch.setattr(mgr, "_monitor_loop", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        bridge_manager,
+        "_http_get_unix",
+        AsyncMock(return_value={"state": "pair_required"}),
+    )
+    monkeypatch.setattr(bridge_manager, "_http_post_unix", AsyncMock(return_value={}))
+
+    with pytest.raises(RuntimeError, match="Bridge startup state: pair_required"):
+        await mgr.start()
+
+    assert mgr._process is None

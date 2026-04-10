@@ -86,6 +86,12 @@ class BridgeConfig:
     startup_timeout_s: float = 30.0
     """Maximum seconds to wait for the bridge to report 'connected' on startup."""
 
+    startup_success_states: tuple[str, ...] = ("connected",)
+    """Bridge /status states that count as a successful startup."""
+
+    startup_failure_states: tuple[str, ...] = ("pair_required",)
+    """Bridge /status states that should fail startup immediately."""
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -249,6 +255,8 @@ class BridgeSubprocessManager:
 
         # Event that resolves once the bridge is "connected" (for startup wait)
         self._connected_event: asyncio.Event = asyncio.Event()
+        self._startup_failure_event: asyncio.Event = asyncio.Event()
+        self._startup_failure_reason: str | None = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -295,6 +303,7 @@ class BridgeSubprocessManager:
         self._stopping = False
         self._degraded = False
         self._degraded_reason = None
+        self._reset_startup_state()
 
         await self._spawn()
 
@@ -313,7 +322,7 @@ class BridgeSubprocessManager:
         )
         try:
             await asyncio.wait_for(
-                self._connected_event.wait(),
+                self._wait_for_startup_result(),
                 timeout=self._config.startup_timeout_s,
             )
         except TimeoutError:
@@ -321,6 +330,10 @@ class BridgeSubprocessManager:
                 "Bridge did not reach 'connected' within %.0fs",
                 self._config.startup_timeout_s,
             )
+            await self.stop()
+            raise
+        except Exception:
+            await self.stop()
             raise
         finally:
             startup_poll_task.cancel()
@@ -529,7 +542,7 @@ class BridgeSubprocessManager:
                 break
 
             self._restart_attempt += 1
-            self._connected_event.clear()
+            self._reset_startup_state()
 
             try:
                 await self._spawn()
@@ -542,11 +555,15 @@ class BridgeSubprocessManager:
             # a successful restart (reset the backoff counter).
             try:
                 await asyncio.wait_for(
-                    self._connected_event.wait(),
+                    self._wait_for_startup_result(),
                     timeout=self._config.startup_timeout_s,
                 )
                 logger.info("Bridge reconnected after restart")
                 self._restart_attempt = 0
+            except RuntimeError as exc:
+                logger.warning("Bridge restart failed: %s", exc)
+                self._set_degraded(str(exc))
+                break
             except TimeoutError:
                 logger.warning(
                     "Bridge did not reconnect within %.0fs after restart (attempt %d)",
@@ -592,6 +609,49 @@ class BridgeSubprocessManager:
         self._degraded_reason = reason
         logger.warning("Bridge entering degraded mode: %s", reason)
 
+    def _reset_startup_state(self) -> None:
+        """Clear startup readiness/failure bookkeeping before a new launch."""
+        self._connected_event.clear()
+        self._startup_failure_event.clear()
+        self._startup_failure_reason = None
+
+    def _set_startup_failure(self, reason: str) -> None:
+        """Record a terminal startup failure state and wake waiters."""
+        if self._startup_failure_event.is_set():
+            return
+        self._startup_failure_reason = reason
+        self._startup_failure_event.set()
+
+    async def _wait_for_startup_result(self) -> None:
+        """Wait until startup reaches a configured success or failure state."""
+        ready_task = asyncio.create_task(self._connected_event.wait(), name="bridge-startup-ready")
+        failure_task = asyncio.create_task(
+            self._startup_failure_event.wait(), name="bridge-startup-failed"
+        )
+        try:
+            done, pending = await asyncio.wait(
+                {ready_task, failure_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            if failure_task in done:
+                reason = self._startup_failure_reason or "Bridge startup failed"
+                raise RuntimeError(reason)
+        finally:
+            for task in (ready_task, failure_task):
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
     # ------------------------------------------------------------------
     # Private helpers — health polling
     # ------------------------------------------------------------------
@@ -628,8 +688,13 @@ class BridgeSubprocessManager:
                 )
                 state = data.get("state", "unknown")
                 logger.debug("Bridge startup /status: state=%s", state)
-                if state == "connected":
+                if state in self._config.startup_success_states:
+                    if state != "connected":
+                        self._set_degraded(f"Bridge startup state: {state}")
                     self._connected_event.set()
+                    break
+                if state in self._config.startup_failure_states:
+                    self._set_startup_failure(f"Bridge startup state: {state}")
                     break
                 # 'connecting' is an expected transient state during startup —
                 # keep polling rather than entering degraded mode.
