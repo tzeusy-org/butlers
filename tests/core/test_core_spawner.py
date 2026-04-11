@@ -20,12 +20,14 @@ import json
 import os
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.config import ButlerConfig, RuntimeConfig
+from butlers.config import ButlerConfig, RuntimeSeedConfig
+from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import (
     Spawner,
@@ -374,23 +376,20 @@ def _make_config(
     max_queued_sessions: int = 100,
     session_timeout_s: int = 1800,
 ) -> ButlerConfig:
-    if model is not _SENTINEL:
-        runtime = RuntimeConfig(
-            model=model,
-            max_concurrent_sessions=max_concurrent_sessions,
-            max_queued_sessions=max_queued_sessions,
-            session_timeout_s=session_timeout_s,
-        )
-    else:
-        runtime = RuntimeConfig(
-            max_concurrent_sessions=max_concurrent_sessions,
-            max_queued_sessions=max_queued_sessions,
-            session_timeout_s=session_timeout_s,
-        )
+    # ``model`` and ``session_timeout_s`` used to live on the butler config as
+    # last-resort fallbacks. They are now hard-coded spawner constants —
+    # the parameters remain on this factory for signature compatibility but
+    # are intentionally unused; the catalog or ``timeout_override`` is the
+    # only way to vary them at spawn time.
+    del model, session_timeout_s
+    runtime_seed = RuntimeSeedConfig(
+        max_concurrent_sessions=max_concurrent_sessions,
+        max_queued_sessions=max_queued_sessions,
+    )
     return ButlerConfig(
         name=name,
         port=port,
-        runtime=runtime,
+        runtime_seed=runtime_seed,
         modules=modules or {},
         env_required=env_required or [],
         env_optional=env_optional or [],
@@ -474,11 +473,10 @@ class TestSpawnerInvocation:
         assert result3.duration_ms >= 40
 
     async def test_runtime_args_forwarded_to_runtime_invoke(self, tmp_path: Path):
-        """Configured runtime args are forwarded to adapter invoke kwargs."""
+        """Catalog-resolved runtime args are forwarded to adapter invoke kwargs."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
-        config.runtime.args = ("--config", 'model_reasoning_effort="high"')
 
         captured: dict[str, Any] = {}
 
@@ -510,22 +508,55 @@ class TestSpawnerInvocation:
             def parse_system_prompt_file(self, config_dir: Path) -> str:
                 return ""
 
+        mock_pool = AsyncMock()
         spawner = Spawner(
             config=config,
             config_dir=config_dir,
+            pool=mock_pool,
             runtime=RuntimeArgsCaptureAdapter(),
         )
 
-        result = await spawner.trigger("hello", "tick")
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=(
+                    "codex",
+                    "gpt-5.4-mini",
+                    ["--config", 'model_reasoning_effort="high"'],
+                    7,
+                    600,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(
+                    allowed=True,
+                    usage_24h=0,
+                    usage_30d=0,
+                    limit_24h=None,
+                    limit_30d=None,
+                ),
+            ),
+            patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            result = await spawner.trigger("hello", "tick")
 
         assert result.success is True
         assert captured["runtime_args"] == ["--config", 'model_reasoning_effort="high"']
 
     async def test_session_timeout_forwarded_to_runtime_invoke(self, tmp_path: Path):
-        """Effective session timeout is forwarded to adapter invoke kwargs."""
+        """Hard-coded fallback session timeout is forwarded when neither catalog nor
+        override is set."""
+        from butlers.core.spawner import _FALLBACK_SESSION_TIMEOUT_S
+
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config(session_timeout_s=123)
+        config = _make_config()
 
         captured: dict[str, Any] = {}
 
@@ -566,13 +597,13 @@ class TestSpawnerInvocation:
         result = await spawner.trigger("hello", "tick")
 
         assert result.success is True
-        assert captured["timeout"] == 123
+        assert captured["timeout"] == _FALLBACK_SESSION_TIMEOUT_S
 
     async def test_timeout_override_takes_precedence(self, tmp_path: Path):
-        """timeout_override overrides the default session_timeout_s."""
+        """timeout_override overrides both the catalog and the hard-coded fallback."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config(session_timeout_s=123)
+        config = _make_config()
 
         captured: dict[str, Any] = {}
 
@@ -660,12 +691,12 @@ class TestSpawnerInvocation:
         """Timed-out sessions return error; semaphore released so next session succeeds."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config(session_timeout_s=1)
+        config = _make_config()
 
         # Single-shot timeout
         adapter = MockAdapter(result_text="never reached", delay=60)
         result = await Spawner(config=config, config_dir=config_dir, runtime=adapter).trigger(
-            "hung prompt", "route"
+            "hung prompt", "route", timeout_override=1
         )
         assert result.success is False
         assert "timed out" in result.error.lower()
@@ -674,9 +705,9 @@ class TestSpawnerInvocation:
         # Semaphore released: second session succeeds
         seq_adapter = SequenceMockAdapter(sequence=[{"delay": 60}, {"result_text": "ok"}])
         spawner = Spawner(config=config, config_dir=config_dir, runtime=seq_adapter)
-        r1 = await spawner.trigger("hung", "route")
+        r1 = await spawner.trigger("hung", "route", timeout_override=1)
         assert r1.success is False and "timed out" in r1.error.lower()
-        r2 = await spawner.trigger("ok", "route")
+        r2 = await spawner.trigger("ok", "route", timeout_override=1)
         assert r2.success is True and r2.output == "ok"
 
 
@@ -1047,9 +1078,16 @@ class TestSessionLogging:
         mock_pool = AsyncMock()
 
         # Success path
+        from butlers.core.spawner import _FALLBACK_MODEL_ID
+
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
             mock_create.return_value = fake_session_id
@@ -1064,7 +1102,7 @@ class TestSessionLogging:
             assert create_args[0] is mock_pool
             assert create_args[1] == "log me"
             assert create_args[2] == "schedule"
-            assert create_kwargs.get("model") == "claude-haiku-4-5-20251001"
+            assert create_kwargs.get("model") == _FALLBACK_MODEL_ID
             mock_complete.assert_called_once()
             args, kwargs = mock_complete.call_args
             assert args[0] is mock_pool and args[1] == fake_session_id
@@ -1163,44 +1201,37 @@ class CapturingMockAdapter(MockAdapter):
 
 
 class TestModelPassthrough:
-    """Model string from config is passed through to invoke() kwargs."""
+    """Model string resolved by the catalog (or the static fallback) is passed
+    through to ``invoke()`` kwargs and surfaced on :class:`SpawnerResult`."""
 
     async def test_model_passed_to_invoke_and_result(self, tmp_path: Path):
-        """Configured model passed to invoke(); SpawnerResult includes model on success/error."""
+        """Without a pool, the hard-coded fallback model is forwarded to invoke();
+        error results surface the same fallback model."""
+        from butlers.core.spawner import _FALLBACK_MODEL_ID
+
         config_dir = tmp_path / "config"
         config_dir.mkdir()
 
-        # Configured model
+        # No pool → catalog is skipped, spawner falls back to the constant
         adapter = CapturingMockAdapter(result_text="ok")
         spawner = Spawner(
-            config=_make_config(model="claude-sonnet-4-20250514"),
+            config=_make_config(),
             config_dir=config_dir,
             runtime=adapter,
         )
-        result = await spawner.trigger("test model", "tick")
-        assert adapter.captured_models[0] == "claude-sonnet-4-20250514"
-        assert result.model == "claude-sonnet-4-20250514"
+        result = await spawner.trigger("test default", "tick")
+        assert adapter.captured_models[0] == _FALLBACK_MODEL_ID
+        assert result.model == _FALLBACK_MODEL_ID
 
-        # Default model (Haiku)
-        adapter2 = CapturingMockAdapter(result_text="ok")
-        spawner2 = Spawner(
-            config=_make_config(),
-            config_dir=config_dir,
-            runtime=adapter2,
-        )
-        result2 = await spawner2.trigger("test default", "tick")
-        assert adapter2.captured_models[0] == "claude-haiku-4-5-20251001"
-        assert result2.model == "claude-haiku-4-5-20251001"
-
-        # Model in result on error
+        # Error path still surfaces the fallback model
         spawner3 = Spawner(
-            config=_make_config(model="claude-opus-4-20250514"),
+            config=_make_config(),
             config_dir=config_dir,
             runtime=MockAdapter(error="invocation failed"),
         )
         result3 = await spawner3.trigger("fail", "tick")
         assert result3.error is not None
-        assert result3.model == "claude-opus-4-20250514"
+        assert result3.model == _FALLBACK_MODEL_ID
 
 
 # ---------------------------------------------------------------------------
@@ -1534,11 +1565,13 @@ class TestCatalogModelResolution:
     - Graceful fallback on catalog resolution errors
     """
 
-    async def test_catalog_and_toml_fallback_model_selection(self, tmp_path: Path):
-        """Catalog model used when available; TOML model used when catalog returns None."""
+    async def test_catalog_and_static_fallback_model_selection(self, tmp_path: Path):
+        """Catalog model used when available; static constant used when catalog returns None."""
+        from butlers.core.spawner import _FALLBACK_MODEL_ID
+
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config(model="claude-haiku-4-5-20251001")  # TOML fallback
+        config = _make_config()
 
         captured: dict = {}
 
@@ -1571,7 +1604,13 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID, 2400),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-opus-4-20250514",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    2400,
+                ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -1581,7 +1620,7 @@ class TestCatalogModelResolution:
         assert captured["timeout"] == 2400
         assert result.model == "claude-opus-4-20250514"
 
-        # Catalog returns None → TOML fallback
+        # Catalog returns None → static fallback constant
         captured.clear()
         adapter2 = CapturingAdapter()
         spawner2 = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter2)
@@ -1597,8 +1636,8 @@ class TestCatalogModelResolution:
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             result2 = await spawner2.trigger("prompt", "tick")
         assert result2.success is True
-        assert captured["model"] == "claude-haiku-4-5-20251001"
-        assert result2.model == "claude-haiku-4-5-20251001"
+        assert captured["model"] == _FALLBACK_MODEL_ID
+        assert result2.model == _FALLBACK_MODEL_ID
 
     async def test_complexity_routing(self, tmp_path: Path):
         """Without pool: resolve_model not called. With pool: complexity forwarded."""
@@ -1658,11 +1697,10 @@ class TestCatalogModelResolution:
         assert mock_resolve3.call_args[0][2] == Complexity.MEDIUM
 
     async def test_extra_args_merging(self, tmp_path: Path):
-        """TOML args first, catalog extra_args appended; both-empty omits kwarg."""
+        """Catalog extra_args are forwarded verbatim; empty args omits the kwarg."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
-        config.runtime.args = ("--toml-flag", "toml-value")
 
         captured: dict = {}
 
@@ -1687,7 +1725,7 @@ class TestCatalogModelResolution:
         adapter = CapturingAdapter()
         spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
 
-        # TOML args + catalog args merged
+        # Catalog-supplied args forwarded as-is
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
@@ -1695,7 +1733,7 @@ class TestCatalogModelResolution:
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
                 return_value=(
-                    "claude",
+                    DEFAULT_RUNTIME_TYPE,
                     "claude-opus-4-20250514",
                     ["--catalog-arg", "val"],
                     _FAKE_CATALOG_ID,
@@ -1705,10 +1743,10 @@ class TestCatalogModelResolution:
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner.trigger("prompt", "tick")
-        assert captured["runtime_args"] == ["--toml-flag", "toml-value", "--catalog-arg", "val"]
+        assert captured["runtime_args"] == ["--catalog-arg", "val"]
         assert captured["timeout"] == 2400
 
-        # Both empty → runtime_args kwarg is None
+        # Empty args → runtime_args kwarg is None (spawner omits the kwarg)
         config2 = _make_config()
         captured2: dict = {}
 
@@ -1741,7 +1779,13 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID, 2400),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-opus-4-20250514",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    2400,
+                ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -1749,11 +1793,13 @@ class TestCatalogModelResolution:
         assert captured2["runtime_args"] is None
         assert captured2["timeout"] == 2400
 
-    async def test_catalog_error_and_unknown_runtime_fall_back_to_toml(self, tmp_path: Path):
-        """Both catalog errors and unknown runtime types fall back to TOML model."""
+    async def test_catalog_error_and_unknown_runtime_fall_back_to_static(self, tmp_path: Path):
+        """Both catalog errors and unknown runtime types fall back to the static default."""
+        from butlers.core.spawner import _FALLBACK_MODEL_ID
+
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        config = _make_config(model="claude-haiku-4-5-20251001")
+        config = _make_config()
         mock_pool = AsyncMock()
 
         for side_effect, return_value in [
@@ -1795,8 +1841,8 @@ class TestCatalogModelResolution:
                 mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
                 result = await spawner.trigger("prompt", "tick")
             assert result.success is True
-            assert captured["model"] == "claude-haiku-4-5-20251001"
-            assert result.model == "claude-haiku-4-5-20251001"
+            assert captured["model"] == _FALLBACK_MODEL_ID
+            assert result.model == _FALLBACK_MODEL_ID
 
     async def test_audit_log_resolution_metadata(self, tmp_path: Path):
         """Audit log includes model, runtime_type, complexity, resolution_source."""
@@ -1824,7 +1870,13 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID, 2400),
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "claude-opus-4-20250514",
+                    [],
+                    _FAKE_CATALOG_ID,
+                    2400,
+                ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -1833,15 +1885,16 @@ class TestCatalogModelResolution:
         assert len(audit_entries) == 1
         data = audit_entries[0]["data"]
         assert data["model"] == "claude-opus-4-20250514"
-        assert data["runtime_type"] == "claude"
+        assert data["runtime_type"] == DEFAULT_RUNTIME_TYPE
         assert data["complexity"] == "high"
         assert data["resolution_source"] == "catalog"
 
-        # Also verify toml_fallback source
+        # Also verify the static_fallback source
+        from butlers.core.spawner import _FALLBACK_MODEL_ID
+
         audit_entries.clear()
-        config_toml = _make_config(model="claude-haiku-4-5-20251001")
         spawner2 = Spawner(
-            config=config_toml,
+            config=_make_config(),
             config_dir=config_dir,
             pool=mock_pool,
             runtime=MockAdapter(result_text="ok"),
@@ -1860,8 +1913,8 @@ class TestCatalogModelResolution:
             await spawner2.trigger("prompt", "tick")
         assert len(audit_entries) == 1
         data2 = audit_entries[0]["data"]
-        assert data2["model"] == "claude-haiku-4-5-20251001"
-        assert data2["resolution_source"] == "toml_fallback"
+        assert data2["model"] == _FALLBACK_MODEL_ID
+        assert data2["resolution_source"] == "static_fallback"
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,8 @@ class RuntimeConfig:
     """Effective runtime configuration from the DB ``runtime_config`` table.
 
     This is the runtime source of truth, distinct from ``RuntimeSeedConfig``
-    (the toml seed) and ``butlers.config.RuntimeConfig`` (the legacy static config).
+    (the toml seed in :mod:`butlers.config`). The Spawner prefers this
+    DB-backed value and falls back to the seed when no accessor is wired.
     """
 
     butler_name: str

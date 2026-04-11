@@ -14,11 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from butlers.core.runtimes import get_adapter
-
-# Default LLM model used by all butlers unless overridden in butler.toml.
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-
 # Default trusted callers for route.execute authz.
 DEFAULT_TRUSTED_ROUTE_CALLERS: tuple[str, ...] = ("switchboard",)
 
@@ -81,54 +76,29 @@ class ScheduleConfig:
 
 
 @dataclass
-class RuntimeConfig:
-    """Effective *static* runtime configuration for one butler.
-
-    This dataclass is a *snapshot* assembled by :func:`load_config` from three
-    different sources. It does NOT own any of those values; it just exposes
-    them in one place so the daemon and Spawner don't have to reach back into
-    three sections on every access. The sources and their ownership:
-
-    - ``type`` comes from top-level ``[runtime]`` (see
-      :func:`_parse_runtime_section`). It is the default adapter used to seed
-      the Spawner's adapter pool; the model catalog may resolve a different
-      adapter per session.
-    - ``model``, ``session_timeout_s``, and ``args`` are *last-resort
-      fallbacks*. They are consulted only when catalog resolution fails
-      (no matching entry or DB unreachable). The canonical source for these
-      values is ``public.model_catalog``, resolved per spawn by
-      :func:`butlers.core.model_routing.resolve_model`.
-    - ``max_concurrent_sessions``, ``max_queued_sessions``, and
-      ``core_groups`` come from ``[butler.runtime_seed]`` (first boot) and
-      from the ``{schema}.runtime_config`` DB row thereafter. The Spawner
-      prefers the DB row via :class:`RuntimeConfigAccessor` and falls back to
-      the values cached here when no accessor is wired.
-
-    See ``about/heart-and-soul/vision.md`` Rule 5 ("git identity vs DB
-    operational tuning") for why these three ownership lanes exist.
-    """
-
-    type: str = "claude"
-    model: str | None = DEFAULT_MODEL
-    max_concurrent_sessions: int = 1
-    max_queued_sessions: int = 100
-    session_timeout_s: int = 1800
-    args: tuple[str, ...] = ()
-    core_groups: tuple[str, ...] | None = None
-
-
-@dataclass
 class RuntimeSeedConfig:
-    """Seed configuration from [butler.runtime_seed] section.
+    """Sole butler-scoped runtime configuration from ``[butler.runtime_seed]``.
 
-    Used on first boot to seed the per-schema ``runtime_config`` DB table.
+    Used on first boot to seed the per-schema ``runtime_config`` DB table and,
+    thereafter, as the in-memory fallback when the ``RuntimeConfigAccessor``
+    is unavailable or its cache is empty. This is the only butler-scoped
+    runtime config source in git.
 
-    Only operational fields (``core_groups``, concurrency, queue depth) map to
-    the DB-backed ``runtime_config`` row. Model selection, runtime args, and
-    per-session timeout are owned by the model catalog or static defaults, not
-    by ``runtime_seed``. Registration-only fields (``liveness_ttl_seconds``,
-    ``route_contract_min``, ``route_contract_max``) are not stored in
-    ``runtime_config``.
+    Fields:
+
+    - ``core_groups`` / ``max_concurrent_sessions`` / ``max_queued_sessions``
+      are the operational tuning knobs that map to the DB-backed
+      ``runtime_config`` row. The Spawner prefers the DB row via
+      :class:`RuntimeConfigAccessor` and falls back to the values here when
+      no accessor is wired.
+    - ``liveness_ttl_seconds`` / ``route_contract_min`` / ``route_contract_max``
+      are registration-only and are not stored in ``runtime_config``.
+
+    Model selection, per-session timeouts, and runtime CLI args live in
+    ``public.model_catalog`` (resolved per spawn). The runtime adapter type
+    is fixed for the whole roster — see ``DEFAULT_RUNTIME_TYPE`` in
+    :mod:`butlers.core.runtimes`. See ``about/heart-and-soul/vision.md``
+    Rule 5 for the ownership model.
     """
 
     core_groups: tuple[str, ...] | None = None
@@ -273,7 +243,6 @@ class ButlerConfig:
     db_name: str = ""
     db_schema: str | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     runtime_seed: RuntimeSeedConfig = field(default_factory=RuntimeSeedConfig)
     schedules: list[ScheduleConfig] = field(default_factory=list)
     modules: dict[str, dict] = field(default_factory=dict)
@@ -378,7 +347,9 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
     # Reject retired runtime-selection fields that now belong elsewhere.
     retired_keys = {
         "model": "the model catalog",
-        "runtime_type": "top-level [runtime]",
+        "runtime_type": (
+            "DEFAULT_RUNTIME_TYPE in butlers.core.runtimes (fixed for the whole roster)"
+        ),
         "args": "the model catalog",
         "session_timeout_s": "the model catalog",
     }
@@ -416,45 +387,6 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
         route_contract_min=route_contract_min,
         route_contract_max=route_contract_max,
     )
-
-
-# Keys accepted under the top-level ``[runtime]`` section. A strict allow-list
-# makes typos fail loudly at load time instead of silently falling through to a
-# default adapter, which is the kind of ambiguity this file works to prevent.
-_ALLOWED_RUNTIME_KEYS: frozenset[str] = frozenset({"type"})
-
-
-def _parse_runtime_section(data: dict[str, Any]) -> str:
-    """Return the runtime adapter type declared in top-level ``[runtime]``.
-
-    Defaults to ``"claude"`` when the section is absent. Any unknown key is
-    treated as a typo and rejected. The chosen adapter must be registered in
-    :mod:`butlers.core.runtimes`; unknown adapters fail fast at load time.
-    """
-    runtime_section = data.get("runtime", {})
-    if runtime_section is None:
-        runtime_section = {}
-    if not isinstance(runtime_section, dict):
-        raise ConfigError("Top-level [runtime] must be a TOML table")
-
-    unexpected = set(runtime_section.keys()) - _ALLOWED_RUNTIME_KEYS
-    if unexpected:
-        bad = ", ".join(sorted(unexpected))
-        raise ConfigError(
-            f"Unknown key(s) in top-level [runtime]: {bad}. "
-            f"Allowed keys: {sorted(_ALLOWED_RUNTIME_KEYS)}"
-        )
-
-    raw_type = runtime_section.get("type", "claude")
-    if not isinstance(raw_type, str) or not raw_type.strip():
-        raise ConfigError(f"Invalid [runtime].type: {raw_type!r}. Expected a non-empty string.")
-    runtime_type = raw_type.strip()
-
-    try:
-        get_adapter(runtime_type)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
-    return runtime_type
 
 
 def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
@@ -906,9 +838,10 @@ def load_config(config_dir: Path) -> ButlerConfig:
     if "runtime" in butler_section:
         raise ConfigError(
             "[butler.runtime] is no longer supported. "
-            "Move operational seed fields to [butler.runtime_seed], "
-            "runtime adapter type to top-level [runtime], and model selection "
-            "settings to the model catalog."
+            "Move operational seed fields to [butler.runtime_seed] and "
+            "model selection settings to the model catalog. The runtime "
+            "adapter type is fixed to DEFAULT_RUNTIME_TYPE in "
+            "butlers.core.runtimes."
         )
     if "seed_configs" in butler_section:
         raise ConfigError(
@@ -917,22 +850,20 @@ def load_config(config_dir: Path) -> ButlerConfig:
             "and remove the [butler.seed_configs] section."
         )
 
+    # --- Reject top-level [runtime] section ---
+    # The runtime adapter type is fixed for the entire roster; keeping a
+    # per-butler toggle in git invites silent drift and offers no consumer
+    # differentiation. See DEFAULT_RUNTIME_TYPE in butlers.core.runtimes.
+    if "runtime" in data:
+        raise ConfigError(
+            "Top-level [runtime] section is no longer supported. "
+            "The runtime adapter type is fixed to DEFAULT_RUNTIME_TYPE in "
+            "butlers.core.runtimes. Delete the [runtime] section from "
+            "butler.toml."
+        )
+
     # --- [butler.runtime_seed] sub-section (new canonical name) ---
     runtime_seed = _parse_runtime_seed(butler_section)
-
-    # --- [runtime] top-level section (runtime adapter type) ---
-    runtime_type = _parse_runtime_section(data)
-
-    # Build RuntimeConfig from static defaults plus operational runtime_seed
-    # settings. Model selection is catalog-driven (see model_routing.py); the
-    # static ``model`` field is only a last-resort fallback when catalog
-    # resolution fails entirely.
-    runtime = RuntimeConfig(
-        type=runtime_type,
-        max_concurrent_sessions=runtime_seed.max_concurrent_sessions,
-        max_queued_sessions=runtime_seed.max_queued_sessions,
-        core_groups=runtime_seed.core_groups,
-    )
 
     return ButlerConfig(
         name=name,
@@ -943,7 +874,6 @@ def load_config(config_dir: Path) -> ButlerConfig:
         db_name=db_name,
         db_schema=db_schema,
         logging=logging_config,
-        runtime=runtime,
         runtime_seed=runtime_seed,
         schedules=schedules,
         modules=modules,

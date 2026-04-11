@@ -18,9 +18,6 @@ core_groups = [
     "temporal",       # deadlines, event_chains, seasonal_periods
 ]
 
-[runtime]
-type = "codex"
-
 [butler.db]
 name = "butlers"
 schema = "finance"

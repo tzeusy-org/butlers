@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.config import ButlerConfig, RuntimeConfig
+from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
@@ -62,7 +62,6 @@ def _make_config(
     return ButlerConfig(
         name=name,
         port=port,
-        runtime=RuntimeConfig(),
         modules=modules or {},
         env_required=[],
         env_optional=[],

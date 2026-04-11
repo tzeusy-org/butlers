@@ -20,9 +20,6 @@ core_groups = [
     "switchboard_backfill", # backfill.poll, backfill.progress
 ]
 
-[runtime]
-type = "codex"
-
 [buffer]
 queue_capacity = 100
 worker_count = 3

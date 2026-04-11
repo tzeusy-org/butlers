@@ -273,20 +273,20 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 #### Scenario: Catalog resolution overrides static fallback model
 - **WHEN** `resolve_model()` returns a result
 - **THEN** the returned `runtime_type`, `model_id`, and `extra_args` are used for the invocation
-- **AND** the static `RuntimeConfig.model` fallback value is ignored
+- **AND** the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` is ignored
 
 #### Scenario: Catalog empty fallback to static defaults
-- **WHEN** `resolve_model()` returns `None` (no matching entries)
-- **THEN** the spawner falls back to `self._config.runtime.model` (the static default constant) and the adapter seeded from top-level `[runtime].type`
+- **WHEN** `resolve_model()` returns `None` (no matching entries) or fails
+- **THEN** the spawner falls back to the module-private `_FALLBACK_MODEL_ID` constant paired with `DEFAULT_RUNTIME_TYPE` from `butlers.core.runtimes`; these are hard-coded last-resort constants, not butler-scoped config
 
-#### Scenario: Extra args merge with static fallback args
+#### Scenario: Runtime args sourced only from the catalog
 - **WHEN** catalog resolution returns `extra_args`
-- **THEN** the catalog `extra_args` are appended after any static `RuntimeConfig.args` fallback in the invocation
-- **AND** static args appear first so that positional overrides from the catalog win
+- **THEN** the catalog `extra_args` are forwarded verbatim to the adapter as `runtime_args`
+- **AND** there is no butler-scoped args fallback; when the catalog returns no args, the kwarg is omitted
 
 #### Scenario: Session record includes model resolution metadata
 - **WHEN** a session is created via `session_create()`
-- **THEN** the session record includes: the resolved `model` (model_id from catalog or TOML fallback), `runtime_type`, `complexity` tier, and resolution source (`catalog` or `toml_fallback`)
+- **THEN** the session record includes: the resolved `model` (model_id from catalog or the static fallback constant), `runtime_type`, `complexity` tier, and resolution source (`catalog` or `static_fallback`)
 
 ### Requirement: Drain for Shutdown
 The spawner supports `stop_accepting()` to reject new triggers and `drain(timeout)` to wait for in-flight sessions to complete, cancelling remaining sessions after timeout.

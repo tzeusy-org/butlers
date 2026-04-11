@@ -109,8 +109,8 @@ class TestLifestyleButlerStartup:
         from butlers.config import load_config
 
         cfg = load_config(_LIFESTYLE_ROSTER_DIR)
-        assert cfg.runtime is not None
-        assert cfg.runtime.max_concurrent_sessions >= 3
+        assert cfg.runtime_seed is not None
+        assert cfg.runtime_seed.max_concurrent_sessions >= 3
 
     def test_lifestyle_butler_in_list_butlers(self) -> None:
         """list_butlers() discovers the lifestyle butler from the real roster."""

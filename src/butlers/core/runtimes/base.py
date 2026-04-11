@@ -11,6 +11,12 @@ import abc
 from pathlib import Path
 from typing import Any
 
+# Default runtime adapter type used to seed every Spawner's adapter pool.
+# There is no roster-level or per-butler differentiation: every live butler
+# boots into the same default adapter. Per-session overrides come from
+# ``public.model_catalog`` at spawn time — not from ``butler.toml``.
+DEFAULT_RUNTIME_TYPE = "codex"
+
 
 class RuntimeAdapter(abc.ABC):
     """Abstract base class for runtime adapters.

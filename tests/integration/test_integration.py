@@ -366,8 +366,8 @@ class TestButlerStartupIntegration:
         daemon.config.description = "A test butler"
         daemon.config.port = 9100
         daemon.config.type = MagicMock(value="staffer")
-        daemon.config.runtime = MagicMock()
-        daemon.config.runtime.core_groups = None
+        daemon.config.runtime_seed = MagicMock()
+        daemon.config.runtime_seed.core_groups = None
         daemon._modules = []
         daemon._started_at = 1000.0
         daemon.spawner = MagicMock()

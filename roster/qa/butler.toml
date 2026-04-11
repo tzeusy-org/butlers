@@ -10,9 +10,6 @@ cross_butler_access = ["*"]
 [butler.runtime_seed]
 max_concurrent_sessions = 3
 
-[runtime]
-type = "codex"
-
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
 

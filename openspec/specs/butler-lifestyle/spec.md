@@ -6,38 +6,44 @@ The Lifestyle butler owns taste, rhythm, and daily quality-of-life. It is the do
 
 ## Requirements
 
-### Requirement: Butler Identity and Configuration
+### Requirement: Butler Identity and Wire Contract
 
-The Lifestyle butler SHALL be configured as a standard butler in `roster/lifestyle/`.
+The Lifestyle butler SHALL expose a stable identity and wire contract that other components of the system depend on. Identity details that drift (model, cron minutes, module list, concurrency caps) are owned by `roster/lifestyle/butler.toml` per `about/heart-and-soul/vision.md` Rule 5 and are NOT mirrored here.
 
-#### Scenario: Butler configuration
+#### Scenario: Stable wire identity
 
-- **WHEN** the Lifestyle butler is loaded from `roster/lifestyle/butler.toml`
-- **THEN** it SHALL have:
-  - `name = "lifestyle"`
-  - `port = 41109`
-  - `description` summarizing its domain (taste, music, entertainment, food, hobbies, routines)
-  - `[butler.db]` with `name = "butlers"` and `schema = "lifestyle"`
-  - `[butler.switchboard]` with `url = "http://localhost:41100/mcp"`
-  - `[butler.runtime_seed]` with `max_concurrent_sessions = 3`, `liveness_ttl_seconds = 300`, `route_contract_min = 1`, `route_contract_max = 1` (operational seed only — see vision.md Rule 5; model + runtime adapter are catalog-resolved and must not be duplicated here)
-  - `[runtime]` top-level with `type = "codex"` (the default runtime adapter seeded into the Spawner's adapter pool; per-session overrides come from `public.model_catalog`)
+- **WHEN** the butler is loaded from `roster/lifestyle/butler.toml`
+- **THEN** it SHALL have `name = "lifestyle"` and `port = 41109`
+- **AND** its database binding SHALL be `[butler.db]` with `name = "butlers"` and `schema = "lifestyle"`
+- **AND** its switchboard binding SHALL be `[butler.switchboard]` with `url = "http://localhost:41100/mcp"`
 
-### Requirement: Base Module Configuration
+#### Scenario: Runtime seed is operational-only
 
-The Lifestyle butler SHALL enable standard utility modules and the spotify module when available.
+- **WHEN** `roster/lifestyle/butler.toml` declares a `[butler.runtime_seed]` table
+- **THEN** it SHALL contain only operational tuning fields (concurrency, liveness TTL, route contract bounds)
+- **AND** it SHALL NOT declare `model` or runtime adapter fields — those are resolved at session-spawn time from `public.model_catalog`
+- **AND** the toml SHALL NOT contain a top-level `[runtime]` section; the loader rejects any reintroduction of one
 
-#### Scenario: Enabled modules
+### Requirement: Agent Type and Module Shape
+
+The Lifestyle butler SHALL be a butler-typed agent (not a staffer) and SHALL expose a fixed shape of required module capabilities.
+
+#### Scenario: Butler-typed specialist
+
+- **WHEN** the daemon classifies the Lifestyle butler
+- **THEN** it SHALL be a butler-typed agent, eligible for routing from the Switchboard as a domain specialist
+- **AND** it SHALL NOT be a staffer (Switchboard, Messenger, QA)
+
+#### Scenario: Required module capabilities
 
 - **WHEN** the butler starts
-- **THEN** the following modules SHALL be enabled:
-  - `memory` — taste profiles, consumption patterns, preference facts
-  - `calendar` — routine scheduling, event-linked taste notes
-  - `contacts` — entity resolution for shared-taste contexts
-  - `spotify` — music tools (when the spotify-module change is implemented)
+- **THEN** it SHALL enable the `memory`, `calendar`, and `contacts` modules at minimum
+- **AND** it MAY enable domain-specific integration modules (e.g. Spotify, Steam)
+- **AND** the authoritative enabled-module list lives in `roster/lifestyle/butler.toml`
 
 ### Requirement: Domain Scope Boundary
 
-The Lifestyle butler SHALL own a clearly defined domain that does not overlap with other butlers' primary responsibilities.
+The Lifestyle butler SHALL own a clearly defined domain that does not overlap with other butlers' primary responsibilities. These boundaries are routing invariants that other butlers rely on.
 
 #### Scenario: Lifestyle domain ownership
 
@@ -67,131 +73,79 @@ The Lifestyle butler SHALL own a clearly defined domain that does not overlap wi
 - **THEN** the Lifestyle butler SHALL be the primary routing target
 - **AND** the message SHALL NOT be routed to Health unless it contains explicit health metrics (sleep duration, exercise reps, vitals)
 
-### Requirement: Memory Taxonomy
+#### Scenario: Nutrition tracking refusal
 
-The Lifestyle butler SHALL maintain a domain-specific memory taxonomy for taste and consumption patterns.
+- **WHEN** a request asks the Lifestyle butler to track calories, macros, or a nutrition plan
+- **THEN** the butler SHALL refuse and defer to the Health butler
 
-#### Scenario: Taste preference facts
+#### Scenario: Formal learning refusal
 
-- **WHEN** the butler stores a taste preference
-- **THEN** it SHALL use subject/predicate pairs from the following taxonomy:
-  - `user | likes_genre` — music genre preferences
-  - `user | likes_artist` — favorite artists
-  - `user | likes_cuisine` — cuisine preferences
-  - `user | favorite_restaurant` — preferred dining spots
-  - `user | favorite_recipe` — beloved recipes
-  - `user | hobby` — active hobbies and interests
-  - `user | food_preference` — dietary patterns and preferences
-  - `user | food_dislike` — foods to avoid (allergies, taste aversions)
-  - `user | routine` — daily routine patterns
-- **AND** taste preferences SHALL default to `stable` permanence
+- **WHEN** a request asks the Lifestyle butler to manage curricula, study plans, or spaced-repetition learning
+- **THEN** the butler SHALL refuse and defer to the Education butler
 
-#### Scenario: Consumption tracking facts
+#### Scenario: Social event planning refusal
 
-- **WHEN** the butler stores current consumption state
-- **THEN** it SHALL use predicates:
-  - `user | watches` — currently watching (TV, film)
-  - `user | reads` — currently reading
-  - `user | plays` — currently playing (games)
-  - `user | listens_to` — current listening focus
-- **AND** these SHALL default to `volatile` permanence
+- **WHEN** a request asks the Lifestyle butler to coordinate social events or manage relationships
+- **THEN** the butler SHALL refuse and defer to the Relationship butler
 
-#### Scenario: Spotify-enriched memory
+#### Scenario: Home automation refusal
 
-- **WHEN** the butler stores Spotify-derived insights
-- **THEN** it SHALL use subject patterns:
-  - `spotify:artist:{id} | listening_pattern` — rotation intensity over time
-  - `spotify:playlist:{id} | purpose` — what the playlist is for
-  - `spotify:playlist:{id} | context` — when/where/why it's used
-- **AND** these SHALL default to `stable` permanence
+- **WHEN** a request asks the Lifestyle butler to control home devices or automate the home
+- **THEN** the butler SHALL refuse and defer to the Home butler
 
-### Requirement: Scheduled Tasks
+### Requirement: Memory Taxonomy Shape
 
-The Lifestyle butler SHALL run standard memory maintenance and domain-specific scheduled tasks.
+The Lifestyle butler SHALL maintain a domain-specific memory taxonomy distinguishing enduring taste preferences from current consumption state. The full predicate inventory and example facts live in `roster/lifestyle/CLAUDE.md` under Memory Classification.
 
-#### Scenario: Memory maintenance tasks
+#### Scenario: Permanence contract
 
-- **WHEN** the butler is running
-- **THEN** it SHALL schedule:
-  - `memory_consolidation` at `0 */6 * * *`
-  - `memory_episode_cleanup` at `0 4 * * *`
-  - `memory_purge_superseded` at `10 4 * * *`
+- **WHEN** the butler stores a lifestyle fact
+- **THEN** enduring preferences (genre, artist, cuisine, favorite restaurants, recipes, hobbies, dietary patterns, routines) SHALL default to `stable` permanence
+- **AND** current consumption state (what the user is currently watching, reading, playing, or listening to) SHALL default to `volatile` permanence
 
-#### Scenario: Weekly taste digest
+### Requirement: Scheduled Task Shape
 
-- **WHEN** the `weekly-taste-digest` job runs at `0 21 * * 0` (Sunday at 21:00)
-- **THEN** the butler SHALL generate a weekly digest summarizing:
-  - Music: top artists, new discoveries, playlist activity, listening hours
-  - Entertainment: what was watched/read/played
-  - Food: notable meals or restaurant visits
-  - Hobbies: activity highlights
-- **AND** the digest SHALL be delivered via `notify(intent="send")`
+The Lifestyle butler SHALL run the standard memory maintenance job set shared across butler-typed agents, plus at least one domain-specific periodic task that surfaces taste highlights.
 
-#### Scenario: Daily briefing contribution
+#### Scenario: Standard maintenance plus domain digest
 
-- **WHEN** the `daily_briefing_contribution` job runs at `55 6 * * *`
-- **THEN** the butler SHALL contribute lifestyle highlights to the cross-butler morning briefing
-- **AND** the contribution SHALL include: any notable listening patterns, entertainment milestones, or taste discoveries from the past 24 hours
+- **WHEN** the butler daemon is running
+- **THEN** it SHALL schedule the standard memory maintenance jobs shared by butler-typed agents
+- **AND** it SHALL schedule at least one domain-specific recurring task whose current shape is a weekly taste digest
+- **AND** the exact cron expressions and dispatch modes live in `roster/lifestyle/butler.toml`
+
+### Requirement: Cross-Butler Briefing Contribution
+
+The Lifestyle butler SHALL participate in the canonical daily briefing as a specialist butler.
+
+#### Scenario: Participates as canonical specialist
+
+- **WHEN** the daily briefing aggregation runs
+- **THEN** Lifestyle SHALL contribute via the contract defined in `openspec/specs/cross-butler-briefing-contribution/spec.md` as a member of the canonical specialist set
+- **AND** when new consumption or taste facts were recorded in the last 24 hours, the contribution SHALL have `has_updates=true`
+- **AND** the highlight schema, category labels, and cleanup rules are owned by the briefing contribution spec, not this role spec
 
 ### Requirement: Interactive Response Mode
 
-The Lifestyle butler SHALL respond to interactive messaging channels with appropriate engagement.
+The Lifestyle butler SHALL follow the shared Interactive Response Mode contract for user-facing ingests, and SHALL NOT treat background connector events as interactive.
 
-#### Scenario: Taste capture from chat
+#### Scenario: Interactive channel ingest
 
-- **WHEN** the user mentions a food preference, music opinion, or entertainment recommendation via an interactive channel
-- **THEN** the butler SHALL store the fact in memory
-- **AND** it SHALL respond with a brief acknowledgment (react or affirm mode)
-- **AND** it MAY offer a follow-up ("Want me to add that to your playlist?" / "Should I remember that restaurant?")
+- **WHEN** the butler receives a routed message whose `source_channel` is an interactive channel (e.g. `telegram_bot`)
+- **THEN** it SHALL follow the Interactive Response Mode contract defined in `roster/shared/AGENTS.md`
 
-#### Scenario: Taste query from chat
+#### Scenario: Spotify connector events are non-interactive
 
-- **WHEN** the user asks about their preferences or consumption history via an interactive channel
-- **THEN** the butler SHALL search memory and respond with a substantive answer
-- **AND** it SHALL include relevant context (when the preference was recorded, related facts)
+- **WHEN** the butler receives a routed Spotify connector event (`spotify.track_change`, `spotify.session_summary`)
+- **THEN** it SHALL treat the event as background knowledge-graph growth
+- **AND** it SHALL NOT emit a user-facing reply, reaction, or Telegram notification in response to the event
 
 ### Requirement: Manifesto
 
-The Lifestyle butler SHALL have a MANIFESTO.md that defines its identity and value proposition.
+The Lifestyle butler SHALL have a `MANIFESTO.md` under `roster/lifestyle/` that defines its identity and value proposition.
 
-#### Scenario: Manifesto content
+#### Scenario: Manifesto exists and declares scope
 
 - **WHEN** the manifesto is read
-- **THEN** it SHALL communicate:
-  - The butler celebrates what the user enjoys without judgment
-  - It remembers taste preferences, tracks patterns, and surfaces discoveries
-  - It is a knowledgeable friend who remembers your taste — not a critic or algorithm
-  - The domain scope: music, entertainment, food preferences, hobbies, routines
-  - Explicit refusals: does not track nutrition/calories (Health), does not manage formal learning (Education), does not plan social events (Relationship), does not automate the home (Home)
-  - The value: over time, the butler becomes a rich map of what makes your life enjoyable
-
-### Requirement: System Prompt Structure
-
-The Lifestyle butler's CLAUDE.md SHALL follow the standard system prompt structure.
-
-#### Scenario: Shared agent context
-
-- **WHEN** the CLAUDE.md is loaded by the runtime
-- **THEN** it SHALL begin with `@../shared/AGENTS.md` to include shared agent context
-- **AND** it SHALL include sections for: tool inventory, guidelines, calendar usage, Interactive Response Mode, and Memory Classification
-
-### Requirement: Shared Skills
-
-The Lifestyle butler SHALL include shared skill symlinks for runtime instances.
-
-#### Scenario: Shared skill availability
-
-- **WHEN** the butler's `.agents/skills/` directory is created
-- **THEN** it SHALL contain symlinks to:
-  - `butler-memory` → `../../../shared/skills/butler-memory`
-  - `butler-notifications` → `../../../shared/skills/butler-notifications`
-- **AND** a `.claude` → `.agents` symlink SHALL exist at the butler root
-
-### Requirement: Shutdown
-
-The butler SHALL shut down gracefully following standard butler lifecycle.
-
-#### Scenario: Graceful shutdown
-
-- **WHEN** the butler receives a shutdown signal
-- **THEN** it SHALL close all module connections and flush pending memory writes
+- **THEN** it SHALL define the butler's scope, promises, refusals, and value to the user
+- **AND** the authoritative content lives in `roster/lifestyle/MANIFESTO.md`

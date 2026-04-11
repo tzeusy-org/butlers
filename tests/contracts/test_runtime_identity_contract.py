@@ -3,7 +3,8 @@
 Locks the ownership model documented in ``about/heart-and-soul/vision.md``
 Rule 5 and the precedence note in ``about/README.md``:
 
-- Adapter type (``[runtime].type``) — git, top-level.
+- Adapter type — a fixed process-wide constant
+  ``butlers.core.runtimes.DEFAULT_RUNTIME_TYPE``. No roster-level override.
 - Operational tuning seed — git, ``[butler.runtime_seed]``.
 - Model / session_timeout / CLI args — ``public.model_catalog`` (DB), resolved
   per spawn. Never pinned in roster.
@@ -21,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from butlers.config import ButlerType, load_config
-from butlers.core.runtimes import get_adapter
+from butlers.config import ButlerType, ConfigError, load_config
+from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE, get_adapter
 from butlers.core.runtimes.base import list_registered_runtime_types
 
 pytestmark = pytest.mark.contract
@@ -39,36 +40,34 @@ def _iter_roster_configs() -> list[tuple[str, Path]]:
     return entries
 
 
-class TestRuntimeTypeIsSingleSource:
-    """``[runtime].type`` is the only place in git that names the adapter."""
+class TestDefaultRuntimeTypeIsRegistered:
+    """The fixed ``DEFAULT_RUNTIME_TYPE`` must resolve to a real adapter."""
 
-    def test_every_roster_resolves_to_registered_adapter(self):
-        """Every roster's declared runtime adapter must exist in the registry.
-
-        If a butler config is shipped with a typo or with an adapter that has
-        not been implemented yet, daemon startup will fail at Spawner
-        construction. This test surfaces that class of drift at load time.
-        """
+    def test_default_runtime_type_is_registered(self):
         registered = set(list_registered_runtime_types())
         assert registered, "runtime registry is empty — cannot validate adapters"
+        assert DEFAULT_RUNTIME_TYPE in registered, (
+            f"DEFAULT_RUNTIME_TYPE={DEFAULT_RUNTIME_TYPE!r} not registered; "
+            f"available adapters: {sorted(registered)}"
+        )
+        get_adapter(DEFAULT_RUNTIME_TYPE)  # must not raise
 
-        failed: list[tuple[str, str]] = []
+    def test_no_roster_butler_pins_runtime_type(self):
+        """No roster butler.toml may contain a top-level [runtime] section.
+
+        The loader refuses it — this test projects that refusal into the real
+        roster so any commit that re-introduces the section trips the suite.
+        """
         for name, path in _iter_roster_configs():
-            cfg = load_config(path)
-            if cfg.runtime.type not in registered:
-                failed.append((name, cfg.runtime.type))
-            # get_adapter is what load_config already calls; keep the
-            # assertion symmetric so a future divergence between list +
-            # registry is visible.
-            get_adapter(cfg.runtime.type)
-        assert not failed, f"butlers naming unregistered runtime adapters: {failed}"
+            toml_text = (path / "butler.toml").read_text()
+            assert "[runtime]" not in toml_text, (
+                f"{name}: top-level [runtime] section is forbidden; "
+                "DEFAULT_RUNTIME_TYPE is the single source"
+            )
 
     def test_runtime_seed_never_duplicates_adapter_type(self):
         """A roster butler.toml that tries to set runtime_type under runtime_seed
         is rejected by the loader. This locks that rejection in place."""
-        from butlers.config import ConfigError
-        from butlers.config import load_config as load_cfg
-
         bad_dir = _REPO_ROOT / "tests" / "contracts" / "_synthesised_bad_runtime"
         bad_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -77,7 +76,23 @@ class TestRuntimeTypeIsSingleSource:
                 '[butler.runtime_seed]\nruntime_type = "codex"\n'
             )
             with pytest.raises(ConfigError, match=r"runtime_seed\.runtime_type"):
-                load_cfg(bad_dir)
+                load_config(bad_dir)
+        finally:
+            (bad_dir / "butler.toml").unlink(missing_ok=True)
+            bad_dir.rmdir()
+
+    def test_top_level_runtime_section_rejected(self):
+        """The loader must reject any re-introduction of top-level [runtime]."""
+        bad_dir = _REPO_ROOT / "tests" / "contracts" / "_synthesised_bad_runtime_top"
+        bad_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (bad_dir / "butler.toml").write_text(
+                '[butler]\nname = "bogus"\nport = 55551\n[runtime]\ntype = "codex"\n'
+            )
+            with pytest.raises(
+                ConfigError, match=r"Top-level \[runtime\] section is no longer supported"
+            ):
+                load_config(bad_dir)
         finally:
             (bad_dir / "butler.toml").unlink(missing_ok=True)
             bad_dir.rmdir()
@@ -100,9 +115,6 @@ class TestOperationalFieldsLiveInSeed:
             assert cfg.runtime_seed.max_queued_sessions > 0, (
                 f"{name}: runtime_seed.max_queued_sessions must be > 0"
             )
-            # RuntimeConfig snapshot exposes the same values.
-            assert cfg.runtime.max_concurrent_sessions == cfg.runtime_seed.max_concurrent_sessions
-            assert cfg.runtime.max_queued_sessions == cfg.runtime_seed.max_queued_sessions
 
 
 class TestStaffersAndButlersAreTyped:

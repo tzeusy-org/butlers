@@ -9,9 +9,6 @@ liveness_ttl_seconds = 300
 route_contract_min = 1
 route_contract_max = 1
 
-[runtime]
-type = "codex"
-
 [butler.db]
 name = "butlers"
 schema = "education"

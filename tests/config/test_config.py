@@ -14,7 +14,7 @@ from butlers.config import (
     ConfigError,
     GatedToolConfig,
     LoggingConfig,
-    RuntimeConfig,
+    RuntimeSeedConfig,
     ScheduleConfig,
     ScheduleDispatchMode,
     load_config,
@@ -75,7 +75,7 @@ def test_load_config_full_and_minimal(tmp_path: Path):
     """Full config parses all sections; minimal config applies defaults."""
     cfg = load_config(_write_toml(tmp_path, FULL_TOML))
     assert cfg.name == "jarvis" and cfg.port == 41100 and cfg.db_name == "jarvis_db"
-    assert cfg.runtime.model == "claude-haiku-4-5-20251001"
+    assert cfg.runtime_seed.max_concurrent_sessions == 3
     assert len(cfg.schedules) == 2
     assert cfg.schedules[0] == ScheduleConfig(
         name="daily_digest", cron="0 8 * * *", prompt="Summarise overnight emails"
@@ -85,7 +85,7 @@ def test_load_config_full_and_minimal(tmp_path: Path):
 
     cfg2 = load_config(_write_toml(tmp_path, MINIMAL_TOML))
     assert cfg2.name == "alfred" and cfg2.port == 9000
-    assert cfg2.runtime.model == "claude-haiku-4-5-20251001"
+    assert cfg2.runtime_seed.max_concurrent_sessions == 3
     assert cfg2.schedules == [] and cfg2.modules == {}
     assert cfg2.db_name == "butlers" and cfg2.db_schema == "alfred"
 
@@ -153,22 +153,20 @@ def test_schedule_parsing(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# RuntimeConfig + BufferConfig + LoggingConfig
+# RuntimeSeedConfig + BufferConfig + LoggingConfig
 # ---------------------------------------------------------------------------
 
 
-def test_runtime_config(tmp_path: Path):
-    """Model, args, concurrency/queue defaults and validation."""
-    assert RuntimeConfig().max_concurrent_sessions == 1
-    assert RuntimeConfig().max_queued_sessions == 100
-    assert RuntimeConfig().model == "claude-haiku-4-5-20251001"
+def test_runtime_seed_config(tmp_path: Path):
+    """Operational defaults and validation for [butler.runtime_seed]."""
+    assert RuntimeSeedConfig().max_concurrent_sessions == 3
+    assert RuntimeSeedConfig().max_queued_sessions == 10
+    assert RuntimeSeedConfig().core_groups is None
 
     runtime_toml = (
         '[butler]\nname = "m"\nport = 7010\n[butler.runtime_seed]\nmax_concurrent_sessions = 4\n'
     )
     cfg = load_config(_write_toml(tmp_path, runtime_toml))
-    assert cfg.runtime.model == "claude-haiku-4-5-20251001"
-    assert cfg.runtime.max_concurrent_sessions == 4
     assert cfg.runtime_seed.max_concurrent_sessions == 4
 
     with pytest.raises(ConfigError, match="max_queued_sessions"):
@@ -199,7 +197,8 @@ def test_runtime_config(tmp_path: Path):
 
     repo_root = Path(__file__).resolve().parents[2]
     for butler in ("switchboard", "general", "relationship", "health", "messenger"):
-        assert load_config(repo_root / "roster" / butler).runtime.max_concurrent_sessions >= 3
+        cfg_b = load_config(repo_root / "roster" / butler)
+        assert cfg_b.runtime_seed.max_concurrent_sessions >= 3
 
 
 def test_old_runtime_section_rejected(tmp_path: Path):
@@ -232,62 +231,18 @@ def test_butler_runtime_rejected_even_when_runtime_seed_present(tmp_path: Path):
         load_config(_write_toml(tmp_path, both_toml))
 
 
-def test_runtime_section_typo_rejected(tmp_path: Path):
-    """Unknown keys under top-level [runtime] fail loudly.
+def test_top_level_runtime_section_rejected(tmp_path: Path):
+    """Top-level [runtime] section is rejected at load time.
 
-    Typos used to silently fall through to the default adapter. The strict
-    allow-list makes that impossible — the parser names the offending key.
+    The runtime adapter type is fixed to ``DEFAULT_RUNTIME_TYPE`` for every
+    butler in the roster. A git-level [runtime] knob with no consumer
+    differentiation is cruft and invites silent drift, so ``load_config``
+    refuses to parse it — a fresh butler that re-introduces the section will
+    fail at load time instead of silently overriding the default.
     """
-    bad_toml = (
-        '[butler]\nname = "m"\nport = 7021\n[runtime]\ntype = "codex"\nmodle = "gpt-5.4-mini"\n'
-    )
-    with pytest.raises(ConfigError, match=r"Unknown key.*modle"):
+    bad_toml = '[butler]\nname = "m"\nport = 7030\n[runtime]\ntype = "codex"\n'
+    with pytest.raises(ConfigError, match=r"Top-level \[runtime\] section is no longer supported"):
         load_config(_write_toml(tmp_path, bad_toml))
-
-
-def test_runtime_section_empty_type_rejected(tmp_path: Path):
-    """Empty [runtime].type rejected instead of silently falling back to default."""
-    bad_toml = '[butler]\nname = "m"\nport = 7022\n[runtime]\ntype = ""\n'
-    with pytest.raises(ConfigError, match=r"\[runtime\]\.type"):
-        load_config(_write_toml(tmp_path, bad_toml))
-
-
-def test_runtime_section_unknown_adapter_rejected(tmp_path: Path):
-    """An adapter type not in the runtime registry fails fast at load time."""
-    bad_toml = '[butler]\nname = "m"\nport = 7023\n[runtime]\ntype = "nonexistent_adapter"\n'
-    with pytest.raises(ConfigError):
-        load_config(_write_toml(tmp_path, bad_toml))
-
-
-def test_runtime_type_flows_into_runtime_config(tmp_path: Path):
-    """The adapter type declared in [runtime] is the single source of truth.
-
-    ButlerConfig.runtime.type must reflect the value of [runtime].type (not a
-    hidden default), so Spawner's adapter-pool seed matches what the operator
-    declared in git.
-    """
-    toml = '[butler]\nname = "m"\nport = 7024\n[runtime]\ntype = "codex"\n'
-    cfg = load_config(_write_toml(tmp_path, toml))
-    assert cfg.runtime.type == "codex"
-
-    toml_claude = '[butler]\nname = "m"\nport = 7025\n[runtime]\ntype = "claude"\n'
-    cfg_claude = load_config(_write_toml(tmp_path, toml_claude))
-    assert cfg_claude.runtime.type == "claude"
-
-
-def test_runtime_type_default_when_section_absent(tmp_path: Path):
-    """Missing [runtime] section falls back to the documented default adapter.
-
-    Exact default is an implementation detail, but it must be a real registered
-    adapter — otherwise downstream code that instantiates a default Spawner on
-    the back of this value breaks at import time.
-    """
-    from butlers.core.runtimes import get_adapter
-
-    toml = '[butler]\nname = "m"\nport = 7026\n'
-    cfg = load_config(_write_toml(tmp_path, toml))
-    assert cfg.runtime.type  # non-empty
-    get_adapter(cfg.runtime.type)  # must not raise
 
 
 def test_roster_runtime_identity_is_internally_consistent():
@@ -308,7 +263,6 @@ def test_roster_runtime_identity_is_internally_consistent():
             continue
         parsed_any = True
         cfg = load_config(entry)
-        assert cfg.runtime.type, f"{entry.name}: runtime.type must be set"
         # runtime_seed exposes only operational fields; catalog-owned names
         # would have been rejected by _parse_runtime_seed.
         assert cfg.runtime_seed.max_concurrent_sessions > 0
@@ -348,7 +302,7 @@ def test_buffer_and_logging_config(tmp_path: Path):
 
     repo_root = Path(__file__).resolve().parents[2]
     cfg_sw = load_config(repo_root / "roster" / "switchboard")
-    assert cfg_sw.buffer.worker_count == cfg_sw.runtime.max_concurrent_sessions
+    assert cfg_sw.buffer.worker_count == cfg_sw.runtime_seed.max_concurrent_sessions
 
 
 # ---------------------------------------------------------------------------

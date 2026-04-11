@@ -87,7 +87,7 @@ The system SHALL provide a `resolve_model(butler_name, complexity_tier)` functio
 #### Scenario: No candidates fallback
 - **WHEN** `resolve_model(butler_name, complexity_tier)` finds no enabled entries for the requested tier
 - **THEN** the function returns `None`
-- **AND** the caller (spawner) falls back to the static `RuntimeConfig.model` default value (see `core-spawner` — Catalog empty fallback)
+- **AND** the caller (spawner) falls back to the module-private `_FALLBACK_MODEL_ID` constant in `butlers.core.spawner` (see `core-spawner` — Catalog empty fallback)
 
 #### Scenario: Priority tie-breaking
 - **WHEN** multiple enabled entries exist for the same butler+tier with the same effective priority

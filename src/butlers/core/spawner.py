@@ -53,6 +53,7 @@ from butlers.core.model_routing import (
     record_token_usage,
     resolve_model,
 )
+from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
@@ -80,6 +81,18 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_GLOBAL_SESSIONS = 3
 _global_semaphore: asyncio.Semaphore | None = None
+
+# Last-resort model id used only when the model catalog returns nothing
+# (no matching entry or DB unreachable). This is a hard-coded fallback
+# constant, not config — nothing in git can override it. It exists so that
+# the spawner keeps a deterministic dispatch model when the catalog path is
+# fully degraded; the catalog path is the canonical source of truth.
+_FALLBACK_MODEL_ID = "claude-haiku-4-5-20251001"
+
+# Last-resort session timeout (seconds), paired with ``_FALLBACK_MODEL_ID``.
+# Used only when neither the catalog nor a ``timeout_override`` supplies a
+# timeout for the current spawn.
+_FALLBACK_SESSION_TIMEOUT_S = 1800
 
 
 def _get_global_semaphore() -> asyncio.Semaphore:
@@ -686,13 +699,13 @@ class Spawner:
         self._credential_store = credential_store
         self._runtime_config_accessor = runtime_config_accessor
 
-        # Cold fields: read from accessor (DB) if available, else fall back to static config.
+        # Cold fields: read from accessor (DB) if available, else fall back to the runtime seed.
         if runtime_config_accessor is not None and runtime_config_accessor._cache is not None:
             _max_concurrent = runtime_config_accessor._cache.max_concurrent
             _max_queued = runtime_config_accessor._cache.max_queued
         else:
-            _max_concurrent = config.runtime.max_concurrent_sessions
-            _max_queued = config.runtime.max_queued_sessions
+            _max_concurrent = config.runtime_seed.max_concurrent_sessions
+            _max_queued = config.runtime_seed.max_queued_sessions
         self._session_semaphore = asyncio.Semaphore(_max_concurrent)
         self._max_queued_sessions = _max_queued
         self._accepting = True
@@ -707,12 +720,14 @@ class Spawner:
 
         if runtime is not None:
             self._runtime = runtime
-            # Seed the adapter pool with the injected runtime under the TOML type.
-            # This allows tests to inject a mock without requiring a full adapter registry.
+            # Seed the adapter pool with the injected runtime under the default
+            # adapter type. Tests that inject a mock adapter get a one-entry
+            # pool keyed by the fixed default type; per-session runtime types
+            # are resolved lazily via :meth:`_get_or_create_adapter`.
             self._adapter_pool: dict[str, RuntimeAdapter] = {
-                config.runtime.type: runtime,
+                DEFAULT_RUNTIME_TYPE: runtime,
             }
-            self._adapter_pool_cfg: dict[str, str] = {config.runtime.type: ""}
+            self._adapter_pool_cfg: dict[str, str] = {DEFAULT_RUNTIME_TYPE: ""}
         else:
             # Default: create a ClaudeCodeAdapter with the real SDK query
             from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
@@ -724,9 +739,9 @@ class Spawner:
                 credential_store=credential_store,
             )
             self._adapter_pool = {
-                config.runtime.type: self._runtime,
+                DEFAULT_RUNTIME_TYPE: self._runtime,
             }
-            self._adapter_pool_cfg = {config.runtime.type: ""}
+            self._adapter_pool_cfg = {DEFAULT_RUNTIME_TYPE: ""}
 
     def wire_healing_module(self, healing_module: Any) -> None:
         """Wire the self-healing module for spawner fallback dispatch.
@@ -887,7 +902,7 @@ class Spawner:
             return SpawnerResult(
                 success=False,
                 error=error_msg,
-                model=self._config.runtime.model,
+                model=_FALLBACK_MODEL_ID,
             )
 
         # Implementation note: queue-depth checks read Semaphore._waiters, which
@@ -906,7 +921,7 @@ class Spawner:
             return SpawnerResult(
                 success=False,
                 error=error_msg,
-                model=self._config.runtime.model,
+                model=_FALLBACK_MODEL_ID,
             )
 
         self._in_flight_event.clear()
@@ -1084,10 +1099,10 @@ class Spawner:
         if context:
             final_prompt = f"{context}\n\n{prompt}"
 
-        # Resolve model from the catalog; fall back to static butler config only
-        # when no catalog entry exists or catalog resolution fails.
-        toml_runtime_type = self._config.runtime.type
-        toml_model = self._config.runtime.model
+        # Resolve model from the catalog; fall back to the hard-coded default
+        # constants only when no catalog entry exists or catalog resolution fails.
+        fallback_runtime_type = DEFAULT_RUNTIME_TYPE
+        fallback_model = _FALLBACK_MODEL_ID
         catalog_result = None
         if self._pool is not None:
             try:
@@ -1126,11 +1141,11 @@ class Spawner:
             ) = catalog_result
             resolution_source = "catalog"
         else:
-            resolved_runtime_type = toml_runtime_type
-            model = toml_model
+            resolved_runtime_type = fallback_runtime_type
+            model = fallback_model
             catalog_extra_args = []
             catalog_timeout_s = None
-            resolution_source = "toml_fallback"
+            resolution_source = "static_fallback"
 
         logger.debug(
             "Model resolution: butler=%s complexity=%s source=%s runtime_type=%s model=%s",
@@ -1175,7 +1190,7 @@ class Spawner:
         provider_config = await self._resolve_provider_config(model)
 
         # Select adapter for the resolved runtime type (lazy instantiation on demand).
-        # Fall back to the TOML adapter if the catalog resolved an unregistered runtime type.
+        # Fall back to the default adapter if the catalog resolved an unregistered runtime type.
         try:
             runtime = self._get_or_create_adapter(
                 resolved_runtime_type, provider_config
@@ -1183,21 +1198,21 @@ class Spawner:
         except ValueError:
             logger.warning(
                 "Catalog resolved unregistered runtime_type=%s for butler=%s; "
-                "falling back to TOML runtime_type=%s",
+                "falling back to default runtime_type=%s",
                 resolved_runtime_type,
                 self._config.name,
-                toml_runtime_type,
+                fallback_runtime_type,
             )
-            resolved_runtime_type = toml_runtime_type
-            model = toml_model
+            resolved_runtime_type = fallback_runtime_type
+            model = fallback_model
             catalog_extra_args = []
             catalog_timeout_s = None
-            resolution_source = "toml_fallback"
-            runtime = self._get_or_create_adapter(toml_runtime_type).create_worker()
+            resolution_source = "static_fallback"
+            runtime = self._get_or_create_adapter(fallback_runtime_type).create_worker()
 
-        # Merge args: TOML args first, then catalog extra_args appended
-        base_args = list(self._config.runtime.args)
-        merged_args = base_args + catalog_extra_args
+        # Use the catalog-supplied extra args. There is no butler-level args
+        # fallback: the model catalog is the sole source of per-session CLI args.
+        merged_args = list(catalog_extra_args)
 
         # Get tracer and start butler.llm_session span with parent context
         tracer = trace.get_tracer("butlers")
@@ -1347,7 +1362,7 @@ class Spawner:
             elif catalog_timeout_s is not None:
                 timeout_s = catalog_timeout_s
             else:
-                timeout_s = self._config.runtime.session_timeout_s
+                timeout_s = _FALLBACK_SESSION_TIMEOUT_S
             invoke_kwargs["timeout"] = timeout_s
             try:
                 result_text, tool_calls, usage = await asyncio.wait_for(

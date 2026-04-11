@@ -1016,7 +1016,7 @@ class ButlerDaemon:
         if _accessor is not None and _accessor._cache is not None:
             _core_groups = _accessor._cache.core_groups
         else:
-            _core_groups = self.config.runtime.core_groups
+            _core_groups = self.config.runtime_seed.core_groups
 
         # Name-gated groups: only effective for specific butlers.
         _name_gated_groups = {

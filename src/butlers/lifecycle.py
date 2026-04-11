@@ -27,7 +27,7 @@ from butlers.config import (
 )
 from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import init_metrics
-from butlers.core.runtimes import get_adapter
+from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE, get_adapter
 from butlers.core.scheduler import sync_schedules
 from butlers.core.skills import get_skills_dir
 from butlers.core.spawner import Spawner
@@ -266,9 +266,9 @@ async def run_startup(daemon: Any) -> None:
             daemon._cascade_module_failures()
 
     # 10. Create Spawner with runtime adapter (verify binary on PATH)
-    adapter_cls = get_adapter(daemon.config.runtime.type)
+    adapter_cls = get_adapter(DEFAULT_RUNTIME_TYPE)
     # ClaudeCodeAdapter accepts butler_name/log_root for CC stderr capture
-    if daemon.config.runtime.type == "claude":
+    if DEFAULT_RUNTIME_TYPE == "claude":
         runtime = adapter_cls(butler_name=daemon.config.name, log_root=log_root)
     else:
         runtime = adapter_cls()
@@ -277,7 +277,7 @@ async def run_startup(daemon: Any) -> None:
     if not shutil.which(binary):
         raise RuntimeBinaryNotFoundError(
             f"Runtime binary {binary!r} not found on PATH. "
-            f"The {daemon.config.runtime.type!r} runtime requires {binary!r} to be installed."
+            f"The {DEFAULT_RUNTIME_TYPE!r} runtime requires {binary!r} to be installed."
         )
 
     # 10a. Set up audit pool for daemon-side audit logging

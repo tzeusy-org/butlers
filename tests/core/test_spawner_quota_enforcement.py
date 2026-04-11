@@ -23,8 +23,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.config import ButlerConfig, RuntimeConfig
+from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.model_routing import QuotaStatus
+from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 
@@ -94,7 +95,7 @@ def _make_config(name: str = "test-butler", port: int = 9100) -> ButlerConfig:
     return ButlerConfig(
         name=name,
         port=port,
-        runtime=RuntimeConfig(max_concurrent_sessions=1),
+        runtime_seed=RuntimeSeedConfig(max_concurrent_sessions=1),
         modules={},
         env_required=[],
         env_optional=[],
@@ -143,7 +144,7 @@ class TestSpawnerQuotaEnforcement:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -163,7 +164,7 @@ class TestSpawnerQuotaEnforcement:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -194,7 +195,7 @@ class TestSpawnerQuotaEnforcement:
                 patch(
                     "butlers.core.spawner.resolve_model",
                     new_callable=AsyncMock,
-                    return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                    return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
                 ),
                 patch(
                     "butlers.core.spawner.check_token_quota",
@@ -274,7 +275,7 @@ class TestSpawnerLedgerRecording:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -315,7 +316,7 @@ class TestSpawnerLedgerRecording:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",
@@ -346,7 +347,7 @@ class TestSpawnerLedgerRecording:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+                return_value=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
             ),
             patch(
                 "butlers.core.spawner.check_token_quota",

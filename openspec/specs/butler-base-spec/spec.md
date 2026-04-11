@@ -242,8 +242,9 @@ The spawner generates ephemeral MCP configurations and invokes LLM CLI runtimes 
 - **AND** no undeclared environment variables leak from the host to the runtime subprocess
 
 #### Scenario: Runtime adapter selection
-- **WHEN** `butler.toml` specifies `[runtime] type = "codex"` (or `"claude"`, `"gemini"`)
-- **THEN** the corresponding adapter is used: CodexAdapter (GPT models), ClaudeCodeAdapter (Claude models), GeminiAdapter (Gemini models)
+- **WHEN** the daemon seeds its Spawner adapter pool at startup
+- **THEN** the default adapter is resolved from the process-wide constant `DEFAULT_RUNTIME_TYPE` in `butlers.core.runtimes` (currently `"codex"`) — there is no per-butler `[runtime]` knob in `butler.toml`
+- **AND** per-session runtime type overrides come from `public.model_catalog` via `resolve_model()`, which may instantiate any registered adapter (CodexAdapter, ClaudeCodeAdapter, GeminiAdapter, OpenCodeAdapter) lazily on demand
 - **AND** each adapter implements `async invoke(prompt, system_prompt, mcp_servers, env, ...)` returning `(result_text, tool_calls, usage_dict)`
 
 #### Scenario: Concurrency control
@@ -281,9 +282,9 @@ The `butler.toml` file declares butler identity, runtime, database, modules, sch
 
 #### Scenario: Runtime configuration
 - **WHEN** the runtime-related sections of `butler.toml` are parsed
-- **THEN** `[butler.runtime_seed]` is the only butler-scoped runtime block and contains operational seed fields only: `core_groups`, `max_concurrent_sessions`, `max_queued_sessions`, `liveness_ttl_seconds`, `route_contract_min`, `route_contract_max`
-- **AND** top-level `[runtime].type` selects the default adapter binary (`codex`, `claude`, `gemini`, `opencode`) used to seed the Spawner's adapter pool
-- **AND** the legacy sections `[butler.runtime]` and `[butler.seed_configs]` are rejected at load time with a `ConfigError`
+- **THEN** `[butler.runtime_seed]` is the sole butler-scoped runtime block and contains operational seed fields only: `core_groups`, `max_concurrent_sessions`, `max_queued_sessions`, `liveness_ttl_seconds`, `route_contract_min`, `route_contract_max`
+- **AND** the default runtime adapter type is fixed for the whole roster by the `DEFAULT_RUNTIME_TYPE` constant in `butlers.core.runtimes`; there is no per-butler adapter knob in git
+- **AND** the legacy sections `[butler.runtime]`, `[butler.seed_configs]`, and top-level `[runtime]` are all rejected at load time with a `ConfigError` (a roster butler.toml that re-introduces any of them fails fast)
 - **AND** model identity, per-session timeout, CLI args, and runtime type overrides live in `public.model_catalog` (resolved per spawn by `resolve_model()`); they must not be duplicated in `butler.toml`
 
 #### Scenario: Database configuration

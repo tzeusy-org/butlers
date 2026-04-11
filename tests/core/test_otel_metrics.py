@@ -24,7 +24,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.util._once import Once
 
 import butlers.core.metrics as _metrics_mod
-from butlers.config import BufferConfig, ButlerConfig, RuntimeConfig
+from butlers.config import BufferConfig, ButlerConfig, RuntimeSeedConfig
 from butlers.core.buffer import DurableBuffer, _MessageRef
 from butlers.core.metrics import ButlerMetrics, init_metrics
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -198,7 +198,9 @@ async def test_spawner_and_buffer_metrics_integration(tmp_path: Path) -> None:
     _provider, reader = _make_in_memory_provider()
     try:
         config = ButlerConfig(
-            name="metrics-spawner-test", port=9100, runtime=RuntimeConfig(max_concurrent_sessions=2)
+            name="metrics-spawner-test",
+            port=9100,
+            runtime_seed=RuntimeSeedConfig(max_concurrent_sessions=2),
         )
         (tmp_path / "CLAUDE.md").write_text("# test")
         spawner = Spawner(config=config, config_dir=tmp_path, runtime=MockAdapter())

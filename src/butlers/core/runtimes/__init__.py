@@ -5,6 +5,7 @@ adapter classes by runtime type string.
 """
 
 from butlers.core.runtimes.base import (
+    DEFAULT_RUNTIME_TYPE,
     RuntimeAdapter,
     create_adapter,
     get_adapter,
@@ -17,6 +18,7 @@ from butlers.core.runtimes.gemini import GeminiAdapter
 from butlers.core.runtimes.opencode import OpenCodeAdapter
 
 __all__ = [
+    "DEFAULT_RUNTIME_TYPE",
     "ClaudeCodeAdapter",
     "CodexAdapter",
     "GeminiAdapter",
