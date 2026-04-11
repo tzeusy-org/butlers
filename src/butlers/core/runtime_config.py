@@ -1,11 +1,11 @@
 """RuntimeConfigAccessor — TTL-cached read/write accessor for per-butler runtime config.
 
-The ``runtime_config`` table stores operational tuning knobs (model, runtime_type,
-concurrency limits, core_groups, session timeout, CLI args) in each butler's schema.
+The ``runtime_config`` table stores operational tuning knobs (concurrency limits
+and core tool groups) in each butler's schema.
 
 The accessor is created during daemon startup (phase 9b) and shared between:
 - The daemon (for ``core_groups`` at tool registration time)
-- The spawner (for hot fields per-trigger: model, runtime_type, args, session_timeout_s)
+- The spawner constructor (for concurrency limits cached at startup)
 
 Cache behavior:
 - ``get()`` returns the cached row if within TTL, otherwise queries the DB.
@@ -15,7 +15,6 @@ Cache behavior:
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass
@@ -37,12 +36,8 @@ class RuntimeConfig:
 
     butler_name: str
     core_groups: tuple[str, ...] | None = None
-    model: str | None = None
-    runtime_type: str = "codex"
-    args: tuple[str, ...] = ()
     max_concurrent: int = 3
     max_queued: int = 10
-    session_timeout_s: int = 900
     seeded_at: str | None = None
     updated_at: str | None = None
 
@@ -52,20 +47,11 @@ def _row_to_config(row: asyncpg.Record) -> RuntimeConfig:
     raw_core_groups = row["core_groups"]
     core_groups = tuple(raw_core_groups) if raw_core_groups is not None else None
 
-    raw_args = row["args"]
-    if isinstance(raw_args, str):
-        raw_args = json.loads(raw_args)
-    args = tuple(raw_args) if raw_args else ()
-
     return RuntimeConfig(
         butler_name=row["butler_name"],
         core_groups=core_groups,
-        model=row["model"],
-        runtime_type=row["runtime_type"],
-        args=args,
         max_concurrent=row["max_concurrent"],
         max_queued=row["max_queued"],
-        session_timeout_s=row["session_timeout_s"],
         seeded_at=str(row["seeded_at"]) if row["seeded_at"] else None,
         updated_at=str(row["updated_at"]) if row["updated_at"] else None,
     )
@@ -139,25 +125,19 @@ class RuntimeConfigAccessor:
 
         Returns the effective runtime config (existing or newly seeded).
         """
-        args_json = json.dumps(list(seed.args))
         core_groups_val = list(seed.core_groups) if seed.core_groups is not None else None
 
         await self._pool.execute(
             f"""
             INSERT INTO {self._schema}.runtime_config
-                (butler_name, core_groups, model, runtime_type, args,
-                 max_concurrent, max_queued, session_timeout_s)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+                (butler_name, core_groups, max_concurrent, max_queued)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (butler_name) DO NOTHING
             """,
             butler_name,
             core_groups_val,
-            seed.model,
-            seed.runtime_type,
-            args_json,
             seed.max_concurrent_sessions,
             seed.max_queued_sessions,
-            seed.session_timeout_s,
         )
 
         # Always read back the effective row (may be pre-existing)

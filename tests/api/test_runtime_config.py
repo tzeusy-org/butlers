@@ -25,24 +25,16 @@ pytestmark = pytest.mark.unit
 def _mock_row(
     butler_name: str = "test",
     core_groups: list[str] | None = None,
-    model: str | None = "gpt-5.4-mini",
-    runtime_type: str = "codex",
-    args: str = "[]",
     max_concurrent: int = 3,
     max_queued: int = 10,
-    session_timeout_s: int = 900,
     seeded_at: str = "2026-01-01T00:00:00+00:00",
     updated_at: str = "2026-01-01T00:00:00+00:00",
 ) -> MagicMock:
     data = {
         "butler_name": butler_name,
         "core_groups": core_groups,
-        "model": model,
-        "runtime_type": runtime_type,
-        "args": args,
         "max_concurrent": max_concurrent,
         "max_queued": max_queued,
-        "session_timeout_s": session_timeout_s,
         "seeded_at": seeded_at,
         "updated_at": updated_at,
     }
@@ -92,10 +84,11 @@ def test_get_success():
     assert resp.status_code == 200
     data = resp.json()
     assert data["butler_name"] == "test"
-    assert data["model"] == "gpt-5.4-mini"
-    assert data["runtime_type"] == "codex"
+    assert "model" not in data
+    assert "runtime_type" not in data
+    assert "args" not in data
+    assert "session_timeout_s" not in data
     assert "field_tiers" in data
-    assert data["field_tiers"]["model"] == "hot"
     assert data["field_tiers"]["core_groups"] == "cold"
 
 
@@ -109,23 +102,23 @@ def test_get_404_unknown_butler():
     assert resp.status_code == 404
 
 
-def test_patch_hot_field():
-    """PATCH of hot field returns empty restart_required."""
+def test_patch_max_concurrent_is_cold_field():
+    """PATCH of max_concurrent returns restart_required."""
     pool = AsyncMock()
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_mock_row(session_timeout_s=1200))
+    pool.fetchrow = AsyncMock(return_value=_mock_row(max_concurrent=5))
     db = _make_db_manager(pool=pool)
     app = _make_app(db)
 
     client = TestClient(app)
     resp = client.patch(
         "/api/butlers/test/runtime-config",
-        json={"session_timeout_s": 1200},
+        json={"max_concurrent": 5},
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["restart_required"] == []
-    assert data["config"]["session_timeout_s"] == 1200
+    assert data["restart_required"] == ["max_concurrent"]
+    assert data["config"]["max_concurrent"] == 5
 
 
 def test_patch_cold_field():
@@ -189,6 +182,20 @@ def test_patch_negative_concurrency():
     resp = client.patch(
         "/api/butlers/test/runtime-config",
         json={"max_concurrent": -1},
+    )
+    assert resp.status_code == 422
+
+
+def test_patch_rejects_removed_runtime_selection_fields():
+    """PATCH rejects removed runtime-selection fields."""
+    pool = AsyncMock()
+    db = _make_db_manager(pool=pool)
+    app = _make_app(db)
+
+    client = TestClient(app)
+    resp = client.patch(
+        "/api/butlers/test/runtime-config",
+        json={"session_timeout_s": 1200},
     )
     assert resp.status_code == 422
 

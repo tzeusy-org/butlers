@@ -380,6 +380,7 @@ interface ModelFormValues {
   extra_args_raw: string;
   complexity_tier: ComplexityTier;
   priority: string;
+  session_timeout_s: string;
   enabled: boolean;
 }
 
@@ -391,6 +392,7 @@ function defaultFormValues(entry?: ModelCatalogEntry | null): ModelFormValues {
     extra_args_raw: entry ? JSON.stringify(entry.extra_args, null, 2) : "[]",
     complexity_tier: entry?.complexity_tier ?? "medium",
     priority: String(entry?.priority ?? 0),
+    session_timeout_s: String(entry?.session_timeout_s ?? 1800),
     enabled: entry?.enabled ?? true,
   };
 }
@@ -481,13 +483,16 @@ function ModelFormFields({
 
   const parsedArgs = parseExtraArgs(values.extra_args_raw);
   const priorityNum = parseInt(values.priority, 10);
+  const sessionTimeoutNum = parseInt(values.session_timeout_s, 10);
   const priorityValid = !isNaN(priorityNum);
+  const sessionTimeoutValid = !isNaN(sessionTimeoutNum) && sessionTimeoutNum > 0;
   const isValid =
     values.alias.trim() !== "" &&
     values.runtime_type.trim() !== "" &&
     values.model_id.trim() !== "" &&
     parsedArgs.error === null &&
-    priorityValid;
+    priorityValid &&
+    sessionTimeoutValid;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -499,11 +504,16 @@ function ModelFormFields({
       extra_args: parsedArgs.value,
       complexity_tier: values.complexity_tier,
       priority: priorityNum,
+      session_timeout_s: sessionTimeoutNum,
       enabled: values.enabled,
     });
   }
 
-  const displayError = parsedArgs.error ?? (!priorityValid ? "Priority must be an integer" : null) ?? error;
+  const displayError =
+    parsedArgs.error ??
+    (!priorityValid ? "Priority must be an integer" : null) ??
+    (!sessionTimeoutValid ? "Session timeout must be a positive integer" : null) ??
+    error;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -589,7 +599,7 @@ function ModelFormFields({
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <div className="space-y-2">
           <Label htmlFor="model-complexity-tier">Complexity Tier</Label>
           <Select
@@ -622,6 +632,19 @@ function ModelFormFields({
             disabled={isSubmitting}
           />
           <p className="text-xs text-muted-foreground">Higher = higher priority.</p>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="model-session-timeout">Session Timeout (s)</Label>
+          <Input
+            id="model-session-timeout"
+            type="number"
+            min={1}
+            value={values.session_timeout_s}
+            onChange={(e) => setValues((v) => ({ ...v, session_timeout_s: e.target.value }))}
+            placeholder="1800"
+            disabled={isSubmitting}
+          />
+          <p className="text-xs text-muted-foreground">Per-session runtime budget for this catalog row.</p>
         </div>
       </div>
 
@@ -724,6 +747,7 @@ function SkeletonRows({ count = 4 }: { count?: number }) {
           <TableCell><Skeleton className="h-4 w-12" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
         </TableRow>
       ))}
@@ -953,6 +977,7 @@ export function ModelCatalogCard() {
                       </TooltipProvider>
                     </div>
                   </TableHead>
+                  <TableHead>Timeout</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1023,6 +1048,7 @@ export function ModelCatalogCard() {
                       </TooltipProvider>
                     </div>
                   </TableHead>
+                  <TableHead>Timeout</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1030,7 +1056,7 @@ export function ModelCatalogCard() {
                 {grouped.map(({ tier, entries: tierEntries }) => (
                   <>
                     <TableRow key={`tier-${tier}`} className="hover:bg-transparent">
-                      <TableCell colSpan={10} className="py-2 px-0">
+                      <TableCell colSpan={11} className="py-2 px-0">
                         <div className="flex items-center gap-2">
                           <ComplexityBadge tier={tier} />
                           {tier === "discretion" && (
@@ -1165,6 +1191,9 @@ export function ModelCatalogCard() {
                             limit={entry.limit_30d}
                             onLimitClick={() => setLimitEditor({ entry, window: "30d" })}
                           />
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+                          {entry.session_timeout_s}s
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">

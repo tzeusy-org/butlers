@@ -190,7 +190,7 @@ class DiscretionDispatcher:
                 "Add an enabled entry with complexity_tier='discretion'."
             )
 
-        runtime_type, model_id, extra_args, catalog_entry_id = catalog_result
+        runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = catalog_result
 
         # Pre-call quota check: block if catalog entry token budget is exhausted.
         quota = await check_token_quota(self._pool, catalog_entry_id)
@@ -228,12 +228,13 @@ class DiscretionDispatcher:
                 max_turns=1,
                 model=model_id,
                 runtime_args=extra_args or None,
+                timeout=session_timeout_s,
             )
             return result_text or ""
 
         async with self._semaphore:
             try:
-                result = await asyncio.wait_for(_invoke(), timeout=self._timeout_s)
+                result = await asyncio.wait_for(_invoke(), timeout=session_timeout_s)
             finally:
                 # Record token usage best-effort (success and failure).
                 # Tokens are consumed by the provider on invocation regardless of outcome.

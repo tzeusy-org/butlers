@@ -24,7 +24,7 @@ For a given ``butler_name`` and ``complexity_tier``:
    ``public.model_round_robin_counters`` and select the candidate at index
    ``counter % candidate_count`` (round-robin).
 8. Return the selected row as (runtime_type, model_id, extra_args,
-   catalog_entry_id), or None if no matching entries exist.
+   catalog_entry_id, session_timeout_s), or None if no matching entries exist.
 """
 
 from __future__ import annotations
@@ -88,6 +88,7 @@ WITH candidates AS (
         mc.model_id,
         mc.extra_args,
         mc.id,
+        mc.session_timeout_s,
         ROW_NUMBER() OVER (ORDER BY mc.created_at ASC, mc.id ASC) - 1 AS rn,
         COUNT(*) OVER () AS total
     FROM public.model_catalog mc
@@ -117,7 +118,7 @@ next_counter AS (
                   updated_at = now()
     RETURNING counter
 )
-SELECT c.runtime_type, c.model_id, c.extra_args, c.id
+SELECT c.runtime_type, c.model_id, c.extra_args, c.id, c.session_timeout_s
 FROM candidates c, next_counter nc
 WHERE c.rn = (nc.counter % c.total)
 """
@@ -176,7 +177,7 @@ async def resolve_model(
     pool: asyncpg.Pool,
     butler_name: str,
     complexity_tier: Complexity | str,
-) -> tuple[str, str, list[str], uuid.UUID] | None:
+) -> tuple[str, str, list[str], uuid.UUID, int] | None:
     """Resolve the best model for a butler and complexity tier.
 
     Queries ``public.model_catalog`` with an optional ``public.butler_model_overrides``
@@ -202,11 +203,12 @@ async def resolve_model(
 
     Returns
     -------
-    tuple[str, str, list[str], uuid.UUID] | None
-        ``(runtime_type, model_id, extra_args, catalog_entry_id)`` for the
-        selected entry, or ``None`` if no enabled entries match.
+    tuple[str, str, list[str], uuid.UUID, int] | None
+        ``(runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s)``
+        for the selected entry, or ``None`` if no enabled entries match.
         ``extra_args`` is a list of CLI token strings (e.g. ``["--config", "k=v"]``).
         ``catalog_entry_id`` is the UUID primary key of the matched catalog row.
+        ``session_timeout_s`` is the per-session runtime timeout from the catalog row.
     """
     if isinstance(complexity_tier, Complexity):
         tier_value = complexity_tier.value
@@ -229,7 +231,13 @@ async def resolve_model(
     else:
         extra_args = []
 
-    return (row["runtime_type"], row["model_id"], extra_args, row["id"])
+    return (
+        row["runtime_type"],
+        row["model_id"],
+        extra_args,
+        row["id"],
+        row["session_timeout_s"],
+    )
 
 
 async def check_token_quota(

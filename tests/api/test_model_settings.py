@@ -32,6 +32,7 @@ def _make_catalog_row(
     complexity_tier="medium",
     enabled=True,
     priority=0,
+    session_timeout_s=1800,
     extra_args=None,
 ):
     return {
@@ -43,6 +44,7 @@ def _make_catalog_row(
         "complexity_tier": complexity_tier,
         "enabled": enabled,
         "priority": priority,
+        "session_timeout_s": session_timeout_s,
     }
 
 
@@ -110,6 +112,7 @@ class TestCatalogEntries:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert len(data) == 2
+        assert data[0]["session_timeout_s"] == 1800
 
     async def test_list_503_when_pool_unavailable(self, app):
         _app_with_pool(app, pool_raises=KeyError("No shared pool"))
@@ -121,7 +124,12 @@ class TestCatalogEntries:
 
     async def test_create_returns_201(self, app):
         created_id = uuid.uuid4()
-        row = _make_catalog_row(entry_id=created_id, alias="new-model", runtime_type="codex")
+        row = _make_catalog_row(
+            entry_id=created_id,
+            alias="new-model",
+            runtime_type="codex",
+            session_timeout_s=2400,
+        )
         _app_with_pool(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -135,10 +143,31 @@ class TestCatalogEntries:
                     "complexity_tier": "medium",
                     "enabled": True,
                     "priority": 0,
+                    "session_timeout_s": 2400,
                 },
             )
         assert resp.status_code == 201
         assert resp.json()["data"]["alias"] == "new-model"
+        assert resp.json()["data"]["session_timeout_s"] == 2400
+
+    async def test_update_catalog_entry_includes_session_timeout(self, app):
+        updated_id = uuid.uuid4()
+        row = _make_catalog_row(
+            entry_id=updated_id,
+            alias="updated-model",
+            runtime_type="codex",
+            session_timeout_s=2400,
+        )
+        _app_with_pool(app, fetchrow_result=row)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                f"/api/settings/models/{updated_id}",
+                json={"session_timeout_s": 2400},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["session_timeout_s"] == 2400
 
     async def test_create_409_on_duplicate_alias(self, app):
         app2, mock_pool = _app_with_pool(app)

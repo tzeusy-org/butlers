@@ -103,6 +103,7 @@ async def _create_schema(pool: asyncpg.Pool) -> None:
             complexity_tier TEXT NOT NULL DEFAULT 'medium',
             enabled         BOOLEAN NOT NULL DEFAULT true,
             priority        INTEGER NOT NULL DEFAULT 0,
+            session_timeout_s INT NOT NULL DEFAULT 1800,
             created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
             CONSTRAINT uq_model_catalog_alias UNIQUE (alias),
@@ -148,6 +149,7 @@ async def _insert_catalog_entry(
     complexity_tier: str = "medium",
     enabled: bool = True,
     priority: int = 0,
+    session_timeout_s: int = 1800,
     extra_args: list[str] | None = None,
 ) -> str:
     import json
@@ -156,8 +158,8 @@ async def _insert_catalog_entry(
     row = await pool.fetchrow(
         """
         INSERT INTO public.model_catalog
-            (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
-        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+            (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority, session_timeout_s)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
         RETURNING id
         """,
         alias,
@@ -167,6 +169,7 @@ async def _insert_catalog_entry(
         complexity_tier,
         enabled,
         priority,
+        session_timeout_s,
     )
     return str(row["id"])
 
@@ -221,11 +224,12 @@ async def test_resolve_basic_catalog(postgres_container: Any) -> None:
         )
         result = await resolve_model(pool, "general", Complexity.MEDIUM)
         assert result is not None
-        runtime_type, model_id, extra_args, catalog_entry_id = result
+        runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = result
         assert runtime_type == "claude"
         assert model_id == "claude-sonnet-4"
         assert extra_args == []
         assert str(catalog_entry_id) == entry_id
+        assert session_timeout_s == 1800
 
         # Wrong tier returns None
         assert await resolve_model(pool, "general", Complexity.HIGH) is None
@@ -233,6 +237,29 @@ async def test_resolve_basic_catalog(postgres_container: Any) -> None:
     # Empty catalog returns None
     async with _make_pool(postgres_container) as pool:
         assert await resolve_model(pool, "general", Complexity.MEDIUM) is None
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_resolve_returns_catalog_session_timeout(postgres_container: Any) -> None:
+    """Resolved catalog rows include per-row session_timeout_s."""
+    async with _make_pool(postgres_container) as pool:
+        entry_id = await _insert_catalog_entry(
+            pool,
+            alias="timed-sonnet",
+            model_id="claude-sonnet-4",
+            complexity_tier="medium",
+            session_timeout_s=2400,
+        )
+        result = await resolve_model(pool, "general", Complexity.MEDIUM)
+        assert result is not None
+        runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = result
+        assert runtime_type == "claude"
+        assert model_id == "claude-sonnet-4"
+        assert extra_args == []
+        assert str(catalog_entry_id) == entry_id
+        assert session_timeout_s == 2400
 
 
 @pytest.mark.integration

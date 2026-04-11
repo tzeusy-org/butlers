@@ -2295,6 +2295,7 @@ export interface ModelCatalogEntry {
   complexity_tier: ComplexityTier;
   enabled: boolean;
   priority: number;
+  session_timeout_s: number;
   /** Rolling 24h token usage (from ledger aggregation). */
   usage_24h: number;
   /** Rolling 30d token usage (from ledger aggregation). */
@@ -2314,6 +2315,7 @@ export interface ModelCatalogCreate {
   complexity_tier?: ComplexityTier;
   enabled?: boolean;
   priority?: number;
+  session_timeout_s?: number;
 }
 
 /** Request body for updating a catalog entry (all fields optional). */
@@ -2325,6 +2327,7 @@ export interface ModelCatalogUpdate {
   complexity_tier?: ComplexityTier;
   enabled?: boolean;
   priority?: number;
+  session_timeout_s?: number;
 }
 
 /** A single per-butler model override joined with catalog alias. */
@@ -2361,6 +2364,7 @@ export interface ResolveModelResponse {
   runtime_type: string | null;
   model_id: string | null;
   extra_args: string[];
+  session_timeout_s: number | null;
   resolved: boolean;
   /** True when either window's usage meets or exceeds its configured limit. */
   quota_blocked: boolean;
@@ -3110,12 +3114,8 @@ export interface QaAllowedRepoPatch {
 export interface RuntimeConfigResponse {
   butler_name: string;
   core_groups: string[] | null;
-  model: string | null;
-  runtime_type: string;
-  args: string[];
   max_concurrent: number;
   max_queued: number;
-  session_timeout_s: number;
   seeded_at: string | null;
   updated_at: string | null;
   field_tiers: Record<string, "hot" | "cold">;
@@ -3124,12 +3124,8 @@ export interface RuntimeConfigResponse {
 /** Request body for PATCH /api/butlers/{name}/runtime-config. */
 export interface RuntimeConfigPatch {
   core_groups?: string[] | null;
-  model?: string | null;
-  runtime_type?: string;
-  args?: string[];
   max_concurrent?: number;
   max_queued?: number;
-  session_timeout_s?: number;
 }
 
 /** Response from PATCH /api/butlers/{name}/runtime-config. */

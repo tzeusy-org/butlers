@@ -847,10 +847,10 @@ class Spawner:
             with this explicit environment map. Used by the QA dispatcher to pass
             a sandboxed environment that strips dangerous variables.
         timeout_override:
-            When provided, overrides the runtime_config ``session_timeout_s``
-            for this invocation (in seconds).  Used by the self-healing and QA
-            dispatchers whose watchdog timeouts may differ from the butler's
-            default session timeout.
+            When provided, overrides the resolved per-session timeout for this
+            invocation (in seconds). Used by the self-healing and QA dispatchers
+            whose workflow watchdog caps may differ from the catalog/default
+            session timeout.
 
         Returns
         -------
@@ -1084,35 +1084,10 @@ class Spawner:
         if context:
             final_prompt = f"{context}\n\n{prompt}"
 
-        # Resolve model from catalog; fall back to DB-backed runtime config
-        # (via RuntimeConfigAccessor) when catalog is unavailable. The accessor
-        # reads hot fields per-trigger with a 30s TTL cache, so dashboard changes
-        # take effect within 30s without restart.
-        _accessor = self._runtime_config_accessor
-        if _accessor is not None:
-            try:
-                _rt_cfg = await _accessor.get()
-                accessor_runtime_type = _rt_cfg.runtime_type
-                accessor_model = _rt_cfg.model
-                accessor_args = _rt_cfg.args
-                accessor_timeout = _rt_cfg.session_timeout_s
-            except Exception:
-                logger.debug(
-                    "RuntimeConfigAccessor.get() failed; using static config",
-                    exc_info=True,
-                )
-                accessor_runtime_type = None
-                accessor_model = None
-                accessor_args = None
-                accessor_timeout = None
-        else:
-            accessor_runtime_type = None
-            accessor_model = None
-            accessor_args = None
-            accessor_timeout = None
-
-        toml_runtime_type = accessor_runtime_type or self._config.runtime.type
-        toml_model = accessor_model or self._config.runtime.model
+        # Resolve model from the catalog; fall back to static butler config only
+        # when no catalog entry exists or catalog resolution fails.
+        toml_runtime_type = self._config.runtime.type
+        toml_model = self._config.runtime.model
         catalog_result = None
         if self._pool is not None:
             try:
@@ -1132,20 +1107,29 @@ class Spawner:
         _catalog_valid = (
             catalog_result is not None
             and isinstance(catalog_result, tuple)
-            and len(catalog_result) == 4
+            and len(catalog_result) == 5
             and isinstance(catalog_result[0], str)
             and isinstance(catalog_result[1], str)
             and isinstance(catalog_result[2], list)
+            and isinstance(catalog_result[4], int)
         )
         catalog_entry_id = None
+        catalog_timeout_s: int | None = None
         if _catalog_valid:
             assert catalog_result is not None  # narrowing for type checker
-            resolved_runtime_type, model, catalog_extra_args, catalog_entry_id = catalog_result
+            (
+                resolved_runtime_type,
+                model,
+                catalog_extra_args,
+                catalog_entry_id,
+                catalog_timeout_s,
+            ) = catalog_result
             resolution_source = "catalog"
         else:
             resolved_runtime_type = toml_runtime_type
             model = toml_model
             catalog_extra_args = []
+            catalog_timeout_s = None
             resolution_source = "toml_fallback"
 
         logger.debug(
@@ -1207,11 +1191,12 @@ class Spawner:
             resolved_runtime_type = toml_runtime_type
             model = toml_model
             catalog_extra_args = []
+            catalog_timeout_s = None
             resolution_source = "toml_fallback"
             runtime = self._get_or_create_adapter(toml_runtime_type).create_worker()
 
         # Merge args: TOML args first, then catalog extra_args appended
-        base_args = list(accessor_args) if accessor_args else list(self._config.runtime.args)
+        base_args = list(self._config.runtime.args)
         merged_args = base_args + catalog_extra_args
 
         # Get tracer and start butler.llm_session span with parent context
@@ -1359,8 +1344,8 @@ class Spawner:
                 invoke_kwargs["runtime_args"] = merged_args
             if timeout_override is not None:
                 timeout_s = timeout_override
-            elif accessor_timeout is not None:
-                timeout_s = accessor_timeout
+            elif catalog_timeout_s is not None:
+                timeout_s = catalog_timeout_s
             else:
                 timeout_s = self._config.runtime.session_timeout_s
             invoke_kwargs["timeout"] = timeout_s

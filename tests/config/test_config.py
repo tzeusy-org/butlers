@@ -215,7 +215,7 @@ def test_missing_runtime_seed_section_defaults(tmp_path: Path):
     assert cfg.runtime_seed.runtime_type == "codex"
     assert cfg.runtime_seed.max_concurrent_sessions == 3
     assert cfg.runtime_seed.max_queued_sessions == 10
-    assert cfg.runtime_seed.session_timeout_s == 900
+    assert cfg.runtime_seed.session_timeout_s == 1800
     assert cfg.runtime_seed.core_groups is None
     assert cfg.runtime_seed.args == ()
     assert cfg.runtime_seed.liveness_ttl_seconds == 300

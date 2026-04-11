@@ -89,9 +89,6 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
     setRestartFields([]);
   };
 
-  const currentModel = editState.model ?? config.model ?? "";
-  const currentRuntimeType = editState.runtime_type ?? config.runtime_type;
-  const currentSessionTimeout = editState.session_timeout_s ?? config.session_timeout_s;
   const currentMaxConcurrent = editState.max_concurrent ?? config.max_concurrent;
   const currentMaxQueued = editState.max_queued ?? config.max_queued;
   const currentCoreGroups = editState.core_groups ?? config.core_groups ?? [];
@@ -130,46 +127,7 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
           </div>
         )}
 
-        {/* Hot fields */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <Label className="text-xs">
-              Model <FieldTierBadge tier={tiers?.model ?? "hot"} />
-            </Label>
-            <Input
-              value={currentModel}
-              onChange={(e) => updateField("model", e.target.value || null)}
-              placeholder="(use catalog default)"
-              className="mt-1"
-            />
-          </div>
-          <div>
-            <Label className="text-xs">
-              Runtime Type <FieldTierBadge tier={tiers?.runtime_type ?? "hot"} />
-            </Label>
-            <Input
-              value={currentRuntimeType}
-              onChange={(e) => updateField("runtime_type", e.target.value)}
-              className="mt-1"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <Label className="text-xs">
-              Session Timeout (s) <FieldTierBadge tier={tiers?.session_timeout_s ?? "hot"} />
-            </Label>
-            <Input
-              type="number"
-              value={currentSessionTimeout}
-              onChange={(e) => updateField("session_timeout_s", parseInt(e.target.value) || 900)}
-              className="mt-1"
-            />
-          </div>
-        </div>
-
-        {/* Cold fields */}
+        {/* Operational fields */}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <Label className="text-xs">

@@ -1557,6 +1557,7 @@ class TestCatalogModelResolution:
             ):
                 captured["model"] = model
                 captured["runtime_args"] = runtime_args
+                captured["timeout"] = timeout
                 return "ok", [], None
 
         mock_pool = AsyncMock()
@@ -1570,13 +1571,14 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID, 2400),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             result = await spawner.trigger("prompt", "tick")
         assert result.success is True
         assert captured["model"] == "claude-opus-4-20250514"
+        assert captured["timeout"] == 2400
         assert result.model == "claude-opus-4-20250514"
 
         # Catalog returns None → TOML fallback
@@ -1678,6 +1680,7 @@ class TestCatalogModelResolution:
                 timeout=None,
             ):
                 captured["runtime_args"] = runtime_args
+                captured["timeout"] = timeout
                 return "ok", [], None
 
         mock_pool = AsyncMock()
@@ -1696,12 +1699,14 @@ class TestCatalogModelResolution:
                     "claude-opus-4-20250514",
                     ["--catalog-arg", "val"],
                     _FAKE_CATALOG_ID,
+                    2400,
                 ),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner.trigger("prompt", "tick")
         assert captured["runtime_args"] == ["--toml-flag", "toml-value", "--catalog-arg", "val"]
+        assert captured["timeout"] == 2400
 
         # Both empty → runtime_args kwarg is None
         config2 = _make_config()
@@ -1721,6 +1726,7 @@ class TestCatalogModelResolution:
                 timeout=None,
             ):
                 captured2["runtime_args"] = runtime_args
+                captured2["timeout"] = timeout
                 return "ok", [], None
 
         spawner2 = Spawner(
@@ -1735,12 +1741,13 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID, 2400),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner2.trigger("prompt", "tick")
         assert captured2["runtime_args"] is None
+        assert captured2["timeout"] == 2400
 
     async def test_catalog_error_and_unknown_runtime_fall_back_to_toml(self, tmp_path: Path):
         """Both catalog errors and unknown runtime types fall back to TOML model."""
@@ -1751,7 +1758,7 @@ class TestCatalogModelResolution:
 
         for side_effect, return_value in [
             (Exception("DB connection error"), None),
-            (None, ("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID)),
+            (None, ("nonexistent-runtime", "some-model", [], _FAKE_CATALOG_ID, 2400)),
         ]:
             captured: dict = {}
 
@@ -1817,7 +1824,7 @@ class TestCatalogModelResolution:
             patch(
                 "butlers.core.spawner.resolve_model",
                 new_callable=AsyncMock,
-                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID),
+                return_value=("claude", "claude-opus-4-20250514", [], _FAKE_CATALOG_ID, 2400),
             ),
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")

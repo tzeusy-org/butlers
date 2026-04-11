@@ -59,6 +59,7 @@ class ModelCatalogEntry(BaseModel):
     complexity_tier: str
     enabled: bool = True
     priority: int = 0
+    session_timeout_s: int = Field(default=1800, gt=0)
     # Token usage + limits (populated by list endpoint CTE aggregation)
     usage_24h: int = 0
     usage_30d: int = 0
@@ -76,6 +77,7 @@ class ModelCatalogCreate(BaseModel):
     complexity_tier: str = "medium"
     enabled: bool = True
     priority: int = 0
+    session_timeout_s: int = Field(default=1800, gt=0)
 
 
 class ModelCatalogUpdate(BaseModel):
@@ -88,6 +90,7 @@ class ModelCatalogUpdate(BaseModel):
     complexity_tier: str | None = None
     enabled: bool | None = None
     priority: int | None = None
+    session_timeout_s: int | None = Field(default=None, gt=0)
 
 
 class ButlerModelOverride(BaseModel):
@@ -119,6 +122,7 @@ class ResolveModelResponse(BaseModel):
     runtime_type: str | None = None
     model_id: str | None = None
     extra_args: list[str] = Field(default_factory=list)
+    session_timeout_s: int | None = None
     resolved: bool
     # Quota fields (populated when resolved=True)
     quota_blocked: bool = False
@@ -244,6 +248,7 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         complexity_tier=row["complexity_tier"],
         enabled=bool(_row_value(row, "enabled", True)),
         priority=int(_row_value(row, "priority", 0)),
+        session_timeout_s=int(_row_value(row, "session_timeout_s", 1800)),
         usage_24h=int(raw_usage_24h) if raw_usage_24h is not None else 0,
         usage_30d=int(raw_usage_30d) if raw_usage_30d is not None else 0,
         limit_24h=int(raw_limit_24h) if raw_limit_24h is not None else None,
@@ -315,7 +320,7 @@ async def list_catalog_entries(
         )
         SELECT
             mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
-            mc.complexity_tier, mc.enabled, mc.priority,
+            mc.complexity_tier, mc.enabled, mc.priority, mc.session_timeout_s,
             COALESCE(ua.usage_24h, 0) AS usage_24h,
             COALESCE(ua.usage_30d, 0) AS usage_30d,
             tl.limit_24h,
@@ -358,10 +363,13 @@ async def create_catalog_entry(
         row = await pool.fetchrow(
             """
             INSERT INTO public.model_catalog
-                (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
-            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+                (
+                    alias, runtime_type, model_id, extra_args, complexity_tier,
+                    enabled, priority, session_timeout_s
+                )
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
             RETURNING id, alias, runtime_type, model_id, extra_args,
-                      complexity_tier, enabled, priority
+                      complexity_tier, enabled, priority, session_timeout_s
             """,
             body.alias,
             body.runtime_type,
@@ -370,6 +378,7 @@ async def create_catalog_entry(
             body.complexity_tier,
             body.enabled,
             body.priority,
+            body.session_timeout_s,
         )
     except asyncpg.UniqueViolationError:
         raise HTTPException(
@@ -428,7 +437,7 @@ async def update_catalog_entry(
         f"UPDATE public.model_catalog SET {', '.join(set_parts)} "
         f"WHERE id = ${idx} "
         "RETURNING id, alias, runtime_type, model_id, extra_args, "
-        "complexity_tier, enabled, priority"
+        "complexity_tier, enabled, priority, session_timeout_s"
     )
 
     try:
@@ -857,7 +866,7 @@ async def resolve_model_preview(
             )
         )
 
-    runtime_type, model_id, extra_args, catalog_entry_id = result
+    runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = result
 
     # Query actual usage from ledger (always, even for unlimited entries).
     # Only possible when we have a catalog_entry_id from the row.
@@ -924,6 +933,7 @@ async def resolve_model_preview(
             runtime_type=runtime_type,
             model_id=model_id,
             extra_args=extra_args,
+            session_timeout_s=session_timeout_s,
             resolved=True,
             quota_blocked=quota_blocked,
             usage_24h=usage_24h,

@@ -27,12 +27,8 @@ pytestmark = pytest.mark.unit
 def _make_row(
     butler_name: str = "test",
     core_groups: list[str] | None = None,
-    model: str | None = "gpt-5.4-mini",
-    runtime_type: str = "codex",
-    args: str = "[]",
     max_concurrent: int = 3,
     max_queued: int = 10,
-    session_timeout_s: int = 900,
     seeded_at: str = "2026-01-01T00:00:00+00:00",
     updated_at: str = "2026-01-01T00:00:00+00:00",
 ) -> dict:
@@ -40,12 +36,8 @@ def _make_row(
     return {
         "butler_name": butler_name,
         "core_groups": core_groups,
-        "model": model,
-        "runtime_type": runtime_type,
-        "args": args,
         "max_concurrent": max_concurrent,
         "max_queued": max_queued,
-        "session_timeout_s": session_timeout_s,
         "seeded_at": seeded_at,
         "updated_at": updated_at,
     }
@@ -60,17 +52,12 @@ def _mock_record(row_dict: dict) -> MagicMock:
 
 
 def _make_seed(
-    model: str | None = "gpt-5.4-mini",
     core_groups: tuple[str, ...] | None = None,
 ) -> RuntimeSeedConfig:
     return RuntimeSeedConfig(
-        model=model,
         core_groups=core_groups,
-        runtime_type="codex",
-        args=(),
         max_concurrent_sessions=3,
         max_queued_sessions=10,
-        session_timeout_s=900,
     )
 
 
@@ -93,33 +80,32 @@ async def test_cache_hit_within_ttl():
 async def test_cache_miss_after_ttl():
     """get() after TTL expiry queries the DB again."""
     pool = AsyncMock()
-    row1 = _mock_record(_make_row(model="gpt-5.4-mini"))
-    row2 = _mock_record(_make_row(model="gpt-5.2"))
+    row1 = _mock_record(_make_row(max_concurrent=3))
+    row2 = _mock_record(_make_row(max_concurrent=5))
     pool.fetchrow = AsyncMock(side_effect=[row1, row2])
 
     accessor = RuntimeConfigAccessor(pool, "test", ttl_s=0.01)
     result1 = await accessor.get()
-    assert result1.model == "gpt-5.4-mini"
+    assert result1.max_concurrent == 3
 
     # Wait for TTL to expire
     await asyncio.sleep(0.02)
     result2 = await accessor.get()
-    assert result2.model == "gpt-5.2"
+    assert result2.max_concurrent == 5
     assert pool.fetchrow.call_count == 2
 
 
 async def test_seed_on_empty_table():
     """seed_if_empty() inserts a row when the table is empty."""
     pool = AsyncMock()
-    seed = _make_seed(model="gpt-5.4-mini", core_groups=("infra", "state"))
-    seeded_row = _mock_record(_make_row(model="gpt-5.4-mini", core_groups=["infra", "state"]))
+    seed = _make_seed(core_groups=("infra", "state"))
+    seeded_row = _mock_record(_make_row(core_groups=["infra", "state"]))
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=seeded_row)
 
     accessor = RuntimeConfigAccessor(pool, "test")
     result = await accessor.seed_if_empty(seed, "test")
 
-    assert result.model == "gpt-5.4-mini"
     assert result.core_groups == ("infra", "state")
     pool.execute.assert_called_once()
     # Verify INSERT ... ON CONFLICT DO NOTHING pattern
@@ -131,46 +117,45 @@ async def test_seed_on_empty_table():
 async def test_noop_seed_on_existing_row():
     """seed_if_empty() returns existing row without overwriting."""
     pool = AsyncMock()
-    seed = _make_seed(model="gpt-5.2")  # seed wants gpt-5.2
-    existing_row = _mock_record(_make_row(model="gpt-5.4-mini"))  # DB has gpt-5.4-mini
+    seed = _make_seed()
+    existing_row = _mock_record(_make_row())
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=existing_row)
 
     accessor = RuntimeConfigAccessor(pool, "test")
     result = await accessor.seed_if_empty(seed, "test")
 
-    # Existing row's model is returned, not the seed's
-    assert result.model == "gpt-5.4-mini"
+    assert result.max_concurrent == 3
 
 
 async def test_reseed_after_row_deletion():
     """After deleting the row and re-seeding, new seed values take effect."""
     pool = AsyncMock()
-    seed = _make_seed(model="gpt-5.2")
-    new_row = _mock_record(_make_row(model="gpt-5.2"))
+    seed = _make_seed()
+    new_row = _mock_record(_make_row())
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=new_row)
 
     accessor = RuntimeConfigAccessor(pool, "test")
     result = await accessor.seed_if_empty(seed, "test")
-    assert result.model == "gpt-5.2"
+    assert result.max_concurrent == 3
 
 
 async def test_db_failure_with_stale_cache():
     """get() returns stale cache on DB failure when cache exists."""
     pool = AsyncMock()
-    row = _mock_record(_make_row(model="gpt-5.4-mini"))
+    row = _mock_record(_make_row())
     pool.fetchrow = AsyncMock(side_effect=[row, Exception("DB unavailable")])
 
     accessor = RuntimeConfigAccessor(pool, "test", ttl_s=0.01)
     result1 = await accessor.get()
-    assert result1.model == "gpt-5.4-mini"
+    assert result1.max_concurrent == 3
 
     # Wait for TTL to expire
     await asyncio.sleep(0.02)
     # DB fails, but stale cache is returned
     result2 = await accessor.get()
-    assert result2.model == "gpt-5.4-mini"
+    assert result2.max_concurrent == 3
     assert result2 is result1  # same cached object
 
 
@@ -207,17 +192,17 @@ async def test_concurrent_seed_race():
 async def test_invalidate_cache():
     """invalidate_cache() forces next get() to query the DB."""
     pool = AsyncMock()
-    row1 = _mock_record(_make_row(model="gpt-5.4-mini"))
-    row2 = _mock_record(_make_row(model="gpt-5.2"))
+    row1 = _mock_record(_make_row(max_concurrent=3))
+    row2 = _mock_record(_make_row(max_concurrent=7))
     pool.fetchrow = AsyncMock(side_effect=[row1, row2])
 
     accessor = RuntimeConfigAccessor(pool, "test", ttl_s=300.0)  # long TTL
     result1 = await accessor.get()
-    assert result1.model == "gpt-5.4-mini"
+    assert result1.max_concurrent == 3
 
     accessor.invalidate_cache()
     result2 = await accessor.get()
-    assert result2.model == "gpt-5.2"
+    assert result2.max_concurrent == 7
     assert pool.fetchrow.call_count == 2
 
 
@@ -226,6 +211,10 @@ def test_row_to_config_with_null_core_groups():
     row = _mock_record(_make_row(core_groups=None))
     config = _row_to_config(row)
     assert config.core_groups is None
+    assert not hasattr(config, "model")
+    assert not hasattr(config, "runtime_type")
+    assert not hasattr(config, "args")
+    assert not hasattr(config, "session_timeout_s")
 
 
 def test_row_to_config_with_core_groups():

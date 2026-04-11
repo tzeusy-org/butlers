@@ -119,13 +119,15 @@ class RuntimeConfig:
 class RuntimeSeedConfig:
     """Seed configuration from [butler.runtime_seed] section.
 
-    Used only on first boot to seed the per-schema ``runtime_config`` DB table.
-    After first boot, the DB table is the runtime source of truth.
+    Used on first boot to seed the per-schema ``runtime_config`` DB table and
+    to populate static fallback runtime settings from ``load_config()``.
 
-    Fields map to columns in the ``runtime_config`` table plus additional
-    fields used for switchboard butler registration (liveness_ttl_seconds,
-    route_contract_min, route_contract_max) which are NOT stored in
-    runtime_config but passed to the switchboard's butler_registry.
+    Only operational fields (``core_groups``, concurrency, queue depth) map to
+    the DB-backed ``runtime_config`` row. Runtime selection and timeout fields
+    remain available here as static fallback config when catalog resolution is
+    unavailable. Registration-only fields (``liveness_ttl_seconds``,
+    ``route_contract_min``, ``route_contract_max``) are not stored in
+    ``runtime_config``.
     """
 
     core_groups: tuple[str, ...] | None = None
@@ -134,7 +136,7 @@ class RuntimeSeedConfig:
     args: tuple[str, ...] = ()
     max_concurrent_sessions: int = 3
     max_queued_sessions: int = 10
-    session_timeout_s: int = 900
+    session_timeout_s: int = 1800
     liveness_ttl_seconds: int = 300
     route_contract_min: int = 1
     route_contract_max: int = 1
@@ -411,7 +413,7 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
             "Must be a positive integer."
         )
 
-    session_timeout_s = int(seed_section.get("session_timeout_s", 900))
+    session_timeout_s = int(seed_section.get("session_timeout_s", 1800))
     if session_timeout_s <= 0:
         raise ConfigError(
             f"Invalid butler.runtime_seed.session_timeout_s: {session_timeout_s!r}. "

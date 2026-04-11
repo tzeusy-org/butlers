@@ -1,9 +1,7 @@
 """Tests for core_061 runtime_config migration.
 
-Verifies:
-- Migration revision chain is correct (core_061 revises core_060)
-- upgrade() SQL creates the runtime_config table with expected columns
-- downgrade() SQL drops the table
+Verifies the historical creation migration still matches the original table
+shape before later reduction migrations.
 """
 
 from __future__ import annotations
@@ -46,7 +44,7 @@ def test_migration_file_exists():
 
 
 def test_migration_sql_contains_expected_columns():
-    """The upgrade SQL includes all required columns with correct types."""
+    """The historical upgrade SQL includes the original runtime_config columns."""
     source = _MIGRATION_PATH.read_text()
     expected_columns = [
         "butler_name      TEXT PRIMARY KEY",
