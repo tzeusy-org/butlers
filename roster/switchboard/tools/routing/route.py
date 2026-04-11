@@ -12,6 +12,7 @@ import asyncpg
 from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
+from butlers.core.mcp_urls import prefer_streamable_http_url
 from butlers.core.telemetry import inject_trace_context
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
@@ -98,18 +99,19 @@ async def _call_tool_with_router_client(
 ) -> Any:
     first_exc: Exception | None = None
     telemetry = get_switchboard_telemetry()
+    client_endpoint_url = prefer_streamable_http_url(endpoint_url)
 
     for reconnect in (False, True):
         try:
-            client = await _get_cached_router_client(endpoint_url, reconnect=reconnect)
+            client = await _get_cached_router_client(client_endpoint_url, reconnect=reconnect)
             return await client.call_tool(tool_name, args, raise_on_error=False)
         except Exception as exc:
             if reconnect:
                 if first_exc is None:
-                    message = f"Failed to call tool {tool_name} on {endpoint_url}: {exc}"
+                    message = f"Failed to call tool {tool_name} on {client_endpoint_url}: {exc}"
                 else:
                     message = (
-                        f"Failed to call tool {tool_name} on {endpoint_url}: "
+                        f"Failed to call tool {tool_name} on {client_endpoint_url}: "
                         f"{first_exc} (reconnect failed: {exc})"
                     )
                 raise ConnectionError(message) from exc
@@ -126,7 +128,7 @@ async def _call_tool_with_router_client(
             )
             logger.info(
                 "Switchboard router call failed for %s (%s); reconnecting once",
-                endpoint_url,
+                client_endpoint_url,
                 tool_name,
             )
 

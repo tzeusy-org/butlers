@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from butlers.core.mcp_urls import (
+    prefer_streamable_http_url,
     resolve_runtime_mcp_transport,
     runtime_mcp_transport_from_url,
     runtime_mcp_url,
@@ -36,3 +37,13 @@ def test_mcp_url_and_transport():
 
     # Falls back to URL inference
     assert resolve_runtime_mcp_transport({"url": "http://localhost:41103/sse"}) == "sse"
+
+
+def test_prefer_streamable_http_url_upgrades_legacy_sse_path():
+    """Legacy `/sse` runtime URLs should be upgraded to `/mcp` for internal clients."""
+    assert prefer_streamable_http_url("http://localhost:41103/sse") == "http://localhost:41103/mcp"
+    assert (
+        prefer_streamable_http_url("http://localhost:41103/sse?session_id=abc")
+        == "http://localhost:41103/mcp?session_id=abc"
+    )
+    assert prefer_streamable_http_url("http://localhost:41103/mcp") == "http://localhost:41103/mcp"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 RuntimeMcpTransport = Literal["http", "sse"]
 
@@ -20,6 +20,20 @@ _HTTP_ALIASES = frozenset({"http", "streamable-http", "streamable_http"})
 def runtime_mcp_url(port: int, *, host: str = "localhost") -> str:
     """Build the canonical runtime MCP URL for a butler daemon."""
     return f"http://{host}:{port}{_STREAMABLE_HTTP_PATH}"
+
+
+def prefer_streamable_http_url(url: str) -> str:
+    """Upgrade a legacy runtime SSE URL to the canonical streamable HTTP URL.
+
+    This keeps old stored/runtime URLs working while steering internal clients
+    away from the legacy SSE transport whenever the daemon exposes both paths.
+    Non-SSE URLs are returned unchanged.
+    """
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if path.rstrip("/") != _SSE_PATH:
+        return url
+    return urlunparse(parsed._replace(path=_STREAMABLE_HTTP_PATH))
 
 
 def runtime_mcp_transport_from_url(url: str) -> RuntimeMcpTransport:

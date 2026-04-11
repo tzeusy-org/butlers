@@ -1098,7 +1098,7 @@ class TestCallButlerTool:
             )
 
         assert result == {"ok": True}
-        mock_ctor.assert_called_once_with("http://localhost:41101/sse", name="switchboard-router")
+        mock_ctor.assert_called_once_with("http://localhost:41101/mcp", name="switchboard-router")
         mock_client.call_tool.assert_awaited_once_with(
             "bot_switchboard_handle_message",
             {},
@@ -1135,7 +1135,7 @@ class TestCallButlerTool:
 
         assert first == {"n": 1}
         assert second == {"n": 2}
-        mock_ctor.assert_called_once_with("http://localhost:41101/sse", name="switchboard-router")
+        mock_ctor.assert_called_once_with("http://localhost:41101/mcp", name="switchboard-router")
         assert mock_client.call_tool.await_count == 2
 
     async def test_reconnects_when_cached_client_disconnected(self) -> None:
@@ -1183,6 +1183,8 @@ class TestCallButlerTool:
         assert first == {"step": 1}
         assert second == {"step": 2}
         assert mock_ctor.call_count == 2
+        assert mock_ctor.call_args_list[0].args == ("http://localhost:41101/mcp",)
+        assert mock_ctor.call_args_list[1].args == ("http://localhost:41101/mcp",)
 
     async def test_wraps_client_failure_as_connection_error(self) -> None:
         """_call_butler_tool should preserve failed-call context in the exception."""
