@@ -370,7 +370,8 @@ async def _lookup_merchant_category(pool: asyncpg.Pool, merchant: str) -> str | 
     row = await pool.fetchrow(
         """
         SELECT category FROM merchant_mappings
-        WHERE lower($1) LIKE lower(merchant_pattern)
+        WHERE is_active = true
+          AND lower($1) LIKE lower(raw_pattern)
         ORDER BY confidence DESC, updated_at DESC
         LIMIT 1
         """,
@@ -1557,24 +1558,52 @@ async def bulk_recategorize(
             try:
                 has_mm = await _has_table(pool, "merchant_mappings")
                 if has_mm:
-                    await pool.execute(
+                    normalized_merchant = merchant_pattern.replace("%", "").replace("_", "").strip()
+                    existing = await pool.fetchrow(
                         """
-                        INSERT INTO merchant_mappings
-                            (merchant_pattern, category, confidence, sample_count)
-                        VALUES ($1, $2, 1.0, $3)
-                        ON CONFLICT (merchant_pattern)
-                        DO UPDATE SET
-                            category = EXCLUDED.category,
-                            confidence = 1.0,
-                            sample_count = (
-                                merchant_mappings.sample_count + EXCLUDED.sample_count
-                            ),
-                            updated_at = now()
+                        SELECT id, learned_from_count
+                        FROM merchant_mappings
+                        WHERE is_active = true
+                          AND lower(raw_pattern) = lower($1)
+                        LIMIT 1
                         """,
                         merchant_pattern,
-                        new_category,
-                        int(updated),
                     )
+                    if existing is None:
+                        await pool.execute(
+                            """
+                            INSERT INTO merchant_mappings (
+                                raw_pattern,
+                                normalized_merchant,
+                                category,
+                                confidence,
+                                learned_from_count,
+                                source
+                            )
+                            VALUES ($1, $2, $3, 1.0, $4, 'manual')
+                            """,
+                            merchant_pattern,
+                            normalized_merchant or merchant_pattern,
+                            new_category,
+                            int(updated),
+                        )
+                    else:
+                        await pool.execute(
+                            """
+                            UPDATE merchant_mappings
+                            SET normalized_merchant = $2,
+                                category = $3,
+                                confidence = 1.0,
+                                learned_from_count = COALESCE(learned_from_count, 0) + $4,
+                                source = 'manual',
+                                updated_at = now()
+                            WHERE id = $1::uuid
+                            """,
+                            str(existing["id"]),
+                            normalized_merchant or merchant_pattern,
+                            new_category,
+                            int(updated),
+                        )
             except Exception:
                 logger.warning(
                     "bulk_recategorize: merchant mapping rule upsert failed for pattern %r",

@@ -652,14 +652,23 @@ async def pool_v2(provisioned_postgres_pool):
         """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS merchant_mappings (
-                id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                merchant_pattern TEXT NOT NULL UNIQUE,
-                category         TEXT NOT NULL,
-                confidence       NUMERIC(5, 4) NOT NULL DEFAULT 1.0,
-                sample_count     INTEGER NOT NULL DEFAULT 1,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+                id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                raw_pattern         TEXT NOT NULL,
+                normalized_merchant TEXT NOT NULL,
+                category            TEXT NOT NULL,
+                confidence          FLOAT NOT NULL DEFAULT 1.0,
+                learned_from_count  INTEGER NOT NULL DEFAULT 1,
+                source              TEXT NOT NULL DEFAULT 'manual',
+                is_active           BOOLEAN NOT NULL DEFAULT true,
+                metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
             )
+        """)
+        await p.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_merchant_mapping_pattern
+                ON merchant_mappings (lower(raw_pattern))
+                WHERE is_active = true
         """)
         yield p
 
@@ -805,8 +814,9 @@ class TestRecordTransactionEnhanced:
         # Seed a merchant mapping.
         await pool_v2.execute(
             """
-            INSERT INTO merchant_mappings (merchant_pattern, category, confidence)
-            VALUES ('%Netflix%', 'subscriptions', 0.99)
+            INSERT INTO merchant_mappings
+                (raw_pattern, normalized_merchant, category, confidence, learned_from_count, source)
+            VALUES ('%Netflix%', 'Netflix', 'subscriptions', 0.99, 1, 'manual')
             """
         )
 
@@ -827,8 +837,9 @@ class TestRecordTransactionEnhanced:
 
         await pool_v2.execute(
             """
-            INSERT INTO merchant_mappings (merchant_pattern, category, confidence)
-            VALUES ('%Spotify%', 'subscriptions', 0.99)
+            INSERT INTO merchant_mappings
+                (raw_pattern, normalized_merchant, category, confidence, learned_from_count, source)
+            VALUES ('%Spotify%', 'Spotify', 'subscriptions', 0.99, 1, 'manual')
             """
         )
 
@@ -1232,11 +1243,12 @@ class TestBulkRecategorizeEnhanced:
 
         # Verify mapping was created.
         mapping = await pool_v2.fetchrow(
-            "SELECT * FROM merchant_mappings WHERE merchant_pattern = $1",
+            "SELECT * FROM merchant_mappings WHERE raw_pattern = $1",
             "%RuleTest%",
         )
         assert mapping is not None
         assert mapping["category"] == "services"
+        assert mapping["normalized_merchant"] == "RuleTest"
 
     async def test_bulk_recategorize_skips_locked_transactions(self, pool_v2):
         """bulk_recategorize does not update category-locked transactions."""

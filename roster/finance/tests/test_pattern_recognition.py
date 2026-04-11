@@ -1314,14 +1314,17 @@ class TestPredictBills:
 
 CREATE_MERCHANT_MAPPINGS_CLEAN_SQL = """
 CREATE TABLE IF NOT EXISTS merchant_mappings (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    merchant        TEXT NOT NULL UNIQUE,
-    category        TEXT NOT NULL,
-    confidence      NUMERIC(5, 4) NOT NULL DEFAULT 0.5,
-    sample_count    INT NOT NULL DEFAULT 1,
-    is_active       BOOLEAN NOT NULL DEFAULT true,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    raw_pattern         TEXT NOT NULL,
+    normalized_merchant TEXT NOT NULL,
+    category            TEXT NOT NULL,
+    confidence          FLOAT NOT NULL DEFAULT 0.5,
+    learned_from_count  INT NOT NULL DEFAULT 1,
+    source              TEXT NOT NULL DEFAULT 'learned',
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 )
 """
 
@@ -1379,12 +1382,16 @@ class TestLearnMerchantCategories:
 
         assert result["upserted"] == 1
         row = await pool_merchant.fetchrow(
-            "SELECT category, sample_count FROM merchant_mappings WHERE merchant = $1",
+            """
+            SELECT category, learned_from_count
+            FROM merchant_mappings
+            WHERE raw_pattern = $1
+            """,
             "Whole Foods",
         )
         assert row is not None
         assert row["category"] == "groceries"
-        assert row["sample_count"] == 1
+        assert row["learned_from_count"] == 1
 
     async def test_dominant_category_wins(self, pool_merchant):
         """When a merchant has multiple categories, the most frequent one is stored."""
@@ -1398,12 +1405,16 @@ class TestLearnMerchantCategories:
         await learn_merchant_categories(pool_merchant)
 
         row = await pool_merchant.fetchrow(
-            "SELECT category, sample_count FROM merchant_mappings WHERE merchant = $1",
+            """
+            SELECT category, learned_from_count
+            FROM merchant_mappings
+            WHERE raw_pattern = $1
+            """,
             "Chili's",
         )
         assert row is not None
         assert row["category"] == "dining"
-        assert row["sample_count"] == 3
+        assert row["learned_from_count"] == 3
 
     async def test_confidence_grows_with_sample_count(self, pool_merchant):
         """Higher sample counts yield higher confidence scores (capped at 0.99)."""
@@ -1415,7 +1426,7 @@ class TestLearnMerchantCategories:
         await learn_merchant_categories(pool_merchant)
 
         row = await pool_merchant.fetchrow(
-            "SELECT confidence FROM merchant_mappings WHERE merchant = $1",
+            "SELECT confidence FROM merchant_mappings WHERE raw_pattern = $1",
             "Amazon",
         )
         assert row is not None
@@ -1432,7 +1443,7 @@ class TestLearnMerchantCategories:
         await learn_merchant_categories(pool_merchant)
 
         row = await pool_merchant.fetchrow(
-            "SELECT confidence FROM merchant_mappings WHERE merchant = $1",
+            "SELECT confidence FROM merchant_mappings WHERE raw_pattern = $1",
             "HighVolumeStore",
         )
         assert row is not None
@@ -1448,7 +1459,7 @@ class TestLearnMerchantCategories:
         await learn_merchant_categories(pool_merchant)
 
         count = await pool_merchant.fetchval(
-            "SELECT COUNT(*) FROM merchant_mappings WHERE merchant = $1",
+            "SELECT COUNT(*) FROM merchant_mappings WHERE raw_pattern = $1",
             "Target",
         )
         assert count == 1
@@ -1484,7 +1495,7 @@ class TestLearnMerchantCategories:
         # Only DebitStore should appear; CreditStore is a credit transaction
         assert result["upserted"] == 1
         row = await pool_merchant.fetchrow(
-            "SELECT merchant FROM merchant_mappings WHERE merchant = $1",
+            "SELECT raw_pattern FROM merchant_mappings WHERE raw_pattern = $1",
             "CreditStore",
         )
         assert row is None
@@ -1535,6 +1546,7 @@ class TestSuggestCategories:
         assert len(result["suggestions"]) == 1
         s = result["suggestions"][0]
         assert s["merchant"] == "Netflix Inc"
+        assert s["normalized_merchant"] == "Netflix Inc"
         assert s["category"] == "subscriptions"
         assert 0.0 < s["confidence"] <= 1.0
 
@@ -1611,7 +1623,7 @@ class TestSuggestCategories:
 
         # Deactivate the mapping
         await pool_merchant.execute(
-            "UPDATE merchant_mappings SET is_active = false WHERE merchant = $1",
+            "UPDATE merchant_mappings SET is_active = false WHERE raw_pattern = $1",
             "OldMerchant",
         )
 
@@ -1646,7 +1658,7 @@ class TestRecallMerchantMappings:
 
         result = await recall_merchant_mappings(pool_merchant)
 
-        merchants = {m["merchant"] for m in result["mappings"]}
+        merchants = {m["raw_pattern"] for m in result["mappings"]}
         assert "Costco" in merchants
         assert "Delta Airlines" in merchants
 
@@ -1664,7 +1676,7 @@ class TestRecallMerchantMappings:
         result = await recall_merchant_mappings(pool_merchant, merchant_pattern="Starbucks")
 
         assert len(result["mappings"]) == 1
-        assert result["mappings"][0]["merchant"] == "Starbucks"
+        assert result["mappings"][0]["raw_pattern"] == "Starbucks"
 
     async def test_category_filter(self, pool_merchant):
         """category filter returns only mappings matching that exact category."""
@@ -1680,7 +1692,7 @@ class TestRecallMerchantMappings:
 
         result = await recall_merchant_mappings(pool_merchant, category="travel")
 
-        merchants = {m["merchant"] for m in result["mappings"]}
+        merchants = {m["raw_pattern"] for m in result["mappings"]}
         assert "United Airlines" in merchants
         assert "Airbnb" in merchants
         assert "Safeway" not in merchants
@@ -1701,10 +1713,10 @@ class TestRecallMerchantMappings:
         )
 
         assert len(result["mappings"]) == 1
-        assert result["mappings"][0]["merchant"] == "Southwest Airlines"
+        assert result["mappings"][0]["raw_pattern"] == "Southwest Airlines"
 
     async def test_response_includes_confidence_and_sample_count(self, pool_merchant):
-        """Each mapping includes confidence and sample_count fields."""
+        """Each mapping includes confidence and learned_from_count fields."""
         from butlers.tools.finance.pattern_recognition import (
             learn_merchant_categories,
             recall_merchant_mappings,
@@ -1719,8 +1731,8 @@ class TestRecallMerchantMappings:
         assert len(result["mappings"]) == 1
         m = result["mappings"][0]
         assert "confidence" in m
-        assert "sample_count" in m
-        assert m["sample_count"] == 4
+        assert "learned_from_count" in m
+        assert m["learned_from_count"] == 4
         assert 0.0 < m["confidence"] <= 1.0
 
     async def test_inactive_mappings_excluded(self, pool_merchant):
@@ -1734,7 +1746,7 @@ class TestRecallMerchantMappings:
         await learn_merchant_categories(pool_merchant)
 
         await pool_merchant.execute(
-            "UPDATE merchant_mappings SET is_active = false WHERE merchant = $1",
+            "UPDATE merchant_mappings SET is_active = false WHERE raw_pattern = $1",
             "OldBrand",
         )
 
@@ -1757,7 +1769,7 @@ class TestRecallMerchantMappings:
 
         result = await recall_merchant_mappings(pool_merchant, category="shopping")
 
-        merchants_in_order = [m["merchant"] for m in result["mappings"]]
+        merchants_in_order = [m["raw_pattern"] for m in result["mappings"]]
         assert merchants_in_order.index("HighConf") < merchants_in_order.index("LowConf")
 
 

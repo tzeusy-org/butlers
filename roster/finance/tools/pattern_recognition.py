@@ -50,6 +50,21 @@ _AMOUNT_VARIANCE_THRESHOLD = 0.10  # 10% max variance for predict_bills amount c
 _BILL_DRIFT_THRESHOLD = 0.10  # 10% drift to flag amount_drift
 
 
+def _merchant_mapping_display_name(raw_pattern: str, normalized_merchant: str | None) -> str:
+    """Return a stable human-facing merchant name for a mapping row."""
+    if normalized_merchant and normalized_merchant.strip():
+        return normalized_merchant
+    return raw_pattern
+
+
+def _matches_like_pattern(value: str, pattern: str) -> bool:
+    """Apply SQL LIKE semantics for ``%``/``_`` in Python."""
+    import re
+
+    regex = "^" + re.escape(pattern).replace("%", ".*").replace("_", ".") + "$"
+    return re.match(regex, value, flags=re.IGNORECASE) is not None
+
+
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
@@ -448,18 +463,21 @@ async def learn_merchant_categories(
     if not merchant_category:
         return {"upserted": 0, "as_of": datetime.now(UTC).isoformat()}
 
-    # Ensure table exists.
+    # Ensure table exists using the live raw_pattern schema.
     await pool.execute(
         """
         CREATE TABLE IF NOT EXISTS merchant_mappings (
-            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            merchant        TEXT NOT NULL UNIQUE,
-            category        TEXT NOT NULL,
-            confidence      NUMERIC(5, 4) NOT NULL DEFAULT 0.5,
-            sample_count    INT NOT NULL DEFAULT 1,
-            is_active       BOOLEAN NOT NULL DEFAULT true,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+            id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            raw_pattern         TEXT NOT NULL,
+            normalized_merchant TEXT NOT NULL,
+            category            TEXT NOT NULL,
+            confidence          NUMERIC(5, 4) NOT NULL DEFAULT 0.5,
+            learned_from_count  INT NOT NULL DEFAULT 1,
+            source              TEXT NOT NULL DEFAULT 'learned',
+            is_active           BOOLEAN NOT NULL DEFAULT true,
+            metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
     )
@@ -468,22 +486,53 @@ async def learn_merchant_categories(
     for merchant, (category, freq) in merchant_category.items():
         # Confidence is capped at 0.99; grows with sample count.
         confidence = min(0.99, 0.5 + (freq - 1) * 0.05)
-        await pool.execute(
+        existing = await pool.fetchrow(
             """
-            INSERT INTO merchant_mappings (merchant, category, confidence, sample_count)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (merchant)
-            DO UPDATE SET
-                category     = EXCLUDED.category,
-                confidence   = EXCLUDED.confidence,
-                sample_count = EXCLUDED.sample_count,
-                updated_at   = now()
+            SELECT id
+            FROM merchant_mappings
+            WHERE is_active = true
+              AND lower(raw_pattern) = lower($1)
+            LIMIT 1
             """,
             merchant,
-            category,
-            confidence,
-            freq,
         )
+        if existing is None:
+            await pool.execute(
+                """
+                INSERT INTO merchant_mappings (
+                    raw_pattern,
+                    normalized_merchant,
+                    category,
+                    confidence,
+                    learned_from_count,
+                    source
+                )
+                VALUES ($1, $2, $3, $4, $5, 'learned')
+                """,
+                merchant,
+                merchant,
+                category,
+                confidence,
+                freq,
+            )
+        else:
+            await pool.execute(
+                """
+                UPDATE merchant_mappings
+                SET normalized_merchant = $2,
+                    category = $3,
+                    confidence = $4,
+                    learned_from_count = $5,
+                    source = 'learned',
+                    updated_at = now()
+                WHERE id = $1::uuid
+                """,
+                str(existing["id"]),
+                merchant,
+                category,
+                confidence,
+                freq,
+            )
         upserted += 1
 
     return {"upserted": upserted, "as_of": datetime.now(UTC).isoformat()}
@@ -532,9 +581,10 @@ async def suggest_categories(
     if merchant:
         rows = await pool.fetch(
             """
-            SELECT merchant, category, confidence
+            SELECT raw_pattern, normalized_merchant, category, confidence
             FROM merchant_mappings
-            WHERE is_active = true AND merchant ILIKE $1
+            WHERE is_active = true
+              AND (raw_pattern ILIKE $1 OR normalized_merchant ILIKE $1)
             ORDER BY confidence DESC
             """,
             f"%{merchant}%",
@@ -542,7 +592,10 @@ async def suggest_categories(
         for row in rows:
             suggestions.append(
                 {
-                    "merchant": row["merchant"],
+                    "merchant": _merchant_mapping_display_name(
+                        row["raw_pattern"], row["normalized_merchant"]
+                    ),
+                    "normalized_merchant": row["normalized_merchant"],
                     "category": row["category"],
                     "confidence": float(row["confidence"]),
                 }
@@ -562,7 +615,7 @@ async def suggest_categories(
         # but merchant_mappings is typically small enough to fetch unconditionally).
         all_active_mappings = await pool.fetch(
             """
-            SELECT merchant, category, confidence
+            SELECT raw_pattern, normalized_merchant, category, confidence
             FROM merchant_mappings
             WHERE is_active = true
             ORDER BY confidence DESC
@@ -573,17 +626,15 @@ async def suggest_categories(
             merchant_name = txn_by_id.get(txn_id)
             if merchant_name is None:
                 continue
-            merchant_lower = merchant_name.lower()
             # Match in Python — avoids one query per transaction and ensures is_active
-            # is applied uniformly (the original per-row SQL had an operator-precedence
-            # bug where AND bound tighter than OR, letting inactive mappings leak through).
+            # is applied uniformly to the current raw_pattern schema.
             for m in all_active_mappings:
-                m_lower = m["merchant"].lower()
-                if m_lower in merchant_lower or merchant_lower in m_lower:
+                if _matches_like_pattern(merchant_name, m["raw_pattern"]):
                     suggestions.append(
                         {
                             "transaction_id": txn_id,
                             "merchant": merchant_name,
+                            "normalized_merchant": m["normalized_merchant"],
                             "suggested_category": m["category"],
                             "confidence": float(m["confidence"]),
                         }
@@ -617,7 +668,8 @@ async def recall_merchant_mappings(
     Returns
     -------
     dict
-        ``{mappings: [{merchant, category, confidence, sample_count}], as_of}``
+        ``{mappings: [{raw_pattern, normalized_merchant, category, confidence,
+        learned_from_count, source}], as_of}``
     """
     has_mappings = await pool.fetchval(
         """
@@ -635,7 +687,9 @@ async def recall_merchant_mappings(
 
     if merchant_pattern:
         params.append(f"%{merchant_pattern}%")
-        conditions.append(f"merchant ILIKE ${len(params)}")
+        conditions.append(
+            f"(raw_pattern ILIKE ${len(params)} OR normalized_merchant ILIKE ${len(params)})"
+        )
 
     if category:
         params.append(category)
@@ -644,24 +698,26 @@ async def recall_merchant_mappings(
     where_clause = " AND ".join(conditions)
     rows = await pool.fetch(
         f"""
-        SELECT merchant, category, confidence, sample_count
+        SELECT raw_pattern, normalized_merchant, category, confidence, learned_from_count, source
         FROM merchant_mappings
         WHERE {where_clause}
-        ORDER BY confidence DESC, merchant ASC
+        ORDER BY confidence DESC, raw_pattern ASC
         """,
         *params,
     )
 
     mappings = [
         {
-            "merchant": row["merchant"],
+            "raw_pattern": row["raw_pattern"],
+            "normalized_merchant": row["normalized_merchant"],
             "category": row["category"],
             "confidence": float(row["confidence"]),
-            "sample_count": row["sample_count"],
+            "learned_from_count": row["learned_from_count"],
+            "source": row["source"],
         }
         for row in rows
     ]
-    return {"mappings": mappings, "as_of": datetime.now(UTC).isoformat()}
+    return {"mappings": mappings, "total": len(mappings), "as_of": datetime.now(UTC).isoformat()}
 
 
 # ---------------------------------------------------------------------------
