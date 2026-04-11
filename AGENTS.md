@@ -175,6 +175,12 @@ git push                # Push to remote
 - QA circuit-breaker state must use the same launched-attempt filter everywhere: count rows with `healing_session_id IS NOT NULL` plus the synthetic dashboard reset sentinel `status = 'manual_reset'`, while still excluding orphaned gate-rejection rows.
 - The dashboard summary, `/api/qa/circuit-breaker`, `/api/qa/circuit-breaker/reset`, and `src/butlers/core/qa/dispatch.py::_is_circuit_breaker_tripped` must stay aligned or the UI can report a reset while dispatch still suppresses new QA investigations.
 
+### QA recursion provenance drift
+- The intended QA self-recursion barrier depends on `qa_findings.source_session_trigger_source`, but current ingress/discovery paths do not populate it end-to-end: `modules/qa.report_finding` omits `trigger_source`, `core/qa/sources/butler_reports.py` does not store it, and `core/qa/sources/session_records.py`/`log_scanner.py` do not extract it, even though `core/qa/dispatch.py` and `/api/qa/meta-review` already rely on it.
+
+### QA doctrine doc drift
+- `about/heart-and-soul/architecture.md` still describes QA as a future staffer, while `about/README.md`, `roster/qa/`, and the live daemon topology treat QA as a current third staffer; when reconciling doctrine, prefer roster + spec state over that stale paragraph until the pillar doc is corrected.
+
 ### PR merge from worktree contract
 - In this repo's multi-worktree setup, `gh pr merge` from a non-main worktree can fail with `fatal: 'main' is already checked out at '/home/tze/GitHub/butlers'`; reviewer workers should merge via GitHub API (`PUT /repos/{owner}/{repo}/pulls/{number}/merge`) and delete the head ref separately when needed.
 
@@ -1050,3 +1056,7 @@ For more details, see README.md and docs/QUICKSTART.md.
 - In the current frontend toolchain, Recharts `Tooltip` formatter callbacks should accept `value: string | number | undefined`; narrower signatures can fail `npm run build` under TypeScript even when the plotted data is numeric.
 - `src/butlers/core/runtimes/codex.py` should stage isolated per-invocation `HOME` roots under `~/.codex/.tmp` when a real home directory exists; current `codex-cli` warns and can fail when `codex_home` is placed under `/tmp`.
 - `src/butlers/core/qa/dispatch.py` cannot rely on `GH_TOKEN` alone for raw `git push` over HTTPS; QA PR creation and PR-review follow-up pushes need non-interactive git credentials (`GIT_ASKPASS`, `GIT_TERMINAL_PROMPT=0`, and `BUTLERS_QA_GIT_TOKEN`) or investigations can succeed locally but fail to land with `could not read Username for 'https://github.com'`.
+- `src/butlers/core/qa/dispatch.py::_create_qa_pr` also depends on the GitHub CLI after a successful agent session; `Dockerfile.base` must continue to ship `gh` alongside `git` and `uv` or QA investigations can finish cleanly but fail before raising a PR with `FileNotFoundError: 'gh'`.
+- This repo's local beads database currently has no Dolt remote named `origin`; `bd dolt push` fails with `remote 'origin' not found`, but local `bd create/update/dep add` writes still persist in `.beads/` via Dolt.
+- `src/butlers/modules/qa/__init__.py::_handle_report_finding` currently trusts caller-supplied `fingerprint` and `severity`; QA dedup and dispatch autonomy depend on canonicalizing or validating those fields at the QA boundary rather than treating report payloads as authoritative.
+- `src/butlers/core/qa/sources/log_scanner.py` currently spends `max_entries_per_scan` budget before `_should_include_entry(...)` filtering and scans oldest-first across deterministically ordered files, so noisy benign logs can starve real error discovery unless the scanner budget/traversal logic is hardened.
