@@ -242,7 +242,7 @@ async def test_discover_butlers_from_config_dir(pool, tmp_path):
     discovered = await discover_butlers(pool, tmp_path)
     assert len(discovered) == 1
     assert discovered[0]["name"] == "mybutler"
-    assert discovered[0]["endpoint_url"] == "http://localhost:9999/sse"
+    assert discovered[0]["endpoint_url"] == "http://localhost:9999/mcp"
 
     # Verify it was registered
     butlers = await list_butlers(pool)

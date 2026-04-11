@@ -10,6 +10,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.mcp_urls import runtime_mcp_url
+
 logger = logging.getLogger(__name__)
 
 ELIGIBILITY_ACTIVE = "active"
@@ -565,7 +567,7 @@ async def discover_butlers(
         if toml_path.exists():
             try:
                 config = load_config(config_dir)
-                endpoint_url = f"http://localhost:{config.port}/sse"
+                endpoint_url = runtime_mcp_url(config.port)
                 modules = list(config.modules.keys())
                 capabilities = sorted(set(modules) | {"trigger"})
                 await register_butler(

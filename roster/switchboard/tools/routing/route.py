@@ -12,6 +12,7 @@ import asyncpg
 from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
+from butlers.core.mcp_urls import prefer_streamable_runtime_mcp_url
 from butlers.core.telemetry import inject_trace_context
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
@@ -98,6 +99,7 @@ async def _call_tool_with_router_client(
 ) -> Any:
     first_exc: Exception | None = None
     telemetry = get_switchboard_telemetry()
+    endpoint_url = prefer_streamable_runtime_mcp_url(endpoint_url)
 
     for reconnect in (False, True):
         try:
