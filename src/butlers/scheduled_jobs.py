@@ -410,15 +410,7 @@ async def _run_qa_pr_status_check_job(
         logger.warning("qa_pr_status_check job: QaModule not active — skipping")
         return {"skipped": True, "reason": "qa_module_not_active"}
 
-    # Resolve GH token from credential store
-    gh_token: str | None = None
-    if qa._credential_store is not None:
-        try:
-            from butlers.core.qa.dispatch import QA_GH_TOKEN_KEY
-
-            gh_token = await qa._credential_store.get(QA_GH_TOKEN_KEY)
-        except Exception:
-            pass
+    gh_token = await qa._resolve_gh_token()
 
     await qa._check_pr_statuses(pool, gh_token)
     return {"status": "completed"}

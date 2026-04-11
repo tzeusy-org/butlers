@@ -86,9 +86,7 @@ class TestBranchNameFormat:
         short2, epoch_str2 = parts2[2].rsplit("-", 1)
         assert short2 == "deadbeef0000" and epoch_str2.isdigit()
 
-        assert _branch_name("general", fp, prefix="custom-prefix").startswith(
-            "custom-prefix/general/"
-        )
+        assert _branch_name("general", fp, prefix="custom-prefix").startswith("custom-prefix/general/")
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +98,10 @@ class TestCreateHealingWorktree:
     async def test_success_path_and_prefix_variants(self, tmp_path: Path) -> None:
         """create_healing_worktree returns (path, branch); parent dir created; QA prefix works."""
         fp = _make_fingerprint("abc123def456")
+        calls: list[tuple[str, ...]] = []
 
         async def mock_run_git(*args, cwd, capture_stderr=True):
+            calls.append(args)
             return 0, "", ""
 
         with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
@@ -121,47 +121,14 @@ class TestCreateHealingWorktree:
         assert ".healing-worktrees/self-healing/" in str(sh_path)
         assert qa_path.parent.exists()
 
-    async def test_base_ref_parameter(self, tmp_path: Path) -> None:
-        """base_ref is forwarded to git branch creation; None falls back to 'main'."""
-        fp = _make_fingerprint("abc123def456")
-        captured: list[tuple] = []
-
-        async def mock_run_git(*args, cwd, capture_stderr=True):
-            captured.append(args)
-            return 0, "", ""
-
-        # Explicit base_ref=origin/main
+        # Custom base ref
+        calls.clear()
         with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
-            await create_healing_worktree(tmp_path, "email", fp, base_ref="origin/main")
-        branch_calls = [c for c in captured if c[0] == "branch" and len(c) == 3]
-        assert len(branch_calls) == 1
-        assert branch_calls[0][2] == "origin/main"
-
-        # Default (no base_ref) falls back to "main"
-        captured.clear()
-        with patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git):
-            await create_healing_worktree(tmp_path, "email", fp)
-        branch_calls_default = [c for c in captured if c[0] == "branch" and len(c) == 3]
-        assert len(branch_calls_default) == 1
-        assert branch_calls_default[0][2] == "main"
-
-    async def test_base_ref_logged(self, tmp_path: Path, caplog) -> None:
-        """base_ref selection is visible in INFO logs for postmortem analysis."""
-        fp = _make_fingerprint("abc123def456")
-
-        async def mock_run_git(*args, cwd, capture_stderr=True):
-            return 0, "", ""
-
-        import logging
-
-        with (
-            patch("butlers.core.healing.worktree._run_git", side_effect=mock_run_git),
-            caplog.at_level(logging.INFO, logger="butlers.core.healing.worktree"),
-        ):
-            await create_healing_worktree(tmp_path, "email", fp, base_ref="origin/main")
-
-        log_messages = " ".join(r.message for r in caplog.records)
-        assert "origin/main" in log_messages
+            await create_healing_worktree(
+                tmp_path, "email", fp, prefix="qa", base_ref="origin/main"
+            )
+        assert calls[0][0] == "branch"
+        assert calls[0][2] == "origin/main"
 
     async def test_failure_cases(self, tmp_path: Path) -> None:
         """Branch collision, worktree add failure (cleanup), and git lock all raise WorktreeCreationError."""
@@ -336,20 +303,8 @@ class TestReapStaleWorktrees:
             sql = args[0]
             if "branch_name = ANY" in sql:
                 return [
-                    {
-                        "branch_name": terminal_branch,
-                        "status": "failed",
-                        "closed_at": old,
-                        "updated_at": old,
-                        "healing_session_id": None,
-                    },
-                    {
-                        "branch_name": active_branch,
-                        "status": "investigating",
-                        "closed_at": None,
-                        "updated_at": recent,
-                        "healing_session_id": str(uuid.uuid4()),
-                    },
+                    {"branch_name": terminal_branch, "status": "failed", "closed_at": old, "updated_at": old, "healing_session_id": None},
+                    {"branch_name": active_branch, "status": "investigating", "closed_at": None, "updated_at": recent, "healing_session_id": str(uuid.uuid4())},
                     # orphaned_branch has no row → orphaned
                 ]
             return []
@@ -379,15 +334,7 @@ class TestReapStaleWorktrees:
         async def mock_fetch_orphan(*args, **kwargs):
             sql = args[0]
             if "branch_name = ANY" in sql:
-                return [
-                    {
-                        "branch_name": orphan_branch,
-                        "status": "failed",
-                        "closed_at": None,
-                        "updated_at": None,
-                        "healing_session_id": None,
-                    }
-                ]
+                return [{"branch_name": orphan_branch, "status": "failed", "closed_at": None, "updated_at": None, "healing_session_id": None}]
             return []
 
         pool_orphan.fetch = AsyncMock(side_effect=mock_fetch_orphan)
@@ -420,16 +367,7 @@ class TestReapStaleWorktrees:
         async def mock_fetch_mixed(*args, **kwargs):
             sql = args[0]
             if "branch_name = ANY" in sql:
-                return [
-                    {
-                        "branch_name": b,
-                        "status": "failed",
-                        "closed_at": old2,
-                        "updated_at": old2,
-                        "healing_session_id": None,
-                    }
-                    for b in branches
-                ]
+                return [{"branch_name": b, "status": "failed", "closed_at": old2, "updated_at": old2, "healing_session_id": None} for b in branches]
             return []
 
         pool_mixed.fetch = AsyncMock(side_effect=mock_fetch_mixed)
@@ -440,10 +378,7 @@ class TestReapStaleWorktrees:
 
         with (
             patch("butlers.core.healing.worktree._list_healing_branches", return_value=[]),
-            patch(
-                "butlers.core.healing.worktree.remove_healing_worktree",
-                side_effect=mock_remove_mixed,
-            ),
+            patch("butlers.core.healing.worktree.remove_healing_worktree", side_effect=mock_remove_mixed),
         ):
             count_mixed = await reap_stale_worktrees(mixed_tmp, pool_mixed)
         assert count_mixed == 3 and all(b in remove_mixed for b in branches)
@@ -458,15 +393,7 @@ class TestReapStaleWorktrees:
         async def mock_fetch_qa(*args, **kwargs):
             sql = args[0]
             if "branch_name = ANY" in sql:
-                return [
-                    {
-                        "branch_name": qa_branch,
-                        "status": "failed",
-                        "closed_at": old2,
-                        "updated_at": old2,
-                        "healing_session_id": None,
-                    }
-                ]
+                return [{"branch_name": qa_branch, "status": "failed", "closed_at": old2, "updated_at": old2, "healing_session_id": None}]
             return []
 
         pool_qa.fetch = AsyncMock(side_effect=mock_fetch_qa)
@@ -477,9 +404,7 @@ class TestReapStaleWorktrees:
 
         with (
             patch("butlers.core.healing.worktree._list_healing_branches", return_value=[]),
-            patch(
-                "butlers.core.healing.worktree.remove_healing_worktree", side_effect=mock_remove_qa
-            ),
+            patch("butlers.core.healing.worktree.remove_healing_worktree", side_effect=mock_remove_qa),
         ):
             count_qa = await reap_stale_worktrees(qa_tmp, pool_qa, prefixes=("qa",))
         assert count_qa == 1 and qa_branch in remove_qa

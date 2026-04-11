@@ -38,6 +38,7 @@ import os
 import tempfile
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -104,7 +105,8 @@ _QA_PREFIX = "qa"
 _QA_REVIEW_PREFIX = "qa-review"
 
 #: Maximum number of follow-up dispatches per PR per patrol cycle (rate-limit).
-_MAX_FOLLOW_UP_PER_CYCLE = 1
+_FOLLOW_UP_BASE_DELAY = timedelta(minutes=5)
+_FOLLOW_UP_MAX_DELAY = timedelta(hours=6)
 
 #: Maximum characters to store in review_feedback_summary.
 _MAX_FEEDBACK_SUMMARY_LEN = 2000
@@ -347,6 +349,103 @@ def _classify_git_push_error(push_err: str) -> str:
     return f"git push failed: {push_err}"
 
 
+def _follow_up_backoff_delay(follow_up_count: int) -> timedelta:
+    """Return the exponential backoff delay before the next review follow-up.
+
+    ``follow_up_count`` is the number of previous follow-up dispatches already
+    made for the PR. The first follow-up is immediate. Subsequent follow-ups
+    are delayed with exponential backoff capped at ``_FOLLOW_UP_MAX_DELAY``.
+    """
+    if follow_up_count <= 0:
+        return timedelta(0)
+    delay = _FOLLOW_UP_BASE_DELAY * (2**follow_up_count)
+    return min(delay, _FOLLOW_UP_MAX_DELAY)
+
+
+def _follow_up_dispatch_due(
+    *,
+    now: datetime,
+    follow_up_count: int,
+    last_follow_up_at: datetime | None,
+) -> bool:
+    """Return True when a PR review follow-up is eligible for dispatch."""
+    if follow_up_count <= 0 or last_follow_up_at is None:
+        return True
+    return (now - last_follow_up_at) >= _follow_up_backoff_delay(follow_up_count)
+
+
+async def _run_subprocess(
+    *args: str,
+    cwd: Path,
+    env: dict[str, str],
+) -> tuple[int, str, str]:
+    """Run a subprocess and return ``(returncode, stdout, stderr)``."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    return (
+        proc.returncode or 0,
+        stdout.decode("utf-8", errors="replace").strip(),
+        stderr.decode("utf-8", errors="replace").strip(),
+    )
+
+
+async def _push_branch_with_gh_auth(
+    repo_root: Path,
+    branch_name: str,
+    owner_repo: str,
+    env: dict[str, str],
+) -> str | None:
+    """Push a branch over HTTPS using ``gh`` as the Git credential helper."""
+    rc, _, stderr = await _run_subprocess("gh", "auth", "setup-git", cwd=repo_root, env=env)
+    if rc != 0:
+        return f"gh auth setup-git failed: {stderr}"
+
+    push_target = f"https://github.com/{owner_repo}.git"
+    rc, _, stderr = await _run_subprocess(
+        "git",
+        "push",
+        push_target,
+        branch_name,
+        cwd=repo_root,
+        env=env,
+    )
+    if rc != 0:
+        return _classify_git_push_error(stderr)
+    return None
+
+
+async def _delete_remote_branch_with_gh_auth(
+    repo_root: Path,
+    branch_name: str,
+    owner_repo: str,
+    env: dict[str, str],
+) -> str | None:
+    """Delete a remote branch over HTTPS using ``gh`` as the credential helper."""
+    rc, _, stderr = await _run_subprocess("gh", "auth", "setup-git", cwd=repo_root, env=env)
+    if rc != 0:
+        return f"gh auth setup-git failed: {stderr}"
+
+    push_target = f"https://github.com/{owner_repo}.git"
+    rc, _, stderr = await _run_subprocess(
+        "git",
+        "push",
+        push_target,
+        "--delete",
+        branch_name,
+        cwd=repo_root,
+        env=env,
+    )
+    if rc != 0:
+        return f"git push --delete failed: {stderr}"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # PR creation
 # ---------------------------------------------------------------------------
@@ -535,21 +634,10 @@ async def _create_qa_pr(
         )
         return None, None, "no_op_branch"
 
-    # Step 1: git push
-    push_proc = await asyncio.create_subprocess_exec(
-        "git",
-        "push",
-        "origin",
-        branch_name,
-        cwd=str(repo_root),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    _, push_stderr = await push_proc.communicate()
-    if push_proc.returncode != 0:
-        push_err = push_stderr.decode("utf-8", errors="replace").strip()
-        return None, None, _classify_git_push_error(push_err)
+    # Step 1: git push over HTTPS using GH_TOKEN-backed gh auth.
+    push_error = await _push_branch_with_gh_auth(repo_root, branch_name, owner_repo, env)
+    if push_error is not None:
+        return None, None, push_error
 
     # Step 2: Build PR content
     fp_short = finding.fingerprint[:12]
@@ -607,23 +695,14 @@ async def _create_qa_pr(
             violations[:3],
         )
         # Delete the remote branch (await to avoid leaking the child process)
-        delete_proc = await asyncio.create_subprocess_exec(
-            "git",
-            "push",
-            "origin",
-            "--delete",
-            branch_name,
-            cwd=str(repo_root),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        delete_error = await _delete_remote_branch_with_gh_auth(
+            repo_root, branch_name, owner_repo, env
         )
-        _, delete_stderr = await delete_proc.communicate()
-        if delete_proc.returncode != 0:
+        if delete_error is not None:
             logger.warning(
                 "Failed to delete remote branch %s after anonymization failure: %s",
                 branch_name,
-                delete_stderr.decode("utf-8", errors="replace").strip(),
+                delete_error,
             )
         return None, None, "anonymization_failed"
 
@@ -668,24 +747,15 @@ async def _create_qa_pr(
         # Best-effort remote branch cleanup: push succeeded but PR creation failed,
         # so we now own a leaked remote branch.  Clean it up before returning.
         try:
-            del_proc = await asyncio.create_subprocess_exec(
-                "git",
-                "push",
-                "origin",
-                "--delete",
-                branch_name,
-                cwd=str(repo_root),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
+            delete_error = await _delete_remote_branch_with_gh_auth(
+                repo_root, branch_name, owner_repo, env
             )
-            _, del_stderr = await del_proc.communicate()
-            if del_proc.returncode != 0:
+            if delete_error is not None:
                 logger.warning(
                     "_create_qa_pr: best-effort branch cleanup after PR creation failure "
                     "could not delete remote branch %r: %s",
                     branch_name,
-                    del_stderr.decode("utf-8", errors="replace").strip(),
+                    delete_error,
                 )
             else:
                 logger.debug(
@@ -1307,11 +1377,10 @@ async def check_open_pr_statuses(
     an agent worktree).  Transitions pr_open → pr_merged or pr_open → failed
     based on actual GitHub PR state.
 
-    When ``spawner`` and ``config`` are provided, also checks for unresolved
+When ``spawner`` and ``config`` are provided, also checks for unresolved
     review threads or "changes_requested" state and dispatches a follow-up
-    agent to address reviewer feedback (rate-limited to
-    ``_MAX_FOLLOW_UP_PER_CYCLE`` per PR per patrol cycle, tracked via
-    ``follow_up_cycle_patrol_id`` and ``follow_up_cycle_count``).
+    agent to address reviewer feedback with exponential backoff between
+    repeated follow-up attempts on the same PR.
 
     Parameters
     ----------
@@ -1355,7 +1424,7 @@ async def check_open_pr_statuses(
     rows = await pool.fetch(
         """
         SELECT id, pr_url, pr_number, fingerprint, butler_name, follow_up_count,
-               branch_name, follow_up_cycle_patrol_id, follow_up_cycle_count
+               branch_name, last_follow_up_at
         FROM public.healing_attempts
         WHERE status = 'pr_open'
           AND qa_patrol_id IS NOT NULL
@@ -1376,8 +1445,7 @@ async def check_open_pr_statuses(
         butler_name: str = row["butler_name"]
         follow_up_count: int = row["follow_up_count"] or 0
         pr_branch_name: str | None = row["branch_name"]
-        follow_up_cycle_patrol_id: uuid.UUID | None = row["follow_up_cycle_patrol_id"]
-        follow_up_cycle_count: int = row["follow_up_cycle_count"] or 0
+        last_follow_up_at: datetime | None = row["last_follow_up_at"]
 
         if pr_number is None:
             # pr_number is missing — the attempt was persisted without it (e.g.
@@ -1553,24 +1621,16 @@ async def check_open_pr_statuses(
             _needs_followup = review_state in _ACTIONABLE_REVIEW_STATES or (
                 review_state is None and bool(feedback_summary)
             )
-            # Compute the effective cycle count for rate-limiting.  When a
-            # patrol_id is provided we use the per-cycle counter, which resets
-            # automatically when the cycle changes.  Fallback to the lifetime
-            # follow_up_count only when no patrol_id was threaded in (e.g.
-            # standalone callers or tests that predate per-cycle tracking).
-            if patrol_id is not None:
-                # A fresh patrol_id means the cycle has rolled over.
-                if follow_up_cycle_patrol_id != patrol_id:
-                    _effective_cycle_count = 0
-                else:
-                    _effective_cycle_count = follow_up_cycle_count
-            else:
-                _effective_cycle_count = follow_up_count
+            now = datetime.now(UTC)
             if (
                 spawner is not None
                 and config is not None
                 and _needs_followup
-                and _effective_cycle_count < _MAX_FOLLOW_UP_PER_CYCLE
+                and _follow_up_dispatch_due(
+                    now=now,
+                    follow_up_count=follow_up_count,
+                    last_follow_up_at=last_follow_up_at,
+                )
                 and feedback_summary
             ):
                 dispatched = await _dispatch_pr_review_followup(
@@ -1708,11 +1768,9 @@ async def _dispatch_pr_review_followup(
     follow-up agent with the reviewer feedback as context, and pushes the
     resulting changes to the same PR branch so the open PR is updated.
 
-    Rate-limited per patrol cycle: increments ``follow_up_cycle_count`` (reset
-    when ``patrol_id`` changes) and the lifetime ``follow_up_count`` telemetry
-    counter on the healing_attempts row.  Outcome is persisted via
-    ``last_follow_up_status``, ``last_follow_up_session_id``,
-    ``last_follow_up_error``, and ``last_follow_up_at``.
+    Repeated dispatch is exponentially staggered using ``last_follow_up_at``
+    and ``follow_up_count`` on the healing_attempts row. Per-patrol cycle
+    counters are still maintained for operator visibility and telemetry.
     Anonymization validation is applied before the agent runs.
 
     Parameters
@@ -1992,25 +2050,17 @@ async def _run_review_followup_session(
             )
             return
 
-        # Push the follow-up commits to origin
-        git_env = build_git_auth_env(sandbox_env.get("GH_TOKEN"), base_env=sandbox_env)
-        push_proc = await asyncio.create_subprocess_exec(
-            "git",
-            "push",
-            "origin",
-            followup_branch,
-            cwd=str(repo_root),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=git_env,
-        )
-        _, push_stderr = await push_proc.communicate()
-        if push_proc.returncode != 0:
-            push_err = push_stderr.decode("utf-8", errors="replace").strip()
-            classified = _classify_git_push_error(push_err)
+        owner_repo = await _get_remote_owner_repo(repo_root, sandbox_env)
+        if owner_repo is None:
+            push_error = "remote_unavailable"
+        else:
+            push_error = await _push_branch_with_gh_auth(
+                repo_root, followup_branch, owner_repo, sandbox_env
+            )
+        if push_error is not None:
             logger.warning(
                 "QA review follow-up: %s (attempt=%s)",
-                classified,
+                push_error,
                 attempt_id,
             )
             await pool.execute(
@@ -2024,7 +2074,7 @@ async def _run_review_followup_session(
                 """,
                 attempt_id,
                 followup_session_id,
-                classified[:_MAX_FOLLOWUP_ERROR_LEN],
+                push_error[:_MAX_FOLLOWUP_ERROR_LEN],
             )
         else:
             logger.info(
@@ -2342,45 +2392,19 @@ async def dispatch_qa_investigation(
         # ---------------------------------------------------------------
         # Gate 8: Concurrency cap
         # ---------------------------------------------------------------
+        # The batch dispatcher pre-checks the active count before dispatching
+        # each novel finding so capped work is queued for a later patrol
+        # rather than being inserted and terminally failed here. If another
+        # concurrent dispatcher slips past that pre-check, prefer a small
+        # transient cap overshoot over dropping the investigation attempt.
         active_count = await count_active_attempts(pool, qa_only=True)
-        # active_count includes the row we just inserted (QA-scoped only)
         if active_count > config.max_concurrent:
-            logger.debug(
-                "QA dispatch skipped: concurrency cap reached (active=%d, max=%d, fingerprint=%s)",
+            logger.warning(
+                "QA dispatch exceeded concurrency cap after claim "
+                "(active=%d, max=%d, fingerprint=%s); proceeding",
                 active_count,
                 config.max_concurrent,
                 fp[:12],
-            )
-            await delete_orphaned_attempt(pool, attempt_id)
-            try:
-                await update_finding_dedup_reason(pool, finding_id, "concurrency_cap")
-            except Exception as _dr_exc:
-                logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
-            try:
-                await update_finding_dispatch_queued(pool, finding_id, True)
-            except Exception as _dq_exc:
-                logger.debug(
-                    "QA dispatch: failed to mark finding dispatch_queued (gate 8): %s", _dq_exc
-                )
-            try:
-                await create_dispatch_event(
-                    pool,
-                    fingerprint=fp,
-                    butler_name=finding.source_butler,
-                    decision="concurrency_cap",
-                    reason=(
-                        f"Concurrency cap reached: {active_count} active"
-                        f" / {config.max_concurrent} max"
-                    ),
-                )
-            except Exception as _evt_exc:
-                logger.debug("QA dispatch: failed to record concurrency_cap event: %s", _evt_exc)
-            if metrics is not None:
-                metrics.record_recovery_dispatch_decision(workflow="qa", decision="concurrency_cap")
-            return QaDispatchResult(
-                accepted=False,
-                fingerprint=fp,
-                reason="concurrency_cap",
             )
 
         # ---------------------------------------------------------------
@@ -2658,6 +2682,18 @@ async def dispatch_novel_findings(
     cap_skipped = 0
 
     for triaged in novel_findings:
+        active_count = await count_active_attempts(pool, qa_only=True)
+        if active_count >= config.max_concurrent:
+            results.append(
+                QaDispatchResult(
+                    accepted=False,
+                    fingerprint=triaged.finding.fingerprint,
+                    reason="concurrency_cap",
+                )
+            )
+            cap_skipped += 1
+            continue
+
         # Once the concurrency cap is reached, stop calling dispatch for remaining
         # findings.  Continuing would cause each subsequent finding to go through
         # create_or_join_attempt (inserting a new row) before being rejected — these

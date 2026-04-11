@@ -180,7 +180,7 @@ async def test_create_qa_pr_git_remote_fails_blocks():
 
 @pytest.mark.asyncio
 async def test_create_qa_pr_allowed_repo_proceeds_to_push():
-    """An allowed repo passes the whitelist check and reaches git push."""
+    """An allowed repo passes the whitelist check and reaches HTTPS git push."""
     whitelist = _make_loaded_whitelist(["acme/repo"])
 
     call_index = 0
@@ -195,11 +195,15 @@ async def test_create_qa_pr_allowed_repo_proceeds_to_push():
             proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
             proc.returncode = 0
         elif call_index == 1:
-            # Second call: git log (no-op detection) → has commits, so push proceeds
+            # Second call: git log (no-op detection) — return a commit line so push is attempted
             proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
             proc.returncode = 0
         elif call_index == 2:
-            # Third call: git push → fail so we don't continue to gh pr create
+            # Third call: gh auth setup-git
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.returncode = 0
+        elif call_index == 3:
+            # Fourth call: git push → fail so we don't continue to gh pr create
             proc.communicate = AsyncMock(return_value=(b"", b"push failed"))
             proc.returncode = 1
         else:
@@ -225,114 +229,26 @@ async def test_create_qa_pr_allowed_repo_proceeds_to_push():
     # The whitelist passed; we got to git push which failed.
     assert error is not None
     assert "git push failed" in error
-    # There were at least 3 subprocess calls (get-url + no-op detection + push)
-    assert call_index >= 3
-
-
-@pytest.mark.asyncio
-async def test_create_qa_pr_push_uses_git_askpass_env():
-    """Allowed repo push uses explicit non-interactive git auth env."""
-    whitelist = _make_loaded_whitelist(["acme/repo"])
-
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    async def _fake_subprocess(*args, **kwargs):
-        calls.append((args, kwargs))
-        proc = MagicMock()
-        if len(calls) == 1:
-            # git remote get-url
-            proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
-            proc.returncode = 0
-        elif len(calls) == 2:
-            # git log (no-op detection) — return a commit line so push is not blocked
-            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
-            proc.returncode = 0
-        else:
-            # git push → fail
-            proc.communicate = AsyncMock(return_value=(b"", b"push failed"))
-            proc.returncode = 1
-        return proc
-
-    with patch(
-        "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
-        side_effect=_fake_subprocess,
-    ):
-        _, _, error = await _create_qa_pr(
-            repo_root=Path("/tmp/repo"),
-            branch_name="qa/test-branch",
-            finding=_make_finding(),
-            attempt_id=uuid.uuid4(),
-            labels=[],
-            gh_token="ghtoken",
-            whitelist=whitelist,
-        )
-
-    assert error is not None
-    push_kwargs = calls[2][1]
-    env = push_kwargs["env"]
-    assert env["GH_TOKEN"] == "ghtoken"
-    assert env["BUTLERS_QA_GIT_TOKEN"] == "ghtoken"
-    assert env["GIT_TERMINAL_PROMPT"] == "0"
-    assert env["GIT_ASKPASS"]
-
-
-@pytest.mark.asyncio
-async def test_create_qa_pr_classifies_git_auth_failures():
-    """Username/auth prompt failures return a dedicated git_auth_failed code."""
-    whitelist = _make_loaded_whitelist(["acme/repo"])
-
-    call_index = 0
-
-    async def _fake_subprocess(*args, **kwargs):
-        nonlocal call_index
-        proc = MagicMock()
-        if call_index == 0:
-            # git remote get-url
-            proc.communicate = AsyncMock(return_value=(b"https://github.com/acme/repo.git", b""))
-            proc.returncode = 0
-        elif call_index == 1:
-            # git log (no-op detection) — return a commit line so push is attempted
-            proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
-            proc.returncode = 0
-        else:
-            # git push → auth failure
-            proc.communicate = AsyncMock(
-                return_value=(
-                    b"",
-                    b"fatal: could not read Username for 'https://github.com': No such device or address",
-                )
-            )
-            proc.returncode = 128
-        call_index += 1
-        return proc
-
-    with patch(
-        "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
-        side_effect=_fake_subprocess,
-    ):
-        _, _, error = await _create_qa_pr(
-            repo_root=Path("/tmp/repo"),
-            branch_name="qa/test-branch",
-            finding=_make_finding(),
-            attempt_id=uuid.uuid4(),
-            labels=[],
-            gh_token="ghtoken",
-            whitelist=whitelist,
-        )
-
-    assert error is not None
-    assert error.startswith("git_auth_failed:")
+    assert call_args_list[2] == ("gh", "auth", "setup-git")
+    assert call_args_list[3] == (
+        "git",
+        "push",
+        "https://github.com/acme/repo.git",
+        "qa/test-branch",
+    )
 
 
 @pytest.mark.asyncio
 async def test_create_qa_pr_ssh_url_allowed():
-    """SSH remote URLs are correctly parsed and matched against the whitelist."""
+    """SSH remotes are parsed, but pushes still use HTTPS token auth."""
     whitelist = _make_loaded_whitelist(["acme/repo"])
 
     call_index = 0
+    call_args_list = []
 
     async def _fake_subprocess(*args, **kwargs):
         nonlocal call_index
+        call_args_list.append(args)
         proc = MagicMock()
         if call_index == 0:
             # git remote get-url → SSH URL
@@ -341,6 +257,9 @@ async def test_create_qa_pr_ssh_url_allowed():
         elif call_index == 1:
             # git log (no-op detection) — return a commit line so push is attempted
             proc.communicate = AsyncMock(return_value=(b"abc1234 fix: something\n", b""))
+            proc.returncode = 0
+        elif call_index == 2:
+            proc.communicate = AsyncMock(return_value=(b"", b""))
             proc.returncode = 0
         else:
             # git push → fail
@@ -365,3 +284,9 @@ async def test_create_qa_pr_ssh_url_allowed():
 
     # Should have passed the whitelist (SSH parsed correctly) and reached push.
     assert error is not None and "git push failed" in error
+    assert call_args_list[3] == (
+        "git",
+        "push",
+        "https://github.com/acme/repo.git",
+        "qa/test-branch",
+    )
