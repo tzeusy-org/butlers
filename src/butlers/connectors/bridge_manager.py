@@ -247,8 +247,12 @@ class BridgeSubprocessManager:
         # Shutdown signal (set by stop())
         self._stopping = False
 
-        # Event that resolves once the bridge is "connected" (for startup wait)
+        # Event that resolves once the bridge is "connected".
         self._connected_event: asyncio.Event = asyncio.Event()
+        # Event that resolves once startup reaches any terminal state:
+        # connected, pair_required, or a non-restart startup failure.
+        self._startup_complete_event: asyncio.Event = asyncio.Event()
+        self._startup_failure: RuntimeError | None = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -285,16 +289,19 @@ class BridgeSubprocessManager:
             return {}
 
     async def start(self) -> None:
-        """Start the bridge subprocess and wait until it reports 'connected'.
+        """Start the bridge subprocess and wait until startup reaches a terminal state.
 
         Raises:
             RuntimeError: If the binary is not found in $PATH.
-            TimeoutError: If the bridge does not reach 'connected' within
-                ``config.startup_timeout_s`` seconds.
+            TimeoutError: If the bridge does not reach a terminal startup state
+                within ``config.startup_timeout_s`` seconds.
         """
         self._stopping = False
         self._degraded = False
         self._degraded_reason = None
+        self._connected_event.clear()
+        self._startup_complete_event.clear()
+        self._startup_failure = None
 
         await self._spawn()
 
@@ -313,12 +320,12 @@ class BridgeSubprocessManager:
         )
         try:
             await asyncio.wait_for(
-                self._connected_event.wait(),
+                self._startup_complete_event.wait(),
                 timeout=self._config.startup_timeout_s,
             )
         except TimeoutError:
             logger.error(
-                "Bridge did not reach 'connected' within %.0fs",
+                "Bridge did not reach a terminal startup state within %.0fs",
                 self._config.startup_timeout_s,
             )
             raise
@@ -329,9 +336,18 @@ class BridgeSubprocessManager:
             except (asyncio.CancelledError, Exception):
                 pass
 
+        if self._startup_failure is not None:
+            raise self._startup_failure
+
         # Start background health polling
         self._health_task = asyncio.create_task(self._health_poll_loop(), name="bridge-health-poll")
-        logger.info("Bridge startup complete — health polling started")
+        if self._connected_event.is_set():
+            logger.info("Bridge startup complete — health polling started")
+        else:
+            logger.info(
+                "Bridge startup complete in degraded mode (%s) — health polling started",
+                self._degraded_reason or "unknown",
+            )
 
     async def stop(self) -> None:
         """Gracefully shut down the bridge.
@@ -511,6 +527,9 @@ class BridgeSubprocessManager:
 
             should_restart = self._classify_exit(rc)
             if not should_restart:
+                if not self._connected_event.is_set() and self._startup_failure is None:
+                    self._startup_failure = self._startup_exit_error(rc)
+                    self._startup_complete_event.set()
                 break
 
             # Compute and wait for backoff delay
@@ -592,6 +611,16 @@ class BridgeSubprocessManager:
         self._degraded_reason = reason
         logger.warning("Bridge entering degraded mode: %s", reason)
 
+    def _startup_exit_error(self, rc: int | None) -> RuntimeError:
+        """Build an actionable startup failure for a non-restart exit."""
+        if rc == _EXIT_PAIR_TIMEOUT:
+            return RuntimeError("Bridge pairing timed out during startup; re-pair required")
+        if rc == _EXIT_SESSION_INVALID:
+            return RuntimeError("Bridge session invalidated during startup; re-pair required")
+        if rc == _EXIT_CLEAN:
+            return RuntimeError("Bridge exited cleanly before startup completed")
+        return RuntimeError(f"Bridge exited during startup (rc={rc})")
+
     # ------------------------------------------------------------------
     # Private helpers — health polling
     # ------------------------------------------------------------------
@@ -630,6 +659,11 @@ class BridgeSubprocessManager:
                 logger.debug("Bridge startup /status: state=%s", state)
                 if state == "connected":
                     self._connected_event.set()
+                    self._startup_complete_event.set()
+                    break
+                if state == "pair_required":
+                    self._set_degraded("pair_required")
+                    self._startup_complete_event.set()
                     break
                 # 'connecting' is an expected transient state during startup —
                 # keep polling rather than entering degraded mode.

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import butlers.connectors.bridge_manager as bridge_manager
 from butlers.connectors.bridge_manager import (
     BridgeConfig,
     BridgeSubprocessManager,
@@ -51,6 +52,28 @@ def _fake_process(returncode: int | None = None, pid: int = 1234) -> MagicMock:
     proc.stdout.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
     proc.stderr.__aiter__ = lambda self: self
     proc.stderr.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
+    return proc
+
+
+def _fake_running_process(pid: int = 1234) -> MagicMock:
+    proc = MagicMock()
+    proc.pid = pid
+    proc.returncode = None
+    wait_started = asyncio.Event()
+
+    async def _wait():
+        wait_started.set()
+        await asyncio.Future()
+
+    proc.wait = _wait
+    proc.send_signal = MagicMock()
+    proc.stdout = AsyncMock(spec=asyncio.StreamReader)
+    proc.stderr = AsyncMock(spec=asyncio.StreamReader)
+    proc.stdout.__aiter__ = lambda self: self
+    proc.stdout.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
+    proc.stderr.__aiter__ = lambda self: self
+    proc.stderr.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
+    proc._wait_started = wait_started
     return proc
 
 
@@ -105,3 +128,61 @@ def test_not_running_with_exited_process() -> None:
     mgr = BridgeSubprocessManager(_make_config())
     mgr._process = _fake_process(returncode=0)
     assert not mgr.is_running
+
+
+@pytest.mark.asyncio
+async def test_start_succeeds_when_bridge_reports_pair_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A live bridge in pair_required mode should complete startup in degraded mode."""
+    mgr = BridgeSubprocessManager(_make_config())
+    proc = _fake_running_process()
+
+    async def _spawn() -> None:
+        mgr._process = proc
+
+    async def _monitor_loop() -> None:
+        await asyncio.Future()
+
+    async def _health_poll_loop() -> None:
+        await asyncio.Future()
+
+    monkeypatch.setattr(mgr, "_spawn", _spawn)
+    monkeypatch.setattr(mgr, "_monitor_loop", _monitor_loop)
+    monkeypatch.setattr(mgr, "_health_poll_loop", _health_poll_loop)
+    monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(
+        bridge_manager,
+        "_http_get_unix",
+        AsyncMock(return_value={"state": "pair_required"}),
+    )
+
+    await mgr.start()
+
+    assert mgr.is_running
+    assert mgr.is_degraded
+    assert mgr.degraded_reason == "pair_required"
+    assert not mgr._connected_event.is_set()
+
+    await mgr.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_fails_fast_when_bridge_exits_with_session_invalidated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-restart startup exit should raise an actionable error immediately."""
+    mgr = BridgeSubprocessManager(_make_config())
+    proc = _fake_process(returncode=2)
+
+    async def _spawn() -> None:
+        mgr._process = proc
+
+    monkeypatch.setattr(mgr, "_spawn", _spawn)
+    monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(
+        bridge_manager,
+        "_http_get_unix",
+        AsyncMock(side_effect=ConnectionRefusedError("socket not ready")),
+    )
+
+    with pytest.raises(RuntimeError, match="session invalidated during startup"):
+        await mgr.start()
