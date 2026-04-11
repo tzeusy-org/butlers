@@ -30,9 +30,9 @@ priority = 10
 enabled = false
 
 [[models]]
-alias = "gpt-5.1"
+alias = "gpt-5.4-mini"
 runtime_type = "codex"
-model_id = "gpt-5.1"
+model_id = "gpt-5.4-mini"
 extra_args = []
 complexity_tier = "trivial"
 priority = 25

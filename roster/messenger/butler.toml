@@ -10,7 +10,7 @@ cross_butler_access = ["*"]
 [butler.runtime_seed]
 max_concurrent_sessions = 3
 runtime_type = "codex"
-model = "gpt-5.1"
+model = "gpt-5.4-mini"
 liveness_ttl_seconds = 300
 route_contract_min = 1
 route_contract_max = 1

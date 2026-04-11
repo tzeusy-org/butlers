@@ -241,7 +241,7 @@ docker ps --filter name=butlers-dev --format '{{.Names}}'
 Butler daemon logs use structlog (one JSON object per line):
 ```json
 {
-  "event": "Session created: <uuid> (trigger=tick, model=gpt-5.1)",
+  "event": "Session created: <uuid> (trigger=tick, model=gpt-5.4-mini)",
   "level": "info",
   "logger": "butlers.core.sessions",
   "timestamp": "2026-03-12T03:34:22.332551Z",

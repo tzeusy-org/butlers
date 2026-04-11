@@ -2,7 +2,7 @@
 
 - [ ] 1.1 Create Alembic migration adding `shared.model_catalog` table (id, alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority, created_at, updated_at) with UNIQUE on alias and CHECK on complexity_tier
 - [ ] 1.2 Create Alembic migration adding `shared.butler_model_overrides` table (id, butler_name, catalog_entry_id FK, enabled, priority, complexity_tier) with UNIQUE on (butler_name, catalog_entry_id) and CASCADE delete on catalog_entry_id
-- [ ] 1.3 Add seed data insert to migration: 12 default catalog entries (claude-haiku/sonnet/opus, gpt-5.1/5.3-spark/5.4/5.4-high, gemini-2.5-flash/pro, minimax-m2.5, glm-5, kimi-k2.5) with ON CONFLICT DO NOTHING
+- [ ] 1.3 Add seed data insert to migration: 12 default catalog entries (claude-haiku/sonnet/opus, gpt-5.4-mini/5.3-spark/5.4/5.4-high, gemini-2.5-flash/pro, minimax-m2.5, glm-5, kimi-k2.5) with ON CONFLICT DO NOTHING
 - [ ] 1.4 Add `complexity` column (text, nullable, default 'medium') to `scheduled_tasks` table via migration
 
 ## 2. Complexity Enum & Model Resolution

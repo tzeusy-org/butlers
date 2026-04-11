@@ -131,7 +131,7 @@ class TestCatalogEntries:
                 json={
                     "alias": "new-model",
                     "runtime_type": "codex",
-                    "model_id": "gpt-5.1",
+                    "model_id": "gpt-5.4-mini",
                     "complexity_tier": "medium",
                     "enabled": True,
                     "priority": 0,

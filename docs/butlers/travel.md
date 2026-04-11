@@ -17,7 +17,7 @@ The butler proactively monitors upcoming departures, check-in windows, connectio
 | **Port** | 41106 |
 | **Schema** | `travel` |
 | **Modules** | email, calendar, memory, travel |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 

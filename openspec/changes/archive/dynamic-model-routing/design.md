@@ -1,6 +1,6 @@
 ## Context
 
-Today every butler has a single model hardcoded in `butler.toml` under `[butler.runtime].model` (currently `gpt-5.1` across the fleet). The spawner reads this once and passes it through to the `RuntimeAdapter.invoke()` call. There is no mechanism to vary the model based on task characteristics, and no way to change model assignments without editing TOML files and restarting daemons.
+Today every butler has a single model hardcoded in `butler.toml` under `[butler.runtime].model` (currently `gpt-5.4-mini` across the fleet). The spawner reads this once and passes it through to the `RuntimeAdapter.invoke()` call. There is no mechanism to vary the model based on task characteristics, and no way to change model assignments without editing TOML files and restarting daemons.
 
 The system already supports four runtime adapters (claude, codex, gemini, opencode) and the spawner's `invoke()` signature already accepts `model` and `runtime_args` as parameters — so the plumbing for multi-model invocation exists. What's missing is the **decision layer**: who picks the model, based on what, and how is that configuration managed.
 
@@ -140,7 +140,7 @@ The dashboard UI presents this as an alias editor:
 | `claude-haiku` | `claude` | `claude-haiku-4-5-20251001` | `[]` | `trivial` |
 | `claude-sonnet` | `claude` | `claude-sonnet-4-6` | `[]` | `medium` |
 | `claude-opus` | `claude` | `claude-opus-4-6` | `[]` | `high` |
-| `gpt-5.1` | `codex` | `gpt-5.1` | `[]` | `medium` |
+| `gpt-5.4-mini` | `codex` | `gpt-5.4-mini` | `[]` | `medium` |
 | `gpt-5.3-spark` | `codex` | `gpt-5.3-codex-spark` | `[]` | `trivial` |
 | `gpt-5.4` | `codex` | `gpt-5.4` | `[]` | `high` |
 | `gpt-5.4-high` | `codex` | `gpt-5.4` | `["--config", "model_reasoning_effort=high"]` | `extra_high` |

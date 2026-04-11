@@ -19,7 +19,7 @@ The Lifestyle butler SHALL be configured as a standard butler in `roster/lifesty
   - `description` summarizing its domain (taste, music, entertainment, food, hobbies, routines)
   - `[butler.db]` with `name = "butlers"` and `schema = "lifestyle"`
   - `[butler.switchboard]` with `url = "http://localhost:41100/mcp"`
-  - `[butler.seed_configs]` with `runtime_type = "codex"`, `model = "gpt-5.1"`, `liveness_ttl_seconds = 300`, `route_contract_min = 1`, `route_contract_max = 1`
+  - `[butler.seed_configs]` with `runtime_type = "codex"`, `model = "gpt-5.4-mini"`, `liveness_ttl_seconds = 300`, `route_contract_min = 1`, `route_contract_max = 1`
   - `[butler.runtime]` with `max_concurrent_sessions = 3`
 
 ### Requirement: Base Module Configuration

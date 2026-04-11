@@ -19,7 +19,7 @@ Messenger exists because outbound communication should have one owner. When ever
 | **Port** | 41104 |
 | **Schema** | `messenger` |
 | **Modules** | calendar, telegram, email, approvals, messenger |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 

@@ -21,7 +21,7 @@ The Health Butler also has read-only access to Home Assistant sensor data, enabl
 | **Port** | 41103 |
 | **Schema** | `health` |
 | **Modules** | calendar, contacts, health, home_assistant (read-only), memory |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 

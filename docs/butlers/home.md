@@ -17,7 +17,7 @@ The butler's philosophy is that smart home technology should feel invisible: res
 | **Port** | 41108 |
 | **Schema** | `home` |
 | **Modules** | home_assistant, memory, contacts, approvals |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 

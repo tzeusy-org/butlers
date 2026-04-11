@@ -19,7 +19,7 @@ Switchboard never handles domain logic itself. It classifies, routes, and tracks
 | **Port** | 41100 |
 | **Schema** | `switchboard` |
 | **Modules** | calendar, telegram, memory, email, pipeline, switchboard |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 

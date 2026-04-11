@@ -19,7 +19,7 @@ The Finance Butler does not offer investment advice, initiate payments, file tax
 | **Port** | 41105 |
 | **Schema** | `finance` |
 | **Modules** | email, calendar, memory, finance |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 

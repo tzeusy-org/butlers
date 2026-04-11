@@ -25,7 +25,7 @@ pytestmark = pytest.mark.unit
 def _mock_row(
     butler_name: str = "test",
     core_groups: list[str] | None = None,
-    model: str | None = "gpt-5.1",
+    model: str | None = "gpt-5.4-mini",
     runtime_type: str = "codex",
     args: str = "[]",
     max_concurrent: int = 3,
@@ -92,7 +92,7 @@ def test_get_success():
     assert resp.status_code == 200
     data = resp.json()
     assert data["butler_name"] == "test"
-    assert data["model"] == "gpt-5.1"
+    assert data["model"] == "gpt-5.4-mini"
     assert data["runtime_type"] == "codex"
     assert "field_tiers" in data
     assert data["field_tiers"]["model"] == "hot"

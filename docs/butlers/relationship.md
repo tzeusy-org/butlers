@@ -19,7 +19,7 @@ The design philosophy centers on three principles: **thoughtfulness** (never mis
 | **Port** | 41102 |
 | **Schema** | `relationship` |
 | **Modules** | calendar, contacts, memory, relationship |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 

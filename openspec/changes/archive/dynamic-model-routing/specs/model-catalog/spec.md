@@ -97,7 +97,7 @@ The system SHALL seed the model catalog with sensible defaults on first migratio
 | `claude-haiku` | `claude` | `claude-haiku-4-5-20251001` | `[]` | `trivial` | 0 |
 | `claude-sonnet` | `claude` | `claude-sonnet-4-6` | `[]` | `medium` | 0 |
 | `claude-opus` | `claude` | `claude-opus-4-6` | `[]` | `high` | 0 |
-| `gpt-5.1` | `codex` | `gpt-5.1` | `[]` | `medium` | 10 |
+| `gpt-5.4-mini` | `codex` | `gpt-5.4-mini` | `[]` | `medium` | 10 |
 | `gpt-5.3-spark` | `codex` | `gpt-5.3-codex-spark` | `[]` | `trivial` | 0 |
 | `gpt-5.4` | `codex` | `gpt-5.4` | `[]` | `high` | 10 |
 | `gpt-5.4-high` | `codex` | `gpt-5.4` | `["--config", "model_reasoning_effort=high"]` | `extra_high` | 0 |

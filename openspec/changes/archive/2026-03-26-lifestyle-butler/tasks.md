@@ -1,7 +1,7 @@
 ## 1. Butler Directory Scaffolding
 
 - [ ] 1.1 Create `roster/lifestyle/` directory
-- [ ] 1.2 Write `roster/lifestyle/butler.toml` with: `[butler]` (port 41109), `[butler.db]` (schema `lifestyle`), `[butler.switchboard]`, `[butler.seed_configs]` (codex/gpt-5.1), `[butler.runtime]` (max_concurrent=3), modules (memory, calendar, contacts), and scheduled tasks (memory_consolidation, memory_episode_cleanup, memory_purge_superseded, daily_briefing_contribution, weekly-taste-digest)
+- [ ] 1.2 Write `roster/lifestyle/butler.toml` with: `[butler]` (port 41109), `[butler.db]` (schema `lifestyle`), `[butler.switchboard]`, `[butler.seed_configs]` (codex/gpt-5.4-mini), `[butler.runtime]` (max_concurrent=3), modules (memory, calendar, contacts), and scheduled tasks (memory_consolidation, memory_episode_cleanup, memory_purge_superseded, daily_briefing_contribution, weekly-taste-digest)
 - [ ] 1.3 Write `roster/lifestyle/MANIFESTO.md` — identity, philosophy, domain scope, value proposition
 - [ ] 1.4 Write `roster/lifestyle/CLAUDE.md` — start with `@../shared/AGENTS.md`, then system prompt with tool inventory, guidelines, calendar usage, interactive response mode, memory classification taxonomy (subject/predicate/permanence), and example facts
 - [ ] 1.5 Write `roster/lifestyle/AGENTS.md` — initialize with `@../shared/AGENTS.md` reference and "# Notes to self" header

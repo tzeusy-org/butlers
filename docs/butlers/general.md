@@ -17,7 +17,7 @@ It also serves as the safe fallback for Switchboard routing. When the classifier
 | **Port** | 41101 |
 | **Schema** | `general` |
 | **Modules** | calendar, contacts, general, memory |
-| **Runtime** | codex (gpt-5.1) |
+| **Runtime** | codex (gpt-5.4-mini) |
 
 ## Schedule
 
