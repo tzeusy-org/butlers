@@ -112,6 +112,7 @@ All tools default to the primary connected account when `steam_id` is omitted.
 - Default conflict behavior is `suggest`: propose alternative slots first when overlaps are detected.
 - Only use overlap overrides when the user explicitly asks to keep the overlap.
 - Attendee invites are out of scope for v1. Do not add attendees or send invitations.
+- **Time-anchored lifestyle events** (concerts, gigs, theatre shows, gallery/exhibition visits, restaurant reservations, hobby classes, sports tickets, gaming tournaments, film screenings): whenever the user mentions or forwards one with a concrete date/time — including forwarded booking confirmations — create a calendar event as part of the ingest. Do not treat this as opt-in; if you also store a memory fact about the preference, the calendar event and the fact are both part of the same response. Block from the event start time to a reasonable end time (shows/concerts/tours +2h, restaurants +1.5h, classes by stated duration). Include venue, any seating/section, entrance/gate, and confirmation number in the event description. Skip the calendar event only when no concrete start time is known.
 
 ## Spotify Connector Events — Non-Interactive
 
