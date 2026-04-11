@@ -169,6 +169,13 @@ class WhatsAppModule(Module):
         else:
             logger.debug("WhatsApp module: no DB pool available; skipping credential resolution")
 
+        if not self._config.send_enabled:
+            logger.info(
+                "WhatsApp module: send_enabled=false, skipping bridge startup until outbound "
+                "messaging is explicitly enabled"
+            )
+            return
+
         # Build bridge config: pass DSN via env var to avoid leaking credentials
         # in ps / /proc/<pid>/cmdline output.
         bridge_env: dict[str, str] = {}

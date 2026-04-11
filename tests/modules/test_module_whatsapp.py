@@ -14,7 +14,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -86,3 +86,30 @@ class TestSendDisabled:
         # _SEND_DISABLED_ERROR is an actionable string message (not a dict)
         assert isinstance(_SEND_DISABLED_ERROR, str)
         assert "send_enabled" in _SEND_DISABLED_ERROR or "disabled" in _SEND_DISABLED_ERROR.lower()
+
+
+class TestStartup:
+    async def test_on_startup_skips_bridge_when_send_disabled(
+        self, whatsapp_module: WhatsAppModule
+    ) -> None:
+        with patch("butlers.modules.whatsapp.BridgeSubprocessManager") as manager_cls:
+            await whatsapp_module.on_startup(config={"send_tools": True, "send_enabled": False}, db=None)
+
+        manager_cls.assert_not_called()
+        assert whatsapp_module._bridge_manager is None
+
+    async def test_on_startup_starts_bridge_when_send_enabled(
+        self, whatsapp_module: WhatsAppModule
+    ) -> None:
+        manager = MagicMock()
+        manager.start = AsyncMock()
+
+        with patch(
+            "butlers.modules.whatsapp.BridgeSubprocessManager",
+            return_value=manager,
+        ) as manager_cls:
+            await whatsapp_module.on_startup(config={"send_tools": True, "send_enabled": True}, db=None)
+
+        manager_cls.assert_called_once()
+        manager.start.assert_awaited_once()
+        assert whatsapp_module._bridge_manager is manager
