@@ -34,6 +34,48 @@ and Care cross-cuts the same chain as the execution-quality layer: it defines
 how changes to any part of the chain must be implemented, verified, reviewed,
 and documented.
 
+### Precedence Order When Layers Disagree
+
+The pillars above are not a free-for-all. When two artefacts disagree, resolve
+them in this order — higher numbers defer to lower numbers, never the reverse:
+
+| # | Layer | Owns | Home |
+|---|-------|------|------|
+| 1 | **Heart and Soul** | Principles, scope boundaries, the 7 non-negotiable rules | `about/heart-and-soul/` |
+| 2 | **Law and Lore** | Wire contracts, state machines, data models, sanctioned rule exceptions | `about/law-and-lore/rfcs/` |
+| 3 | **Spec and Spine** | Feature behaviour, acceptance scenarios (WHEN/THEN), per-butler contracts | `openspec/specs/` |
+| 4 | **Craft and Care** | Execution-quality standards, test scope, review gates, observability bar | `about/craft-and-care/` |
+| 5 | **Lay and Land** | Topology snapshot — where components live, how they connect, stability levels | `about/lay-and-land/` |
+| 6 | **Roster config** | Live butler identity: `butler.toml`, `MANIFESTO.md`, `CLAUDE.md`, skills, API routes | `roster/{butler}/` |
+| 7 | **Code** | Runtime behaviour — executed source, migrations, tests | `src/`, `alembic/`, `tests/` |
+
+Precedence in practice:
+
+- **Higher layers (1–2) bind lower layers.** A commit that contradicts Heart
+  and Soul without a formal RFC does not ship. A commit that contradicts an
+  accepted RFC without amending the RFC does not ship.
+- **Specs describe intended behaviour; roster describes identity; code
+  implements both.** When a spec and the code disagree, the spec must be
+  either updated or the code must be fixed — never both left stale. Same for
+  roster ↔ code.
+- **Roster is the source of truth for live butler identity (Rule 5).** Models,
+  schedules, modules, and manifesto are owned by `roster/{butler}/` — not by
+  the role spec. The role spec is a stable *contract* about scope and
+  guarantees; it does not mirror every roster field. If a detail drifts
+  frequently (model IDs, concurrency caps, exact cron minutes), it belongs in
+  the roster, not in the spec.
+- **Operational tuning lives in the database, not git.** Per-butler
+  `runtime_config` row overrides roster seed values at runtime. Changes
+  there do not require spec or roster edits.
+- **Topology (Lay and Land) is a snapshot, not a contract.** If `components.md`
+  disagrees with what is running, fix `components.md` — it does not drive the
+  build.
+
+The repo ships contract tests under `tests/contracts/` (marker: `contract`) that
+project from one source of truth into the artefacts below it, so drift fails in
+CI rather than in production. When you add a new cross-cutting invariant, add
+a contract test that projects from the highest-level artefact downward.
+
 ## Reading Order
 
 **New to the project?** Read top-down — each pillar grounds the next:

@@ -76,8 +76,10 @@ Steps:
    has_updates=true — omit the section entirely if no contributions are present or all
    has_updates=false)
    For each specialist domain with has_updates=true, include one concise line using the
-   pre-rendered `summary` field. Group under these domain labels as applicable:
-   Health · Finance · Travel · Relationships · Learning · Home
+   pre-rendered `summary` field. Group under these domain labels as applicable (the
+   mapping is fixed — one label per specialist butler, in the order specialists are
+   declared in src/butlers/jobs/briefing.py::SPECIALIST_BUTLERS):
+   Learning (education) · Finance · Health · Home · Lifestyle · Relationships · Travel
 
    **Heads-up** (optional — include only when two or more high-priority highlights across different
    domains suggest a cross-domain conflict or compounded risk, e.g., a travel departure that

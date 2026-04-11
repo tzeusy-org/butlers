@@ -270,19 +270,19 @@ The spawner SHALL resolve the model dynamically at spawn time using the model ca
 - **WHEN** `trigger(prompt, trigger_source)` is called without a complexity parameter
 - **THEN** the complexity defaults to `medium`
 
-#### Scenario: Catalog resolution overrides TOML model
+#### Scenario: Catalog resolution overrides static fallback model
 - **WHEN** `resolve_model()` returns a result
 - **THEN** the returned `runtime_type`, `model_id`, and `extra_args` are used for the invocation
-- **AND** the TOML-configured `[butler.runtime].model` is ignored
+- **AND** the static `RuntimeConfig.model` fallback value is ignored
 
-#### Scenario: Catalog empty fallback to TOML
+#### Scenario: Catalog empty fallback to static defaults
 - **WHEN** `resolve_model()` returns `None` (no matching entries)
-- **THEN** the spawner falls back to `self._config.runtime.model` and `self._runtime` (the TOML-configured adapter)
+- **THEN** the spawner falls back to `self._config.runtime.model` (the static default constant) and the adapter seeded from top-level `[runtime].type`
 
-#### Scenario: Extra args merge with TOML args
-- **WHEN** catalog resolution returns `extra_args` and the butler's TOML also has `args`
-- **THEN** the catalog `extra_args` are appended after TOML `args` in the invocation
-- **AND** TOML args take precedence (appear first) for args that override by position
+#### Scenario: Extra args merge with static fallback args
+- **WHEN** catalog resolution returns `extra_args`
+- **THEN** the catalog `extra_args` are appended after any static `RuntimeConfig.args` fallback in the invocation
+- **AND** static args appear first so that positional overrides from the catalog win
 
 #### Scenario: Session record includes model resolution metadata
 - **WHEN** a session is created via `session_create()`

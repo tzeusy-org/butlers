@@ -23,11 +23,11 @@ The education butler SHALL be configured with the correct port, description, com
 - **AND** the model catalog MUST have at least one enabled entry at those tiers that can satisfy the request
 - **AND** the actual model resolved is determined by the catalog's priority ranking, not hardcoded in config
 
-#### Scenario: Runtime section contains concurrency settings only
+#### Scenario: Runtime section contains operational tuning only
 
 - **WHEN** the `butler.toml` file is parsed
-- **THEN** `[butler.runtime]` MUST specify `max_concurrent_sessions`
-- **AND** model identity (runtime_type, model) lives in `[butler.seed_configs]` as a fallback only — the model catalog is authoritative at runtime
+- **THEN** `[butler.runtime_seed]` MUST specify `max_concurrent_sessions` and contain only operational seed fields (see `butler-base-spec` — Runtime configuration)
+- **AND** model identity (runtime_type, model, args, session_timeout_s) is authoritative in `public.model_catalog`; it MUST NOT be pinned in `butler.toml`
 
 ---
 

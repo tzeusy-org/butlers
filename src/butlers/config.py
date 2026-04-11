@@ -82,28 +82,30 @@ class ScheduleConfig:
 
 @dataclass
 class RuntimeConfig:
-    """Static runtime configuration from top-level [runtime] plus defaults.
+    """Effective *static* runtime configuration for one butler.
 
-    ``type`` selects the runtime adapter binary. ``model``, ``args``, and
-    ``session_timeout_s`` are static fallback values used only when catalog
-    resolution does not provide a model-specific override.
+    This dataclass is a *snapshot* assembled by :func:`load_config` from three
+    different sources. It does NOT own any of those values; it just exposes
+    them in one place so the daemon and Spawner don't have to reach back into
+    three sections on every access. The sources and their ownership:
 
-    max_concurrent_sessions controls how many LLM CLI sessions may run
-    simultaneously for this butler. Default of 1 preserves serial (lock-like)
-    behaviour for unaudited butlers; set higher only for butlers explicitly
-    designed for concurrency.
+    - ``type`` comes from top-level ``[runtime]`` (see
+      :func:`_parse_runtime_section`). It is the default adapter used to seed
+      the Spawner's adapter pool; the model catalog may resolve a different
+      adapter per session.
+    - ``model``, ``session_timeout_s``, and ``args`` are *last-resort
+      fallbacks*. They are consulted only when catalog resolution fails
+      (no matching entry or DB unreachable). The canonical source for these
+      values is ``public.model_catalog``, resolved per spawn by
+      :func:`butlers.core.model_routing.resolve_model`.
+    - ``max_concurrent_sessions``, ``max_queued_sessions``, and
+      ``core_groups`` come from ``[butler.runtime_seed]`` (first boot) and
+      from the ``{schema}.runtime_config`` DB row thereafter. The Spawner
+      prefers the DB row via :class:`RuntimeConfigAccessor` and falls back to
+      the values cached here when no accessor is wired.
 
-    max_queued_sessions controls spawner queue backpressure. Once the queue is
-    full, new triggers are rejected immediately instead of waiting unboundedly.
-
-    session_timeout_s controls the maximum wall-clock duration of a single
-    runtime invocation. Sessions exceeding this limit are cancelled and marked
-    as failed, releasing their concurrency slots. Default of 1800 (30 minutes)
-    prevents hung runtime processes from permanently blocking the pipeline.
-
-    args is an optional ordered list of additional CLI arguments passed to the
-    selected runtime adapter invocation. Arguments are passed as-is (no shell
-    parsing), so each CLI token should be a separate list entry.
+    See ``about/heart-and-soul/vision.md`` Rule 5 ("git identity vs DB
+    operational tuning") for why these three ownership lanes exist.
     """
 
     type: str = "claude"
@@ -414,6 +416,45 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
         route_contract_min=route_contract_min,
         route_contract_max=route_contract_max,
     )
+
+
+# Keys accepted under the top-level ``[runtime]`` section. A strict allow-list
+# makes typos fail loudly at load time instead of silently falling through to a
+# default adapter, which is the kind of ambiguity this file works to prevent.
+_ALLOWED_RUNTIME_KEYS: frozenset[str] = frozenset({"type"})
+
+
+def _parse_runtime_section(data: dict[str, Any]) -> str:
+    """Return the runtime adapter type declared in top-level ``[runtime]``.
+
+    Defaults to ``"claude"`` when the section is absent. Any unknown key is
+    treated as a typo and rejected. The chosen adapter must be registered in
+    :mod:`butlers.core.runtimes`; unknown adapters fail fast at load time.
+    """
+    runtime_section = data.get("runtime", {})
+    if runtime_section is None:
+        runtime_section = {}
+    if not isinstance(runtime_section, dict):
+        raise ConfigError("Top-level [runtime] must be a TOML table")
+
+    unexpected = set(runtime_section.keys()) - _ALLOWED_RUNTIME_KEYS
+    if unexpected:
+        bad = ", ".join(sorted(unexpected))
+        raise ConfigError(
+            f"Unknown key(s) in top-level [runtime]: {bad}. "
+            f"Allowed keys: {sorted(_ALLOWED_RUNTIME_KEYS)}"
+        )
+
+    raw_type = runtime_section.get("type", "claude")
+    if not isinstance(raw_type, str) or not raw_type.strip():
+        raise ConfigError(f"Invalid [runtime].type: {raw_type!r}. Expected a non-empty string.")
+    runtime_type = raw_type.strip()
+
+    try:
+        get_adapter(runtime_type)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+    return runtime_type
 
 
 def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
@@ -860,7 +901,9 @@ def load_config(config_dir: Path) -> ButlerConfig:
     _validate_messenger_requirements(name, modules)
 
     # --- Reject old section names with clear error messages ---
-    if "runtime" in butler_section and "runtime_seed" not in butler_section:
+    # Unconditional: even if [butler.runtime_seed] is also present, having
+    # [butler.runtime] around invites silent drift between the two.
+    if "runtime" in butler_section:
         raise ConfigError(
             "[butler.runtime] is no longer supported. "
             "Move operational seed fields to [butler.runtime_seed], "
@@ -878,18 +921,12 @@ def load_config(config_dir: Path) -> ButlerConfig:
     runtime_seed = _parse_runtime_seed(butler_section)
 
     # --- [runtime] top-level section (runtime adapter type) ---
-    runtime_section = data.get("runtime", {})
-    runtime_type = runtime_section.get("type", "claude")
-
-    # Validate runtime type early (fail fast at config load time)
-    try:
-        get_adapter(runtime_type)
-    except ValueError as exc:
-        raise ConfigError(str(exc)) from exc
+    runtime_type = _parse_runtime_section(data)
 
     # Build RuntimeConfig from static defaults plus operational runtime_seed
-    # settings. Model selection is catalog-driven and no longer configured via
-    # runtime_seed.
+    # settings. Model selection is catalog-driven (see model_routing.py); the
+    # static ``model`` field is only a last-resort fallback when catalog
+    # resolution fails entirely.
     runtime = RuntimeConfig(
         type=runtime_type,
         max_concurrent_sessions=runtime_seed.max_concurrent_sessions,

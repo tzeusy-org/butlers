@@ -9,7 +9,7 @@ This RFC documents a sanctioned exception to the MCP-only inter-butler communica
 
 ## Motivation
 
-The General butler produces a daily end-of-day briefing (cron `0 7 * * *` UTC). Today it covers only calendar events. Specialist butlers -- Health, Finance, Relationship, Travel, Education, Home, Lifestyle -- each maintain domain-specific data that would make the briefing significantly more useful: upcoming bills, missed medication doses, birthdays, departures, learning streaks, habit streaks, device alerts.
+The General butler produces a daily end-of-day briefing (cron `0 15 * * *` UTC, 23:00 SGT). Today it covers only calendar events. Specialist butlers -- Health, Finance, Relationship, Travel, Education, Home, Lifestyle -- each maintain domain-specific data that would make the briefing significantly more useful: upcoming bills, missed medication doses, birthdays, departures, learning streaks, habit streaks, device alerts.
 
 The architecturally compliant approach is Switchboard fan-out: General sends an MCP request to each specialist butler via the Switchboard, each specialist spawns an LLM session to formulate its response, and General spawns a final session to synthesize the results. This costs 1 (General request) + 7 (specialist responses) + 1 (General synthesis) = 9 LLM sessions per day.
 
@@ -88,7 +88,7 @@ These guardrails exist specifically to prevent this exception from becoming a ge
     -> validates each contribution envelope
     -> writes general.state['briefing/combined/2026-03-25']
 
-15:00 SGT (cron 0 7 * * *)
+23:00 SGT (cron 0 15 * * *)
   general.eod-tomorrow-prep (LLM session)
     -> reads general.state['briefing/combined/2026-03-25']
     -> sends multi-domain briefing via Telegram

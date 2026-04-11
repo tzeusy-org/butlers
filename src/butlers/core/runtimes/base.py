@@ -180,6 +180,15 @@ def get_adapter(type_str: str) -> type[RuntimeAdapter]:
     return _ADAPTER_REGISTRY[type_str]
 
 
+def list_registered_runtime_types() -> tuple[str, ...]:
+    """Return the sorted tuple of registered runtime adapter type strings.
+
+    Useful for contract tests that want to project "is this name valid?"
+    without having to replicate the registry's lookup logic.
+    """
+    return tuple(sorted(_ADAPTER_REGISTRY))
+
+
 def create_adapter(
     runtime_type: str,
     *,

@@ -3,7 +3,7 @@
 ![CI](https://github.com/Tzeusy/butlers/actions/workflows/ci.yml/badge.svg)
 ![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Tzeusy/33d1433ee529f878bd4b4a8bf4609f96/raw/butlers-coverage.json)
 
-A personal AI agent system where each **butler** is a long-running MCP server daemon that you interact with day-to-day. Butlers handle recurring tasks, manage integrations, and act on your behalf — powered by an extensible module framework under the hood.
+A personal AI agent system where each **butler** is a long-running MCP server daemon that handles recurring tasks, manages integrations, and acts on the owner's behalf. Every instance belongs to exactly one person — there is no hosted product, no multi-tenancy, and no third-party developer surface. Internally, butlers gain capability through a set of first-party modules that the daemon loads by topological order; "modules" is an implementation detail, not an extension API for external code. See [`about/heart-and-soul/vision.md`](about/heart-and-soul/vision.md) for the full scope boundary.
 
 > **[Full Documentation](docs/index.md)** — start here for the complete guide, from overview through architecture to operations.
 
@@ -25,7 +25,7 @@ Each butler runs as a persistent daemon with built-in infrastructure:
 - **Session log** — tracks what happened and when
 - **Custom tools** — Tools specific to a butler's functionality
 
-On top of that, butlers gain capabilities through **modules** — pluggable integrations like Email, Telegram, Calendar, and WhatsApp, among others. Mix and match modules to build the butler you need.
+On top of that, butlers gain capabilities through **modules** — first-party integrations like Email, Telegram, Calendar, and Memory. Modules are part of the codebase, not a plugin API: adding a new one means adding it to `src/butlers/modules/` or `roster/{butler}/modules/` and shipping it as part of this repo.
 
 See [Concepts](docs/concepts/index.md) for the full mental model.
 

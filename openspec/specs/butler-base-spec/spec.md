@@ -280,10 +280,11 @@ The `butler.toml` file declares butler identity, runtime, database, modules, sch
 - **THEN** `[butler]` provides: `name` (unique identifier), `port` (FastMCP SSE server port), `description` (human-readable purpose string), `type` (agent type: `"butler"` or `"staffer"`, default `"butler"`)
 
 #### Scenario: Runtime configuration
-- **WHEN** `[butler.runtime]` and `[runtime]` sections are present
-- **THEN** `butler.runtime.model` specifies the LLM model for runtime instances
-- **AND** `butler.runtime.max_concurrent_sessions` controls spawner concurrency
-- **AND** `runtime.type` selects the adapter (`codex`, `claude`, `gemini`)
+- **WHEN** the runtime-related sections of `butler.toml` are parsed
+- **THEN** `[butler.runtime_seed]` is the only butler-scoped runtime block and contains operational seed fields only: `core_groups`, `max_concurrent_sessions`, `max_queued_sessions`, `liveness_ttl_seconds`, `route_contract_min`, `route_contract_max`
+- **AND** top-level `[runtime].type` selects the default adapter binary (`codex`, `claude`, `gemini`, `opencode`) used to seed the Spawner's adapter pool
+- **AND** the legacy sections `[butler.runtime]` and `[butler.seed_configs]` are rejected at load time with a `ConfigError`
+- **AND** model identity, per-session timeout, CLI args, and runtime type overrides live in `public.model_catalog` (resolved per spawn by `resolve_model()`); they must not be duplicated in `butler.toml`
 
 #### Scenario: Database configuration
 - **WHEN** `[butler.db]` specifies `name = "butlers"` and `schema = "{butler-name}"`

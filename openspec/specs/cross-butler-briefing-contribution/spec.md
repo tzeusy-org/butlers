@@ -123,8 +123,23 @@ The Home butler's `daily_briefing_contribution` job SHALL query its domain table
 - **WHEN** no device alerts, environment outliers, or energy anomalies are present
 - **THEN** the contribution has `has_updates=false`
 
+### Requirement: Lifestyle Butler Contribution
+The Lifestyle butler's `daily_briefing_contribution` job SHALL query its memory tables to extract today's taste and consumption activity: volatile consumption facts recorded today under `watches`, `reads`, `plays`, and `listens_to` predicates, plus newly captured stable taste preferences under `likes_genre`, `likes_artist`, `likes_cuisine`, `favorite_restaurant`, `hobby`, `food_preference`, and `food_dislike`.
+
+#### Scenario: Consumption activity today
+- **WHEN** the user has recorded new volatile consumption facts since midnight SGT
+- **THEN** the contribution includes one highlight per fact with category "consumption" and priority "low"
+
+#### Scenario: Taste preference captured today
+- **WHEN** the user has recorded new stable taste preferences since midnight SGT
+- **THEN** the contribution includes one highlight per fact with category "taste-updates" and priority "low"
+
+#### Scenario: No lifestyle highlights
+- **WHEN** no new consumption or taste facts were recorded today
+- **THEN** the contribution has `has_updates=false`
+
 ### Requirement: Contribution Job Scheduling
-Each specialist butler SHALL have a `daily_briefing_contribution` entry in its `butler.toml` with `dispatch_mode="job"`, `job_name="daily_briefing_contribution"`, and cron `55 6 * * *` (06:55 UTC = 14:55 SGT). Staffer-typed agents SHALL NOT register or execute briefing contribution jobs.
+Each specialist butler SHALL have a `daily_briefing_contribution` entry in its `butler.toml` with `dispatch_mode="job"`, `job_name="daily_briefing_contribution"`, and cron `55 6 * * *` (06:55 UTC = 14:55 SGT). The canonical specialist set is defined by `SPECIALIST_BUTLERS` in `src/butlers/jobs/briefing.py`: `education`, `finance`, `health`, `home`, `lifestyle`, `relationship`, `travel`. Staffer-typed agents SHALL NOT register or execute briefing contribution jobs.
 
 #### Scenario: Schedule entry present (butler-typed agents only)
 - **WHEN** a butler-typed agent daemon starts and syncs TOML schedules

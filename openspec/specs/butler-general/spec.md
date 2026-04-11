@@ -30,7 +30,7 @@ The general butler runs memory maintenance, briefing aggregation, and a daily en
 
 #### Scenario: Scheduled task inventory
 - **WHEN** the general butler daemon is running
-- **THEN** it executes: `memory-consolidation` (0 */6 * * *, job), `memory-episode-cleanup` (0 4 * * *, job), `collect-briefing-contributions` (58 6 * * *, job: aggregates specialist briefing contributions into combined payload), and `eod-tomorrow-prep` (0 7 * * *, prompt-based: end-of-day briefing reviewing tomorrow's calendar AND incorporating cross-butler specialist summaries, sent via Telegram)
+- **THEN** it executes: `memory_consolidation` (0 */6 * * *, job), `memory_episode_cleanup` (0 4 * * *, job), `collect_briefing_contributions` (58 6 * * *, job: 14:58 SGT; aggregates specialist briefing contributions into combined payload), and `eod-tomorrow-prep` (0 15 * * *, prompt-based: 23:00 SGT end-of-day briefing reviewing tomorrow's calendar AND incorporating cross-butler specialist summaries, sent via Telegram)
 
 #### Scenario: EOD briefing reads combined contributions
 - **WHEN** the `eod-tomorrow-prep` prompt executes
@@ -61,7 +61,7 @@ The EOD briefing message SHALL follow a structured multi-domain format when spec
 
 #### Scenario: Full briefing with specialist sections
 - **WHEN** the combined briefing payload has contributions with `has_updates=true`
-- **THEN** the message includes a calendar timeline section followed by a "Today's Highlights" section grouping specialist summaries by domain (Health, Finance, Travel, Relationships, Learning, Home)
+- **THEN** the message includes a calendar timeline section followed by a "Today's Highlights" section grouping specialist summaries by domain — the domain label set is exactly: Learning (education), Finance, Health, Home, Lifestyle, Relationships, Travel (one label per butler in `SPECIALIST_BUTLERS`)
 - **AND** only domains with `has_updates=true` appear in the output
 
 #### Scenario: Cross-domain heads-up flags

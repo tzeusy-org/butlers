@@ -19,8 +19,8 @@ The Lifestyle butler SHALL be configured as a standard butler in `roster/lifesty
   - `description` summarizing its domain (taste, music, entertainment, food, hobbies, routines)
   - `[butler.db]` with `name = "butlers"` and `schema = "lifestyle"`
   - `[butler.switchboard]` with `url = "http://localhost:41100/mcp"`
-  - `[butler.seed_configs]` with `runtime_type = "codex"`, `model = "gpt-5.4-mini"`, `liveness_ttl_seconds = 300`, `route_contract_min = 1`, `route_contract_max = 1`
-  - `[butler.runtime]` with `max_concurrent_sessions = 3`
+  - `[butler.runtime_seed]` with `max_concurrent_sessions = 3`, `liveness_ttl_seconds = 300`, `route_contract_min = 1`, `route_contract_max = 1` (operational seed only — see vision.md Rule 5; model + runtime adapter are catalog-resolved and must not be duplicated here)
+  - `[runtime]` top-level with `type = "codex"` (the default runtime adapter seeded into the Spawner's adapter pool; per-session overrides come from `public.model_catalog`)
 
 ### Requirement: Base Module Configuration
 

@@ -8,6 +8,7 @@ from butlers.core.runtimes.base import (
     RuntimeAdapter,
     create_adapter,
     get_adapter,
+    list_registered_runtime_types,
     register_adapter,
 )
 from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
@@ -23,5 +24,6 @@ __all__ = [
     "RuntimeAdapter",
     "create_adapter",
     "get_adapter",
+    "list_registered_runtime_types",
     "register_adapter",
 ]

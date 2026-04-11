@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Cross-Schema Briefing View
-A SQL view `general.v_briefing_contributions` SHALL exist that provides read-only access to briefing contribution state entries across all specialist schemas. The view SHALL union `butler`, `key`, and `value` columns from the `state` table of each specialist schema (health, finance, relationship, travel, education, home) filtered to keys matching `briefing/daily/%`. Each UNION term SHALL include an explicit `butler` column as a string literal identifying the source schema (e.g., `SELECT 'health' AS butler, key, value FROM health.state WHERE key LIKE 'briefing/daily/%'`).
+A SQL view `general.v_briefing_contributions` SHALL exist that provides read-only access to briefing contribution state entries across all specialist schemas. The view SHALL union `butler`, `key`, and `value` columns from the `state` table of each specialist schema (education, finance, health, home, lifestyle, relationship, travel — seven specialists total) filtered to keys matching `briefing/daily/%`. Each UNION term SHALL include an explicit `butler` column as a string literal identifying the source schema (e.g., `SELECT 'health' AS butler, key, value FROM health.state WHERE key LIKE 'briefing/daily/%'`). The authoritative list lives in `src/butlers/jobs/briefing.py::SPECIALIST_BUTLERS` and must match the `_SPECIALIST_SCHEMAS` tuple in the Alembic migration `core_063_v_briefing_contributions`.
 
 This view is a sanctioned exception to schema isolation (RFC 0006). Constraints: the view is read-only, uses an explicit `butler` source column for auditability, queries are date-filtered only, a health check validates view accessibility, and grants are migration-based (auditable).
 
@@ -27,17 +27,18 @@ This view is a sanctioned exception to schema isolation (RFC 0006). Constraints:
 The General butler SHALL have a `collect_briefing_contributions` deterministic job that reads all specialist contributions for today's date (SGT) via the `v_briefing_contributions` view, merges them into a combined payload, and writes the result to General's state store under key `briefing/combined/<YYYY-MM-DD>`.
 
 #### Scenario: All specialists contributed
-- **WHEN** the aggregation job runs and all 6 specialist contributions exist for today
-- **THEN** the combined payload contains entries from all 6 butlers, ordered by butler name
+- **WHEN** the aggregation job runs and all 7 specialist contributions exist for today
+- **THEN** the combined payload contains entries from all 7 butlers, ordered by butler name
+- **AND** the 7 butlers are precisely: `education`, `finance`, `health`, `home`, `lifestyle`, `relationship`, `travel`
 
 #### Scenario: Partial contributions
-- **WHEN** the aggregation job runs and only 3 of 6 specialists have contributed
+- **WHEN** the aggregation job runs and only 3 of 7 specialists have contributed
 - **THEN** the combined payload contains the 3 available contributions
 - **AND** the `missing_butlers` field lists the names of butlers that did not contribute
 
 #### Scenario: No contributions available
 - **WHEN** the aggregation job runs and no specialist contributions exist for today
-- **THEN** the combined payload has an empty `contributions` array and `missing_butlers` lists all 6 specialist butler names
+- **THEN** the combined payload has an empty `contributions` array and `missing_butlers` lists all 7 specialist butler names
 
 #### Scenario: Malformed contribution skipped
 - **WHEN** a specialist's state entry exists but contains invalid JSON or is missing required fields

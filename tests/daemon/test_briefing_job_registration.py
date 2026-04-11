@@ -12,8 +12,18 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# Specialist butlers that must expose daily_briefing_contribution
-_SPECIALIST_BUTLERS = ("health", "finance", "relationship", "travel", "education", "home")
+# Specialist butlers that must expose daily_briefing_contribution.
+# Source of truth is butlers.jobs.briefing.SPECIALIST_BUTLERS — imported below.
+# This line stays hard-coded so a drift between code + test is visible in diff.
+_EXPECTED_SPECIALIST_BUTLERS = (
+    "education",
+    "finance",
+    "health",
+    "home",
+    "lifestyle",
+    "relationship",
+    "travel",
+)
 
 _HOME_DETERMINISTIC_JOBS = (
     "device_health_check",
@@ -24,29 +34,39 @@ _HOME_DETERMINISTIC_JOBS = (
 
 
 class TestBriefingJobRegistration:
+    def test_expected_set_matches_jobs_module(self):
+        """The expected specialist set must match ``briefing.SPECIALIST_BUTLERS``.
+
+        If a new specialist is added to the briefing jobs module, this
+        assertion forces the test (and the schedule + spec) to be updated in
+        the same change — preventing a repeat of the lifestyle-left-behind
+        drift that this repo shipped for several weeks.
+        """
+        from butlers.jobs.briefing import SPECIALIST_BUTLERS
+
+        assert tuple(sorted(_EXPECTED_SPECIALIST_BUTLERS)) == tuple(sorted(SPECIALIST_BUTLERS))
+
     def test_briefing_handlers_registered_callable_and_resolvable(self):
-        """All 7 briefing handlers registered, callable, and resolvable via resolve function."""
+        """All specialist + aggregator briefing handlers are registered, callable, and resolvable."""
         from butlers.daemon import (
             _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
             _resolve_deterministic_schedule_job_name,
         )
 
-        # All specialist butlers have daily_briefing_contribution
         missing = [
             butler
-            for butler in _SPECIALIST_BUTLERS
+            for butler in _EXPECTED_SPECIALIST_BUTLERS
             if "daily_briefing_contribution"
             not in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler, {})
         ]
         assert not missing, f"daily_briefing_contribution not registered for: {missing}"
 
-        # General butler has collect_briefing_contributions
+        # General butler owns the aggregation job.
         jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("general", {})
         assert "collect_briefing_contributions" in jobs
 
-        # All 7 callable and exactly 7 slots
         handler_entries: list[tuple[str, str]] = [
-            (butler, "daily_briefing_contribution") for butler in _SPECIALIST_BUTLERS
+            (butler, "daily_briefing_contribution") for butler in _EXPECTED_SPECIALIST_BUTLERS
         ] + [("general", "collect_briefing_contributions")]
         not_callable = [
             f"{b}/{j}"
@@ -54,10 +74,10 @@ class TestBriefingJobRegistration:
             if not callable(_DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(b, {}).get(j))
         ]
         assert not not_callable, f"Non-callable handlers: {not_callable}"
-        assert len(handler_entries) == 7
+        # 7 specialists + 1 aggregator
+        assert len(handler_entries) == 8
 
-        # Resolvable via resolve function
-        for butler in _SPECIALIST_BUTLERS:
+        for butler in _EXPECTED_SPECIALIST_BUTLERS:
             resolved = _resolve_deterministic_schedule_job_name(
                 butler_name=butler,
                 trigger_source="schedule:daily_briefing_contribution",

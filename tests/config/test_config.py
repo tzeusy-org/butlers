@@ -164,8 +164,7 @@ def test_runtime_config(tmp_path: Path):
     assert RuntimeConfig().model == "claude-haiku-4-5-20251001"
 
     runtime_toml = (
-        '[butler]\nname = "m"\nport = 7010\n'
-        '[butler.runtime_seed]\nmax_concurrent_sessions = 4\n'
+        '[butler]\nname = "m"\nport = 7010\n[butler.runtime_seed]\nmax_concurrent_sessions = 4\n'
     )
     cfg = load_config(_write_toml(tmp_path, runtime_toml))
     assert cfg.runtime.model == "claude-haiku-4-5-20251001"
@@ -184,8 +183,7 @@ def test_runtime_config(tmp_path: Path):
 
     with pytest.raises(ConfigError, match=r"runtime_seed\.runtime_type"):
         rt_toml = (
-            '[butler]\nname = "m"\nport = 7013\n'
-            '[butler.runtime_seed]\nruntime_type = "codex"\n'
+            '[butler]\nname = "m"\nport = 7013\n[butler.runtime_seed]\nruntime_type = "codex"\n'
         )
         load_config(_write_toml(tmp_path, rt_toml))
 
@@ -195,8 +193,7 @@ def test_runtime_config(tmp_path: Path):
 
     with pytest.raises(ConfigError, match=r"runtime_seed\.session_timeout_s"):
         timeout_toml = (
-            '[butler]\nname = "m"\nport = 7015\n'
-            '[butler.runtime_seed]\nsession_timeout_s = 42\n'
+            '[butler]\nname = "m"\nport = 7015\n[butler.runtime_seed]\nsession_timeout_s = 42\n'
         )
         load_config(_write_toml(tmp_path, timeout_toml))
 
@@ -217,6 +214,106 @@ def test_old_seed_configs_section_rejected(tmp_path: Path):
     old_toml = '[butler]\nname = "m"\nport = 7014\n[butler.seed_configs]\nmodel = "x"\n'
     with pytest.raises(ConfigError, match=r"\[butler\.seed_configs\] has been merged"):
         load_config(_write_toml(tmp_path, old_toml))
+
+
+def test_butler_runtime_rejected_even_when_runtime_seed_present(tmp_path: Path):
+    """[butler.runtime] must raise even if [butler.runtime_seed] is also set.
+
+    Allowing both silently would let two adjacent sections drift apart for the
+    same butler, which is the exact failure mode the canonicalisation is meant
+    to prevent. Regression guard for the pre-cleanup behaviour.
+    """
+    both_toml = (
+        '[butler]\nname = "m"\nport = 7020\n'
+        "[butler.runtime_seed]\nmax_concurrent_sessions = 2\n"
+        '[butler.runtime]\nmodel = "x"\n'
+    )
+    with pytest.raises(ConfigError, match=r"\[butler\.runtime\] is no longer supported"):
+        load_config(_write_toml(tmp_path, both_toml))
+
+
+def test_runtime_section_typo_rejected(tmp_path: Path):
+    """Unknown keys under top-level [runtime] fail loudly.
+
+    Typos used to silently fall through to the default adapter. The strict
+    allow-list makes that impossible — the parser names the offending key.
+    """
+    bad_toml = (
+        '[butler]\nname = "m"\nport = 7021\n[runtime]\ntype = "codex"\nmodle = "gpt-5.4-mini"\n'
+    )
+    with pytest.raises(ConfigError, match=r"Unknown key.*modle"):
+        load_config(_write_toml(tmp_path, bad_toml))
+
+
+def test_runtime_section_empty_type_rejected(tmp_path: Path):
+    """Empty [runtime].type rejected instead of silently falling back to default."""
+    bad_toml = '[butler]\nname = "m"\nport = 7022\n[runtime]\ntype = ""\n'
+    with pytest.raises(ConfigError, match=r"\[runtime\]\.type"):
+        load_config(_write_toml(tmp_path, bad_toml))
+
+
+def test_runtime_section_unknown_adapter_rejected(tmp_path: Path):
+    """An adapter type not in the runtime registry fails fast at load time."""
+    bad_toml = '[butler]\nname = "m"\nport = 7023\n[runtime]\ntype = "nonexistent_adapter"\n'
+    with pytest.raises(ConfigError):
+        load_config(_write_toml(tmp_path, bad_toml))
+
+
+def test_runtime_type_flows_into_runtime_config(tmp_path: Path):
+    """The adapter type declared in [runtime] is the single source of truth.
+
+    ButlerConfig.runtime.type must reflect the value of [runtime].type (not a
+    hidden default), so Spawner's adapter-pool seed matches what the operator
+    declared in git.
+    """
+    toml = '[butler]\nname = "m"\nport = 7024\n[runtime]\ntype = "codex"\n'
+    cfg = load_config(_write_toml(tmp_path, toml))
+    assert cfg.runtime.type == "codex"
+
+    toml_claude = '[butler]\nname = "m"\nport = 7025\n[runtime]\ntype = "claude"\n'
+    cfg_claude = load_config(_write_toml(tmp_path, toml_claude))
+    assert cfg_claude.runtime.type == "claude"
+
+
+def test_runtime_type_default_when_section_absent(tmp_path: Path):
+    """Missing [runtime] section falls back to the documented default adapter.
+
+    Exact default is an implementation detail, but it must be a real registered
+    adapter — otherwise downstream code that instantiates a default Spawner on
+    the back of this value breaks at import time.
+    """
+    from butlers.core.runtimes import get_adapter
+
+    toml = '[butler]\nname = "m"\nport = 7026\n'
+    cfg = load_config(_write_toml(tmp_path, toml))
+    assert cfg.runtime.type  # non-empty
+    get_adapter(cfg.runtime.type)  # must not raise
+
+
+def test_roster_runtime_identity_is_internally_consistent():
+    """Every roster butler's runtime_seed stays clean of catalog-owned fields.
+
+    This contract-style test walks the real roster directory and parses each
+    butler.toml. If any butler starts stashing model/runtime_type/args/
+    session_timeout_s under [butler.runtime_seed], parsing will raise, and this
+    test will fail — catching drift before it reaches production.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    roster_dir = repo_root / "roster"
+    assert roster_dir.is_dir(), f"Expected roster dir at {roster_dir}"
+
+    parsed_any = False
+    for entry in sorted(roster_dir.iterdir()):
+        if not entry.is_dir() or not (entry / "butler.toml").exists():
+            continue
+        parsed_any = True
+        cfg = load_config(entry)
+        assert cfg.runtime.type, f"{entry.name}: runtime.type must be set"
+        # runtime_seed exposes only operational fields; catalog-owned names
+        # would have been rejected by _parse_runtime_seed.
+        assert cfg.runtime_seed.max_concurrent_sessions > 0
+        assert cfg.runtime_seed.max_queued_sessions > 0
+    assert parsed_any, "No roster butlers discovered — check tests/config layout"
 
 
 def test_missing_runtime_seed_section_defaults(tmp_path: Path):
