@@ -151,6 +151,7 @@ git push                # Push to remote
 ### Model catalog timeout authority contract
 - `public.model_catalog.session_timeout_s` is the authoritative per-session runtime timeout for catalog-resolved runs; `resolve_model()` returns it, `Spawner` uses it for normal butler sessions, and `DiscretionDispatcher` uses it for discretion-tier direct adapter calls.
 - Per-butler `runtime_config` is operational-only (`core_groups`, `max_concurrent`, `max_queued`); model/runtime selection, extra args, and per-session timeout must not be reintroduced there or the `/settings` model catalog stops being authoritative again.
+- `[butler.runtime_seed]` is also operational-only after the cleanup pass: keep only concurrency/core-group/registration seed fields there, put runtime adapter type under top-level `[runtime]`, and keep model selection/args/timeouts in the model catalog.
 
 ### Finance overview N+1 query optimization pattern
 - The subscription_audit function in `roster/finance/tools/overview.py` implements batched query optimization for fetching subscription charge dates: use single LEFT JOIN with GROUP BY instead of per-subscription queries. This pattern should be replicated for any overview/analytics tool that needs to correlate multiple parent entities with their most recent related transactions or events. The key is `COALESCE(MAX(CASE WHEN condition THEN field END), fallback)` to handle entities with no related rows.

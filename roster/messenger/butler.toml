@@ -9,11 +9,12 @@ cross_butler_access = ["*"]
 
 [butler.runtime_seed]
 max_concurrent_sessions = 3
-runtime_type = "codex"
-model = "gpt-5.4-mini"
 liveness_ttl_seconds = 300
 route_contract_min = 1
 route_contract_max = 1
+
+[runtime]
+type = "codex"
 
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
@@ -99,4 +100,3 @@ risk_tier = "medium"
 # account = ""              # Google account email (default: primary account)
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
-

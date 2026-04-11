@@ -82,11 +82,11 @@ class ScheduleConfig:
 
 @dataclass
 class RuntimeConfig:
-    """Runtime configuration from [butler.runtime] section.
+    """Static runtime configuration from top-level [runtime] plus defaults.
 
-    Controls which LLM runtime and model the butler uses. The model string
-    is opaque to the framework — no validation beyond non-empty. Each runtime
-    defines its own valid model IDs.
+    ``type`` selects the runtime adapter binary. ``model``, ``args``, and
+    ``session_timeout_s`` are static fallback values used only when catalog
+    resolution does not provide a model-specific override.
 
     max_concurrent_sessions controls how many LLM CLI sessions may run
     simultaneously for this butler. Default of 1 preserves serial (lock-like)
@@ -119,24 +119,19 @@ class RuntimeConfig:
 class RuntimeSeedConfig:
     """Seed configuration from [butler.runtime_seed] section.
 
-    Used on first boot to seed the per-schema ``runtime_config`` DB table and
-    to populate static fallback runtime settings from ``load_config()``.
+    Used on first boot to seed the per-schema ``runtime_config`` DB table.
 
     Only operational fields (``core_groups``, concurrency, queue depth) map to
-    the DB-backed ``runtime_config`` row. Runtime selection and timeout fields
-    remain available here as static fallback config when catalog resolution is
-    unavailable. Registration-only fields (``liveness_ttl_seconds``,
+    the DB-backed ``runtime_config`` row. Model selection, runtime args, and
+    per-session timeout are owned by the model catalog or static defaults, not
+    by ``runtime_seed``. Registration-only fields (``liveness_ttl_seconds``,
     ``route_contract_min``, ``route_contract_max``) are not stored in
     ``runtime_config``.
     """
 
     core_groups: tuple[str, ...] | None = None
-    model: str | None = None
-    runtime_type: str = "codex"
-    args: tuple[str, ...] = ()
     max_concurrent_sessions: int = 3
     max_queued_sessions: int = 10
-    session_timeout_s: int = 1800
     liveness_ttl_seconds: int = 300
     route_contract_min: int = 1
     route_contract_max: int = 1
@@ -356,8 +351,8 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
     """Parse the optional [butler.runtime_seed] sub-section.
 
     Returns a RuntimeSeedConfig using dataclass defaults for any absent fields.
-    This section replaces the old [butler.runtime] and [butler.seed_configs]
-    sections, which are now rejected with clear error messages.
+    This section is operational-only; model selection lives in the model
+    catalog, while runtime adapter type lives in top-level ``[runtime]``.
     """
     seed_section = butler_section.get("runtime_seed", {})
 
@@ -378,25 +373,19 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
             validated_groups.append(entry.strip())
         core_groups = tuple(validated_groups)
 
-    # --- model ---
-    model = seed_section.get("model")
-    if isinstance(model, str) and not model.strip():
-        model = None
-
-    # --- runtime_type ---
-    runtime_type = str(seed_section.get("runtime_type", "codex")).strip()
-    if not runtime_type:
-        runtime_type = "codex"
-
-    # --- args ---
-    raw_args = seed_section.get("args", [])
-    if not isinstance(raw_args, list):
-        raise ConfigError("Invalid butler.runtime_seed.args: expected an array of strings")
-    args: list[str] = []
-    for i, arg in enumerate(raw_args):
-        if not isinstance(arg, str) or not arg.strip():
-            raise ConfigError(f"Invalid butler.runtime_seed.args[{i}]: expected a non-empty string")
-        args.append(arg)
+    # Reject retired runtime-selection fields that now belong elsewhere.
+    retired_keys = {
+        "model": "the model catalog",
+        "runtime_type": "top-level [runtime]",
+        "args": "the model catalog",
+        "session_timeout_s": "the model catalog",
+    }
+    for key, destination in retired_keys.items():
+        if key in seed_section:
+            raise ConfigError(
+                f"Invalid butler.runtime_seed.{key}: this field is no longer supported. "
+                f"Move it to {destination}."
+            )
 
     # --- numeric fields with validation ---
     max_concurrent_sessions = int(seed_section.get("max_concurrent_sessions", 3))
@@ -413,25 +402,14 @@ def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
             "Must be a positive integer."
         )
 
-    session_timeout_s = int(seed_section.get("session_timeout_s", 1800))
-    if session_timeout_s <= 0:
-        raise ConfigError(
-            f"Invalid butler.runtime_seed.session_timeout_s: {session_timeout_s!r}. "
-            "Must be a positive integer."
-        )
-
     liveness_ttl_seconds = int(seed_section.get("liveness_ttl_seconds", 300))
     route_contract_min = int(seed_section.get("route_contract_min", 1))
     route_contract_max = int(seed_section.get("route_contract_max", 1))
 
     return RuntimeSeedConfig(
         core_groups=core_groups,
-        model=model,
-        runtime_type=runtime_type,
-        args=tuple(args),
         max_concurrent_sessions=max_concurrent_sessions,
         max_queued_sessions=max_queued_sessions,
-        session_timeout_s=session_timeout_s,
         liveness_ttl_seconds=liveness_ttl_seconds,
         route_contract_min=route_contract_min,
         route_contract_max=route_contract_max,
@@ -884,15 +862,16 @@ def load_config(config_dir: Path) -> ButlerConfig:
     # --- Reject old section names with clear error messages ---
     if "runtime" in butler_section and "runtime_seed" not in butler_section:
         raise ConfigError(
-            "[butler.runtime] has been renamed to [butler.runtime_seed]. "
-            "Please rename the section in your butler.toml and merge any "
-            "[butler.seed_configs] fields into it."
+            "[butler.runtime] is no longer supported. "
+            "Move operational seed fields to [butler.runtime_seed], "
+            "runtime adapter type to top-level [runtime], and model selection "
+            "settings to the model catalog."
         )
     if "seed_configs" in butler_section:
         raise ConfigError(
             "[butler.seed_configs] has been merged into [butler.runtime_seed]. "
-            "Please move its fields into [butler.runtime_seed] and remove "
-            "the [butler.seed_configs] section."
+            "Please move only operational seed fields into [butler.runtime_seed] "
+            "and remove the [butler.seed_configs] section."
         )
 
     # --- [butler.runtime_seed] sub-section (new canonical name) ---
@@ -908,17 +887,13 @@ def load_config(config_dir: Path) -> ButlerConfig:
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 
-    # Build RuntimeConfig from runtime_seed for backward compatibility.
-    # The runtime_seed feeds the DB on first boot; the RuntimeConfig on
-    # ButlerConfig is still populated so that existing code paths that
-    # haven't migrated to the accessor yet continue to work.
+    # Build RuntimeConfig from static defaults plus operational runtime_seed
+    # settings. Model selection is catalog-driven and no longer configured via
+    # runtime_seed.
     runtime = RuntimeConfig(
         type=runtime_type,
-        model=runtime_seed.model if runtime_seed.model else DEFAULT_MODEL,
         max_concurrent_sessions=runtime_seed.max_concurrent_sessions,
         max_queued_sessions=runtime_seed.max_queued_sessions,
-        session_timeout_s=runtime_seed.session_timeout_s,
-        args=runtime_seed.args,
         core_groups=runtime_seed.core_groups,
     )
 

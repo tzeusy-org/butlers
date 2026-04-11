@@ -5,8 +5,6 @@ description = "Personal CRM. Manages contacts, relationships, important dates, i
 
 [butler.runtime_seed]
 max_concurrent_sessions = 3
-runtime_type = "codex"
-model = "gpt-5.4-mini"
 liveness_ttl_seconds = 300
 route_contract_min = 1
 route_contract_max = 1
@@ -19,6 +17,9 @@ core_groups = [
     "media",          # get_attachment
     "temporal",       # deadlines, event_chains, seasonal_periods
 ]
+
+[runtime]
+type = "codex"
 
 [butler.db]
 name = "butlers"
@@ -127,4 +128,3 @@ groups = ["contacts", "interactions", "management", "tracking"]
 # account = ""              # Google account email (default: primary account)
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
-

@@ -97,12 +97,8 @@ def _make_runtime_config_row(butler_name: str = "health") -> dict:
     return {
         "butler_name": butler_name,
         "core_groups": None,
-        "model": None,
-        "runtime_type": "codex",
-        "args": "[]",
         "max_concurrent": 3,
         "max_queued": 10,
-        "session_timeout_s": 900,
         "seeded_at": None,
         "updated_at": None,
     }
