@@ -225,14 +225,31 @@ for p in "${PROFILES[@]}"; do
   fi
 done
 
-# ── Ensure base image exists ───────────────────────────────────────────
+# ── Ensure base image is current ───────────────────────────────────────
 # The base image (butlers-base) contains system deps, Node.js, LLM CLIs,
-# Go binaries, and uv. It changes rarely. Build it once; Dockerfile uses
-# it as FROM. Rebuild manually with: docker build -f Dockerfile.base -t butlers-base .
-if ! docker image inspect butlers-base:latest &>/dev/null; then
-  echo "Building butlers-base image (first time only, ~5-10 min)..."
-  docker build -f Dockerfile.base -t butlers-base . || {
+# and uv. Rebuild it when Dockerfile.base changes so app rebuilds cannot
+# silently inherit a stale toolchain.
+if command -v sha256sum &>/dev/null; then
+  BASE_DOCKERFILE_SHA=$(sha256sum Dockerfile.base | awk '{print $1}')
+else
+  BASE_DOCKERFILE_SHA=$(shasum -a 256 Dockerfile.base | awk '{print $1}')
+fi
+
+BASE_IMAGE_SHA=$(
+  docker image inspect butlers-base:latest     --format '{{ index .Config.Labels "butlers.base.dockerfile_sha" }}'     2>/dev/null || true
+)
+
+if [ -z "$BASE_IMAGE_SHA" ]; then
+  echo "Building butlers-base image (~5-10 min)..."
+  docker build     --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}"     -f Dockerfile.base     -t butlers-base . || {
     echo "ERROR: Failed to build butlers-base image" >&2
+    exit 1
+  }
+  echo ""
+elif [ "$BASE_IMAGE_SHA" != "$BASE_DOCKERFILE_SHA" ]; then
+  echo "Rebuilding butlers-base image because Dockerfile.base changed..."
+  docker build     --label "butlers.base.dockerfile_sha=${BASE_DOCKERFILE_SHA}"     -f Dockerfile.base     -t butlers-base . || {
+    echo "ERROR: Failed to rebuild butlers-base image" >&2
     exit 1
   }
   echo ""
