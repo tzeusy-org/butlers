@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -19,7 +21,6 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("general", "health", "messenger", "relationship", "switchboard")
-CORE_HEAD_REVISION = "core_072"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",
@@ -27,6 +28,20 @@ RUNTIME_ROLES = {
     "relationship": "butler_relationship_rw",
     "switchboard": "butler_switchboard_rw",
 }
+
+
+def _latest_core_revision() -> str:
+    core_dir = Path("alembic/versions/core")
+    revisions: list[tuple[int, str]] = []
+    for path in core_dir.glob("core_*.py"):
+        match = re.match(r"core_(\d+)", path.stem)
+        if match is not None:
+            revisions.append((int(match.group(1)), f"core_{match.group(1)}"))
+
+    if not revisions:
+        raise AssertionError("No core migrations found")
+
+    return max(revisions, key=lambda item: item[0])[1]
 
 
 def _quote_ident(identifier: str) -> str:
@@ -283,7 +298,7 @@ def test_alembic_version_tracking_and_schema_scoped(postgres_container):
     with engine.connect() as conn:
         versions = [row[0] for row in conn.execute(text("SELECT version_num FROM alembic_version"))]
     engine.dispose()
-    assert CORE_HEAD_REVISION in versions
+    assert _latest_core_revision() in versions
 
     # Schema-scoped version tracking
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))

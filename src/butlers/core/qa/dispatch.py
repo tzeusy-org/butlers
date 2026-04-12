@@ -1373,41 +1373,41 @@ async def check_open_pr_statuses(
 ) -> dict[str, int]:
     """Check GitHub status of all pr_open QA healing attempts.
 
-    Called on each patrol cycle from the QA staffer daemon context (not inside
-    an agent worktree).  Transitions pr_open → pr_merged or pr_open → failed
-    based on actual GitHub PR state.
+        Called on each patrol cycle from the QA staffer daemon context (not inside
+        an agent worktree).  Transitions pr_open → pr_merged or pr_open → failed
+        based on actual GitHub PR state.
 
-When ``spawner`` and ``config`` are provided, also checks for unresolved
-    review threads or "changes_requested" state and dispatches a follow-up
-    agent to address reviewer feedback with exponential backoff between
-    repeated follow-up attempts on the same PR.
+    When ``spawner`` and ``config`` are provided, also checks for unresolved
+        review threads or "changes_requested" state and dispatches a follow-up
+        agent to address reviewer feedback with exponential backoff between
+        repeated follow-up attempts on the same PR.
 
-    Parameters
-    ----------
-    pool:
-        asyncpg connection pool targeting the public schema.
-    repo_root:
-        Absolute path to the repository root (for gh CLI invocations).
-    gh_token:
-        GitHub token from CredentialStore.  If ``None``, tracking is skipped.
-    spawner:
-        Optional QA staffer Spawner.  When provided, enables follow-up agent
-        dispatch for PRs with actionable reviewer feedback.
-    config:
-        Optional ``QaDispatchConfig``.  Required alongside ``spawner`` for
-        follow-up dispatch.
-    task_registry:
-        Optional list to which watchdog tasks will be appended.
-    patrol_id:
-        UUID of the current patrol cycle.  When provided and ``spawner`` is
-        set, the cycle-scoped follow-up counter (``follow_up_cycle_count``) is
-        used for rate-limiting instead of the lifetime ``follow_up_count``.
+        Parameters
+        ----------
+        pool:
+            asyncpg connection pool targeting the public schema.
+        repo_root:
+            Absolute path to the repository root (for gh CLI invocations).
+        gh_token:
+            GitHub token from CredentialStore.  If ``None``, tracking is skipped.
+        spawner:
+            Optional QA staffer Spawner.  When provided, enables follow-up agent
+            dispatch for PRs with actionable reviewer feedback.
+        config:
+            Optional ``QaDispatchConfig``.  Required alongside ``spawner`` for
+            follow-up dispatch.
+        task_registry:
+            Optional list to which watchdog tasks will be appended.
+        patrol_id:
+            UUID of the current patrol cycle.  When provided and ``spawner`` is
+            set, the cycle-scoped follow-up counter (``follow_up_cycle_count``) is
+            used for rate-limiting instead of the lifetime ``follow_up_count``.
 
-    Returns
-    -------
-    dict[str, int]
-        Counts of transitions: ``{"merged": N, "closed": N, "errors": N,
-        "follow_ups_dispatched": N}``.
+        Returns
+        -------
+        dict[str, int]
+            Counts of transitions: ``{"merged": N, "closed": N, "errors": N,
+            "follow_ups_dispatched": N}``.
     """
     counts: dict[str, int] = {
         "merged": 0,

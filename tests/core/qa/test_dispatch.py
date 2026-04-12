@@ -48,12 +48,16 @@ def _make_finding(severity: int = 1) -> QaFinding:
         event_summary="Test event",
         call_site="module:1",
         occurrence_count=3,
-        first_seen=now, last_seen=now, timestamp=now,
+        first_seen=now,
+        last_seen=now,
+        timestamp=now,
     )
 
 
 def _make_triaged(finding: QaFinding | None = None) -> TriagedFinding:
-    return TriagedFinding(finding=finding or _make_finding(), dedup_reason=None, finding_id=uuid.uuid4())
+    return TriagedFinding(
+        finding=finding or _make_finding(), dedup_reason=None, finding_id=uuid.uuid4()
+    )
 
 
 def _make_pool():
@@ -111,52 +115,88 @@ async def test_dispatch_qa_gate_rejections():
 
     # Severity above threshold
     r1 = await dispatch_qa_investigation(
-        pool=_make_pool(), triaged_finding=_make_triaged(_make_finding(severity=3)),
-        patrol_id=uuid.uuid4(), config=config, repo_root=Path("/tmp/repo"),
-        spawner=MagicMock(), gh_token=None,
+        pool=_make_pool(),
+        triaged_finding=_make_triaged(_make_finding(severity=3)),
+        patrol_id=uuid.uuid4(),
+        config=config,
+        repo_root=Path("/tmp/repo"),
+        spawner=MagicMock(),
+        gh_token=None,
     )
     assert r1.accepted is False and r1.reason == "severity_above_threshold"
 
     # Already investigating
-    with patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock,
-               return_value=(uuid.uuid4(), False)):
+    with patch(
+        "butlers.core.qa.dispatch.create_or_join_attempt",
+        new_callable=AsyncMock,
+        return_value=(uuid.uuid4(), False),
+    ):
         r2 = await dispatch_qa_investigation(
-            pool=_make_pool(), triaged_finding=_make_triaged(_make_finding(severity=1)),
-            patrol_id=uuid.uuid4(), config=QaDispatchConfig(), repo_root=Path("/tmp/repo"),
-            spawner=MagicMock(), gh_token=None,
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
         )
     assert r2.accepted is False and r2.reason == "already_investigating"
 
     # Cooldown
     with (
-        patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock,
-              return_value=(uuid.uuid4(), True)),
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(uuid.uuid4(), True),
+        ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-        patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock,
-              return_value={"status": "failed"}),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value={"status": "failed"},
+        ),
     ):
         r3 = await dispatch_qa_investigation(
-            pool=_make_pool(), triaged_finding=_make_triaged(_make_finding(severity=1)),
-            patrol_id=uuid.uuid4(), config=QaDispatchConfig(), repo_root=Path("/tmp/repo"),
-            spawner=MagicMock(), gh_token=None,
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
         )
     assert r3.accepted is False and r3.reason == "cooldown"
 
     # No model
     with (
-        patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock,
-              return_value=(uuid.uuid4(), True)),
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(uuid.uuid4(), True),
+        ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-        patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-        patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-        patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None
+        ),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1
+        ),
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
         patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=None),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
     ):
         r4 = await dispatch_qa_investigation(
-            pool=_make_pool(), triaged_finding=_make_triaged(_make_finding(severity=1)),
-            patrol_id=uuid.uuid4(), config=QaDispatchConfig(), repo_root=Path("/tmp/repo"),
-            spawner=MagicMock(), gh_token=None,
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
         )
     assert r4.accepted is False and r4.reason == "no_model"
 
@@ -173,25 +213,51 @@ async def test_dispatch_qa_success_and_never_raises():
     mock_proc.returncode = 0
 
     with (
-        patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock,
-              return_value=(attempt_id, True)),
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(attempt_id, True),
+        ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
-        patch("butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None),
-        patch("butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1),
-        patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
-        patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=MagicMock()),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None
+        ),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1
+        ),
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.resolve_model",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", new_callable=AsyncMock,
-              return_value=mock_proc),
-        patch("butlers.core.qa.dispatch.create_healing_worktree", new_callable=AsyncMock,
-              return_value=(worktree_path, branch_name)),
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.create_healing_worktree",
+            new_callable=AsyncMock,
+            return_value=(worktree_path, branch_name),
+        ),
         patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
         patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
     ):
         result = await dispatch_qa_investigation(
-            pool=_make_pool(), triaged_finding=_make_triaged(_make_finding(severity=1)),
-            patrol_id=uuid.uuid4(), config=QaDispatchConfig(), repo_root=Path("/tmp/repo"),
-            spawner=MagicMock(), gh_token="ghtoken", task_registry=task_registry,
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token="ghtoken",
+            task_registry=task_registry,
         )
     assert result.accepted is True and result.reason == "dispatched"
     for task in task_registry:
@@ -202,12 +268,19 @@ async def test_dispatch_qa_success_and_never_raises():
             pass
 
     # Never raises
-    with patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock,
-               side_effect=RuntimeError("db down")):
+    with patch(
+        "butlers.core.qa.dispatch.create_or_join_attempt",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("db down"),
+    ):
         r_err = await dispatch_qa_investigation(
-            pool=_make_pool(), triaged_finding=_make_triaged(),
-            patrol_id=uuid.uuid4(), config=QaDispatchConfig(), repo_root=Path("/tmp/repo"),
-            spawner=MagicMock(), gh_token=None,
+            pool=_make_pool(),
+            triaged_finding=_make_triaged(),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
         )
     assert r_err.accepted is False and r_err.reason == "internal_error"
 
@@ -234,9 +307,13 @@ async def test_dispatch_novel_findings():
         ) as mock_d,
     ):
         results = await dispatch_novel_findings(
-            pool=pool, novel_findings=findings, patrol_id=uuid.uuid4(),
-            config=QaDispatchConfig(), repo_root=Path("/tmp/repo"),
-            spawner=MagicMock(), gh_token=None,
+            pool=pool,
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            gh_token=None,
         )
     assert len(results) == 3 and mock_d.call_count == 3
 
@@ -247,11 +324,16 @@ async def test_dispatch_novel_findings():
             new_callable=AsyncMock,
             return_value=0,
         ),
-        patch("butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock) as mock_d2,
+        patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock
+        ) as mock_d2,
     ):
         results2 = await dispatch_novel_findings(
-            pool=pool, novel_findings=[], patrol_id=uuid.uuid4(),
-            config=QaDispatchConfig(), repo_root=Path("/tmp/repo"),
+            pool=pool,
+            novel_findings=[],
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
             spawner=MagicMock(),
         )
     assert results2 == [] and not mock_d2.called
@@ -326,13 +408,13 @@ async def test_check_open_pr_statuses_merged():
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
     pr_data = {"state": "MERGED", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(
-        _test_json.dumps(pr_data).encode(), b""
-    ))
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
     mock_proc.returncode = 0
     with (
         patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
-        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as mock_update,
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock
+        ) as mock_update,
     ):
         counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
     assert counts["merged"] == 1
@@ -351,13 +433,13 @@ async def test_check_open_pr_statuses_closed():
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
     pr_data = {"state": "CLOSED", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(
-        _test_json.dumps(pr_data).encode(), b""
-    ))
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
     mock_proc.returncode = 0
     with (
         patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
-        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as mock_update,
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock
+        ) as mock_update,
     ):
         counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token="ghtoken")
     assert counts["closed"] == 1
@@ -373,9 +455,7 @@ async def test_check_open_pr_statuses_open_no_review():
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
     pr_data = {"state": "OPEN", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(
-        _test_json.dumps(pr_data).encode(), b""
-    ))
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
     mock_proc.returncode = 0
     with (
         patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
@@ -398,17 +478,17 @@ async def test_check_open_pr_statuses_changes_requested_dispatches_followup():
     pr_data = {
         "state": "OPEN",
         "reviews": [
-            {"state": "CHANGES_REQUESTED", "body": "Please fix the tests.", "author": {"login": "alice"}}
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "Please fix the tests.",
+                "author": {"login": "alice"},
+            }
         ],
-        "latestReviews": [
-            {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}
-        ],
+        "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}],
         "reviewThreads": [],
     }
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(
-        _test_json.dumps(pr_data).encode(), b""
-    ))
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
     mock_proc.returncode = 0
     spawner = MagicMock()
     config = QaDispatchConfig()
@@ -423,8 +503,11 @@ async def test_check_open_pr_statuses_changes_requested_dispatches_followup():
         ) as mock_followup,
     ):
         counts = await check_open_pr_statuses(
-            pool, Path("/tmp/repo"), gh_token="ghtoken",
-            spawner=spawner, config=config,
+            pool,
+            Path("/tmp/repo"),
+            gh_token="ghtoken",
+            spawner=spawner,
+            config=config,
         )
     assert counts["follow_ups_dispatched"] == 1
     mock_followup.assert_awaited_once()
@@ -451,9 +534,7 @@ async def test_check_open_pr_statuses_rate_limit_respected():
         "reviewThreads": [],
     }
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(
-        _test_json.dumps(pr_data).encode(), b""
-    ))
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
     mock_proc.returncode = 0
     spawner = MagicMock()
     config = QaDispatchConfig()
@@ -468,8 +549,11 @@ async def test_check_open_pr_statuses_rate_limit_respected():
         ) as mock_followup,
     ):
         counts = await check_open_pr_statuses(
-            pool, Path("/tmp/repo"), gh_token="ghtoken",
-            spawner=spawner, config=config,
+            pool,
+            Path("/tmp/repo"),
+            gh_token="ghtoken",
+            spawner=spawner,
+            config=config,
         )
     assert counts["follow_ups_dispatched"] == 0
     mock_followup.assert_not_called()
@@ -496,9 +580,7 @@ async def test_check_open_pr_statuses_followup_due_after_backoff():
         "reviewThreads": [],
     }
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(
-        _test_json.dumps(pr_data).encode(), b""
-    ))
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
     mock_proc.returncode = 0
 
     with (
@@ -534,9 +616,7 @@ async def test_check_open_pr_statuses_no_spawner_no_followup():
         "reviewThreads": [],
     }
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(
-        _test_json.dumps(pr_data).encode(), b""
-    ))
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
     mock_proc.returncode = 0
 
     with (
@@ -605,7 +685,10 @@ def test_extract_review_state_unresolved_threads():
                 "isOutdated": False,
                 "comments": {
                     "nodes": [
-                        {"body": "Please add a test for this case.", "author": {"login": "reviewer"}}
+                        {
+                            "body": "Please add a test for this case.",
+                            "author": {"login": "reviewer"},
+                        }
                     ]
                 },
             }

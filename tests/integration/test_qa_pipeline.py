@@ -93,7 +93,7 @@ def _make_triaged(
 
 def _make_pool() -> MagicMock:
     pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=uuid.uuid4())
+    pool.fetchval = AsyncMock(return_value=0)
     pool.fetchrow = AsyncMock(return_value=None)
     pool.fetch = AsyncMock(return_value=[])
     pool.execute = AsyncMock()

@@ -95,6 +95,7 @@ class RuntimeConfigPatch(BaseModel):
             raise ValueError("max_queued must be a positive integer")
         return v
 
+
 def _get_db_manager() -> DatabaseManager:
     return get_db_manager()
 

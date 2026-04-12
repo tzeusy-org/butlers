@@ -67,6 +67,29 @@ const ENTITY: EntitySummary = {
   dunbar_score: null,
 };
 
+function mockEntitiesResult(data: EntitySummary[]): ReturnType<typeof useEntities> {
+  return {
+    data: {
+      data,
+      meta: {
+        total: data.length,
+        offset: 0,
+        limit: data.length === 0 ? 200 : 50,
+      },
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as unknown as ReturnType<typeof useEntities>;
+}
+
+function mockMutationResult<T>(mutateAsync = vi.fn()): T {
+  return {
+    mutateAsync,
+    isPending: false,
+  } as unknown as T;
+}
+
 function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -86,46 +109,31 @@ describe("EntitiesPage delete flow", () => {
 
     vi.mocked(useEntities).mockImplementation((params) => {
       if (params?.unidentified === true) {
-        return {
-          data: { data: [], meta: { total: 0, offset: 0, limit: 200 } },
-          isLoading: false,
-          isError: false,
-          error: null,
-        } as ReturnType<typeof useEntities>;
+        return mockEntitiesResult([]);
       }
 
-      return {
-        data: { data: [ENTITY], meta: { total: 1, offset: 0, limit: 50 } },
-        isLoading: false,
-        isError: false,
-        error: null,
-      } as ReturnType<typeof useEntities>;
+      return mockEntitiesResult([ENTITY]);
     });
 
-    vi.mocked(useDeleteEntity).mockReturnValue({
-      mutateAsync: vi.fn().mockRejectedValue(new Error(ACTIVE_FACT_ERROR)),
-      isPending: false,
-    } as ReturnType<typeof useDeleteEntity>);
+    vi.mocked(useDeleteEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useDeleteEntity>>(
+        vi.fn().mockRejectedValue(new Error(ACTIVE_FACT_ERROR)),
+      ),
+    );
 
-    vi.mocked(useArchiveEntity).mockReturnValue({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    } as ReturnType<typeof useArchiveEntity>);
+    vi.mocked(useArchiveEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useArchiveEntity>>(),
+    );
 
-    vi.mocked(useUnarchiveEntity).mockReturnValue({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    } as ReturnType<typeof useUnarchiveEntity>);
+    vi.mocked(useUnarchiveEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useUnarchiveEntity>>(),
+    );
 
-    vi.mocked(useMergeEntity).mockReturnValue({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    } as ReturnType<typeof useMergeEntity>);
+    vi.mocked(useMergeEntity).mockReturnValue(mockMutationResult<ReturnType<typeof useMergeEntity>>());
 
-    vi.mocked(usePromoteEntity).mockReturnValue({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    } as ReturnType<typeof usePromoteEntity>);
+    vi.mocked(usePromoteEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof usePromoteEntity>>(),
+    );
 
     container = document.createElement("div");
     document.body.appendChild(container);
