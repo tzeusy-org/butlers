@@ -552,7 +552,8 @@ function UnidentifiedEntitiesSection({
             <AlertDialogAction
               variant="destructive"
               disabled={deleteMutation.isPending}
-              onClick={async () => {
+              onClick={async (event) => {
+                event.preventDefault();
                 if (!deleteTarget) return;
                 try {
                   await deleteMutation.mutateAsync({
@@ -1000,7 +1001,8 @@ export default function EntitiesPage() {
             <AlertDialogAction
               variant="destructive"
               disabled={deleteMutation.isPending}
-              onClick={async () => {
+              onClick={async (event) => {
+                event.preventDefault();
                 if (!deleteTarget) return;
                 try {
                   await deleteMutation.mutateAsync({
