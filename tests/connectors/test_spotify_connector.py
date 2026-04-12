@@ -16,13 +16,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.connectors.spotify import (
     ListeningSession,
     ListeningSessionTracker,
+    SpotifyConnector,
+    SpotifyConnectorConfig,
     build_context_start_envelope,
+    build_listening_digest_envelope,
     build_session_summary_envelope,
 )
 
@@ -133,6 +137,97 @@ def test_session_summary_schema_version() -> None:
     )
     assert env["schema_version"] == "ingest.v1"
     assert env["control"]["ingestion_tier"] == "full"
+
+
+def test_context_start_prefers_explicit_context_name_from_raw_payload() -> None:
+    env = build_context_start_envelope(
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        track_id="track1",
+        track_name="Song A",
+        artist_names=["Artist"],
+        album_name="Album",
+        duration_ms=240000,
+        context_uri="spotify:playlist:abc123",
+        device_name="Phone",
+        timestamp_ms=1711447200000,
+        raw_payload={"context_name": "Deep Focus"},
+        observed_at=_OBSERVED,
+    )
+
+    assert "Deep Focus" in env["payload"]["normalized_text"]
+    assert "abc123" not in env["payload"]["normalized_text"]
+
+
+def test_listening_digest_prefers_session_context_name() -> None:
+    session = ListeningSession(
+        started_at=_NOW,
+        context_uri="spotify:playlist:abc123",
+        track_names=["Song A", "Song B"],
+        last_digest_at=_NOW,
+    )
+    session.context_name = "Deep Focus"
+
+    env = build_listening_digest_envelope(
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+        observed_at=_OBSERVED,
+    )
+
+    assert "Deep Focus" in env["payload"]["normalized_text"]
+    assert "abc123" not in env["payload"]["normalized_text"]
+
+
+def test_session_summary_prefers_session_context_name() -> None:
+    session = ListeningSession(
+        started_at=_NOW,
+        context_uri="spotify:playlist:abc123",
+        track_names=["Song A", "Song B"],
+        last_digest_at=_NOW,
+    )
+    session.context_name = "Deep Focus"
+
+    env = build_session_summary_envelope(
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+        observed_at=_OBSERVED,
+    )
+
+    assert "Deep Focus" in env["payload"]["normalized_text"]
+    assert "abc123" not in env["payload"]["normalized_text"]
+
+
+@pytest.mark.asyncio
+async def test_handle_active_playback_resolves_context_name() -> None:
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._submit_envelope = AsyncMock()
+    connector._resolve_context_name = AsyncMock(return_value="Deep Focus")
+
+    payload = {
+        "timestamp": 1711447200000,
+        "context": {"uri": "spotify:playlist:abc123"},
+        "device": {"name": "Phone"},
+        "item": {
+            "id": "track1",
+            "name": "Song A",
+            "duration_ms": 240000,
+            "artists": [{"name": "Artist"}],
+            "album": {"name": "Album"},
+        },
+    }
+
+    await connector._handle_active_playback(payload, payload["item"], _NOW, _OBSERVED)
+
+    envelope = connector._submit_envelope.await_args.args[0]
+    assert envelope["payload"]["raw"]["context_name"] == "Deep Focus"
+    assert "Deep Focus" in envelope["payload"]["normalized_text"]
+    assert "abc123" not in envelope["payload"]["normalized_text"]
 
 
 # ---------------------------------------------------------------------------

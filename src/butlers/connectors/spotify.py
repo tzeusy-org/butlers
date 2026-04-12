@@ -235,6 +235,7 @@ class ListeningSession:
 
     context_uri: str | None  # playlist:xxx / album:xxx / None
     started_at: datetime
+    context_name: str | None = None
     track_names: list[str] = field(default_factory=list)
     last_activity_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     drain_started_at: datetime | None = None
@@ -297,6 +298,7 @@ class ListeningSessionTracker:
         track_id: str,
         track_name: str,
         context_uri: str | None,
+        context_name: str | None = None,
         now: datetime | None = None,
     ) -> tuple[list[str], list[ListeningSession]]:
         """Process an active playback event.
@@ -321,6 +323,7 @@ class ListeningSessionTracker:
             self._session = ListeningSession(
                 context_uri=context_uri,
                 started_at=now,
+                context_name=context_name,
                 track_names=[track_name],
                 last_activity_at=now,
                 last_digest_at=now,
@@ -331,6 +334,12 @@ class ListeningSessionTracker:
 
         elif self._state == "active":
             assert self._session is not None
+            if (
+                self._session.context_name is None
+                and context_name
+                and self._session.context_uri == context_uri
+            ):
+                self._session.context_name = context_name
             if track_id == self._last_track_id:
                 # Same track: update last activity, no event
                 self._session.last_activity_at = now
@@ -350,6 +359,12 @@ class ListeningSessionTracker:
             # pause) but the session is still alive — accumulate silently.
             self._session.drain_started_at = None
             self._session.last_activity_at = now
+            if (
+                self._session.context_name is None
+                and context_name
+                and self._session.context_uri == context_uri
+            ):
+                self._session.context_name = context_name
             if track_id != self._last_track_id:
                 self._last_track_id = track_id
                 self._session.track_names.append(track_name)
@@ -422,6 +437,68 @@ class SpotifyRateLimitError(Exception):
         self.retry_after = retry_after
 
 
+def _clean_context_name(value: Any) -> str | None:
+    """Return a non-empty Spotify context name, or None."""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _parse_spotify_context_uri(context_uri: str | None) -> tuple[str | None, str | None]:
+    """Split a Spotify context URI into (kind, id)."""
+    if not context_uri:
+        return None, None
+    parts = context_uri.split(":", 2)
+    if len(parts) != 3 or parts[0] != "spotify":
+        return None, None
+    return parts[1], parts[2]
+
+
+def _context_name_from_item(context_uri: str | None, item: dict[str, Any]) -> str | None:
+    """Resolve a context name directly from the current track payload when possible."""
+    context_type, context_id = _parse_spotify_context_uri(context_uri)
+    if not context_type or not context_id:
+        return None
+
+    if context_type == "album":
+        album = item.get("album") or {}
+        album_id = str(album.get("id") or "").strip()
+        album_uri = str(album.get("uri") or "").strip()
+        if album_id == context_id or album_uri == context_uri:
+            return _clean_context_name(album.get("name"))
+
+    if context_type == "artist":
+        for artist in item.get("artists", []) or []:
+            artist_id = str(artist.get("id") or "").strip()
+            artist_uri = str(artist.get("uri") or "").strip()
+            if artist_id == context_id or artist_uri == context_uri:
+                return _clean_context_name(artist.get("name"))
+
+    return None
+
+
+def _resolve_context_label(
+    *,
+    context_uri: str | None,
+    context_name: str | None = None,
+    raw_payload: dict[str, Any] | None = None,
+) -> str | None:
+    """Choose the best human-readable label for a Spotify listening context."""
+    explicit_name = _clean_context_name(context_name)
+    if explicit_name:
+        return explicit_name
+
+    if raw_payload:
+        embedded_name = _clean_context_name(raw_payload.get("context_name"))
+        if embedded_name:
+            return embedded_name
+
+    if context_uri:
+        return context_uri.split(":")[-1]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Envelope builders
 # ---------------------------------------------------------------------------
@@ -437,6 +514,7 @@ def build_context_start_envelope(
     album_name: str,
     duration_ms: int,
     context_uri: str | None,
+    context_name: str | None = None,
     device_name: str | None,
     timestamp_ms: int,
     raw_payload: dict[str, Any],
@@ -447,13 +525,21 @@ def build_context_start_envelope(
     Emitted once when a new listening context begins (playlist, album, etc.).
     """
     artist_str = ", ".join(artist_names) if artist_names else "unknown artist"
-    context_label = context_uri.split(":")[-1] if context_uri else None
+    context_label = _resolve_context_label(
+        context_uri=context_uri,
+        context_name=context_name,
+        raw_payload=raw_payload,
+    )
     if context_label:
         normalized_text = (
             f"Started listening to {context_label} — first track: {track_name} by {artist_str}"
         )
     else:
         normalized_text = f"Started listening to {track_name} by {artist_str}"
+
+    payload_raw = dict(raw_payload)
+    if context_label:
+        payload_raw["context_name"] = context_label
 
     idempotency_key = f"spotify:{endpoint_identity}:ctx:{timestamp_ms}:{context_uri or track_id}"
     external_event_id = f"spotify:ctx:{timestamp_ms}:{context_uri or track_id}"
@@ -474,7 +560,7 @@ def build_context_start_envelope(
             "identity": spotify_user_id,
         },
         "payload": {
-            "raw": raw_payload,
+            "raw": payload_raw,
             "normalized_text": normalized_text,
         },
         "control": {
@@ -497,7 +583,10 @@ def build_listening_digest_envelope(
     Emitted periodically (default every 60 min) during active listening.
     Shows only tracks played since the last digest (or session start).
     """
-    context_label = session.context_uri.split(":")[-1] if session.context_uri else None
+    context_label = _resolve_context_label(
+        context_uri=session.context_uri,
+        context_name=session.context_name,
+    )
     period_tracks = session.track_names[session.last_digest_track_index :]
     period_count = len(period_tracks)
     track_list = ", ".join(period_tracks)
@@ -534,6 +623,7 @@ def build_listening_digest_envelope(
                 "period_track_count": period_count,
                 "total_track_count": session.track_count,
                 "context_uri": session.context_uri,
+                "context_name": context_label,
                 "period_tracks": period_tracks,
                 "tracks": session.track_names,
             },
@@ -560,7 +650,10 @@ def build_session_summary_envelope(
     seconds = duration_s % 60
     duration_label = f"{minutes}m{seconds}s" if minutes > 0 else f"{seconds}s"
 
-    context_label = session.context_uri.split(":")[-1] if session.context_uri else None
+    context_label = _resolve_context_label(
+        context_uri=session.context_uri,
+        context_name=session.context_name,
+    )
     if context_label:
         normalized_text = (
             f"Listening session: {session.track_count} tracks over "
@@ -595,6 +688,7 @@ def build_session_summary_envelope(
                 "duration_seconds": duration_s,
                 "track_count": session.track_count,
                 "context_uri": session.context_uri,
+                "context_name": context_label,
                 "tracks": session.track_names,
             },
             "normalized_text": normalized_text,
@@ -651,6 +745,7 @@ class SpotifyConnector:
         self._current_poll_interval_s: float = config.poll_active_s
         self._last_recently_played_cursor: str | None = None  # after= timestamp (ms)
         self._last_gap_fill_poll_at: float = 0.0  # monotonic; 0 = never polled
+        self._context_name_cache: dict[str, str] = {}
 
         # Session tracking
         self._session_tracker = ListeningSessionTracker(
@@ -1194,6 +1289,61 @@ class SpotifyConnector:
         )
         return data.get("items", [])
 
+    async def _resolve_context_name(
+        self,
+        context_uri: str | None,
+        item: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Best-effort resolve a Spotify context URI to a human-readable name."""
+        normalized_uri = (context_uri or "").strip()
+        if not normalized_uri:
+            return None
+
+        cached = self._context_name_cache.get(normalized_uri)
+        if cached:
+            return cached
+
+        inline_name = _context_name_from_item(normalized_uri, item or {})
+        if inline_name:
+            self._context_name_cache[normalized_uri] = inline_name
+            return inline_name
+
+        context_type, context_id = _parse_spotify_context_uri(normalized_uri)
+        if not context_type or not context_id:
+            return None
+
+        try:
+            if context_type == "playlist":
+                payload = await self._spotify_get(
+                    f"/playlists/{context_id}",
+                    params={"fields": "name"},
+                    api_method="playlist_name",
+                )
+            elif context_type == "album":
+                payload = await self._spotify_get(
+                    f"/albums/{context_id}",
+                    api_method="album_name",
+                )
+            elif context_type == "artist":
+                payload = await self._spotify_get(
+                    f"/artists/{context_id}",
+                    api_method="artist_name",
+                )
+            else:
+                return None
+        except Exception as exc:
+            logger.debug(
+                "SpotifyConnector: could not resolve context name for %s: %s",
+                normalized_uri,
+                exc,
+            )
+            return None
+
+        resolved_name = _clean_context_name(payload.get("name"))
+        if resolved_name:
+            self._context_name_cache[normalized_uri] = resolved_name
+        return resolved_name
+
     # ------------------------------------------------------------------
     # Main polling loop
     # ------------------------------------------------------------------
@@ -1343,6 +1493,7 @@ class SpotifyConnector:
 
         context = payload.get("context") or {}
         context_uri = context.get("uri") if context else None
+        context_name = await self._resolve_context_name(context_uri, item)
 
         timestamp_ms = int(payload.get("timestamp", now.timestamp() * 1000))
         device = payload.get("device") or {}
@@ -1356,6 +1507,7 @@ class SpotifyConnector:
             track_id=track_id,
             track_name=track_name,
             context_uri=context_uri,
+            context_name=context_name,
             now=now,
         )
 
@@ -1374,6 +1526,7 @@ class SpotifyConnector:
                 album_name=album_name,
                 duration_ms=duration_ms,
                 context_uri=context_uri,
+                context_name=context_name,
                 device_name=device_name,
                 timestamp_ms=timestamp_ms,
                 raw_payload=payload,
