@@ -249,6 +249,9 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### dev.sh OAuth shared-store contract
 - `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) query `public.contact_info` for the owner contact's `google_oauth_refresh` row (one-db mode, schema `public` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
 
+### Dev debug access contract
+- In repo-root dev workflows, use `docker logs` as the primary debugging surface for compose services rather than the local `logs/` folder, and build `psql` commands from `.env.dev`; `POSTGRES_DB` may be unset there, with compose/scripts defaulting the database name to `butlers`.
+
 ### Google OAuth credential storage split
 - App credentials (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_SCOPES`) live in `butler_secrets` via `CredentialStore`.
 - Refresh token lives exclusively in `public.contact_info` on the owner contact (type `google_oauth_refresh`, `secured=true`). No butler_secrets fallback exists.
