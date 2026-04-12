@@ -119,6 +119,7 @@ def test_prompt_safety_and_braces():
     prompt = build_investigation_prompt(_make_finding(), uuid.uuid4())
     assert "UNFIXABLE" in prompt
     assert "do not" in prompt.lower() or "not push" in prompt.lower()
+    assert "do not run ``bd``" in prompt.lower()
     assert "pii" in prompt.lower() or "user data" in prompt.lower() or "sensitive" in prompt.lower()
 
     # Braces in dynamic fields

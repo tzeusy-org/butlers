@@ -28,6 +28,7 @@ from butlers.core.qa.dispatch import (
     QaDispatchResult,
     _dispatch_pr_review_followup,
     _extract_review_state,
+    _prepare_agent_workspace,
     build_sandbox_env,
     check_open_pr_statuses,
     dispatch_novel_findings,
@@ -81,9 +82,17 @@ def test_sandbox_env_filtering_and_injection(monkeypatch):
     monkeypatch.setenv("HOME", "/home/user")
     monkeypatch.setenv("UV_CACHE_DIR", "/tmp/uv-cache")
 
-    env_with_token = build_sandbox_env("mytoken123")
+    env_with_token = build_sandbox_env(
+        "mytoken123",
+        git_author_name="QA Staffer",
+        git_author_email="qa@example.com",
+    )
     assert env_with_token.get("GH_TOKEN") == "mytoken123"
     assert "PATH" in env_with_token and "HOME" in env_with_token
+    assert env_with_token["GIT_AUTHOR_NAME"] == "QA Staffer"
+    assert env_with_token["GIT_COMMITTER_NAME"] == "QA Staffer"
+    assert env_with_token["GIT_AUTHOR_EMAIL"] == "qa@example.com"
+    assert env_with_token["GIT_COMMITTER_EMAIL"] == "qa@example.com"
 
     env_no_token = build_sandbox_env(None)
     assert "GH_TOKEN" not in env_no_token
@@ -93,6 +102,29 @@ def test_sandbox_env_filtering_and_injection(monkeypatch):
 
     # Empty string gh_token not injected
     assert "GH_TOKEN" not in build_sandbox_env("")
+
+
+@pytest.mark.unit
+def test_prepare_agent_workspace_creates_override(tmp_path: Path):
+    """QA helper cwd is created under ignored .tmp with a local AGENTS override."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "roster").mkdir()
+    (tmp_path / "frontend").mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='qa-test'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("", encoding="utf-8")
+
+    agent_dir = _prepare_agent_workspace(tmp_path)
+    assert agent_dir == tmp_path / ".tmp" / "qa-agent"
+    agents_md = agent_dir / "AGENTS.md"
+    assert agents_md.is_file()
+    text = agents_md.read_text(encoding="utf-8")
+    assert "Do not run `bd`." in text
+    assert "Do not push branches or open PRs yourself." in text
+    for name in ("src", "tests", "roster", "frontend", "pyproject.toml", "uv.lock"):
+        link_path = agent_dir / name
+        assert link_path.exists()
+        assert link_path.is_symlink()
 
 
 @pytest.mark.unit

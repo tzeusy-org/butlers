@@ -36,6 +36,8 @@ from butlers.core.healing import reap_stale_worktrees, recover_stale_attempts
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.dispatch import (
     QA_GH_TOKEN_KEY,
+    QA_GIT_AUTHOR_EMAIL_KEY,
+    QA_GIT_AUTHOR_NAME_KEY,
     QaDispatchConfig,
     check_open_pr_statuses,
     dispatch_novel_findings,
@@ -1088,6 +1090,7 @@ class QaModule(Module):
 
             # Phase 3: Dispatch
             gh_token = await self._resolve_gh_token()
+            git_author_name, git_author_email = await self._resolve_git_identity()
             if not gh_token:  # None or empty string
                 await self._notify_missing_gh_token(patrol_id)
             dispatch_config = QaDispatchConfig(
@@ -1132,6 +1135,8 @@ class QaModule(Module):
                     repo_root=self._repo_root,
                     spawner=self._spawner,
                     gh_token=gh_token,
+                    git_author_name=git_author_name,
+                    git_author_email=git_author_email,
                     task_registry=self._watchdog_tasks,
                     metrics=getattr(self._spawner, "_metrics", None),
                 )
@@ -1149,7 +1154,13 @@ class QaModule(Module):
             dispatched_count = sum(1 for r in dispatch_results if r.accepted)
 
             # Phase 4: PR status check
-            await self._check_pr_statuses(pool, gh_token, patrol_id=patrol_id)
+            await self._check_pr_statuses(
+                pool,
+                gh_token,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
+                patrol_id=patrol_id,
+            )
 
             # Phase 5: Metric snapshots (non-fatal)
             await self._record_investigation_metrics(pool)
@@ -1498,6 +1509,27 @@ class QaModule(Module):
             logger.debug("QaModule: failed to resolve GH token", exc_info=True)
             return None
 
+    async def _resolve_git_identity(self) -> tuple[str | None, str | None]:
+        """Resolve optional git author identity for QA-generated commits."""
+        if self._credential_store is None:
+            return None, None
+
+        try:
+            author_name = await self._credential_store.resolve(QA_GIT_AUTHOR_NAME_KEY)
+        except Exception:
+            logger.debug("QaModule: failed to resolve QA git author name", exc_info=True)
+            author_name = None
+
+        try:
+            author_email = await self._credential_store.resolve(QA_GIT_AUTHOR_EMAIL_KEY)
+        except Exception:
+            logger.debug("QaModule: failed to resolve QA git author email", exc_info=True)
+            author_email = None
+
+        cleaned_name = (author_name or "").strip() or None
+        cleaned_email = (author_email or "").strip() or None
+        return cleaned_name, cleaned_email
+
     # ------------------------------------------------------------------
     # PR status check
     # ------------------------------------------------------------------
@@ -1506,6 +1538,8 @@ class QaModule(Module):
         self,
         pool: Any,
         gh_token: str | None,
+        git_author_name: str | None = None,
+        git_author_email: str | None = None,
         patrol_id: uuid.UUID | None = None,
     ) -> None:
         """Check GitHub status of open PR investigations.
@@ -1536,6 +1570,8 @@ class QaModule(Module):
                 pool,
                 self._repo_root,
                 gh_token,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
                 spawner=self._spawner,
                 config=dispatch_config,
                 task_registry=self._watchdog_tasks,

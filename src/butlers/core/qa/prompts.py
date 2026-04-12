@@ -43,8 +43,8 @@ been spawned to investigate the root cause and propose a fix.
 {evidence_section}{context_section}{dashboard_section}\
 ## Your Task
 
-1. Read the relevant source code (your CWD is an isolated worktree branched \
-from main).
+1. Read the relevant source code (your CWD is a QA helper directory inside an \
+isolated worktree branched from main; the git repository root is nearby).
 2. Identify the root cause of this error.
 3. If it is a code bug: write a fix with tests, then commit. The dispatcher \
 will open a PR automatically (do NOT push yourself).
@@ -75,6 +75,8 @@ attempt to ``unfixable`` status (no PR will be opened).
 - Do NOT include any PII, user data, credentials, environment-specific \
 information, or sensitive context in commit messages, code changes, or the \
 UNFIXABLE file.
+- Beads is NOT part of the QA workflow. Do NOT run ``bd`` or follow repo-level \
+issue-tracker/session-close procedures that are unrelated to this investigation.
 - Run tests after a code fix: ``uv run pytest`` and \
 ``uv run ruff check src/ tests/``.
 - Stay within the scope of this specific error.

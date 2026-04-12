@@ -124,6 +124,8 @@ _DEFAULT_PR_LABELS = ["self-healing", "automated"]
 
 #: CredentialStore key for the GitHub token used by QA investigations.
 QA_GH_TOKEN_KEY = "BUTLERS_QA_GH_TOKEN"
+QA_GIT_AUTHOR_NAME_KEY = "BUTLERS_QA_GIT_AUTHOR_NAME"
+QA_GIT_AUTHOR_EMAIL_KEY = "BUTLERS_QA_GIT_AUTHOR_EMAIL"
 
 #: Temporary environment variable consumed by the git askpass helper.
 _GIT_AUTH_TOKEN_ENV_VAR = "BUTLERS_QA_GIT_TOKEN"
@@ -169,6 +171,21 @@ _ALLOWED_ENV_VARS = frozenset(
         "XDG_RUNTIME_DIR",
     }
 )
+
+_QA_AGENT_SUBDIR = Path(".tmp/qa-agent")
+_QA_AGENT_OVERRIDE = """# QA Agent Override
+
+You are running inside a QA investigation helper directory under an isolated git worktree.
+The repository root is the parent worktree, and git commands still operate on that repository.
+
+Ignore repository-level workflow instructions about beads (`bd`), generic session-close/push
+requirements, and unrelated operator procedures. They do not apply to QA investigations.
+
+Rules specific to this workspace:
+- Do not run `bd`.
+- Do not push branches or open PRs yourself.
+- Stay within the scope of the current QA investigation or PR-review follow-up.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -253,10 +270,16 @@ class QaDispatchResult:
 # ---------------------------------------------------------------------------
 
 
-def build_sandbox_env(gh_token: str | None) -> dict[str, str]:
+def build_sandbox_env(
+    gh_token: str | None,
+    *,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
+) -> dict[str, str]:
     """Build a minimal sandboxed environment for investigation agents.
 
-    Only allows: GH_TOKEN, PATH, HOME, and build-tool variables.
+    Only allows: GH_TOKEN, PATH, HOME, build-tool variables, and optional
+    git author identity for non-interactive commits.
     Strips all BUTLERS_* vars, database connection strings, API keys,
     OAuth tokens, and any other butler runtime variables.
 
@@ -265,6 +288,10 @@ def build_sandbox_env(gh_token: str | None) -> dict[str, str]:
     gh_token:
         GitHub token from CredentialStore.  If ``None``, GH_TOKEN is not
         included in the returned environment.
+
+    git_author_name / git_author_email:
+        Optional git author identity injected as both author and committer
+        environment variables for QA-generated commits.
 
     Returns
     -------
@@ -291,7 +318,31 @@ def build_sandbox_env(gh_token: str | None) -> dict[str, str]:
         # Remove any GH_TOKEN that snuck in from environment (not from secrets store)
         del env["GH_TOKEN"]
 
+    author_name = (git_author_name or "").strip()
+    author_email = (git_author_email or "").strip()
+    if author_name:
+        env["GIT_AUTHOR_NAME"] = author_name
+        env["GIT_COMMITTER_NAME"] = author_name
+    if author_email:
+        env["GIT_AUTHOR_EMAIL"] = author_email
+        env["GIT_COMMITTER_EMAIL"] = author_email
+
     return env
+
+
+def _prepare_agent_workspace(worktree_path: Path) -> Path:
+    """Create an ignored helper cwd with QA-specific AGENTS.md overrides."""
+    agent_dir = worktree_path / _QA_AGENT_SUBDIR
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "AGENTS.md").write_text(_QA_AGENT_OVERRIDE, encoding="utf-8")
+    for name in ("src", "tests", "roster", "frontend", "pyproject.toml", "uv.lock"):
+        link_path = agent_dir / name
+        target_path = worktree_path / name
+        if link_path.exists() or link_path.is_symlink():
+            continue
+        if target_path.exists():
+            link_path.symlink_to(target_path)
+    return agent_dir
 
 
 @lru_cache(maxsize=1)
@@ -866,6 +917,8 @@ async def _run_investigation_session(
     config: QaDispatchConfig,
     spawner: Any,
     gh_token: str | None,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
     metrics: ButlerMetrics | None = None,
 ) -> None:
     """Run the QA investigation agent and handle PR creation.
@@ -906,9 +959,14 @@ async def _run_investigation_session(
             attempt_id=attempt_id,
             dashboard_base_url=config.dashboard_base_url,
         )
+        agent_cwd = _prepare_agent_workspace(worktree_path)
 
         # Build sandboxed environment for the agent
-        sandbox_env = build_sandbox_env(gh_token)
+        sandbox_env = build_sandbox_env(
+            gh_token,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
+        )
 
         # Inject the investigation root span's trace context as TRACEPARENT so the
         # spawned agent can continue this trace as a child process.
@@ -923,7 +981,7 @@ async def _run_investigation_session(
             prompt=prompt,
             trigger_source="qa",
             complexity=Complexity.SELF_HEALING,
-            cwd=str(worktree_path),
+            cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
             timeout_override=config.timeout_minutes * 60,
@@ -1366,6 +1424,8 @@ async def check_open_pr_statuses(
     pool: asyncpg.Pool,
     repo_root: Path,
     gh_token: str | None,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
     spawner: Any = None,
     config: QaDispatchConfig | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
@@ -1646,6 +1706,8 @@ async def check_open_pr_statuses(
                     config=config,
                     spawner=spawner,
                     gh_token=gh_token,
+                    git_author_name=git_author_name,
+                    git_author_email=git_author_email,
                     task_registry=task_registry,
                     patrol_id=patrol_id,
                 )
@@ -1759,6 +1821,8 @@ async def _dispatch_pr_review_followup(
     config: QaDispatchConfig,
     spawner: Any,
     gh_token: str | None,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
     patrol_id: uuid.UUID | None = None,
 ) -> bool:
@@ -1937,7 +2001,11 @@ async def _dispatch_pr_review_followup(
             patrol_id,
         )
 
-        sandbox_env = build_sandbox_env(gh_token)
+        sandbox_env = build_sandbox_env(
+            gh_token,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
+        )
 
         # Inject trace context if available
         if _HAS_OTEL:
@@ -2013,11 +2081,12 @@ async def _run_review_followup_session(
     """
     followup_session_id: uuid.UUID | None = None
     try:
+        agent_cwd = _prepare_agent_workspace(worktree_path)
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
             complexity=Complexity.SELF_HEALING,
-            cwd=str(worktree_path),
+            cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
             timeout_override=config.timeout_minutes * 60,
@@ -2192,6 +2261,8 @@ async def dispatch_qa_investigation(
     repo_root: Path,
     spawner: Any,
     gh_token: str | None = None,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
     metrics: ButlerMetrics | None = None,
 ) -> QaDispatchResult:
@@ -2591,6 +2662,8 @@ async def dispatch_qa_investigation(
                 config=config,
                 spawner=spawner,
                 gh_token=gh_token,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
                 metrics=metrics,
             ),
             name=f"qa-investigation-{attempt_id}",
@@ -2645,6 +2718,8 @@ async def dispatch_novel_findings(
     repo_root: Path,
     spawner: Any,
     gh_token: str | None = None,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
     task_registry: list[asyncio.Task[Any]] | None = None,
     metrics: ButlerMetrics | None = None,
 ) -> list[QaDispatchResult]:
@@ -2733,6 +2808,8 @@ async def dispatch_novel_findings(
             repo_root=repo_root,
             spawner=spawner,
             gh_token=gh_token,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
             task_registry=task_registry,
             metrics=metrics,
         )

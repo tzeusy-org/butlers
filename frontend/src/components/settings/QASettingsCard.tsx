@@ -1,10 +1,11 @@
 /**
  * QASettingsCard — QA Staffer configuration card for the settings page.
  *
- * Three sections:
+ * Four sections:
  * 1. Repository URL — the repo QA clones for investigations
  * 2. GitHub Token — BUTLERS_QA_GH_TOKEN credential
- * 3. Allowed Repositories — whitelist for PR creation
+ * 3. Git author identity — commit author name/email for QA-generated commits
+ * 4. Allowed Repositories — whitelist for PR creation
  */
 
 import { useState } from "react";
@@ -53,6 +54,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 const SHARED_TARGET = "shared";
 const GH_TOKEN_KEY = "BUTLERS_QA_GH_TOKEN";
+const GIT_AUTHOR_NAME_KEY = "BUTLERS_QA_GIT_AUTHOR_NAME";
+const GIT_AUTHOR_EMAIL_KEY = "BUTLERS_QA_GIT_AUTHOR_EMAIL";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -98,6 +101,56 @@ export function QASettingsCard() {
 
   const [ghToken, setGhToken] = useState("");
   const [showToken, setShowToken] = useState(false);
+
+  // --- Git author identity ---
+  const authorNameQuery = useQuery({
+    queryKey: ["qa-git-author-name-meta"],
+    queryFn: () => getSecretMeta(SHARED_TARGET, GIT_AUTHOR_NAME_KEY),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const authorEmailQuery = useQuery({
+    queryKey: ["qa-git-author-email-meta"],
+    queryFn: () => getSecretMeta(SHARED_TARGET, GIT_AUTHOR_EMAIL_KEY),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const authorNameIsSet = authorNameQuery.data?.data?.is_set === true;
+  const authorEmailIsSet = authorEmailQuery.data?.data?.is_set === true;
+
+  const saveIdentityMutation = useMutation({
+    mutationFn: async ({ name, email }: { name: string; email: string }) => {
+      const writes = [];
+      if (name.trim()) {
+        writes.push(
+          upsertSecret(SHARED_TARGET, GIT_AUTHOR_NAME_KEY, {
+            value: name.trim(),
+            category: "qa",
+            is_sensitive: false,
+            description: "Git author name for QA-generated commits",
+          } as SecretUpsertRequest),
+        );
+      }
+      if (email.trim()) {
+        writes.push(
+          upsertSecret(SHARED_TARGET, GIT_AUTHOR_EMAIL_KEY, {
+            value: email.trim(),
+            category: "qa",
+            is_sensitive: false,
+            description: "Git author email for QA-generated commits",
+          } as SecretUpsertRequest),
+        );
+      }
+      await Promise.all(writes);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["qa-git-author-name-meta"] });
+      queryClient.invalidateQueries({ queryKey: ["qa-git-author-email-meta"] });
+    },
+  });
+
+  const [gitAuthorName, setGitAuthorName] = useState("");
+  const [gitAuthorEmail, setGitAuthorEmail] = useState("");
 
   // --- Allowed repos ---
   const allowedReposQuery = useQaAllowedRepos();
@@ -146,6 +199,21 @@ export function QASettingsCard() {
     }
   }
 
+  async function handleSaveIdentity() {
+    if (!gitAuthorName.trim() && !gitAuthorEmail.trim()) return;
+    try {
+      await saveIdentityMutation.mutateAsync({
+        name: gitAuthorName,
+        email: gitAuthorEmail,
+      });
+      toast.success("Git author identity saved");
+      setGitAuthorName("");
+      setGitAuthorEmail("");
+    } catch (err) {
+      toast.error(`Failed to save: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+
   async function handleAddRepo() {
     const val = newRepoInput.trim();
     if (!val) return;
@@ -159,7 +227,8 @@ export function QASettingsCard() {
   }
 
   // --- Badge ---
-  const isConfigured = repoConfig && tokenIsSet;
+  const hasGitIdentity = authorNameIsSet && authorEmailIsSet;
+  const isConfigured = repoConfig && tokenIsSet && hasGitIdentity;
   const badgeInfo = isConfigured
     ? { variant: "default" as const, label: "Configured" }
     : { variant: "outline" as const, label: "Setup required" };
@@ -315,7 +384,67 @@ export function QASettingsCard() {
 
         <hr className="border-border" />
 
-        {/* ---- Section 3: Allowed Repositories ---- */}
+        {/* ---- Section 3: Git author identity ---- */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <h4 className="text-sm font-medium">Git Author Identity</h4>
+            {(authorNameQuery.isSuccess || authorEmailQuery.isSuccess) && (
+              <Badge variant={hasGitIdentity ? "default" : "destructive"} className="text-xs">
+                {hasGitIdentity ? "Set" : "Missing"}
+              </Badge>
+            )}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="qa-git-author-name">Author name</Label>
+              <Input
+                id="qa-git-author-name"
+                value={gitAuthorName}
+                onChange={(e) => setGitAuthorName(e.target.value)}
+                placeholder={authorNameIsSet ? "(saved)" : "QA Staffer"}
+                autoComplete="off"
+                disabled={saveIdentityMutation.isPending}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="qa-git-author-email">Author email</Label>
+              <Input
+                id="qa-git-author-email"
+                type="email"
+                value={gitAuthorEmail}
+                onChange={(e) => setGitAuthorEmail(e.target.value)}
+                placeholder={authorEmailIsSet ? "(saved)" : "qa-bot@example.com"}
+                autoComplete="off"
+                disabled={saveIdentityMutation.isPending}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Used as <code className="text-xs">GIT_AUTHOR_*</code> and{" "}
+            <code className="text-xs">GIT_COMMITTER_*</code> for QA-generated commits.
+          </p>
+          <Button
+            size="sm"
+            onClick={handleSaveIdentity}
+            disabled={
+              saveIdentityMutation.isPending ||
+              (!gitAuthorName.trim() && !gitAuthorEmail.trim())
+            }
+          >
+            {saveIdentityMutation.isPending ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                Saving...
+              </>
+            ) : (
+              "Save Identity"
+            )}
+          </Button>
+        </div>
+
+        <hr className="border-border" />
+
+        {/* ---- Section 4: Allowed Repositories ---- */}
         <div className="space-y-3">
           <h4 className="text-sm font-medium">Allowed Repositories</h4>
           <p className="text-xs text-muted-foreground">

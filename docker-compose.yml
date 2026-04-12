@@ -407,7 +407,7 @@ services:
   # LLM runtime CLIs are spawned as subprocesses.
   butlers-up:
     image: butlers-app:latest
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "uv", "run", "--frozen", "--no-dev", "butlers", "up"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up"]
     command: []
     ports:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"

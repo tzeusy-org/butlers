@@ -252,6 +252,18 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### Dev debug access contract
 - In repo-root dev workflows, use `docker logs` as the primary debugging surface for compose services rather than the local `logs/` folder, and build `psql` commands from `.env.dev`; `POSTGRES_DB` may be unset there, with compose/scripts defaulting the database name to `butlers`.
 
+### butlers-dev path split contract
+- The dev dashboard and API are served on different Tailscale path prefixes: `/butlers-dev/` is the Vite frontend, while live JSON APIs are under `/butlers-dev-api/api/...`; probing `/butlers-dev/api/...` returns the frontend HTML fallback, not backend JSON.
+
+### Compose live-log inspection contract
+- For the `butlers-dev` Docker compose stack, authoritative live run logs are inside the containers under `/app/logs/...` (for example `/app/logs/butlers/*.log` and `/app/logs/<run>/butlers/up/output.log`); the repo worktree's `logs/` tree can lag or reflect a different local run and should not be treated as the live source of truth.
+
+### QA/self-healing PR label contract
+- QA and self-healing dispatch default to GitHub labels `self-healing` and `automated`; on `Tzeusy/butlers`, missing repo labels make otherwise successful investigations fail at PR creation with `gh_pr_create_failed: could not add label: '<label>' not found`, leaving `healing_attempts.status = 'failed'` even when the agent produced a valid commit.
+
+### QA helper workspace contract
+- QA investigation Codex runs now launch from `<worktree>/.tmp/qa-agent/` with a local `AGENTS.md` override that explicitly disables `bd`/generic session-close workflow instructions; the helper dir must keep symlinks to repo roots like `src/`, `tests/`, `roster/`, `frontend/`, `pyproject.toml`, and `uv.lock` so repo-relative `uv run pytest` / `ruff check src/ tests/` still work.
+
 ### Google OAuth credential storage split
 - App credentials (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_SCOPES`) live in `butler_secrets` via `CredentialStore`.
 - Refresh token lives exclusively in `public.contact_info` on the owner contact (type `google_oauth_refresh`, `secured=true`). No butler_secrets fallback exists.
