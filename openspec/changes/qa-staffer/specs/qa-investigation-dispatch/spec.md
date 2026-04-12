@@ -60,10 +60,17 @@ Investigation agents SHALL operate in a sandboxed environment with minimal crede
 #### Scenario: Agent environment
 - **WHEN** the investigation agent is spawned in a worktree
 - **THEN** the QA staffer resolves `BUTLERS_QA_GH_TOKEN` from `CredentialStore` and injects it as `GH_TOKEN` in the agent's environment (the `gh` CLI requires the env var name `GH_TOKEN` specifically)
+- **AND** if configured, the QA staffer resolves `BUTLERS_QA_GIT_AUTHOR_NAME` and `BUTLERS_QA_GIT_AUTHOR_EMAIL` and injects them as `GIT_AUTHOR_*` / `GIT_COMMITTER_*` so non-interactive `git commit` does not depend on per-worktree `git config`
 - **AND** the agent's environment contains only: `GH_TOKEN`, `PATH`, and build-tool variables (`UV_CACHE_DIR`, etc.)
 - **AND** it does NOT have: butler DB connection strings, API keys, OAuth tokens, user data, or any `BUTLERS_*` env vars
 - **AND** it does NOT have MCP server connections (the spawner automatically sets empty MCP server config when `trigger_source="qa"`, preventing access to live production state and suppressing the Codex adapter's MCP-discovery retry path)
 - **AND** its filesystem scope is the worktree directory only
+
+#### Scenario: Agent runs from a QA helper workspace
+- **WHEN** the investigation agent is spawned in a worktree
+- **THEN** its current working directory is a QA-owned helper subdirectory inside the worktree, not the repository root
+- **AND** that helper directory contains a local `AGENTS.md` override that disables unrelated repo-level workflow instructions such as `bd` usage, generic session-close rules, or self-managed PR/push steps
+- **AND** the helper directory exposes the repo roots needed for normal QA commands (`src/`, `tests/`, `roster/`, `frontend/`, `pyproject.toml`, `uv.lock`) so repo-relative validation commands still work unchanged
 
 #### Scenario: GitHub credentials from secrets store
 - **WHEN** the QA staffer needs to create a PR
@@ -79,6 +86,7 @@ The QA investigation agent SHALL receive a prompt that includes the error contex
 - **WHEN** the investigation agent is spawned
 - **THEN** its prompt includes: error fingerprint, exception type, sanitized event summary, call site (module path), source butler name, occurrence count and time range, discovery source type, and instructions to: read relevant source code, identify root cause, implement a fix, run targeted tests, commit with a descriptive message
 - **AND** the prompt explicitly instructs the agent to NOT include any user data, PII, or sensitive content in commits or PR descriptions
+- **AND** the prompt explicitly instructs the agent to ignore unrelated repository workflow instructions and to not run `bd`, push branches manually, or open PRs itself
 
 #### Scenario: Agent uses self_healing model tier
 - **WHEN** the investigation agent is spawned

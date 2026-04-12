@@ -152,6 +152,20 @@ The dashboard API SHALL expose endpoints under `/api/qa/` to support the fronten
 - **THEN** the dismissal for that fingerprint is removed
 - **AND** subsequent patrol cycles will treat findings with that fingerprint as novel again
 
+### Requirement: QA Settings Surface
+The dashboard settings page SHALL expose the operator-managed configuration needed for QA investigations to clone, commit, and open PRs successfully.
+
+#### Scenario: QA Staffer settings card
+- **WHEN** the user opens `/settings`
+- **THEN** the "QA Staffer" card shows repository configuration, GitHub token status, git author identity status, and the allowed-repositories whitelist
+- **AND** the configuration badge is only "Configured" when repository settings exist, `BUTLERS_QA_GH_TOKEN` is present, and both `BUTLERS_QA_GIT_AUTHOR_NAME` and `BUTLERS_QA_GIT_AUTHOR_EMAIL` are present
+
+#### Scenario: Git author identity is editable
+- **WHEN** the operator edits the QA Staffer card's git author identity fields
+- **THEN** the dashboard stores `BUTLERS_QA_GIT_AUTHOR_NAME` and `BUTLERS_QA_GIT_AUTHOR_EMAIL` via the shared secrets/settings backend
+- **AND** those values are treated as the commit identity for QA-generated commits
+- **AND** they are validated and surfaced independently from the GitHub token because git commit identity and GitHub authentication are separate requirements
+
 ### Requirement: Navigation Integration
 The QA page SHALL be accessible from the dashboard's main navigation.
 
