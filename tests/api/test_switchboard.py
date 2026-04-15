@@ -51,6 +51,12 @@ def _get_db_dep():
     return sys.modules[_MODULE_NAME]._get_db_manager
 
 
+def _get_router_module():
+    """Return the live switchboard API router module."""
+    _get_db_dep()
+    return sys.modules[_MODULE_NAME]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -146,6 +152,37 @@ class TestSwitchboardViews:
         ) as client:
             resp = await client.get("/api/switchboard/registry")
         assert resp.status_code == 503
+
+    async def test_register_missing_butler_from_roster_uses_mcp_url(self, tmp_path):
+        module = _get_router_module()
+
+        config_dir = tmp_path / "demo"
+        config_dir.mkdir()
+        (config_dir / "butler.toml").write_text(
+            '[butler]\nname = "demo"\nport = 41234\ndescription = "Demo butler"\n'
+        )
+
+        registry_module = MagicMock()
+        registry_module.register_butler = AsyncMock()
+
+        previous_registry_module = sys.modules.get(module._REGISTRY_MODULE_NAME)
+        sys.modules[module._REGISTRY_MODULE_NAME] = registry_module
+
+        old_roster_dir = module._ROSTER_DIR
+        try:
+            module._ROSTER_DIR = tmp_path
+            ok = await module._register_missing_butler_from_roster(AsyncMock(), "demo")
+        finally:
+            module._ROSTER_DIR = old_roster_dir
+            if previous_registry_module is None:
+                sys.modules.pop(module._REGISTRY_MODULE_NAME, None)
+            else:
+                sys.modules[module._REGISTRY_MODULE_NAME] = previous_registry_module
+
+        assert ok is True
+        registry_module.register_butler.assert_awaited_once()
+        args = registry_module.register_butler.await_args.args
+        assert args[2] == "http://localhost:41234/mcp"
 
 
 # ---------------------------------------------------------------------------
