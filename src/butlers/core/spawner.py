@@ -229,15 +229,69 @@ def _dedup_tool_calls_by_id(calls: list[dict[str, Any]]) -> list[dict[str, Any]]
     ]
 
 
+def _normalize_tool_name(name: str, butler_name: str | None) -> str:
+    """Strip runtime-specific prefixes so the same underlying MCP tool matches
+    regardless of which runtime emitted the record.
+
+    Runtimes emit the same tool under three forms:
+
+    - bare ``fn.__name__`` (server-side capture in ``tool_call_capture``)
+    - ``mcp__{butler_name}__{fn}`` (claude_code / codex parsers)
+    - ``{butler_name}_{fn}`` (opencode parser)
+
+    Without normalization the merge-by-(name, payload) signature never matches
+    across those forms, causing duplicate rows in ``sessions.tool_calls``.
+
+    Safety rule: we unconditionally strip a leading ``{butler_name}_`` when
+    present. Underscores are ambiguous in theory — a butler named ``memory``
+    plus a real tool ``entity_resolve`` would collide with a tool named
+    ``memory_entity_resolve`` — but in practice this collision is already
+    impossible: opencode would emit ``memory_memory_entity_resolve`` vs
+    ``memory_entity_resolve`` for the two cases, and the bare
+    ``memory_entity_resolve`` form is what the capture side records either
+    way, so stripping is safe. No registered tool can start with its own
+    butler's name as a prefix without already colliding with opencode's
+    prefixed form.
+    """
+    if not name:
+        return name
+    if butler_name:
+        mcp_prefix = f"mcp__{butler_name}__"
+        if name.startswith(mcp_prefix):
+            return name[len(mcp_prefix) :]
+        opencode_prefix = f"{butler_name}_"
+        if name.startswith(opencode_prefix):
+            return name[len(opencode_prefix) :]
+    return name
+
+
 def _merge_tool_call_records(
     parsed_calls: list[dict[str, Any]],
     executed_calls: list[dict[str, Any]],
+    *,
+    butler_name: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Merge parser + executed call records while preserving retry attempts."""
+    """Merge parser + executed call records while preserving retry attempts.
+
+    ``butler_name`` enables normalization of runtime-specific tool-name
+    prefixes so parser-side records (e.g. ``mcp__lifestyle__memory_entity_resolve``
+    or ``lifestyle_memory_entity_resolve``) collapse against capture-side records
+    that use the bare ``fn.__name__`` form. When ``butler_name`` is omitted the
+    function falls back to legacy name-equality semantics for backward compat.
+    """
+
+    def _normalize_name_in_place(call: dict[str, Any]) -> dict[str, Any]:
+        if not butler_name:
+            return call
+        normalized = dict(call)
+        raw_name = str(normalized.get("name", "") or "")
+        normalized["name"] = _normalize_tool_name(raw_name, butler_name)
+        return normalized
+
     if not executed_calls:
-        return _dedup_tool_calls_by_id(list(parsed_calls))
+        return _dedup_tool_calls_by_id([_normalize_name_in_place(c) for c in parsed_calls])
     if not parsed_calls:
-        return _dedup_tool_calls_by_id(list(executed_calls))
+        return _dedup_tool_calls_by_id([_normalize_name_in_place(c) for c in executed_calls])
 
     def _payload_for_signature(call: dict[str, Any]) -> Any:
         payload = call.get("input")
@@ -257,7 +311,8 @@ def _merge_tool_call_records(
         return payload
 
     def _signature(call: dict[str, Any]) -> str:
-        name = str(call.get("name", "") or "")
+        raw_name = str(call.get("name", "") or "")
+        name = _normalize_tool_name(raw_name, butler_name)
         payload = _payload_for_signature(call)
         return f"{name}|{json.dumps(payload, sort_keys=True, default=str)}"
 
@@ -278,17 +333,32 @@ def _merge_tool_call_records(
             None,
         )
         if parsed_index is None:
+            # No parser counterpart; capture name is already bare. Keep as-is.
             merged.append(executed_call)
             continue
         matched_parsed_indexes.add(parsed_index)
         merged_record = dict(parsed_calls[parsed_index])
         merged_record.update(executed_call)
+        # Canonical stored name is the bare fn.__name__ form. The capture-side
+        # record carries that form already, but we normalize defensively so a
+        # single invocation always persists under one stable tool name.
+        raw_name = str(merged_record.get("name", "") or "")
+        merged_record["name"] = _normalize_tool_name(raw_name, butler_name)
         merged.append(merged_record)
 
     for idx, parsed_call in enumerate(parsed_calls):
         if idx in matched_parsed_indexes:
             continue
-        merged.append(parsed_call)
+        # Unmatched parser record: normalize the stored name so downstream
+        # consumers (dashboard, tool-call-scorecard) see one canonical form
+        # per tool even when no capture counterpart was recorded.
+        if butler_name:
+            normalized = dict(parsed_call)
+            raw_name = str(normalized.get("name", "") or "")
+            normalized["name"] = _normalize_tool_name(raw_name, butler_name)
+            merged.append(normalized)
+        else:
+            merged.append(parsed_call)
 
     return _dedup_tool_calls_by_id(merged)
 
@@ -1412,7 +1482,11 @@ class Spawner:
                 )
             if runtime_session_id:
                 executed_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
-                tool_calls = _merge_tool_call_records(tool_calls, executed_tool_calls)
+                tool_calls = _merge_tool_call_records(
+                    tool_calls,
+                    executed_tool_calls,
+                    butler_name=self._config.name,
+                )
 
             duration_ms = int((time.monotonic() - t0) * 1000)
 
