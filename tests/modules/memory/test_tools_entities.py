@@ -184,9 +184,32 @@ class TestEntityUpdate:
 
 
 class TestEntityResolve:
-    async def test_empty_name_returns_empty(self, pool: AsyncMock) -> None:
-        assert await entity_resolve(pool, "") == []
+    async def test_both_name_and_identifier_none_raises(self, pool: AsyncMock) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            await entity_resolve(pool, name=None, identifier=None)
         pool.fetch.assert_not_called()
+
+    async def test_empty_identifier_raises(self, pool: AsyncMock) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            await entity_resolve(pool, identifier="")
+        pool.fetch.assert_not_called()
+
+    async def test_whitespace_identifier_raises(self, pool: AsyncMock) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            await entity_resolve(pool, identifier="   ")
+        pool.fetch.assert_not_called()
+
+    async def test_empty_name_raises(self, pool: AsyncMock) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            await entity_resolve(pool, "")
+        pool.fetch.assert_not_called()
+
+    async def test_normal_identifier_still_works(self, pool: AsyncMock) -> None:
+        row = _entity_mock_row(uuid.UUID(str(uuid.uuid4())), "Mah Rock", match_type="exact")
+        pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(pool, identifier="Mah Rock")
+        assert results
+        assert results[0]["canonical_name"] == "Mah Rock"
 
     async def test_exact_match_returns_score_exact_name(self, pool: AsyncMock) -> None:
         row = _entity_mock_row(uuid.UUID(str(uuid.uuid4())), "Alice", match_type="exact")
@@ -206,6 +229,87 @@ class TestEntityResolve:
     async def test_identifier_and_name_raises(self, pool: AsyncMock) -> None:
         with pytest.raises(ValueError, match="not both"):
             await entity_resolve(pool, "Alice", identifier="Owner")
+
+
+class TestEntityResolveSchema:
+    """Verify MCP tool schema is tightened so strict-validation runtimes can
+    reject null/empty identifier inputs before they reach the server."""
+
+    async def _get_resolve_tool(self):
+        from unittest.mock import MagicMock, patch
+
+        from butlers.modules.memory import MemoryModule
+
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="fake_pool")
+        mcp = MagicMock()
+        registered: dict[str, object] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                registered[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool.side_effect = capture_tool
+
+        parent_mock = MagicMock()
+        with patch.dict(
+            "sys.modules",
+            {
+                "butlers.modules.memory.tools": parent_mock,
+                "butlers.modules.memory.tools.writing": MagicMock(),
+                "butlers.modules.memory.tools.reading": MagicMock(),
+                "butlers.modules.memory.tools.feedback": MagicMock(),
+                "butlers.modules.memory.tools.management": MagicMock(),
+                "butlers.modules.memory.tools.context": MagicMock(),
+                "butlers.modules.memory.tools.entities": MagicMock(),
+            },
+        ):
+            await mod.register_tools(mcp=mcp, config=None, db=fake_db)
+        return registered["memory_entity_resolve"]
+
+    async def test_identifier_is_required_non_null_non_empty(self) -> None:
+        import inspect
+        import typing
+
+        from pydantic.fields import FieldInfo
+
+        tool = await self._get_resolve_tool()
+        sig = inspect.signature(tool)
+        assert "identifier" in sig.parameters
+        ident = sig.parameters["identifier"]
+
+        # identifier is a required positional (no default)
+        assert ident.default is inspect.Parameter.empty, (
+            "identifier must be required (no default) for strict schema validation"
+        )
+
+        # Resolve forward-ref annotations (file uses `from __future__ import annotations`).
+        hints = typing.get_type_hints(tool, include_extras=True)
+        ident_type = hints["identifier"]
+        args = typing.get_args(ident_type)
+        assert args, f"identifier must be Annotated[str, Field(...)]; got {ident_type!r}"
+        assert args[0] is str, f"identifier must be typed `str` (non-nullable), got {args[0]}"
+
+        # Field metadata enforces min_length=1
+        field_info = next((a for a in args[1:] if isinstance(a, FieldInfo)), None)
+        assert field_info is not None, "identifier must carry a pydantic Field"
+        metadata_strs = [str(m) for m in field_info.metadata]
+        assert any("min_length=1" in m for m in metadata_strs), (
+            f"identifier Field must enforce min_length=1; got metadata={field_info.metadata}"
+        )
+
+    async def test_legacy_name_parameter_removed_from_tool_signature(self) -> None:
+        """The MCP tool surface no longer exposes the ambiguous legacy `name` kwarg;
+        only `identifier` is accepted, which prevents callers from passing both null."""
+        import inspect
+
+        tool = await self._get_resolve_tool()
+        sig = inspect.signature(tool)
+        assert "name" not in sig.parameters
 
 
 # ---------------------------------------------------------------------------

@@ -1036,32 +1036,39 @@ class MemoryModule(Module):
 
         @_tool("entity")
         async def memory_entity_resolve(
-            name: str | None = None,
-            identifier: str | None = None,
+            identifier: Annotated[
+                str,
+                Field(
+                    min_length=1,
+                    description=(
+                        "Required non-empty identifier to resolve. Waterfall lookup: "
+                        "tries role match first (e.g. 'Owner' matches entities with "
+                        "roles=['owner']), then falls through to name-based tiers "
+                        "(exact canonical, exact alias, prefix/substring, optional fuzzy). "
+                        "Must not be null, empty, or whitespace-only — the tool raises "
+                        "ValueError in those cases instead of returning an empty list."
+                    ),
+                ),
+            ],
             entity_type: str | None = None,
             context_hints: dict[str, Any] | None = None,
             enable_fuzzy: bool = False,
         ) -> list[dict[str, Any]]:
             """Resolve an ambiguous string to ranked memory entity candidates.
 
-            Two modes:
-            - **name**: Name-only lookup (exact, alias, prefix/substring, fuzzy).
-            - **identifier**: Waterfall lookup — tries role match first (e.g.
-              identifier="Owner" matches entities with roles=['owner']), then
-              falls through to name-based tiers.
-
-            Provide one of ``name`` or ``identifier``, not both.
+            ``identifier`` is required and must be a non-empty string. Passing
+            null, empty string, or whitespace-only raises ValueError — the tool
+            will not silently return an empty list. An empty list result means
+            a well-formed query found no matching entities.
 
             Returns a list of candidate entities ordered by composite score.
-            Returns an empty list when no candidates are found — does not
-            auto-create.
+            Does not auto-create.
 
             context_hints keys: topic (str), mentioned_with (list),
             domain_scores (dict of entity_id -> numeric score).
             """
             return await _entities.entity_resolve(
                 module._get_pool(),
-                name,
                 identifier=identifier,
                 entity_type=entity_type,
                 context_hints=context_hints,

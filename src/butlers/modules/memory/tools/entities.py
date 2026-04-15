@@ -270,8 +270,8 @@ async def entity_resolve(
         Returns empty list when no candidates found above minimum threshold.
 
     Raises:
-        ValueError: If both ``name`` and ``identifier`` are provided, or
-            neither is provided.
+        ValueError: If both ``name`` and ``identifier`` are provided, or if
+            neither is provided (including null/empty/whitespace-only values).
     """
     if name and identifier:
         raise ValueError("Provide either 'name' or 'identifier', not both.")
@@ -279,7 +279,10 @@ async def entity_resolve(
     # Resolve which string to use for lookup
     lookup = identifier or name
     if not lookup or not lookup.strip():
-        return []
+        raise ValueError(
+            "memory_entity_resolve requires a non-empty 'identifier' (or legacy 'name') argument. "
+            "Received null/empty input."
+        )
 
     name_stripped = lookup.strip()
     name_lower = name_stripped.lower()
