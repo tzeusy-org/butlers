@@ -8,12 +8,14 @@ re-exports them so they are equally visible from ``roster/*/tests/``.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import tempfile
 import time
 import uuid
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -71,6 +73,10 @@ if TYPE_CHECKING:
 
 docker_available = shutil.which("docker") is not None
 logger = logging.getLogger(__name__)
+_TESTCONTAINER_START_LOCK_PATH = os.path.join(
+    tempfile.gettempdir(), "butlers-testcontainers-start.lock"
+)
+_DEFAULT_XDIST_AUTO_WORKERS = 3
 
 _TEARDOWN_TRANSIENT_EXIT_EVENT_SNIPPET = "did not receive an exit event"
 _TEARDOWN_TRANSIENT_ALREADY_IN_PROGRESS_SNIPPET = "is already in progress"
@@ -150,6 +156,31 @@ def _initialize_docker_client_with_retry(
             time.sleep(0.5 * attempt)
 
 
+@contextmanager
+def _serialize_testcontainer_startup() -> Iterator[None]:
+    """Serialize Docker container creation across xdist workers.
+
+    Session-scoped fixtures still instantiate once per worker process under
+    pytest-xdist. Locking only the Docker API create/start section avoids the
+    `requests.exceptions.ReadTimeout` bursts seen when many workers ask the
+    daemon to create `pgvector/pgvector:pg17` containers at the same time.
+    """
+
+    fd = os.open(_TESTCONTAINER_START_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def _remove_container_with_retry(
     container: object,
     *,
@@ -192,6 +223,23 @@ def _install_resilient_testcontainers_startup() -> None:
     DockerClient.__init__ = _resilient_init
 
 
+def _install_serialized_testcontainers_run() -> None:
+    from testcontainers.core.docker_client import DockerClient
+
+    if getattr(DockerClient.run, "__butlers_serialized_start__", False):
+        return
+
+    original_run = DockerClient.run
+
+    def _serialized_run(self: object, *args: object, **kwargs: object) -> object:
+        with _serialize_testcontainer_startup():
+            return original_run(self, *args, **kwargs)
+
+    _serialized_run.__butlers_serialized_start__ = True
+    _serialized_run.__wrapped__ = original_run
+    DockerClient.run = _serialized_run
+
+
 def _install_resilient_testcontainers_stop() -> None:
     from testcontainers.core.container import DockerContainer
 
@@ -215,7 +263,23 @@ def _install_resilient_testcontainers_stop() -> None:
 
 
 _install_resilient_testcontainers_startup()
+_install_serialized_testcontainers_run()
 _install_resilient_testcontainers_stop()
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """Cap ``-n auto`` to the repo's intended worker count.
+
+    CI integration commands explicitly pass ``-n auto``, which bypasses the
+    ``pyproject.toml`` default and can fan out enough workers to overwhelm
+    Docker-backed testcontainers startup. Keep auto aligned with the repo's
+    documented three-worker contract unless an explicit override is supplied.
+    """
+
+    raw = os.environ.get("PYTEST_XDIST_AUTO_WORKERS")
+    if raw:
+        return max(1, int(raw))
+    return _DEFAULT_XDIST_AUTO_WORKERS
 
 
 def _unique_test_db_name() -> str:

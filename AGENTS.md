@@ -1101,3 +1101,6 @@ For more details, see README.md and docs/QUICKSTART.md.
 - Live finance schemas at `finance_006` use `merchant_mappings.raw_pattern`, `normalized_merchant`, `learned_from_count`, and `source`; finance runtime code must not query or upsert legacy `merchant`, `merchant_pattern`, or `sample_count` columns or uncategorized transaction ingestion will fail with `UndefinedColumnError`.
 - `src/butlers/connectors/spotify.py` must prefer resolved human-readable `context_name` values for playlist/album/artist contexts in both `normalized_text` and `payload.raw.context_name`; raw URI suffixes are fallback-only because downstream entity extraction will otherwise store Spotify IDs as canonical names.
 - `tests/config/test_migrations.py` should derive the current core Alembic head from `alembic/versions/core/` instead of pinning a `CORE_HEAD_REVISION` constant; new core migrations land often enough that static head expectations rot immediately.
+### Pytest xdist/testcontainers concurrency contract
+- `conftest.py` now serializes `testcontainers` `DockerClient.run()` calls across xdist workers and caps `pytest_xdist_auto_num_workers()` to `3` by default (override with `PYTEST_XDIST_AUTO_WORKERS`) so CI commands that pass `-n auto` do not overwhelm Docker-backed Postgres fixtures and time out during container startup.
+

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { Clock3, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useGeneralSettings, useUpdateGeneralSettings } from "@/hooks/use-general-settings";
+import type { GeneralSettings as ApiGeneralSettings, GeneralSettingsUpdate } from "@/api/index.ts";
 
 type SupportedIntl = typeof Intl & {
   supportedValuesOf?: (key: string) => string[];
@@ -44,6 +45,17 @@ interface GeneralSettingsFormState {
   time_format: string;
   week_starts_on: string;
   currency: string;
+}
+
+function buildFormState(settings: ApiGeneralSettings): GeneralSettingsFormState {
+  return {
+    timezone: settings.timezone,
+    language: settings.language,
+    date_format: settings.date_format,
+    time_format: settings.time_format,
+    week_starts_on: settings.week_starts_on,
+    currency: settings.currency,
+  };
 }
 
 function parseOffsetMinutes(label: string): number {
@@ -97,67 +109,7 @@ function labelForTimezone(timezone: string, fallback?: string): string {
 
 export function GeneralSettingsCard() {
   const settingsQuery = useGeneralSettings();
-  const updateMutation = useUpdateGeneralSettings();
   const settings = settingsQuery.data?.data;
-
-  const [formState, setFormState] = useState<GeneralSettingsFormState>({
-    timezone: "",
-    language: "",
-    date_format: "",
-    time_format: "",
-    week_starts_on: "",
-    currency: "",
-  });
-
-  useEffect(() => {
-    if (settings) {
-      setFormState({
-        timezone: settings.timezone,
-        language: settings.language,
-        date_format: settings.date_format,
-        time_format: settings.time_format,
-        week_starts_on: settings.week_starts_on,
-        currency: settings.currency,
-      });
-    }
-  }, [settings]);
-
-  const currentTimezone = settings?.timezone ?? "UTC";
-  const currentLabel = settings?.timezone_label ?? labelForTimezone(currentTimezone, "UTC (GMT+00:00)");
-  const effectiveSelectedTimezone = formState.timezone || currentTimezone;
-  const selectedLabel = labelForTimezone(effectiveSelectedTimezone, currentLabel);
-  const effectiveLanguage = formState.language || settings?.language || "en-US";
-  const effectiveDateFormat = formState.date_format || settings?.date_format || "YYYY-mm-dd";
-  const effectiveTimeFormat = formState.time_format || settings?.time_format || "HH:MM";
-  const effectiveWeekStartsOn = formState.week_starts_on || settings?.week_starts_on || "Monday";
-  const effectiveCurrency = (formState.currency || settings?.currency || "USD").toUpperCase();
-  const effectiveMeasurementSystem = settings?.measurement_system || "metric";
-  const isDirty = settings != null && (
-    effectiveSelectedTimezone !== settings.timezone ||
-    effectiveLanguage !== settings.language ||
-    effectiveDateFormat !== settings.date_format ||
-    effectiveTimeFormat !== settings.time_format ||
-    effectiveWeekStartsOn !== settings.week_starts_on ||
-    effectiveCurrency !== settings.currency
-  );
-
-  async function handleSave() {
-    try {
-      await updateMutation.mutateAsync({
-        timezone: effectiveSelectedTimezone,
-        language: effectiveLanguage,
-        date_format: effectiveDateFormat,
-        time_format: effectiveTimeFormat,
-        week_starts_on: effectiveWeekStartsOn,
-        currency: effectiveCurrency,
-      });
-      toast.success("General settings updated");
-    } catch (error) {
-      toast.error(
-        `Failed to update settings: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
-    }
-  }
 
   if (settingsQuery.isLoading) {
     return (
@@ -175,6 +127,69 @@ export function GeneralSettingsCard() {
     );
   }
 
+  if (!settings) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Clock3 className="h-5 w-5" />
+            General
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-destructive">Failed to load general settings.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const settingsKey = [
+    settings.timezone,
+    settings.language,
+    settings.date_format,
+    settings.time_format,
+    settings.week_starts_on,
+    settings.currency,
+  ].join("|");
+
+  return <GeneralSettingsForm key={settingsKey} settings={settings} />;
+}
+
+function GeneralSettingsForm({ settings }: { settings: ApiGeneralSettings }) {
+  const updateMutation = useUpdateGeneralSettings();
+  const [formState, setFormState] = useState<GeneralSettingsFormState>(() => buildFormState(settings));
+
+  const currentLabel = settings.timezone_label || labelForTimezone(settings.timezone, "UTC (GMT+00:00)");
+  const selectedLabel = labelForTimezone(formState.timezone, currentLabel);
+  const effectiveCurrency = formState.currency.toUpperCase();
+  const isDirty = (
+    formState.timezone !== settings.timezone ||
+    formState.language !== settings.language ||
+    formState.date_format !== settings.date_format ||
+    formState.time_format !== settings.time_format ||
+    formState.week_starts_on !== settings.week_starts_on ||
+    effectiveCurrency !== settings.currency
+  );
+
+  async function handleSave() {
+    const payload: GeneralSettingsUpdate = {
+      timezone: formState.timezone,
+      language: formState.language,
+      date_format: formState.date_format,
+      time_format: formState.time_format,
+      week_starts_on: formState.week_starts_on,
+      currency: effectiveCurrency,
+    };
+    try {
+      await updateMutation.mutateAsync(payload);
+      toast.success("General settings updated");
+    } catch (error) {
+      toast.error(
+        `Failed to update settings: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -190,7 +205,7 @@ export function GeneralSettingsCard() {
         <div className="space-y-1.5">
           <Label htmlFor="general-timezone">Default timezone</Label>
           <Select
-            value={effectiveSelectedTimezone}
+            value={formState.timezone}
             onValueChange={(value) => setFormState((current) => ({ ...current, timezone: value }))}
           >
             <SelectTrigger id="general-timezone">
@@ -214,7 +229,7 @@ export function GeneralSettingsCard() {
             <Label htmlFor="general-language">Language</Label>
             <Input
               id="general-language"
-              value={effectiveLanguage}
+              value={formState.language}
               onChange={(event) =>
                 setFormState((current) => ({ ...current, language: event.target.value }))
               }
@@ -238,7 +253,7 @@ export function GeneralSettingsCard() {
           <div className="space-y-1.5">
             <Label htmlFor="general-date-format">Date format</Label>
             <Select
-              value={effectiveDateFormat}
+              value={formState.date_format}
               onValueChange={(value) => setFormState((current) => ({ ...current, date_format: value }))}
             >
               <SelectTrigger id="general-date-format">
@@ -257,7 +272,7 @@ export function GeneralSettingsCard() {
           <div className="space-y-1.5">
             <Label htmlFor="general-time-format">Time format</Label>
             <Select
-              value={effectiveTimeFormat}
+              value={formState.time_format}
               onValueChange={(value) => setFormState((current) => ({ ...current, time_format: value }))}
             >
               <SelectTrigger id="general-time-format">
@@ -276,7 +291,7 @@ export function GeneralSettingsCard() {
           <div className="space-y-1.5">
             <Label htmlFor="general-week-start">Week starts on</Label>
             <Select
-              value={effectiveWeekStartsOn}
+              value={formState.week_starts_on}
               onValueChange={(value) =>
                 setFormState((current) => ({ ...current, week_starts_on: value }))
               }
@@ -298,7 +313,7 @@ export function GeneralSettingsCard() {
             <Label htmlFor="general-measurement-system">Measurement system</Label>
             <Input
               id="general-measurement-system"
-              value={effectiveMeasurementSystem}
+              value={settings.measurement_system}
               readOnly
               disabled
             />
@@ -309,10 +324,10 @@ export function GeneralSettingsCard() {
           <p className="font-medium">Current prompt assumption</p>
           <div className="mt-1 space-y-1 text-muted-foreground">
             <p>Unless otherwise stated, assume times and timezones are in {selectedLabel}.</p>
-            <p>Default language/locale: {effectiveLanguage}.</p>
-            <p>Default date format: {effectiveDateFormat}.</p>
-            <p>Default time format: {effectiveTimeFormat}.</p>
-            <p>Week starts on: {effectiveWeekStartsOn}.</p>
+            <p>Default language/locale: {formState.language}.</p>
+            <p>Default date format: {formState.date_format}.</p>
+            <p>Default time format: {formState.time_format}.</p>
+            <p>Week starts on: {formState.week_starts_on}.</p>
             <p>Default currency: {effectiveCurrency}.</p>
             <p>Use metric measurements.</p>
           </div>
@@ -320,7 +335,7 @@ export function GeneralSettingsCard() {
 
         <div className="flex items-center justify-between gap-4">
           <p className="text-sm text-muted-foreground">
-            Active timezone: <span className="font-medium text-foreground">{currentLabel}</span>
+            Active timezone: <span className="font-medium text-foreground">{settings.timezone_label}</span>
           </p>
           <Button onClick={handleSave} disabled={!isDirty || updateMutation.isPending}>
             {updateMutation.isPending ? (
