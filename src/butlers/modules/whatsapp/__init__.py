@@ -144,11 +144,11 @@ class WhatsAppModule(Module):
         1. Parse and validate configuration.
         2. Resolve ``whatsapp_phone`` from owner entity_info (log warning on miss).
         3. Start the Go bridge sidecar via BridgeSubprocessManager.
-        4. Wait up to 30s for the bridge to report 'connected'.
+        4. Wait up to 30s for the bridge to become startup-ready.
 
         Raises:
             RuntimeError: If the whatsapp-bridge binary is not found in $PATH.
-            TimeoutError: If the bridge does not reach 'connected' within 30s.
+            TimeoutError: If the bridge does not become startup-ready within 30s.
         """
         self._config = (
             config if isinstance(config, WhatsAppConfig) else WhatsAppConfig(**(config or {}))
@@ -183,13 +183,20 @@ class WhatsAppModule(Module):
             bridge_socket=self._config.bridge_socket,
             startup_timeout_s=30.0,
             health_poll_interval_s=30.0,
+            startup_allow_degraded=True,
         )
         self._bridge_manager = BridgeSubprocessManager(bridge_cfg)
 
         # BridgeSubprocessManager.start() raises RuntimeError for missing binary
-        # and TimeoutError if the bridge does not connect within startup_timeout_s.
+        # and TimeoutError if the bridge never becomes startup-ready.
         await self._bridge_manager.start()
-        logger.info("WhatsApp module: bridge started and connected")
+        if self._bridge_manager.is_degraded:
+            logger.warning(
+                "WhatsApp module: bridge started in degraded mode (%s)",
+                self._bridge_manager.degraded_reason,
+            )
+        else:
+            logger.info("WhatsApp module: bridge started and connected")
 
     async def on_shutdown(self) -> None:
         """Gracefully shut down the Go bridge sidecar."""

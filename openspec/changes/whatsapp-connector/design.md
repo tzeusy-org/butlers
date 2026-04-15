@@ -220,6 +220,11 @@ A `BridgeSubprocessManager` utility handles:
 
 This is shared between the connector (which manages the bridge for event streaming) and the module (which manages the bridge for send operations). Both use the same manager, but only one bridge process runs per container.
 
+Startup readiness is caller-specific:
+- the connector keeps the strict contract and waits for `/status` `connected` before entering the event loop
+- the module may opt into degraded startup readiness so `pair_required` / `disconnected` can unblock startup while the module remains degraded
+- after startup unblocks, the manager performs one immediate `/status` probe before the regular health-poll interval begins so fast recovery to `connected` is observed promptly
+
 ### D11: Dashboard WhatsApp settings section
 
 A dedicated section on the settings page at `/butlers/settings`, modeled after Google OAuth account management:
