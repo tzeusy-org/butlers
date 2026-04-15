@@ -1,4 +1,4 @@
 interface:
   display_name: "Butler QA PR Review"
   short_description: "Work QA PR threads to closure and clear required checks"
-  default_prompt: "Use $butler-qa-pr-review on PR #<number> to scrub PII, answer every unresolved review thread inline with either Accepted <commit> or Wontfix <reason>, resolve the threads, and finish only when the validator shows all required GitHub checks are passing"
+  default_prompt: "Use $butler-qa-pr-review on PR #<number> to run a dedicated alignment subagent against heart-and-soul, craft-and-care, and spec-and-spine before closing threads, then scrub PII, answer every unresolved review thread inline with either Accepted <commit> or Wontfix <reason>, resolve the threads, and finish only when the validator shows all required GitHub checks are passing"
