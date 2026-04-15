@@ -20,6 +20,7 @@ from butlers.jobs.briefing import (
     collect_briefing_contributions,
     combined_key,
     contribution_key,
+    run_finance_briefing_contribution,
     today_sgt,
     validate_contribution,
 )
@@ -226,6 +227,31 @@ async def test_collect_briefing_contributions_db_error_propagates():
     ):
         with pytest.raises(Exception, match="database error"):
             await collect_briefing_contributions(pool, None)
+
+
+async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime_subtraction():
+    """Anomaly SQL must not rely on `$2 - $1`, which triggers asyncpg operator ambiguity."""
+
+    class _RecordingPool:
+        def __init__(self) -> None:
+            self.fetch_calls: list[tuple[str, tuple[Any, ...]]] = []
+
+        async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            self.fetch_calls.append((sql, args))
+            return []
+
+    pool = _RecordingPool()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock),
+    ):
+        result = await run_finance_briefing_contribution(pool, None)
+
+    anomaly_sql, anomaly_args = pool.fetch_calls[1]
+    assert "EXTRACT(DAY FROM $2 - $1)" not in anomaly_sql
+    assert "$2 - $1" not in anomaly_sql
+    assert len(anomaly_args) == 3
+    assert result["spending_anomalies"] == 0
 
 
 # ---------------------------------------------------------------------------

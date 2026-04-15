@@ -227,6 +227,22 @@ BEGIN
         );
     END LOOP;
 
+    -- Relationship follow-up jobs aggregate recent inbound interactions from the
+    -- switchboard message inbox, so the relationship runtime role needs
+    -- read-only access to the switchboard schema.
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _switchboard_schema, 'butler_relationship_rw');
+    EXECUTE format(
+        'GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I',
+        _switchboard_schema,
+        'butler_relationship_rw'
+    );
+    EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO %I',
+        _migration_user,
+        _switchboard_schema,
+        'butler_relationship_rw'
+    );
+
     -- Connector role: write access to connector schema, switchboard operational
     -- tables, and shared public tables.
     EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', _db_name, _connector_role);

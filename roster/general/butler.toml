@@ -87,7 +87,7 @@ Steps:
    summaries if needed to stay within limit. The calendar timeline takes priority over the
    Highlights section when trimming.
 
-6. Send the summary via notify(channel="telegram", intent="send").
+6. Send the summary via notify(channel="telegram", intent="send", message=<final briefing text>).
 """
 
 [[butler.schedule]]

@@ -134,6 +134,76 @@ def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_c
     assert row["registry_dml"] is True
 
 
+def test_init_db_bootstrap_grants_relationship_read_access_to_switchboard_message_inbox(
+    postgres_container,
+):
+    """relationship runtime role can read switchboard.message_inbox after bootstrap."""
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            conn.execute(text("DROP ROLE IF EXISTS butlers"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
+    engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE switchboard.message_inbox ("
+                    "  id UUID PRIMARY KEY,"
+                    "  direction TEXT NOT NULL,"
+                    "  request_context JSONB NOT NULL DEFAULT '{}'::jsonb,"
+                    "  received_at TIMESTAMPTZ NOT NULL DEFAULT now()"
+                    ")"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(butlers_url)
+    try:
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT "
+                        "  has_schema_privilege('butler_relationship_rw', 'switchboard', 'USAGE') "
+                        "    AS schema_usage,"
+                        "  has_table_privilege("
+                        "    'butler_relationship_rw',"
+                        "    'switchboard.message_inbox',"
+                        "    'SELECT'"
+                        "  ) AS inbox_select"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+
+    assert row["schema_usage"] is True
+    assert row["inbox_select"] is True
+
+
 def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_container):
     """bootstrap repairs stale role membership so SET ROLE succeeds for QA."""
     host, port, admin_user, admin_password = _admin_params(postgres_container)

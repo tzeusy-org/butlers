@@ -404,12 +404,13 @@ async def run_finance_briefing_contribution(
     # Divide each sum by its actual window length to get a true daily average.
     thirty_days_ago = now_utc - timedelta(days=30)
     seven_days_ago = now_utc - timedelta(days=7)
+    baseline_window_days = max((seven_days_ago - thirty_days_ago).total_seconds() / 86400.0, 1.0)
 
     anomaly_rows = await pool.fetch(
         """
         WITH rolling_avg AS (
             SELECT category,
-                   SUM(amount) / GREATEST(1, EXTRACT(DAY FROM $2 - $1)) AS daily_avg
+                   SUM(amount) / $3::double precision AS daily_avg
             FROM transactions
             WHERE direction = 'debit'
               AND posted_at >= $1
@@ -437,6 +438,7 @@ async def run_finance_briefing_contribution(
         """,
         thirty_days_ago,
         seven_days_ago,
+        baseline_window_days,
     )
 
     for row in anomaly_rows:
