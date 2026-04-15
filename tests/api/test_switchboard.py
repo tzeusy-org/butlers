@@ -21,7 +21,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -165,19 +165,13 @@ class TestSwitchboardViews:
         registry_module = MagicMock()
         registry_module.register_butler = AsyncMock()
 
-        previous_registry_module = sys.modules.get(module._REGISTRY_MODULE_NAME)
-        sys.modules[module._REGISTRY_MODULE_NAME] = registry_module
-
-        old_roster_dir = module._ROSTER_DIR
-        try:
+        with patch.dict(sys.modules, {module._REGISTRY_MODULE_NAME: registry_module}):
+            old_roster_dir = module._ROSTER_DIR
             module._ROSTER_DIR = tmp_path
-            ok = await module._register_missing_butler_from_roster(AsyncMock(), "demo")
-        finally:
-            module._ROSTER_DIR = old_roster_dir
-            if previous_registry_module is None:
-                sys.modules.pop(module._REGISTRY_MODULE_NAME, None)
-            else:
-                sys.modules[module._REGISTRY_MODULE_NAME] = previous_registry_module
+            try:
+                ok = await module._register_missing_butler_from_roster(AsyncMock(), "demo")
+            finally:
+                module._ROSTER_DIR = old_roster_dir
 
         assert ok is True
         registry_module.register_butler.assert_awaited_once()
