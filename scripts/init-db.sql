@@ -257,6 +257,11 @@ BEGIN
         _connector_schema,
         _connector_role
     );
+    EXECUTE format(
+        'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO %I',
+        _connector_schema,
+        _connector_role
+    );
     EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _switchboard_schema, _connector_role);
     EXECUTE format(
         'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I',
@@ -286,6 +291,12 @@ BEGIN
     );
     EXECUTE format(
         'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I',
+        _migration_user,
+        _connector_schema,
+        _connector_role
+    );
+    EXECUTE format(
+        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT EXECUTE ON FUNCTIONS TO %I',
         _migration_user,
         _connector_schema,
         _connector_role

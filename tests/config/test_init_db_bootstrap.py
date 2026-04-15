@@ -134,6 +134,76 @@ def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_c
     assert row["registry_dml"] is True
 
 
+def test_init_db_bootstrap_repairs_connector_function_execute_grant(postgres_container):
+    """bootstrap grants connector_writer EXECUTE on existing connectors functions."""
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            conn.execute(text("DROP ROLE IF EXISTS butlers"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
+    engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS connectors"))
+            conn.execute(
+                text(
+                    "CREATE OR REPLACE FUNCTION connectors.test_connector_acl() "
+                    "RETURNS integer LANGUAGE sql AS $$ SELECT 1 $$"
+                )
+            )
+            conn.execute(text("REVOKE ALL ON FUNCTION connectors.test_connector_acl() FROM PUBLIC"))
+            conn.execute(
+                text("REVOKE ALL ON FUNCTION connectors.test_connector_acl() FROM connector_writer")
+            )
+    finally:
+        engine.dispose()
+
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(butlers_url)
+    try:
+        with engine.connect() as conn:
+            can_execute = conn.execute(
+                text(
+                    "SELECT has_function_privilege("
+                    "  'connector_writer',"
+                    "  'connectors.test_connector_acl()',"
+                    "  'EXECUTE'"
+                    ")"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert can_execute is True
+
+
 def test_init_db_bootstrap_grants_relationship_read_access_to_switchboard_message_inbox(
     postgres_container,
 ):

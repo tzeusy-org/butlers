@@ -110,6 +110,7 @@ _FLUSH_SCANNER_INTERVAL_S = 60  # How often the flush scanner wakes up
 _BRIDGE_STARTUP_TIMEOUT_S = 60.0  # Bridge startup timeout (longer for QR re-pair)
 _SSE_RECONNECT_DELAY_S = 5.0  # Delay before reconnecting SSE after failure
 _SSE_KEEPALIVE_TIMEOUT_S = 90.0  # Max silence from SSE stream before treating as stale
+_CONNECTOR_TYPE = "whatsapp_user_client"
 
 # ---------------------------------------------------------------------------
 # Chat buffer data structure
@@ -438,7 +439,7 @@ class WhatsAppUserClientConnector:
 
         # Metrics
         self._metrics = ConnectorMetrics(
-            connector_type="whatsapp_user_client",
+            connector_type=_CONNECTOR_TYPE,
             endpoint_identity=config.endpoint_identity,
         )
 
@@ -457,7 +458,7 @@ class WhatsAppUserClientConnector:
 
         # Filtered event buffer
         self._filtered_event_buffer = FilteredEventBuffer(
-            connector_type=config.provider,
+            connector_type=_CONNECTOR_TYPE,
             endpoint_identity=config.endpoint_identity,
         )
 
@@ -727,7 +728,7 @@ class WhatsAppUserClientConnector:
 
             settings = await load_connector_settings(
                 self._cursor_pool,
-                "whatsapp_user_client",
+                _CONNECTOR_TYPE,
                 self._config.endpoint_identity,
             )
             if settings is None:
@@ -1216,7 +1217,7 @@ class WhatsAppUserClientConnector:
         await self._filtered_event_buffer.flush(self._db_pool)
         await drain_replay_pending(
             self._db_pool,
-            self._config.provider,
+            _CONNECTOR_TYPE,
             self._config.endpoint_identity,
             self._submit_to_ingest,
             logger,
@@ -1229,7 +1230,7 @@ class WhatsAppUserClientConnector:
     def _start_heartbeat(self) -> None:
         """Initialize and start heartbeat background task."""
         heartbeat_config = HeartbeatConfig.from_env(
-            connector_type="whatsapp_user_client",
+            connector_type=_CONNECTOR_TYPE,
             endpoint_identity=self._config.endpoint_identity,
             version=None,
         )
@@ -1273,7 +1274,7 @@ class WhatsAppUserClientConnector:
         try:
             raw = await load_cursor(
                 self._cursor_pool,
-                "whatsapp_user_client",
+                _CONNECTOR_TYPE,
                 self._config.endpoint_identity,
             )
             if raw is not None:
@@ -1296,7 +1297,7 @@ class WhatsAppUserClientConnector:
             payload: dict[str, Any] = {"last_event_id": self._last_event_id}
             await save_cursor(
                 self._cursor_pool,
-                "whatsapp_user_client",
+                _CONNECTOR_TYPE,
                 self._config.endpoint_identity,
                 json.dumps(payload),
             )

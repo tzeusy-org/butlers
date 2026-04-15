@@ -108,6 +108,34 @@ def _execute_as_role(db_url: str, role_name: str, sql: str, *, scalar: bool = Fa
         engine.dispose()
 
 
+def _execute_as_role_via_session_auth(
+    db_url: str,
+    session_role: str,
+    role_name: str,
+    sql: str,
+    *,
+    scalar: bool = False,
+):
+    """Execute SQL via a non-superuser session authorization, then SET ROLE."""
+    quoted_role = _quote_ident(role_name)
+    quoted_session_role = _quote_ident(session_role)
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"SET SESSION AUTHORIZATION {quoted_session_role}"))
+            conn.execute(text(f"SET ROLE {quoted_role}"))
+            try:
+                result = conn.execute(text(sql))
+                if scalar:
+                    return result.scalar()
+                return None
+            finally:
+                conn.execute(text("RESET ROLE"))
+                conn.execute(text("RESET SESSION AUTHORIZATION"))
+    finally:
+        engine.dispose()
+
+
 def test_runtime_roles_are_limited_to_own_schema_and_shared(postgres_container):
     """Each runtime role can write own schema, read shared, and cannot read another schema."""
     from butlers.migrations import run_migrations
@@ -513,17 +541,31 @@ def test_connector_writer_role_enforcement(postgres_container):
     _require_runtime_acl(db_url)
     _require_connector_writer(db_url)
 
+    session_role = "connector_probe"
+
+    setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with setup_engine.connect() as conn:
+            conn.execute(
+                text(f"CREATE ROLE {session_role} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT")
+            )
+            conn.execute(text(f"GRANT connector_writer TO {session_role} WITH SET TRUE"))
+    finally:
+        setup_engine.dispose()
+
     # connector_writer can INSERT into connectors schema tables.
     # connectors.filtered_events is created by core_007; we need to ensure
     # the partition exists.  Use the partition-ensuring function if available,
     # or insert a probe into the table directly.
-    _execute_as_role(
+    _execute_as_role_via_session_auth(
         db_url,
+        session_role,
         "connector_writer",
         "SELECT connectors.connectors_filtered_events_ensure_partition(now())",
     )
-    _execute_as_role(
+    _execute_as_role_via_session_auth(
         db_url,
+        session_role,
         "connector_writer",
         "INSERT INTO connectors.filtered_events"
         " (connector_type, endpoint_identity, external_message_id,"
@@ -533,8 +575,9 @@ def test_connector_writer_role_enforcement(postgres_container):
     )
 
     # connector_writer can INSERT into public.ingestion_events (in the write matrix).
-    _execute_as_role(
+    _execute_as_role_via_session_auth(
         db_url,
+        session_role,
         "connector_writer",
         "INSERT INTO public.ingestion_events"
         " (id, source_channel, source_provider, source_endpoint_identity,"
@@ -557,8 +600,9 @@ def test_connector_writer_role_enforcement(postgres_container):
 
     # connector_writer cannot INSERT into a butler runtime schema.
     with pytest.raises(ProgrammingError, match="permission denied"):
-        _execute_as_role(
+        _execute_as_role_via_session_auth(
             db_url,
+            session_role,
             "connector_writer",
             "INSERT INTO general.acl_probe_connector_block (key, value)"
             " VALUES ('connector-probe-blocked', '\"blocked\"'::jsonb)",

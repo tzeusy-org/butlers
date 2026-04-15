@@ -13,7 +13,7 @@ Verifies:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -110,3 +110,41 @@ def test_single_event_passes_parse_ingest_envelope(
         parse_ingest_envelope(env)
     except ValidationError as exc:
         pytest.fail(f"parse_ingest_envelope raised ValidationError: {exc}")
+
+
+def test_filtered_event_buffer_uses_runtime_connector_type(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Filtered-event rows must be keyed by the runtime connector type."""
+    connector._record_batch_filtered_event(
+        chat_jid="chat-99",
+        batch_event_id="batch-001",
+        filter_reason="discretion:IGNORE",
+    )
+    assert connector._filtered_event_buffer._rows[0][1] == "whatsapp_user_client"
+
+
+async def test_flush_and_drain_uses_runtime_connector_type(
+    connector: WhatsAppUserClientConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replay drain must look up WhatsApp rows by the runtime connector type."""
+    connector._db_pool = MagicMock()
+    connector._filtered_event_buffer.flush = AsyncMock()
+    submit_mock = AsyncMock()
+    connector._submit_to_ingest = submit_mock
+    drain_mock = AsyncMock()
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.drain_replay_pending",
+        drain_mock,
+    )
+
+    await connector._flush_and_drain()
+
+    drain_mock.assert_awaited_once_with(
+        connector._db_pool,
+        "whatsapp_user_client",
+        connector._config.endpoint_identity,
+        submit_mock,
+        pytest.importorskip("butlers.connectors.whatsapp_user_client").logger,
+    )

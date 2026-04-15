@@ -607,8 +607,18 @@ def _apply_connector_writer_role() -> None:
         role_name=_CONNECTOR_ROLE,
     )
     _execute_best_effort(
+        f"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA {_quote_ident('connectors')}"
+        f" TO {_quote_ident(_CONNECTOR_ROLE)}",
+        role_name=_CONNECTOR_ROLE,
+    )
+    _execute_best_effort(
         f"ALTER DEFAULT PRIVILEGES IN SCHEMA {_quote_ident('connectors')}"
         f" GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {_quote_ident(_CONNECTOR_ROLE)}",
+        role_name=_CONNECTOR_ROLE,
+    )
+    _execute_best_effort(
+        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {_quote_ident('connectors')}"
+        f" GRANT EXECUTE ON FUNCTIONS TO {_quote_ident(_CONNECTOR_ROLE)}",
         role_name=_CONNECTOR_ROLE,
     )
     _execute_best_effort(

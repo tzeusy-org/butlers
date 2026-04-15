@@ -288,6 +288,9 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - `scripts/init-db.sql` is the single privileged bootstrap entrypoint: it must create managed schemas/runtime roles when missing, grant role membership to the migration user (default `butlers`), grant runtime DB/schema ACLs, and set `ALTER DEFAULT PRIVILEGES FOR ROLE <migration user>` so later Alembic runs by `butlers` do not require a post-migration privileged grant pass.
 - The script intentionally grants broad DML defaults on `public` objects created by the migration user to all runtime roles (`butler_*_rw`, `butler_qa_rw`, `connector_writer`) as the operational tradeoff that keeps the bootstrap to one privileged step; rerun it only when the managed schema/role surface changes.
 
+### Pytest xdist/testcontainers concurrency contract
+- `conftest.py` now serializes `testcontainers` `DockerClient.run()` calls across xdist workers and caps `pytest_xdist_auto_num_workers()` to `3` by default (override with `PYTEST_XDIST_AUTO_WORKERS`) so CI commands that pass `-n auto` do not overwhelm Docker-backed Postgres fixtures and time out during container startup.
+
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
 - `src/butlers/modules/` — base.py (ABC), registry.py, telegram.py, email.py
@@ -1101,6 +1104,5 @@ For more details, see README.md and docs/QUICKSTART.md.
 - Live finance schemas at `finance_006` use `merchant_mappings.raw_pattern`, `normalized_merchant`, `learned_from_count`, and `source`; finance runtime code must not query or upsert legacy `merchant`, `merchant_pattern`, or `sample_count` columns or uncategorized transaction ingestion will fail with `UndefinedColumnError`.
 - `src/butlers/connectors/spotify.py` must prefer resolved human-readable `context_name` values for playlist/album/artist contexts in both `normalized_text` and `payload.raw.context_name`; raw URI suffixes are fallback-only because downstream entity extraction will otherwise store Spotify IDs as canonical names.
 - `tests/config/test_migrations.py` should derive the current core Alembic head from `alembic/versions/core/` instead of pinning a `CORE_HEAD_REVISION` constant; new core migrations land often enough that static head expectations rot immediately.
-### Pytest xdist/testcontainers concurrency contract
-- `conftest.py` now serializes `testcontainers` `DockerClient.run()` calls across xdist workers and caps `pytest_xdist_auto_num_workers()` to `3` by default (override with `PYTEST_XDIST_AUTO_WORKERS`) so CI commands that pass `-n auto` do not overwhelm Docker-backed Postgres fixtures and time out during container startup.
-
+- `.claude/skills/butler-qa-pr-review/scripts/_github.py::fetch_required_checks` currently treats `gh pr checks --required` exit code 1 as fatal when a PR has no branch-protection required checks configured, so `validate_pr_review.py` can crash even though `statusCheckRollup` still exposes actual CI results.
+- `src/butlers/connectors/whatsapp_user_client.py::_get_bridge_db_dsn()` currently hands the Go bridge a bare `butlers` DSN with no schema search_path; in live dev that means the real linked-device state restores from `public.whatsmeow_*` tables while `messenger.whatsapp_sessions` stays empty, so bridge session bookkeeping and whatsmeow device restore can silently diverge.
