@@ -16,6 +16,7 @@ Endpoints:
 - POST /api/qa/known-issues/{fingerprint}/dismiss   — dismiss a known issue
 - DELETE /api/qa/known-issues/{fingerprint}/dismiss — un-dismiss a known issue
 - POST /api/qa/force-patrol                         — trigger immediate patrol
+- POST /api/qa/dev/synthetic-findings               — queue a synthetic finding for next patrol
 - GET  /api/qa/trends                               — daily aggregated stats
 - GET  /api/qa/dismissals                           — list active dismissals
 - DELETE /api/qa/dismissals/{fingerprint}           — remove a dismissal
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -49,11 +51,22 @@ from pydantic import BaseModel, Field
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.repo_whitelist import parse_repo_url
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/qa", tags=["qa"])
+
+_SYNTHETIC_FINDINGS_ENV = "QA_ALLOW_SYNTHETIC_FINDINGS"
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_SEVERITY_INT_TO_HINT: dict[int, str] = {
+    0: "critical",
+    1: "high",
+    2: "medium",
+    3: "low",
+    4: "info",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +123,12 @@ def _shared_pool(db: DatabaseManager):
             status_code=503,
             detail="Shared database pool is not available",
         )
+
+
+def _synthetic_findings_enabled() -> bool:
+    """Return True when synthetic QA finding injection is explicitly enabled."""
+    raw = os.environ.get(_SYNTHETIC_FINDINGS_ENV, "").strip().lower()
+    return raw in _TRUTHY_ENV_VALUES
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +383,60 @@ class ForcePatrolResponse(BaseModel):
     """Response from a force-patrol request."""
 
     accepted: bool
+    message: str
+
+
+class SyntheticFindingCreate(BaseModel):
+    """Operator-injected synthetic QA finding for dev/staging validation."""
+
+    source_butler: str = Field(
+        default="general",
+        min_length=1,
+        description="Butler name to attribute the validation finding to.",
+    )
+    severity: int = Field(
+        default=2,
+        ge=0,
+        le=4,
+        description="Severity hint (0=critical, 4=info). Canonical scoring may adjust it.",
+    )
+    exception_type: str = Field(
+        default="SyntheticQaValidationError",
+        min_length=1,
+        description="Synthetic exception class name used for fingerprinting.",
+    )
+    event_summary: str = Field(
+        default=(
+            "Synthetic QA validation canary injected by operator; this is not a real product "
+            "bug and should follow the UNFIXABLE protocol."
+        ),
+        min_length=1,
+        description="Sanitized summary shown to the QA investigation agent.",
+    )
+    call_site: str = Field(
+        default="qa.validation.synthetic",
+        min_length=1,
+        description="Synthetic call-site identifier used for fingerprinting.",
+    )
+    occurrence_count: int = Field(
+        default=1,
+        ge=1,
+        le=100,
+        description="Synthetic occurrence count to persist with the finding.",
+    )
+    trigger_source: str | None = Field(
+        default="dashboard",
+        description="Optional trigger_source provenance to store on the finding.",
+    )
+
+
+class SyntheticFindingResponse(BaseModel):
+    """Response returned after queueing a synthetic QA finding."""
+
+    accepted: bool
+    patrol_id: uuid.UUID
+    finding_id: uuid.UUID
+    fingerprint: str
     message: str
 
 
@@ -1458,6 +1531,114 @@ async def force_patrol(
             accepted=False,
             message="Force patrol is only supported when the QA daemon is running in-process.",
         )
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/qa/dev/synthetic-findings — queue a synthetic finding for the next patrol
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/dev/synthetic-findings",
+    response_model=ApiResponse[SyntheticFindingResponse],
+    status_code=202,
+)
+async def create_synthetic_finding(
+    body: SyntheticFindingCreate = Body(default_factory=SyntheticFindingCreate),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SyntheticFindingResponse]:
+    """Queue a synthetic QA finding for the next scheduled patrol.
+
+    This validation hook is intended for dev/staging. It persists a queued
+    ``qa_findings`` row so the next patrol rehydrates it even when the dashboard
+    API is running out-of-process from the QA daemon.
+    """
+    if not _synthetic_findings_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Synthetic QA finding injection is disabled. Set "
+                f"{_SYNTHETIC_FINDINGS_ENV}=true to enable this operator-only hook."
+            ),
+        )
+
+    pool = _shared_pool(db)
+    now = datetime.now(tz=UTC)
+    patrol_id = uuid.uuid4()
+    patrol_error_detail = "Synthetic validation placeholder patrol created by dashboard API"
+
+    fp_result = compute_fingerprint_from_report(
+        error_type=body.exception_type,
+        error_message=body.event_summary,
+        call_site=body.call_site,
+        traceback_str=None,
+        severity_hint=_SEVERITY_INT_TO_HINT.get(body.severity),
+    )
+    structured_evidence_json = json.dumps(
+        {
+            "synthetic_validation": True,
+            "injected_via": "dashboard_api",
+            "expected_outcome": "Treat as validation canary and follow the UNFIXABLE protocol.",
+        }
+    )
+
+    await pool.execute(
+        """
+        INSERT INTO public.qa_patrols (
+            id, completed_at, status, findings_count, novel_count, dispatched_count,
+            log_lookback_minutes, sources_polled, error_detail
+        )
+        VALUES ($1, now(), 'suppressed', 0, 0, 0, 0, '{}', $2)
+        """,
+        patrol_id,
+        patrol_error_detail,
+    )
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO public.qa_findings (
+            patrol_id, fingerprint, source_type, source_butler,
+            severity, exception_type, event_summary, call_site,
+            occurrence_count, first_seen, last_seen, dedup_reason,
+            source_session_trigger_source, structured_evidence, dispatch_queued
+        )
+        VALUES (
+            $1, $2, 'butler_reports', $3,
+            $4, $5, $6, $7,
+            $8, $9, $10, NULL,
+            $11, $12::jsonb, TRUE
+        )
+        RETURNING id, fingerprint, patrol_id
+        """,
+        patrol_id,
+        fp_result.fingerprint,
+        body.source_butler.strip(),
+        fp_result.severity,
+        body.exception_type,
+        body.event_summary,
+        body.call_site,
+        body.occurrence_count,
+        now,
+        now,
+        body.trigger_source,
+        structured_evidence_json,
+    )
+    if row is None:
+        raise HTTPException(status_code=500, detail="Synthetic finding insert returned no row")
+
+    return ApiResponse(
+        data=SyntheticFindingResponse(
+            accepted=True,
+            patrol_id=row["patrol_id"],
+            finding_id=row["id"],
+            fingerprint=row["fingerprint"],
+            message=(
+                "Synthetic QA finding queued. The next scheduled patrol will rehydrate it "
+                "and attempt dispatch."
+            ),
+        ),
+        meta=ApiMeta(),
     )
 
 

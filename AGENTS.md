@@ -270,6 +270,9 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### QA helper workspace contract
 - QA investigation Codex runs now launch from `<worktree>/.tmp/qa-agent/` with a local `AGENTS.md` override that explicitly disables `bd`/generic session-close workflow instructions; the helper dir must keep symlinks to repo roots like `src/`, `tests/`, `roster/`, `frontend/`, `pyproject.toml`, and `uv.lock` so repo-relative `uv run pytest` / `ruff check src/ tests/` still work.
 
+### QA synthetic validation contract
+- `POST /api/qa/dev/synthetic-findings` is an operator-only dev/staging hook gated by `QA_ALLOW_SYNTHETIC_FINDINGS=true`; it persists a placeholder `qa_patrols` row (`status='suppressed'`) plus a queued `qa_findings` row (`dispatch_queued=TRUE`) so the next scheduled patrol validates the normal rehydrate/triage/dispatch path even when `force_patrol` is unavailable out-of-process.
+
 ### Google OAuth credential storage split
 - App credentials (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_SCOPES`) live in `butler_secrets` via `CredentialStore`.
 - Refresh token lives exclusively in `public.contact_info` on the owner contact (type `google_oauth_refresh`, `secured=true`). No butler_secrets fallback exists.

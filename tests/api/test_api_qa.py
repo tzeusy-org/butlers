@@ -1464,6 +1464,71 @@ class TestForcePatrol:
 
 
 # ---------------------------------------------------------------------------
+# POST /api/qa/dev/synthetic-findings
+# ---------------------------------------------------------------------------
+
+
+class TestInjectSyntheticFinding:
+    async def test_rejects_when_synthetic_findings_are_disabled(self, monkeypatch) -> None:
+        """The operator-only synthetic finding hook must be explicitly enabled."""
+        monkeypatch.delenv("QA_ALLOW_SYNTHETIC_FINDINGS", raising=False)
+        app, pool = _build_app()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/qa/dev/synthetic-findings", json={})
+
+        assert response.status_code == 403
+        assert "QA_ALLOW_SYNTHETIC_FINDINGS" in response.json()["detail"]
+        pool.execute.assert_not_called()
+        pool.fetchrow.assert_not_called()
+
+    async def test_queues_synthetic_finding_for_next_patrol(self, monkeypatch) -> None:
+        """When enabled, the endpoint should create a placeholder patrol and a queued finding."""
+        monkeypatch.setenv("QA_ALLOW_SYNTHETIC_FINDINGS", "true")
+        patrol_id = uuid.uuid4()
+        finding_id = uuid.uuid4()
+        monkeypatch.setattr("butlers.api.routers.qa.uuid.uuid4", lambda: patrol_id)
+        app, pool = _build_app(
+            fetchrow_result={
+                "id": finding_id,
+                "fingerprint": "a" * 64,
+                "patrol_id": patrol_id,
+            }
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/qa/dev/synthetic-findings",
+                json={"source_butler": "general"},
+            )
+
+        assert response.status_code == 202
+        body = response.json()
+        assert body["data"]["accepted"] is True
+        assert body["data"]["patrol_id"] == str(patrol_id)
+        assert body["data"]["finding_id"] == str(finding_id)
+        assert "next scheduled patrol" in body["data"]["message"]
+
+        pool.execute.assert_called_once()
+        patrol_sql, inserted_patrol_id, patrol_error_detail = pool.execute.call_args.args
+        assert "INSERT INTO public.qa_patrols" in patrol_sql
+        assert inserted_patrol_id == patrol_id
+        assert "Synthetic validation placeholder patrol" in patrol_error_detail
+
+        pool.fetchrow.assert_called_once()
+        finding_sql = pool.fetchrow.call_args.args[0]
+        finding_args = pool.fetchrow.call_args.args[1:]
+        assert "INSERT INTO public.qa_findings" in finding_sql
+        assert "dispatch_queued" in finding_sql
+        assert patrol_id in finding_args
+        assert "general" in finding_args
+
+
+# ---------------------------------------------------------------------------
 # GET /api/qa/trends
 # ---------------------------------------------------------------------------
 
