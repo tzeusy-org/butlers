@@ -44,7 +44,27 @@ If the user gives only a PR number, assume `Tzeusy/butlers`.
 
 ## Workflow
 
-### 1. Enumerate the closure set
+### 1. Create an isolated PR checkout
+
+Before making fixes, checking out the PR branch, or running branch-local tests,
+create a dedicated git worktree for this PR review so simultaneous PR-review
+sessions do not interfere with each other.
+
+Default pattern:
+
+```bash
+git fetch origin <pr-head-ref>
+git worktree add -b pr-<pr-number>-review .tmp/pr-<pr-number>-review FETCH_HEAD
+```
+
+Rules:
+
+- Do not do PR-fix work in the main checkout.
+- Treat the dedicated worktree as the PR's temporary isolated subtree/worktree.
+- Run branch-local edits, tests, commits, and pushes from that isolated path.
+- Remove the temporary worktree when the review is done if it is no longer needed.
+
+### 2. Enumerate the closure set
 
 Use the script, not ad hoc API calls:
 
@@ -57,7 +77,7 @@ Pass `--repo <owner/repo-or-url>` when not working against `Tzeusy/butlers`.
 Treat unresolved non-outdated review threads as the required closure set. Keep
 the resulting thread IDs and top-level comment IDs around while you work.
 
-### 2. Dispatch the alignment subagent
+### 3. Dispatch the alignment subagent
 
 Before changing code or replying to review comments, create one dedicated
 subagent for alignment analysis of the PR diff and feature delta.
@@ -89,7 +109,7 @@ Return only blockers, risks, and missing updates, with exact file/spec reference
 Do not close threads or call the PR complete until the alignment subagent has
 reported no unaddressed blockers.
 
-### 3. Load the relevant references
+### 4. Load the relevant references
 
 - Before changing PR text, replies, or commit messages, read
   [references/pii-and-replies.md](references/pii-and-replies.md).
@@ -98,7 +118,7 @@ reported no unaddressed blockers.
 - Only if checks are failing, read
   [references/butlers-quality-gates.md](references/butlers-quality-gates.md).
 
-### 4. Work threads to closure
+### 5. Work threads to closure
 
 For each unresolved thread:
 
@@ -130,7 +150,7 @@ handoff.
 
 Do not approve or merge the PR as part of this skill.
 
-### 5. Validate the final state
+### 6. Validate the final state
 
 The branch is not done until both thread closure and required GitHub checks are
 green.
@@ -154,6 +174,7 @@ reproduce the failing gate locally.
 ## Decision Rules
 
 - Favor minimal diffs. Do not refactor unrelated code while addressing review feedback.
+- Use a dedicated PR-specific git worktree for fixes and branch-local verification; do not share a mutable checkout across concurrent PR reviews.
 - The alignment subagent is mandatory for this skill; do not skip it even for small diffs.
 - Passing local tests is not enough. The PR must pass the actual GitHub quality gates on the remote branch.
 - Prefer the bundled scripts over ad hoc API calls; they are the deterministic path for this skill.
@@ -172,6 +193,7 @@ Before calling the PR review complete, verify all of the following:
 8. You can enumerate the handled thread IDs and their final outcome (`Accepted` or `Wontfix`).
 9. A dedicated alignment subagent completed `/heart-and-soul`, `/craft-and-care`, and `/spec-and-spine` checks on the diff and feature delta.
 10. Any doctrine, craft-and-care, or spec blockers were either fixed in the PR or documented as explicit blockers with justification.
+11. Any fixes, commits, and targeted tests were run from the PR's dedicated isolated worktree, not the main checkout.
 
 ## Handoff Output
 
@@ -182,6 +204,7 @@ Report:
 - whether any PII/secrets were found and how they were removed
 - each handled thread URL or ID with its final outcome
 - commit hashes added during review
+- isolated worktree path used for branch-local fixes, if any
 - alignment subagent findings, including doctrine/craft/spec blockers and their dispositions
 - final GitHub quality gate status
 - any threads that could not be resolved due to permission or tooling limits
