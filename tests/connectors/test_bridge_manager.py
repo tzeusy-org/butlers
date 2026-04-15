@@ -132,9 +132,7 @@ async def test_start_succeeds_in_degraded_mode_for_terminal_startup_states(
     state: str,
     expected_reason: str,
 ) -> None:
-    mgr = BridgeSubprocessManager(
-        _make_config(startup_timeout_s=0.25, startup_allow_degraded=True)
-    )
+    mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.25, startup_allow_degraded=True))
     proc = _blocking_process()
 
     async def _spawn() -> None:
@@ -161,9 +159,7 @@ async def test_start_succeeds_in_degraded_mode_for_terminal_startup_states(
 async def test_start_clears_degraded_if_bridge_recovers_before_health_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mgr = BridgeSubprocessManager(
-        _make_config(startup_timeout_s=0.25, startup_allow_degraded=True)
-    )
+    mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.25, startup_allow_degraded=True))
     proc = _blocking_process()
 
     async def _spawn() -> None:
