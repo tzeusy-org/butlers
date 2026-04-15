@@ -183,6 +183,7 @@ class WhatsAppModule(Module):
             bridge_socket=self._config.bridge_socket,
             startup_timeout_s=30.0,
             health_poll_interval_s=30.0,
+            startup_allow_degraded=True,
         )
         self._bridge_manager = BridgeSubprocessManager(bridge_cfg)
 

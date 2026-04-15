@@ -86,6 +86,15 @@ class BridgeConfig:
     startup_timeout_s: float = 30.0
     """Maximum seconds to wait for the bridge to become startup-ready."""
 
+    startup_allow_degraded: bool = False
+    """Whether terminal degraded startup states can satisfy startup readiness.
+
+    When ``False`` (default), startup waits for `/status` to report
+    ``"connected"``. When ``True``, terminal degraded states such as
+    ``"pair_required"`` and ``"disconnected"`` may also unblock startup so
+    callers can continue in degraded mode.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -288,12 +297,12 @@ class BridgeSubprocessManager:
             return {}
 
     async def start(self) -> None:
-        """Start the bridge subprocess and wait until it is startup-ready.
+        """Start the bridge subprocess and wait until it satisfies startup readiness.
 
         Raises:
             RuntimeError: If the binary is not found in $PATH.
-            TimeoutError: If the bridge does not expose a terminal startup
-                state within ``config.startup_timeout_s`` seconds.
+            TimeoutError: If the bridge does not satisfy the configured startup
+                readiness contract within ``config.startup_timeout_s`` seconds.
         """
         self._stopping = False
         self._degraded = False
@@ -334,6 +343,11 @@ class BridgeSubprocessManager:
                 await startup_poll_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        # Re-check status once immediately before the regular health cadence.
+        # This avoids leaving a just-recovered bridge in stale degraded mode
+        # until the first delayed health poll runs.
+        await self._poll_status()
 
         # Start background health polling
         self._health_task = asyncio.create_task(self._health_poll_loop(), name="bridge-health-poll")
@@ -645,11 +659,11 @@ class BridgeSubprocessManager:
                     self._connected_event.set()
                     self._startup_ready_event.set()
                     break
-                if state == "pair_required":
+                if self._config.startup_allow_degraded and state == "pair_required":
                     self._set_degraded("pair_required")
                     self._startup_ready_event.set()
                     break
-                if state == "disconnected":
+                if self._config.startup_allow_degraded and state == "disconnected":
                     self._set_degraded("Bridge status: disconnected")
                     self._startup_ready_event.set()
                     break

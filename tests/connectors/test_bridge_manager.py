@@ -132,7 +132,9 @@ async def test_start_succeeds_in_degraded_mode_for_terminal_startup_states(
     state: str,
     expected_reason: str,
 ) -> None:
-    mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.25))
+    mgr = BridgeSubprocessManager(
+        _make_config(startup_timeout_s=0.25, startup_allow_degraded=True)
+    )
     proc = _blocking_process()
 
     async def _spawn() -> None:
@@ -152,5 +154,57 @@ async def test_start_succeeds_in_degraded_mode_for_terminal_startup_states(
     assert mgr.degraded_reason == expected_reason
     assert not mgr._connected_event.is_set()
     assert mgr._startup_ready_event.is_set()
+
+    await mgr.stop()
+
+
+async def test_start_clears_degraded_if_bridge_recovers_before_health_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mgr = BridgeSubprocessManager(
+        _make_config(startup_timeout_s=0.25, startup_allow_degraded=True)
+    )
+    proc = _blocking_process()
+
+    async def _spawn() -> None:
+        mgr._process = proc
+
+    monkeypatch.setattr(mgr, "_spawn", _spawn)
+    monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
+    monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(
+        "butlers.connectors.bridge_manager._http_get_unix",
+        AsyncMock(side_effect=[{"state": "pair_required"}, {"state": "connected"}]),
+    )
+
+    await asyncio.wait_for(mgr.start(), timeout=1.0)
+
+    assert not mgr.is_degraded
+    assert mgr.degraded_reason is None
+    assert mgr._connected_event.is_set()
+    assert mgr._startup_ready_event.is_set()
+
+    await mgr.stop()
+
+
+async def test_start_times_out_when_degraded_states_are_not_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.01))
+    proc = _blocking_process()
+
+    async def _spawn() -> None:
+        mgr._process = proc
+
+    monkeypatch.setattr(mgr, "_spawn", _spawn)
+    monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
+    monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(
+        "butlers.connectors.bridge_manager._http_get_unix",
+        AsyncMock(return_value={"state": "pair_required"}),
+    )
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(mgr.start(), timeout=1.0)
 
     await mgr.stop()

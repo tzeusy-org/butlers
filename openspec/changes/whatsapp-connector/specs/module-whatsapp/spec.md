@@ -135,8 +135,10 @@ The module manages the whatsapp-bridge Go binary as a subprocess via `BridgeSubp
 
 - **WHEN** the WhatsApp module's `on_startup` is called
 - **THEN** it SHALL start the `whatsapp-bridge` binary via `BridgeSubprocessManager` with `--db-dsn` and `--listen unix://<bridge_socket>`
-- **AND** it SHALL wait for the bridge's `/status` endpoint to report `"connected"` before completing startup
-- **AND** startup SHALL timeout after 30 seconds if the bridge fails to connect
+- **AND** it SHALL complete startup once the bridge reports either `"connected"` or a terminal degraded startup state (`"pair_required"` or `"disconnected"`)
+- **AND** if startup completes in a terminal degraded state, the module SHALL log a warning and remain in degraded mode
+- **AND** it SHALL perform an immediate post-startup `/status` probe before handing off to the regular 30-second health-poll cadence so recovery to `"connected"` is detected promptly
+- **AND** startup SHALL timeout after 30 seconds if the bridge fails to reach `"connected"` or a terminal degraded startup state
 
 #### Scenario: Bridge health monitoring
 

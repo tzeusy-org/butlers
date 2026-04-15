@@ -62,10 +62,10 @@
 - [ ] 9.2 Add config validation: error if `send_enabled=true` and `send_tools=false`
 - [ ] 9.3 Implement `WhatsAppModule(Module)` with `name="whatsapp"`, `config_schema=WhatsAppConfig`, `dependencies=[]`, `migration_revisions()=None`
 - [ ] 9.4 Implement `register_tools()`: conditionally register `whatsapp_send_message` and `whatsapp_reply_to_message` only when `send_tools=true` (following email module's pattern); gate execution behind `send_enabled` runtime check
-- [ ] 9.5 Implement `on_startup()`: resolve `whatsapp_phone` from entity_info, start Go bridge via `BridgeSubprocessManager`, wait for `/status` connected (30s timeout)
+- [ ] 9.5 Implement `on_startup()`: resolve `whatsapp_phone` from entity_info, start Go bridge via `BridgeSubprocessManager`, allow startup to complete on `/status` `connected` or terminal degraded states (`pair_required` / `disconnected`), and run an immediate post-startup status probe before the regular 30s health-poll cadence
 - [ ] 9.6 Implement `on_shutdown()`: delegate to `BridgeSubprocessManager` graceful shutdown
 - [ ] 9.7 Handle bridge binary not found: raise `RuntimeError` with clear install instructions
-- [ ] 9.8 Write unit tests for config validation, tool registration modes (no send_tools vs send_tools+disabled vs send_tools+enabled), and bridge lifecycle
+- [ ] 9.8 Write unit tests for config validation, tool registration modes (no send_tools vs send_tools+disabled vs send_tools+enabled), and bridge lifecycle, including connected startup, degraded terminal startup, and timeout behavior
 
 ## 10. WhatsApp User Client Connector (`src/butlers/connectors/whatsapp_user_client.py`)
 
