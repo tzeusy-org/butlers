@@ -1,11 +1,11 @@
 ---
 name: butler-qa-pr-review
-description: Review a specific GitHub pull request for Butler QA follow-up. Accepts a repository and PR number, defaulting the repository to https://github.com/Tzeusy/butlers when omitted. Ensures the PR contains no personal information or secrets, addresses every outstanding unresolved review thread, and replies to each thread with either an acceptance response that includes the commit hash or a wontfix response with concrete justification.
+description: Review a specific GitHub pull request for Butler QA follow-up. Accepts a repository and PR number, defaulting the repository to https://github.com/Tzeusy/butlers when omitted. Ensures the PR contains no personal information or secrets, addresses every outstanding unresolved review thread, replies to each thread with either an acceptance response that includes the commit hash or a wontfix response with concrete justification, and does not finish until all GitHub quality gate checks are passing.
 ---
 
 # Butler QA PR Review
 
-Review one PR end-to-end: scrub personal information, resolve the outstanding review feedback, and leave no unresolved thread without a terminal reply.
+Review one PR end-to-end: scrub personal information, resolve the outstanding review feedback, leave no unresolved thread without a terminal reply, and finish only when the PR's GitHub quality gates are green.
 
 ## Inputs
 
@@ -158,6 +158,32 @@ Use GitHub connector reply tools when available. Fallback:
 
 Do not approve or merge the PR as part of this skill.
 
+### 6. Wait for GitHub quality gates to pass
+
+The PR is not complete until all required GitHub checks are passing.
+
+After the last code push:
+
+1. Fetch the current check state for the PR head commit.
+2. If any required check is failing, diagnose and fix it.
+3. If checks are still running, wait and recheck.
+4. Do not report completion while any required check is failing, pending, or missing.
+
+Prefer GitHub connector status/check tools when available. Fallback:
+
+```bash
+REPO_INPUT="${REPO:-https://github.com/Tzeusy/butlers}"
+REPO="${REPO_INPUT#https://github.com/}"
+REPO="${REPO%.git}"
+PR_NUMBER="<pr-number>"
+
+gh pr checks "$PR_NUMBER" --repo "$REPO"
+```
+
+Use `gh pr checks --watch` when the checks are already running and you only need to wait for completion.
+
+If the PR is blocked on an external or infrastructure failure that you cannot remediate from the branch, report that explicitly and do not claim the skill completed successfully.
+
 ## Decision Rules
 
 - Favor minimal diffs. Do not refactor unrelated code while addressing review feedback.
@@ -165,6 +191,7 @@ Do not approve or merge the PR as part of this skill.
 - Use `Wontfix` only when you can defend it concretely. "Not needed" is not enough.
 - If a reviewer request conflicts with the active spec or a safety invariant, cite that in the wontfix justification.
 - If a thread contains PII in the reviewer text, do not repeat it verbatim in your reply.
+- Passing local tests is not enough. The PR must pass the actual GitHub quality gates on the remote branch.
 
 ## Verification Checklist
 
@@ -175,7 +202,8 @@ Before calling the PR review complete, verify all of the following:
 3. Every acceptance reply includes a commit hash.
 4. Every wontfix reply includes concrete justification.
 5. Any code changes were pushed to the PR branch.
-6. You can enumerate the handled thread IDs and their final outcome (`Accepted` or `Wontfix`).
+6. All required GitHub quality gate checks are passing on the PR head.
+7. You can enumerate the handled thread IDs and their final outcome (`Accepted` or `Wontfix`).
 
 ## Handoff Output
 
@@ -185,4 +213,5 @@ Report:
 - whether any PII/secrets were found and how they were removed
 - each handled thread URL or ID with its final outcome
 - commit hashes added during review
+- final GitHub quality gate status
 - any threads that could not be resolved due to permission or tooling limits

@@ -1,4 +1,4 @@
 interface:
   display_name: "Butler QA PR Review"
-  short_description: "Scrub PII and close all PR review threads"
-  default_prompt: "Use $butler-qa-pr-review on PR #<number> to remove personal information and reply to every unresolved review thread with either Accepted <commit> or Wontfix <reason>"
+  short_description: "Scrub PII, close review threads, and clear PR checks"
+  default_prompt: "Use $butler-qa-pr-review on PR #<number> to remove personal information, reply to every unresolved review thread with either Accepted <commit> or Wontfix <reason>, and do not finish until all GitHub quality gate checks are passing"
