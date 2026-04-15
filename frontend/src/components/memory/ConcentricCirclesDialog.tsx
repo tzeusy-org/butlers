@@ -12,7 +12,7 @@
  * - Cold-start empty state when < 5 contacts scored
  */
 
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { CrosshairIcon, PinIcon } from "lucide-react";
 
@@ -224,6 +224,9 @@ interface ConcentricCirclesVisualizationProps {
   onNavigate: (entityId: string) => void;
 }
 
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 8;
+
 function ConcentricCirclesVisualization({
   entries,
   ownerEntityId,
@@ -233,10 +236,91 @@ function ConcentricCirclesVisualization({
   onNavigate,
 }: ConcentricCirclesVisualizationProps) {
   const [expandedTier, setExpandedTier] = useState<Tier | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: width, h: height });
+  const dragRef = useRef<{
+    startClientX: number;
+    startClientY: number;
+    startVB: { x: number; y: number; w: number; h: number };
+    moved: boolean;
+  } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Wheel zoom around cursor. Use a non-passive native listener since React
+  // attaches onWheel as passive (preventDefault becomes a no-op).
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const rect = svg!.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      setViewBox((vb) => {
+        const svgX = vb.x + (mx / rect.width) * vb.w;
+        const svgY = vb.y + (my / rect.height) * vb.h;
+        const currentScale = width / vb.w;
+        const factor = Math.exp(-e.deltaY * 0.0015);
+        const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE, currentScale * factor));
+        const newW = width / target;
+        const newH = height / target;
+        const newX = svgX - (mx / rect.width) * newW;
+        const newY = svgY - (my / rect.height) * newH;
+        return { x: newX, y: newY, w: newW, h: newH };
+      });
+    }
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, [width, height]);
+
+  function handleMouseDown(e: React.MouseEvent<SVGSVGElement>) {
+    // Only initiate pan with primary button; let node clicks bubble through.
+    if (e.button !== 0) return;
+    dragRef.current = {
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startVB: viewBox,
+      moved: false,
+    };
+  }
+
+  function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const dxClient = e.clientX - drag.startClientX;
+    const dyClient = e.clientY - drag.startClientY;
+    if (!drag.moved && Math.hypot(dxClient, dyClient) > 3) {
+      drag.moved = true;
+      setIsDragging(true);
+    }
+    if (!drag.moved) return;
+    const dx = (dxClient * drag.startVB.w) / rect.width;
+    const dy = (dyClient * drag.startVB.h) / rect.height;
+    setViewBox({
+      ...drag.startVB,
+      x: drag.startVB.x - dx,
+      y: drag.startVB.y - dy,
+    });
+  }
+
+  function endDrag() {
+    dragRef.current = null;
+    setIsDragging(false);
+  }
+
+  function resetView() {
+    setViewBox({ x: 0, y: 0, w: width, h: height });
+  }
 
   const cx = width / 2;
   const cy = height / 2;
   const maxR = Math.min(cx, cy) - 24; // 24px padding
+  const currentScale = width / viewBox.w;
 
   // Group entries by tier (exclude owner)
   const tierGroups: Record<Tier, DunbarEntry[]> = {
@@ -261,13 +345,37 @@ function ConcentricCirclesVisualization({
   ).length;
   const isColdStart = scoredCount < 5;
 
+  // Click handlers that respect drag-guard (so dragging doesn't navigate).
+  const navigateGuarded = (id: string) => {
+    if (dragRef.current?.moved) return;
+    onNavigate(id);
+  };
+
   return (
-    <div className="relative">
+    <div className="relative w-full h-full">
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 rounded-md border bg-background/80 backdrop-blur px-2 py-1 text-xs text-muted-foreground shadow-sm">
+        <span>Scroll to zoom · drag to pan</span>
+        <button
+          type="button"
+          onClick={resetView}
+          className="ml-1 rounded px-1.5 py-0.5 text-xs font-medium text-foreground hover:bg-accent"
+        >
+          Reset
+        </button>
+        <span className="ml-1 tabular-nums">{currentScale.toFixed(1)}×</span>
+      </div>
       <svg
-        width={width}
-        height={height}
-        viewBox={`0 0 ${width} ${height}`}
-        className="select-none"
+        ref={svgRef}
+        width="100%"
+        height="100%"
+        viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="select-none touch-none"
+        style={{ cursor: isDragging ? "grabbing" : "grab", display: "block" }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={endDrag}
+        onMouseLeave={endDrag}
         role="img"
         aria-label="Dunbar social map — concentric rings of contacts"
       >
@@ -306,7 +414,7 @@ function ConcentricCirclesVisualization({
         {/* Owner center node */}
         <g
           style={{ cursor: ownerEntityId ? "pointer" : "default" }}
-          onClick={() => ownerEntityId && onNavigate(ownerEntityId)}
+          onClick={() => ownerEntityId && navigateGuarded(ownerEntityId)}
         >
           <circle cx={cx} cy={cy} r={maxR * 0.07} fill="#7c3aed" fillOpacity={0.2} stroke="#7c3aed" strokeWidth={1.5} />
           <text
@@ -367,7 +475,7 @@ function ConcentricCirclesVisualization({
                   tier={tier}
                   showName={showName}
                   radius={nodeRadius}
-                  onNavigate={onNavigate}
+                  onNavigate={navigateGuarded}
                 />
               ))}
               {/* "+N more" badge for large tiers when not expanded */}
@@ -476,10 +584,26 @@ function TierLegend({ tierGroups }: { tierGroups: Record<Tier, DunbarEntry[]> })
 // Public dialog component
 // ---------------------------------------------------------------------------
 
+function useElementSize(ref: React.RefObject<HTMLElement | null>) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setSize({ width: el.clientWidth, height: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return size;
+}
+
 export function ConcentricCirclesDialog() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const { data, isLoading, isError } = useDunbarRanking(open);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const stageSize = useElementSize(stageRef);
 
   const entries = data?.entries ?? [];
   const ownerEntityId = data?.owner_entity_id ?? null;
@@ -516,7 +640,10 @@ export function ConcentricCirclesDialog() {
           Concentric Circles
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent
+        className="sm:max-w-none max-w-none"
+        style={{ width: "60vw", height: "80vh", display: "flex", flexDirection: "column" }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             Concentric Circles
@@ -533,28 +660,41 @@ export function ConcentricCirclesDialog() {
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col items-center gap-2">
+        <div
+          style={{ flex: "1 1 0", minHeight: 0, display: "flex", flexDirection: "column", gap: "0.5rem" }}
+        >
           {isLoading && (
-            <div className="flex items-center justify-center h-[500px] w-full text-muted-foreground text-sm">
+            <div className="flex items-center justify-center flex-1 text-muted-foreground text-sm">
               Loading social map…
             </div>
           )}
           {isError && (
-            <div className="flex items-center justify-center h-[500px] w-full text-destructive text-sm">
+            <div className="flex items-center justify-center flex-1 text-destructive text-sm">
               Failed to load social map. Is the relationship butler running?
             </div>
           )}
           {!isLoading && !isError && (
             <>
-              <div className="w-full overflow-auto">
-                <ConcentricCirclesVisualization
-                  entries={entries}
-                  ownerEntityId={ownerEntityId}
-                  ownerName={ownerName}
-                  width={560}
-                  height={500}
-                  onNavigate={handleNavigate}
-                />
+              <div
+                ref={stageRef}
+                className="relative w-full overflow-hidden rounded-md border bg-muted/20"
+                style={{ flex: "1 1 0", minHeight: 0 }}
+              >
+                {stageSize.width > 0 && stageSize.height > 0 ? (
+                  <ConcentricCirclesVisualization
+                    key={`${stageSize.width}x${stageSize.height}`}
+                    entries={entries}
+                    ownerEntityId={ownerEntityId}
+                    ownerName={ownerName}
+                    width={stageSize.width}
+                    height={stageSize.height}
+                    onNavigate={handleNavigate}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+                    Sizing canvas…
+                  </div>
+                )}
               </div>
               <TierLegend tierGroups={tierGroups} />
             </>
