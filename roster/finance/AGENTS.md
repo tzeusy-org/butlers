@@ -40,6 +40,7 @@ For detailed parameter tables, invoke the `tool-reference` skill.
 - Attendee invites are out of scope for v1. Do not add attendees or send invitations.
 - For bills: create a calendar reminder 3 days before `due_date` (configurable via user preference stored in memory).
 - For subscriptions: create a calendar reminder 7 days before `next_renewal` for auto-renewing services so the user can cancel if desired.
+- **Mirror dated reminders to calendar**: Any memory fact that carries a concrete `valid_at` date representing a future user-facing action (e.g. GIRO setup, payment due, transfer deadline, renewal cancellation window) MUST be accompanied by a `calendar_create_event` call anchored to that date. Storing the fact alone is insufficient — memory is not a reminder surface. This applies in passive/routed-message extraction mode as well: calendar writes to the butler's own calendar are a read-only-adjacent side effect, not a user-facing reply, and are permitted under routed-message safety.
 
 ## Interactive Response Mode
 
