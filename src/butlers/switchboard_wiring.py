@@ -16,6 +16,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import asyncpg
 from fastmcp import Client as MCPClient
 from opentelemetry import trace
@@ -40,6 +41,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SWITCHBOARD_HEARTBEAT_INTERVAL_S = 30
+_SWITCHBOARD_HEARTBEAT_TIMEOUT_S = 5.0
+_STALE_SWITCHBOARD_CONNECTION_ERRORS = (
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+)
 
 
 def wire_pipelines(daemon: Any, pool: Any) -> None:
@@ -396,7 +402,7 @@ async def switchboard_heartbeat_loop(daemon: Any) -> None:
     Runs as a background task for the lifetime of the butler.  On each
     tick it either attempts to connect (when ``switchboard_client`` is
     ``None``) or probes liveness of the existing connection via
-    ``list_tools()``.  A failed probe triggers a disconnect + reconnect.
+    ``ping()``. A failed probe triggers a disconnect + reconnect.
 
     All exceptions (except ``CancelledError``) are swallowed so that the
     heartbeat never crashes the butler.
@@ -413,7 +419,17 @@ async def switchboard_heartbeat_loop(daemon: Any) -> None:
                     await connect_switchboard(daemon)
                 else:
                     try:
-                        await asyncio.wait_for(daemon.switchboard_client.list_tools(), timeout=5.0)
+                        await asyncio.wait_for(
+                            daemon.switchboard_client.ping(),
+                            timeout=_SWITCHBOARD_HEARTBEAT_TIMEOUT_S,
+                        )
+                    except _STALE_SWITCHBOARD_CONNECTION_ERRORS:
+                        logger.info(
+                            "Switchboard heartbeat: stale connection detected, reconnecting",
+                            exc_info=True,
+                        )
+                        await disconnect_switchboard(daemon)
+                        await connect_switchboard(daemon)
                     except Exception:
                         logger.warning(
                             "Switchboard heartbeat: connection dead, reconnecting",
