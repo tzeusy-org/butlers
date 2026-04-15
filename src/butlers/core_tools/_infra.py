@@ -55,7 +55,11 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         }
 
     @_core_tool("infra")
-    async def trigger(prompt: str, context: str | None = None) -> dict:
+    async def trigger(
+        prompt: str,
+        context: str | None = None,
+        complexity: str | None = None,
+    ) -> dict:
         """Trigger the spawner with a prompt.
 
         Parameters
@@ -64,8 +68,21 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             The prompt to send to the runtime instance.
         context:
             Optional text to prepend to the prompt.
+        complexity:
+            Optional complexity tier ("trivial", "medium", "high",
+            "extra_high", "discretion", "self_healing"). Defaults to medium
+            when omitted.
         """
-        result = await spawner.trigger(prompt=prompt, context=context, trigger_source="trigger")
+        from butlers.core.model_routing import Complexity
+
+        spawn_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "context": context,
+            "trigger_source": "trigger",
+        }
+        if complexity is not None:
+            spawn_kwargs["complexity"] = Complexity(complexity)
+        result = await spawner.trigger(**spawn_kwargs)
         return {
             "output": result.output,
             "success": result.success,
