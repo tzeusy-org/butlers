@@ -154,6 +154,7 @@ services:
       retries: 10
       start_period: 15s
     networks: [db, backend, frontend, egress]
+    restart: unless-stopped
 
   frontend-dev:
     image: node:22-slim
@@ -175,6 +176,7 @@ services:
       dashboard-api:
         condition: service_healthy
     networks: [frontend]
+    restart: unless-stopped
 
   # ── Layer 1b: Connectors ──────────────────────────────────────────────
 
@@ -574,6 +576,7 @@ services:
       migrations:
         condition: service_completed_successfully
     networks: [db, backend, frontend, egress]
+    restart: unless-stopped
 
 # ── Volumes ─────────────────────────────────────────────────────────────
 
