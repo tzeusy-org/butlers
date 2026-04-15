@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 from fastmcp import FastMCP as RuntimeFastMCP
 from pydantic import BaseModel
@@ -933,6 +934,76 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
         await daemon2.start()
     assert daemon2.switchboard_client is None
     assert daemon2._started_at is not None
+
+
+async def test_switchboard_heartbeat_uses_ping_for_liveness_probe(butler_dir: Path) -> None:
+    """Heartbeat checks Switchboard liveness with ping(), not list_tools()."""
+    daemon = ButlerDaemon(butler_dir)
+    ping_called = asyncio.Event()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.ping_calls = 0
+            self.list_tools_calls = 0
+
+        async def ping(self) -> bool:
+            self.ping_calls += 1
+            ping_called.set()
+            return True
+
+        async def list_tools(self) -> list[object]:
+            self.list_tools_calls += 1
+            return []
+
+    client = _Client()
+    daemon.switchboard_client = client
+
+    with patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0):
+        task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
+        await asyncio.wait_for(ping_called.wait(), timeout=1.0)
+        task.cancel()
+        await task
+
+    assert client.ping_calls == 1
+    assert client.list_tools_calls == 0
+
+
+async def test_switchboard_heartbeat_reconnects_on_stale_ping_error(butler_dir: Path) -> None:
+    """A stale Switchboard client is evicted and reconnected on heartbeat."""
+    daemon = ButlerDaemon(butler_dir)
+    ping_called = asyncio.Event()
+    reconnect_done = asyncio.Event()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.ping_calls = 0
+
+        async def ping(self) -> None:
+            self.ping_calls += 1
+            ping_called.set()
+            raise anyio.ClosedResourceError()
+
+    client = _Client()
+    daemon.switchboard_client = client
+
+    disconnect = AsyncMock()
+
+    async def connect(_: Any) -> None:
+        reconnect_done.set()
+
+    with (
+        patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0),
+        patch("butlers.switchboard_wiring.disconnect_switchboard", new=disconnect),
+        patch("butlers.switchboard_wiring.connect_switchboard", new=AsyncMock(side_effect=connect)),
+    ):
+        task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
+        await asyncio.wait_for(ping_called.wait(), timeout=1.0)
+        await asyncio.wait_for(reconnect_done.wait(), timeout=1.0)
+        task.cancel()
+        await task
+
+    assert client.ping_calls == 1
+    disconnect.assert_awaited_once_with(daemon)
 
 
 # ---------------------------------------------------------------------------
