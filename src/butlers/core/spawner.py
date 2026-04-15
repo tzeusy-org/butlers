@@ -44,6 +44,10 @@ from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
+from butlers.core.general_settings import (
+    build_general_timezone_instruction,
+    load_general_settings,
+)
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.metrics import ButlerMetrics
@@ -292,6 +296,7 @@ def _merge_tool_call_records(
 def _compose_system_prompt(
     base_system_prompt: str,
     memory_context: str | None,
+    general_timezone_instruction: str | None = None,
     routing_instructions: str | None = None,
     context_preamble: str | None = None,
 ) -> str:
@@ -310,6 +315,8 @@ def _compose_system_prompt(
       one blank line.
     """
     prompt = base_system_prompt
+    if general_timezone_instruction:
+        prompt = f"{prompt}\n\n{general_timezone_instruction}"
     if context_preamble:
         prompt = f"{prompt}\n\n{context_preamble}"
     if routing_instructions:
@@ -317,6 +324,29 @@ def _compose_system_prompt(
     if memory_context:
         prompt = f"{prompt}\n\n{memory_context}"
     return prompt
+
+
+async def fetch_general_timezone_instruction(
+    pool: asyncpg.Pool | None,
+    butler_name: str,
+    credential_store: CredentialStore | None = None,
+) -> str | None:
+    """Fetch the shared general timezone instruction, failing open."""
+    shared_pool = credential_store.shared_pool if credential_store is not None else None
+    settings_pool = shared_pool or pool
+    if settings_pool is None:
+        return None
+
+    try:
+        settings = await load_general_settings(settings_pool)
+        return build_general_timezone_instruction(settings)
+    except Exception:
+        logger.warning(
+            "Failed to fetch general timezone instruction for butler %s",
+            butler_name,
+            exc_info=True,
+        )
+        return None
 
 
 def _capture_pipeline_routing_context() -> dict[str, Any] | None:
@@ -1271,6 +1301,11 @@ class Spawner:
             context_preamble_ctx = await fetch_situational_context_preamble(
                 self._pool, self._config.name
             )
+            general_timezone_instruction = await fetch_general_timezone_instruction(
+                self._pool,
+                self._config.name,
+                self._credential_store,
+            )
 
             # Fetch owner routing instructions (switchboard only)
             # Intentional name check: routing instructions are the switchboard's classifier
@@ -1291,6 +1326,7 @@ class Spawner:
             system_prompt = _compose_system_prompt(
                 system_prompt,
                 memory_ctx,
+                general_timezone_instruction=general_timezone_instruction,
                 routing_instructions=routing_ctx,
                 context_preamble=context_preamble_ctx,
             )

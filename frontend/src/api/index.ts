@@ -123,6 +123,7 @@ export {
   getApprovalMetrics,
   getApprovalRule,
   getApprovalRules,
+  getGeneralSettings,
   getAutonomySuggestions,
   getExecutedActions,
   getRuleSuggestions,
@@ -131,6 +132,7 @@ export {
   revokeApprovalRule,
   setPrimaryCalendar,
   syncCalendarWorkspace,
+  updateGeneralSettings,
 } from "./client.ts";
 
 export type {
@@ -281,6 +283,8 @@ export type {
   GoogleAccount,
   GoogleAccountStatus,
   GoogleCredentialStatusResponse,
+  GeneralSettings,
+  GeneralSettingsUpdate,
   OAuthCredentialState,
   OAuthCredentialStatus,
   OAuthStatusResponse,

@@ -228,6 +228,9 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 - Contacts rollout contract: enable `[modules.contacts]` with `provider = "google"` and `sync` defaults (`run_on_startup=true`, `interval_minutes=15`, `full_sync_interval_days=6`) in `roster/general/butler.toml`, `roster/health/butler.toml`, and `roster/relationship/butler.toml`; intentionally exclude `roster/switchboard/butler.toml` (routing plane) and `roster/messenger/butler.toml` (delivery plane).
 - The concrete runtime contract lives in `src/butlers/modules/contacts/sync.py::ContactsSyncRuntime`; mode selection is state-driven (`full` when no cursor or stale >=6 days, otherwise `incremental`) and poller trigger surface is `trigger_immediate_sync()`.
 
+### Relationship interaction-sync ACL contract
+- `roster/relationship/jobs/relationship_jobs.py::run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql` must grant `butler_relationship_rw` read-only access to schema `switchboard` plus `SELECT` on its tables (and matching default privileges for future migration-user-created tables).
+
 ### Relationship contacts sync trigger API contract
 - `POST /api/relationship/contacts/sync` is the manual dashboard/API trigger for contacts sync and dispatches to the relationship butler MCP tool `contacts_sync_now` with args `{"provider":"google","mode":"incremental|full"}`.
 - The `mode` query parameter is strict (`incremental` or `full` only), and credential-related MCP failures are surfaced as actionable `400` errors pointing operators to `/api/oauth/google/start` or `/api/oauth/google/credentials`.
@@ -257,6 +260,9 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 
 ### Compose live-log inspection contract
 - For the `butlers-dev` Docker compose stack, authoritative live run logs are inside the containers under `/app/logs/...` (for example `/app/logs/butlers/*.log` and `/app/logs/<run>/butlers/up/output.log`); the repo worktree's `logs/` tree can lag or reflect a different local run and should not be treated as the live source of truth.
+
+### Compose UI restart-policy gap
+- In `docker-compose.yml`, `dashboard-api` and `frontend-dev` do not set `restart: unless-stopped`, while `butlers-up` and the connectors do. After a host reboot or external stop, the UI/API pair can remain down with `ExitCode=137` even though switchboard/connectors recover, leaving Tailscale `/butlers-dev` and `/butlers-dev-api` mapped to dead localhost ports until `./scripts/compose.sh` (or targeted `docker compose up -d`) is rerun.
 
 ### QA/self-healing PR label contract
 - QA and self-healing dispatch default to GitHub labels `self-healing` and `automated`; on `Tzeusy/butlers`, missing repo labels make otherwise successful investigations fail at PR creation with `gh_pr_create_failed: could not add label: '<label>' not found`, leaving `healing_attempts.status = 'failed'` even when the agent produced a valid commit.
@@ -315,6 +321,10 @@ Memory is a **common module** (`[modules.memory]`) enabled per butler, not a ded
 ### Memory API fanout contract
 - `src/butlers/api/routers/memory.py` must not require `db.pool("memory")`; `/api/memory/*` reads fan out across available butler DB pools and aggregate results.
 - Pools without memory tables should be skipped gracefully so no-dedicated-memory deployments return zero/empty payloads (or 404 for ID lookups) instead of 503.
+
+### General timezone settings contract
+- Shared dashboard-level defaults live in `public.state` under key `settings.general`; `/api/settings/general` is the owner-facing surface, and `Spawner` injects the resulting general-settings block into every butler system prompt via the shared credential pool when available (falling back to local pool only when shared access is absent).
+- The current shared payload is `{timezone, language, date_format, time_format, week_starts_on, currency}` with implicit defaults `UTC`, `en-US`, `YYYY-mm-dd`, `HH:MM`, `Monday`, `USD`; `measurement_system` is fixed response-only `metric` and is not persisted as a user-editable field.
 
 ### Fact provenance write contract
 - `src/butlers/modules/memory/storage.py::store_fact` now auto-fills `source_butler` from runtime context and creates/reuses a canonical `episodes` row for the current runtime session when `source_episode_id` is omitted.

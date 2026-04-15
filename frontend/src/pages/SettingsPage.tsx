@@ -11,6 +11,7 @@ import type {
   ProviderConfigCreate,
   ProviderConfigUpdate,
 } from "@/api/index.ts";
+import { GeneralSettingsCard } from "@/components/GeneralSettingsCard.tsx";
 import { BlobStorageCard } from "@/components/settings/BlobStorageCard.tsx";
 import { ModelCatalogCard } from "@/components/settings/ModelCatalogCard.tsx";
 import { QASettingsCard } from "@/components/settings/QASettingsCard.tsx";
@@ -792,6 +793,8 @@ export default function SettingsPage() {
       </div>
 
       <ModelCatalogCard />
+
+      <GeneralSettingsCard />
 
       <CLIAuthCard />
 

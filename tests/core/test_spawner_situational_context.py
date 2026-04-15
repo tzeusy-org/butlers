@@ -203,6 +203,42 @@ class TestSpawnerSituationalContextInjection:
             "Identity.\n\n[User Context: dnd (explicit)]\n\nMemory: user prefers short answers."
         )
 
+    async def test_general_settings_instruction_injected_into_system_prompt(self, tmp_path: Path):
+        """General settings instruction is appended to every runtime system prompt."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "CLAUDE.md").write_text("Identity.")
+
+        adapter = _CapturingAdapter()
+        spawner = Spawner(config=_make_config(), config_dir=config_dir, runtime=adapter)
+
+        with patch(
+            "butlers.core.spawner.fetch_general_timezone_instruction",
+            new_callable=AsyncMock,
+            return_value=(
+                "Unless otherwise stated, assume times and timezones are in "
+                "Asia/Singapore (GMT+08:00).\n"
+                "Default language/locale: en-US.\n"
+                "Default date format: YYYY-mm-dd.\n"
+                "Default time format: HH:MM.\n"
+                "Week starts on: Monday.\n"
+                "Default currency: USD.\n"
+                "Use metric measurements."
+            ),
+        ):
+            await spawner.trigger(prompt="do task", trigger_source="trigger")
+
+        assert adapter.captured_system_prompts[-1] == (
+            "Identity.\n\nUnless otherwise stated, assume times and timezones are in "
+            "Asia/Singapore (GMT+08:00).\n"
+            "Default language/locale: en-US.\n"
+            "Default date format: YYYY-mm-dd.\n"
+            "Default time format: HH:MM.\n"
+            "Week starts on: Monday.\n"
+            "Default currency: USD.\n"
+            "Use metric measurements."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Unit tests for format_context_preamble()

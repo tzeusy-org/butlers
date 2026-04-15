@@ -183,6 +183,8 @@ import type {
   TelegramVerifyCodeRequest,
   TelegramVerifyCodeResponse,
   TelegramSessionStatusResponse,
+  GeneralSettings,
+  GeneralSettingsUpdate,
   BlobStorageStatus,
   BlobStorageTestResult,
   SteamAccountListResponse,
@@ -3045,6 +3047,26 @@ export function telegramVerifyCode(
 /** GET /api/telegram/session/status — check if Telegram credentials are configured */
 export function getTelegramSessionStatus(): Promise<TelegramSessionStatusResponse> {
   return apiFetch<TelegramSessionStatusResponse>("/telegram/session/status");
+}
+
+// ---------------------------------------------------------------------------
+// General settings
+// ---------------------------------------------------------------------------
+
+/** GET /api/settings/general — fetch shared prompt defaults */
+export function getGeneralSettings(): Promise<ApiResponse<GeneralSettings>> {
+  return apiFetch<ApiResponse<GeneralSettings>>("/settings/general");
+}
+
+/** PUT /api/settings/general — update shared prompt defaults */
+export function updateGeneralSettings(
+  body: GeneralSettingsUpdate,
+): Promise<ApiResponse<GeneralSettings>> {
+  return apiFetch<ApiResponse<GeneralSettings>>("/settings/general", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 // ---------------------------------------------------------------------------

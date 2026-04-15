@@ -2758,6 +2758,32 @@ export interface TelegramSessionStatusResponse {
 }
 
 // ---------------------------------------------------------------------------
+// General settings
+// ---------------------------------------------------------------------------
+
+/** Response from GET/PUT /api/settings/general. */
+export interface GeneralSettings {
+  timezone: string;
+  timezone_label: string;
+  language: string;
+  date_format: string;
+  time_format: string;
+  week_starts_on: string;
+  currency: string;
+  measurement_system: "metric";
+}
+
+/** Request body for PUT /api/settings/general. */
+export interface GeneralSettingsUpdate {
+  timezone: string;
+  language: string;
+  date_format: string;
+  time_format: string;
+  week_starts_on: string;
+  currency: string;
+}
+
+// ---------------------------------------------------------------------------
 // Blob storage (S3-compatible)
 // ---------------------------------------------------------------------------
 
