@@ -31,6 +31,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.config import load_config
+from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.modules.metrics.prometheus import async_query, async_query_range
 
 # Dynamically load models module from the same directory
@@ -264,7 +265,7 @@ async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> b
 
         register_butler = registry_module.register_butler
         config = load_config(config_dir)
-        endpoint_url = f"http://localhost:{config.port}/sse"
+        endpoint_url = runtime_mcp_url(config.port)
         modules = list(config.modules.keys())
         capabilities = sorted(set(modules) | {"trigger"})
         await register_butler(

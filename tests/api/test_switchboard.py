@@ -21,7 +21,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -49,6 +49,12 @@ def _get_db_dep():
         sys.modules[_MODULE_NAME] = module
         spec.loader.exec_module(module)
     return sys.modules[_MODULE_NAME]._get_db_manager
+
+
+def _get_router_module():
+    """Return the live switchboard API router module."""
+    _get_db_dep()
+    return sys.modules[_MODULE_NAME]
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +152,31 @@ class TestSwitchboardViews:
         ) as client:
             resp = await client.get("/api/switchboard/registry")
         assert resp.status_code == 503
+
+    async def test_register_missing_butler_from_roster_uses_mcp_url(self, tmp_path):
+        module = _get_router_module()
+
+        config_dir = tmp_path / "demo"
+        config_dir.mkdir()
+        (config_dir / "butler.toml").write_text(
+            '[butler]\nname = "demo"\nport = 41234\ndescription = "Demo butler"\n'
+        )
+
+        registry_module = MagicMock()
+        registry_module.register_butler = AsyncMock()
+
+        with patch.dict(sys.modules, {module._REGISTRY_MODULE_NAME: registry_module}):
+            old_roster_dir = module._ROSTER_DIR
+            module._ROSTER_DIR = tmp_path
+            try:
+                ok = await module._register_missing_butler_from_roster(AsyncMock(), "demo")
+            finally:
+                module._ROSTER_DIR = old_roster_dir
+
+        assert ok is True
+        registry_module.register_butler.assert_awaited_once()
+        args = registry_module.register_butler.await_args.args
+        assert args[2] == "http://localhost:41234/mcp"
 
 
 # ---------------------------------------------------------------------------
