@@ -99,9 +99,11 @@ class Module(abc.ABC):
         butler_name:
             Canonical butler identity string, passed by the daemon from its
             loaded configuration.  Modules that need identity for tool logic
-            MUST store it from this parameter.  Modules MUST NOT derive butler
-            identity from database attributes (``db.schema``, ``db.db_name``,
-            or similar).
+            MUST prefer this parameter over any database-derived attribute
+            (``db.schema``, ``db.db_name``, or similar).  Falling back to a
+            database attribute is permitted only for backward compatibility
+            when ``butler_name`` is empty (e.g. in legacy tests that do not
+            supply it).
         """
         ...
 

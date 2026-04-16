@@ -1074,9 +1074,8 @@ class TestSelfHealingToQaRelayIntegration:
 
         # Wire the SelfHealingModule with the mock client (as daemon does after bu-i0geq fix)
         sh_mod = SelfHealingModule()
-        # Identity is provided through register_tools; set directly here for the unit test
-        # (spec: wire_runtime no longer carries butler_name — it comes from register_tools)
-        sh_mod._butler_name = "general"
+        # Identity flows through register_tools per spec; use it here too.
+        await sh_mod.register_tools(MagicMock(), None, None, butler_name="general")
         sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
         sh_mod._pool = None  # No DB required for this relay path
 

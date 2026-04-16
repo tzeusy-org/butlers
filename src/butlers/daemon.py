@@ -1126,7 +1126,9 @@ class ButlerDaemon:
                     module_runtime_states=self._module_runtime_states,
                 )
                 validated_config = self._module_configs.get(mod.name)
-                await mod.register_tools(wrapped_mcp, validated_config, self.db, self.config.name)
+                await mod.register_tools(
+                    wrapped_mcp, validated_config, self.db, butler_name=self.config.name
+                )
                 # Record tool → module mapping for introspection and gating.
                 for tool_name in wrapped_mcp._registered_tool_names:
                     self._tool_module_map[tool_name] = mod.name
