@@ -1647,8 +1647,7 @@ async def check_open_pr_statuses(
                 pr_data = _json.loads(stdout.decode("utf-8", errors="replace"))
             except _json.JSONDecodeError:
                 logger.warning(
-                    "check_open_pr_statuses: failed to parse gh output for "
-                    "attempt=%s pr_number=%s",
+                    "check_open_pr_statuses: failed to parse gh output for attempt=%s pr_number=%s",
                     attempt_id,
                     pr_number,
                 )

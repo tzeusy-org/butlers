@@ -617,6 +617,8 @@ class BridgeSubprocessManager:
         """Enter degraded mode with the given human-readable reason."""
         self._degraded = True
         self._degraded_reason = reason
+        if self._config.startup_allow_degraded:
+            self._startup_ready_event.set()
         logger.warning("Bridge entering degraded mode: %s", reason)
 
     # ------------------------------------------------------------------
