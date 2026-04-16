@@ -47,6 +47,13 @@ These are the load-bearing constraints. Violating any of them means the change d
 6. **Each butler has a manifesto that governs its scope and personality**: features must align with the manifesto.
 7. **Transport is connector responsibility; butlers never know about transport details**: connectors normalize, butlers receive structured requests.
 
+## Do Not Use This Skill For
+
+- Wire contracts, state machines, or schema design: use `legends-and-lore`
+- Feature behavior and acceptance scenarios: use `spec-and-spine`
+- Test scope, verification bar, or documentation hygiene: use `craft-and-care`
+- Code ownership or placement questions: use `lay-and-land`
+
 ## When to Load
 
 - Starting substantive work on any butler or core component

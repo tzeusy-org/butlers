@@ -24,29 +24,30 @@ The `about/legends-and-lore/` directory is the HOW pillar of the Butlers knowled
 
 ## RFC Index
 
-| RFC | File | Status | Summary |
-|-----|------|--------|---------|
-| 0001 | `about/legends-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md` | EXISTS | Multi-phase startup, dual trigger sources (external MCP + internal cron), spawner concurrency model, session lifecycle, request context propagation |
-| 0002 | `about/legends-and-lore/rfcs/0002-mcp-tool-surface-and-modules.md` | EXISTS | FastMCP SSE server, core tool catalog, module ABC and topological resolution, tool call logging proxy, skills infrastructure, ephemeral MCP config generation |
-| 0003 | `about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md` | EXISTS | ingest.v1 envelope format, pre-classification triage, thread affinity, LLM classification fallback, route.execute dispatch, route inbox crash recovery, email priority queuing |
-| 0004 | `about/legends-and-lore/rfcs/0004-identity-and-contact-resolution.md` | EXISTS | Three-table identity schema (contacts, contact_info, entities) in `public`, resolve_contact_by_channel() contract, unknown sender handling, identity preamble format, tenant model |
-| 0005 | `about/legends-and-lore/rfcs/0005-observability-and-telemetry.md` | EXISTS | OTel setup, OTLP export pipeline, trace propagation across process boundaries, tool_span instrumentation, metrics catalog, cardinality discipline |
-| 0006 | `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md` | EXISTS | Single-PG multi-schema model, shared identity tables, per-butler schema contents, multi-chain Alembic migrations, credential store design |
-| 0007 | `about/legends-and-lore/rfcs/0007-dashboard-and-api-surface.md` | EXISTS | FastAPI + Vite architecture, auto-discovered butler routes, route map, backend API contract, tab structures, data access patterns, command palette |
+| RFC | File | Read when... |
+|-----|------|-------------|
+| 0001 | `about/legends-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md` | Touching daemon startup, shutdown, trigger dispatch, session lifecycle, or spawner concurrency |
+| 0002 | `about/legends-and-lore/rfcs/0002-mcp-tool-surface-and-modules.md` | Working on MCP tool registration, module loading, module ABC, skills, or ephemeral MCP config |
+| 0003 | `about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md` | Modifying ingestion, triage, classification, thread affinity, or route dispatch |
+| 0004 | `about/legends-and-lore/rfcs/0004-identity-and-contact-resolution.md` | Changing contacts, contact_info, identity resolution, or unknown sender handling |
+| 0005 | `about/legends-and-lore/rfcs/0005-observability-and-telemetry.md` | Adding or modifying OTel tracing, metrics, cardinality rules, or export pipeline |
+| 0006 | `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md` | Working on schema isolation, Alembic migrations, credential store, or per-butler schema contents |
+| 0007 | `about/legends-and-lore/rfcs/0007-dashboard-and-api-surface.md` | Building or modifying dashboard API routes, frontend tabs, or auto-discovery |
+| 0008 | `about/legends-and-lore/rfcs/0008-deployment-network-security.md` | Changing network isolation, egress rules, container environment, or port binding |
+| 0009 | `about/legends-and-lore/rfcs/0009-situational-context-bus.md` | Working on shared user_context signals, context preamble, or cross-butler context queries |
+| 0010 | `about/legends-and-lore/rfcs/0010-cross-butler-briefing-exception.md` | Implementing cross-schema read exceptions or daily briefing aggregation |
+| 0011 | `about/legends-and-lore/rfcs/0011-proactive-insight-delivery.md` | Working on insight generation, Switchboard brokering, anti-spam budgets, or notify delivery |
+| 0012 | `about/legends-and-lore/rfcs/0012-finance-transaction-data-model.md` | Touching finance transactions, deduplication, materialized summaries, or SPO migration |
+| 0013 | `about/legends-and-lore/rfcs/0013-dunbar-group-aware-interaction-scoring.md` | Working on interaction scoring, group-size dilution, direction weighting, or participant gating |
 
 Consult `about/legends-and-lore/README.md` for the canonical reading order (follows data flow from startup through request handling).
 
-## Key Contracts
+## Do Not Use This Skill For
 
-The most load-bearing design decisions defined by these RFCs:
-
-- **Daemon startup is multi-phase** (RFC 0001): DB connect, run migrations, register modules (topological sort), start MCP server, begin scheduler. Order matters.
-- **Two trigger sources** (RFC 0001): External MCP calls and internal cron ticks. Both flow through the same spawn path.
-- **ingest.v1 envelope** (RFC 0003): The canonical format for all external events entering the system. Connectors produce it, Switchboard consumes it.
-- **Thread affinity** (RFC 0003): Replies to an existing thread route to the same butler that handled the original message, bypassing classification.
-- **resolve_contact_by_channel()** (RFC 0004): The single entry point for identity resolution. Maps (channel_type, channel_value) to a contact record.
-- **Per-butler schemas with shared identity** (RFC 0006): Each butler gets its own PostgreSQL schema. The `public` schema holds contacts, contact_info. Schema isolation is the security boundary.
-- **Auto-discovered dashboard routes** (RFC 0007): Butler API routes in `roster/*/api/router.py` are discovered and mounted automatically.
+- Project purpose or scope arguments: use `heart-and-soul`
+- Feature behavior and acceptance scenarios: use `spec-and-spine`
+- Test scope, verification bar, or documentation hygiene: use `craft-and-care`
+- Code ownership or placement questions: use `lay-and-land`
 
 ## When to Load
 
@@ -57,10 +58,12 @@ The most load-bearing design decisions defined by these RFCs:
 - Adding or modifying telemetry, tracing, or metrics
 - Working on database schema, migrations, or the credential store
 - Building or modifying dashboard API routes or frontend
+- Changing network isolation, deployment, or container configuration
+- Working on cross-butler context, insight delivery, or interaction scoring
 
 ## How to Use
 
 1. Identify which subsystem your work touches.
-2. Load the specific RFC(s) for that subsystem -- not all seven.
+2. Load the specific RFC(s) for that subsystem -- not all thirteen.
 3. Pay attention to normative language: MUST, SHOULD, MAY carry their usual weight.
 4. Cross-reference by RFC number when contracts span subsystems (e.g., RFC 0003 references RFC 0004 for identity resolution during ingestion).
