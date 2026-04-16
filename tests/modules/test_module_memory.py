@@ -151,7 +151,7 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
+            await mod.register_tools(mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler")
 
         return registered_tools
 
@@ -188,7 +188,7 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
+            await mod.register_tools(mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler")
 
         assert mcp.tool.call_count == 25
 
@@ -199,7 +199,7 @@ class TestRegisterTools:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
 
-        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db)
+        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler")
 
         get_tools = getattr(runtime_mcp, "get_tools", None)
         if callable(get_tools):
@@ -237,7 +237,7 @@ class TestRegisterTools:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
 
-        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db)
+        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler")
 
         get_tools = getattr(runtime_mcp, "get_tools", None)
         if callable(get_tools):
@@ -322,7 +322,7 @@ class TestToolDelegation:
                 "butlers.modules.memory.tools.entities": mock_entities,
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=fake_db)
+            await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
         return (
             mod,
@@ -573,7 +573,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
                 "butlers.modules.memory.tools.entities": MagicMock(),
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=fake_db)
+            await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
         mod._embedding_engine = MagicMock(name="embedding")
         mock_writing.memory_store_fact = AsyncMock(return_value={"id": "xyz"})
@@ -701,7 +701,7 @@ class TestToolGroups:
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig()  # groups=None (default)
-        await mod.register_tools(mcp, config, MagicMock())
+        await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         assert len(tools) == 25
 
@@ -710,7 +710,7 @@ class TestToolGroups:
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core"])
-        await mod.register_tools(mcp, config, MagicMock())
+        await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
         assert len(tools) == 8
@@ -726,7 +726,7 @@ class TestToolGroups:
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core", "entity"])
-        await mod.register_tools(mcp, config, MagicMock())
+        await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
         assert len(tools) == 15  # 8 core + 7 entity
@@ -739,7 +739,7 @@ class TestToolGroups:
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=[])
-        await mod.register_tools(mcp, config, MagicMock())
+        await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         assert len(tools) == 25
 

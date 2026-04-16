@@ -328,7 +328,7 @@ class TestToolRegistration:
         mcp = MagicMock()
         mcp.tool.side_effect = lambda: lambda fn: registered.__setitem__(fn.__name__, fn) or fn
 
-        await module.register_tools(mcp=mcp, config=None, db=mock_db)
+        await module.register_tools(mcp=mcp, config=None, db=mock_db, butler_name="test-butler")
 
         for expected in {
             "list_pending_actions",

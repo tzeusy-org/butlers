@@ -51,7 +51,7 @@ class StrictModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         self._tools_config = config
 
     def migration_revisions(self) -> str | None:
@@ -92,7 +92,7 @@ class AllDefaultsModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         self._tools_config = config
 
     def migration_revisions(self) -> str | None:
@@ -126,7 +126,7 @@ class NoSchemaModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         self._tools_config = config
 
     def migration_revisions(self) -> str | None:

@@ -69,7 +69,7 @@ async def _make_module(
     """Register a CalendarModule with a _StubMCP, bypassing table checks."""
     mod = CalendarModule()
     mcp = _StubMCP()
-    await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+    await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None, butler_name="test-butler")
     mod._butler_name = butler_name
     if pool is not None:
         mod._db = _make_db(pool=pool)
@@ -93,7 +93,7 @@ class TestReminderToolsRegistered:
     async def test_reminder_tools_are_registered(self):
         mod = CalendarModule()
         mcp = _StubMCP()
-        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None, butler_name="test-butler")
         assert "reminder_create" in mcp.tools
         assert "reminder_list" in mcp.tools
         assert "reminder_dismiss" in mcp.tools

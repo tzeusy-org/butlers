@@ -49,7 +49,7 @@ def _make_module(
             return list(_deps)
 
         async def register_tools(
-            self, mcp: Any, config: Any, db: Any, butler_name: str = ""
+            self, mcp: Any, config: Any, db: Any, butler_name: str
         ) -> None:
             pass
 

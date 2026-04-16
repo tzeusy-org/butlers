@@ -83,7 +83,7 @@ class TestToolRegistration:
     async def test_registers_read_tools_by_default(
         self, email_module: EmailModule, mock_mcp: MagicMock
     ) -> None:
-        await email_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        await email_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
         registered = set(mock_mcp._registered_tools.keys())
         assert EXPECTED_EMAIL_READ_TOOLS.issubset(registered)
         # Send tools NOT registered by default
@@ -94,7 +94,7 @@ class TestSendEmailBehavior:
     async def test_send_without_credentials_raises(
         self, email_module: EmailModule, mock_mcp: MagicMock
     ) -> None:
-        await email_module.register_tools(mcp=mock_mcp, config={"send_tools": True}, db=None)
+        await email_module.register_tools(mcp=mock_mcp, config={"send_tools": True}, db=None, butler_name="test-butler")
         # No credentials resolved → raises RuntimeError with actionable message
         with pytest.raises(RuntimeError, match="email credentials"):
             await mock_mcp._registered_tools["email_send_message"](

@@ -94,7 +94,7 @@ class MetricsModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register metrics MCP tools on the butler's FastMCP server."""
         self._config = self._coerce_config(config)
         self._db = db
@@ -162,18 +162,9 @@ class MetricsModule(Module):
                 return []
             return await load_all_definitions(module._db)
 
-        # Ensure pool and butler_name are populated (on_startup runs first, but
-        # register_tools may be called in contexts where on_startup did not run,
-        # e.g. tests — fall back gracefully).
         if self._pool is None:
             self._pool = getattr(db, "pool", None)
-        if self._butler_name is None:
-            if butler_name:
-                self._butler_name = butler_name.replace("-", "_")
-            else:
-                schema: str | None = getattr(db, "schema", None)
-                if schema:
-                    self._butler_name = schema.replace("-", "_")
+        self._butler_name = butler_name.replace("-", "_") if butler_name else None
 
         module = self  # capture for closures
 
@@ -384,21 +375,14 @@ class MetricsModule(Module):
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
     ) -> None:
-        """Store config, derive butler name, and restore instrument cache.
+        """Store config and restore instrument cache.
 
-        Derives ``_butler_name`` from ``db.schema`` (hyphens → underscores),
-        stores the asyncpg pool, then loads all persisted metric definitions
+        Stores the asyncpg pool, then loads all persisted metric definitions
         from the state store and rebuilds the in-process OTEL instrument cache.
+        Butler identity is set in ``register_tools()``, not here.
         """
         self._config = self._coerce_config(config)
         self._db = db
-
-        # Derive butler name from the DB schema (e.g. "my-butler" → "my_butler").
-        schema: str | None = getattr(db, "schema", None)
-        if schema:
-            self._butler_name = schema.replace("-", "_")
-        else:
-            self._butler_name = None
 
         # Store pool for state-store access.
         self._pool = getattr(db, "pool", None)

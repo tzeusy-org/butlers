@@ -85,7 +85,7 @@ class Module(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register MCP tools on the butler's FastMCP server.
 
         Parameters
@@ -98,12 +98,9 @@ class Module(abc.ABC):
             Butler database instance (provides ``db.pool`` for asyncpg).
         butler_name:
             Canonical butler identity string, passed by the daemon from its
-            loaded configuration.  Modules that need identity for tool logic
-            MUST prefer this parameter over any database-derived attribute
-            (``db.schema``, ``db.db_name``, or similar).  Falling back to a
-            database attribute is permitted only for backward compatibility
-            when ``butler_name`` is empty (e.g. in legacy tests that do not
-            supply it).
+            loaded configuration.  Modules MUST use this parameter for
+            identity — never derive it from database attributes
+            (``db.schema``, ``db.db_name``, or similar).
         """
         ...
 

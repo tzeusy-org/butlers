@@ -2522,7 +2522,7 @@ class CalendarModule(Module):
     def _coerce_config(config: Any) -> CalendarConfig:
         return config if isinstance(config, CalendarConfig) else CalendarConfig(**(config or {}))
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         self._config = self._coerce_config(config)
         if butler_name:
             self._butler_name = butler_name

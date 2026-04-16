@@ -121,7 +121,7 @@ class TestModuleABCAndConfig:
 
                 return decorator
 
-        await mod.register_tools(FakeMCP(), QaConfig(), _make_db())
+        await mod.register_tools(FakeMCP(), QaConfig(), _make_db(), "test-butler")
         for name in ["report_finding", "force_patrol", "get_qa_status"]:
             assert name in registered_tools
 

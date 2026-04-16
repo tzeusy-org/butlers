@@ -125,7 +125,7 @@ class TestToolRegistration:
     async def test_registers_all_expected_tools(
         self, spotify_module: SpotifyModule, mock_mcp: MagicMock
     ) -> None:
-        await spotify_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        await spotify_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
         registered = set(mock_mcp._registered_tools.keys())
         assert EXPECTED_SPOTIFY_TOOLS.issubset(registered)
         assert EXPECTED_PLAYBACK_TOOLS.issubset(registered)
@@ -155,14 +155,14 @@ class TestToolBehaviors:
             return_value={"tracks": {"items": [{"name": "Song", "uri": "spotify:track:1"}]}}
         )
         module._client = mock_client
-        await module.register_tools(mcp=mock_mcp, config={}, db=None)
+        await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
         result = await mock_mcp._registered_tools["spotify_search"](query="test song", type="track")
         assert result is not None
 
     async def test_missing_credentials_returns_error(self, mock_mcp: MagicMock) -> None:
         module = SpotifyModule()
         # No client set → should return error dict, not raise
-        await module.register_tools(mcp=mock_mcp, config={}, db=None)
+        await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
         result = await mock_mcp._registered_tools["spotify_search"](query="test", type="track")
         assert isinstance(result, dict)
         assert "error" in result or result.get("status") == "error" or len(result) > 0

@@ -234,7 +234,7 @@ class TestMemoryStoreFactStructuredErrors:
                 "butlers.modules.memory.tools.entities": MagicMock(),
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=fake_db)
+            await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
 
         mod._embedding_engine = MagicMock(name="embedding")
         return mod, registered_tools["memory_store_fact"], fake_db.pool, mock_writing

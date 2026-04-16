@@ -79,7 +79,7 @@ class StubSpanModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         @mcp.tool()
         async def stub_action(x: int) -> dict:
             """A stub action for testing span wrapping."""

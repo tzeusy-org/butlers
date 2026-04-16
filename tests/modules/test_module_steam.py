@@ -111,7 +111,7 @@ class TestToolRegistration:
     async def test_registers_expected_tools(
         self, steam_module: SteamModule, mock_mcp: MagicMock
     ) -> None:
-        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_STEAM_TOOLS
 
     def test_tool_metadata_covers_all_tools(self, steam_module: SteamModule) -> None:
@@ -133,7 +133,7 @@ class TestMissingCredentials:
     async def test_tool_without_client_returns_error(
         self, steam_module: SteamModule, mock_mcp: MagicMock
     ) -> None:
-        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        await steam_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
         result = await mock_mcp._registered_tools["steam_get_player_summary"]()
         assert isinstance(result, dict)
         assert "error" in result

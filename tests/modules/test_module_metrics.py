@@ -145,6 +145,7 @@ class TestMetricsDefineEmit:
             mcp=mcp,
             config={"prometheus_query_url": "http://prom:9090"},
             db=db,
+            butler_name="test-butler",
         )
         # metrics_define should be registered
         assert "metrics_define" in tools
@@ -159,6 +160,7 @@ class TestMetricsDefineEmit:
             mcp=mcp,
             config={"prometheus_query_url": "http://prom:9090"},
             db=db,
+            butler_name="test-butler",
         )
         assert "metrics_emit" in tools
         result = await tools["metrics_emit"](name="undefined_metric", value=1.0)

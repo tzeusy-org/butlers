@@ -192,11 +192,11 @@ class TestModuleToolRegistration:
         """Default (send_tools=false) and explicit false register no tools."""
         module = WhatsAppModule()
         mcp, tools = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config=None, db=None)
+        await module.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
         assert len(tools) == 0
 
         await module.register_tools(
-            mcp=mcp, config={"send_tools": False, "send_enabled": False}, db=None
+            mcp=mcp, config={"send_tools": False, "send_enabled": False}, db=None, butler_name="test-butler"
         )
         assert len(tools) == 0
 
@@ -205,7 +205,7 @@ class TestModuleToolRegistration:
         module = WhatsAppModule()
         mcp, tools = _make_mock_mcp()
         await module.register_tools(
-            mcp=mcp, config={"send_tools": True, "send_enabled": False}, db=None
+            mcp=mcp, config={"send_tools": True, "send_enabled": False}, db=None, butler_name="test-butler"
         )
         assert "whatsapp_send_message" in tools and "whatsapp_reply_to_message" in tools
 
@@ -217,7 +217,7 @@ class TestModuleToolRegistration:
         module2 = WhatsAppModule()
         mcp2, tools2 = _make_mock_mcp()
         await module2.register_tools(
-            mcp=mcp2, config={"send_tools": True, "send_enabled": True}, db=None
+            mcp=mcp2, config={"send_tools": True, "send_enabled": True}, db=None, butler_name="test-butler"
         )
         mock_send = AsyncMock(return_value={"message_id": "wa-msg-123", "status": "sent"})
         module2._send_message = mock_send

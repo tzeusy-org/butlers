@@ -207,7 +207,7 @@ class StubModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         self.tools_registered = True
 
     def migration_revisions(self) -> str | None:

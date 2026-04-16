@@ -619,7 +619,7 @@ class QaModule(Module):
     # Tool registration
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register report_finding, force_patrol, and get_qa_status tools."""
         self._config = config if isinstance(config, QaConfig) else QaConfig(**(config or {}))
         if butler_name:

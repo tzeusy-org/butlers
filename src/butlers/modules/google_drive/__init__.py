@@ -558,11 +558,6 @@ class GoogleDriveModule(Module):
         self._credentials = None
         self._db = db
 
-        # Derive butler name from DB schema (same pattern as other modules)
-        schema: str | None = getattr(db, "schema", None)
-        if schema:
-            self._butler_name = schema
-
         if credential_store is None:
             logger.warning(
                 "GoogleDriveModule: no credential_store provided — tools will return errors"
@@ -1244,7 +1239,7 @@ class GoogleDriveModule(Module):
     # Tool registration (spec §6.1)
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register all 7 Google Drive MCP tools on the butler's FastMCP server."""
         if isinstance(config, dict):
             config = GoogleDriveConfig(**(config or {}))
@@ -1252,15 +1247,7 @@ class GoogleDriveModule(Module):
             self._config = config
         self._db = db
 
-        # Prefer the butler_name param; fall back to db.schema for legacy compat.
-        if butler_name:
-            self._butler_name = butler_name
-        else:
-            schema: Any = getattr(db, "schema", None) if db is not None else None
-            if isinstance(schema, str):
-                schema = schema.strip()
-                if schema:
-                    self._butler_name = schema
+        self._butler_name = butler_name
 
         module = self
 

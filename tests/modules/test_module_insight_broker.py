@@ -133,7 +133,7 @@ class TestProposeInsightCandidateTool:
 
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
-        await module.register_tools(mcp=mock_mcp, config={}, db=fake_db)
+        await module.register_tools(mcp=mock_mcp, config={}, db=fake_db, butler_name="test-butler")
         assert "propose_insight_candidate" in mock_mcp._registered_tools
         tool_fn = mock_mcp._registered_tools["propose_insight_candidate"]
         assert callable(tool_fn)

@@ -253,7 +253,7 @@ class ContactsModule(Module):
     def _coerce_config(config: Any) -> ContactsConfig:
         return config if isinstance(config, ContactsConfig) else ContactsConfig(**(config or {}))
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register contacts MCP tools.
 
         Tools capture ``self`` via closure so they resolve ``_runtimes`` at

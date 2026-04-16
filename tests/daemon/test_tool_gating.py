@@ -55,7 +55,7 @@ class _CalendarModule(Module):
     def credentials_env(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         calls = self.calls
 
         @mcp.tool()
@@ -102,7 +102,7 @@ class _EmailModule(Module):
     def credentials_env(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         calls = self.calls
 
         @mcp.tool()

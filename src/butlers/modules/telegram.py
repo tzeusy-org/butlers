@@ -198,7 +198,7 @@ class TelegramModule(Module):
             self._client = httpx.AsyncClient()
         return self._client
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register Telegram send/reply MCP tools."""
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))

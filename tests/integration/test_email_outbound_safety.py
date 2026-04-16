@@ -176,7 +176,7 @@ class TestEmailToolSurfaceRestriction:
             return dec
 
         mcp.tool = capture
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
 
         assert "email_send_message" not in registered, (
             "email_send_message MUST NOT be registered without send_tools=true"
@@ -201,7 +201,7 @@ class TestEmailToolSurfaceRestriction:
             return dec
 
         mcp.tool = capture
-        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None)
+        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None, butler_name="test-butler")
 
         assert "email_send_message" in registered
         assert "email_reply_to_thread" in registered
@@ -772,7 +772,7 @@ class TestIncidentReplay:
         mcp.tool = capture
 
         # Travel butler config: [modules.email] with NO send_tools
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
 
         assert "email_reply_to_thread" not in registered, (
             "Travel butler MUST NOT have email_reply_to_thread. "

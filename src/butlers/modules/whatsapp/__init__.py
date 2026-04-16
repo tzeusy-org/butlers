@@ -105,7 +105,7 @@ class WhatsAppModule(Module):
         """No custom tables — bridge manages sessions, connector manages messages."""
         return None
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register WhatsApp MCP tools.
 
         Send/reply tools are only registered when ``send_tools = true`` in the

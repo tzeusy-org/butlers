@@ -221,7 +221,7 @@ class MemoryModule(Module):
             self._embedding_engine = get_embedding_engine()
         return self._embedding_engine
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register all memory MCP tools."""
         self._db = db
         if isinstance(config, MemoryModuleConfig):

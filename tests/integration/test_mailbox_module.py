@@ -52,7 +52,7 @@ class TestModuleABCAndConfig:
             return decorator
 
         mcp.tool.side_effect = capture_tool
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
 
         expected = {
             "mailbox_post",

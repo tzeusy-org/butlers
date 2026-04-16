@@ -66,7 +66,7 @@ class TestToolRegistration:
         mcp.tool.side_effect = lambda **kw: (
             lambda fn: registered.__setitem__(kw.get("name") or fn.__name__, fn) or fn
         )
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
         assert "report_error" in registered
         assert "get_healing_status" in registered
 
@@ -89,7 +89,7 @@ class TestReportErrorBehavior:
         mcp.tool.side_effect = lambda **kw: (
             lambda fn: registered.__setitem__(kw.get("name") or fn.__name__, fn) or fn
         )
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
 
         result = await registered["report_error"](
             error_type="test_error", error_message="test error"

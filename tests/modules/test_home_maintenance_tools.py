@@ -75,7 +75,7 @@ class TestMaintenanceToolRegistration:
     async def test_maintenance_tools_registered(self, module: HomeAssistantModule) -> None:
         mcp = _make_mcp()
         with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
-            await module.register_tools(mcp, config={}, db=MagicMock())
+            await module.register_tools(mcp, config={}, db=MagicMock(), butler_name="test-butler")
 
         registered = set(mcp._registered_tools.keys())
         for name in [

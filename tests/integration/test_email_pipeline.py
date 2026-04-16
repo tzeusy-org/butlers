@@ -35,7 +35,7 @@ class TestToolFlows:
             return decorator
 
         mcp.tool = capture_tool
-        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None)
+        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None, butler_name="test-butler")
 
         send_mock = AsyncMock(return_value={"status": "sent"})
         reply_mock = AsyncMock(return_value={"status": "sent", "thread_id": "thread-1"})
@@ -82,7 +82,7 @@ class TestToolFlows:
             return decorator
 
         mcp.tool = capture_tool
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
 
         search_mock = AsyncMock(return_value=[{"message_id": "1"}])
         read_mock = AsyncMock(return_value={"message_id": "1", "body": "hello"})
@@ -111,7 +111,7 @@ class TestToolFlows:
             return decorator
 
         mcp.tool = capture_tool
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
 
         assert "email_check_and_route_inbox" not in tools
 
@@ -129,7 +129,7 @@ class TestToolFlows:
             return decorator
 
         mcp.tool = capture_tool
-        await mod.register_tools(mcp=mcp, config=None, db=None)
+        await mod.register_tools(mcp=mcp, config=None, db=None, butler_name="test-butler")
 
         legacy_send = "send" + "_email"
         legacy_ingest = "check" + "_and_route_inbox"

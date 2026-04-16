@@ -276,7 +276,7 @@ class SelfHealingModule(Module):
     # Tool registration
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register report_error and get_healing_status tools on the MCP server."""
         self._config = (
             config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))

@@ -71,12 +71,12 @@ class TestToolRegistration:
 
         mcp.tool = _tool_decorator
         # Default: send_tools=False → no tools registered
-        await whatsapp_module.register_tools(mcp=mcp, config={}, db=None)
+        await whatsapp_module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-butler")
         assert len(registered) == 0
         # With send_tools=True → tools registered
         registered.clear()
         await whatsapp_module.register_tools(
-            mcp=mcp, config={"send_tools": True, "send_enabled": True}, db=None
+            mcp=mcp, config={"send_tools": True, "send_enabled": True}, db=None, butler_name="test-butler"
         )
         assert len(registered) >= 1
 

@@ -34,7 +34,7 @@ class MinimalModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         pass
 
     def migration_revisions(self) -> str | None:
@@ -64,7 +64,7 @@ class ModuleWithDeps(Module):
     def dependencies(self) -> list[str]:
         return ["minimal"]
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         pass
 
     def migration_revisions(self) -> str | None:
@@ -95,7 +95,7 @@ class MissingNameModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         pass
 
     def migration_revisions(self) -> str | None:
@@ -190,7 +190,7 @@ async def test_register_tools_signature():
     """register_tools is callable with the expected arguments."""
     mod = MinimalModule()
     # Should not raise — with and without butler_name
-    await mod.register_tools(mcp=None, config=None, db=None)
+    await mod.register_tools(mcp=None, config=None, db=None, butler_name="test-butler")
     await mod.register_tools(mcp=None, config=None, db=None, butler_name="my-butler")
 
 

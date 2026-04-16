@@ -137,7 +137,7 @@ class EmailModule(Module):
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register email MCP tools.
 
         Send/reply tools are only registered when ``send_tools = true`` in

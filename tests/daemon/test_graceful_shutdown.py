@@ -54,7 +54,7 @@ class StubModuleOk(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         pass
 
     def migration_revisions(self) -> str | None:
@@ -88,7 +88,7 @@ class StubModuleFailing(Module):
     def dependencies(self) -> list[str]:
         return ["stub_ok"]
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         pass
 
     def migration_revisions(self) -> str | None:
@@ -122,7 +122,7 @@ class StubModuleAfterFailing(Module):
     def dependencies(self) -> list[str]:
         return ["stub_failing"]
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         pass
 
     def migration_revisions(self) -> str | None:

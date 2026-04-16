@@ -86,6 +86,7 @@ class TestToolRegistration:
             mcp=mock_mcp,
             config={},
             db=None,
+            butler_name="test-butler",
         )
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
 

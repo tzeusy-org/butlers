@@ -353,7 +353,7 @@ class TestEntityResolveSchema:
                 "butlers.modules.memory.tools.entities": MagicMock(),
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=fake_db)
+            await mod.register_tools(mcp=mcp, config=None, db=fake_db, butler_name="test-butler")
         return registered["memory_entity_resolve"]
 
     async def test_identifier_is_required_non_null_non_empty(self) -> None:

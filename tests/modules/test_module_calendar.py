@@ -244,7 +244,7 @@ class TestModuleStartup:
 
     async def test_register_tools_accepts_dict_config(self):
         mod = CalendarModule()
-        await mod.register_tools(mcp=_StubMCP(), config={"provider": "google"}, db=None)
+        await mod.register_tools(mcp=_StubMCP(), config={"provider": "google"}, db=None, butler_name="test-butler")
         assert isinstance(mod._config, CalendarConfig)
         assert mod._config.provider == "google"
 
@@ -267,7 +267,7 @@ class TestCalendarReadTools:
         mod._provider = provider
         mod._resolved_calendar_id = "primary"
         await mod.register_tools(
-            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None
+            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None, butler_name="test-butler"
         )
 
         list_result = await mcp.tools["calendar_list_events"]()
@@ -285,7 +285,7 @@ class TestCalendarReadTools:
         mod._provider = provider
         mod._resolved_calendar_id = "primary"
         await mod.register_tools(
-            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None
+            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None, butler_name="test-butler"
         )
 
         await mcp.tools["calendar_list_events"](calendar_id="  other-cal  ", limit=5)
@@ -299,7 +299,7 @@ class TestCalendarReadTools:
         mod._provider = provider
         mod._resolved_calendar_id = "primary"
         await mod.register_tools(
-            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None
+            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None, butler_name="test-butler"
         )
 
         with pytest.raises(ValueError, match="calendar_id"):
@@ -325,6 +325,7 @@ class TestCalendarWriteTools:
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
             db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -345,7 +346,7 @@ class TestCalendarWriteTools:
         mod._provider = provider
         mod._resolved_calendar_id = "primary"
         await mod.register_tools(
-            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None
+            mcp=mcp, config={"provider": "google", "calendar_id": "primary"}, db=None, butler_name="test-butler"
         )
         # calendar_delete_event tool is registered and callable
         assert "calendar_delete_event" in mcp.tools
@@ -368,6 +369,7 @@ class TestCalendarWriteTools:
                 "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
             },
             db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
         )
 
         enqueue_calls = []
@@ -612,11 +614,11 @@ class TestCreateEventAuthorship:
         mod = CalendarModule()
         mod._provider = provider
         mod._resolved_calendar_id = "primary"
-        # schema="general" sets the butler name via _resolve_butler_name.
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
             db=SimpleNamespace(schema="general", db_name="butlers"),
+            butler_name="general",
         )
 
         with patch("butlers.modules.calendar._get_session_id", return_value="test-sess-123"):
@@ -641,6 +643,7 @@ class TestCreateEventAuthorship:
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
             db=SimpleNamespace(db_name="butlers", schema="general"),
+            butler_name="test-butler",
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -665,6 +668,7 @@ class TestCreateEventAuthorship:
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
             db=SimpleNamespace(db_name="butlers", schema="general"),
+            butler_name="test-butler",
         )
 
         result = await mcp.tools["calendar_create_event"](
