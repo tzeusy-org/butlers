@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
+from alembic import command
 from butlers.testing.migration import create_migration_db, migration_db_name, table_exists
 
 # Skip all tests if Docker is not available
@@ -163,6 +164,69 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
     expected_owner = _current_user(db_url)
     for schema in REQUIRED_SCHEMAS:
         assert _schema_owner(db_url, schema) == expected_owner
+
+
+def test_core_migration_repairs_relationship_read_access_to_switchboard_message_inbox(
+    postgres_container,
+):
+    """core head repairs existing one-db deployments missing switchboard read grants."""
+    from butlers.migrations import _build_alembic_config
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+
+    relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
+    switchboard_core = _build_alembic_config(db_url, chains=["core"], target_schema="switchboard")
+    switchboard_chain = _build_alembic_config(
+        db_url, chains=["switchboard"], target_schema="switchboard"
+    )
+
+    command.upgrade(relationship_core, "core_076")
+    command.upgrade(switchboard_core, "core_076")
+    command.upgrade(switchboard_chain, "switchboard@head")
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            # The partition function lives in the switchboard schema and its
+            # body references ``message_inbox`` unqualified, so align the
+            # connection's search_path before invoking it.
+            conn.execute(text("SET search_path TO switchboard, public"))
+            conn.execute(
+                text("SELECT switchboard.switchboard_message_inbox_ensure_partition(now())")
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO switchboard.message_inbox ("
+                    "  received_at, request_context, raw_payload, normalized_text, "
+                    "  direction, lifecycle_state, schema_version"
+                    ") VALUES ("
+                    "  now(), '{}'::jsonb, '{}'::jsonb, 'acl probe', "
+                    "  'inbound', 'accepted', 'message_inbox.v2'"
+                    ")"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    with pytest.raises(ProgrammingError, match="permission denied"):
+        _execute_as_role(
+            db_url,
+            RUNTIME_ROLES["relationship"],
+            "SELECT COUNT(*) FROM switchboard.message_inbox",
+            scalar=True,
+        )
+
+    relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
+    command.upgrade(relationship_core, "core@head")
+
+    count = _execute_as_role(
+        db_url,
+        RUNTIME_ROLES["relationship"],
+        "SELECT COUNT(*) FROM switchboard.message_inbox",
+        scalar=True,
+    )
+    assert count == 1
 
 
 def test_core_scheduled_tasks_schema_and_constraints(postgres_container):
