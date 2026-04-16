@@ -43,7 +43,7 @@ export const navSections: NavSection[] = [
     items: [
       { path: '/', label: 'Overview', end: true },
       { path: '/butlers', label: 'Butlers' },
-      { path: '/sessions', label: 'Sessions' },
+      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-known-issues' },
       { path: '/ingestion', label: 'Ingestion' },
       { path: '/approvals', label: 'Approvals' },
       { path: '/memory', label: 'Memory' },
@@ -76,7 +76,7 @@ export const navSections: NavSection[] = [
       { path: '/timeline', label: 'Timeline' },
       { path: '/notifications', label: 'Notifications' },
       { path: '/issues', label: 'Issues' },
-      { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-known-issues' },
+      { path: '/sessions', label: 'Sessions' },
       { path: '/audit-log', label: 'Audit Log' },
     ],
   },
