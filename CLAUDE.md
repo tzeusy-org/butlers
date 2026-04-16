@@ -45,7 +45,7 @@ uv run pytest tests/ --ignore=tests/e2e -q --maxfail=1 --tb=short >"$PYTEST_LOG"
 Every butler has **core components** (always present) and **modules** (opt-in per butler):
 
 - **Core:** State store (KV JSONB), task scheduler (cron-driven), LLM CLI spawner (ephemeral LLM CLI via SDK), session log, tick handler, status
-- **Modules:** Pluggable units adding domain-specific MCP tools (email, telegram, calendar, etc.). Implement the `Module` abstract base class with `register_tools()`, `migrations()`, `on_startup()`, `on_shutdown()`.
+- **Modules:** Pluggable units adding domain-specific MCP tools (email, telegram, calendar, etc.). Implement the `Module` abstract base class with `register_tools(mcp, config, db, butler_name)`, `migrations()`, `on_startup()`, `on_shutdown()`.
 
 ### Trigger Flow
 
