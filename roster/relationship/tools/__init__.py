@@ -69,6 +69,7 @@ from butlers.tools.relationship.groups import (
 from butlers.tools.relationship.interactions import (
     interaction_list,
     interaction_log,
+    interaction_log_group,
 )
 from butlers.tools.relationship.labels import (
     contact_search_by_label,
@@ -177,6 +178,7 @@ __all__ = [
     "group_members",
     "interaction_list",
     "interaction_log",
+    "interaction_log_group",
     "label_assign",
     "label_create",
     "life_event_list",

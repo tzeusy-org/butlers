@@ -147,6 +147,65 @@ async def interaction_log(
     return result
 
 
+async def interaction_log_group(
+    pool: asyncpg.Pool,
+    group_id: uuid.UUID,
+    direction: str = "mutual",
+    occurred_at: datetime | None = None,
+    summary: str | None = None,
+) -> dict[str, Any]:
+    """Log an interaction with all members of a contact group in a single call.
+
+    Resolves group membership from the group_members table and fans out
+    interaction_log() calls for each member with group_size injected into
+    the fact metadata.
+
+    Returns:
+        {"logged": N, "skipped": M, "group_size": G} on success.
+        {"skipped": "group_too_large", "group_size": G} if group has >20 members.
+        {"logged": 0, "skipped": 0, "group_size": 0} if the group is empty.
+    """
+    if direction not in _VALID_DIRECTIONS:
+        raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
+
+    rows = await pool.fetch(
+        "SELECT contact_id FROM group_members WHERE group_id = $1",
+        group_id,
+    )
+    members = [row["contact_id"] for row in rows]
+    group_size = len(members)
+
+    if group_size == 0:
+        return {"logged": 0, "skipped": 0, "group_size": 0}
+
+    if group_size > 20:
+        return {"skipped": "group_too_large", "group_size": group_size}
+
+    logged = 0
+    skipped = 0
+    group_metadata: dict[str, Any] = {
+        "group_size": group_size,
+        "group_id": str(group_id),
+    }
+
+    for contact_id in members:
+        result = await interaction_log(
+            pool,
+            contact_id,
+            type="group_interaction",
+            summary=summary,
+            occurred_at=occurred_at,
+            direction=direction,
+            metadata=group_metadata,
+        )
+        if result.get("skipped") == "duplicate":
+            skipped += 1
+        else:
+            logged += 1
+
+    return {"logged": logged, "skipped": skipped, "group_size": group_size}
+
+
 async def interaction_list(
     pool: asyncpg.Pool,
     contact_id: uuid.UUID,

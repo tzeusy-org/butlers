@@ -468,6 +468,31 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             type=type,
         )
 
+    @_tool("interactions")
+    async def interaction_log_group(
+        group_id: uuid.UUID,
+        direction: str = "mutual",
+        occurred_at: datetime | None = None,
+        summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Log an interaction with all members of a contact group in a single call.
+
+        Resolves group membership and fans out interaction_log() calls for each
+        member with group_size injected into the fact metadata.
+
+        Returns:
+            {"logged": N, "skipped": M, "group_size": G} on success.
+            {"skipped": "group_too_large", "group_size": G} if group has >20 members.
+            {"logged": 0, "skipped": 0, "group_size": 0} if the group is empty.
+        """
+        return await _inter.interaction_log_group(
+            module._get_pool(),
+            group_id,
+            direction=direction,
+            occurred_at=occurred_at,
+            summary=summary,
+        )
+
     # =================================================================
     # Label tools (group: notes)
     # =================================================================

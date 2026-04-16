@@ -2919,3 +2919,172 @@ async def test_contacts_overdue_tier_1500_excluded_without_stay_in_touch(pool_wi
     assert cid not in overdue_ids, (
         "Tier 1500 contact with no stay_in_touch_days must not appear in overdue list"
     )
+
+
+# ------------------------------------------------------------------
+# interaction_log_group
+# ------------------------------------------------------------------
+
+
+async def test_interaction_log_group_fanout(pool):
+    """interaction_log_group fans out to all 5 members and returns correct counts."""
+    from butlers.tools.relationship import (
+        contact_create,
+        group_add_member,
+        group_create,
+        interaction_list,
+        interaction_log_group,
+    )
+
+    # Create a group with 5 members
+    grp = await group_create(pool, "Test Group Fanout")
+    members = []
+    for i in range(5):
+        c = await contact_create(pool, f"GroupFanout-Member-{i}")
+        await group_add_member(pool, grp["id"], c["id"])
+        members.append(c)
+
+    result = await interaction_log_group(pool, grp["id"], summary="Team meeting")
+
+    assert result["logged"] == 5
+    assert result["skipped"] == 0
+    assert result["group_size"] == 5
+
+    # Verify each member got an interaction fact
+    for c in members:
+        interactions = await interaction_list(pool, c["id"])
+        assert len(interactions) == 1
+        assert interactions[0]["summary"] == "Team meeting"
+
+
+async def test_interaction_log_group_empty(pool):
+    """interaction_log_group on an empty group returns zeros."""
+    from butlers.tools.relationship import group_create, interaction_log_group
+
+    grp = await group_create(pool, "Empty Group")
+    result = await interaction_log_group(pool, grp["id"])
+
+    assert result == {"logged": 0, "skipped": 0, "group_size": 0}
+
+
+async def test_interaction_log_group_too_large(pool):
+    """interaction_log_group returns group_too_large error for groups with >20 members."""
+    from butlers.tools.relationship import (
+        contact_create,
+        group_add_member,
+        group_create,
+        interaction_log_group,
+    )
+
+    grp = await group_create(pool, "Large Group")
+    for i in range(21):
+        c = await contact_create(pool, f"LargeGroup-Member-{i}")
+        await group_add_member(pool, grp["id"], c["id"])
+
+    result = await interaction_log_group(pool, grp["id"])
+
+    assert result["skipped"] == "group_too_large"
+    assert result["group_size"] == 21
+
+
+async def test_interaction_log_group_group_size_in_metadata(pool):
+    """interaction_log_group injects group_size and group_id into fact metadata."""
+    from butlers.tools.relationship import (
+        contact_create,
+        group_add_member,
+        group_create,
+        interaction_log_group,
+    )
+
+    grp = await group_create(pool, "Metadata Group")
+    members = []
+    for i in range(3):
+        c = await contact_create(pool, f"MetaGroup-Member-{i}")
+        await group_add_member(pool, grp["id"], c["id"])
+        members.append(c)
+
+    await interaction_log_group(pool, grp["id"])
+
+    # Check metadata on the fact stored for the first member
+    contact_id = members[0]["id"]
+    row = await pool.fetchrow(
+        """
+        SELECT metadata FROM facts
+        WHERE subject = $1
+          AND predicate = 'interaction'
+          AND scope = 'relationship'
+          AND validity = 'active'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        f"contact:{contact_id}",
+    )
+    assert row is not None
+    import json
+
+    meta = (
+        json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+    )
+    # group_size and group_id are stored in extra_metadata (via interaction_log's metadata param)
+    extra = meta.get("extra_metadata", {})
+    assert extra.get("group_size") == 3
+    assert extra.get("group_id") == str(grp["id"])
+
+
+async def test_interaction_log_group_default_direction(pool):
+    """interaction_log_group defaults direction to 'mutual'."""
+    from butlers.tools.relationship import (
+        contact_create,
+        group_add_member,
+        group_create,
+        interaction_list,
+        interaction_log_group,
+    )
+
+    grp = await group_create(pool, "Default Direction Group")
+    c = await contact_create(pool, "DefaultDir-Member")
+    await group_add_member(pool, grp["id"], c["id"])
+
+    await interaction_log_group(pool, grp["id"])
+
+    interactions = await interaction_list(pool, c["id"])
+    assert len(interactions) == 1
+    assert interactions[0]["direction"] == "mutual"
+
+
+async def test_interaction_log_group_custom_direction(pool):
+    """interaction_log_group respects an explicit direction argument."""
+    from butlers.tools.relationship import (
+        contact_create,
+        group_add_member,
+        group_create,
+        interaction_list,
+        interaction_log_group,
+    )
+
+    grp = await group_create(pool, "Custom Direction Group")
+    c = await contact_create(pool, "CustomDir-Member")
+    await group_add_member(pool, grp["id"], c["id"])
+
+    await interaction_log_group(pool, grp["id"], direction="outgoing")
+
+    interactions = await interaction_list(pool, c["id"])
+    assert len(interactions) == 1
+    assert interactions[0]["direction"] == "outgoing"
+
+
+async def test_interaction_log_group_invalid_direction(pool):
+    """interaction_log_group raises ValueError for an invalid direction."""
+    from butlers.tools.relationship import (
+        contact_create,
+        group_add_member,
+        group_create,
+        interaction_log_group,
+    )
+
+    grp = await group_create(pool, "Bad Direction Group")
+    c = await contact_create(pool, "BadDir-Member")
+    await group_add_member(pool, grp["id"], c["id"])
+
+    with pytest.raises(ValueError, match="Invalid direction"):
+        await interaction_log_group(pool, grp["id"], direction="sideways")
