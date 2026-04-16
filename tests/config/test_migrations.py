@@ -284,7 +284,7 @@ def test_core_calendar_tables_and_constraints(postgres_container):
             assert "ix_calendar_events_source_starts_at" in event_idxs
             assert "ix_calendar_events_time_window_gist" in event_idxs
 
-            # New columns and table added by core_074
+            # New columns and table added by core_076
             cal_event_cols = {
                 str(r[0])
                 for r in conn.execute(
