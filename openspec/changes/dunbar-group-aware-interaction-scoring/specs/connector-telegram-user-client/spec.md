@@ -33,7 +33,7 @@ The connector SHALL gate interaction-eligible processing for chats exceeding a c
 
 #### Scenario: Gating telemetry
 - **WHEN** the connector gates a message due to participant count
-- **THEN** it SHOULD emit an OTel counter `butlers.telegram_user_client.interaction_gated` with attributes `{chat_type, participant_count_bucket}`
+- **THEN** it SHOULD emit an OTel counter `butlers.telegram_user_client.interaction_gated` with low-cardinality attributes `{chat_type, participant_count_bucket}` where `participant_count_bucket` is one of `"21-50"`, `"51-200"`, `"201-1000"`, `"1000+"`
 
 #### Scenario: Below-threshold chats are unaffected
 - **WHEN** a chat has `participant_count` at or below `max_interaction_group_size`

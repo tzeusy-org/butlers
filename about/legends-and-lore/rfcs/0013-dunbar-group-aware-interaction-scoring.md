@@ -332,7 +332,7 @@ old facts decay away and new weighted facts dominate the score.
 | `DIRECTION_WEIGHT_OUTGOING` | 10.0 | `dunbar.py` | Cold (code constant) |
 | `DIRECTION_WEIGHT_MUTUAL` | 5.0 | `dunbar.py` | Cold |
 | `DIRECTION_WEIGHT_INCOMING` | 1.0 | `dunbar.py` | Cold |
-| `MAX_INTERACTION_GROUP_SIZE` | 20 | connector config | Hot (per-connector) |
+| `MAX_INTERACTION_GROUP_SIZE` | 20 | connector config (`butler.toml`) | Cold (requires connector restart) |
 | `_LAMBDA` (decay half-life) | ln(2)/30 | `dunbar.py` | Cold (unchanged) |
 
 ## Alternatives Considered
