@@ -29,6 +29,7 @@ CORE_TABLES = {
     "butler_secrets",
     "calendar_sources",
     "calendar_events",
+    "calendar_event_entities",
     "calendar_event_instances",
     "calendar_sync_cursors",
     "calendar_action_log",
@@ -53,6 +54,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "delivery_dead_letter",
     },
     "relationship": {
+        "_reminders_backup",
         "activity_feed",
         "addresses",
         "contact_info",
@@ -72,7 +74,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "quick_facts",
         "relationship_types",
         "relationships",
-        "reminders",
+        # reminders renamed to _reminders_backup by rel_007
         "tasks",
     },
     "switchboard": {

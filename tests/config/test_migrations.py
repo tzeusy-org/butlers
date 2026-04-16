@@ -145,6 +145,7 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
         "butler_secrets",
         "calendar_sources",
         "calendar_events",
+        "calendar_event_entities",
         "calendar_event_instances",
         "calendar_sync_cursors",
         "calendar_action_log",
@@ -239,9 +240,10 @@ def test_core_calendar_tables_and_constraints(postgres_container):
                     "INSERT INTO calendar_sources (source_key, source_kind, lane, provider, calendar_id) VALUES ('google:user-primary', 'provider', 'user', 'google', 'primary') RETURNING id"
                 )
             ).scalar_one()
+            # source_butler is now NOT NULL with no default — supply it explicitly.
             event_id = conn.execute(
                 text(
-                    "INSERT INTO calendar_events (source_id, origin_ref, title, timezone, starts_at, ends_at) VALUES (:sid, 'evt-1', 'Session', 'UTC', now(), now() + interval '1 hour') RETURNING id"
+                    "INSERT INTO calendar_events (source_id, origin_ref, title, timezone, starts_at, ends_at, source_butler) VALUES (:sid, 'evt-1', 'Session', 'UTC', now(), now() + interval '1 hour', 'health') RETURNING id"
                 ),
                 {"sid": source_id},
             ).scalar_one()
@@ -251,7 +253,7 @@ def test_core_calendar_tables_and_constraints(postgres_container):
             with pytest.raises(IntegrityError):
                 conn.execute(
                     text(
-                        "INSERT INTO calendar_events (source_id, origin_ref, title, timezone, starts_at, ends_at) VALUES (:sid, 'evt-1', 'Dup', 'UTC', now() + interval '2 hours', now() + interval '3 hours')"
+                        "INSERT INTO calendar_events (source_id, origin_ref, title, timezone, starts_at, ends_at, source_butler) VALUES (:sid, 'evt-1', 'Dup', 'UTC', now() + interval '2 hours', now() + interval '3 hours', 'health')"
                     ),
                     {"sid": source_id},
                 )
@@ -281,6 +283,34 @@ def test_core_calendar_tables_and_constraints(postgres_container):
             }
             assert "ix_calendar_events_source_starts_at" in event_idxs
             assert "ix_calendar_events_time_window_gist" in event_idxs
+
+            # New columns and table added by core_074
+            cal_event_cols = {
+                str(r[0])
+                for r in conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns"
+                        " WHERE table_schema = 'public' AND table_name = 'calendar_events'"
+                    )
+                )
+            }
+            for col in ("source_butler", "source_session_id", "body"):
+                assert col in cal_event_cols, f"Missing calendar_events.{col}"
+
+            # calendar_event_entities junction table
+            assert table_exists(db_url, "calendar_event_entities"), (
+                "calendar_event_entities table should exist"
+            )
+            junction_idxs = {
+                str(r[0])
+                for r in conn.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'"
+                        " AND tablename = 'calendar_event_entities'"
+                    )
+                )
+            }
+            assert "idx_calendar_event_entities_entity" in junction_idxs
     finally:
         engine.dispose()
 
@@ -360,13 +390,20 @@ def test_core_acl_and_relationship_chain(postgres_container):
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
+            # After rel_007, reminders is renamed to _reminders_backup.
+            # Verify the backup table has the expected columns.
             rows = conn.execute(
                 text(
-                    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'reminders'"
+                    "SELECT column_name FROM information_schema.columns"
+                    " WHERE table_schema = 'public' AND table_name = '_reminders_backup'"
                 )
             )
             cols = {str(r[0]) for r in rows}
             for required in ("contact_id", "message", "reminder_type", "cron", "due_at"):
-                assert required in cols
+                assert required in cols, f"Missing _reminders_backup.{required}"
+            # reminders table should no longer exist
+            assert not _table_exists_in_schema(db_url, "public", "reminders"), (
+                "reminders table should have been renamed to _reminders_backup"
+            )
     finally:
         engine.dispose()
