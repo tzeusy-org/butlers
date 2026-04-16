@@ -172,8 +172,8 @@ def upgrade() -> None:
                 VALUES (
                     :source_id, :origin_ref, :title, NULL,
                     'UTC',
-                    :due_at_str::timestamptz,
-                    :due_at_str::timestamptz + interval '15 minutes',
+                    CAST(:due_at_str AS timestamptz),
+                    CAST(:due_at_str AS timestamptz) + interval '15 minutes',
                     false, :status, 'default',
                     :recurrence_rule, 'relationship',
                     CAST(:metadata AS jsonb), :created_at, now()

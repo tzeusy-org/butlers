@@ -1,7 +1,7 @@
 """calendar: add source_butler, source_session_id, body columns and calendar_event_entities table.
 
-Revision ID: core_074
-Revises: core_073
+Revision ID: core_076
+Revises: core_075
 Create Date: 2026-04-16 00:00:00.000000
 
 Phase 1 of the reminders-as-calendar-native-events change.
@@ -22,8 +22,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_074"
-down_revision = "core_073"
+revision = "core_076"
+down_revision = "core_075"
 branch_labels = None
 depends_on = None
 
