@@ -39,7 +39,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import loans as _loans
     from butlers.tools.relationship import notes as _notes
     from butlers.tools.relationship import relationships as _rels
-    from butlers.tools.relationship import reminders as _remind
     from butlers.tools.relationship import resolve as _resolve
     from butlers.tools.relationship import stay_in_touch as _sit
     from butlers.tools.relationship import tasks as _tasks
@@ -731,59 +730,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         If group is specified, returns only types in that group.
         """
         return await _rels.relationship_types_list(module._get_pool(), group)
-
-    # =================================================================
-    # Reminder tools (group: tracking)
-    # =================================================================
-
-    @_tool("tracking")
-    async def reminder_create(
-        contact_id: uuid.UUID | None = None,
-        message: str | None = None,
-        reminder_type: str | None = None,
-        cron: str | None = None,
-        due_at: datetime | None = None,
-        label: str | None = None,
-        type: str | None = None,
-        next_trigger_at: datetime | None = None,
-        timezone: str | None = None,
-        until_at: datetime | None = None,
-        calendar_event_id: uuid.UUID | None = None,
-    ) -> dict[str, Any]:
-        """Create a reminder for a contact."""
-        return await _remind.reminder_create(
-            module._get_pool(),
-            contact_id,
-            message,
-            reminder_type,
-            cron,
-            due_at,
-            label=label,
-            type=type,
-            next_trigger_at=next_trigger_at,
-            timezone=timezone,
-            until_at=until_at,
-            calendar_event_id=calendar_event_id,
-        )
-
-    @_tool("tracking")
-    async def reminder_list(
-        contact_id: uuid.UUID | None = None,
-        include_dismissed: bool = False,
-    ) -> list[dict[str, Any]]:
-        """List reminders, optionally filtered by contact."""
-        return await _remind.reminder_list(
-            module._get_pool(),
-            contact_id=contact_id,
-            include_dismissed=include_dismissed,
-        )
-
-    @_tool("tracking")
-    async def reminder_dismiss(
-        reminder_id: uuid.UUID,
-    ) -> dict[str, Any]:
-        """Dismiss a reminder across legacy/spec schemas."""
-        return await _remind.reminder_dismiss(module._get_pool(), reminder_id)
 
     # =================================================================
     # Resolve tools (group: contacts)

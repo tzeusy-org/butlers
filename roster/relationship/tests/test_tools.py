@@ -366,8 +366,7 @@ async def pool(provisioned_postgres_pool):
                 ('activity', true),
                 ('gift', false),
                 ('loan', false),
-                ('contact_task', false),
-                ('reminder', false)
+                ('contact_task', false)
             ON CONFLICT (name) DO NOTHING
         """)
 
@@ -454,7 +453,6 @@ def patch_embedding_engine():
             "butlers.tools.relationship.gifts",
             "butlers.tools.relationship.loans",
             "butlers.tools.relationship.tasks",
-            "butlers.tools.relationship.reminders",
             "butlers.tools.relationship.facts",
         ):
             mod = sys.modules.get(mod_name)
@@ -1028,117 +1026,6 @@ async def test_interaction_feed_no_direction(pool):
     assert "(incoming)" not in interaction_entries[0]["summary"]
     assert "(outgoing)" not in interaction_entries[0]["summary"]
     assert "(mutual)" not in interaction_entries[0]["summary"]
-
-
-# ------------------------------------------------------------------
-# Reminders
-# ------------------------------------------------------------------
-
-
-async def test_reminder_create_one_time(pool):
-    """reminder_create stores a one_time reminder."""
-    from butlers.tools.relationship import contact_create, reminder_create
-
-    c = await contact_create(pool, "Remind-Once")
-    due = datetime(2025, 12, 25, 0, 0, 0, tzinfo=UTC)
-    r = await reminder_create(
-        pool,
-        contact_id=c["id"],
-        message="Buy gift",
-        reminder_type="one_time",
-        next_trigger_at=due,
-    )
-    assert r["type"] == "one_time"
-    assert r["next_trigger_at"] == due
-    assert r["last_triggered_at"] is None
-
-
-async def test_reminder_create_recurring(pool):
-    """reminder_create stores a recurring reminder."""
-    from butlers.tools.relationship import contact_create, reminder_create
-
-    c = await contact_create(pool, "Remind-Recur")
-    r = await reminder_create(
-        pool,
-        contact_id=c["id"],
-        message="Monthly check-in",
-        reminder_type="recurring_monthly",
-    )
-    assert r["type"] == "recurring_monthly"
-
-
-async def test_reminder_create_projection_linkage_fields(pool):
-    """reminder_create persists timezone/until/linkage fields for projection."""
-    from butlers.tools.relationship import contact_create, reminder_create
-
-    c = await contact_create(pool, "Remind-Projection")
-    next_trigger = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
-    until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
-    calendar_event_id = uuid.uuid4()
-    r = await reminder_create(
-        pool,
-        contact_id=c["id"],
-        label="Hydration reminder",
-        type="recurring_monthly",
-        next_trigger_at=next_trigger,
-        timezone="America/New_York",
-        until_at=until_at,
-        calendar_event_id=calendar_event_id,
-    )
-    assert r["timezone"] == "America/New_York"
-    assert r["until_at"] == until_at
-    assert r["calendar_event_id"] == calendar_event_id
-
-
-async def test_reminder_list(pool):
-    """reminder_list returns reminders for a contact."""
-    from butlers.tools.relationship import contact_create, reminder_create, reminder_list
-
-    c = await contact_create(pool, "Remind-List")
-    now = datetime.now(UTC)
-    await reminder_create(
-        pool,
-        contact_id=c["id"],
-        message="Reminder 1",
-        reminder_type="one_time",
-        next_trigger_at=now,
-    )
-    await reminder_create(
-        pool,
-        contact_id=c["id"],
-        message="Reminder 2",
-        reminder_type="one_time",
-        next_trigger_at=now,
-    )
-
-    reminders = await reminder_list(pool, contact_id=c["id"])
-    assert len(reminders) == 2
-
-
-async def test_reminder_dismiss(pool):
-    """reminder_dismiss clears next_trigger_at for one-time reminders."""
-    from butlers.tools.relationship import contact_create, reminder_create, reminder_dismiss
-
-    c = await contact_create(pool, "Remind-Dismiss")
-    r = await reminder_create(
-        pool,
-        contact_id=c["id"],
-        message="Do something",
-        reminder_type="one_time",
-        next_trigger_at=datetime.now(UTC),
-    )
-
-    dismissed = await reminder_dismiss(pool, r["id"])
-    assert dismissed["next_trigger_at"] is None
-    assert dismissed["last_triggered_at"] is not None
-
-
-async def test_reminder_dismiss_not_found(pool):
-    """reminder_dismiss raises ValueError for non-existent reminder."""
-    from butlers.tools.relationship import reminder_dismiss
-
-    with pytest.raises(ValueError, match="not found"):
-        await reminder_dismiss(pool, uuid.uuid4())
 
 
 # ------------------------------------------------------------------

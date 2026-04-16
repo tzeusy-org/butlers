@@ -30,7 +30,7 @@ These aren't failures of character—they're failures of memory systems. The Rel
 - **Interaction history:** A feed of who you've talked to and when, so context is always at hand.
 - **Relationship notes:** Capture everything that matters—emotion, context, observations—in a way that feels natural.
 - **Financial clarity:** Track loans, shared expenses, or money you've lent so no awkwardness lingers.
-- **Smart reminders:** One-time follow-ups or recurring check-ins so you stay connected without thinking about it.
+- **Smart scheduling:** One-time follow-ups or recurring check-ins created as calendar events so you stay connected without thinking about it.
 - **Flexible organization:** Group contacts by role (family, close friends, colleagues), label them by context, and search by relationship.
 
 ## The Philosophy

@@ -151,8 +151,8 @@ Reconnection suggestions (by Dunbar urgency):
 - **`note_list`**: Gather recent notes with emotion context
 - **`upcoming_dates`**: Check for birthdays/anniversaries
 - **`gift_list`**: Check for pending gift ideas
-- **`reminder_list`**: Check for active reminders
-- **`reminder_create`**: Create reminders for reconnection tasks
+- **`calendar_list_events`**: Check for pending follow-up events
+- **`calendar_create_event`**: Schedule follow-up events for reconnection
 - **`dunbar_tier_set`**: Set or clear manual tier overrides when computed tier seems wrong
 
 ## Edge Cases
@@ -171,4 +171,4 @@ Reconnection suggestions (by Dunbar urgency):
 - **Manual tier override**: Use `dunbar_tier_set(contact_id, tier)` when computed tier
   doesn't reflect the actual relationship importance.
 - **Tier 1500 contacts**: Never suggested by default. Set `stay_in_touch_days` if you want
-  reminders for someone in the recognizable tier.
+  scheduled check-ins for someone in the recognizable tier.

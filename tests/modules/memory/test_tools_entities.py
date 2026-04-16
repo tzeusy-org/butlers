@@ -85,13 +85,36 @@ def pool() -> AsyncMock:
     return AsyncMock()
 
 
-def _merge_pool(src_row, tgt_row, *, fact_rows=None, edge_rows=None, extra_fetchrow=None):
-    """Build a mock pool for entity_merge with conn set up properly."""
+def _merge_pool(
+    src_row,
+    tgt_row,
+    *,
+    fact_rows=None,
+    edge_rows=None,
+    extra_fetchrow=None,
+    cal_src_rows=None,
+    cal_tgt_rows=None,
+):
+    """Build a mock pool for entity_merge with conn set up properly.
+
+    conn.fetch side_effect order matches entity_merge call sequence:
+      1. _repoint_facts_on_pool subject-side facts
+      2. _repoint_facts_on_pool edge/object-side facts
+      3. _repoint_calendar_event_entities source event_ids
+      4. _repoint_calendar_event_entities already-linked target rows
+    """
     pool = MagicMock()
     conn = AsyncMock()
     extra = extra_fetchrow or []
     conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row, *extra])
-    conn.fetch = AsyncMock(side_effect=[(fact_rows or []), (edge_rows or [])])
+    conn.fetch = AsyncMock(
+        side_effect=[
+            (fact_rows or []),
+            (edge_rows or []),
+            (cal_src_rows or []),
+            (cal_tgt_rows or []),
+        ]
+    )
     conn.execute = AsyncMock()
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=conn)
@@ -445,6 +468,122 @@ class TestEntityMerge:
         ]
         merged_aliases = updates[0][0][1]
         assert "tzeusii" in merged_aliases
+
+
+# ---------------------------------------------------------------------------
+# entity_merge — calendar_event_entities
+# ---------------------------------------------------------------------------
+
+EVENT_UUID_1 = uuid.UUID("cccccccc-1111-1111-1111-cccccccccccc")
+EVENT_UUID_2 = uuid.UUID("dddddddd-2222-2222-2222-dddddddddddd")
+
+
+def _cal_row(event_id: uuid.UUID) -> MagicMock:
+    row = MagicMock()
+    row.__getitem__ = lambda s, k: {"event_id": event_id}[k]
+    return row
+
+
+class TestEntityMergeCalendarEntities:
+    """entity_merge re-points calendar_event_entities from source to target."""
+
+    async def test_repoints_unshared_event_to_target(self) -> None:
+        """When only the source is linked to an event, update entity_id to target."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        # cal_src_rows: source has EVENT_UUID_1; cal_tgt_rows: target has no shared events
+        pool, conn = _merge_pool(
+            src,
+            tgt,
+            cal_src_rows=[_cal_row(EVENT_UUID_1)],
+            cal_tgt_rows=[],  # target not linked to EVENT_UUID_1
+        )
+
+        await entity_merge(pool, SOURCE_ID, TARGET_ID)
+
+        update_calls = [
+            c
+            for c in conn.execute.call_args_list
+            if "UPDATE calendar_event_entities SET entity_id" in c[0][0]
+        ]
+        assert len(update_calls) == 1
+        call_args = update_calls[0][0]
+        assert call_args[1] == tgt_uuid  # new entity_id
+        assert call_args[2] == src_uuid  # old entity_id (WHERE entity_id = $2)
+        assert EVENT_UUID_1 in call_args[3]  # event_id in ANY($3) list
+
+    async def test_deletes_duplicate_event_association(self) -> None:
+        """When target is already linked to the same event, delete the source row."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        # Both source and target are linked to EVENT_UUID_1 — duplicate
+        pool, conn = _merge_pool(
+            src,
+            tgt,
+            cal_src_rows=[_cal_row(EVENT_UUID_1)],
+            cal_tgt_rows=[_cal_row(EVENT_UUID_1)],
+        )
+
+        await entity_merge(pool, SOURCE_ID, TARGET_ID)
+
+        delete_calls = [
+            c
+            for c in conn.execute.call_args_list
+            if "DELETE FROM calendar_event_entities" in c[0][0]
+        ]
+        assert len(delete_calls) == 1
+        call_args = delete_calls[0][0]
+        assert src_uuid in call_args  # WHERE entity_id = $1
+        assert EVENT_UUID_1 in call_args[2]  # event_id in ANY($2) list
+
+    async def test_mixed_events_update_and_delete(self) -> None:
+        """Source has two events; one shared with target (delete), one unique (update)."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        pool, conn = _merge_pool(
+            src,
+            tgt,
+            cal_src_rows=[_cal_row(EVENT_UUID_1), _cal_row(EVENT_UUID_2)],
+            cal_tgt_rows=[_cal_row(EVENT_UUID_1)],  # EVENT_UUID_1 is shared
+        )
+
+        await entity_merge(pool, SOURCE_ID, TARGET_ID)
+
+        update_calls = [
+            c
+            for c in conn.execute.call_args_list
+            if "UPDATE calendar_event_entities SET entity_id" in c[0][0]
+        ]
+        delete_calls = [
+            c
+            for c in conn.execute.call_args_list
+            if "DELETE FROM calendar_event_entities" in c[0][0]
+        ]
+        assert len(update_calls) == 1  # EVENT_UUID_2 re-pointed
+        assert len(delete_calls) == 1  # EVENT_UUID_1 deleted
+
+    async def test_no_calendar_events_no_execute_calls_for_cal(self) -> None:
+        """When source has no calendar event associations, no calendar SQL is issued."""
+        src = _entity_mock_row(SOURCE_UUID)
+        tgt = _entity_mock_row(TARGET_UUID)
+        pool, conn = _merge_pool(
+            src,
+            tgt,
+            cal_src_rows=[],
+            cal_tgt_rows=[],
+        )
+
+        await entity_merge(pool, SOURCE_ID, TARGET_ID)
+
+        cal_execute_calls = [
+            c for c in conn.execute.call_args_list if "calendar_event_entities" in c[0][0]
+        ]
+        assert cal_execute_calls == []
+
+
+# Module-level aliases for clarity in test assertions
+src_uuid = SOURCE_UUID
+tgt_uuid = TARGET_UUID
 
 
 # ---------------------------------------------------------------------------
