@@ -5121,6 +5121,131 @@ class CalendarModule(Module):
             await self._provider.shutdown()
         self._provider = None
 
+    async def tick(
+        self,
+        source_butler: str,
+        notify_fn: Callable[[dict[str, Any]], Coroutine[Any, Any, None]] | None = None,
+    ) -> int:
+        """Evaluate due reminder events and dispatch notifications.
+
+        Queries ``calendar_events`` joined with ``calendar_sources`` for events where:
+        - ``source_kind = 'internal_reminders'``
+        - ``source_butler = source_butler``
+        - ``status = 'confirmed'``
+        - ``starts_at <= now()``
+
+        For each due reminder, calls ``notify_fn(envelope)`` when provided.
+        The notification timestamp is recorded in the event's metadata to prevent
+        duplicate delivery.
+
+        Parameters
+        ----------
+        source_butler:
+            Butler name used to scope reminder evaluation.  Only events owned
+            by this butler are considered.
+        notify_fn:
+            Optional async callable ``async def notify_fn(envelope: dict) -> None``.
+            Receives a ``notify.v1``-style envelope for each due reminder.
+            When ``None``, due reminders are logged but not dispatched.
+
+        Returns
+        -------
+        int
+            Number of reminders for which a notification was dispatched.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return 0
+        if not await self._projection_tables_available():
+            return 0
+
+        now = datetime.now(UTC)
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT ce.id, ce.title, ce.starts_at, ce.source_butler
+                FROM calendar_events ce
+                JOIN calendar_sources cs ON cs.id = ce.source_id
+                WHERE cs.source_kind = $1
+                  AND ce.source_butler = $2
+                  AND ce.status = 'confirmed'
+                  AND ce.starts_at <= $3
+                  AND (
+                      ce.metadata->>'last_notified_at' IS NULL
+                      OR (ce.metadata->>'last_notified_at')::timestamptz < ce.starts_at
+                  )
+                """,
+                SOURCE_KIND_INTERNAL_REMINDERS,
+                source_butler,
+                now,
+            )
+        except Exception as exc:
+            logger.error(
+                "CalendarModule.tick: failed to query due reminders for %s: %s",
+                source_butler,
+                exc,
+                exc_info=True,
+            )
+            return 0
+
+        dispatched = 0
+        for row in rows:
+            event_id = row["id"]
+            title = row["title"] or "Reminder"
+            starts_at = row["starts_at"]
+
+            envelope = {
+                "type": "notify.v1",
+                "intent": "send",
+                "message": f"Reminder: {title}",
+                "source_butler": source_butler,
+                "reminder_event_id": str(event_id),
+                "due_at": starts_at.isoformat() if starts_at is not None else None,
+            }
+
+            notified = False
+            if notify_fn is not None:
+                try:
+                    await notify_fn(envelope)
+                    notified = True
+                except Exception as exc:
+                    logger.error(
+                        "CalendarModule.tick: notify_fn failed for reminder %s: %s",
+                        event_id,
+                        exc,
+                        exc_info=True,
+                    )
+            else:
+                logger.info(
+                    "CalendarModule.tick: due reminder %s ('%s') for %s — no notify_fn configured",
+                    event_id,
+                    title,
+                    source_butler,
+                )
+
+            if notified:
+                # Merge only the last_notified_at key via || so concurrent metadata
+                # edits to other fields are preserved.
+                try:
+                    await pool.execute(
+                        "UPDATE calendar_events "
+                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb "
+                        "WHERE id = $2",
+                        self._encode_jsonb({"last_notified_at": now.isoformat()}),
+                        event_id,
+                    )
+                    dispatched += 1
+                except Exception as exc:
+                    logger.error(
+                        "CalendarModule.tick: failed to record last_notified_at "
+                        "for reminder %s: %s",
+                        event_id,
+                        exc,
+                        exc_info=True,
+                    )
+
+        return dispatched
+
     # ------------------------------------------------------------------
     # Sync infrastructure
     # ------------------------------------------------------------------
@@ -6048,166 +6173,15 @@ class CalendarModule(Module):
             last_error=None,
         )
 
-    async def _project_reminders_source(self) -> None:
-        if not await self._projection_tables_available():
-            return
-        if not await self._table_exists("reminders"):
-            return
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None:
-            return
-
-        source_id = await self._ensure_calendar_source(
-            source_key=f"internal_reminders:{self._butler_name}",
-            source_kind=SOURCE_KIND_INTERNAL_REMINDERS,
-            lane="butler",
-            provider="internal",
-            butler_name=self._butler_name,
-            display_name=f"{self._butler_name} reminders",
-            writable=True,
-            metadata={"projection": "reminders"},
-        )
-        if source_id is None:
-            return
-
-        rows = await pool.fetch("SELECT * FROM reminders")
-        seen_origin_refs: list[str] = []
-        now = datetime.now(UTC)
-        window_end = now + timedelta(days=RECURRENCE_PROJECTION_WINDOW_DAYS)
-
-        for row in rows:
-            record = dict(row)
-            origin_ref = str(record["id"])
-            seen_origin_refs.append(origin_ref)
-            updated_at = self._coerce_datetime(record.get("updated_at"))
-            timezone = str(record.get("timezone") or "UTC")
-            next_trigger_at = self._coerce_datetime(record.get("next_trigger_at"))
-            if next_trigger_at is None:
-                next_trigger_at = self._coerce_datetime(record.get("due_at"))
-
-            if next_trigger_at is None:
-                await self._mark_projection_event_cancelled(
-                    source_id=source_id,
-                    origin_ref=origin_ref,
-                    origin_updated_at=updated_at,
-                )
-                continue
-            dismissed = bool(record.get("dismissed"))
-
-            title = str(record.get("label") or record.get("message") or "Reminder")
-            status = EventStatus.cancelled.value if dismissed else EventStatus.confirmed.value
-            recurrence_rule_raw = record.get("recurrence_rule")
-            recurrence_rule = (
-                str(recurrence_rule_raw).strip()
-                if isinstance(recurrence_rule_raw, str) and recurrence_rule_raw.strip()
-                else None
-            )
-            metadata = {
-                "source_type": SOURCE_KIND_INTERNAL_REMINDERS,
-                "label": record.get("label"),
-                "message": record.get("message"),
-                "type": record.get("type"),
-                "contact_id": record.get("contact_id"),
-                "until_at": record.get("until_at"),
-                "calendar_event_id": record.get("calendar_event_id"),
-                "dismissed": dismissed,
-            }
-
-            # Determine occurrences: expand recurring rules into a windowed list.
-            if recurrence_rule is not None and not dismissed:
-                # Determine whether it's a cron or RRULE expression.
-                rrule_components = self._rrule_components(recurrence_rule)
-                if rrule_components.get("FREQ"):
-                    # RRULE-style recurrence.
-                    occurrences = _rrule_occurrences_in_window(
-                        recurrence_rule,
-                        dtstart=next_trigger_at,
-                        window_start=now,
-                        window_end=window_end,
-                        duration_minutes=15,
-                    )
-                else:
-                    # Treat as cron expression.
-                    occurrences = _cron_occurrences_in_window(
-                        recurrence_rule,
-                        window_start=now,
-                        window_end=window_end,
-                        duration_minutes=15,
-                    )
-                if not occurrences:
-                    # Rule produces no occurrences in window — fall back to next_trigger_at.
-                    occurrences = [(next_trigger_at, next_trigger_at + timedelta(minutes=15))]
-            else:
-                # One-time reminder or dismissed: single occurrence at next_trigger_at.
-                occurrences = [(next_trigger_at, next_trigger_at + timedelta(minutes=15))]
-
-            # The canonical event uses the first occurrence as its starts_at.
-            starts_at, ends_at = occurrences[0]
-            event_id = await self._upsert_projection_event(
-                source_id=source_id,
-                origin_ref=origin_ref,
-                title=title,
-                description=str(record.get("message") or "").strip() or None,
-                location=None,
-                timezone=timezone,
-                starts_at=starts_at,
-                ends_at=ends_at,
-                all_day=False,
-                status=status,
-                visibility=EventVisibility.default.value,
-                recurrence_rule=recurrence_rule,
-                etag=None,
-                origin_updated_at=updated_at,
-                metadata=metadata,
-                source_butler=self._butler_name,
-            )
-
-            # Prune stale instances outside the new window before re-projecting.
-            if recurrence_rule is not None and not dismissed:
-                await self._prune_recurring_instances_outside_window(
-                    event_id=event_id,
-                    window_start=now,
-                    window_end=window_end,
-                )
-
-            for occ_start, occ_end in occurrences:
-                await self._upsert_projection_instance(
-                    event_id=event_id,
-                    source_id=source_id,
-                    origin_instance_ref=f"{origin_ref}:{occ_start.isoformat()}",
-                    timezone=timezone,
-                    starts_at=occ_start,
-                    ends_at=occ_end,
-                    status=status,
-                    is_exception=False,
-                    origin_updated_at=updated_at,
-                    metadata={"source_type": SOURCE_KIND_INTERNAL_REMINDERS},
-                )
-
-        await self._mark_projection_source_stale_events_cancelled(
-            source_id=source_id,
-            seen_origin_refs=seen_origin_refs,
-        )
-        await self._upsert_projection_cursor(
-            source_id=source_id,
-            cursor_name=SYNC_CURSOR_PROJECTION,
-            sync_token=None,
-            checkpoint={
-                "projected_rows": len(seen_origin_refs),
-                "source": SOURCE_KIND_INTERNAL_REMINDERS,
-            },
-            full_sync_required=False,
-            last_synced_at=now,
-            last_success_at=now,
-            last_error_at=None,
-            last_error=None,
-        )
-
     async def _project_internal_sources(self) -> None:
-        """Refresh non-provider butler projection sources (scheduler/reminders)."""
+        """Refresh non-provider butler projection sources (scheduled tasks).
+
+        Reminders are now native calendar events in ``calendar_events`` and are
+        projected through the standard event pipeline — no separate projection
+        pass is needed.
+        """
         try:
             await self._project_scheduler_source()
-            await self._project_reminders_source()
         except Exception as exc:
             logger.error("Internal calendar projection refresh failed: %s", exc, exc_info=True)
 
