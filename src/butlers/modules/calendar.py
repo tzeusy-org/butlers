@@ -5247,6 +5247,239 @@ class CalendarModule(Module):
         return dispatched
 
     # ------------------------------------------------------------------
+    # Due-reminder tick
+    # ------------------------------------------------------------------
+
+    async def tick(
+        self,
+        source_butler: str,
+        notify_fn: Callable[[dict[str, Any]], Coroutine[Any, Any, None]] | None = None,
+    ) -> int:
+        """Evaluate due reminder events and dispatch notifications.
+
+        For **recurring** reminders (``recurrence_rule IS NOT NULL``), each
+        occurrence in ``calendar_event_instances`` is checked independently:
+        an instance fires when its ``starts_at <= now`` and its own
+        ``metadata->>'notified_at'`` is absent.  After a successful dispatch
+        the instance-level metadata is updated to prevent duplicate delivery of
+        the same occurrence.  A cancelled or dismissed instance (``status =
+        'cancelled'``) is always skipped.
+
+        For **one-time** reminders (``recurrence_rule IS NULL``), the series
+        event row is checked directly — the same ``last_notified_at``
+        comparison used in the original PR #1079 design.
+
+        Parameters
+        ----------
+        source_butler:
+            Butler name used to scope reminder evaluation.  Only events owned
+            by this butler (via ``calendar_sources.butler_name``) are
+            considered.
+        notify_fn:
+            Optional async callable ``async def notify_fn(envelope: dict) -> None``.
+            Receives a ``notify.v1``-style envelope for each due reminder.
+            When ``None``, due reminders are logged but not dispatched.
+
+        Returns
+        -------
+        int
+            Number of reminders for which a notification was dispatched.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return 0
+        if not await self._projection_tables_available():
+            return 0
+
+        now = datetime.now(UTC)
+        dispatched = 0
+
+        # ------------------------------------------------------------------
+        # Pass 1: recurring reminders — per-instance dedup via instances table
+        # ------------------------------------------------------------------
+        try:
+            recurring_rows = await pool.fetch(
+                """
+                SELECT
+                    ce.id           AS event_id,
+                    ce.title        AS title,
+                    i.id            AS instance_id,
+                    i.starts_at     AS instance_starts_at
+                FROM calendar_events ce
+                JOIN calendar_sources cs ON cs.id = ce.source_id
+                JOIN calendar_event_instances i ON i.event_id = ce.id
+                WHERE cs.source_kind = $1
+                  AND cs.butler_name = $2
+                  AND ce.recurrence_rule IS NOT NULL
+                  AND ce.status = 'confirmed'
+                  AND i.status = 'confirmed'
+                  AND i.starts_at <= $3
+                  AND (i.metadata->>'notified_at') IS NULL
+                ORDER BY i.starts_at
+                """,
+                SOURCE_KIND_INTERNAL_REMINDERS,
+                source_butler,
+                now,
+            )
+        except Exception as exc:
+            logger.error(
+                "CalendarModule.tick: failed to query due recurring reminders for %s: %s",
+                source_butler,
+                exc,
+                exc_info=True,
+            )
+            recurring_rows = []
+
+        for row in recurring_rows:
+            event_id = row["event_id"]
+            instance_id = row["instance_id"]
+            title = row["title"] or "Reminder"
+            instance_starts_at = row["instance_starts_at"]
+
+            envelope = {
+                "type": "notify.v1",
+                "intent": "send",
+                "message": f"Reminder: {title}",
+                "source_butler": source_butler,
+                "reminder_event_id": str(event_id),
+                "reminder_instance_id": str(instance_id),
+                "due_at": (
+                    instance_starts_at.isoformat() if instance_starts_at is not None else None
+                ),
+            }
+
+            notified = False
+            if notify_fn is not None:
+                try:
+                    await notify_fn(envelope)
+                    notified = True
+                except Exception as exc:
+                    logger.error(
+                        "CalendarModule.tick: notify_fn failed for recurring reminder "
+                        "instance %s (event %s): %s",
+                        instance_id,
+                        event_id,
+                        exc,
+                        exc_info=True,
+                    )
+            else:
+                logger.info(
+                    "CalendarModule.tick: due recurring reminder instance %s "
+                    "('%s') for %s — no notify_fn configured",
+                    instance_id,
+                    title,
+                    source_butler,
+                )
+
+            if notified:
+                try:
+                    await pool.execute(
+                        "UPDATE calendar_event_instances "
+                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb "
+                        "WHERE id = $2",
+                        self._encode_jsonb({"notified_at": now.isoformat()}),
+                        instance_id,
+                    )
+                    dispatched += 1
+                except Exception as exc:
+                    logger.error(
+                        "CalendarModule.tick: failed to record notified_at "
+                        "for recurring reminder instance %s: %s",
+                        instance_id,
+                        exc,
+                        exc_info=True,
+                    )
+
+        # ------------------------------------------------------------------
+        # Pass 2: one-time reminders — series-level dedup via event metadata
+        # ------------------------------------------------------------------
+        try:
+            onetime_rows = await pool.fetch(
+                """
+                SELECT ce.id AS event_id, ce.title AS title, ce.starts_at AS starts_at
+                FROM calendar_events ce
+                JOIN calendar_sources cs ON cs.id = ce.source_id
+                WHERE cs.source_kind = $1
+                  AND cs.butler_name = $2
+                  AND ce.recurrence_rule IS NULL
+                  AND ce.status = 'confirmed'
+                  AND ce.starts_at <= $3
+                  AND (
+                      ce.metadata->>'last_notified_at' IS NULL
+                      OR (ce.metadata->>'last_notified_at')::timestamptz < ce.starts_at
+                  )
+                ORDER BY ce.starts_at
+                """,
+                SOURCE_KIND_INTERNAL_REMINDERS,
+                source_butler,
+                now,
+            )
+        except Exception as exc:
+            logger.error(
+                "CalendarModule.tick: failed to query due one-time reminders for %s: %s",
+                source_butler,
+                exc,
+                exc_info=True,
+            )
+            onetime_rows = []
+
+        for row in onetime_rows:
+            event_id = row["event_id"]
+            title = row["title"] or "Reminder"
+            starts_at = row["starts_at"]
+
+            envelope = {
+                "type": "notify.v1",
+                "intent": "send",
+                "message": f"Reminder: {title}",
+                "source_butler": source_butler,
+                "reminder_event_id": str(event_id),
+                "due_at": starts_at.isoformat() if starts_at is not None else None,
+            }
+
+            notified = False
+            if notify_fn is not None:
+                try:
+                    await notify_fn(envelope)
+                    notified = True
+                except Exception as exc:
+                    logger.error(
+                        "CalendarModule.tick: notify_fn failed for one-time reminder %s: %s",
+                        event_id,
+                        exc,
+                        exc_info=True,
+                    )
+            else:
+                logger.info(
+                    "CalendarModule.tick: due one-time reminder %s ('%s') for %s "
+                    "— no notify_fn configured",
+                    event_id,
+                    title,
+                    source_butler,
+                )
+
+            if notified:
+                try:
+                    await pool.execute(
+                        "UPDATE calendar_events "
+                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb "
+                        "WHERE id = $2",
+                        self._encode_jsonb({"last_notified_at": now.isoformat()}),
+                        event_id,
+                    )
+                    dispatched += 1
+                except Exception as exc:
+                    logger.error(
+                        "CalendarModule.tick: failed to record last_notified_at "
+                        "for one-time reminder %s: %s",
+                        event_id,
+                        exc,
+                        exc_info=True,
+                    )
+
+        return dispatched
+
+    # ------------------------------------------------------------------
     # Sync infrastructure
     # ------------------------------------------------------------------
 
