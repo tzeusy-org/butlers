@@ -398,3 +398,169 @@ class TestIngestAcceptedResponseTriageFields:
         )
         with pytest.raises(Exception):
             resp.triage_decision = "something"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Group chat metadata propagation in _build_request_context (RFC 0013 D3/D4)
+# ---------------------------------------------------------------------------
+
+
+class TestGroupChatMetadataPropagation:
+    """Verify that group chat metadata from IngestSenderV1 / IngestControlV1
+    is correctly propagated into request_context by _build_request_context."""
+
+    def _make_envelope(
+        self,
+        *,
+        participant_count: int | None = None,
+        chat_type: str | None = None,
+        interaction_eligible: bool = True,
+    ):
+        import uuid
+        from datetime import UTC, datetime
+
+        from butlers.tools.switchboard.routing.contracts import (
+            IngestControlV1,
+            IngestEnvelopeV1,
+            IngestEventV1,
+            IngestPayloadV1,
+            IngestSenderV1,
+            IngestSourceV1,
+        )
+
+        return IngestEnvelopeV1(
+            schema_version="ingest.v1",
+            source=IngestSourceV1(
+                channel="telegram_user_client",
+                provider="telegram",
+                endpoint_identity="uc_bot",
+            ),
+            event=IngestEventV1(
+                external_event_id=str(uuid.uuid4()),
+                observed_at=datetime.now(UTC).isoformat(),
+            ),
+            sender=IngestSenderV1(
+                identity="multiple",
+                participant_count=participant_count,
+                chat_type=chat_type,
+            ),
+            payload=IngestPayloadV1(
+                raw={"text": "hello group"},
+                normalized_text="hello group",
+            ),
+            control=IngestControlV1(
+                ingestion_tier="full",
+                interaction_eligible=interaction_eligible,
+            ),
+        )
+
+    def test_participant_count_propagated_when_present(self) -> None:
+        """participant_count from sender is included in request_context."""
+        import uuid
+        from datetime import UTC, datetime
+
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
+
+        envelope = self._make_envelope(participant_count=8, chat_type="group")
+        ctx = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+        )
+
+        assert ctx["participant_count"] == 8
+        assert ctx["chat_type"] == "group"
+
+    def test_chat_type_propagated_when_present(self) -> None:
+        """chat_type from sender is included in request_context."""
+        import uuid
+        from datetime import UTC, datetime
+
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
+
+        envelope = self._make_envelope(participant_count=2, chat_type="private")
+        ctx = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+        )
+
+        assert ctx["chat_type"] == "private"
+        assert ctx["participant_count"] == 2
+
+    def test_group_metadata_absent_when_not_set(self) -> None:
+        """participant_count and chat_type are omitted when not present in envelope."""
+        import uuid
+        from datetime import UTC, datetime
+
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
+
+        envelope = self._make_envelope()  # no participant_count or chat_type
+        ctx = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+        )
+
+        assert "participant_count" not in ctx
+        assert "chat_type" not in ctx
+
+    def test_interaction_eligible_false_propagated(self) -> None:
+        """interaction_eligible=False is stored in request_context."""
+        import uuid
+        from datetime import UTC, datetime
+
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
+
+        envelope = self._make_envelope(
+            participant_count=50, chat_type="supergroup", interaction_eligible=False
+        )
+        ctx = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+        )
+
+        assert ctx["interaction_eligible"] is False
+
+    def test_interaction_eligible_true_omitted_from_context(self) -> None:
+        """interaction_eligible=True (default) is NOT stored in request_context.
+
+        The default case should keep request_context lean; downstream consumers
+        treat a missing key as eligible (backward compatible).
+        """
+        import uuid
+        from datetime import UTC, datetime
+
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
+
+        envelope = self._make_envelope(interaction_eligible=True)
+        ctx = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+        )
+
+        assert "interaction_eligible" not in ctx
+
+    def test_all_group_metadata_combined(self) -> None:
+        """All three group metadata fields propagate together correctly."""
+        import uuid
+        from datetime import UTC, datetime
+
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
+
+        envelope = self._make_envelope(
+            participant_count=25,
+            chat_type="supergroup",
+            interaction_eligible=False,
+        )
+        ctx = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+        )
+
+        assert ctx["participant_count"] == 25
+        assert ctx["chat_type"] == "supergroup"
+        assert ctx["interaction_eligible"] is False
