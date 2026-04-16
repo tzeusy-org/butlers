@@ -331,7 +331,7 @@ def _derive_wa_chat_type(chat_jid: str) -> str:
     - ``@broadcast`` → channel/broadcast
     - ``@newsletter`` → channel/newsletter
 
-    Returns one of: 'private', 'group', 'channel', 'community'.
+    Returns one of: 'private', 'group', 'channel'.
     Falls back to 'private' for unknown suffixes.
     """
     if not chat_jid:
@@ -1062,8 +1062,12 @@ class WhatsAppUserClientConnector:
         # Derive chat type and participant count for Dunbar gating (RFC 0013).
         chat_type = _derive_wa_chat_type(chat_jid)
         participant_count: int | None = None
-        if buffered_events:
-            participant_count = _extract_wa_participant_count(buffered_events[-1])
+        # Scan all events for the first non-None participant_count (bridge may
+        # only include it in some events; the last event is not guaranteed to have it).
+        for _ev in buffered_events:
+            participant_count = _extract_wa_participant_count(_ev)
+            if participant_count is not None:
+                break
         if participant_count is None:
             # Fallback: DMs always have 2 participants; groups are unknown without bridge support.
             participant_count = 2 if chat_type == "private" else None

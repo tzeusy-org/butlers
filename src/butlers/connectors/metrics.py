@@ -265,12 +265,16 @@ class ConnectorMetrics:
 def participant_count_bucket(count: int) -> str:
     """Map a participant count to a low-cardinality OTel/Prometheus bucket label.
 
-    Buckets mirror the spec from RFC 0013:
+    Buckets mirror the spec from RFC 0013 and extend downward for cases where
+    max_interaction_group_size is configured below the default of 20:
+      - "1-20"   (covers counts below the default threshold when threshold is low)
       - "21-50"
       - "51-200"
       - "201-1000"
       - "1000+"
     """
+    if count <= 20:
+        return "1-20"
     if count <= 50:
         return "21-50"
     if count <= 200:
