@@ -284,7 +284,7 @@ _MCP_SERVERS = {"switchboard": {"url": "http://localhost:41100/mcp"}}
 
 
 async def test_retry_on_mcp_connection_failure():
-    """invoke() retries once when MCP tools not discovered, succeeds on second attempt."""
+    """invoke() retries when MCP tools not discovered, succeeds on second attempt."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
     call_count = 0
@@ -304,7 +304,7 @@ async def test_retry_on_mcp_connection_failure():
 
     with (
         patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0,)),
     ):
         result_text, tool_calls, _ = await adapter.invoke(
             prompt="route this",
@@ -321,11 +321,15 @@ async def test_retry_on_mcp_connection_failure():
     assert info["retry_succeeded"] is True
 
 
-async def test_retry_both_fail_returns_first_result():
-    """When retry also fails, returns first result for text-based fallback."""
+async def test_retry_all_fail_returns_error():
+    """When all retries fail, returns an error message and empty tool_calls."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
+    call_count = 0
+
     async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
         proc = AsyncMock()
         proc.returncode = 0
         proc.pid = 42
@@ -334,7 +338,7 @@ async def test_retry_both_fail_returns_first_result():
 
     with (
         patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
     ):
         result_text, tool_calls, _ = await adapter.invoke(
             prompt="route this",
@@ -343,12 +347,15 @@ async def test_retry_both_fail_returns_first_result():
             env={},
         )
 
-    # Should return result (for text fallback), not raise
+    assert call_count == 3, "Should have tried 3 times (initial + 2 retries)"
     assert result_text is not None
+    assert "MCP tool discovery failed" in result_text
+    assert tool_calls == []
     info = adapter.last_process_info
     assert info["mcp_connection_failed"] is True
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is False
+    assert info["attempt_count"] == 3
 
 
 async def test_no_retry_without_mcp_servers():
@@ -453,7 +460,7 @@ async def test_retry_provenance_result_source_retry():
 
     with (
         patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0,)),
     ):
         await adapter.invoke(
             prompt="route this",
@@ -470,7 +477,7 @@ async def test_retry_provenance_result_source_retry():
 
 
 async def test_retry_provenance_result_source_first():
-    """Both attempts fail MCP discovery: result_source='first', attempt_count=2."""
+    """All attempts fail MCP discovery: result_source='first', attempt_count=3."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
     async def _mock_exec(*args, **kwargs):
@@ -482,18 +489,19 @@ async def test_retry_provenance_result_source_first():
 
     with (
         patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAY_SECONDS", 0),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
     ):
-        await adapter.invoke(
+        result_text, tool_calls, _ = await adapter.invoke(
             prompt="route this",
             system_prompt="",
             mcp_servers=_MCP_SERVERS,
             env={},
         )
 
+    assert "MCP tool discovery failed" in result_text
     info = adapter.last_process_info
     assert info["result_source"] == "first"
-    assert info["attempt_count"] == 2
+    assert info["attempt_count"] == 3
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is False
 

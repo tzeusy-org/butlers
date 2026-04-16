@@ -35,8 +35,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 300
 _SAFE_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-# Delay before retrying a Codex invocation when MCP tools were not discovered.
-_MCP_RETRY_DELAY_SECONDS = 1.5
+# Retry delays (in seconds) when the Codex CLI fails to discover MCP tools.
+# Each entry triggers one retry attempt with the given delay beforehand.
+# Exponential backoff: 2s, 5s → 3 total attempts (initial + 2 retries).
+_MCP_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
 
 
 def _infer_mcp_transport_from_url(url: str) -> str | None:
@@ -675,60 +677,77 @@ class CodexAdapter(RuntimeAdapter):
                 mcp_servers,
             )
 
-            # Retry once when MCP tools were configured but the CLI failed
-            # to discover them (intermittent MCP connection failure).
+            # Retry with exponential backoff when MCP tools were configured
+            # but the CLI failed to discover them (intermittent MCP connection
+            # failure).  Codex CLI v0.121.0 has a race where it can start
+            # processing the prompt before MCP tools are fully registered.
             mcp_failed = mcp_servers and not _has_mcp_tool_calls(tool_calls)
             if mcp_failed:
-                # Snapshot first-attempt process info before the retry overwrites it.
-                # When retry fails we restore the first-attempt metadata so the
-                # persisted process log accurately reflects the subprocess whose
-                # output was actually used.
+                # Snapshot first-attempt process info before retries overwrite it.
                 first_info = dict(self._last_process_info) if self._last_process_info else None
-                diag = (self._last_process_info or {}).get("stderr", "")
-                diag_short = diag.strip()[:500] if diag else "(no stderr)"
-                logger.warning(
-                    "Codex CLI returned 0 MCP tool calls (%d command_execution "
-                    "events) despite %d MCP server(s) configured — retrying "
-                    "after %.1fs. stderr: %s",
-                    len(tool_calls),
-                    len(mcp_servers),
-                    _MCP_RETRY_DELAY_SECONDS,
-                    diag_short,
-                )
-                await asyncio.sleep(_MCP_RETRY_DELAY_SECONDS)
-                retry_text, retry_calls, retry_usage = await self._run_codex_subprocess(
-                    cmd,
-                    env,
-                    cwd,
-                    effective_timeout,
-                    cmd_for_log,
-                    mcp_servers,
-                )
-                retry_has_mcp = _has_mcp_tool_calls(retry_calls)
-                if retry_has_mcp:
-                    logger.info("MCP retry succeeded — MCP tools discovered on second attempt")
-                    result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
+                attempt_count = 1
+                retry_succeeded = False
+
+                for delay in _MCP_RETRY_DELAYS:
+                    diag = (self._last_process_info or {}).get("stderr", "")
+                    diag_short = diag.strip()[:500] if diag else "(no stderr)"
+                    logger.warning(
+                        "Codex CLI returned 0 MCP tool calls (%d command_execution "
+                        "events) despite %d MCP server(s) configured — retrying "
+                        "after %.1fs (attempt %d/%d). stderr: %s",
+                        len(tool_calls),
+                        len(mcp_servers),
+                        delay,
+                        attempt_count + 1,
+                        1 + len(_MCP_RETRY_DELAYS),
+                        diag_short,
+                    )
+                    await asyncio.sleep(delay)
+                    attempt_count += 1
+                    retry_text, retry_calls, retry_usage = await self._run_codex_subprocess(
+                        cmd,
+                        env,
+                        cwd,
+                        effective_timeout,
+                        cmd_for_log,
+                        mcp_servers,
+                    )
+                    if _has_mcp_tool_calls(retry_calls):
+                        logger.info(
+                            "MCP retry succeeded — tools discovered on attempt %d",
+                            attempt_count,
+                        )
+                        result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
+                        retry_succeeded = True
+                        break
 
                 # Record diagnostics for session monitoring
                 if self._last_process_info:
-                    # When we fall back to the first result, restore its metadata
-                    # (pid, exit_code, stderr, etc.) so the process log matches
-                    # the subprocess whose output was actually used.
-                    if not retry_has_mcp and first_info:
+                    if not retry_succeeded and first_info:
                         self._last_process_info.update(first_info)
 
                     self._last_process_info["mcp_connection_failed"] = True
                     self._last_process_info["retry_attempted"] = True
-                    self._last_process_info["retry_succeeded"] = retry_has_mcp
-                    self._last_process_info["attempt_count"] = 2
-                    # result_source: 'retry' when retry produced MCP calls,
-                    # 'first' when retry also failed and we fell back to the
-                    # first subprocess output.
-                    self._last_process_info["result_source"] = "retry" if retry_has_mcp else "first"
-                    if not retry_has_mcp:
-                        logger.warning(
-                            "MCP retry also produced 0 MCP tool calls — using first result"
-                        )
+                    self._last_process_info["retry_succeeded"] = retry_succeeded
+                    self._last_process_info["attempt_count"] = attempt_count
+                    self._last_process_info["result_source"] = (
+                        "retry" if retry_succeeded else "first"
+                    )
+
+                if not retry_succeeded:
+                    logger.error(
+                        "MCP discovery failed after %d attempts — aborting session "
+                        "to prevent runaway token usage from bash-only fallback",
+                        attempt_count,
+                    )
+                    return (
+                        "Error: MCP tool discovery failed after multiple attempts. "
+                        "The butler's MCP server was configured but the Codex CLI "
+                        "could not connect to it. This session cannot proceed "
+                        "without MCP tools.",
+                        [],
+                        usage,
+                    )
             else:
                 if self._last_process_info:
                     self._last_process_info["mcp_connection_failed"] = not mcp_servers
