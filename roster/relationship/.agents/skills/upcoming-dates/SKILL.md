@@ -46,10 +46,10 @@ gift_list(contact_id="<contact_id>")
 Avoid duplicate notifications for dates already scheduled:
 
 ```python
-calendar_list_events(entity_id="<entity_id>", days_ahead=14)
+calendar_list_events(start_at=<today>, end_at=<today + 14 days>)
 ```
 
-Skip drafting a notification if an active calendar event already exists for this date.
+Filter the returned events by title or description to identify any that already cover this date. Skip drafting a notification if a matching calendar event already exists for this contact's date.
 
 ### Step 4: Draft Notification Messages
 

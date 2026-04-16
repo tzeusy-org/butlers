@@ -509,8 +509,8 @@ class TestEntityMergeCalendarEntities:
         assert len(update_calls) == 1
         call_args = update_calls[0][0]
         assert call_args[1] == tgt_uuid  # new entity_id
-        assert call_args[2] == EVENT_UUID_1  # event_id
-        assert call_args[3] == src_uuid  # old entity_id
+        assert call_args[2] == src_uuid  # old entity_id (WHERE entity_id = $2)
+        assert EVENT_UUID_1 in call_args[3]  # event_id in ANY($3) list
 
     async def test_deletes_duplicate_event_association(self) -> None:
         """When target is already linked to the same event, delete the source row."""
@@ -533,8 +533,8 @@ class TestEntityMergeCalendarEntities:
         ]
         assert len(delete_calls) == 1
         call_args = delete_calls[0][0]
-        assert EVENT_UUID_1 in call_args
-        assert src_uuid in call_args
+        assert src_uuid in call_args  # WHERE entity_id = $1
+        assert EVENT_UUID_1 in call_args[2]  # event_id in ANY($2) list
 
     async def test_mixed_events_update_and_delete(self) -> None:
         """Source has two events; one shared with target (delete), one unique (update)."""

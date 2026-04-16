@@ -7,6 +7,8 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
+import asyncpg
+
 if TYPE_CHECKING:
     from asyncpg import Pool
 
@@ -946,24 +948,26 @@ async def _repoint_calendar_event_entities(
             )
             already_linked = {r["event_id"] for r in tgt_rows}
 
-            for event_id in src_event_ids:
-                if event_id in already_linked:
-                    # Duplicate — remove the source row
-                    await conn.execute(
-                        "DELETE FROM calendar_event_entities "
-                        "WHERE event_id = $1 AND entity_id = $2",
-                        event_id,
-                        src_uuid,
-                    )
-                else:
-                    # Re-point to target
-                    await conn.execute(
-                        "UPDATE calendar_event_entities SET entity_id = $1 "
-                        "WHERE event_id = $2 AND entity_id = $3",
-                        tgt_uuid,
-                        event_id,
-                        src_uuid,
-                    )
+            to_delete = [eid for eid in src_event_ids if eid in already_linked]
+            to_update = [eid for eid in src_event_ids if eid not in already_linked]
+
+            if to_delete:
+                # Duplicate — remove all source rows in one batch
+                await conn.execute(
+                    "DELETE FROM calendar_event_entities "
+                    "WHERE entity_id = $1 AND event_id = ANY($2)",
+                    src_uuid,
+                    to_delete,
+                )
+            if to_update:
+                # Re-point all non-duplicate rows to target in one batch
+                await conn.execute(
+                    "UPDATE calendar_event_entities SET entity_id = $1 "
+                    "WHERE entity_id = $2 AND event_id = ANY($3)",
+                    tgt_uuid,
+                    src_uuid,
+                    to_update,
+                )
 
 
 async def entity_merge(
@@ -1131,7 +1135,7 @@ async def entity_merge(
     for p in all_pools:
         try:
             await _repoint_calendar_event_entities(p, src_uuid, tgt_uuid)
-        except Exception:
+        except asyncpg.UndefinedTableError:
             # Table may not exist in this schema — skip gracefully
             continue
 

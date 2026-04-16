@@ -191,7 +191,7 @@ Once the user selects a gift idea:
 3. **Schedule a follow-up** (optional)
    If the occasion is far out, offer to create a calendar event as a purchase reminder:
    ```
-   calendar_create_event(title="Buy gift for [occasion]", start_time=[date before occasion], entity_id=[entity_id])
+   calendar_create_event(title="Buy gift for [occasion]", start_at=[date before occasion], end_at=[date before occasion], entity_ids=[entity_id])
    ```
 
 ## Best Practices
