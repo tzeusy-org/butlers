@@ -1599,21 +1599,45 @@ async def check_open_pr_statuses(
                 continue
 
         try:
-            # Fetch state + review info in one call
-            proc = await asyncio.create_subprocess_exec(
-                "gh",
-                "pr",
-                "view",
-                str(pr_number),
-                "--json",
-                "state,reviews,latestReviews,reviewThreads",
-                cwd=str(repo_root),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            stdout, _ = await proc.communicate()
+            # Fetch state + review info in one call.
+            # Note: "reviewThreads" was added in gh >=2.50; older versions
+            # (e.g. 2.46 shipped with Debian) reject the field with exit-code 1.
+            # We attempt the full field set first and fall back to the subset
+            # that older gh versions support.
+            _full_fields = "state,reviews,latestReviews,reviewThreads"
+            _compat_fields = "state,reviews,latestReviews"
+
+            for json_fields in (_full_fields, _compat_fields):
+                proc = await asyncio.create_subprocess_exec(
+                    "gh",
+                    "pr",
+                    "view",
+                    str(pr_number),
+                    "--json",
+                    json_fields,
+                    cwd=str(repo_root),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                stdout, stderr = await proc.communicate()
+                if proc.returncode == 0:
+                    break
+                stderr_text = stderr.decode("utf-8", errors="replace").strip()
+                # If the failure is specifically about an unknown field, retry
+                # with the compat subset; otherwise break and report the error.
+                if "Unknown JSON field" not in stderr_text:
+                    break
+
             if proc.returncode != 0:
+                logger.warning(
+                    "check_open_pr_statuses: gh pr view failed for "
+                    "attempt=%s pr_number=%s (rc=%d): %s",
+                    attempt_id,
+                    pr_number,
+                    proc.returncode,
+                    stderr_text,
+                )
                 counts["errors"] += 1
                 continue
 
@@ -1622,6 +1646,12 @@ async def check_open_pr_statuses(
             try:
                 pr_data = _json.loads(stdout.decode("utf-8", errors="replace"))
             except _json.JSONDecodeError:
+                logger.warning(
+                    "check_open_pr_statuses: failed to parse gh output for "
+                    "attempt=%s pr_number=%s",
+                    attempt_id,
+                    pr_number,
+                )
                 counts["errors"] += 1
                 continue
 
@@ -1734,7 +1764,8 @@ def _extract_review_state(
     Parameters
     ----------
     pr_data:
-        Parsed JSON from ``gh pr view --json reviews,latestReviews,reviewThreads``.
+        Parsed JSON from ``gh pr view --json state,reviews,latestReviews[,reviewThreads]``.
+        ``reviewThreads`` may be absent on older gh CLI versions (<2.50).
 
     Returns
     -------
