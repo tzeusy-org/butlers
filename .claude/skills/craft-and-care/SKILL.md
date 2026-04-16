@@ -18,7 +18,7 @@ before implementing, reviewing, or validating non-trivial changes.
 | Pillar | Directory | Answers |
 |--------|-----------|---------|
 | Doctrine | `about/heart-and-soul/` | WHY -- vision, principles, scope |
-| Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
+| Design Contracts | `about/legends-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | Capability Specs | `openspec/` | WHAT -- normative requirements |
 | Topology | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |
 | **Engineering Standards** | `about/craft-and-care/` | HOW SHOULD WORK BE EXECUTED WELL -- testing, verification, review, documentation, maintainability |
@@ -55,6 +55,6 @@ Read only the files relevant to your task:
 3. Use `Makefile` and `pyproject.toml` only to confirm exact commands and tool configuration; do not invent alternate workflows.
 4. Cross-load the other pillars as needed:
    - doctrine questions -> `heart-and-soul`
-   - design-contract questions -> `law-and-lore`
+   - design-contract questions -> `legends-and-lore`
    - feature-behavior questions -> `spec-and-spine`
    - ownership/location questions -> `lay-and-land`

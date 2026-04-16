@@ -11,7 +11,7 @@ The Butlers ecosystem currently treats all agents uniformly as "butlers," but tw
 - **Infrastructure contract.** Staffers use `MANIFESTO.md` with infrastructure-contract framing (SLA, responsibilities, failure modes) rather than user-relationship framing.
 - **Reclassification.** `switchboard` and `messenger` move from butler to staffer type.
 - **Heart-and-soul updates.** `vision.md`, `architecture.md`, and `v1.md` updated to define the butler/staffer split.
-- **Law-and-lore updates.** RFC 0003 (switchboard routing) updated to formalize staffer routing exclusion and butler-to-staffer routing via switchboard. RFC 0006 (database isolation) updated to describe staffer schema permissions.
+- **legends-and-lore updates.** RFC 0003 (switchboard routing) updated to formalize staffer routing exclusion and butler-to-staffer routing via switchboard. RFC 0006 (database isolation) updated to describe staffer schema permissions.
 
 ## Capabilities
 
@@ -30,6 +30,6 @@ The Butlers ecosystem currently treats all agents uniformly as "butlers," but tw
 - **Config:** `butler.toml` gains `type` field; existing butlers default to `"butler"`, switchboard and messenger set to `"staffer"`.
 - **Code:** `src/butlers/config.py` (new `ButlerType` enum, config parsing), `src/butlers/daemon.py` (type-aware startup logic, briefing exclusion).
 - **Roster:** `roster/switchboard/butler.toml` and `roster/messenger/butler.toml` updated; both `MANIFESTO.md` files reframed as infrastructure contracts.
-- **Docs:** `about/heart-and-soul/vision.md`, `architecture.md`, `v1.md` updated. `about/law-and-lore/rfcs/0003-*.md` and `0006-*.md` updated.
+- **Docs:** `about/heart-and-soul/vision.md`, `architecture.md`, `v1.md` updated. `about/legends-and-lore/rfcs/0003-*.md` and `0006-*.md` updated.
 - **Dashboard:** Staffers may need distinct visual treatment (separate section or badge); dashboard API may filter staffers from "butler list" views.
 - **Future:** The design must accommodate future staffers (e.g., QA staffer with codebase R/W access, log inspection, and PR creation capabilities) without requiring architectural changes.

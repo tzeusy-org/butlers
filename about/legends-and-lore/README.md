@@ -30,6 +30,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0010](rfcs/0010-cross-butler-briefing-exception.md) | Cross-Butler Briefing Exception | Sanctioned Rule 3 exception: read-only SQL view for daily briefing aggregation, five guardrails, reuse criteria for future cross-schema exceptions. |
 | [0011](rfcs/0011-proactive-insight-delivery.md) | Proactive Insight Delivery Protocol | Three-phase insight pipeline (butler generation, Switchboard brokering, notify delivery), anti-spam budget/cooldown/adaptive ratchet, `propose_insight_candidate` MCP tool, `intent='insight'` notify extension. |
 | [0012](rfcs/0012-finance-transaction-data-model.md) | Finance Transaction Data Model | Dedicated `finance.transactions` table with typed columns replacing SPO-primary storage, eight supporting tables, tiered deduplication, materialized spending summaries, 4-phase migration path. |
+| [0013](rfcs/0013-dunbar-group-aware-interaction-scoring.md) | Dunbar Group-Aware Interaction Scoring | Direction-weighted scoring (outgoing 10x, mutual 5x, incoming 1x), group-size-divided scoring (1/n dilution), connector-level participant gating (>20 excluded), interaction_log_group batch tool, interaction_sync group-aware pre-grouping. |
 
 ## Conventions
 

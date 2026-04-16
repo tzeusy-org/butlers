@@ -19,7 +19,7 @@ The `about/heart-and-soul/` directory is the WHY pillar of the Butlers knowledge
 |--------|-----------|---------|
 | **Doctrine** | `about/heart-and-soul/` | WHY -- vision, principles, scope |
 | Engineering Standards | `about/craft-and-care/` | HOW SHOULD WORK BE EXECUTED WELL -- testing, verification, review, maintainability |
-| Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
+| Design Contracts | `about/legends-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | Capability Specs | `openspec/` | WHAT -- normative requirements |
 | Topology | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |
 

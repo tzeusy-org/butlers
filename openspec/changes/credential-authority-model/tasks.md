@@ -62,4 +62,4 @@
 ## 11. Documentation
 
 - [ ] 11.1 Update `about/heart-and-soul/security.md` with three-tier credential authority model
-- [ ] 11.2 Update `about/law-and-lore/rfcs/0006-database-schema-and-isolation.md` with entity_info as Tier 2 authoritative source
+- [ ] 11.2 Update `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md` with entity_info as Tier 2 authoritative source

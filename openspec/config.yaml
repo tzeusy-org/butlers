@@ -4,7 +4,7 @@ context: |
   Tech stack: Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL (JSONB), Docker, asyncio
   Domain: AI agent framework — personal butler daemons with MCP-based communication
   Doctrine: about/heart-and-soul/ (vision.md defines 7 non-negotiable rules)
-  Design contracts: about/law-and-lore/rfcs/ (12 accepted RFCs)
+  Design contracts: about/legends-and-lore/rfcs/ (12 accepted RFCs)
 
 rules:
   spec:

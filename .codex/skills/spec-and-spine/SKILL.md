@@ -28,7 +28,7 @@ Read these in order:
 1. `about/README.md` for pillar precedence and the "Spec and Spine" role in the traceability chain.
 2. `openspec/specs/<domain>/spec.md` for the canonical requirement set.
 3. `openspec/changes/<change>/specs/<domain>/spec.md` only when an active change is modifying the capability.
-4. `about/law-and-lore/rfcs/*.md` when the requirement's design rationale or contract source is unclear.
+4. `about/legends-and-lore/rfcs/*.md` when the requirement's design rationale or contract source is unclear.
 5. `about/craft-and-care/` when deciding how the spec change must be tested, reviewed, or documented.
 
 Archived changes are historical context, not the live source of truth.
@@ -44,7 +44,7 @@ Archived changes are historical context, not the live source of truth.
 ## Do Not Use This Skill For
 
 - Project purpose or scope arguments: use `heart-and-soul`
-- Wire contracts, state machines, or schema design: use `law-and-lore`
+- Wire contracts, state machines, or schema design: use `legends-and-lore`
 - Test scope, verification bar, or documentation hygiene: use `craft-and-care`
 - Code ownership or placement questions: use `lay-and-land`
 
@@ -105,4 +105,4 @@ Use the existing OpenSpec workflow skills for the next step:
 - Quote or reference the specific requirement and scenario headings that justify the change.
 - When behavior changes, update the relevant spec in the same change, not as follow-up drift.
 - Convert the binding WHEN/THEN scenarios into tests or an explicit verification checklist.
-- If the task crosses pillars, re-load `law-and-lore` for contract rationale and `craft-and-care` for execution quality.
+- If the task crosses pillars, re-load `legends-and-lore` for contract rationale and `craft-and-care` for execution quality.

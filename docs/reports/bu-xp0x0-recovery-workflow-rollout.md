@@ -346,8 +346,8 @@ tests/api/test_api_qa.py
 tests/integration/test_qa_pipeline.py
 
 # Spec and docs
-about/law-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md
-about/law-and-lore/rfcs/0007-dashboard-and-api-surface.md
+about/legends-and-lore/rfcs/0001-daemon-lifecycle-and-triggers.md
+about/legends-and-lore/rfcs/0007-dashboard-and-api-surface.md
 openspec/specs/healing-session-tracking/spec.md
 openspec/changes/qa-staffer/specs/qa-investigation-dispatch/spec.md
 docs/reconciliation/bu-xp0x0-recovery-reconciliation.md

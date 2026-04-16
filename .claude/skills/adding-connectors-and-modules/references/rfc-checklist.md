@@ -4,7 +4,7 @@ Before writing specs for a new integration, check each RFC for required amendmen
 
 ## RFC 0003 — Switchboard Routing and Ingestion
 
-**File:** `about/law-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md`
+**File:** `about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md`
 
 Check:
 - [ ] Is your `source.channel` value in the `SourceChannel` enum? (e.g., `telegram`, `email`, `gaming`)
@@ -17,7 +17,7 @@ If any are missing, create a task to amend RFC 0003 before implementation.
 
 ## RFC 0004 — Identity and Contact Resolution
 
-**File:** `about/law-and-lore/rfcs/0004-identity-and-contact-resolution.md`
+**File:** `about/legends-and-lore/rfcs/0004-identity-and-contact-resolution.md`
 
 Check:
 - [ ] Do you need new `entity_info.type` values for credential storage? (e.g., `steam_api_key`, `spotify_refresh_token`)
@@ -25,7 +25,7 @@ Check:
 
 ## RFC 0002 — MCP Tool Surface and Modules
 
-**File:** `about/law-and-lore/rfcs/0002-mcp-tool-surface-and-modules.md`
+**File:** `about/legends-and-lore/rfcs/0002-mcp-tool-surface-and-modules.md`
 
 Check:
 - [ ] Does your module follow the `Module` ABC contract?
@@ -33,7 +33,7 @@ Check:
 
 ## RFC 0006 — Database Schema and Isolation
 
-**File:** `about/law-and-lore/rfcs/0006-database-schema-and-isolation.md`
+**File:** `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md`
 
 Check:
 - [ ] Cross-butler tables go in `public` schema (not `shared` — it's been migrated)

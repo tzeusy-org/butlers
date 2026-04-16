@@ -18,7 +18,7 @@ The `about/lay-and-land/` directory is the WHERE pillar of the Butlers knowledge
 |--------|-----------|---------|
 | Doctrine | `about/heart-and-soul/` | WHY -- vision, principles, scope |
 | Engineering Standards | `about/craft-and-care/` | HOW SHOULD WORK BE EXECUTED WELL -- testing, verification, review, maintainability |
-| Design Contracts | `about/law-and-lore/` | HOW -- RFCs defining wire-level contracts |
+| Design Contracts | `about/legends-and-lore/` | HOW -- RFCs defining wire-level contracts |
 | Capability Specs | `openspec/` | WHAT -- normative requirements |
 | **Topology** | `about/lay-and-land/` | WHERE -- component maps, data flow, deployment |
 
@@ -79,4 +79,4 @@ Until the topology documents are written, these are the major architectural boun
 
 1. Read the specific map relevant to your task -- do not load all five unless necessary.
 2. For component questions: `components.md`. For data paths: `data-flow.md`. For infra: `deployment.md`.
-3. Cross-reference with the relevant RFC in `about/law-and-lore/` or the component's spec in `openspec/`.
+3. Cross-reference with the relevant RFC in `about/legends-and-lore/` or the component's spec in `openspec/`.

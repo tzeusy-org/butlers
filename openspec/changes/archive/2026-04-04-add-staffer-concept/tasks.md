@@ -41,10 +41,10 @@
 - [ ] 7.2 Update `about/heart-and-soul/architecture.md`: add staffer archetype section under "Domain Specialization Over Monolith"
 - [ ] 7.3 Update `about/heart-and-soul/v1.md`: reclassify switchboard and messenger from "Butlers" to "Staffers" in scope listing
 
-## 8. Law-and-Lore RFC Updates
+## 8. legends-and-lore RFC Updates
 
-- [ ] 8.1 Update `about/law-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md`: formalize staffer routing exclusion and butler-to-staffer routing
-- [ ] 8.2 Update `about/law-and-lore/rfcs/0006-database-schema-and-isolation.md`: describe staffer schema permissions and cross-butler access model
+- [ ] 8.1 Update `about/legends-and-lore/rfcs/0003-switchboard-routing-and-ingestion.md`: formalize staffer routing exclusion and butler-to-staffer routing
+- [ ] 8.2 Update `about/legends-and-lore/rfcs/0006-database-schema-and-isolation.md`: describe staffer schema permissions and cross-butler access model
 
 ## 9. Dashboard API
 

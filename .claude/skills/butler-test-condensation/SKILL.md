@@ -18,7 +18,7 @@ contract, or an OpenSpec capability.
    ```
 2. **Check epic status**: `bd list --parent bu-rhztl` — see which beads are done/in-progress
 3. **Read your bead**: `bd show <bead-id>` for targets and acceptance criteria
-4. **Load doctrine**: read `about/heart-and-soul/` for invariants, relevant RFCs in `about/law-and-lore/`
+4. **Load doctrine**: read `about/heart-and-soul/` for invariants, relevant RFCs in `about/legends-and-lore/`
 5. **Run scoped discovery** on your domain — see [references/discovery.md](references/discovery.md)
 
 If your measured counts differ >10% from this skill's numbers, update

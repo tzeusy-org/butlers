@@ -16,7 +16,7 @@ their own structure and tooling.
 |--------|-----------|----------|---------|------------|
 | **Heart and Soul** | `about/heart-and-soul/` | **WHY** does this exist? | Vision, 7 non-negotiable rules, scope boundaries, anti-patterns | [vision.md](heart-and-soul/vision.md) |
 | **Craft and Care** | `about/craft-and-care/` | **HOW SHOULD WORK BE EXECUTED WELL?** | Engineering bar, testing discipline, review expectations, observability, security, maintainability | [README.md](craft-and-care/README.md) |
-| **Law and Lore** | `about/law-and-lore/` | **HOW** will it work? | 12 RFCs defining wire contracts, state machines, data models | [README.md](law-and-lore/README.md) |
+| **Law and Lore** | `about/legends-and-lore/` | **HOW** will it work? | 12 RFCs defining wire contracts, state machines, data models | [README.md](legends-and-lore/README.md) |
 | **Spec and Spine** | `openspec/` | **WHAT** exactly must be built? | 141 capability specs with WHEN/THEN scenarios | `openspec/specs/` |
 | **Lay and Land** | `about/lay-and-land/` | **WHERE** does everything live? | Component maps, data flow, dependencies, deployment topology | [README.md](lay-and-land/README.md) |
 
@@ -42,7 +42,7 @@ them in this order — higher numbers defer to lower numbers, never the reverse:
 | # | Layer | Owns | Home |
 |---|-------|------|------|
 | 1 | **Heart and Soul** | Principles, scope boundaries, the 7 non-negotiable rules | `about/heart-and-soul/` |
-| 2 | **Law and Lore** | Wire contracts, state machines, data models, sanctioned rule exceptions | `about/law-and-lore/rfcs/` |
+| 2 | **Law and Lore** | Wire contracts, state machines, data models, sanctioned rule exceptions | `about/legends-and-lore/rfcs/` |
 | 3 | **Spec and Spine** | Feature behaviour, acceptance scenarios (WHEN/THEN), per-butler contracts | `openspec/specs/` |
 | 4 | **Craft and Care** | Execution-quality standards, test scope, review gates, observability bar | `about/craft-and-care/` |
 | 5 | **Lay and Land** | Topology snapshot — where components live, how they connect, stability levels | `about/lay-and-land/` |
@@ -86,7 +86,7 @@ a contract test that projects from the highest-level artefact downward.
    Scope debates end here.
 3. **[Craft and Care README](craft-and-care/README.md)** — The engineering bar:
    testing, verification, review, observability, security, and maintainability.
-4. **[Law and Lore README](law-and-lore/README.md)** — Index of 12 RFCs in
+4. **[Law and Lore README](legends-and-lore/README.md)** — Index of 12 RFCs in
    recommended data-flow reading order.
 5. **[components.md](lay-and-land/components.md)** — Every runtime piece,
    what it owns, and its stability level.

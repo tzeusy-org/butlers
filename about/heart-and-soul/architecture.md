@@ -246,15 +246,65 @@ modules. They do not run inside butler daemons.
 - **Independent lifecycle:** A Telegram connector can crash and restart without
   affecting any butler. A butler can restart without dropping Telegram
   connections.
-- **Single responsibility:** Connectors do one thing: read events from an
-  external system, normalize them into a canonical envelope, and submit them to
-  the Switchboard. They do not classify, route, or act.
+- **Single responsibility:** Connectors read events from an external system,
+  normalize them into a canonical envelope, apply structural cost gates (see
+  below), and submit them to the Switchboard. They do not classify content,
+  route to butlers, or take domain actions.
 - **Checkpointing:** Connectors manage their own cursors (last-read message
   ID, IMAP UID, etc.) and handle crash recovery independently.
 
 **The constraint:** Butlers must never contain transport-specific code. If a
 butler knows how to poll Telegram or parse a Gmail push notification, the
 separation has been violated.
+
+## Why Connectors Are the Computational Cost Boundary
+
+Connectors are the cheapest place to prevent cost explosions. Every event that
+passes a connector enters the Switchboard pipeline --- ingestion, deduplication,
+potential LLM classification, storage, and downstream signal extraction. Each
+stage has cost: database writes, embedding generation, LLM tokens, and fact
+creation fan-out. Once an event enters the pipeline, it is expensive to stop.
+
+**The principle:** Connectors MUST apply computational cost gates before
+submitting envelopes to the Switchboard. If a connector can determine that an
+event will produce no useful downstream value, it must not submit that event.
+This is not classification or routing --- connectors still do not decide which
+butler handles a message. It is volume gating: preventing events that would
+generate unbounded work from entering the pipeline at all.
+
+**The canonical example:** Group chat interactions. A message in a 500-person
+Telegram community channel would, without gating, create identity resolution
+attempts for every sender, interaction facts for every resolved contact,
+embedding generation for every fact, and Dunbar score inflation for hundreds
+of peripheral contacts. The connector has access to the chat metadata
+(participant count, chat type) that downstream components do not. It is the
+only component that can cheaply distinguish a 3-person family group from a
+500-person community channel.
+
+**What connectors MUST gate:**
+
+- **Participant count:** Chat connectors (Telegram, WhatsApp) MUST include
+  participant count metadata in the envelope. Events from chats exceeding the
+  configured threshold (default: 20 participants) MUST be excluded from
+  interaction-relevant submission or downgraded to metadata-only tier.
+- **Chat type:** Connectors SHOULD distinguish DMs, small groups, supergroups,
+  and broadcast channels. This metadata enables downstream components to apply
+  appropriate weighting without repeating the transport-specific API calls.
+
+**What connectors MUST NOT gate:** Content-based filtering, semantic
+classification, or routing decisions. Those remain the Switchboard's
+responsibility. The connector gates on structural metadata (participant count,
+chat type) that is available from the transport API without reading message
+content.
+
+**Why not gate at the Switchboard instead?** The Switchboard receives normalized
+envelopes. By the time it sees a message, the transport-specific metadata
+(Telethon `chat.participants_count`, whatsmeow group membership) is lost unless
+the connector explicitly included it. Asking the Switchboard to query Telegram
+for participant counts would violate the transport abstraction. The connector
+already has the transport client; the cost of checking participant count is
+negligible compared to the cost of processing the event through the full
+pipeline.
 
 ## Why Single PostgreSQL with Schema Isolation
 

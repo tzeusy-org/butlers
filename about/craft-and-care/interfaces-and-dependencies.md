@@ -26,7 +26,7 @@ surfaces should be:
 
 Before changing a boundary, check the relevant pillar:
 
-- RFCs in `about/law-and-lore/` for wire and architecture contracts
+- RFCs in `about/legends-and-lore/` for wire and architecture contracts
 - specs in `openspec/` for promised behavior
 - topology docs in `about/lay-and-land/` for ownership and placement
 

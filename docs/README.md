@@ -134,7 +134,7 @@ This project's knowledge is organized into five pillars, each answering a differ
 |--------|----------|-----------------|
 | **Heart and Soul** | [`about/heart-and-soul/`](../about/heart-and-soul/) | Vision, principles, scope boundaries — the WHY |
 | **Craft and Care** | [`about/craft-and-care/`](../about/craft-and-care/) | Engineering bar, testing discipline, review expectations, observability, security, maintainability — HOW WORK SHOULD BE EXECUTED WELL |
-| **Law and Lore** | [`about/law-and-lore/`](../about/law-and-lore/) | Numbered RFCs defining technical contracts — the HOW |
+| **Law and Lore** | [`about/legends-and-lore/`](../about/legends-and-lore/) | Numbered RFCs defining technical contracts — the HOW |
 | **Spec and Spine** | [`openspec/`](../openspec/) | Detailed feature requirements with testable scenarios — the WHAT |
 | **Lay and Land** | [`about/lay-and-land/`](../about/lay-and-land/) | Component maps, data flow diagrams, deployment topology — the WHERE |
 
@@ -142,7 +142,7 @@ This project's knowledge is organized into five pillars, each answering a differ
 
 **Use** [`about/craft-and-care/`](../about/craft-and-care/) when you need the execution-quality layer: what testing, verification, review, documentation, observability, and security bar a change must meet.
 
-**Read** [`about/law-and-lore/`](../about/law-and-lore/) when you need to understand a technical design decision — each RFC covers a subsystem (daemon lifecycle, MCP tools, routing, identity, observability, database schema, dashboard).
+**Read** [`about/legends-and-lore/`](../about/legends-and-lore/) when you need to understand a technical design decision — each RFC covers a subsystem (daemon lifecycle, MCP tools, routing, identity, observability, database schema, dashboard).
 
 **Check** [`openspec/`](../openspec/) for the exact requirements before implementing a feature.
 
