@@ -572,7 +572,11 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     """outgoing direction produces 10x score vs incoming (RFC 0013, D1)."""
     import json
 
-    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+    from butlers.tools.relationship.dunbar import (
+        DIRECTION_WEIGHT_INCOMING,
+        DIRECTION_WEIGHT_OUTGOING,
+        compute_dunbar_scores,
+    )
 
     outgoing = await _make_contact(dunbar_pool, "OutgoingContact")
     incoming = await _make_contact(dunbar_pool, "IncomingContact")
@@ -600,9 +604,9 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     scores = await compute_dunbar_scores(dunbar_pool)
     score_map = {s["contact_id"]: s["score"] for s in scores}
 
-    # outgoing should be exactly 10x incoming
+    expected_ratio = DIRECTION_WEIGHT_OUTGOING / DIRECTION_WEIGHT_INCOMING
     ratio = score_map[outgoing["id"]] / score_map[incoming["id"]]
-    assert abs(ratio - 10.0) < 1e-9, f"Expected 10x ratio, got {ratio}"
+    assert abs(ratio - expected_ratio) < 1e-9, f"Expected {expected_ratio}x ratio, got {ratio}"
 
 
 @pytest.mark.integration
@@ -612,7 +616,11 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     """mutual direction produces 5x score vs incoming (RFC 0013, D1)."""
     import json
 
-    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+    from butlers.tools.relationship.dunbar import (
+        DIRECTION_WEIGHT_INCOMING,
+        DIRECTION_WEIGHT_MUTUAL,
+        compute_dunbar_scores,
+    )
 
     mutual = await _make_contact(dunbar_pool, "MutualContact")
     incoming = await _make_contact(dunbar_pool, "IncomingContact2")
@@ -640,9 +648,9 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     scores = await compute_dunbar_scores(dunbar_pool)
     score_map = {s["contact_id"]: s["score"] for s in scores}
 
-    # mutual should be exactly 5x incoming
+    expected_ratio = DIRECTION_WEIGHT_MUTUAL / DIRECTION_WEIGHT_INCOMING
     ratio = score_map[mutual["id"]] / score_map[incoming["id"]]
-    assert abs(ratio - 5.0) < 1e-9, f"Expected 5x ratio, got {ratio}"
+    assert abs(ratio - expected_ratio) < 1e-9, f"Expected {expected_ratio}x ratio, got {ratio}"
 
 
 @pytest.mark.integration
@@ -657,6 +665,8 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
     group_contact = await _make_contact(dunbar_pool, "GroupContact")
     dm_contact = await _make_contact(dunbar_pool, "DmContact")
 
+    group_size_large = 10
+    group_size_dm = 1
     occurred_at = datetime.now(UTC) - timedelta(days=3)
     await dunbar_pool.execute(
         """
@@ -665,7 +675,7 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
         """,
         f"contact:{group_contact['id']}",
         occurred_at,
-        json.dumps({"group_size": 10}),
+        json.dumps({"group_size": group_size_large}),
     )
     await dunbar_pool.execute(
         """
@@ -674,15 +684,16 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
         """,
         f"contact:{dm_contact['id']}",
         occurred_at,
-        json.dumps({"group_size": 1}),
+        json.dumps({"group_size": group_size_dm}),
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
     score_map = {s["contact_id"]: s["score"] for s in scores}
 
-    # group_size=10 should be 1/10th of group_size=1
+    # group score scales as 1/group_size
+    expected_ratio = group_size_dm / group_size_large
     ratio = score_map[group_contact["id"]] / score_map[dm_contact["id"]]
-    assert abs(ratio - 0.1) < 1e-9, f"Expected 0.1 ratio, got {ratio}"
+    assert abs(ratio - expected_ratio) < 1e-9, f"Expected {expected_ratio} ratio, got {ratio}"
 
 
 @pytest.mark.integration

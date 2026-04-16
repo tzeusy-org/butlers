@@ -173,6 +173,7 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     Group size divisor (RFC 0013, D2):
     - ``group_size`` in metadata → divided by that value
     - NULL ``group_size`` → defaults to 1.0 (DM weight; backward compatible)
+    - ``group_size < 1`` is clamped to 1.0 to prevent amplification and division by zero
 
     Spec reference: D1, D2 — direction-weighted, group-size-divided exponential decay.
     """
@@ -193,12 +194,19 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                             )
                         )
                         * CASE f.metadata->>'direction'
-                            WHEN 'outgoing' THEN 10.0
-                            WHEN 'mutual'   THEN 5.0
-                            ELSE 1.0
+                            WHEN 'outgoing' THEN $2::float
+                            WHEN 'mutual'   THEN $3::float
+                            ELSE $4::float
                           END
                         * (1.0 / GREATEST(
-                            COALESCE((f.metadata->>'group_size')::float, 1.0),
+                            COALESCE(
+                                CASE
+                                    WHEN jsonb_typeof(f.metadata->'group_size') = 'number'
+                                    THEN (f.metadata->>'group_size')::float
+                                    ELSE NULL
+                                END,
+                                1.0
+                            ),
                             1.0
                           ))
                         ELSE NULL
@@ -219,6 +227,9 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         ORDER BY score DESC
         """,
         _LAMBDA,
+        DIRECTION_WEIGHT_OUTGOING,
+        DIRECTION_WEIGHT_MUTUAL,
+        DIRECTION_WEIGHT_INCOMING,
     )
     return [
         {
