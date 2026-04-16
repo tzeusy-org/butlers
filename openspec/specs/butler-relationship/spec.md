@@ -26,12 +26,13 @@ The relationship butler exposes a comprehensive personal CRM tool set.
 - **THEN** it has access to 40+ tools including: contact CRUD (`contact_create`, `contact_update`, `contact_get`, `contact_search`, `contact_archive`, `contact_resolve`), relationship management (`relationship_add`, `relationship_list`, `relationship_remove`), date tracking (`date_add`, `date_list`, `upcoming_dates`), notes (`note_create`, `note_list`, `note_search`), interactions (`interaction_log`, `interaction_list`), reminders (`reminder_create`, `reminder_list`, `reminder_dismiss`), gifts (`gift_add`, `gift_update_status`, `gift_list`), loans (`loan_create`, `loan_settle`, `loan_list`), groups (`group_create`, `group_add_member`, `group_list`, `group_members`), labels (`label_create`, `label_assign`, `contact_search_by_label`), facts (`fact_set`, `fact_list`), feed (`feed_get`), entity resolution (`entity_resolve`, `entity_create`), memory (`memory_store_fact`), and calendar tools
 
 ### Requirement: Relationship Butler Tool Surface — Dunbar Tier
-The relationship butler exposes a tool for manual Dunbar tier overrides.
+The relationship butler SHALL expose Dunbar tier management and group interaction tools.
 
 #### Scenario: Dunbar tier tool in tool inventory
 - **WHEN** a runtime instance is spawned for the relationship butler
 - **THEN** it MUST have access to `dunbar_tier_set(contact_id, tier)` for setting or clearing manual Dunbar tier overrides
 - **AND** `contact_get` and `contact_search` responses MUST include `dunbar_tier` and `dunbar_score` fields
+- **AND** it MUST have access to `interaction_log_group(group_id, direction, occurred_at, summary)` for logging interactions with all members of a contact group in a single call
 
 ### Requirement: Entity Resolution Pipeline
 The relationship butler follows a 7-step entity resolution pipeline for person mentions.
