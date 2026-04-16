@@ -145,6 +145,14 @@ class _ProviderDouble(CalendarProvider):
         return None
 
 
+def _calendar_events_fetchrow_args(pool: MagicMock) -> tuple[object, ...]:
+    for call in pool.fetchrow.await_args_list:
+        sql = call.args[0]
+        if isinstance(sql, str) and "INSERT INTO calendar_events" in sql:
+            return call.args
+    raise AssertionError("expected a calendar_events fetchrow call")
+
+
 def _make_event(**kwargs) -> CalendarEvent:
     defaults = dict(
         event_id="evt-1",
