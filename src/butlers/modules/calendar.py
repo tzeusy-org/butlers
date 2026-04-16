@@ -6990,9 +6990,9 @@ class CalendarModule(Module):
     @staticmethod
     def _resolve_butler_name(db: Any) -> str:
         # Prefer schema name (one-db topology) over db_name
-        db_schema = getattr(db, "db_schema", None)
-        if isinstance(db_schema, str) and db_schema.strip():
-            return db_schema.strip()
+        schema = getattr(db, "schema", None)
+        if isinstance(schema, str) and schema.strip():
+            return schema.strip()
         db_name = getattr(db, "db_name", None)
         if isinstance(db_name, str):
             normalized = db_name.strip()
