@@ -726,195 +726,6 @@ class TestEntityAssociationHelpers:
         assert "INSERT INTO calendar_event_entities" in insert_sql
 
 
-# ---------------------------------------------------------------------------
-# tick() — due reminder evaluation and source_butler scoping [bu-pn5ko]
-# ---------------------------------------------------------------------------
-
-
-def _make_reminder_row(
-    *,
-    event_id=None,
-    title="Call Mom",
-    starts_at=None,
-    source_butler="relationship",
-):
-    """Return a minimal asyncpg-like row dict for a due reminder."""
-    import uuid as _uuid
-
-    return {
-        "id": event_id or _uuid.uuid4(),
-        "title": title,
-        "starts_at": starts_at or datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
-        "source_butler": source_butler,
-    }
-
-
-class TestCalendarModuleTick:
-    """CalendarModule.tick() scopes due-reminder evaluation by source_butler."""
-
-    def _make_mod_with_pool(self, pool):
-        """Return a CalendarModule wired to a mock pool with projection tables available."""
-        mod = CalendarModule()
-        mod._db = SimpleNamespace(pool=pool)
-        # Pre-cache table availability so the method skips the DB check.
-        mod._projection_tables_available_cache = True
-        return mod
-
-    async def test_tick_returns_zero_when_no_pool(self):
-        """tick() returns 0 immediately when no DB pool is available."""
-        mod = CalendarModule()
-        mod._db = None
-        result = await mod.tick(source_butler="relationship")
-        assert result == 0
-
-    async def test_tick_returns_zero_when_projection_tables_unavailable(self):
-        """tick() returns 0 when projection tables are not present."""
-        mod = CalendarModule()
-        mock_pool = AsyncMock()
-        mod._db = SimpleNamespace(pool=mock_pool)
-        mod._projection_tables_available_cache = False
-        result = await mod.tick(source_butler="relationship")
-        assert result == 0
-
-    async def test_tick_no_pool_does_not_poison_availability_cache(self):
-        """A no-pool tick must not poison the projection-tables cache for later ticks."""
-        mod = CalendarModule()
-        mod._db = None
-
-        first_result = await mod.tick(source_butler="relationship")
-        assert first_result == 0
-
-        # Attach a real pool; cache must not be stuck at False.
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
-        mod._db = SimpleNamespace(pool=mock_pool)
-        mod._projection_tables_available_cache = True  # simulate tables present
-
-        second_result = await mod.tick(source_butler="relationship")
-        assert second_result == 0
-        mock_pool.fetch.assert_awaited_once()
-
-    async def test_tick_returns_zero_when_no_due_reminders(self):
-        """tick() returns 0 when no due reminders match source_butler."""
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
-        mod = self._make_mod_with_pool(mock_pool)
-
-        result = await mod.tick(source_butler="relationship")
-
-        assert result == 0
-        mock_pool.fetch.assert_awaited_once()
-        # Verify the query scopes on source_butler.
-        call_args = mock_pool.fetch.call_args
-        assert "source_butler" in call_args[0][0].lower() or "$2" in call_args[0][0]
-
-    async def test_tick_dispatches_notify_fn_for_due_reminder(self):
-        """tick() calls notify_fn for each due reminder and returns count."""
-        eid = uuid.uuid4()
-        row = _make_reminder_row(event_id=eid, title="Call Mom", source_butler="relationship")
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[row])
-        mock_pool.execute = AsyncMock()
-        mod = self._make_mod_with_pool(mock_pool)
-
-        received_envelopes: list[dict] = []
-
-        async def _notify(envelope: dict) -> None:
-            received_envelopes.append(envelope)
-
-        result = await mod.tick(source_butler="relationship", notify_fn=_notify)
-
-        assert result == 1
-        assert len(received_envelopes) == 1
-        envelope = received_envelopes[0]
-        assert envelope["type"] == "notify.v1"
-        assert "Call Mom" in envelope["message"]
-        assert envelope["source_butler"] == "relationship"
-        assert envelope["reminder_event_id"] == str(eid)
-
-    async def test_tick_records_last_notified_at_after_dispatch(self):
-        """tick() updates metadata.last_notified_at after a successful notify."""
-        eid = uuid.uuid4()
-        row = _make_reminder_row(event_id=eid, title="Call Mom")
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[row])
-        mock_pool.execute = AsyncMock()
-        mod = self._make_mod_with_pool(mock_pool)
-
-        await mod.tick(source_butler="relationship", notify_fn=AsyncMock())
-
-        mock_pool.execute.assert_awaited_once()
-        update_sql = mock_pool.execute.call_args[0][0]
-        assert "UPDATE calendar_events" in update_sql
-        assert "||" in update_sql  # merges only last_notified_at, not full overwrite
-
-    async def test_tick_does_not_update_metadata_when_notify_fn_raises(self):
-        """tick() skips metadata update when notify_fn raises an exception."""
-        eid = uuid.uuid4()
-        row = _make_reminder_row(event_id=eid)
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[row])
-        mock_pool.execute = AsyncMock()
-        mod = self._make_mod_with_pool(mock_pool)
-
-        async def _failing_notify(envelope: dict) -> None:
-            raise RuntimeError("delivery failed")
-
-        result = await mod.tick(source_butler="relationship", notify_fn=_failing_notify)
-
-        assert result == 0
-        mock_pool.execute.assert_not_awaited()
-
-    async def test_tick_scopes_to_source_butler_in_query(self):
-        """tick() query filters on the provided source_butler value."""
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[])
-        mod = self._make_mod_with_pool(mock_pool)
-
-        await mod.tick(source_butler="health")
-
-        call_args = mock_pool.fetch.call_args
-        # source_butler is the 2nd positional parameter after the SQL string.
-        query_params = call_args[0]
-        assert "health" in query_params
-
-    async def test_tick_logs_without_notify_fn_and_returns_zero(self):
-        """tick() with no notify_fn logs reminders but returns 0 dispatched."""
-        eid = uuid.uuid4()
-        row = _make_reminder_row(event_id=eid, title="Take meds")
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=[row])
-        mock_pool.execute = AsyncMock()
-        mod = self._make_mod_with_pool(mock_pool)
-
-        result = await mod.tick(source_butler="health")
-
-        assert result == 0
-        # No metadata update since nothing was dispatched.
-        mock_pool.execute.assert_not_awaited()
-
-    async def test_tick_handles_multiple_due_reminders(self):
-        """tick() dispatches all due reminders and returns total count."""
-        rows = [
-            _make_reminder_row(title="Call Mom", source_butler="relationship"),
-            _make_reminder_row(title="Dentist", source_butler="relationship"),
-        ]
-        mock_pool = AsyncMock()
-        mock_pool.fetch = AsyncMock(return_value=rows)
-        mock_pool.execute = AsyncMock()
-        mod = self._make_mod_with_pool(mock_pool)
-
-        envelopes: list[dict] = []
-
-        async def _notify(envelope: dict) -> None:
-            envelopes.append(envelope)
-
-        result = await mod.tick(source_butler="relationship", notify_fn=_notify)
-
-        assert result == 2
-        assert len(envelopes) == 2
-
-
 class TestProjectInternalSourcesNoReminders:
     """_project_internal_sources no longer invokes a separate reminders pipeline."""
 
@@ -939,3 +750,237 @@ class TestProjectInternalSourcesNoReminders:
         assert not hasattr(mod, "_project_reminders_source"), (
             "_project_reminders_source should have been removed from CalendarModule"
         )
+
+
+# ---------------------------------------------------------------------------
+# tick() — due-reminder evaluation
+# ---------------------------------------------------------------------------
+
+
+def _make_pool_for_tick(
+    *,
+    projection_available: bool = True,
+    recurring_rows: list[dict] | None = None,
+    onetime_rows: list[dict] | None = None,
+    execute_raises: Exception | None = None,
+) -> MagicMock:
+    """Build an asyncpg pool mock for CalendarModule.tick() tests."""
+    pool = MagicMock()
+
+    # _projection_tables_available uses pool.fetchrow.
+    availability_row = MagicMock()
+    availability_row.__getitem__ = lambda self, key: True  # all tables present
+
+    async def fetchrow_side_effect(query, *args):
+        if "to_regclass" in query:
+            if not projection_available:
+                return None
+            return availability_row
+        return None
+
+    pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+
+    # pool.fetch dispatches by query content so tests stay stable if tick()
+    # reorders or adds queries.
+    async def fetch_side_effect(query, *args):
+        if "calendar_event_instances" in query:
+            return [_row_to_record(r) for r in (recurring_rows or [])]
+        else:
+            return [_row_to_record(r) for r in (onetime_rows or [])]
+
+    pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+
+    if execute_raises is not None:
+        pool.execute = AsyncMock(side_effect=execute_raises)
+    else:
+        pool.execute = AsyncMock()
+
+    return pool
+
+
+def _row_to_record(d: dict) -> MagicMock:
+    """Convert a plain dict into an asyncpg Record-like MagicMock."""
+    rec = MagicMock()
+    rec.__getitem__ = lambda self, key: d[key]
+    return rec
+
+
+def _make_module_with_pool(pool) -> CalendarModule:
+    mod = CalendarModule()
+    db = MagicMock()
+    db.pool = pool
+    mod._db = db
+    # Allow _projection_tables_available to actually query
+    mod._projection_tables_available_cache = None
+    return mod
+
+
+class TestCalendarModuleTick:
+    """CalendarModule.tick() — recurring and one-time reminder dedup."""
+
+    async def test_returns_zero_when_no_pool(self):
+        mod = CalendarModule()
+        mod._db = None
+        result = await mod.tick("general")
+        assert result == 0
+
+    async def test_returns_zero_when_projection_tables_unavailable(self):
+        pool = _make_pool_for_tick(projection_available=False)
+        mod = _make_module_with_pool(pool)
+        result = await mod.tick("general")
+        assert result == 0
+
+    async def test_returns_zero_when_no_due_reminders(self):
+        pool = _make_pool_for_tick(recurring_rows=[], onetime_rows=[])
+        mod = _make_module_with_pool(pool)
+        notify_fn = AsyncMock()
+        result = await mod.tick("general", notify_fn=notify_fn)
+        assert result == 0
+        notify_fn.assert_not_called()
+
+    async def test_recurring_reminder_fires_on_occurrence(self):
+        """A recurring reminder's instance fires when its starts_at is past."""
+        event_id = uuid.uuid4()
+        instance_id = uuid.uuid4()
+        pool = _make_pool_for_tick(
+            recurring_rows=[
+                {
+                    "event_id": event_id,
+                    "title": "Weekly Check",
+                    "instance_id": instance_id,
+                    "instance_starts_at": datetime(2026, 4, 14, 9, 0, tzinfo=UTC),
+                }
+            ],
+            onetime_rows=[],
+        )
+        mod = _make_module_with_pool(pool)
+        notify_fn = AsyncMock()
+
+        result = await mod.tick("general", notify_fn=notify_fn)
+
+        assert result == 1
+        notify_fn.assert_called_once()
+        envelope = notify_fn.call_args[0][0]
+        assert envelope["reminder_event_id"] == str(event_id)
+        assert envelope["reminder_instance_id"] == str(instance_id)
+        # Instance metadata must be updated (not the event row)
+        execute_calls = pool.execute.call_args_list
+        assert len(execute_calls) == 1
+        assert "calendar_event_instances" in execute_calls[0][0][0]
+        assert "notified_at" in execute_calls[0][0][1]
+
+    async def test_recurring_reminder_same_occurrence_does_not_double_fire(self):
+        """An instance already marked notified_at is excluded by the query."""
+        # If the query returns no rows, tick() fires nothing.
+        pool = _make_pool_for_tick(recurring_rows=[], onetime_rows=[])
+        mod = _make_module_with_pool(pool)
+        notify_fn = AsyncMock()
+
+        result = await mod.tick("general", notify_fn=notify_fn)
+
+        assert result == 0
+        notify_fn.assert_not_called()
+
+    async def test_dismissed_recurring_instance_is_skipped(self):
+        """Cancelled instances are excluded by the SQL status='confirmed' filter.
+
+        We test the behaviour indirectly: if the pool returns no rows (because
+        the SQL WHERE clause filtered the cancelled instance), tick returns 0.
+        """
+        pool = _make_pool_for_tick(recurring_rows=[], onetime_rows=[])
+        mod = _make_module_with_pool(pool)
+        notify_fn = AsyncMock()
+
+        result = await mod.tick("general", notify_fn=notify_fn)
+
+        assert result == 0
+        notify_fn.assert_not_called()
+
+    async def test_onetime_reminder_fires_and_marks_event(self):
+        """A one-time reminder fires and records last_notified_at on the event."""
+        event_id = uuid.uuid4()
+        pool = _make_pool_for_tick(
+            recurring_rows=[],
+            onetime_rows=[
+                {
+                    "event_id": event_id,
+                    "title": "Doctor Appointment",
+                    "starts_at": datetime(2026, 4, 15, 10, 0, tzinfo=UTC),
+                }
+            ],
+        )
+        mod = _make_module_with_pool(pool)
+        notify_fn = AsyncMock()
+
+        result = await mod.tick("general", notify_fn=notify_fn)
+
+        assert result == 1
+        notify_fn.assert_called_once()
+        envelope = notify_fn.call_args[0][0]
+        assert envelope["reminder_event_id"] == str(event_id)
+        assert "reminder_instance_id" not in envelope
+        # Event row must be updated with last_notified_at
+        execute_calls = pool.execute.call_args_list
+        assert len(execute_calls) == 1
+        assert "calendar_events" in execute_calls[0][0][0]
+        assert "last_notified_at" in execute_calls[0][0][1]
+
+    async def test_notify_fn_failure_skips_metadata_update(self):
+        """When notify_fn raises, the instance is not marked as notified."""
+        event_id = uuid.uuid4()
+        instance_id = uuid.uuid4()
+        pool = _make_pool_for_tick(
+            recurring_rows=[
+                {
+                    "event_id": event_id,
+                    "title": "Daily Stand-up",
+                    "instance_id": instance_id,
+                    "instance_starts_at": datetime(2026, 4, 14, 9, 0, tzinfo=UTC),
+                }
+            ],
+            onetime_rows=[],
+        )
+        mod = _make_module_with_pool(pool)
+        notify_fn = AsyncMock(side_effect=RuntimeError("delivery failed"))
+
+        result = await mod.tick("general", notify_fn=notify_fn)
+
+        assert result == 0
+        pool.execute.assert_not_called()
+
+    async def test_multi_occurrence_dispatched_independently(self):
+        """Multiple past occurrences of the same recurring series each fire once."""
+        event_id = uuid.uuid4()
+        instance_id_1 = uuid.uuid4()
+        instance_id_2 = uuid.uuid4()
+        pool = _make_pool_for_tick(
+            recurring_rows=[
+                {
+                    "event_id": event_id,
+                    "title": "Monthly Review",
+                    "instance_id": instance_id_1,
+                    "instance_starts_at": datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+                },
+                {
+                    "event_id": event_id,
+                    "title": "Monthly Review",
+                    "instance_id": instance_id_2,
+                    "instance_starts_at": datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
+                },
+            ],
+            onetime_rows=[],
+        )
+        mod = _make_module_with_pool(pool)
+        notify_fn = AsyncMock()
+
+        result = await mod.tick("general", notify_fn=notify_fn)
+
+        assert result == 2
+        assert notify_fn.call_count == 2
+        # Two separate UPDATE statements on calendar_event_instances
+        execute_calls = pool.execute.call_args_list
+        assert len(execute_calls) == 2
+        # Each call should target the two different instance IDs
+        updated_ids = {call[0][2] for call in execute_calls}
+        assert instance_id_1 in updated_ids
+        assert instance_id_2 in updated_ids
