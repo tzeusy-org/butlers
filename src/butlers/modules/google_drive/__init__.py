@@ -1256,9 +1256,11 @@ class GoogleDriveModule(Module):
         if butler_name:
             self._butler_name = butler_name
         else:
-            schema: str | None = getattr(db, "schema", None) if db is not None else None
-            if schema:
-                self._butler_name = schema
+            schema: Any = getattr(db, "schema", None) if db is not None else None
+            if isinstance(schema, str):
+                schema = schema.strip()
+                if schema:
+                    self._butler_name = schema
 
         module = self
 

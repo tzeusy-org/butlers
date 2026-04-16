@@ -2520,6 +2520,10 @@ class CalendarModule(Module):
                         self._butler_name = (
                             normalized.removeprefix("butler_") or DEFAULT_BUTLER_NAME
                         )
+                    else:
+                        self._butler_name = DEFAULT_BUTLER_NAME
+                else:
+                    self._butler_name = DEFAULT_BUTLER_NAME
         self._db = db
         module = self
 
