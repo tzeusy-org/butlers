@@ -276,11 +276,13 @@ class SelfHealingModule(Module):
     # Tool registration
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register report_error and get_healing_status tools on the MCP server."""
         self._config = (
             config if isinstance(config, SelfHealingConfig) else SelfHealingConfig(**(config or {}))
         )
+        if butler_name:
+            self._butler_name = butler_name
         self._pool = getattr(db, "pool", None) if db is not None else None
 
         # Capture self reference for tool handler closures
@@ -726,21 +728,19 @@ class SelfHealingModule(Module):
 
     def wire_runtime(
         self,
-        butler_name: str,
         spawner: Any,
         repo_root: Path | str,
         switchboard_client: Any = None,
     ) -> None:
-        """Wire the module to the spawner and butler identity.
+        """Wire the module to the spawner and runtime dependencies.
 
         Called by the butler daemon after ``register_tools()`` to give the
         module access to the spawner (for healing agent dispatch) and the
-        repo root (for worktree creation).
+        repo root (for worktree creation).  Butler identity is provided
+        exclusively through ``register_tools()`` and is not repeated here.
 
         Parameters
         ----------
-        butler_name:
-            Name of the butler that owns this module instance.
         spawner:
             Spawner instance for dispatching healing agents (fallback path).
         repo_root:
@@ -750,7 +750,6 @@ class SelfHealingModule(Module):
             the QA staffer is registered, findings are relayed via Switchboard.
             When ``None``, the module uses direct dispatch only.
         """
-        self._butler_name = butler_name
         self._spawner = spawner
         self._repo_root = Path(repo_root)
         self._switchboard_client = switchboard_client

@@ -94,7 +94,7 @@ class MetricsModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register metrics MCP tools on the butler's FastMCP server."""
         self._config = self._coerce_config(config)
         self._db = db
@@ -168,9 +168,12 @@ class MetricsModule(Module):
         if self._pool is None:
             self._pool = getattr(db, "pool", None)
         if self._butler_name is None:
-            schema: str | None = getattr(db, "schema", None)
-            if schema:
-                self._butler_name = schema.replace("-", "_")
+            if butler_name:
+                self._butler_name = butler_name.replace("-", "_")
+            else:
+                schema: str | None = getattr(db, "schema", None)
+                if schema:
+                    self._butler_name = schema.replace("-", "_")
 
         module = self  # capture for closures
 

@@ -619,9 +619,11 @@ class QaModule(Module):
     # Tool registration
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register report_finding, force_patrol, and get_qa_status tools."""
         self._config = config if isinstance(config, QaConfig) else QaConfig(**(config or {}))
+        if butler_name:
+            self._butler_name = butler_name
         self._pool = getattr(db, "pool", None) if db is not None else None
 
         module = self
@@ -1640,22 +1642,20 @@ class QaModule(Module):
 
     def wire_runtime(
         self,
-        butler_name: str,
         spawner: Any,
         repo_root: Path | str,
         notify_fn: Callable[..., Coroutine[Any, Any, Any]] | None = None,
         switchboard_client: Any = None,
     ) -> None:
-        """Wire the module to the spawner and butler identity.
+        """Wire the module to the spawner and runtime dependencies.
 
         Called by the QA staffer daemon after ``register_tools()`` to give the
         module access to the spawner (for investigation dispatch) and the
-        repo root (for worktree creation).
+        repo root (for worktree creation).  Butler identity is provided
+        exclusively through ``register_tools()`` and is not repeated here.
 
         Parameters
         ----------
-        butler_name:
-            Name of the butler that owns this module instance.
         spawner:
             Spawner instance for dispatching investigations.
         repo_root:
@@ -1670,7 +1670,6 @@ class QaModule(Module):
             When provided, enables future QA-to-butler routing via Switchboard.
             When ``None``, the module operates without Switchboard connectivity.
         """
-        self._butler_name = butler_name
         self._spawner = spawner
         # Only use daemon's repo_root as fallback if managed clone is not active
         if self._managed_clone is None or self._managed_clone.clone_path is None:

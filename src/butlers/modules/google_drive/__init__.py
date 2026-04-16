@@ -1244,7 +1244,7 @@ class GoogleDriveModule(Module):
     # Tool registration (spec §6.1)
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register all 7 Google Drive MCP tools on the butler's FastMCP server."""
         if isinstance(config, dict):
             config = GoogleDriveConfig(**(config or {}))

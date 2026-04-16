@@ -115,6 +115,39 @@ class _StubConfig(BaseModel):
     pass
 
 
+class StubModuleCapturingButlerName(Module):
+    """Stub module that captures butler_name from register_tools()."""
+
+    def __init__(self) -> None:
+        self.received_butler_name: str = ""
+
+    @property
+    def name(self) -> str:
+        return "stub_capture_name"
+
+    @property
+    def config_schema(self) -> type[BaseModel]:
+        return _StubConfig
+
+    @property
+    def dependencies(self) -> list[str]:
+        return []
+
+    def migration_revisions(self) -> str | None:
+        return None
+
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
+        self.received_butler_name = butler_name
+
+    async def on_startup(
+        self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
+    ) -> None:
+        pass
+
+    async def on_shutdown(self) -> None:
+        pass
+
+
 class StubModuleWithWireRuntime(Module):
     """Stub module that implements wire_runtime() for inspection."""
 
@@ -138,7 +171,7 @@ class StubModuleWithWireRuntime(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         pass
 
     async def on_startup(
@@ -173,7 +206,7 @@ class StubModuleWithoutWireRuntime(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         pass
 
     async def on_startup(
@@ -203,7 +236,7 @@ class StubModuleWithBrokenWireRuntime(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         pass
 
     async def on_startup(
@@ -216,6 +249,43 @@ class StubModuleWithBrokenWireRuntime(Module):
 
     def wire_runtime(self, *args, **kwargs) -> None:
         raise RuntimeError("wire_runtime intentionally broken")
+
+
+# ---------------------------------------------------------------------------
+# Tests: daemon passes butler_name to register_tools
+# ---------------------------------------------------------------------------
+
+
+async def test_daemon_passes_butler_name_to_register_tools(tmp_path: Path) -> None:
+    """Daemon passes self.config.name as butler_name to register_tools()."""
+    registry = ModuleRegistry()
+    registry.register(StubModuleCapturingButlerName)
+
+    butler_dir = _make_butler_toml(tmp_path, modules={"stub_capture_name": {}})
+    patches = _patch_infra()
+
+    with (
+        patches["db_from_env"],
+        patches["run_migrations"],
+        patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["init_telemetry"],
+        patches["sync_schedules"],
+        patches["FastMCP"],
+        patches["Spawner"],
+        patches["get_adapter"],
+        patches["shutil_which"],
+        patches["start_mcp_server"],
+        patches["create_audit_pool"],
+        patches["recover_route_inbox"],
+        patch.object(ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock),
+    ):
+        daemon = ButlerDaemon(butler_dir, registry=registry)
+        await daemon.start()
+
+    stub_mod = next(m for m in daemon._modules if m.name == "stub_capture_name")
+    # Daemon must pass self.config.name ("test-butler" from the toml) as butler_name
+    assert stub_mod.received_butler_name == "test-butler"
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +545,7 @@ async def test_try_qa_relay_reaches_switchboard_route() -> None:
     client.call_tool = mock_call_tool
 
     mod = SelfHealingModule()
-    mod.wire_runtime("general", MagicMock(), "/repo", switchboard_client=client)
+    mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
     mod._pool = None  # No DB in this unit test
 
     result = await mod._handle_report_error(
@@ -506,7 +576,7 @@ def test_qa_wire_runtime_stores_switchboard_client() -> None:
 
     mod = QaModule()
     client = MagicMock()
-    mod.wire_runtime("qa", MagicMock(), "/repo", switchboard_client=client)
+    mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
 
     assert mod._switchboard_client is client
 
@@ -516,6 +586,6 @@ def test_qa_wire_runtime_without_switchboard_client() -> None:
     from butlers.modules.qa import QaModule
 
     mod = QaModule()
-    mod.wire_runtime("qa", MagicMock(), "/repo")
+    mod.wire_runtime(MagicMock(), "/repo")
 
     assert mod._switchboard_client is None

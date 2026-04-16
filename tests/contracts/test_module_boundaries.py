@@ -30,7 +30,7 @@ def _make_minimal_module(name: str = "test_module"):
         def dependencies(self) -> list[str]:
             return []
 
-        async def register_tools(self, mcp, config, db) -> None:
+        async def register_tools(self, mcp, config, db, butler_name: str = "") -> None:
             pass
 
         def migration_revisions(self) -> str | None:

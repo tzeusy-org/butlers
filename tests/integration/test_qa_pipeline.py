@@ -1074,7 +1074,9 @@ class TestSelfHealingToQaRelayIntegration:
 
         # Wire the SelfHealingModule with the mock client (as daemon does after bu-i0geq fix)
         sh_mod = SelfHealingModule()
-        sh_mod.wire_runtime("general", MagicMock(), "/repo", switchboard_client=client)
+        # Identity flows through register_tools per spec; use it here too.
+        await sh_mod.register_tools(MagicMock(), None, None, butler_name="general")
+        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
         sh_mod._pool = None  # No DB required for this relay path
 
         # Invoke report_error — triggers the full relay chain
@@ -1121,7 +1123,7 @@ class TestSelfHealingToQaRelayIntegration:
         client.call_tool = mock_call_tool
 
         sh_mod = SelfHealingModule()
-        sh_mod.wire_runtime("general", MagicMock(), "/repo", switchboard_client=client)
+        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
         sh_mod._pool = None
         sh_mod._spawner = None  # Forces not_configured on direct dispatch path
 
