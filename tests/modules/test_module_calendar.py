@@ -724,3 +724,201 @@ class TestEntityAssociationHelpers:
         mock_conn.executemany.assert_awaited_once()
         insert_sql = mock_conn.executemany.call_args[0][0]
         assert "INSERT INTO calendar_event_entities" in insert_sql
+
+
+# ---------------------------------------------------------------------------
+# tick() — due reminder evaluation and source_butler scoping [bu-pn5ko]
+# ---------------------------------------------------------------------------
+
+
+def _make_reminder_row(
+    *,
+    event_id=None,
+    title="Call Mom",
+    starts_at=None,
+    metadata=None,
+    source_butler="relationship",
+):
+    """Return a minimal asyncpg-like row dict for a due reminder."""
+    import uuid as _uuid
+
+    return {
+        "id": event_id or _uuid.uuid4(),
+        "title": title,
+        "starts_at": starts_at or datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+        "metadata": metadata or "{}",
+        "source_butler": source_butler,
+    }
+
+
+class TestCalendarModuleTick:
+    """CalendarModule.tick() scopes due-reminder evaluation by source_butler."""
+
+    def _make_mod_with_pool(self, pool):
+        """Return a CalendarModule wired to a mock pool with projection tables available."""
+        mod = CalendarModule()
+        mod._db = SimpleNamespace(pool=pool)
+        # Pre-cache table availability so the method skips the DB check.
+        mod._projection_tables_available_cache = True
+        return mod
+
+    async def test_tick_returns_zero_when_no_pool(self):
+        """tick() returns 0 immediately when no DB pool is available."""
+        mod = CalendarModule()
+        mod._db = None
+        result = await mod.tick(source_butler="relationship")
+        assert result == 0
+
+    async def test_tick_returns_zero_when_projection_tables_unavailable(self):
+        """tick() returns 0 when projection tables are not present."""
+        mod = CalendarModule()
+        mock_pool = AsyncMock()
+        mod._db = SimpleNamespace(pool=mock_pool)
+        mod._projection_tables_available_cache = False
+        result = await mod.tick(source_butler="relationship")
+        assert result == 0
+
+    async def test_tick_returns_zero_when_no_due_reminders(self):
+        """tick() returns 0 when no due reminders match source_butler."""
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[])
+        mod = self._make_mod_with_pool(mock_pool)
+
+        result = await mod.tick(source_butler="relationship")
+
+        assert result == 0
+        mock_pool.fetch.assert_awaited_once()
+        # Verify the query scopes on source_butler.
+        call_args = mock_pool.fetch.call_args
+        assert "source_butler" in call_args[0][0].lower() or "$2" in call_args[0][0]
+
+    async def test_tick_dispatches_notify_fn_for_due_reminder(self):
+        """tick() calls notify_fn for each due reminder and returns count."""
+        eid = uuid.uuid4()
+        row = _make_reminder_row(event_id=eid, title="Call Mom", source_butler="relationship")
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        mock_pool.execute = AsyncMock()
+        mod = self._make_mod_with_pool(mock_pool)
+
+        received_envelopes: list[dict] = []
+
+        async def _notify(envelope: dict) -> None:
+            received_envelopes.append(envelope)
+
+        result = await mod.tick(source_butler="relationship", notify_fn=_notify)
+
+        assert result == 1
+        assert len(received_envelopes) == 1
+        envelope = received_envelopes[0]
+        assert envelope["type"] == "notify.v1"
+        assert "Call Mom" in envelope["message"]
+        assert envelope["source_butler"] == "relationship"
+        assert envelope["reminder_event_id"] == str(eid)
+
+    async def test_tick_records_last_notified_at_after_dispatch(self):
+        """tick() updates metadata.last_notified_at after a successful notify."""
+        eid = uuid.uuid4()
+        row = _make_reminder_row(event_id=eid, title="Call Mom")
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        mock_pool.execute = AsyncMock()
+        mod = self._make_mod_with_pool(mock_pool)
+
+        await mod.tick(source_butler="relationship", notify_fn=AsyncMock())
+
+        mock_pool.execute.assert_awaited_once()
+        update_sql = mock_pool.execute.call_args[0][0]
+        assert "last_notified_at" in update_sql or "UPDATE calendar_events" in update_sql
+
+    async def test_tick_does_not_update_metadata_when_notify_fn_raises(self):
+        """tick() skips metadata update when notify_fn raises an exception."""
+        eid = uuid.uuid4()
+        row = _make_reminder_row(event_id=eid)
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        mock_pool.execute = AsyncMock()
+        mod = self._make_mod_with_pool(mock_pool)
+
+        async def _failing_notify(envelope: dict) -> None:
+            raise RuntimeError("delivery failed")
+
+        result = await mod.tick(source_butler="relationship", notify_fn=_failing_notify)
+
+        assert result == 0
+        mock_pool.execute.assert_not_awaited()
+
+    async def test_tick_scopes_to_source_butler_in_query(self):
+        """tick() query filters on the provided source_butler value."""
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[])
+        mod = self._make_mod_with_pool(mock_pool)
+
+        await mod.tick(source_butler="health")
+
+        call_args = mock_pool.fetch.call_args
+        # source_butler is the 2nd positional parameter after the SQL string.
+        query_params = call_args[0]
+        assert "health" in query_params
+
+    async def test_tick_logs_without_notify_fn_and_returns_zero(self):
+        """tick() with no notify_fn logs reminders but returns 0 dispatched."""
+        eid = uuid.uuid4()
+        row = _make_reminder_row(event_id=eid, title="Take meds")
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        mock_pool.execute = AsyncMock()
+        mod = self._make_mod_with_pool(mock_pool)
+
+        result = await mod.tick(source_butler="health")
+
+        assert result == 0
+        # No metadata update since nothing was dispatched.
+        mock_pool.execute.assert_not_awaited()
+
+    async def test_tick_handles_multiple_due_reminders(self):
+        """tick() dispatches all due reminders and returns total count."""
+        rows = [
+            _make_reminder_row(title="Call Mom", source_butler="relationship"),
+            _make_reminder_row(title="Dentist", source_butler="relationship"),
+        ]
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=rows)
+        mock_pool.execute = AsyncMock()
+        mod = self._make_mod_with_pool(mock_pool)
+
+        envelopes: list[dict] = []
+
+        async def _notify(envelope: dict) -> None:
+            envelopes.append(envelope)
+
+        result = await mod.tick(source_butler="relationship", notify_fn=_notify)
+
+        assert result == 2
+        assert len(envelopes) == 2
+
+
+class TestProjectInternalSourcesNoReminders:
+    """_project_internal_sources no longer invokes a separate reminders pipeline."""
+
+    async def test_project_internal_sources_only_calls_scheduler_source(self):
+        """_project_internal_sources delegates only to _project_scheduler_source.
+
+        ``_project_reminders_source`` was removed in bu-pn5ko.  Reminders are now
+        native calendar events projected through the standard pipeline.
+        """
+        mod = CalendarModule()
+        mod._db = SimpleNamespace(pool=None)
+
+        scheduler_calls: list[str] = []
+
+        async def _mock_scheduler() -> None:
+            scheduler_calls.append("scheduler")
+
+        with patch.object(mod, "_project_scheduler_source", side_effect=_mock_scheduler):
+            await mod._project_internal_sources()
+
+        assert scheduler_calls == ["scheduler"]
+        assert not hasattr(mod, "_project_reminders_source"), (
+            "_project_reminders_source should have been removed from CalendarModule"
+        )
