@@ -3,7 +3,7 @@
 ## Purpose
 Defines the pluggable module architecture for butlers: the Module abstract base class, automatic discovery and registration, topological dependency resolution, Pydantic config schema validation, tool registration, migration chains, and runtime enable/disable state management.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Module Abstract Base Class
 Every pluggable module must subclass `Module` (from `butlers.modules.base`) and implement all abstract members: `name` (property), `config_schema` (property returning Pydantic BaseModel class), `dependencies` (property returning list of module names), `register_tools(mcp, config, db, butler_name)`, `migration_revisions()` (returns Alembic branch label or None), `on_startup(config, db, credential_store)`, and `on_shutdown()`.
