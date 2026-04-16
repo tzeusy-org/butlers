@@ -606,7 +606,8 @@ async def test_contact_association_reminder_projected_with_metadata(reminder_poo
     )
     assert event_row is not None
     raw_metadata = event_row["metadata"]
-    # asyncpg returns JSONB columns as JSON strings; decode if needed
+    # asyncpg typically decodes JSONB columns to Python dicts; the str branch
+    # is a safety net for custom codec configurations that return raw JSON strings.
     if isinstance(raw_metadata, str):
         metadata = json.loads(raw_metadata)
     else:
