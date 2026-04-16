@@ -253,7 +253,8 @@ async def test_full_lifecycle_create_list_dismiss(reminder_pool):
 
     assert reminder["label"] == "Take vitamins"
     assert reminder["dismissed"] is False
-    assert reminder["next_trigger_at"] == start_at or reminder["due_at"] == start_at
+    assert reminder["next_trigger_at"] == start_at
+    assert reminder["due_at"] == start_at
     reminder_id = uuid.UUID(str(reminder["id"]))
 
     # Verify persisted in DB
@@ -312,8 +313,10 @@ async def test_full_lifecycle_update_title_and_time(reminder_pool):
         enabled=None,
     )
 
-    assert updated["label"] == "Afternoon walk" or updated["message"] == "Afternoon walk"
-    assert updated["next_trigger_at"] == new_start or updated["due_at"] == new_start
+    assert updated["label"] == "Afternoon walk"
+    assert updated["message"] == "Afternoon walk"
+    assert updated["next_trigger_at"] == new_start
+    assert updated["due_at"] == new_start
 
     # Verify DB
     row = await pool.fetchrow("SELECT * FROM reminders WHERE id = $1", reminder_id)
@@ -328,17 +331,17 @@ async def test_full_lifecycle_update_title_and_time(reminder_pool):
 # ===========================================================================
 
 
-async def test_recurring_monthly_advance_on_dismiss(reminder_pool):
-    """Dismiss on a monthly recurring reminder advances next_trigger_at by 1 month.
+async def test_recurring_reminder_toggle_state_transitions(reminder_pool):
+    """Toggle a monthly recurring reminder off and on; verify state transitions.
 
-    Uses _toggle_reminder_event(enabled=False) to simulate dismiss, then
-    verifies the next_trigger_at is preserved (not cleared) for recurring types.
+    _toggle_reminder_event(enabled=False) clears next_trigger_at and marks
+    dismissed=True. Re-enabling (enabled=True) restores next_trigger_at from
+    due_at and sets dismissed=False.
 
-    Note: The CalendarModule's _toggle_reminder_event sets next_trigger_at=None
-    when enabled=False. The recurring advance logic lives in the relationship
-    butler's reminder_dismiss function. This test verifies that disabling a
-    recurring reminder marks it dismissed but preserves the existing trigger
-    time on re-enable.
+    Note: The CalendarModule's _toggle_reminder_event clears next_trigger_at
+    when enabled=False and restores it from due_at when re-enabled. The
+    recurring advance logic (advancing to the next occurrence) lives in the
+    relationship butler's reminder_dismiss function, not here.
     """
     pool = reminder_pool
     mod = _make_module(pool)
@@ -352,7 +355,7 @@ async def test_recurring_monthly_advance_on_dismiss(reminder_pool):
     )
     reminder_id = uuid.UUID(str(reminder["id"]))
 
-    # Confirm it was created as recurring
+    # Confirm it was created as recurring with trigger time set
     row = await pool.fetchrow("SELECT * FROM reminders WHERE id = $1", reminder_id)
     assert row["dismissed"] is False
     assert row["next_trigger_at"] is not None or row["due_at"] is not None
@@ -360,10 +363,12 @@ async def test_recurring_monthly_advance_on_dismiss(reminder_pool):
     # Dismiss (pause) the recurring reminder
     dismissed = await mod._toggle_reminder_event(reminder_id, enabled=False)
     assert dismissed["dismissed"] is True
+    assert dismissed["next_trigger_at"] is None
 
-    # Re-enable: the stored next_trigger_at should be restored
+    # Re-enable: next_trigger_at should be restored from due_at
     resumed = await mod._toggle_reminder_event(reminder_id, enabled=True)
     assert resumed["dismissed"] is False
+    assert resumed["next_trigger_at"] == due
 
 
 async def test_recurring_projection_creates_multiple_instances(reminder_pool):
@@ -514,23 +519,25 @@ async def test_source_butler_isolation_events_scoped_to_source(reminder_pool):
     )
     assert src_a is not None and src_b is not None
 
-    # Events for A's reminder must be under A's source_id
-    event_a = await pool.fetchrow(
+    # Verify Reminder A is ONLY under Source A (exactly one row, correct source_id)
+    event_a_rows = await pool.fetch(
         "SELECT source_id FROM calendar_events WHERE origin_ref = $1",
         str(reminder_a["id"]),
     )
-    event_b = await pool.fetchrow(
+    assert len(event_a_rows) == 1, (
+        f"Reminder A must appear exactly once in calendar_events; got {len(event_a_rows)}"
+    )
+    assert event_a_rows[0]["source_id"] == src_a["id"], "Reminder A must be under source A"
+
+    # Verify Reminder B is ONLY under Source B (exactly one row, correct source_id)
+    event_b_rows = await pool.fetch(
         "SELECT source_id FROM calendar_events WHERE origin_ref = $1",
         str(reminder_b["id"]),
     )
-
-    assert event_a is not None, "Reminder A must have a projected calendar event"
-    assert event_b is not None, "Reminder B must have a projected calendar event"
-    assert event_a["source_id"] == src_a["id"], "Reminder A must be under source A"
-    assert event_b["source_id"] == src_b["id"], "Reminder B must be under source B"
-    # Cross-contamination check
-    assert event_a["source_id"] != src_b["id"], "Reminder A must NOT be under source B"
-    assert event_b["source_id"] != src_a["id"], "Reminder B must NOT be under source A"
+    assert len(event_b_rows) == 1, (
+        f"Reminder B must appear exactly once in calendar_events; got {len(event_b_rows)}"
+    )
+    assert event_b_rows[0]["source_id"] == src_b["id"], "Reminder B must be under source B"
 
 
 # ===========================================================================
