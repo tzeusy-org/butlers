@@ -67,6 +67,28 @@ def _blocking_process(pid: int = 1234) -> MagicMock:
     return proc
 
 
+def _eventual_exit_process(returncode: int, pid: int = 1234) -> tuple[MagicMock, asyncio.Event]:
+    proc = MagicMock()
+    proc.pid = pid
+    proc.returncode = None
+    exit_event = asyncio.Event()
+
+    async def _wait():
+        await exit_event.wait()
+        proc.returncode = returncode
+        return returncode
+
+    proc.wait = _wait
+    proc.send_signal = MagicMock()
+    proc.stdout = AsyncMock(spec=asyncio.StreamReader)
+    proc.stderr = AsyncMock(spec=asyncio.StreamReader)
+    proc.stdout.__aiter__ = lambda self: self
+    proc.stdout.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
+    proc.stderr.__aiter__ = lambda self: self
+    proc.stderr.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
+    return proc, exit_event
+
+
 def test_backoff_attempt_zero_is_bounded() -> None:
     """Attempt 0 should be within ±25% of initial value (5s)."""
     delay = _jittered_backoff(0)
@@ -202,5 +224,44 @@ async def test_start_times_out_when_degraded_states_are_not_allowed(
 
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(mgr.start(), timeout=1.0)
+
+    await mgr.stop()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected_reason"),
+    [
+        (1, "Pairing timeout — re-pair required"),
+        (2, "Session invalidated — re-pair required"),
+    ],
+)
+async def test_start_succeeds_when_bridge_exits_into_terminal_degraded_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    expected_reason: str,
+) -> None:
+    mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.25, startup_allow_degraded=True))
+    proc, exit_event = _eventual_exit_process(returncode)
+
+    async def _spawn() -> None:
+        mgr._process = proc
+
+    monkeypatch.setattr(mgr, "_spawn", _spawn)
+    monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
+    monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(
+        "butlers.connectors.bridge_manager._http_get_unix",
+        AsyncMock(side_effect=ConnectionError("bridge not ready")),
+    )
+
+    start_task = asyncio.create_task(mgr.start())
+    await asyncio.sleep(0)
+    exit_event.set()
+
+    await asyncio.wait_for(start_task, timeout=1.0)
+
+    assert mgr.is_degraded
+    assert mgr.degraded_reason == expected_reason
+    assert mgr._startup_ready_event.is_set()
 
     await mgr.stop()
