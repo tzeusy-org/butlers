@@ -413,7 +413,7 @@ class HomeAssistantModule(Module):
     # Tool registration
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register Home Assistant MCP tools on the butler's FastMCP server.
 
         Tools are registered as closures that capture the module instance

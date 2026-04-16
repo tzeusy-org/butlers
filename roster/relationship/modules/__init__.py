@@ -86,7 +86,7 @@ class RelationshipModule(Module):
             raise RuntimeError("RelationshipModule not initialised -- no DB available")
         return self._db.pool
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register all relationship MCP tools."""
         self._db = db
         from .tools import register_tools
