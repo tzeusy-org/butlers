@@ -72,7 +72,7 @@ class InsightBrokerModule(Module):
             raise RuntimeError("InsightBrokerModule not initialised — no DB available")
         return self._db.pool
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register the propose_insight_candidate MCP tool."""
         self._db = db
         from butlers.tools.switchboard.insight.broker import (

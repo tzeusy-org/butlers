@@ -92,7 +92,7 @@ class HealthModule(Module):
             raise RuntimeError("HealthModule not initialised — no DB available")
         return self._db.pool
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register all health MCP tools."""
         self._db = db
 
