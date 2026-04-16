@@ -760,8 +760,11 @@ def _build_google_event_body(payload: CalendarEventCreate) -> dict[str, Any]:
     body["summary"] = payload.title
 
     # Optional text fields
-    if payload.description is not None:
-        body["description"] = payload.description
+    # `body` takes precedence over `description` as the richer content field;
+    # both map to Google's single `description` property.
+    google_description = payload.body if payload.body is not None else payload.description
+    if google_description is not None:
+        body["description"] = google_description
     if payload.location is not None:
         body["location"] = payload.location
 
@@ -904,8 +907,11 @@ def _build_google_event_patch_body(
         body["summary"] = patch.title
 
     # Optional text fields
-    if patch.description is not None:
-        body["description"] = patch.description
+    # `body` takes precedence over `description` as the richer content field;
+    # both map to Google's single `description` property.
+    google_description = patch.body if patch.body is not None else patch.description
+    if google_description is not None:
+        body["description"] = google_description
     if patch.location is not None:
         body["location"] = patch.location
 
@@ -3598,7 +3604,14 @@ class CalendarModule(Module):
             request_id: str | None = None,
             _approval_bypass: bool = False,
         ) -> dict[str, Any]:
-            """Update a butler schedule/reminder event."""
+            """Update a butler schedule/reminder event.
+
+            ``body`` is accepted for forward-compatibility and is recorded in the
+            audit log but is not written to the scheduler/reminder source tables —
+            butler events are internal and their underlying storage does not carry
+            a free-text body.  It is included here so callers have a uniform
+            interface across create/update tool families.
+            """
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
@@ -5373,7 +5386,10 @@ class CalendarModule(Module):
         """Replace entity associations for a calendar event.
 
         Deletes all existing links for the event and inserts the new set.
-        A no-op when entity_ids is empty (does not delete existing links).
+        When entity_ids is empty, this is a no-op — existing links are
+        preserved.  Callers that intend to clear all associations must avoid
+        calling this method with an empty list; explicit clearing requires a
+        direct DELETE without a subsequent INSERT.
         """
         if not entity_ids:
             return
@@ -5674,6 +5690,9 @@ class CalendarModule(Module):
                 source_butler=event.source_butler or event.butler_name or self._butler_name,
                 source_session_id=event.source_session_id,
             )
+            # Only write entity links when the event carries explicit associations.
+            # Skipping on empty list prevents sync cycles from clearing links that
+            # were attached outside of this projection path (e.g. direct mutations).
             if event.entity_ids:
                 await self._upsert_event_entities(
                     event_id=event_db_id,
