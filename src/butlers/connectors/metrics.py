@@ -87,6 +87,13 @@ attachment_type_distribution_total = Counter(
     labelnames=["connector_type", "endpoint_identity", "media_type"],
 )
 
+# Dunbar group-aware interaction gating (RFC 0013)
+interaction_gated_total = Counter(
+    "butlers_interaction_gated_total",
+    "Messages gated from interaction tracking due to participant count threshold",
+    labelnames=["connector_type", "chat_type", "participant_count_bucket"],
+)
+
 
 class ConnectorMetrics:
     """Metrics collector for a specific connector instance.
@@ -240,6 +247,41 @@ class ConnectorMetrics:
             endpoint_identity=self._endpoint_identity,
             media_type=media_type,
         ).inc()
+
+    def record_interaction_gated(self, chat_type: str, count: int) -> None:
+        """Record a message gated from interaction tracking (Dunbar RFC 0013).
+
+        Args:
+            chat_type: Chat type label (e.g. 'group', 'supergroup', 'channel').
+            count: Participant count, used to derive the low-cardinality bucket.
+        """
+        interaction_gated_total.labels(
+            connector_type=self._connector_type,
+            chat_type=chat_type,
+            participant_count_bucket=participant_count_bucket(count),
+        ).inc()
+
+
+def participant_count_bucket(count: int) -> str:
+    """Map a participant count to a low-cardinality OTel/Prometheus bucket label.
+
+    Buckets mirror the spec from RFC 0013 and extend downward for cases where
+    max_interaction_group_size is configured below the default of 20:
+      - "1-20"   (covers counts below the default threshold when threshold is low)
+      - "21-50"
+      - "51-200"
+      - "201-1000"
+      - "1000+"
+    """
+    if count <= 20:
+        return "1-20"
+    if count <= 50:
+        return "21-50"
+    if count <= 200:
+        return "51-200"
+    if count <= 1000:
+        return "201-1000"
+    return "1000+"
 
 
 def get_error_type(exc: Exception) -> str:

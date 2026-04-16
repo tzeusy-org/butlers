@@ -191,6 +191,10 @@ class TelegramUserClientConnectorConfig:
     # Address-mention keywords for passive→interactive promotion
     address_keywords: frozenset[str] = field(default_factory=lambda: _DEFAULT_ADDRESS_KEYWORDS)
 
+    # Dunbar group-aware interaction gating (RFC 0013)
+    max_interaction_group_size: int = 20
+    """Chats with more participants than this threshold have interaction_eligible=False."""
+
     @classmethod
     def from_env(cls) -> TelegramUserClientConnectorConfig:
         """Load non-credential configuration from environment variables.
@@ -241,6 +245,8 @@ class TelegramUserClientConnectorConfig:
             else _DEFAULT_ADDRESS_KEYWORDS
         )
 
+        max_interaction_group_size = _int("TELEGRAM_USER_MAX_INTERACTION_GROUP_SIZE", 20)
+
         # Credential fields default to empty — must be populated from DB.
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
@@ -260,6 +266,7 @@ class TelegramUserClientConnectorConfig:
             discretion_weight_bypass=discretion_weight_bypass,
             discretion_weight_fail_open=discretion_weight_fail_open,
             address_keywords=address_keywords,
+            max_interaction_group_size=max_interaction_group_size,
         )
 
 
@@ -360,6 +367,12 @@ class TelegramUserClientConnector:
 
         # Background flush scanner task (started in start(), cancelled in stop()).
         self._flush_scanner_task: asyncio.Task[None] | None = None
+
+        # Participant count cache: chat_id → (participant_count, cache_timestamp_monotonic).
+        # TTL: 1 hour. Avoids hitting the Telethon API on every message.
+        self._participant_count_cache: dict[str, tuple[int, float]] = {}
+        _PARTICIPANT_COUNT_CACHE_TTL_S = 3600  # 1 hour
+        self._participant_count_cache_ttl_s = _PARTICIPANT_COUNT_CACHE_TTL_S
 
     async def start(self) -> None:
         """Start the Telegram user-client connector in live-stream mode.
@@ -822,8 +835,22 @@ class TelegramUserClientConnector:
             )
 
             # d. Build batch ingest.v1 envelope.
+            # Resolve participant count and chat type for Dunbar gating (RFC 0013).
+            _first_msg = buffered_messages[0] if buffered_messages else None
+            _chat_entity = getattr(_first_msg, "chat", None) if _first_msg else None
+            _chat_type = self._derive_chat_type(_chat_entity)
+            _participant_count = (
+                await self._get_participant_count(chat_id, _first_msg)
+                if _first_msg is not None
+                else 0
+            )
             envelope = self._build_batch_envelope(
-                chat_id, buffered_messages, context_messages, chat_title=chat_title
+                chat_id,
+                buffered_messages,
+                context_messages,
+                chat_title=chat_title,
+                participant_count=_participant_count if _participant_count > 0 else None,
+                chat_type=_chat_type,
             )
 
             # Extract batch event ID from the envelope (already computed there).
@@ -940,15 +967,20 @@ class TelegramUserClientConnector:
         buffered_messages: list[Any],
         context_messages: list[Any],
         chat_title: str | None = None,
+        participant_count: int | None = None,
+        chat_type: str | None = None,
     ) -> dict[str, Any]:
         """Build an ingest.v1 batch envelope for a flushed chat buffer.
 
         The envelope contains:
         - event.external_event_id: "batch:<chat_id>:<min_id>-<max_id>"
         - sender.identity: "multiple" (batch contains multiple senders)
+        - sender.participant_count: number of chat participants (RFC 0013)
+        - sender.chat_type: 'private'/'group'/'supergroup'/'channel' (RFC 0013)
         - payload.normalized_text: framed conversation text with header/footer
         - payload.raw.conversation_history: ordered list of all context messages
         - control.idempotency_key: "tg_batch:<chat_id>:<min_id>:<max_id>"
+        - control.interaction_eligible: False when participant_count > max_interaction_group_size
 
         The normalized_text is enriched with:
         - Header: chat identity (chat_id, chat_title), time window
@@ -961,6 +993,8 @@ class TelegramUserClientConnector:
             buffered_messages: The new (flush buffer) messages.
             context_messages: All context messages (history + buffered), sorted by ID.
             chat_title: Optional human-readable chat title (None for DMs without title).
+            participant_count: Pre-fetched participant count (None if unknown).
+            chat_type: Pre-derived chat type string (None if unknown).
 
         Returns:
             ingest.v1 envelope dict.
@@ -1068,6 +1102,24 @@ class TelegramUserClientConnector:
 
         flush_timestamp = datetime.now(UTC).isoformat()
 
+        # Interaction eligibility gate (RFC 0013)
+        interaction_eligible = (
+            participant_count <= self._config.max_interaction_group_size
+            if participant_count is not None and participant_count > 0
+            else True
+        )
+        if not interaction_eligible and chat_type is not None:
+            self._metrics.record_interaction_gated(
+                chat_type,
+                participant_count,  # type: ignore[arg-type]
+            )
+            logger.debug(
+                "Interaction gated for batch in chat %s (participant_count=%d, chat_type=%s)",
+                chat_id,
+                participant_count,
+                chat_type,
+            )
+
         return {
             "schema_version": "ingest.v1",
             "source": {
@@ -1084,6 +1136,8 @@ class TelegramUserClientConnector:
                 "identity": "multiple",
                 "participants": all_sender_ids,
                 "owner_sender_id": str(owner_sender_id) if owner_sender_id is not None else None,
+                "participant_count": participant_count if participant_count else None,
+                "chat_type": chat_type,
             },
             "payload": {
                 "raw": {"conversation_history": conversation_history},
@@ -1096,6 +1150,7 @@ class TelegramUserClientConnector:
                     new_messages_sorted, self._config.address_keywords
                 ),
                 "payload_type": "conversation_history",
+                "interaction_eligible": interaction_eligible,
             },
         }
 
@@ -1405,6 +1460,100 @@ class TelegramUserClientConnector:
             return str(text)[:200]
         return None
 
+    @staticmethod
+    def _derive_chat_type(chat_entity: Any) -> str:
+        """Derive a canonical chat_type string from a Telethon chat entity.
+
+        Returns one of: 'private', 'group', 'supergroup', 'channel'.
+        Falls back to 'private' when the entity type is unrecognized.
+        """
+        if chat_entity is None:
+            return "private"
+
+        # Telethon type names: User, Chat, Channel (with is_megagroup / broadcast flags)
+        type_name = type(chat_entity).__name__
+
+        if type_name == "User":
+            return "private"
+
+        if type_name == "Chat":
+            return "group"
+
+        if type_name == "Channel":
+            if getattr(chat_entity, "megagroup", False):
+                return "supergroup"
+            if getattr(chat_entity, "broadcast", False):
+                return "channel"
+            return "supergroup"
+
+        return "private"
+
+    async def _get_participant_count(self, chat_id: str, message: Any) -> int:
+        """Return the participant count for a chat, with 1-hour TTL cache.
+
+        For DMs (private chats), always returns 2 (owner + other party).
+        For groups/supergroups/channels, queries ``chat.participants_count``
+        via the Telethon client. Falls back to 0 on error (which will NOT gate,
+        to avoid false positives from transient API failures).
+
+        Args:
+            chat_id: The chat ID string.
+            message: A Telethon message object to derive chat entity from.
+
+        Returns:
+            Number of participants, or 0 if unavailable.
+        """
+        # Check TTL cache first
+        cached = self._participant_count_cache.get(chat_id)
+        now = time.monotonic()
+        if cached is not None:
+            count, cached_at = cached
+            if now - cached_at < self._participant_count_cache_ttl_s:
+                return count
+
+        # Derive from chat entity
+        chat_entity = getattr(message, "chat", None)
+        chat_type = self._derive_chat_type(chat_entity)
+
+        if chat_type == "private":
+            # DM: always 2 participants (owner + other party)
+            count = 2
+            self._participant_count_cache[chat_id] = (count, now)
+            return count
+
+        # Group/supergroup/channel: query via Telethon
+        if self._telegram_client is None:
+            return 0
+
+        try:
+            # participants_count may be cached on the entity; try that first.
+            raw_count = getattr(chat_entity, "participants_count", None)
+            if raw_count is not None:
+                count = int(raw_count)
+                self._participant_count_cache[chat_id] = (count, now)
+                return count
+
+            # Fallback: fetch full entity via Telethon to get participants_count.
+            try:
+                full_entity = await self._telegram_client.get_entity(int(chat_id))
+            except (ValueError, TypeError):
+                full_entity = await self._telegram_client.get_entity(chat_id)
+
+            raw_count = getattr(full_entity, "participants_count", None)
+            if raw_count is not None:
+                count = int(raw_count)
+                self._participant_count_cache[chat_id] = (count, now)
+                return count
+
+        except Exception as exc:
+            logger.debug(
+                "Failed to get participant count for chat %s (non-fatal): %s",
+                chat_id,
+                exc,
+            )
+
+        return 0
+
     async def _fetch_conversation_history(
         self,
         chat_id: Any,
@@ -1589,9 +1738,12 @@ class TelegramUserClientConnector:
         - event.external_thread_id: chat.id or thread_id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: sender user ID
+        - sender.participant_count: number of chat participants (RFC 0013)
+        - sender.chat_type: 'private'/'group'/'supergroup'/'channel' (RFC 0013)
         - payload.raw: full Telegram message object (as dict)
         - payload.normalized_text: extracted text
         - control.idempotency_key: tg:<chat_id>:<message_id> (canonical across connectors)
+        - control.interaction_eligible: False when participant_count > max_interaction_group_size
         """
         message_id = str(getattr(message, "id", "unknown"))
         chat_id = None
@@ -1640,8 +1792,28 @@ class TelegramUserClientConnector:
             else f"telegram:{self._config.endpoint_identity}:{message_id}"
         )
 
+        # Participant count + chat type for Dunbar group-aware scoring (RFC 0013).
+        chat_entity = getattr(message, "chat", None)
+        chat_type = self._derive_chat_type(chat_entity)
+        participant_count = await self._get_participant_count(chat_id, message) if chat_id else 0
+
+        # Gate interaction eligibility based on participant count.
+        interaction_eligible = (
+            participant_count <= self._config.max_interaction_group_size
+            if participant_count > 0
+            else True
+        )
+        if not interaction_eligible:
+            self._metrics.record_interaction_gated(chat_type, participant_count)
+            logger.debug(
+                "Interaction gated for chat %s (participant_count=%d, chat_type=%s)",
+                chat_id,
+                participant_count,
+                chat_type,
+            )
+
         # Build ingest.v1 envelope
-        envelope = {
+        envelope: dict[str, Any] = {
             "schema_version": "ingest.v1",
             "source": {
                 "channel": self._config.channel,
@@ -1655,6 +1827,8 @@ class TelegramUserClientConnector:
             },
             "sender": {
                 "identity": sender_id,
+                "participant_count": participant_count if participant_count > 0 else None,
+                "chat_type": chat_type,
             },
             "payload": {
                 "raw": raw_payload,
@@ -1664,6 +1838,7 @@ class TelegramUserClientConnector:
                 "idempotency_key": idem_key,
                 "policy_tier": "passive",
                 "addressed": _detect_addressed(normalized_text, self._config.address_keywords),
+                "interaction_eligible": interaction_eligible,
             },
         }
 
