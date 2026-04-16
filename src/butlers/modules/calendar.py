@@ -5121,7 +5121,11 @@ class CalendarModule(Module):
             await self._provider.shutdown()
         self._provider = None
 
-    async def tick(self, source_butler: str, notify_fn=None) -> int:
+    async def tick(
+        self,
+        source_butler: str,
+        notify_fn: Callable[[dict[str, Any]], Coroutine[Any, Any, None]] | None = None,
+    ) -> int:
         """Evaluate due reminder events and dispatch notifications.
 
         Queries ``calendar_events`` joined with ``calendar_sources`` for events where:
@@ -5149,17 +5153,17 @@ class CalendarModule(Module):
         int
             Number of reminders for which a notification was dispatched.
         """
-        if not await self._projection_tables_available():
-            return 0
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
+            return 0
+        if not await self._projection_tables_available():
             return 0
 
         now = datetime.now(UTC)
         try:
             rows = await pool.fetch(
                 """
-                SELECT ce.id, ce.title, ce.starts_at, ce.metadata, ce.source_butler
+                SELECT ce.id, ce.title, ce.starts_at, ce.source_butler
                 FROM calendar_events ce
                 JOIN calendar_sources cs ON cs.id = ce.source_id
                 WHERE cs.source_kind = $1
@@ -5189,7 +5193,6 @@ class CalendarModule(Module):
             event_id = row["id"]
             title = row["title"] or "Reminder"
             starts_at = row["starts_at"]
-            metadata = self._normalize_json_object(row["metadata"])
 
             envelope = {
                 "type": "notify.v1",
@@ -5221,12 +5224,14 @@ class CalendarModule(Module):
                 )
 
             if notified:
-                # Record notification timestamp to prevent re-delivery on the next tick.
-                updated_metadata = {**metadata, "last_notified_at": now.isoformat()}
+                # Merge only the last_notified_at key via || so concurrent metadata
+                # edits to other fields are preserved.
                 try:
                     await pool.execute(
-                        "UPDATE calendar_events SET metadata = $1::jsonb WHERE id = $2",
-                        self._encode_jsonb(updated_metadata),
+                        "UPDATE calendar_events "
+                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb "
+                        "WHERE id = $2",
+                        self._encode_jsonb({"last_notified_at": now.isoformat()}),
                         event_id,
                     )
                     dispatched += 1

@@ -736,7 +736,6 @@ def _make_reminder_row(
     event_id=None,
     title="Call Mom",
     starts_at=None,
-    metadata=None,
     source_butler="relationship",
 ):
     """Return a minimal asyncpg-like row dict for a due reminder."""
@@ -746,7 +745,6 @@ def _make_reminder_row(
         "id": event_id or _uuid.uuid4(),
         "title": title,
         "starts_at": starts_at or datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
-        "metadata": metadata or "{}",
         "source_butler": source_butler,
     }
 
@@ -777,6 +775,24 @@ class TestCalendarModuleTick:
         mod._projection_tables_available_cache = False
         result = await mod.tick(source_butler="relationship")
         assert result == 0
+
+    async def test_tick_no_pool_does_not_poison_availability_cache(self):
+        """A no-pool tick must not poison the projection-tables cache for later ticks."""
+        mod = CalendarModule()
+        mod._db = None
+
+        first_result = await mod.tick(source_butler="relationship")
+        assert first_result == 0
+
+        # Attach a real pool; cache must not be stuck at False.
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[])
+        mod._db = SimpleNamespace(pool=mock_pool)
+        mod._projection_tables_available_cache = True  # simulate tables present
+
+        second_result = await mod.tick(source_butler="relationship")
+        assert second_result == 0
+        mock_pool.fetch.assert_awaited_once()
 
     async def test_tick_returns_zero_when_no_due_reminders(self):
         """tick() returns 0 when no due reminders match source_butler."""
@@ -829,7 +845,8 @@ class TestCalendarModuleTick:
 
         mock_pool.execute.assert_awaited_once()
         update_sql = mock_pool.execute.call_args[0][0]
-        assert "last_notified_at" in update_sql or "UPDATE calendar_events" in update_sql
+        assert "UPDATE calendar_events" in update_sql
+        assert "||" in update_sql  # merges only last_notified_at, not full overwrite
 
     async def test_tick_does_not_update_metadata_when_notify_fn_raises(self):
         """tick() skips metadata update when notify_fn raises an exception."""
