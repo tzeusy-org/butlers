@@ -409,6 +409,40 @@ class TestCalendarWriteTools:
 
 
 # ---------------------------------------------------------------------------
+# Projection persistence
+# ---------------------------------------------------------------------------
+
+
+class TestProjectionPersistence:
+    async def test_upsert_projection_event_persists_source_butler(self):
+        """calendar_events.source_butler is NOT NULL with no DB default; the
+        projection upsert must include it on both INSERT and ON CONFLICT paths
+        and bind the caller-supplied butler name."""
+        mod = CalendarModule()
+        mod._butler_name = "calendar"
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        mod._db = SimpleNamespace(pool=pool)
+
+        await mod._upsert_projection_event(
+            source_id=uuid.uuid4(),
+            origin_ref="evt-123",
+            title="Calendar item",
+            timezone="UTC",
+            starts_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            status="confirmed",
+            source_butler="relationship",
+        )
+
+        query = pool.fetchrow.await_args.args[0]
+        params = pool.fetchrow.await_args.args[1:]
+        assert "source_butler" in query
+        assert "source_butler = EXCLUDED.source_butler" in query
+        assert "relationship" in params
+
+
+# ---------------------------------------------------------------------------
 # Error hierarchy
 # ---------------------------------------------------------------------------
 
