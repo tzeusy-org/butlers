@@ -171,6 +171,10 @@ class WhatsAppUserClientConnectorConfig:
     # Address-mention keywords for passive→interactive promotion
     address_keywords: frozenset[str] = field(default_factory=lambda: _DEFAULT_ADDRESS_KEYWORDS)
 
+    # Dunbar group-aware interaction gating (RFC 0013)
+    max_interaction_group_size: int = 20
+    """Chats with more participants than this threshold have interaction_eligible=False."""
+
     @classmethod
     def from_env(cls) -> WhatsAppUserClientConnectorConfig:
         """Load non-credential configuration from environment variables.
@@ -203,6 +207,9 @@ class WhatsAppUserClientConnectorConfig:
             else _DEFAULT_ADDRESS_KEYWORDS
         )
 
+        _raw_max_group = os.environ.get("WA_MAX_INTERACTION_GROUP_SIZE", "").strip()
+        max_interaction_group_size = int(_raw_max_group) if _raw_max_group else 20
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -215,6 +222,7 @@ class WhatsAppUserClientConnectorConfig:
             buffer_max_messages=buffer_max_messages,
             health_port=health_port,
             address_keywords=address_keywords,
+            max_interaction_group_size=max_interaction_group_size,
         )
 
 
@@ -312,6 +320,61 @@ def normalize_message_text(event: dict[str, Any]) -> str:
         return str(text)
 
     return f"[{msg_type}]" if msg_type else "[unknown]"
+
+
+def _derive_wa_chat_type(chat_jid: str) -> str:
+    """Derive a canonical chat_type from a WhatsApp JID string.
+
+    WhatsApp JID suffixes:
+    - ``@s.whatsapp.net`` → private (DM)
+    - ``@g.us`` → group
+    - ``@broadcast`` → channel/broadcast
+    - ``@newsletter`` → channel/newsletter
+
+    Returns one of: 'private', 'group', 'channel', 'community'.
+    Falls back to 'private' for unknown suffixes.
+    """
+    if not chat_jid:
+        return "private"
+    jid_lower = chat_jid.lower()
+    if jid_lower.endswith("@g.us"):
+        return "group"
+    if jid_lower.endswith("@broadcast") or jid_lower.endswith("@newsletter"):
+        return "channel"
+    if jid_lower.endswith("@lid"):
+        # LID-based JIDs (new privacy-preserving identifiers) — treat as private
+        return "private"
+    return "private"
+
+
+def _extract_wa_participant_count(event: dict[str, Any]) -> int | None:
+    """Extract participant count from a WhatsApp bridge event, if present.
+
+    The Go bridge currently does not emit participant_count in standard events.
+    This function reads it from optional metadata fields that may be added in
+    future bridge versions, or from explicit group_metadata payloads.
+
+    Returns None when not available (caller should fall back to JID-based heuristic).
+    """
+    # Check top-level participant_count field (future bridge support)
+    raw_count = event.get("participant_count")
+    if raw_count is not None:
+        try:
+            return int(raw_count)
+        except (TypeError, ValueError):
+            pass
+
+    # Check content.participant_count for group events
+    content = event.get("content") or {}
+    if isinstance(content, dict):
+        raw_count = content.get("participant_count")
+        if raw_count is not None:
+            try:
+                return int(raw_count)
+            except (TypeError, ValueError):
+                pass
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -992,7 +1055,33 @@ class WhatsAppUserClientConnector:
 
         Normalizes each event in the batch and concatenates into a framed
         normalized_text with header identifying the chat and time window.
+
+        Includes participant_count and chat_type for Dunbar group-aware scoring
+        (RFC 0013) and sets control.interaction_eligible=False for large groups.
         """
+        # Derive chat type and participant count for Dunbar gating (RFC 0013).
+        chat_type = _derive_wa_chat_type(chat_jid)
+        participant_count: int | None = None
+        if buffered_events:
+            participant_count = _extract_wa_participant_count(buffered_events[-1])
+        if participant_count is None:
+            # Fallback: DMs always have 2 participants; groups are unknown without bridge support.
+            participant_count = 2 if chat_type == "private" else None
+
+        # Gate interaction eligibility (RFC 0013).
+        _max_size = self._config.max_interaction_group_size
+        if participant_count is not None and participant_count > _max_size:
+            interaction_eligible = False
+            self._metrics.record_interaction_gated(chat_type, participant_count)
+            logger.debug(
+                "Interaction gated for batch in chat %s (participant_count=%d, chat_type=%s)",
+                chat_jid,
+                participant_count,
+                chat_type,
+            )
+        else:
+            interaction_eligible = True
+
         if not buffered_events:
             normalized_text = "[no messages]"
             flush_ts = datetime.now(UTC).isoformat()
@@ -1008,7 +1097,11 @@ class WhatsAppUserClientConnector:
                     "external_thread_id": chat_jid,
                     "observed_at": flush_ts,
                 },
-                "sender": {"identity": "multiple"},
+                "sender": {
+                    "identity": "multiple",
+                    "participant_count": participant_count,
+                    "chat_type": chat_type,
+                },
                 "payload": {
                     "raw": {"conversation_history": []},
                     "normalized_text": normalized_text,
@@ -1018,6 +1111,7 @@ class WhatsAppUserClientConnector:
                     "policy_tier": "passive",
                     "addressed": False,
                     "payload_type": "conversation_history",
+                    "interaction_eligible": interaction_eligible,
                 },
             }
 
@@ -1098,7 +1192,11 @@ class WhatsAppUserClientConnector:
                 "external_thread_id": chat_jid,
                 "observed_at": flush_ts,
             },
-            "sender": {"identity": "multiple"},
+            "sender": {
+                "identity": "multiple",
+                "participant_count": participant_count,
+                "chat_type": chat_type,
+            },
             "payload": {
                 "raw": raw_payload,
                 "normalized_text": normalized_text,
@@ -1110,6 +1208,7 @@ class WhatsAppUserClientConnector:
                     buffered_events, self._config.address_keywords
                 ),
                 "payload_type": "conversation_history",
+                "interaction_eligible": interaction_eligible,
             },
         }
 
@@ -1148,6 +1247,26 @@ class WhatsAppUserClientConnector:
         normalized_text = normalize_message_text(event)
         idempotency_key = f"whatsapp:{self._config.endpoint_identity}:{msg_id}"
 
+        # Participant count + chat type for Dunbar group-aware scoring (RFC 0013).
+        chat_type = _derive_wa_chat_type(chat_jid)
+        participant_count = _extract_wa_participant_count(event)
+        if participant_count is None:
+            participant_count = 2 if chat_type == "private" else None
+
+        # Gate interaction eligibility based on participant count.
+        _max_size = self._config.max_interaction_group_size
+        if participant_count is not None and participant_count > _max_size:
+            interaction_eligible = False
+            self._metrics.record_interaction_gated(chat_type, participant_count)
+            logger.debug(
+                "Interaction gated for chat %s (participant_count=%d, chat_type=%s)",
+                chat_jid,
+                participant_count,
+                chat_type,
+            )
+        else:
+            interaction_eligible = True
+
         return {
             "schema_version": "ingest.v1",
             "source": {
@@ -1160,7 +1279,11 @@ class WhatsAppUserClientConnector:
                 "external_thread_id": chat_jid if chat_jid else None,
                 "observed_at": observed_at,
             },
-            "sender": {"identity": sender_jid},
+            "sender": {
+                "identity": sender_jid,
+                "participant_count": participant_count,
+                "chat_type": chat_type,
+            },
             "payload": {
                 "raw": event,
                 "normalized_text": normalized_text,
@@ -1169,6 +1292,7 @@ class WhatsAppUserClientConnector:
                 "idempotency_key": idempotency_key,
                 "policy_tier": "passive",
                 "addressed": _detect_addressed(normalized_text, self._config.address_keywords),
+                "interaction_eligible": interaction_eligible,
             },
         }
 
