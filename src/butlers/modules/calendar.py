@@ -2806,6 +2806,7 @@ class CalendarModule(Module):
                         "all_day": all_day,
                         "timezone": timezone,
                         "description": description,
+                        "body": body,
                         "location": location,
                         "attendees": attendees or [],
                         "recurrence_rule": recurrence_rule,
@@ -2816,6 +2817,7 @@ class CalendarModule(Module):
                         "color_id": color_id,
                         "calendar_id": calendar_id,
                         "conflict_policy": resolved_conflict_policy,
+                        "entity_ids": [str(e) for e in resolved_entity_ids],
                     },
                     conflicts=conflict_result["conflicts"],
                     provider_name=provider.name,
@@ -3125,6 +3127,7 @@ class CalendarModule(Module):
                             "end_at": end_at.isoformat() if end_at else None,
                             "timezone": timezone,
                             "description": description,
+                            "body": body,
                             "location": location,
                             "attendees": attendees,
                             "recurrence_rule": recurrence_rule,
@@ -3132,6 +3135,9 @@ class CalendarModule(Module):
                             "color_id": color_id,
                             "calendar_id": calendar_id,
                             "conflict_policy": resolved_conflict_policy,
+                            "entity_ids": (
+                                [str(e) for e in entity_ids] if entity_ids is not None else None
+                            ),
                         },
                         conflicts=conflict_result["conflicts"],
                         provider_name=provider.name,

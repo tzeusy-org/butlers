@@ -640,7 +640,7 @@ class TestCreateEventAuthorship:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            db=SimpleNamespace(db_name="butlers", schema="general"),
         )
 
         result = await mcp.tools["calendar_create_event"](
@@ -664,7 +664,7 @@ class TestCreateEventAuthorship:
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
-            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            db=SimpleNamespace(db_name="butlers", schema="general"),
         )
 
         result = await mcp.tools["calendar_create_event"](
