@@ -66,7 +66,7 @@ def upgrade() -> None:
 
     # ------------------------------------------------------------------
     # Guard: skip if calendar_event_entities does not exist yet.
-    # (core_074 must be applied before this migration.)
+    # (core_076 must be applied before this migration.)
     # ------------------------------------------------------------------
     junction_exists = conn.execute(text("SELECT to_regclass('calendar_event_entities')")).scalar()
     if junction_exists is None:

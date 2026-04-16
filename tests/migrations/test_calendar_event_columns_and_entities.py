@@ -1,4 +1,4 @@
-"""Tests for core_074 calendar_event column additions and calendar_event_entities migration.
+"""Tests for core_076 calendar_event column additions and calendar_event_entities migration.
 
 Unit tests verify the migration file structure, revision chain, and SQL content.
 Integration tests are covered by the existing test_core_calendar_tables_and_constraints
@@ -19,7 +19,7 @@ _CORE_MIGRATION_PATH = (
     / "alembic"
     / "versions"
     / "core"
-    / "core_074_calendar_event_columns_and_entities.py"
+    / "core_076_calendar_event_columns_and_entities.py"
 )
 
 _REL_MIGRATION_PATH = (
@@ -32,7 +32,7 @@ _REL_MIGRATION_PATH = (
 
 
 def _load_core_migration():
-    spec = importlib.util.spec_from_file_location("core_074", _CORE_MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_076", _CORE_MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -58,8 +58,8 @@ def test_core_migration_file_exists():
 
 def test_core_migration_revision_chain():
     mod = _load_core_migration()
-    assert mod.revision == "core_074"
-    assert mod.down_revision == "core_073"
+    assert mod.revision == "core_076"
+    assert mod.down_revision == "core_075"
 
 
 def test_core_migration_adds_source_butler_column():
