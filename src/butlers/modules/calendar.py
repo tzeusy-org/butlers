@@ -5277,13 +5277,16 @@ class CalendarModule(Module):
             considered.
         notify_fn:
             Optional async callable ``async def notify_fn(envelope: dict) -> None``.
-            Receives a ``notify.v1``-style envelope for each due reminder.
+            Receives a canonical ``notify.v1`` envelope for each due reminder.
             When ``None``, due reminders are logged but not dispatched.
 
         Returns
         -------
         int
-            Number of reminders for which a notification was dispatched.
+            Number of reminders that were both dispatched via *notify_fn* and
+            had their dedup metadata persisted successfully.  A reminder whose
+            notification was delivered but whose metadata write subsequently
+            failed is **not** counted, and it will re-fire on the next tick.
         """
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -5311,8 +5314,8 @@ class CalendarModule(Module):
                 WHERE cs.source_kind = $1
                   AND cs.butler_name = $2
                   AND ce.recurrence_rule IS NOT NULL
-                  AND ce.status = 'confirmed'
-                  AND i.status = 'confirmed'
+                  AND ce.status = $4
+                  AND i.status = $4
                   AND i.starts_at <= $3
                   AND (i.metadata->>'notified_at') IS NULL
                 ORDER BY i.starts_at
@@ -5320,6 +5323,7 @@ class CalendarModule(Module):
                 SOURCE_KIND_INTERNAL_REMINDERS,
                 source_butler,
                 now,
+                EventStatus.confirmed.value,
             )
         except Exception as exc:
             logger.error(
@@ -5337,10 +5341,12 @@ class CalendarModule(Module):
             instance_starts_at = row["instance_starts_at"]
 
             envelope = {
-                "type": "notify.v1",
-                "intent": "send",
-                "message": f"Reminder: {title}",
-                "source_butler": source_butler,
+                "schema_version": "notify.v1",
+                "origin_butler": source_butler,
+                "delivery": {
+                    "intent": "send",
+                    "message": f"Reminder: {title}",
+                },
                 "reminder_event_id": str(event_id),
                 "reminder_instance_id": str(instance_id),
                 "due_at": (
@@ -5402,7 +5408,7 @@ class CalendarModule(Module):
                 WHERE cs.source_kind = $1
                   AND cs.butler_name = $2
                   AND ce.recurrence_rule IS NULL
-                  AND ce.status = 'confirmed'
+                  AND ce.status = $4
                   AND ce.starts_at <= $3
                   AND (
                       ce.metadata->>'last_notified_at' IS NULL
@@ -5413,6 +5419,7 @@ class CalendarModule(Module):
                 SOURCE_KIND_INTERNAL_REMINDERS,
                 source_butler,
                 now,
+                EventStatus.confirmed.value,
             )
         except Exception as exc:
             logger.error(
@@ -5429,10 +5436,12 @@ class CalendarModule(Module):
             starts_at = row["starts_at"]
 
             envelope = {
-                "type": "notify.v1",
-                "intent": "send",
-                "message": f"Reminder: {title}",
-                "source_butler": source_butler,
+                "schema_version": "notify.v1",
+                "origin_butler": source_butler,
+                "delivery": {
+                    "intent": "send",
+                    "message": f"Reminder: {title}",
+                },
                 "reminder_event_id": str(event_id),
                 "due_at": starts_at.isoformat() if starts_at is not None else None,
             }

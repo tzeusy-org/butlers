@@ -969,16 +969,12 @@ def _make_pool_for_tick(
 
     pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
 
-    # pool.fetch returns recurring_rows on first call, onetime_rows on second.
-    fetch_call_count = [0]
-
+    # pool.fetch dispatches by query content so tests stay stable if tick()
+    # reorders or adds queries.
     async def fetch_side_effect(query, *args):
-        fetch_call_count[0] += 1
-        if fetch_call_count[0] == 1:
-            # recurring query
+        if "calendar_event_instances" in query:
             return [_row_to_record(r) for r in (recurring_rows or [])]
         else:
-            # onetime query
             return [_row_to_record(r) for r in (onetime_rows or [])]
 
     pool.fetch = AsyncMock(side_effect=fetch_side_effect)
