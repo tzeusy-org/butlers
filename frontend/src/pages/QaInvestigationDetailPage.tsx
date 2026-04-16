@@ -295,7 +295,8 @@ export default function QaInvestigationDetailPage() {
       <Breadcrumbs
         items={[
           { label: "QA", href: "/qa" },
-          { label: `Investigation ${attempt.id.slice(0, 8)}` },
+          { label: "Investigations", href: "/qa/investigations" },
+          { label: attempt.id.slice(0, 8) },
         ]}
       />
 

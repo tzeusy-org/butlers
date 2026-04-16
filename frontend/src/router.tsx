@@ -36,6 +36,7 @@ import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 import QaOverviewPage from './pages/QaOverviewPage.tsx'
 import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
 import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
+import QaInvestigationsPage from './pages/QaInvestigationsPage.tsx'
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
@@ -90,6 +91,7 @@ export const router = createBrowserRouter(
         // QA Staffer routes
         { path: '/qa', element: <QaOverviewPage /> },
         { path: '/qa/patrols/:patrolId', element: <QaPatrolDetailPage /> },
+        { path: '/qa/investigations', element: <QaInvestigationsPage /> },
         { path: '/qa/investigations/:attemptId', element: <QaInvestigationDetailPage /> },
         // Ingestion routes (spec section 3.1, 3.2)
         { path: '/ingestion', element: <IngestionPage /> },
