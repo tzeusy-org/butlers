@@ -80,22 +80,45 @@ async def interaction_log(
     effective_occurred_at = occurred_at if occurred_at is not None else now
 
     # Idempotency guard: only explicit timestamps are treated as deterministic backfills.
+    # Direction is included in the dedup key so that incoming and outgoing facts for the
+    # same contact on the same day can coexist (RFC 0013 D4).  Two facts with direction=None
+    # still collide with each other to preserve backward compatibility.
     if occurred_at is not None:
-        existing = await pool.fetchrow(
-            """
-            SELECT id FROM facts
-            WHERE subject = $1
-              AND predicate = 'interaction'
-              AND scope = 'relationship'
-              AND validity = 'active'
-              AND valid_at::date = $2::date
-              AND metadata->>'type' = $3
-            LIMIT 1
-            """,
-            f"contact:{contact_id}",
-            occurred_at,
-            type,
-        )
+        if direction is not None:
+            existing = await pool.fetchrow(
+                """
+                SELECT id FROM facts
+                WHERE subject = $1
+                  AND predicate = 'interaction'
+                  AND scope = 'relationship'
+                  AND validity = 'active'
+                  AND valid_at::date = $2::date
+                  AND metadata->>'type' = $3
+                  AND metadata->>'direction' = $4
+                LIMIT 1
+                """,
+                f"contact:{contact_id}",
+                occurred_at,
+                type,
+                direction,
+            )
+        else:
+            existing = await pool.fetchrow(
+                """
+                SELECT id FROM facts
+                WHERE subject = $1
+                  AND predicate = 'interaction'
+                  AND scope = 'relationship'
+                  AND validity = 'active'
+                  AND valid_at::date = $2::date
+                  AND metadata->>'type' = $3
+                  AND metadata->>'direction' IS NULL
+                LIMIT 1
+                """,
+                f"contact:{contact_id}",
+                occurred_at,
+                type,
+            )
         if existing is not None:
             return {
                 "skipped": "duplicate",

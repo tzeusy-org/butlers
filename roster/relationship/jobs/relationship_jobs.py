@@ -619,7 +619,7 @@ _INTERACTION_SYNC_CHANNEL_MAP: dict[str, str] = {
     "email": "email",
 }
 
-# Per-channel hour offset within a day to ensure unique occurred_at timestamps.
+# Per-channel incoming hour offset within a day to ensure unique occurred_at timestamps.
 # store_fact() derives its idempotency key from (entity_id, scope, predicate, valid_at).
 # Two channels for the same contact on the same day would collide on that key unless
 # occurred_at differs.  Using stable hour offsets ensures each (contact, channel, day)
@@ -629,6 +629,20 @@ _INTERACTION_SYNC_CHANNEL_HOUR_OFFSET: dict[str, int] = {
     "whatsapp_user_client": 1,
     "email": 2,
 }
+
+# Per-channel outgoing hour offset (+12 from incoming) so that both an incoming and
+# an outgoing interaction fact can coexist for the same contact on the same day.
+# RFC 0013 D4: incoming and outgoing share the same metadata->>'type', so they would
+# otherwise collide under the interaction_log() deduplication guard.
+_INTERACTION_SYNC_CHANNEL_HOUR_OFFSET_OUTGOING: dict[str, int] = {
+    "telegram_user_client": 12,
+    "whatsapp_user_client": 13,
+    "email": 14,
+}
+
+# Maximum number of participants in a chat for interaction tracking.
+# Chats exceeding this threshold are skipped entirely (RFC 0013 D3).
+_INTERACTION_SYNC_MAX_GROUP_SIZE = 20
 
 # Checkpoint key for scan window persistence.
 _INTERACTION_SYNC_STATE_KEY = "interaction_sync.last_scan_at"
@@ -645,11 +659,29 @@ _INTERACTION_SYNC_MAX_WINDOW_DAYS = 30
 async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Sync interactions from messages and calendar events to interaction facts.
 
-    **Message-based sync:** Queries ``switchboard.message_inbox`` for recent
-    inbound messages on user-to-person channels (``telegram_user_client``,
-    ``whatsapp_user_client``, ``email``).  Groups by
-    ``(source_sender_identity, source_channel, DATE(received_at))`` so that at
-    most one interaction fact is logged per contact per day per channel.
+    **Message-based sync (group-aware):** Queries ``switchboard.message_inbox``
+    for recent inbound messages on user-to-person channels
+    (``telegram_user_client``, ``whatsapp_user_client``, ``email``).
+
+    Groups by ``(source_thread_identity, source_channel, DATE(received_at))``
+    — a chat-centric view — rather than by individual sender.  Per RFC 0013 D4:
+
+    1. Messages where ``request_context->>'interaction_eligible'`` is ``'false'``
+       are skipped entirely before grouping.
+    2. For each (chat, channel, date) group the distinct set of senders is
+       collected.  ``participant_count`` is read from ``request_context`` if
+       present; otherwise it falls back to the count of distinct senders.
+    3. Groups with ``participant_count > 20`` are skipped (D3 gate).
+    4. The owner's sender identity is identified via ``public.entities.roles``
+       (joined through ``public.contacts.entity_id``).
+       If the owner sent at least one message in the chat on that day, each
+       non-owner contact in the group receives both an **incoming** fact (they
+       messaged) and an **outgoing** fact (owner engaged).  If the owner did
+       not send, only an incoming fact is logged.
+    5. Both fact kinds carry ``group_size`` in metadata.  Outgoing facts use
+       an hour offset of +12 relative to the incoming offset so that the two
+       facts coexist without colliding under the ``interaction_log()`` dedup
+       guard (which checks ``valid_at::date + direction``).
 
     The scan window is checkpoint-based:
     - ``scan_window_start``: read from state key ``interaction_sync.last_scan_at``.
@@ -659,18 +691,6 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     On successful completion the job writes ``scan_window_end`` back to the state
     store so the next run continues from where this one left off.
-
-    Message resolution steps:
-    1. Map ``source_channel`` → ``contact_info.type`` (see ``_INTERACTION_SYNC_CHANNEL_MAP``).
-    2. Resolve ``source_sender_identity`` to ``contact_id`` via
-       ``public.contact_info(type, value)``.
-    3. Skip senders that cannot be resolved to a contact (unresolved).
-    4. Skip owner contacts (entity has ``'owner'`` in roles).
-    5. Call ``interaction_log()`` with ``type=source_channel``,
-       ``direction='incoming'``, and ``occurred_at`` set to the grouped
-       message date in UTC plus a channel-specific hour offset, so facts from
-       different channels on the same day do not collide under
-       ``store_fact()`` temporal idempotency.
 
     **Calendar-based sync:** Queries ``public.calendar_events`` for confirmed
     events within the scan window.  For each event, extracts the
@@ -686,6 +706,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     Returns:
         Dictionary with keys: scan_window_start (ISO8601), scan_window_end
         (ISO8601), processed, logged, skipped_unresolved, skipped_owner,
+        skipped_ineligible, skipped_group_too_large,
         calendar_events_scanned, errors.
     """
     from butlers.tools.relationship.interactions import interaction_log
@@ -740,6 +761,8 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "logged": 0,
         "skipped_unresolved": 0,
         "skipped_owner": 0,
+        "skipped_ineligible": 0,
+        "skipped_group_too_large": 0,
         "calendar_events_scanned": 0,
         "errors": 0,
     }
@@ -747,25 +770,48 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     channels = list(_INTERACTION_SYNC_CHANNEL_MAP.keys())
 
     # -----------------------------------------------------------------------
-    # Step 1: Query switchboard.message_inbox for recent inbound messages,
-    # grouped to one row per (sender_identity, channel, date).
+    # Step 1: Query switchboard.message_inbox grouped by chat identity.
+    #
+    # RFC 0013 D4: group by (source_thread_identity, source_channel, date)
+    # and collect the distinct set of senders per group.  Messages flagged
+    # as interaction_eligible=false are excluded before grouping.
+    #
+    # When source_thread_identity is NULL (legacy/connectors that don't set it),
+    # fall back to source_sender_identity as the grouping key so that each sender
+    # forms its own "chat" group rather than being merged into a NULL mega-group.
     # -----------------------------------------------------------------------
     try:
         rows = await db_pool.fetch(
             """
             SELECT
-                request_context ->> 'source_sender_identity' AS sender_identity,
-                request_context ->> 'source_channel'          AS source_channel,
-                (received_at AT TIME ZONE 'UTC')::date        AS interaction_date,
-                COUNT(*)                                       AS message_count
+                COALESCE(
+                    request_context ->> 'source_thread_identity',
+                    request_context ->> 'source_sender_identity'
+                )                                              AS thread_identity,
+                request_context ->> 'source_channel'           AS source_channel,
+                (received_at AT TIME ZONE 'UTC')::date         AS interaction_date,
+                array_agg(DISTINCT request_context ->> 'source_sender_identity')
+                                                               AS sender_identities,
+                COUNT(*)                                       AS message_count,
+                MAX(
+                    CASE
+                        WHEN request_context ->> 'participant_count' IS NOT NULL
+                        THEN (request_context ->> 'participant_count')::int
+                        ELSE NULL
+                    END
+                )                                              AS participant_count
             FROM switchboard.message_inbox
             WHERE direction = 'inbound'
               AND received_at >= $1
               AND request_context ->> 'source_channel' = ANY($2::text[])
               AND request_context ->> 'source_sender_identity' IS NOT NULL
               AND request_context ->> 'source_sender_identity' != 'unknown'
+              AND COALESCE(request_context ->> 'interaction_eligible', 'true') != 'false'
             GROUP BY
-                request_context ->> 'source_sender_identity',
+                COALESCE(
+                    request_context ->> 'source_thread_identity',
+                    request_context ->> 'source_sender_identity'
+                ),
                 request_context ->> 'source_channel',
                 (received_at AT TIME ZONE 'UTC')::date
             ORDER BY interaction_date DESC
@@ -782,26 +828,28 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         logger.info("interaction_sync: no recent inbound messages found")
 
     # -----------------------------------------------------------------------
-    # Step 2: Batch-resolve sender identities to contact_ids via
-    # public.contact_info, filtering out owner contacts.
+    # Step 2: Batch-resolve all sender identities to contact_ids in one query.
+    #
+    # Build the full set of (ci_type, sender_identity) pairs across all groups,
+    # then resolve them in a single UNNEST-based join.  Owner contacts are
+    # identified by roles and tracked separately.
     # -----------------------------------------------------------------------
-    # Build (type, value) pairs for lookup
     lookup_pairs: list[tuple[str, str]] = []
     for row in rows:
         source_channel = row["source_channel"]
-        sender_identity = row["sender_identity"]
         ci_type = _INTERACTION_SYNC_CHANNEL_MAP.get(source_channel)
-        if ci_type and sender_identity:
-            lookup_pairs.append((ci_type, sender_identity))
+        if not ci_type:
+            continue
+        for sender_identity in row["sender_identities"] or []:
+            if sender_identity:
+                lookup_pairs.append((ci_type, sender_identity))
 
-    # Resolve all at once with a single query using UNNEST
     resolved: dict[tuple[str, str], uuid.UUID] = {}  # (ci_type, value) -> contact_id
     owner_contact_ids: set[uuid.UUID] = set()
 
     if lookup_pairs:
-        type_values = [(t, v) for t, v in lookup_pairs]
-        ci_types = [tv[0] for tv in type_values]
-        ci_values = [tv[1] for tv in type_values]
+        ci_types = [t for t, _ in lookup_pairs]
+        ci_values = [v for _, v in lookup_pairs]
 
         try:
             contact_rows = await db_pool.fetch(
@@ -841,87 +889,186 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 owner_contact_ids.add(contact_id)
 
     # -----------------------------------------------------------------------
-    # Step 3: Log interactions for resolved non-owner contacts.
+    # Step 3: For each (chat, channel, date) group apply the group-aware logic:
+    #   a. Determine participant_count; skip groups above the gate threshold.
+    #   b. Detect owner presence to determine direction.
+    #   c. For each non-owner sender: log incoming (and optionally outgoing) facts.
     # -----------------------------------------------------------------------
     for row in rows:
-        stats["processed"] += 1
-
-        source_channel: str = row["source_channel"]
-        sender_identity: str = row["sender_identity"]
-        interaction_date: date = row["interaction_date"]
+        source_channel = row["source_channel"]
+        thread_identity = row["thread_identity"]
+        interaction_date = row["interaction_date"]
+        sender_identities: list[str] = [s for s in (row["sender_identities"] or []) if s]
+        message_count: int = int(row["message_count"])
 
         ci_type = _INTERACTION_SYNC_CHANNEL_MAP.get(source_channel)
-        if not ci_type or not sender_identity:
-            stats["skipped_unresolved"] += 1
+        if not ci_type:
             continue
 
-        key = (ci_type, sender_identity)
-        contact_id = resolved.get(key)
+        # Resolve each sender_identity → contact_id (may include owner).
+        sender_contacts: list[uuid.UUID] = []
+        for si in sender_identities:
+            cid = resolved.get((ci_type, si))
+            if cid is not None:
+                sender_contacts.append(cid)
 
-        if contact_id is None:
+        # --- participant count ---
+        # Prefer the envelope-reported participant_count from request_context;
+        # fall back to distinct sender count for backward compatibility.
+        raw_participant_count = row["participant_count"]
+        if raw_participant_count is not None:
+            participant_count = int(raw_participant_count)
+        else:
+            participant_count = len(sender_identities)
+
+        if participant_count > _INTERACTION_SYNC_MAX_GROUP_SIZE:
             logger.debug(
-                "interaction_sync: unresolved sender %s (%s=%s)",
-                sender_identity,
-                ci_type,
-                sender_identity,
+                "interaction_sync: skipping group thread=%s channel=%s date=%s "
+                "(participant_count=%d > %d)",
+                thread_identity,
+                source_channel,
+                interaction_date,
+                participant_count,
+                _INTERACTION_SYNC_MAX_GROUP_SIZE,
             )
-            stats["skipped_unresolved"] += 1
+            stats["skipped_group_too_large"] += 1
             continue
 
-        if contact_id in owner_contact_ids:
-            logger.debug(
-                "interaction_sync: skipping owner contact %s (channel=%s)",
-                contact_id,
-                source_channel,
-            )
-            stats["skipped_owner"] += 1
-            continue
+        # --- owner presence and group_size ---
+        owner_sent = any(c in owner_contact_ids for c in sender_contacts)
 
-        # Use a per-channel hour offset within the day so that two different channels
-        # (e.g., telegram + email) for the same contact on the same date produce
-        # distinct occurred_at values and thus distinct store_fact() idempotency keys.
-        hour_offset = _INTERACTION_SYNC_CHANNEL_HOUR_OFFSET.get(source_channel, 0)
-        occurred_at = datetime(
-            interaction_date.year,
-            interaction_date.month,
-            interaction_date.day,
-            hour_offset,
-            0,
-            0,
-            tzinfo=UTC,
-        )
+        # group_size = participant_count for group chats.
+        # For DMs (only one non-owner participant), clamp to 1 so the
+        # interaction receives full weight (RFC 0013 D2, D4).
+        #
+        # participant_count covers both owner and non-owner participants.
+        # A DM has at most 2 participants (owner + 1 contact), so:
+        # participant_count <= 2 → treat as DM → group_size = 1.
+        # This correctly handles bidirectional DMs where the owner also sent
+        # (participant_count=2 should still yield group_size=1, not 2).
+        if participant_count <= 2:
+            group_size = 1
+        else:
+            group_size = max(participant_count, 1)
 
-        try:
-            result = await interaction_log(
-                db_pool,
-                contact_id=contact_id,
-                type=source_channel,
-                direction="incoming",
-                occurred_at=occurred_at,
-                summary=None,
-            )
-            if result.get("skipped") == "duplicate":
+        incoming_hour = _INTERACTION_SYNC_CHANNEL_HOUR_OFFSET.get(source_channel, 0)
+        outgoing_hour = _INTERACTION_SYNC_CHANNEL_HOUR_OFFSET_OUTGOING.get(source_channel, 12)
+
+        # --- per-sender logging ---
+        for si in sender_identities:
+            stats["processed"] += 1
+
+            cid = resolved.get((ci_type, si))
+
+            if cid is None:
                 logger.debug(
-                    "interaction_sync: duplicate skipped for contact=%s channel=%s date=%s",
-                    contact_id,
+                    "interaction_sync: unresolved sender %s (channel=%s)",
+                    si,
                     source_channel,
-                    interaction_date,
                 )
-            else:
-                stats["logged"] += 1
-                logger.debug(
-                    "interaction_sync: logged interaction contact=%s channel=%s date=%s",
-                    contact_id,
-                    source_channel,
-                    interaction_date,
-                )
-        except Exception:
-            logger.exception(
-                "interaction_sync: error logging interaction for contact=%s channel=%s",
-                contact_id,
-                source_channel,
+                stats["skipped_unresolved"] += 1
+                continue
+
+            if cid in owner_contact_ids:
+                # Owner's presence is used for direction detection, not logged as a contact.
+                stats["skipped_owner"] += 1
+                continue
+
+            # Build shared metadata for both directions.
+            fact_metadata: dict[str, Any] = {
+                "source": "interaction_sync",
+                "message_count": message_count,
+                "group_size": group_size,
+            }
+
+            # --- incoming interaction ---
+            incoming_occurred_at = datetime(
+                interaction_date.year,
+                interaction_date.month,
+                interaction_date.day,
+                incoming_hour,
+                0,
+                0,
+                tzinfo=UTC,
             )
-            stats["errors"] += 1
+            try:
+                result = await interaction_log(
+                    db_pool,
+                    contact_id=cid,
+                    type=source_channel,
+                    direction="incoming",
+                    occurred_at=incoming_occurred_at,
+                    summary=None,
+                    metadata=fact_metadata,
+                )
+                if result.get("skipped") == "duplicate":
+                    logger.debug(
+                        "interaction_sync: duplicate incoming skipped "
+                        "contact=%s channel=%s date=%s",
+                        cid,
+                        source_channel,
+                        interaction_date,
+                    )
+                else:
+                    stats["logged"] += 1
+                    logger.debug(
+                        "interaction_sync: logged incoming contact=%s channel=%s date=%s",
+                        cid,
+                        source_channel,
+                        interaction_date,
+                    )
+            except Exception:
+                logger.exception(
+                    "interaction_sync: error logging incoming for contact=%s channel=%s",
+                    cid,
+                    source_channel,
+                )
+                stats["errors"] += 1
+
+            # --- outgoing interaction (only when owner also sent in this chat) ---
+            if owner_sent:
+                outgoing_occurred_at = datetime(
+                    interaction_date.year,
+                    interaction_date.month,
+                    interaction_date.day,
+                    outgoing_hour,
+                    0,
+                    0,
+                    tzinfo=UTC,
+                )
+                try:
+                    result = await interaction_log(
+                        db_pool,
+                        contact_id=cid,
+                        type=source_channel,
+                        direction="outgoing",
+                        occurred_at=outgoing_occurred_at,
+                        summary=None,
+                        metadata=fact_metadata,
+                    )
+                    if result.get("skipped") == "duplicate":
+                        logger.debug(
+                            "interaction_sync: duplicate outgoing skipped "
+                            "contact=%s channel=%s date=%s",
+                            cid,
+                            source_channel,
+                            interaction_date,
+                        )
+                    else:
+                        stats["logged"] += 1
+                        logger.debug(
+                            "interaction_sync: logged outgoing contact=%s channel=%s date=%s",
+                            cid,
+                            source_channel,
+                            interaction_date,
+                        )
+                except Exception:
+                    logger.exception(
+                        "interaction_sync: error logging outgoing for contact=%s channel=%s",
+                        cid,
+                        source_channel,
+                    )
+                    stats["errors"] += 1
 
     # -----------------------------------------------------------------------
     # Step 4: Scan public.calendar_events for confirmed events within the
@@ -1124,11 +1271,14 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info(
         "Interaction sync complete: processed=%d, logged=%d, "
         "skipped_unresolved=%d, skipped_owner=%d, "
+        "skipped_ineligible=%d, skipped_group_too_large=%d, "
         "calendar_events_scanned=%d, errors=%d",
         stats["processed"],
         stats["logged"],
         stats["skipped_unresolved"],
         stats["skipped_owner"],
+        stats["skipped_ineligible"],
+        stats["skipped_group_too_large"],
         stats["calendar_events_scanned"],
         stats["errors"],
     )
