@@ -384,6 +384,17 @@ def _build_request_context(
         if triage_decision.matched_rule_type:
             context["triage_rule_type"] = triage_decision.matched_rule_type
 
+    # Group chat metadata from RFC 0013 D3/D4.
+    # These are optional additive keys; omitting them preserves existing behavior.
+    if sender.participant_count is not None:
+        context["participant_count"] = sender.participant_count
+    if sender.chat_type is not None:
+        context["chat_type"] = sender.chat_type
+    # interaction_eligible: only propagate when explicitly set to False to keep
+    # request_context lean for the common case (all existing envelopes are eligible).
+    if not control.interaction_eligible:
+        context["interaction_eligible"] = False
+
     return context
 
 

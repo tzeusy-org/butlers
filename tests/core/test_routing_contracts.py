@@ -405,3 +405,85 @@ def test_notify_contracts():
                 },
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# IngestSenderV1 group chat metadata fields (RFC 0013 D3)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_sender_participant_count_and_chat_type():
+    """IngestSenderV1 accepts participant_count and chat_type; both default to None."""
+    # Absent (backward compat): existing envelopes without new fields validate unchanged
+    e = parse_ingest_envelope(_build_valid_ingest_envelope())
+    assert e.sender.participant_count is None
+    assert e.sender.chat_type is None
+
+    # Explicit values accepted
+    base = _build_valid_ingest_envelope()
+    base["sender"]["participant_count"] = 8
+    base["sender"]["chat_type"] = "group"
+    parsed = parse_ingest_envelope(base)
+    assert parsed.sender.participant_count == 8
+    assert parsed.sender.chat_type == "group"
+
+    # DM: participant_count=2, chat_type="private"
+    base2 = _build_valid_ingest_envelope()
+    base2["sender"]["participant_count"] = 2
+    base2["sender"]["chat_type"] = "private"
+    parsed2 = parse_ingest_envelope(base2)
+    assert parsed2.sender.participant_count == 2
+    assert parsed2.sender.chat_type == "private"
+
+    # supergroup and channel are valid chat_type values
+    for ct in ("supergroup", "channel", "community"):
+        base_ct = _build_valid_ingest_envelope()
+        base_ct["sender"]["chat_type"] = ct
+        assert parse_ingest_envelope(base_ct).sender.chat_type == ct
+
+    # Null values accepted
+    base3 = _build_valid_ingest_envelope()
+    base3["sender"]["participant_count"] = None
+    base3["sender"]["chat_type"] = None
+    parsed3 = parse_ingest_envelope(base3)
+    assert parsed3.sender.participant_count is None
+    assert parsed3.sender.chat_type is None
+
+    # Unknown fields still rejected (extra="forbid")
+    with pytest.raises(ValidationError):
+        bad = _build_valid_ingest_envelope()
+        bad["sender"]["unknown_field"] = "x"
+        parse_ingest_envelope(bad)
+
+
+# ---------------------------------------------------------------------------
+# IngestControlV1 interaction_eligible field (RFC 0013 D3)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_control_interaction_eligible():
+    """IngestControlV1 accepts interaction_eligible; defaults to True."""
+    # Default: True when not provided (backward compat)
+    e = parse_ingest_envelope(_build_valid_ingest_envelope())
+    assert e.control.interaction_eligible is True
+
+    # Explicit True
+    base = _build_valid_ingest_envelope()
+    base["control"] = {"interaction_eligible": True}
+    assert parse_ingest_envelope(base).control.interaction_eligible is True
+
+    # Explicit False (large group gating)
+    base2 = _build_valid_ingest_envelope()
+    base2["control"] = {"interaction_eligible": False}
+    assert parse_ingest_envelope(base2).control.interaction_eligible is False
+
+    # interaction_eligible can coexist with other control fields
+    base3 = _build_valid_ingest_envelope()
+    base3["control"] = {
+        "idempotency_key": "idem-abc",
+        "policy_tier": "default",
+        "interaction_eligible": False,
+    }
+    parsed3 = parse_ingest_envelope(base3)
+    assert parsed3.control.interaction_eligible is False
+    assert parsed3.control.idempotency_key == "idem-abc"

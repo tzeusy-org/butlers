@@ -192,6 +192,18 @@ class IngestSenderV1(BaseModel):
     """Batch envelopes: mapping of sender_id → display_name for all participants."""
     owner_sender_id: str | None = None
     """Batch envelopes: the owner's sender_id, used to distinguish other senders."""
+    participant_count: int | None = None
+    """Group chat metadata: number of participants in the chat.
+
+    DMs have participant_count=2. Chats exceeding max_interaction_group_size are
+    gated from interaction-eligible processing. See RFC 0013 D3.
+    """
+    chat_type: str | None = None
+    """Group chat metadata: chat type descriptor from the connector.
+
+    Valid values: ``"private"`` (DM), ``"group"``, ``"supergroup"``,
+    ``"channel"``, ``"community"``. See RFC 0013 D3.
+    """
 
 
 class IngestAttachment(BaseModel):
@@ -251,6 +263,15 @@ class IngestControlV1(BaseModel):
     ingestion_tier: IngestionTier = "full"
     addressed: bool = False
     payload_type: PayloadType | None = None
+    interaction_eligible: bool = True
+    """Whether this message is eligible for interaction scoring.
+
+    Connectors MUST set this to ``False`` for chats exceeding
+    ``max_interaction_group_size``. Defaults to ``True`` for backward
+    compatibility with existing envelopes. The interaction_sync job skips
+    messages where ``request_context->>'interaction_eligible'`` is ``'false'``.
+    See RFC 0013 D3.
+    """
 
 
 class IngestEnvelopeV1(BaseModel):
