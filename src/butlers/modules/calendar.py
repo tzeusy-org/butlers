@@ -2505,7 +2505,21 @@ class CalendarModule(Module):
 
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         self._config = self._coerce_config(config)
-        self._butler_name = butler_name or self._resolve_butler_name(db)
+        if butler_name:
+            self._butler_name = butler_name
+        else:
+            # Legacy fallback for tests that do not supply butler_name.
+            schema = getattr(db, "schema", None)
+            if isinstance(schema, str) and schema.strip():
+                self._butler_name = schema.strip()
+            else:
+                db_name = getattr(db, "db_name", None)
+                if isinstance(db_name, str):
+                    normalized = db_name.strip()
+                    if normalized:
+                        self._butler_name = (
+                            normalized.removeprefix("butler_") or DEFAULT_BUTLER_NAME
+                        )
         self._db = db
         module = self
 
@@ -6986,19 +7000,6 @@ class CalendarModule(Module):
         if updated is None:
             raise ValueError(f"Reminder {reminder_id} not found")
         return self._normalize_reminder_row(dict(updated))
-
-    @staticmethod
-    def _resolve_butler_name(db: Any) -> str:
-        # Prefer schema name (one-db topology) over db_name
-        schema = getattr(db, "schema", None)
-        if isinstance(schema, str) and schema.strip():
-            return schema.strip()
-        db_name = getattr(db, "db_name", None)
-        if isinstance(db_name, str):
-            normalized = db_name.strip()
-            if normalized:
-                return normalized.removeprefix("butler_") or DEFAULT_BUTLER_NAME
-        return DEFAULT_BUTLER_NAME
 
     @staticmethod
     def _ensure_butler_title(title: str) -> str:

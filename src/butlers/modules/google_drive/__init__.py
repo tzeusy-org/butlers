@@ -1252,11 +1252,13 @@ class GoogleDriveModule(Module):
             self._config = config
         self._db = db
 
-        # Derive butler name from DB schema, mirroring on_startup so the name
-        # is consistent regardless of call order.
-        schema: str | None = getattr(db, "schema", None) if db is not None else None
-        if schema:
-            self._butler_name = schema
+        # Prefer the butler_name param; fall back to db.schema for legacy compat.
+        if butler_name:
+            self._butler_name = butler_name
+        else:
+            schema: str | None = getattr(db, "schema", None) if db is not None else None
+            if schema:
+                self._butler_name = schema
 
         module = self
 
