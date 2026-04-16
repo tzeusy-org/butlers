@@ -471,9 +471,12 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     @_tool("interactions")
     async def interaction_log_group(
         group_id: uuid.UUID,
+        type: str = "group_interaction",
         direction: str = "mutual",
         occurred_at: datetime | None = None,
         summary: str | None = None,
+        duration_minutes: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Log an interaction with all members of a contact group in a single call.
 
@@ -481,16 +484,19 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         member with group_size injected into the fact metadata.
 
         Returns:
-            {"logged": N, "skipped": M, "group_size": G} on success.
-            {"skipped": "group_too_large", "group_size": G} if group has >20 members.
-            {"logged": 0, "skipped": 0, "group_size": 0} if the group is empty.
+            {"logged": N, "skipped": M, "group_size": G, "status": "ok"} on success.
+            {"logged": 0, "skipped": 0, "group_size": G, "status": "group_too_large"} if >20.
+            {"logged": 0, "skipped": 0, "group_size": 0, "status": "ok"} if the group is empty.
         """
         return await _inter.interaction_log_group(
             module._get_pool(),
             group_id,
+            type=type,
             direction=direction,
             occurred_at=occurred_at,
             summary=summary,
+            duration_minutes=duration_minutes,
+            metadata=metadata,
         )
 
     # =================================================================

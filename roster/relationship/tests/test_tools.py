@@ -2964,7 +2964,7 @@ async def test_interaction_log_group_empty(pool):
     grp = await group_create(pool, "Empty Group")
     result = await interaction_log_group(pool, grp["id"])
 
-    assert result == {"logged": 0, "skipped": 0, "group_size": 0}
+    assert result == {"logged": 0, "skipped": 0, "group_size": 0, "status": "ok"}
 
 
 async def test_interaction_log_group_too_large(pool):
@@ -2983,8 +2983,10 @@ async def test_interaction_log_group_too_large(pool):
 
     result = await interaction_log_group(pool, grp["id"])
 
-    assert result["skipped"] == "group_too_large"
+    assert result["skipped"] == 0
+    assert result["logged"] == 0
     assert result["group_size"] == 21
+    assert result["status"] == "group_too_large"
 
 
 async def test_interaction_log_group_group_size_in_metadata(pool):
