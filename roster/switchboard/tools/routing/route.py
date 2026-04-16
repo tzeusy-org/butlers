@@ -12,6 +12,7 @@ import asyncpg
 from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
+from butlers.core.mcp_urls import canonical_runtime_mcp_url
 from butlers.core.telemetry import inject_trace_context
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
@@ -28,6 +29,7 @@ _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 def _router_lock(endpoint_url: str) -> asyncio.Lock:
+    endpoint_url = canonical_runtime_mcp_url(endpoint_url)
     lock = _ROUTER_CLIENT_LOCKS.get(endpoint_url)
     if lock is None:
         lock = asyncio.Lock()
@@ -47,6 +49,7 @@ def _is_cached_router_client_healthy(client_ctx: MCPClient, client: Any) -> bool
 
 
 async def _close_cached_router_client(endpoint_url: str) -> None:
+    endpoint_url = canonical_runtime_mcp_url(endpoint_url)
     cached = _ROUTER_CLIENTS.pop(endpoint_url, None)
     if cached is None:
         return
@@ -73,6 +76,7 @@ async def _get_cached_router_client(
     *,
     reconnect: bool = False,
 ) -> Any:
+    endpoint_url = canonical_runtime_mcp_url(endpoint_url)
     async with _router_lock(endpoint_url):
         if reconnect:
             await _close_cached_router_client(endpoint_url)
@@ -178,7 +182,7 @@ async def route(
 ) -> dict[str, Any]:
     """Route a tool call to a target butler via its MCP endpoint.
 
-    Looks up the target butler in the registry, connects via SSE MCP client,
+    Looks up the target butler in the registry, connects via the target's MCP endpoint,
     calls the specified tool, logs the routing, and returns the result.
 
     Parameters
@@ -280,7 +284,7 @@ async def route(
                 )
                 return {"error": error_msg}
 
-            endpoint_url = target_row["endpoint_url"]
+            endpoint_url = canonical_runtime_mcp_url(target_row["endpoint_url"])
 
             # Inject trace context into args
             trace_context = inject_trace_context()
@@ -459,7 +463,7 @@ async def post_mail(
 
 
 async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, Any]) -> Any:
-    """Call a tool on another butler via MCP SSE client.
+    """Call a tool on another butler via its MCP runtime endpoint.
 
     Raises
     ------

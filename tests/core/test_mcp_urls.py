@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from butlers.core.mcp_urls import (
+    canonical_runtime_mcp_url,
     resolve_runtime_mcp_transport,
     runtime_mcp_transport_from_url,
     runtime_mcp_url,
@@ -17,6 +18,12 @@ def test_mcp_url_and_transport():
     """URL uses streamable-http path; transport inferred from URL; explicit transport preferred."""
     # URL format
     assert runtime_mcp_url(41103) == "http://localhost:41103/mcp"
+    assert canonical_runtime_mcp_url("http://localhost:41103/sse") == "http://localhost:41103/mcp"
+    assert canonical_runtime_mcp_url("http://localhost:41103/sse/") == "http://localhost:41103/mcp"
+    assert (
+        canonical_runtime_mcp_url("http://localhost:41103/mcp/sse")
+        == "http://localhost:41103/mcp/sse"
+    )
 
     # Inferred from URL
     assert runtime_mcp_transport_from_url("http://localhost:41103/sse") == "sse"

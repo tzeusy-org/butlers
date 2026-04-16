@@ -149,12 +149,16 @@ class TestToolRegistration:
     async def test_registers_expected_tools(
         self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
     ) -> None:
-        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None, butler_name="test-butler")
+        await ha_module.register_tools(
+            mcp=mock_mcp, config={"url": "http://ha.local"}, db=None, butler_name="test-butler"
+        )
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_TOOLS
 
     async def test_read_only_registers_only_query_tools(self, mock_mcp: MagicMock) -> None:
         module = HomeAssistantModule()
-        await module.register_tools(mcp=mock_mcp, config={"read_only": True}, db=None, butler_name="test-butler")
+        await module.register_tools(
+            mcp=mock_mcp, config={"read_only": True}, db=None, butler_name="test-butler"
+        )
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_READ_ONLY_TOOLS
 
     def test_default_registry_includes_home_assistant(self) -> None:

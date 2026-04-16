@@ -201,7 +201,9 @@ class TestEmailToolSurfaceRestriction:
             return dec
 
         mcp.tool = capture
-        await mod.register_tools(mcp=mcp, config={"send_tools": True}, db=None, butler_name="test-butler")
+        await mod.register_tools(
+            mcp=mcp, config={"send_tools": True}, db=None, butler_name="test-butler"
+        )
 
         assert "email_send_message" in registered
         assert "email_reply_to_thread" in registered

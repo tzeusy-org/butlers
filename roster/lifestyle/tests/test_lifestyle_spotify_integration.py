@@ -208,7 +208,7 @@ class TestScenario1ValidCredentials:
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_22_tools_registered_after_valid_startup(self) -> None:
@@ -278,7 +278,7 @@ class TestScenario2MissingCredentials:
         module = SpotifyModule()
         await module.on_startup(config={}, db=None, credential_store=None)
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def _startup_module_empty_tokens(self) -> tuple[SpotifyModule, MagicMock]:
@@ -291,7 +291,7 @@ class TestScenario2MissingCredentials:
         module = SpotifyModule()
         await module.on_startup(config={}, db=None, credential_store=cred_store)
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_credentials_ok_false_when_no_store(self) -> None:
@@ -379,7 +379,7 @@ class TestScenario3PlaylistFlow:
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_create_playlist_returns_id(
@@ -474,7 +474,7 @@ class TestScenario4SearchPlayFlow:
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_search_returns_track_items(
@@ -543,7 +543,7 @@ class TestScenario5DiscoveryFallback:
             await module.on_startup(config={}, db=None, credential_store=cred_store)
 
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_recommendations_success_returns_tracks(

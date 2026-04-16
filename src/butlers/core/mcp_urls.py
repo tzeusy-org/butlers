@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 RuntimeMcpTransport = Literal["http", "sse"]
 
@@ -20,6 +20,21 @@ _HTTP_ALIASES = frozenset({"http", "streamable-http", "streamable_http"})
 def runtime_mcp_url(port: int, *, host: str = "localhost") -> str:
     """Build the canonical runtime MCP URL for a butler daemon."""
     return f"http://{host}:{port}{_STREAMABLE_HTTP_PATH}"
+
+
+def canonical_runtime_mcp_url(url: str) -> str:
+    """Prefer the canonical runtime MCP endpoint for legacy runtime URLs.
+
+    Exact legacy runtime SSE endpoints (``.../sse`` or ``.../sse/``) are
+    rewritten to the canonical streamable HTTP endpoint (``.../mcp``).
+    Other paths are left unchanged so non-runtime or nested paths like
+    ``.../mcp/sse`` keep their original meaning.
+    """
+    parsed = urlparse(url)
+    normalized_path = parsed.path.rstrip("/") or "/"
+    if normalized_path != _SSE_PATH:
+        return url
+    return urlunparse(parsed._replace(path=_STREAMABLE_HTTP_PATH))
 
 
 def runtime_mcp_transport_from_url(url: str) -> RuntimeMcpTransport:

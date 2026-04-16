@@ -317,7 +317,8 @@ class TestDeliverTelegramSuccess:
 
         await deliver(pool, channel="telegram", message="Test", recipient="123", call_fn=mock_call)
 
-        assert captured_urls == ["http://tg-host:9200/sse"]
+        # Legacy ``/sse`` registry URLs are canonicalized to ``/mcp`` before dispatch.
+        assert captured_urls == ["http://tg-host:9200/mcp"]
 
 
 # ---------------------------------------------------------------------------
@@ -1098,7 +1099,7 @@ class TestCallButlerTool:
             )
 
         assert result == {"ok": True}
-        mock_ctor.assert_called_once_with("http://localhost:41101/sse", name="switchboard-router")
+        mock_ctor.assert_called_once_with("http://localhost:41101/mcp", name="switchboard-router")
         mock_client.call_tool.assert_awaited_once_with(
             "bot_switchboard_handle_message",
             {},
@@ -1135,7 +1136,7 @@ class TestCallButlerTool:
 
         assert first == {"n": 1}
         assert second == {"n": 2}
-        mock_ctor.assert_called_once_with("http://localhost:41101/sse", name="switchboard-router")
+        mock_ctor.assert_called_once_with("http://localhost:41101/mcp", name="switchboard-router")
         assert mock_client.call_tool.await_count == 2
 
     async def test_reconnects_when_cached_client_disconnected(self) -> None:

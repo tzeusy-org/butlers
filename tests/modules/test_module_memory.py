@@ -151,7 +151,9 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler")
+            await mod.register_tools(
+                mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler"
+            )
 
         return registered_tools
 
@@ -188,7 +190,9 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.preferences": MagicMock(),
             },
         ):
-            await mod.register_tools(mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler")
+            await mod.register_tools(
+                mcp=mcp, config=None, db=MagicMock(), butler_name="test-butler"
+            )
 
         assert mcp.tool.call_count == 25
 
@@ -199,7 +203,9 @@ class TestRegisterTools:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
 
-        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler")
+        await mod.register_tools(
+            mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler"
+        )
 
         get_tools = getattr(runtime_mcp, "get_tools", None)
         if callable(get_tools):
@@ -237,7 +243,9 @@ class TestRegisterTools:
         fake_db = MagicMock()
         fake_db.pool = MagicMock()
 
-        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler")
+        await mod.register_tools(
+            mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler"
+        )
 
         get_tools = getattr(runtime_mcp, "get_tools", None)
         if callable(get_tools):

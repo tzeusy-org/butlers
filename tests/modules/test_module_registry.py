@@ -48,9 +48,7 @@ def _make_module(
         def dependencies(self) -> list[str]:
             return list(_deps)
 
-        async def register_tools(
-            self, mcp: Any, config: Any, db: Any, butler_name: str
-        ) -> None:
+        async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
             pass
 
         def migration_revisions(self) -> str | None:

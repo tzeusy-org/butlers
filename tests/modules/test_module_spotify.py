@@ -125,7 +125,9 @@ class TestToolRegistration:
     async def test_registers_all_expected_tools(
         self, spotify_module: SpotifyModule, mock_mcp: MagicMock
     ) -> None:
-        await spotify_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="test-butler")
+        await spotify_module.register_tools(
+            mcp=mock_mcp, config={}, db=None, butler_name="test-butler"
+        )
         registered = set(mock_mcp._registered_tools.keys())
         assert EXPECTED_SPOTIFY_TOOLS.issubset(registered)
         assert EXPECTED_PLAYBACK_TOOLS.issubset(registered)

@@ -167,21 +167,21 @@ class TestSteamModuleRegistration:
         """SteamModule.register_tools() registers exactly 9 tools."""
         module = SteamModule()
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         assert len(mcp._registered_tools) == 9
 
     async def test_all_expected_tool_names_present(self) -> None:
         """The registered tool names match exactly the expected 9-tool set."""
         module = SteamModule()
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         assert set(mcp._registered_tools.keys()) == _EXPECTED_STEAM_TOOLS
 
     async def test_all_tools_are_callable(self) -> None:
         """Every registered tool is a callable (async function)."""
         module = SteamModule()
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         for name, fn in mcp._registered_tools.items():
             assert callable(fn), f"{name} should be callable"
 
@@ -227,7 +227,7 @@ class TestDegradedMode:
         with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_client):
             await module.on_startup(config={}, db=None)
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_credentials_ok_false_in_degraded_mode(self) -> None:
@@ -320,7 +320,7 @@ class TestPublicEndpointsWithoutAuth:
         with patch("butlers.modules.steam.SteamAPIClient", return_value=mock_client):
             await module.on_startup(config={}, db=None)
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_game_news_works_without_auth(self) -> None:
@@ -394,7 +394,7 @@ class TestFullQueryFlow:
             await module.on_startup(config={}, db=db)
 
         mcp = _make_mock_mcp()
-        await module.register_tools(mcp=mcp, config={}, db=None)
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-lifestyle")
         return module, mcp
 
     async def test_credentials_ok_after_successful_startup(

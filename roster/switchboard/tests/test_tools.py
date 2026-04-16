@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from typing import Any
 
 import pytest
 from opentelemetry import trace
@@ -300,12 +301,15 @@ async def test_route_to_known_butler_success(pool):
     from butlers.tools.switchboard import register_butler, route
 
     await register_butler(pool, "target", "http://localhost:41200/sse")
+    captured: dict[str, Any] = {}
 
     async def mock_call(endpoint_url, tool_name, args):
+        captured["endpoint_url"] = endpoint_url
         return {"status": "ok", "data": 42}
 
     result = await route(pool, "target", "get_data", {"key": "x"}, call_fn=mock_call)
     assert result == {"result": {"status": "ok", "data": 42}}
+    assert captured["endpoint_url"] == "http://localhost:41200/mcp"
 
 
 async def test_route_to_known_butler_failure(pool):
@@ -1710,7 +1714,8 @@ async def test_deliver_selects_butler_with_matching_module(deliver_pool):
         recipient="123",
         call_fn=mock_call,
     )
-    assert captured_urls[-1] == "http://localhost:41103/sse"
+    # Legacy ``/sse`` registry URLs are canonicalized to ``/mcp`` before dispatch.
+    assert captured_urls[-1] == "http://localhost:41103/mcp"
 
     # Send via email — should route to emailer
     await deliver(
@@ -1720,7 +1725,7 @@ async def test_deliver_selects_butler_with_matching_module(deliver_pool):
         recipient="user@example.com",
         call_fn=mock_call,
     )
-    assert captured_urls[-1] == "http://localhost:41102/sse"
+    assert captured_urls[-1] == "http://localhost:41102/mcp"
 
 
 # ------------------------------------------------------------------
