@@ -5460,7 +5460,28 @@ class CalendarModule(Module):
                     to_regclass('calendar_events') IS NOT NULL AS has_events,
                     to_regclass('calendar_event_instances') IS NOT NULL AS has_instances,
                     to_regclass('calendar_sync_cursors') IS NOT NULL AS has_cursors,
-                    to_regclass('calendar_action_log') IS NOT NULL AS has_action_log
+                    to_regclass('calendar_action_log') IS NOT NULL AS has_action_log,
+                    EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'calendar_events'
+                          AND column_name = 'body'
+                    ) AS has_events_body,
+                    EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'calendar_events'
+                          AND column_name = 'source_butler'
+                    ) AS has_events_source_butler,
+                    EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'calendar_events'
+                          AND column_name = 'source_session_id'
+                    ) AS has_events_source_session_id
                 """
             )
         except Exception as exc:
@@ -5473,19 +5494,30 @@ class CalendarModule(Module):
             return False
 
         try:
-            flags = [
-                row["has_sources"],
-                row["has_events"],
-                row["has_instances"],
-                row["has_cursors"],
-                row["has_action_log"],
-            ]
+            flag_map = {
+                "calendar_sources": row["has_sources"],
+                "calendar_events": row["has_events"],
+                "calendar_event_instances": row["has_instances"],
+                "calendar_sync_cursors": row["has_cursors"],
+                "calendar_action_log": row["has_action_log"],
+                "calendar_events.body": row["has_events_body"],
+                "calendar_events.source_butler": row["has_events_source_butler"],
+                "calendar_events.source_session_id": row["has_events_source_session_id"],
+            }
         except KeyError:
             self._projection_tables_available_cache = False
             return False
 
-        # Use strict True checks to avoid treating mock placeholder objects as table existence.
-        self._projection_tables_available_cache = all(flag is True for flag in flags)
+        # Treat partially migrated schemas as unavailable so background pollers
+        # fail closed instead of repeatedly hitting column-mismatch errors.
+        self._projection_tables_available_cache = all(flag is True for flag in flag_map.values())
+        if not self._projection_tables_available_cache:
+            missing = sorted(name for name, flag in flag_map.items() if flag is not True)
+            logger.debug(
+                "Calendar projection schema incomplete; disabling projection paths until "
+                "migrations catch up: %s",
+                ", ".join(missing),
+            )
         return self._projection_tables_available_cache
 
     async def _table_exists(self, table_name: str) -> bool:

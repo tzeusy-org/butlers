@@ -756,6 +756,44 @@ class TestProjectInternalSourcesNoReminders:
         )
 
 
+class TestCalendarProjectionSchemaCompatibility:
+    """Projection paths fail closed when calendar schema is only partially migrated."""
+
+    @staticmethod
+    def _make_projection_pool(*, missing_flags: set[str] | None = None) -> MagicMock:
+        pool = MagicMock()
+        missing = missing_flags or set()
+
+        availability_row = MagicMock()
+        availability_row.__getitem__ = lambda self, key: key not in missing
+
+        pool.fetchrow = AsyncMock(return_value=availability_row)
+        pool.fetchval = AsyncMock()
+        pool.fetch = AsyncMock()
+        return pool
+
+    async def test_projection_tables_unavailable_when_required_event_columns_missing(self):
+        pool = self._make_projection_pool(missing_flags={"has_events_body"})
+        mod = _make_module_with_pool(pool)
+
+        assert await mod._projection_tables_available() is False
+
+    async def test_project_scheduler_source_noops_when_required_event_columns_missing(self):
+        pool = self._make_projection_pool(
+            missing_flags={
+                "has_events_body",
+                "has_events_source_butler",
+                "has_events_source_session_id",
+            }
+        )
+        mod = _make_module_with_pool(pool)
+
+        await mod._project_scheduler_source()
+
+        pool.fetchval.assert_not_awaited()
+        pool.fetch.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # tick() — due-reminder evaluation
 # ---------------------------------------------------------------------------
