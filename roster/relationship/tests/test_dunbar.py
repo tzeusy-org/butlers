@@ -218,6 +218,30 @@ class TestGetTierRanking:
         assert tier_1500_count == 100  # ranks 501-600
 
 
+class TestDirectionWeightConstants:
+    """Verify direction weight constants (RFC 0013, D1)."""
+
+    def test_direction_weight_values(self):
+        from butlers.tools.relationship.dunbar import (
+            DIRECTION_WEIGHT_INCOMING,
+            DIRECTION_WEIGHT_MUTUAL,
+            DIRECTION_WEIGHT_OUTGOING,
+        )
+
+        assert DIRECTION_WEIGHT_OUTGOING == 10.0
+        assert DIRECTION_WEIGHT_MUTUAL == 5.0
+        assert DIRECTION_WEIGHT_INCOMING == 1.0
+
+    def test_outgoing_is_highest(self):
+        from butlers.tools.relationship.dunbar import (
+            DIRECTION_WEIGHT_INCOMING,
+            DIRECTION_WEIGHT_MUTUAL,
+            DIRECTION_WEIGHT_OUTGOING,
+        )
+
+        assert DIRECTION_WEIGHT_OUTGOING > DIRECTION_WEIGHT_MUTUAL > DIRECTION_WEIGHT_INCOMING
+
+
 class TestDecayFormulaConstants:
     """Verify the decay lambda constant and tier constants."""
 
@@ -539,6 +563,204 @@ async def test_inactive_facts_excluded(dunbar_pool):
     contact_score = next((s for s in scores if s["contact_id"] == contact["id"]), None)
     assert contact_score is not None
     assert contact_score["score"] == 0.0  # superseded fact not counted
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
+    """outgoing direction produces 10x score vs incoming (RFC 0013, D1)."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    outgoing = await _make_contact(dunbar_pool, "OutgoingContact")
+    incoming = await _make_contact(dunbar_pool, "IncomingContact")
+
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{outgoing['id']}",
+        occurred_at,
+        json.dumps({"direction": "outgoing"}),
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{incoming['id']}",
+        occurred_at,
+        json.dumps({"direction": "incoming"}),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    # outgoing should be exactly 10x incoming
+    ratio = score_map[outgoing["id"]] / score_map[incoming["id"]]
+    assert abs(ratio - 10.0) < 1e-9, f"Expected 10x ratio, got {ratio}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
+    """mutual direction produces 5x score vs incoming (RFC 0013, D1)."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    mutual = await _make_contact(dunbar_pool, "MutualContact")
+    incoming = await _make_contact(dunbar_pool, "IncomingContact2")
+
+    occurred_at = datetime.now(UTC) - timedelta(days=2)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{mutual['id']}",
+        occurred_at,
+        json.dumps({"direction": "mutual"}),
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{incoming['id']}",
+        occurred_at,
+        json.dumps({"direction": "incoming"}),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    # mutual should be exactly 5x incoming
+    ratio = score_map[mutual["id"]] / score_map[incoming["id"]]
+    assert abs(ratio - 5.0) < 1e-9, f"Expected 5x ratio, got {ratio}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_group_size_10_produces_tenth_score(dunbar_pool):
+    """group_size=10 produces 1/10th score vs group_size=1 (RFC 0013, D2)."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    group_contact = await _make_contact(dunbar_pool, "GroupContact")
+    dm_contact = await _make_contact(dunbar_pool, "DmContact")
+
+    occurred_at = datetime.now(UTC) - timedelta(days=3)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{group_contact['id']}",
+        occurred_at,
+        json.dumps({"group_size": 10}),
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{dm_contact['id']}",
+        occurred_at,
+        json.dumps({"group_size": 1}),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    # group_size=10 should be 1/10th of group_size=1
+    ratio = score_map[group_contact["id"]] / score_map[dm_contact["id"]]
+    assert abs(ratio - 0.1) < 1e-9, f"Expected 0.1 ratio, got {ratio}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_null_direction_defaults_to_1x(dunbar_pool):
+    """NULL direction defaults to 1.0x multiplier (backward compatible, RFC 0013, D6)."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    null_dir = await _make_contact(dunbar_pool, "NullDirection")
+    explicit_incoming = await _make_contact(dunbar_pool, "ExplicitIncoming")
+
+    occurred_at = datetime.now(UTC) - timedelta(days=4)
+    # fact without direction metadata (simulates pre-RFC facts)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2)
+        """,
+        f"contact:{null_dir['id']}",
+        occurred_at,
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{explicit_incoming['id']}",
+        occurred_at,
+        json.dumps({"direction": "incoming"}),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    # NULL direction should equal explicit incoming (1.0x)
+    assert abs(score_map[null_dir["id"]] - score_map[explicit_incoming["id"]]) < 1e-9
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_null_group_size_defaults_to_1x(dunbar_pool):
+    """NULL group_size defaults to 1.0x divisor (backward compatible, RFC 0013, D6)."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    null_gs = await _make_contact(dunbar_pool, "NullGroupSize")
+    explicit_dm = await _make_contact(dunbar_pool, "ExplicitDm")
+
+    occurred_at = datetime.now(UTC) - timedelta(days=5)
+    # fact without group_size metadata (simulates pre-RFC facts)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2)
+        """,
+        f"contact:{null_gs['id']}",
+        occurred_at,
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{explicit_dm['id']}",
+        occurred_at,
+        json.dumps({"group_size": 1}),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    # NULL group_size should equal group_size=1 (both 1.0x divisor)
+    assert abs(score_map[null_gs["id"]] - score_map[explicit_dm["id"]]) < 1e-9
 
 
 @pytest.mark.integration
