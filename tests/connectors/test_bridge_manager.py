@@ -82,10 +82,10 @@ def _eventual_exit_process(returncode: int, pid: int = 1234) -> tuple[MagicMock,
     proc.send_signal = MagicMock()
     proc.stdout = AsyncMock(spec=asyncio.StreamReader)
     proc.stderr = AsyncMock(spec=asyncio.StreamReader)
-    proc.stdout.__aiter__ = lambda self: self
-    proc.stdout.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
-    proc.stderr.__aiter__ = lambda self: self
-    proc.stderr.__anext__ = AsyncMock(side_effect=StopAsyncIteration)
+    proc.stdout.__aiter__.return_value = proc.stdout
+    proc.stdout.__anext__.side_effect = StopAsyncIteration
+    proc.stderr.__aiter__.return_value = proc.stderr
+    proc.stderr.__anext__.side_effect = StopAsyncIteration
     return proc, exit_event
 
 
