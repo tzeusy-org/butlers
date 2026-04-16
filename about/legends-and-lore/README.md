@@ -1,4 +1,4 @@
-# Law and Lore -- Design Contracts
+# Legends and Lore -- Design Contracts
 
 This directory contains the normative design contracts for the Butlers system. Each RFC defines a technical contract at the wire, protocol, or API level. Together they describe HOW the system works.
 

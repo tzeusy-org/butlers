@@ -9,7 +9,7 @@ These documents are standards, not subsystem design docs. They do not replace
 the other pillars:
 
 - **Heart and Soul** defines what the project is for and what it refuses to be.
-- **Law and Lore** defines wire-level and architectural contracts.
+- **Legends and Lore** defines wire-level and architectural contracts.
 - **Spec and Spine** defines feature behavior and acceptance criteria.
 - **Lay and Land** defines where components live and how they connect.
 - **Craft and Care** defines how changes to any of those layers must be carried

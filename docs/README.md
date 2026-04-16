@@ -134,7 +134,7 @@ This project's knowledge is organized into five pillars, each answering a differ
 |--------|----------|-----------------|
 | **Heart and Soul** | [`about/heart-and-soul/`](../about/heart-and-soul/) | Vision, principles, scope boundaries — the WHY |
 | **Craft and Care** | [`about/craft-and-care/`](../about/craft-and-care/) | Engineering bar, testing discipline, review expectations, observability, security, maintainability — HOW WORK SHOULD BE EXECUTED WELL |
-| **Law and Lore** | [`about/legends-and-lore/`](../about/legends-and-lore/) | Numbered RFCs defining technical contracts — the HOW |
+| **Legends and Lore** | [`about/legends-and-lore/`](../about/legends-and-lore/) | Numbered RFCs defining technical contracts — the HOW |
 | **Spec and Spine** | [`openspec/`](../openspec/) | Detailed feature requirements with testable scenarios — the WHAT |
 | **Lay and Land** | [`about/lay-and-land/`](../about/lay-and-land/) | Component maps, data flow diagrams, deployment topology — the WHERE |
 

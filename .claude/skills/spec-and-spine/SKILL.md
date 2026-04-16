@@ -6,13 +6,6 @@ description: >
   change needs a new spec, or locating the relevant capability spec or active OpenSpec change
   in `openspec/`. Triggers: "check the spec", "what does the spec say", "which spec covers X",
   "spec drift", "does the code match the spec", "need a new spec".
-metadata:
-  owner: tze
-  authors:
-    - tze
-    - OpenAI Codex
-  status: active
-  last_reviewed: "2026-04-12"
 ---
 
 # Spec and Spine
