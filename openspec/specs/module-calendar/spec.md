@@ -68,7 +68,7 @@ Configuration is declared under `[modules.calendar]` in `butler.toml` with field
 
 ### Requirement: Calendar Event CRUD Tools
 
-The module registers 13 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`.
+The module registers 16 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`.
 
 #### Scenario: List events with time window
 
@@ -110,7 +110,12 @@ The module registers 13 MCP tools total. The core CRUD tools are: `calendar_list
 
 ### Requirement: CalendarEvent Model
 
-The canonical `CalendarEvent` model is provider-neutral with fields: `event_id`, `title`, `start_at`, `end_at`, `timezone`, `description`, `location`, `attendees` (list of `AttendeeInfo`), `recurrence_rule`, `color_id`, `butler_generated`, `butler_name`, `status`, `organizer`, `visibility`, `etag`, `created_at`, `updated_at`.
+The canonical `CalendarEvent` model is provider-neutral with fields: `event_id`, `title`, `start_at`, `end_at`, `timezone`, `description`, `body`, `location`, `attendees` (list of `AttendeeInfo`), `recurrence_rule`, `color_id`, `butler_generated`, `butler_name`, `source_butler`, `source_session_id`, `entity_ids`, `status`, `organizer`, `visibility`, `etag`, `created_at`, `updated_at`.
+
+- `body` — a longer freeform description to complement the short `title` (nullable; maps to Google Calendar `description` field on parse)
+- `source_butler` — the butler name that created or owns the event (NOT NULL; backfilled from `metadata.butler_name` on migration)
+- `source_session_id` — session identifier of the creating LLM session (nullable)
+- `entity_ids` — list of entity UUIDs linked to this event via the `calendar_event_entities` junction table; populated on read, accepted on create/update
 
 #### Scenario: Google event parsing
 
@@ -120,6 +125,37 @@ The canonical `CalendarEvent` model is provider-neutral with fields: `event_id`,
 - **AND** attendees are parsed into `AttendeeInfo` objects with email, display_name, response_status, optional, organizer, self_, and comment fields
 - **AND** recurrence rules are extracted from the `recurrence` array
 - **AND** butler-generated metadata is extracted from `extendedProperties.private`
+- **AND** `description` field is mapped to `body` on the model
+
+#### Scenario: Authorship annotation on create
+
+- **WHEN** `calendar_create_event` or `calendar_update_event` is called
+- **THEN** the resulting event is annotated with `source_butler` (the butler's name) and `source_session_id` (the current runtime session ID)
+- **AND** both values are written to the `calendar_events` row in the projection table
+
+#### Scenario: Entity association on create and update
+
+- **WHEN** `calendar_create_event`, `calendar_update_event`, or `calendar_update_butler_event` is called with `entity_ids`
+- **THEN** the junction table `calendar_event_entities` is updated via `_upsert_event_entities`
+- **AND** existing entity links for the event are replaced with the new set (full replace, not additive)
+
+#### Scenario: Entity association on read
+
+- **WHEN** an event is returned from `calendar_get_event`, `calendar_list_events`, or any projection read path
+- **THEN** the event's `entity_ids` field is populated from `calendar_event_entities` via `_fetch_event_entity_ids`
+
+### Requirement: calendar_event_entities Junction Table
+
+The `calendar_event_entities` table is a cross-reference between `calendar_events` rows and entities in the memory butler's entity graph. It enables reverse lookup — given an entity, find all calendar events associated with it.
+
+Schema: `(event_id UUID REFERENCES calendar_events(id) ON DELETE CASCADE, entity_id UUID REFERENCES public.entities(id) ON DELETE CASCADE)` with a UNIQUE constraint on `(event_id, entity_id)`.
+
+#### Scenario: Entity merge re-pointing
+
+- **WHEN** two entities are merged via `entity_merge()` in the memory module
+- **THEN** `calendar_event_entities` rows referencing the source entity are re-pointed to the target entity
+- **AND** any duplicates created by the re-point are deleted (deduplication on `(event_id, entity_id)`)
+- **AND** failures in the re-pointing step are swallowed gracefully if the table does not exist
 
 ### Requirement: RRULE and Cron Support
 
@@ -227,9 +263,80 @@ The Google provider handles OAuth token refresh and rate-limited retries, resolv
 - **WHEN** an error message might contain credential values
 - **THEN** patterns like `client_secret=...`, `refresh_token=...`, `access_token=...` are redacted before logging or returning to the caller
 
+### Requirement: Reminder Tools
+
+The module registers three MCP tools for managing butler-owned reminders as native calendar events: `reminder_create`, `reminder_list`, `reminder_dismiss`. Reminders are stored as `calendar_events` rows with `source_kind = 'internal_reminders'` and scoped to the calling butler via `source_butler`. The legacy `reminders` SPO fact table used by the relationship butler has been migrated to `calendar_events` and is no longer authoritative.
+
+#### Scenario: Create reminder as calendar event
+
+- **WHEN** `reminder_create` is called with `title`, `due_at`, and optional `body`, `ends_at`, `recurrence`, `entity_ids`, `timezone`
+- **THEN** a row is inserted into `calendar_events` with `source_kind = 'internal_reminders'`, `source_butler = <calling butler>`, `status = 'confirmed'`
+- **AND** `ends_at` defaults to `due_at + 15 minutes` when not provided
+- **AND** `recurrence` accepts `"daily"`, `"weekly"`, `"monthly"`, or `"yearly"` and is mapped to an RRULE string
+- **AND** `entity_ids` are stored in `calendar_event_entities` for reverse lookup
+- **AND** the response includes `event_id`, `title`, `starts_at`, `ends_at`, `recurrence_rule`, `entity_ids`, and `source_butler`
+
+#### Scenario: List reminders
+
+- **WHEN** `reminder_list` is called with optional `entity_id`, `due_before`, and `include_dismissed` filters
+- **THEN** reminders are fetched from `calendar_events` where `source_kind = 'internal_reminders'` and `source_butler = <calling butler>`
+- **AND** entity associations are resolved in a single batch fetch from `calendar_event_entities`
+- **AND** dismissed reminders (status = 'cancelled') are excluded unless `include_dismissed=True`
+- **AND** an unavailable DB pool returns an empty list (fail-open)
+
+#### Scenario: Dismiss one-time reminder
+
+- **WHEN** `reminder_dismiss` is called with an `event_id` that has no `recurrence_rule`
+- **THEN** the `calendar_events` row `status` is set to `'cancelled'`
+
+#### Scenario: Dismiss recurring reminder occurrence
+
+- **WHEN** `reminder_dismiss` is called with an `event_id` that has a `recurrence_rule`
+- **THEN** the earliest non-cancelled instance in `calendar_event_instances` has its `status` set to `'cancelled'`
+- **AND** the series event row remains active so future occurrences continue to be projected
+
+#### Scenario: Migration from relationship butler reminders
+
+- **WHEN** the relationship butler's migration `007_reminders_to_calendar_events` runs
+- **THEN** all existing reminder facts (predicate = 'reminder') from the relationship butler are migrated to `calendar_events` with RRULE recurrence mapping
+- **AND** `calendar_event_entities` rows are populated from contact entity resolution
+- **AND** the legacy `reminders` table is renamed to `_reminders_backup`
+- **AND** reminder MCP tools (`reminder_create`, `reminder_list`, `reminder_dismiss`) are removed from the relationship butler's tool surface
+
+### Requirement: Reminder Dispatch via tick()
+
+The module exposes an async `tick(source_butler, notify_fn=None)` method that the butler core can call periodically to evaluate and dispatch due reminders.
+
+#### Scenario: One-time reminder dispatch
+
+- **WHEN** `tick(source_butler)` is called
+- **AND** a one-time reminder (no `recurrence_rule`) has `starts_at <= now` and `metadata->>'last_notified_at'` is absent
+- **THEN** `notify_fn` is called with a `notify.v1` envelope containing the reminder title and `due_at`
+- **AND** `metadata.last_notified_at` is updated on the event row to prevent duplicate delivery
+
+#### Scenario: Recurring reminder per-occurrence dedup
+
+- **WHEN** `tick(source_butler)` evaluates recurring reminders
+- **THEN** it joins `calendar_event_instances` to find instances where `starts_at <= now` and `metadata->>'notified_at'` is absent
+- **AND** each instance fires exactly once: after dispatch, `notified_at` is stamped on the instance row (not the series event)
+- **AND** cancelled instances (status = 'cancelled') are skipped
+- **BECAUSE** stamping dedup metadata on the instance ensures each occurrence of a recurring series fires independently
+
+#### Scenario: Scoping to a butler
+
+- **WHEN** `tick(source_butler)` is called with a butler name
+- **THEN** only `calendar_events` owned by that butler (via `calendar_sources.butler_name = source_butler`) are evaluated
+- **AND** each butler's due reminder evaluation is isolated from other butlers
+
+#### Scenario: tick() with no notify_fn
+
+- **WHEN** `tick(source_butler, notify_fn=None)` is called
+- **THEN** due reminders are identified and logged but not dispatched
+- **AND** dedup metadata is NOT written (so they will fire again when a real notify_fn is provided)
+
 ### Requirement: Calendar Sync Tools
 
-The module registers MCP tools for sync observability and manual triggering: `calendar_sync_status` and `calendar_force_sync`.
+The module registers MCP tools for sync observability and manual triggering: `calendar_sync_status`, `calendar_force_sync`, and `calendar_set_primary`.
 
 #### Scenario: Query sync status
 
@@ -243,6 +350,13 @@ The module registers MCP tools for sync observability and manual triggering: `ca
 - **THEN** an immediate sync is triggered outside the normal polling schedule
 - **AND** if a background poller is running, it is signaled; otherwise an inline one-off sync runs
 - **AND** provider errors are recorded in `last_sync_error` rather than raised (fail-open)
+
+#### Scenario: Set primary calendar
+
+- **WHEN** `calendar_set_primary` is called with a `calendar_id`
+- **THEN** the in-memory default `_primary_calendar_id` is updated to the specified calendar
+- **AND** the choice is persisted to the credential store so it survives restarts
+- **AND** the `calendar_id` must be one of the discovered provider calendars
 
 ### Requirement: [TARGET-STATE] Calendar Sync and Projection
 
@@ -264,7 +378,7 @@ Provider sync with incremental/full modes and a unified projection table for fas
 The projection uses a dual-lane model to separate event authority. Each `calendar_sources` row has a `lane` field: `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.
 
 - **`lane="user"`** — Provider-synced external events (meetings, appointments created by humans on Google Calendar). Google is the source of truth. The local projection faithfully mirrors whatever the provider reports on each sync cycle.
-- **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's database (`scheduled_tasks`, `reminders`) is the source of truth. These are pushed outbound to Google for visibility but Google is never read back as authoritative for them.
+- **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's `calendar_events` rows (for reminders with `source_kind='internal_reminders'`) and `scheduled_tasks` table are the source of truth. These are pushed outbound to Google for visibility but Google is never read back as authoritative for them.
 
 #### Scenario: Butler-generated events in provider sync projection
 
@@ -280,7 +394,7 @@ The projection uses a dual-lane model to separate event authority. Each `calenda
 - **WHEN** a user manually moves or edits a butler-generated event directly on Google Calendar
 - **AND** the next sync cycle runs
 - **THEN** the provider sync skips the modified event (butler-generated filter)
-- **AND** `_push_internal_events_to_provider` overwrites the Google event with the butler's local state (title, start/end from `scheduled_tasks` or `reminders`)
+- **AND** `_push_internal_events_to_provider` overwrites the Google event with the butler's local state (title, start/end from `scheduled_tasks` or `calendar_events` with `source_kind='internal_reminders'`)
 - **BECAUSE** the butler's database is authoritative for butler-owned events; Google is a read-only mirror for them
 
 #### Scenario: External events faithfully track provider state
