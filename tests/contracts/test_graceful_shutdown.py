@@ -32,7 +32,7 @@ def _make_tracking_module(name: str, deps: list[str], shutdown_order: list):
         def dependencies(self) -> list[str]:
             return deps
 
-        async def register_tools(self, mcp, config, db) -> None:
+        async def register_tools(self, mcp, config, db, butler_name: str = "") -> None:
             pass
 
         def migration_revisions(self) -> str | None:
@@ -228,7 +228,7 @@ class TestConcreteModuleShutdown:
             def dependencies(self) -> list[str]:
                 return []
 
-            async def register_tools(self, mcp, config, db) -> None:
+            async def register_tools(self, mcp, config, db, butler_name: str = "") -> None:
                 pass
 
             def migration_revisions(self) -> str | None:
@@ -265,7 +265,7 @@ class TestConcreteModuleShutdown:
             def dependencies(self) -> list[str]:
                 return []
 
-            async def register_tools(self, mcp, config, db) -> None:
+            async def register_tools(self, mcp, config, db, butler_name: str = "") -> None:
                 pass
 
             def migration_revisions(self) -> str | None:
@@ -290,7 +290,7 @@ class TestConcreteModuleShutdown:
             def dependencies(self) -> list[str]:
                 return ["dep_a"]
 
-            async def register_tools(self, mcp, config, db) -> None:
+            async def register_tools(self, mcp, config, db, butler_name: str = "") -> None:
                 pass
 
             def migration_revisions(self) -> str | None:

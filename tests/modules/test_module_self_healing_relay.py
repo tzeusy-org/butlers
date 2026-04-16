@@ -209,10 +209,10 @@ class TestWireRuntime:
     def test_wire_runtime_accepts_switchboard_client(self):
         mod = SelfHealingModule()
         client = MagicMock()
-        mod.wire_runtime("general", MagicMock(), "/repo", switchboard_client=client)
+        mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
         assert mod._switchboard_client is client
 
     def test_wire_runtime_without_switchboard_client(self):
         mod = SelfHealingModule()
-        mod.wire_runtime("general", MagicMock(), "/repo")
+        mod.wire_runtime(MagicMock(), "/repo")
         assert mod._switchboard_client is None

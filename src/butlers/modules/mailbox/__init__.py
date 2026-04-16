@@ -63,7 +63,7 @@ class MailboxModule(Module):
     def migration_revisions(self) -> str | None:
         return "mailbox"
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register all five mailbox MCP tools."""
         self._pool = db
         module = self  # capture for closures

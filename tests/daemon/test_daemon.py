@@ -90,7 +90,7 @@ class StubModuleA(Module):
     def credentials_env(self) -> list[str]:
         return ["STUB_A_TOKEN"]
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         self.tools_registered = True
 
     def migration_revisions(self) -> str | None:
@@ -131,7 +131,7 @@ class StubModuleB(Module):
     def dependencies(self) -> list[str]:
         return ["stub_a"]
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         self.tools_registered = True
 
     def migration_revisions(self) -> str | None:
@@ -166,7 +166,7 @@ class StubModuleFailStartup(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         self.tools_registered = True
 
     def migration_revisions(self) -> str | None:

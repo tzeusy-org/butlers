@@ -55,7 +55,7 @@ class StubModuleA(Module):
     def credentials_env(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         pass
 
     def migration_revisions(self) -> str | None:
@@ -87,7 +87,7 @@ class StubModuleB(Module):
     def credentials_env(self) -> list[str]:
         return []
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         pass
 
     def migration_revisions(self) -> str | None:

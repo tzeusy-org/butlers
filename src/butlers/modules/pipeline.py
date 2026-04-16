@@ -2188,7 +2188,7 @@ class PipelineModule(Module):
         """
         self._pipeline = pipeline
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register the ``pipeline.process`` MCP tool.
 
         The registered tool allows external callers (or scheduled tasks) to

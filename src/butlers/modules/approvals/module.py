@@ -322,7 +322,7 @@ class ApprovalsModule(Module):
                 )
         return None
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register all 16 approval MCP tools (7 queue + 6 rules CRUD + 3 suggestion tools)."""
         self._config = (
             config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))

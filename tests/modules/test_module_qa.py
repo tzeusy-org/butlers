@@ -193,8 +193,8 @@ class TestWireRuntime:
     def test_wire_runtime_sets_all_fields(self):
         mod = _make_module()
         spawner = MagicMock()
-        mod.wire_runtime("qa", spawner, "/repo/root")
-        assert mod._butler_name == "qa" and mod._repo_root == Path("/repo/root")
+        mod.wire_runtime(spawner, "/repo/root")
+        assert mod._repo_root == Path("/repo/root")
 
 
 class TestReportFinding:
@@ -636,14 +636,14 @@ class TestWireRuntimeNotifyFn:
         async def _fake_notify(**kwargs):
             return {}
 
-        mod.wire_runtime("qa", spawner, "/repo/root", notify_fn=_fake_notify)
+        mod.wire_runtime(spawner, "/repo/root", notify_fn=_fake_notify)
         assert mod._notify_fn is _fake_notify
 
     def test_wire_runtime_notify_fn_defaults_none(self):
         """wire_runtime notify_fn defaults to None when not provided."""
         mod = _make_module()
         spawner = MagicMock()
-        mod.wire_runtime("qa", spawner, "/repo/root")
+        mod.wire_runtime(spawner, "/repo/root")
         assert mod._notify_fn is None
 
 

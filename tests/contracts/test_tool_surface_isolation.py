@@ -224,7 +224,7 @@ class TestEphemeralMcpConfig:
             def dependencies(self) -> list[str]:
                 return []
 
-            async def register_tools(self, mcp, config, db) -> None:
+            async def register_tools(self, mcp, config, db, butler_name: str = "") -> None:
                 pass
 
             def migration_revisions(self) -> str | None:

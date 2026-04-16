@@ -362,7 +362,7 @@ class TestMcpOnlyInterButler:
             def migration_revisions(self) -> str | None:
                 return None
 
-            async def register_tools(self, mcp, config, db) -> None:
+            async def register_tools(self, mcp, config, db, butler_name: str = "") -> None:
                 pass
 
             async def on_startup(self, config, db) -> None:

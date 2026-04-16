@@ -257,7 +257,7 @@ class SpotifyModule(Module):
     # register_tools
     # ------------------------------------------------------------------
 
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+    async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str = "") -> None:
         """Register all 22 Spotify MCP tools on the FastMCP server."""
         self._config = (
             config
