@@ -5737,13 +5737,18 @@ class CalendarModule(Module):
         etag: str | None = None,
         origin_updated_at: datetime | None = None,
         metadata: dict[str, Any] | None = None,
-        source_butler: str = "unknown",
+        source_butler: str | None = None,
         source_session_id: str | None = None,
     ) -> uuid.UUID:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
             raise RuntimeError("Projection writes require a database pool")
 
+        effective_source_butler = (
+            _normalize_optional_string(source_butler)
+            or _normalize_optional_string(self._butler_name)
+            or DEFAULT_BUTLER_NAME
+        )
         metadata_json = self._encode_jsonb(metadata or {})
         row = await pool.fetchrow(
             """
@@ -5793,7 +5798,7 @@ class CalendarModule(Module):
             etag,
             origin_updated_at,
             metadata_json,
-            source_butler,
+            effective_source_butler,
             source_session_id,
         )
         if row is None:

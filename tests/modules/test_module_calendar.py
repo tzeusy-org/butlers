@@ -413,6 +413,14 @@ class TestCalendarWriteTools:
 # ---------------------------------------------------------------------------
 
 
+def _calendar_events_fetchrow_args(pool: MagicMock) -> tuple[object, ...]:
+    for call in pool.fetchrow.await_args_list:
+        sql = call.args[0]
+        if isinstance(sql, str) and "INSERT INTO calendar_events" in sql:
+            return call.args
+    raise AssertionError("expected a calendar_events fetchrow call")
+
+
 class TestProjectionPersistence:
     async def test_upsert_projection_event_persists_source_butler(self):
         """calendar_events.source_butler is NOT NULL with no DB default; the
@@ -440,6 +448,68 @@ class TestProjectionPersistence:
         assert "source_butler" in query
         assert "source_butler = EXCLUDED.source_butler" in query
         assert "relationship" in params
+
+    async def test_upsert_projection_event_blank_source_butler_uses_active_butler(self):
+        mod = CalendarModule()
+        mod._butler_name = "health"
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        mod._db = SimpleNamespace(pool=pool)
+
+        await mod._upsert_projection_event(
+            source_id=uuid.uuid4(),
+            origin_ref="evt-1",
+            title="Projected event",
+            timezone="UTC",
+            starts_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            status="confirmed",
+            source_butler="   ",
+        )
+
+        args = _calendar_events_fetchrow_args(pool)
+        # source_butler is the second-to-last positional arg; source_session_id is last.
+        assert args[-2] == "health"
+
+    async def test_upsert_projection_event_writes_source_butler(self):
+        mod = CalendarModule()
+        mod._butler_name = "health"
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        mod._db = SimpleNamespace(pool=pool)
+
+        await mod._upsert_projection_event(
+            source_id=uuid.uuid4(),
+            origin_ref="evt-1",
+            title="Projected event",
+            timezone="UTC",
+            starts_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            status="confirmed",
+        )
+
+        sql, *args = _calendar_events_fetchrow_args(pool)
+        assert "source_butler" in sql
+        # source_butler precedes source_session_id as the final two positional args.
+        assert args[-2] == "health"
+
+    async def test_project_provider_changes_persists_active_butler_name(self):
+        mod = CalendarModule()
+        mod._butler_name = "health"
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        mod._db = SimpleNamespace(pool=pool)
+        mod._upsert_projection_instance = AsyncMock(return_value=uuid.uuid4())
+
+        await mod._project_provider_changes(
+            source_id=uuid.uuid4(),
+            provider_name="google",
+            calendar_id="primary",
+            updated_events=[_make_event(butler_name=None)],
+            cancelled_ids=[],
+        )
+
+        assert _calendar_events_fetchrow_args(pool)[-2] == "health"
 
 
 # ---------------------------------------------------------------------------
