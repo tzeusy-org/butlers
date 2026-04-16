@@ -26,7 +26,7 @@ The `public.entities` table is the single source of identity across all butlers.
 | `metadata` | JSONB | Extensible; includes lifecycle (`merged_into`, `deleted_at`, `unidentified`) |
 | `tenant_id` | TEXT | Multi-tenant isolation |
 
-**Entity resolution** uses a 5-tier waterfall: role match -> exact name -> exact alias -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and domain hints refines scoring.
+**Entity resolution** uses a 4-tier waterfall: role match -> exact (canonical or alias) -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and domain hints refines scoring.
 
 **Lifecycle**: Entities are never hard-deleted. Merging sets `metadata.merged_into`; soft-delete sets `metadata.deleted_at`. A partial unique index allows name reuse after tombstoning.
 

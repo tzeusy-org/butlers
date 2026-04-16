@@ -39,8 +39,8 @@ Use the resolution thresholds from the spec (§10.4):
 |--------|----------|
 | **Zero candidates** (NONE) | Person is unknown. See "New People" section below. |
 | **Single candidate** (HIGH) | Use `entity_id` directly. Proceed silently. |
-| **Multiple candidates, top score leads by ≥30 points** (HIGH, inferred) | Use top `entity_id`. Confirm transparently: *"Assuming you're referring to [Name] ([reason]) — ..."* Include `inferred_reason` in confirmation. |
-| **Multiple candidates, gap <30 points** (MEDIUM) | Ask the user: *"Did you mean [Candidate A] or [Candidate B]?"* Do not store facts until clarified. |
+| **Multiple candidates, exactly one at score=100** (HIGH, inferred) | Use that `entity_id`. Confirm transparently: *"Assuming you're referring to [Name] ([reason]) — ..."* Include `inferred_reason` in confirmation. |
+| **Multiple candidates at score=100** (MEDIUM) | Ask the user: *"Did you mean [Candidate A] or [Candidate B]?"* Do not store facts until clarified. |
 
 ## Step 4: Handle New People (NONE confidence)
 
@@ -404,7 +404,7 @@ User: "What does Alice like?"
 **User message**: "Chloe came by today, we had coffee"
 
 **Actions**:
-1. `memory_entity_resolve("Chloe", entity_type="person", context_hints={"domain_scores": {"<uuid-chloe-wong>": 95, "<uuid-chloe-tan>": 12}})` → two candidates, top leads by 83 points → HIGH confidence, `inferred=true`, `inferred_reason="partner, most frequent contact"`
+1. `memory_entity_resolve("Chloe", entity_type="person", context_hints={"domain_scores": {"<uuid-chloe-wong>": 100, "<uuid-chloe-tan>": 42}})` → two candidates, exactly one at score=100 → HIGH confidence, `inferred=true`, `inferred_reason="partner, most frequent contact"`
 2. Use `entity_id="<uuid-chloe-wong>"`
 3. `interaction_log(contact_id="<chloe_wong_contact_id>", interaction_type="coffee", summary="Came by, had coffee")`
 4. `notify(channel="telegram", message="Assuming you're referring to Chloe Wong (your partner) — logged your coffee catch-up.", intent="reply", request_context=...)`
@@ -414,7 +414,7 @@ User: "What does Alice like?"
 **User message**: "Alex got promoted!"
 
 **Actions**:
-1. `memory_entity_resolve("Alex", entity_type="person", context_hints={"topic": "promotion"})` → two candidates, gap <30 points → MEDIUM confidence
+1. `memory_entity_resolve("Alex", entity_type="person", context_hints={"topic": "promotion"})` → two candidates both at score=100 → MEDIUM confidence
 2. Do NOT store facts yet.
 3. `notify(channel="telegram", message="Did you mean Alex Chen or Alex Rivera?", intent="reply", request_context=...)`
 4. Wait for user clarification before proceeding.
@@ -510,4 +510,4 @@ You should still run Steps 1–3 for any *other* people mentioned in the message
 - **Questions deserve answers** — always use memory + domain tools to provide substantive responses
 - **Proactive follow-ups** — offer to set reminders, create events, or track related information
 - **Confirm inferred resolutions** — when `inferred=true`, always mention the resolved name and reason to the user
-- **Ask on ambiguity** — when MEDIUM confidence (gap <30 points), ask before acting; don't guess
+- **Ask on ambiguity** — when MEDIUM confidence (multiple candidates at score=100), ask before acting; don't guess

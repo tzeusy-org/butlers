@@ -1044,7 +1044,7 @@ class MemoryModule(Module):
                         "Required non-empty identifier to resolve. Waterfall lookup: "
                         "tries role match first (e.g. 'Owner' matches entities with "
                         "roles=['owner']), then falls through to name-based tiers "
-                        "(exact canonical, exact alias, prefix/substring, optional fuzzy). "
+                        "(exact, prefix/substring, optional fuzzy). "
                         "Must not be null, empty, or whitespace-only — the tool raises "
                         "ValueError in those cases instead of returning an empty list."
                     ),

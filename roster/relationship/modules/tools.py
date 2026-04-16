@@ -768,7 +768,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         Resolution strategy (in order):
         1. Exact full-name match (case-insensitive) -> HIGH confidence
         2. Multiple candidates -> compute salience scores, apply
-           30-point gap threshold
+           entity-resolve score=100 promotion
         3. Partial match -> MEDIUM confidence
         4. No match -> confidence: "none"
         """

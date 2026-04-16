@@ -23,8 +23,9 @@ Before calling `memory_store_fact` for any mention of an external entity — a *
 1. Call `memory_entity_resolve(name, entity_type=<inferred_type>, context_hints={...})` to get ranked candidates.
 2. Apply the disambiguation policy:
    - **Zero candidates:** Create a transitory entity (see "Resolve-or-Create Protocol" below).
-   - **Single candidate or top score leads by ≥30 points:** Use the top `entity_id`. If inferred, confirm to the user transparently.
-   - **Multiple candidates, gap <30 points:** Ask the user for clarification before storing any facts.
+   - **Exactly one candidate at score=100:** Use that `entity_id`. If inferred from an alias or partial name, confirm to the user transparently.
+   - **Multiple candidates at score=100:** The system detected a genuine ambiguity — ask the user for clarification before storing any facts. Present the tied candidates with their `canonical_name`, `aliases`, and `fact_count` so the user can choose.
+   - **No candidates at score=100 (only prefix/fuzzy/sub-tier hits):** Treat as no exact match. Fall through to the Resolve-or-Create Protocol below, OR ask for clarification if a prefix candidate looks plausible.
 3. Pass the resolved `entity_id` to `memory_store_fact`.
 
 ### Entity Type Inference

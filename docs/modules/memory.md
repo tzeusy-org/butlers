@@ -132,7 +132,7 @@ Episode cleanup removes expired rows and enforces capacity limits starting with 
 
 ## Entity Resolution
 
-The `memory_entity_resolve` tool maps ambiguous name strings to stable entity identities using a 5-tier waterfall: exact canonical name -> exact alias -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and caller-provided `context_hints` refines scoring.
+The `memory_entity_resolve` tool maps ambiguous name strings to stable entity identities using a 4-tier waterfall: role match -> exact (canonical or alias) -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and caller-provided `context_hints` refines scoring.
 
 Entities are never hard-deleted. Merging sets `metadata.merged_into`; the source entity is tombstoned and excluded from future resolution.
 

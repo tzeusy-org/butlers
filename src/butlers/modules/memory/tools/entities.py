@@ -34,7 +34,7 @@ _MIN_SCORE: float = 0.0
 # Base scores for match quality (out of 100+).
 _SCORE_ROLE: float = 120.0
 _SCORE_EXACT_NAME: float = 100.0
-_SCORE_EXACT_ALIAS: float = 80.0
+_SCORE_EXACT_DEMOTED: float = 80.0
 _SCORE_PREFIX: float = 50.0
 _SCORE_FUZZY: float = 20.0
 
@@ -245,8 +245,9 @@ async def entity_resolve(
 
     When ``identifier`` is provided it triggers a waterfall lookup:
       1. Role match — case-insensitive match against the ``roles`` array.
-      2. Name match — falls through to the standard four-tier name discovery
-         (exact canonical, exact alias, prefix/substring, optional fuzzy).
+      2. Name match — falls through to the standard three-tier name discovery
+         (exact [canonical or alias], prefix/substring, optional fuzzy).
+         Within the exact tier, candidates are ranked by fact_count.
 
     When only ``name`` is provided, only the name-based tiers execute
     (backward-compatible behavior).
@@ -266,7 +267,10 @@ async def entity_resolve(
     Returns:
         List of candidate dicts ordered by score DESC, then canonical_name ASC.
         Each dict has keys: entity_id, canonical_name, entity_type, score,
-        name_match, aliases.
+        name_match, aliases, fact_count.  The ``fact_count`` field is the
+        number of active facts referencing this entity (as subject or object).
+        Within the exact tier, candidates with the highest fact_count are
+        promoted to score=100; others score 80.
         Returns empty list when no candidates found above minimum threshold.
 
     Raises:
@@ -301,7 +305,7 @@ async def entity_resolve(
     # Each tier returns: id, canonical_name, entity_type, aliases, match_type
     # We use DISTINCT ON to keep the best match type per entity (ordered by tier priority).
     #
-    # Tier numbering: 0=role, 1=exact_canonical, 2=exact_alias, 3=prefix, 4=fuzzy
+    # Tier numbering: 0=role, 1=exact (canonical+alias), 2=prefix, 3=fuzzy
     # Lower tier number = higher priority.
 
     # Tier 0: role-based match (always included — resolves "owner", "admin", etc.
@@ -319,15 +323,18 @@ async def entity_resolve(
         UNION ALL
     """
 
-    discovery_sql = f"""
+    inner_sql = f"""
         SELECT DISTINCT ON (id)
             id, canonical_name, entity_type, aliases, match_type
         FROM (
             {role_tier}
-            -- Tier 1: exact canonical_name match (case-insensitive)
+            -- Tier 1: exact match — canonical_name OR alias (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 1 AS tier, 'exact' AS match_type
             FROM public.entities
-            WHERE LOWER(canonical_name) = $1
+            WHERE (
+                  LOWER(canonical_name) = $1
+                  OR $1 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
+              )
               AND (metadata->>'merged_into') IS NULL
               AND (metadata->>'deleted_at') IS NULL
               AND NOT ('google_account' = ANY(roles))
@@ -335,19 +342,8 @@ async def entity_resolve(
 
             UNION ALL
 
-            -- Tier 2: exact alias match (case-insensitive)
-            SELECT id, canonical_name, entity_type, aliases, 2 AS tier, 'alias' AS match_type
-            FROM public.entities
-            WHERE $1 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
-              AND (metadata->>'merged_into') IS NULL
-              AND (metadata->>'deleted_at') IS NULL
-              AND NOT ('google_account' = ANY(roles))
-              {type_filter}
-
-            UNION ALL
-
-            -- Tier 3: prefix/substring match on canonical_name and aliases
-            SELECT id, canonical_name, entity_type, aliases, 3 AS tier, 'prefix' AS match_type
+            -- Tier 2: prefix/substring match on canonical_name and aliases
+            SELECT id, canonical_name, entity_type, aliases, 2 AS tier, 'prefix' AS match_type
             FROM public.entities
             WHERE (
                   LOWER(canonical_name) LIKE ($1 || '%')
@@ -369,6 +365,20 @@ async def entity_resolve(
         ORDER BY id, tier ASC
     """
 
+    # Wrap with LATERAL fact_count aggregation
+    discovery_sql = f"""
+        SELECT d.id, d.canonical_name, d.entity_type, d.aliases, d.match_type,
+               COALESCE(fc.cnt, 0)::int AS fact_count
+        FROM ({inner_sql}) d
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS cnt
+            FROM facts f
+            WHERE (f.entity_id = d.id OR f.object_entity_id = d.id)
+              AND f.validity = 'active'
+              AND f.invalid_at IS NULL
+        ) fc ON true
+    """
+
     raw_rows = await pool.fetch(discovery_sql, *type_params)
 
     # Optionally add fuzzy candidates (edit distance <= 2)
@@ -379,8 +389,8 @@ async def entity_resolve(
     # -------------------------------------------------------------------------
     # Step 2: build candidate set (dedup by entity id, prefer higher-priority tier)
     # -------------------------------------------------------------------------
-    # match_type priority: role > exact > alias > prefix > fuzzy
-    _TIER_RANK = {"role": -1, "exact": 0, "alias": 1, "prefix": 2, "fuzzy": 3}
+    # match_type priority: role > exact > prefix > fuzzy
+    _TIER_RANK = {"role": -1, "exact": 0, "prefix": 1, "fuzzy": 2}
 
     candidates: dict[str, dict[str, Any]] = {}
 
@@ -394,8 +404,10 @@ async def entity_resolve(
                 "entity_type": row["entity_type"],
                 "aliases": list(row["aliases"]) if row["aliases"] else [],
                 "match_type": row["match_type"],
+                "fact_count": int(row["fact_count"]),
             }
 
+    # Fuzzy candidates need fact_count too — batch lookup
     for row in fuzzy_rows:
         eid = str(row["id"])
         if eid not in candidates:
@@ -405,24 +417,52 @@ async def entity_resolve(
                 "entity_type": row["entity_type"],
                 "aliases": list(row["aliases"]) if row["aliases"] else [],
                 "match_type": "fuzzy",
+                "fact_count": 0,  # populated below
             }
+
+    # Backfill fact_count for fuzzy candidates
+    fuzzy_ids = [
+        eid for eid, c in candidates.items() if c["match_type"] == "fuzzy" and c["fact_count"] == 0
+    ]
+    if fuzzy_ids:
+        fc_rows = await pool.fetch(
+            """
+            SELECT e_id, COUNT(f.id) AS cnt
+            FROM UNNEST($1::uuid[]) AS e_id
+            LEFT JOIN facts f ON (f.entity_id = e_id OR f.object_entity_id = e_id)
+                AND f.validity = 'active' AND f.invalid_at IS NULL
+            GROUP BY e_id
+            """,
+            [uuid.UUID(eid) for eid in fuzzy_ids],
+        )
+        for fc_row in fc_rows:
+            eid = str(fc_row["e_id"])
+            if eid in candidates:
+                candidates[eid]["fact_count"] = int(fc_row["cnt"])
 
     if not candidates:
         return []
 
     # -------------------------------------------------------------------------
-    # Step 3: compute name-match base scores
+    # Step 3: compute name-match base scores with fact-count promotion
     # -------------------------------------------------------------------------
     _MATCH_BASE: dict[str, float] = {
         "role": _SCORE_ROLE,
-        "exact": _SCORE_EXACT_NAME,
-        "alias": _SCORE_EXACT_ALIAS,
         "prefix": _SCORE_PREFIX,
         "fuzzy": _SCORE_FUZZY,
     }
 
+    # Non-exact tiers: static base scores
     for cand in candidates.values():
-        cand["score"] = _MATCH_BASE[cand["match_type"]]
+        if cand["match_type"] != "exact":
+            cand["score"] = _MATCH_BASE[cand["match_type"]]
+
+    # Exact tier: fact-count-based promotion
+    exact_cands = [c for c in candidates.values() if c["match_type"] == "exact"]
+    if exact_cands:
+        max_fc = max(c["fact_count"] for c in exact_cands)
+        for c in exact_cands:
+            c["score"] = _SCORE_EXACT_NAME if c["fact_count"] == max_fc else _SCORE_EXACT_DEMOTED
 
     # -------------------------------------------------------------------------
     # Step 4: graph neighborhood scoring when context_hints provided
@@ -456,6 +496,7 @@ async def entity_resolve(
             "score": round(c["score"], 4),
             "name_match": c["match_type"],
             "aliases": c["aliases"],
+            "fact_count": int(c["fact_count"]),
         }
         for c in results
     ]

@@ -575,7 +575,7 @@ async def _suggest_entities(
     """Score and rank entity suggestions for an unlinked contact.
 
     Three scoring layers:
-    1. Name match via entity_resolve (exact=100, alias=80, prefix=50, fuzzy=20)
+    1. Name match via entity_resolve (exact=100|80 (fact-count promoted), prefix=50, fuzzy=20)
     2. Contact info email/phone match against entity aliases/metadata (email=70, phone=50)
     3. Company/org match via entity_resolve with 0.3x multiplier
 

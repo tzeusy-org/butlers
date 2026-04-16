@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.modules.memory.tools.entities import (
+    _SCORE_EXACT_DEMOTED,
     _SCORE_EXACT_NAME,
     entity_create,
     entity_get,
@@ -63,6 +64,7 @@ def _entity_mock_row(
     aliases: list | None = None,
     metadata: dict | None = None,
     match_type: str = "exact",
+    fact_count: int = 0,
 ) -> MagicMock:
     row = MagicMock()
     row.__getitem__ = lambda s, k: {
@@ -73,6 +75,7 @@ def _entity_mock_row(
         "metadata": metadata or {},
         "roles": [],
         "match_type": match_type,
+        "fact_count": fact_count,
     }[k]
     return row
 
@@ -229,6 +232,65 @@ class TestEntityResolve:
     async def test_identifier_and_name_raises(self, pool: AsyncMock) -> None:
         with pytest.raises(ValueError, match="not both"):
             await entity_resolve(pool, "Alice", identifier="Owner")
+
+    async def test_single_exact_alias_match_returns_score_100(self, pool: AsyncMock) -> None:
+        row = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Bob", match_type="exact", fact_count=0
+        )
+        pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(pool, "Bob")
+        assert results[0]["score"] == 100
+        assert results[0]["name_match"] == "exact"
+
+    async def test_two_exact_candidates_unequal_fact_count(self, pool: AsyncMock) -> None:
+        e1 = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Alice", match_type="exact", fact_count=5
+        )
+        e2 = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Alice Corp", match_type="exact", fact_count=20
+        )
+        pool.fetch = AsyncMock(return_value=[e1, e2])
+        results = await entity_resolve(pool, "alice")
+        by_name = {r["canonical_name"]: r for r in results}
+        assert by_name["Alice Corp"]["score"] == _SCORE_EXACT_NAME
+        assert by_name["Alice"]["score"] == _SCORE_EXACT_DEMOTED
+
+    async def test_tied_fact_count_both_score_100(self, pool: AsyncMock) -> None:
+        e1 = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Eve A", match_type="exact", fact_count=8
+        )
+        e2 = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Eve B", match_type="exact", fact_count=8
+        )
+        pool.fetch = AsyncMock(return_value=[e1, e2])
+        results = await entity_resolve(pool, "eve")
+        assert all(r["score"] == _SCORE_EXACT_NAME for r in results)
+
+    async def test_zero_fact_count_single_candidate_score_100(self, pool: AsyncMock) -> None:
+        row = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Zara", match_type="exact", fact_count=0
+        )
+        pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(pool, "zara")
+        assert results[0]["score"] == _SCORE_EXACT_NAME
+
+    async def test_fact_count_in_return_shape(self, pool: AsyncMock) -> None:
+        row = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Dave", match_type="exact", fact_count=3
+        )
+        pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(pool, "Dave")
+        assert "fact_count" in results[0]
+        assert isinstance(results[0]["fact_count"], int)
+
+    async def test_name_match_never_alias(self, pool: AsyncMock) -> None:
+        row = _entity_mock_row(
+            uuid.UUID(str(uuid.uuid4())), "Charlie", match_type="exact", fact_count=0
+        )
+        pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(pool, "charlie")
+        assert results[0]["name_match"] == "exact"
+        assert results[0]["name_match"] != "alias"
 
 
 class TestEntityResolveSchema:
