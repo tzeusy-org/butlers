@@ -24,11 +24,13 @@ Migration steps:
        - Parse contact_id from fact subject (contact:{contact_id}:reminder:{uuid}).
        - Look up public.contacts.entity_id for that contact_id.
        - If entity_id found, INSERT into calendar_event_entities.
-  4. Delete facts with predicate='reminder' from the facts table.
+  4. Delete only active, non-superseded facts with predicate='reminder' (same WHERE
+     clause as Step 2, preserving historical/invalid rows).
   5. Rename reminders table to _reminders_backup (guards against accidental queries).
 
-This migration is idempotent: it skips calendar_events rows that already exist
-(source_id + origin_ref UNIQUE constraint) and uses INSERT ... ON CONFLICT DO NOTHING.
+This migration is idempotent: calendar_events inserts use ON CONFLICT DO UPDATE to
+return the existing id on reruns, ensuring calendar_event_entities is always populated
+even when the calendar_events row already exists from a partial run.
 """
 
 from __future__ import annotations
@@ -123,13 +125,14 @@ def upgrade() -> None:
         """)
     ).fetchall()
 
-    migrated_event_ids: list[tuple] = []  # (event_id, subject)
+    migrated_event_ids: list[tuple] = []  # (event_id, subject, fact_entity_id)
 
     for row in rows:
         fact_id = row[0]
         subject = row[1]
         content = row[2] or ""
         meta = row[3] or {}
+        fact_entity_id = row[4]  # may be None
         created_at = row[5]
 
         if isinstance(meta, str):
@@ -155,7 +158,8 @@ def upgrade() -> None:
         status = "cancelled" if dismissed else "confirmed"
         origin_ref = str(fact_id)
 
-        # INSERT into calendar_events — idempotent via ON CONFLICT DO NOTHING.
+        # INSERT into calendar_events — idempotent: on conflict return existing id so
+        # entity associations are populated even on reruns / partial runs.
         insert_result = conn.execute(
             text("""
                 INSERT INTO calendar_events (
@@ -172,9 +176,10 @@ def upgrade() -> None:
                     :due_at_str::timestamptz + interval '15 minutes',
                     false, :status, 'default',
                     :recurrence_rule, 'relationship',
-                    :metadata, :created_at, now()
+                    CAST(:metadata AS jsonb), :created_at, now()
                 )
-                ON CONFLICT (source_id, origin_ref) DO NOTHING
+                ON CONFLICT (source_id, origin_ref) DO UPDATE
+                    SET updated_at = EXCLUDED.updated_at
                 RETURNING id
             """),
             {
@@ -190,13 +195,16 @@ def upgrade() -> None:
         ).scalar()
 
         if insert_result is not None:
-            migrated_event_ids.append((insert_result, subject))
+            migrated_event_ids.append((insert_result, subject, fact_entity_id))
 
     # ------------------------------------------------------------------
     # Step 3: Resolve entity associations and populate calendar_event_entities.
+    # Use entity_id stored on the fact directly when available; fall back to
+    # parsing the subject (contact:{contact_id}:reminder:{uuid}) only when the
+    # fact has no entity_id set.
     # ------------------------------------------------------------------
-    for event_id, subject in migrated_event_ids:
-        entity_id = _resolve_entity_id_from_subject(conn, subject)
+    for event_id, subject, fact_entity_id in migrated_event_ids:
+        entity_id = fact_entity_id or _resolve_entity_id_from_subject(conn, subject)
         if entity_id is None:
             continue
         conn.execute(
@@ -209,13 +217,18 @@ def upgrade() -> None:
         )
 
     # ------------------------------------------------------------------
-    # Step 4: Delete reminder facts.
+    # Step 4: Delete only the active reminder facts that were eligible for
+    # migration (same WHERE clause as the SELECT in Step 2).  Historical and
+    # superseded rows (valid_at IS NOT NULL or validity != 'active') are left
+    # untouched to avoid irreversible data loss.
     # ------------------------------------------------------------------
     conn.execute(
         text("""
             DELETE FROM facts
             WHERE predicate = 'reminder'
               AND scope = 'relationship'
+              AND validity = 'active'
+              AND valid_at IS NULL
         """)
     )
 
@@ -274,8 +287,10 @@ def _resolve_entity_id_from_subject(conn, subject: str):  # type: ignore[no-unty
     Subject format: contact:{contact_id}:reminder:{uuid}
     Falls back to None if the subject does not match or the contact has no entity.
     """
+    if not subject:
+        return None
     parts = subject.split(":")
-    if len(parts) < 2 or parts[0] != "contact":
+    if len(parts) != 4 or parts[0] != "contact" or parts[2] != "reminder":
         return None
     try:
         contact_id_str = parts[1]
