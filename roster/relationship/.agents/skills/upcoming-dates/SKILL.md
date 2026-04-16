@@ -1,13 +1,13 @@
 ---
 name: upcoming-dates
-description: Daily scheduled task (8am) — check for important dates (birthdays, anniversaries) in the next 7 days, draft reminder messages, and deliver via notify.
+description: Daily scheduled task (8am) — check for important dates (birthdays, anniversaries) in the next 7 days, draft date notifications, and deliver via notify.
 version: 1.0.0
-tags: [relationship, scheduling, dates, reminders]
+tags: [relationship, scheduling, dates]
 ---
 
 # Upcoming Dates Check
 
-Scheduled daily at 8am. Check for important dates in the next 7 days and draft reminder messages for delivery via Telegram.
+Scheduled daily at 8am. Check for important dates in the next 7 days and draft date notifications for delivery via Telegram.
 
 ## Purpose
 
@@ -25,7 +25,7 @@ Returns a list of upcoming dates across all contacts within the next 7 days.
 
 ### Step 2: Enrich Each Date Entry
 
-For each date returned, gather context to make the reminder message meaningful:
+For each date returned, gather context to make the notification meaningful:
 
 ```python
 # Get contact details
@@ -41,19 +41,19 @@ interaction_list(contact_id="<contact_id>", limit=1)
 gift_list(contact_id="<contact_id>")
 ```
 
-### Step 3: Check for Existing Reminders
+### Step 3: Check for Existing Calendar Events
 
-Avoid creating duplicate reminders for dates already acknowledged:
+Avoid duplicate notifications for dates already scheduled:
 
 ```python
-reminder_list(contact_id="<contact_id>")
+calendar_list_events(entity_id="<entity_id>", days_ahead=14)
 ```
 
-Skip drafting a reminder if an active (non-dismissed) reminder already exists for this date.
+Skip drafting a notification if an active calendar event already exists for this date.
 
-### Step 4: Draft Reminder Messages
+### Step 4: Draft Notification Messages
 
-For each upcoming date without an existing reminder, compose a personalized message:
+For each upcoming date without an existing calendar event, compose a personalized message:
 
 **Birthday format:**
 ```
@@ -74,12 +74,12 @@ For each upcoming date without an existing reminder, compose a personalized mess
 
 ### Step 5: Deliver via notify
 
-Send the compiled reminder digest to the user:
+Send the compiled date digest to the user:
 
 ```python
 notify(
     channel="telegram",
-    message="<compiled reminder digest>",
+    message="<compiled date digest>",
     intent="send"
 )
 ```
@@ -103,7 +103,7 @@ Upcoming dates this week:
 - **Today's date**: If a date is today, use "today" not "0 days away"
 - **Tomorrow**: Use "tomorrow" for clarity
 - **No upcoming dates**: Do not send a message — silence is correct behavior
-- **Already sent reminder**: Check `reminder_list` to avoid duplicate notifications
+- **Already scheduled**: Check `calendar_list_events` to avoid duplicate notifications
 - **Multiple dates for same contact**: Group them together in the digest
 
 ## Integration Notes
@@ -111,4 +111,4 @@ Upcoming dates this week:
 - This skill is triggered by the `upcoming-dates-check` schedule entry in `butler.toml` (cron: `0 8 * * *`)
 - The `upcoming_dates` tool queries across all contacts in the relationship schema
 - Use `date_list(contact_id)` if you need to pull dates for a specific contact directly
-- After sending the digest, optionally create reminders for each date so the user can dismiss them individually
+- After sending the digest, optionally create calendar events for upcoming dates so the user can track them

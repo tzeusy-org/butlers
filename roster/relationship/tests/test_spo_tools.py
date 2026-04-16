@@ -7,7 +7,7 @@ write to SPO facts and read back from them correctly.
 from __future__ import annotations
 
 import shutil
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
@@ -513,100 +513,6 @@ async def test_task_list_exclude_completed_by_default(pool):
     all_ids = {t["id"] for t in tasks_all}
     assert t1["id"] in all_ids
     assert completed["id"] in all_ids
-
-
-# ===========================================================================
-# Reminders (temporal facts)
-# ===========================================================================
-
-
-async def test_reminder_create_writes_to_facts(pool):
-    """reminder_create writes a temporal fact."""
-    from butlers.tools.relationship.reminders import reminder_create
-
-    contact = await _make_contact(pool, "Oscar")
-    cid = contact["id"]
-    due = datetime.now(UTC) + timedelta(days=7)
-
-    reminder = await reminder_create(pool, cid, message="Follow up", next_trigger_at=due)
-    assert reminder["message"] == "Follow up"
-    assert reminder["contact_id"] == cid
-    assert reminder["dismissed"] is False
-    assert reminder["last_triggered_at"] is None
-
-
-async def test_reminder_create_one_time(pool):
-    """reminder_create handles one_time type."""
-    from butlers.tools.relationship.reminders import reminder_create
-
-    contact = await _make_contact(pool, "Pam")
-    cid = contact["id"]
-    due = datetime.now(UTC) + timedelta(days=3)
-
-    reminder = await reminder_create(
-        pool, cid, message="Birthday call", reminder_type="one_time", next_trigger_at=due
-    )
-    assert reminder["type"] == "one_time"
-    assert reminder["last_triggered_at"] is None
-
-
-async def test_reminder_list_active(pool):
-    """reminder_list returns active reminders."""
-    from butlers.tools.relationship.reminders import reminder_create, reminder_list
-
-    contact = await _make_contact(pool, "Quinn")
-    cid = contact["id"]
-    due = datetime.now(UTC) + timedelta(days=1)
-
-    await reminder_create(pool, cid, message="Check in", next_trigger_at=due)
-
-    reminders = await reminder_list(pool, cid)
-    assert len(reminders) >= 1
-    msgs = {r["message"] for r in reminders}
-    assert "Check in" in msgs
-
-
-async def test_reminder_dismiss_one_time(pool):
-    """reminder_dismiss marks one_time reminder as dismissed (next_trigger_at=None)."""
-    from butlers.tools.relationship.reminders import reminder_create, reminder_dismiss
-
-    contact = await _make_contact(pool, "Rita")
-    cid = contact["id"]
-    due = datetime.now(UTC) + timedelta(days=2)
-
-    reminder = await reminder_create(
-        pool, cid, message="Ping", reminder_type="one_time", next_trigger_at=due
-    )
-    rid = reminder["id"]
-
-    dismissed = await reminder_dismiss(pool, rid)
-    assert dismissed["next_trigger_at"] is None
-    assert dismissed["last_triggered_at"] is not None
-
-
-async def test_reminder_dismiss_recurring_monthly(pool):
-    """reminder_dismiss on recurring_monthly advances next_trigger_at by 1 month."""
-    from butlers.tools.relationship.reminders import reminder_create, reminder_dismiss
-
-    contact = await _make_contact(pool, "Sam")
-    cid = contact["id"]
-    due = datetime(2026, 3, 15, tzinfo=UTC)
-
-    reminder = await reminder_create(
-        pool,
-        cid,
-        message="Monthly check",
-        reminder_type="recurring_monthly",
-        next_trigger_at=due,
-    )
-    rid = reminder["id"]
-
-    dismissed = await reminder_dismiss(pool, rid)
-    assert dismissed["next_trigger_at"] is not None
-    new_next = dismissed["next_trigger_at"]
-    # Should be April 15
-    assert new_next.month == 4
-    assert new_next.day == 15
 
 
 # ===========================================================================

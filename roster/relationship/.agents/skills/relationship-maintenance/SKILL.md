@@ -129,14 +129,14 @@ Weekly relationship check-in:
    You mentioned wanting to catch up over dinner.
    → Simple check-in, suggest dinner.
 
-Want me to set reminders for any of these?
+Want me to schedule follow-ups for any of these?
 ```
 
 ## Edge Cases
 
 - **No overdue contacts**: Send "All your key relationships are up to date — no overdue check-ins this week."
 - **Fewer than 3 overdue**: Suggest only those that qualify
-- **Contact has active reminder**: Note it in the suggestion rather than creating a duplicate
+- **Contact has a pending calendar event**: Note it in the suggestion rather than creating a duplicate
 - **Opted-out contacts**: Respect any "do not suggest" labels or facts on a contact
 - **Dunbar tiers calibrating** (new user, few interactions): Note in suggestions that tier
   assignments will become more accurate as more interactions are logged
@@ -145,6 +145,6 @@ Want me to set reminders for any of these?
 
 - This skill is triggered by the `relationship-maintenance` schedule entry in `butler.toml` (cron: `0 9 * * 1`)
 - Works alongside the `reconnect-planner` skill, which handles on-demand staleness checks
-- After the user selects contacts to reach out to, use `reminder_create` to set follow-up reminders
+- After the user selects contacts to reach out to, use `calendar_create_event` to schedule follow-ups
 - Log completed outreach with `interaction_log` when the user confirms they made contact
 - Use `dunbar_tier_set(contact_id, tier)` when the computed tier doesn't match reality

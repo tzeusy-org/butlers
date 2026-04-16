@@ -912,6 +912,60 @@ async def _repoint_facts_on_pool(
     }
 
 
+async def _repoint_calendar_event_entities(
+    pool: Pool,
+    src_uuid: uuid.UUID,
+    tgt_uuid: uuid.UUID,
+) -> None:
+    """Re-point calendar_event_entities rows from source to target entity.
+
+    For each event associated with *src_uuid*:
+      - If *tgt_uuid* is already associated with the same event, delete the
+        source row (deduplication).
+      - Otherwise, update the source row to point to *tgt_uuid*.
+
+    Runs in a single transaction so the set of associations is consistent.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            src_rows = await conn.fetch(
+                "SELECT event_id FROM calendar_event_entities WHERE entity_id = $1",
+                src_uuid,
+            )
+            if not src_rows:
+                return
+
+            src_event_ids = [r["event_id"] for r in src_rows]
+
+            # Find which of those events already have the target entity
+            tgt_rows = await conn.fetch(
+                "SELECT event_id FROM calendar_event_entities "
+                "WHERE entity_id = $1 AND event_id = ANY($2)",
+                tgt_uuid,
+                src_event_ids,
+            )
+            already_linked = {r["event_id"] for r in tgt_rows}
+
+            for event_id in src_event_ids:
+                if event_id in already_linked:
+                    # Duplicate — remove the source row
+                    await conn.execute(
+                        "DELETE FROM calendar_event_entities "
+                        "WHERE event_id = $1 AND entity_id = $2",
+                        event_id,
+                        src_uuid,
+                    )
+                else:
+                    # Re-point to target
+                    await conn.execute(
+                        "UPDATE calendar_event_entities SET entity_id = $1 "
+                        "WHERE event_id = $2 AND entity_id = $3",
+                        tgt_uuid,
+                        event_id,
+                        src_uuid,
+                    )
+
+
 async def entity_merge(
     pool: Pool,
     source_entity_id: str,
@@ -931,6 +985,9 @@ async def entity_merge(
        - Same conflict resolution: if re-pointing would duplicate an existing
          active edge (same entity_id, scope, predicate, object_entity_id=target),
          the higher-confidence fact survives.
+    1c. Re-point calendar_event_entities rows from source to target.
+       - If the target is already associated with the same event, the source
+         row is deleted (deduplication on (event_id, entity_id)).
     2. Append source's aliases to target's alias list (deduplicated).
     3. Merge source's metadata into target's metadata (target wins on conflict).
     4. Tombstone source entity (mark as merged_into=target_entity_id, retained
@@ -1064,6 +1121,19 @@ async def entity_merge(
         facts_superseded += counts["facts_superseded"]
         edge_facts_repointed += counts["edge_facts_repointed"]
         edge_facts_superseded += counts["edge_facts_superseded"]
+
+    # ---------------------------------------------------------------
+    # 2b. Re-point calendar_event_entities rows from source to target.
+    #     Deduplicate on (event_id, entity_id): if the target entity is
+    #     already associated with the same event, delete the source row;
+    #     otherwise update it.
+    # ---------------------------------------------------------------
+    for p in all_pools:
+        try:
+            await _repoint_calendar_event_entities(p, src_uuid, tgt_uuid)
+        except Exception:
+            # Table may not exist in this schema — skip gracefully
+            continue
 
     # ---------------------------------------------------------------
     # 3. Emit audit event

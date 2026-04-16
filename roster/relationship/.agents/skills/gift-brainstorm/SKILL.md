@@ -188,10 +188,10 @@ Once the user selects a gift idea:
    
    Use `gift_update_status(gift_id, status)` to advance through stages.
 
-3. **Set reminders** (optional)
-   If the occasion is far out, offer to create a reminder:
+3. **Schedule a follow-up** (optional)
+   If the occasion is far out, offer to create a calendar event as a purchase reminder:
    ```
-   reminder_create(contact_id, message="Buy gift for [occasion]", type="one_time", due_at=[date before occasion])
+   calendar_create_event(title="Buy gift for [occasion]", start_time=[date before occasion], entity_id=[entity_id])
    ```
 
 ## Best Practices
@@ -270,7 +270,7 @@ You: Added! I've logged "Pottery tool starter set" as a gift idea for Sarah's bi
 
 Gift pipeline: idea → purchased → wrapped → given → thanked
 
-Let me know when you buy it and I'll update the status. Want me to set a reminder to purchase by March 10?
+Let me know when you buy it and I'll update the status. Want me to create a calendar reminder to purchase by March 10?
 ```
 
 ---

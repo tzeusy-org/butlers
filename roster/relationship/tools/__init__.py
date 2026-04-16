@@ -97,11 +97,6 @@ from butlers.tools.relationship.relationships import (
     relationship_type_get,
     relationship_types_list,
 )
-from butlers.tools.relationship.reminders import (
-    reminder_create,
-    reminder_dismiss,
-    reminder_list,
-)
 from butlers.tools.relationship.resolve import (
     CONFIDENCE_HIGH,
     CONFIDENCE_MEDIUM,
@@ -193,9 +188,6 @@ __all__ = [
     "relationship_remove",
     "relationship_type_get",
     "relationship_types_list",
-    "reminder_create",
-    "reminder_dismiss",
-    "reminder_list",
     "stay_in_touch_set",
     "task_complete",
     "task_create",
