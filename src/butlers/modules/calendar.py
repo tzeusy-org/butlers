@@ -30,6 +30,7 @@ from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
+from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
 from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
 logger = logging.getLogger(__name__)
@@ -710,13 +711,15 @@ def _google_event_to_calendar_event(
     created_at = _parse_google_rfc3339_optional(payload.get("created"))
     updated_at = _parse_google_rfc3339_optional(payload.get("updated"))
 
+    description_text = _normalize_optional_text(payload.get("description"))
     return CalendarEvent(
         event_id=event_id,
         title=title,
         start_at=start_at,
         end_at=end_at,
         timezone=timezone,
-        description=_normalize_optional_text(payload.get("description")),
+        description=description_text,
+        body=description_text,
         location=_normalize_optional_text(payload.get("location")),
         attendees=_extract_google_attendees(payload.get("attendees")),
         recurrence_rule=_extract_google_recurrence_rule(payload.get("recurrence")),
@@ -757,8 +760,11 @@ def _build_google_event_body(payload: CalendarEventCreate) -> dict[str, Any]:
     body["summary"] = payload.title
 
     # Optional text fields
-    if payload.description is not None:
-        body["description"] = payload.description
+    # `body` takes precedence over `description` as the richer content field;
+    # both map to Google's single `description` property.
+    google_description = payload.body if payload.body is not None else payload.description
+    if google_description is not None:
+        body["description"] = google_description
     if payload.location is not None:
         body["location"] = payload.location
 
@@ -901,8 +907,11 @@ def _build_google_event_patch_body(
         body["summary"] = patch.title
 
     # Optional text fields
-    if patch.description is not None:
-        body["description"] = patch.description
+    # `body` takes precedence over `description` as the richer content field;
+    # both map to Google's single `description` property.
+    google_description = patch.body if patch.body is not None else patch.description
+    if google_description is not None:
+        body["description"] = google_description
     if patch.location is not None:
         body["location"] = patch.location
 
@@ -1401,12 +1410,18 @@ class CalendarEvent(BaseModel):
     end_at: datetime
     timezone: str
     description: str | None = None
+    body: str | None = None
     location: str | None = None
     attendees: list[AttendeeInfo] = Field(default_factory=list)
     recurrence_rule: str | None = None
     color_id: str | None = None
     butler_generated: bool = False
     butler_name: str | None = None
+    # Authorship fields populated from DB projection columns (core_074).
+    source_butler: str | None = None
+    source_session_id: str | None = None
+    # Entity associations from calendar_event_entities junction table.
+    entity_ids: list[uuid.UUID] = Field(default_factory=list)
     # Extended fields from spec section 5.1
     status: EventStatus | None = None
     organizer: str | None = None
@@ -1425,6 +1440,7 @@ class CalendarEventCreate(BaseModel):
     all_day: bool | None = None
     timezone: str | None = None
     description: str | None = None
+    body: str | None = None
     location: str | None = None
     attendees: list[str] = Field(default_factory=list)
     recurrence_rule: str | None = None
@@ -1434,6 +1450,7 @@ class CalendarEventCreate(BaseModel):
     visibility: EventVisibility | None = None
     notes: str | None = None
     private_metadata: dict[str, str] = Field(default_factory=dict)
+    entity_ids: list[uuid.UUID] = Field(default_factory=list)
 
     @field_validator("timezone")
     @classmethod
@@ -1484,12 +1501,14 @@ class CalendarEventUpdate(BaseModel):
     end_at: datetime | None = None
     timezone: str | None = None
     description: str | None = None
+    body: str | None = None
     location: str | None = None
     attendees: list[str] | None = None
     recurrence_rule: str | None = None
     recurrence_scope: Literal["series"] = "series"
     color_id: str | None = None
     private_metadata: dict[str, str] | None = None
+    entity_ids: list[uuid.UUID] | None = None
     # Etag from the existing event for optimistic concurrency (sent as If-Match header).
     etag: str | None = None
 
@@ -2645,6 +2664,7 @@ class CalendarModule(Module):
             all_day: bool | None = None,
             timezone: str | None = None,
             description: str | None = None,
+            body: str | None = None,
             location: str | None = None,
             attendees: list[str] | None = None,
             recurrence_rule: str | None = None,
@@ -2655,6 +2675,7 @@ class CalendarModule(Module):
             color_id: str | None = None,
             calendar_id: str | None = None,
             conflict_policy: CalendarConflictPolicy | None = None,
+            entity_ids: list[uuid.UUID] | None = None,
             request_id: str | None = None,
         ) -> dict[str, Any]:
             """Create an event and mark it as Butler-generated.
@@ -2668,6 +2689,7 @@ class CalendarModule(Module):
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
             normalized_request_id = module._normalize_request_id(request_id)
+            resolved_entity_ids = entity_ids or []
             action_payload = {
                 "title": title,
                 "start_at": start_at,
@@ -2675,6 +2697,7 @@ class CalendarModule(Module):
                 "all_day": all_day,
                 "timezone": timezone,
                 "description": description,
+                "body": body,
                 "location": location,
                 "attendees": attendees or [],
                 "recurrence_rule": recurrence_rule,
@@ -2684,6 +2707,7 @@ class CalendarModule(Module):
                 "color_id": color_id,
                 "calendar_id": resolved_calendar_id,
                 "conflict_policy": resolved_conflict_policy,
+                "entity_ids": [str(e) for e in resolved_entity_ids],
             }
             idempotency_key, replay = await module._prepare_workspace_mutation(
                 action_type="workspace_user_create",
@@ -2706,6 +2730,7 @@ class CalendarModule(Module):
                     all_day=all_day,
                     timezone=timezone,
                     description=description,
+                    body=body,
                     location=location,
                     attendees=attendees or [],
                     recurrence_rule=recurrence_rule,
@@ -2717,6 +2742,7 @@ class CalendarModule(Module):
                     private_metadata=module._build_butler_private_metadata(
                         butler_name=module._butler_name
                     ),
+                    entity_ids=resolved_entity_ids,
                 )
                 conflict_result = await module._check_conflicts(
                     provider=provider,
@@ -2780,6 +2806,7 @@ class CalendarModule(Module):
                         "all_day": all_day,
                         "timezone": timezone,
                         "description": description,
+                        "body": body,
                         "location": location,
                         "attendees": attendees or [],
                         "recurrence_rule": recurrence_rule,
@@ -2790,6 +2817,7 @@ class CalendarModule(Module):
                         "color_id": color_id,
                         "calendar_id": calendar_id,
                         "conflict_policy": resolved_conflict_policy,
+                        "entity_ids": [str(e) for e in resolved_entity_ids],
                     },
                     conflicts=conflict_result["conflicts"],
                     provider_name=provider.name,
@@ -2837,6 +2865,16 @@ class CalendarModule(Module):
                     error=error_payload.get("error"),
                 )
                 return error_payload
+            # Annotate the event with authorship metadata before projecting.
+            session_id_str = _get_session_id()
+            event = event.model_copy(
+                update={
+                    "body": body if body is not None else event.body,
+                    "source_butler": module._butler_name,
+                    "source_session_id": session_id_str,
+                    "entity_ids": resolved_entity_ids,
+                }
+            )
             result: dict[str, Any] = {
                 "status": "created",
                 "provider": provider.name,
@@ -2876,6 +2914,7 @@ class CalendarModule(Module):
             end_at: datetime | None = None,
             timezone: str | None = None,
             description: str | None = None,
+            body: str | None = None,
             location: str | None = None,
             attendees: list[str] | None = None,
             recurrence_rule: str | None = None,
@@ -2883,6 +2922,7 @@ class CalendarModule(Module):
             color_id: str | None = None,
             calendar_id: str | None = None,
             conflict_policy: CalendarConflictPolicy | None = None,
+            entity_ids: list[uuid.UUID] | None = None,
             request_id: str | None = None,
         ) -> dict[str, Any]:
             """Update an event and preserve Butler tags for Butler-generated entries.
@@ -2906,6 +2946,7 @@ class CalendarModule(Module):
                 "end_at": end_at,
                 "timezone": timezone,
                 "description": description,
+                "body": body,
                 "location": location,
                 "attendees": attendees,
                 "recurrence_rule": recurrence_rule,
@@ -2913,6 +2954,7 @@ class CalendarModule(Module):
                 "color_id": color_id,
                 "calendar_id": resolved_calendar_id,
                 "conflict_policy": resolved_conflict_policy,
+                "entity_ids": [str(e) for e in entity_ids] if entity_ids is not None else None,
             }
             idempotency_key, replay = await module._prepare_workspace_mutation(
                 action_type="workspace_user_update",
@@ -3085,6 +3127,7 @@ class CalendarModule(Module):
                             "end_at": end_at.isoformat() if end_at else None,
                             "timezone": timezone,
                             "description": description,
+                            "body": body,
                             "location": location,
                             "attendees": attendees,
                             "recurrence_rule": recurrence_rule,
@@ -3092,6 +3135,9 @@ class CalendarModule(Module):
                             "color_id": color_id,
                             "calendar_id": calendar_id,
                             "conflict_policy": resolved_conflict_policy,
+                            "entity_ids": (
+                                [str(e) for e in entity_ids] if entity_ids is not None else None
+                            ),
                         },
                         conflicts=conflict_result["conflicts"],
                         provider_name=provider.name,
@@ -3116,12 +3162,14 @@ class CalendarModule(Module):
                 end_at=end_at,
                 timezone=timezone,
                 description=description,
+                body=body,
                 location=location,
                 attendees=attendees,
                 recurrence_rule=recurrence_rule,
                 recurrence_scope=recurrence_scope,
                 color_id=color_id,
                 private_metadata=private_metadata,
+                entity_ids=entity_ids,
                 etag=existing_event.etag,
             )
             try:
@@ -3155,6 +3203,16 @@ class CalendarModule(Module):
                     error=error_payload.get("error"),
                 )
                 return error_payload
+            # Annotate updated event with authorship and body.
+            session_id_str = _get_session_id()
+            event = event.model_copy(
+                update={
+                    "body": body if body is not None else event.body,
+                    "source_butler": module._butler_name,
+                    "source_session_id": session_id_str,
+                    "entity_ids": entity_ids if entity_ids is not None else event.entity_ids,
+                }
+            )
             result = {
                 "status": "updated",
                 "provider": provider.name,
@@ -3547,10 +3605,19 @@ class CalendarModule(Module):
             until_at: datetime | None = None,
             enabled: bool | None = None,
             source_hint: str | None = None,
+            body: str | None = None,
+            entity_ids: list[uuid.UUID] | None = None,
             request_id: str | None = None,
             _approval_bypass: bool = False,
         ) -> dict[str, Any]:
-            """Update a butler schedule/reminder event."""
+            """Update a butler schedule/reminder event.
+
+            ``body`` is accepted for forward-compatibility and is recorded in the
+            audit log but is not written to the scheduler/reminder source tables —
+            butler events are internal and their underlying storage does not carry
+            a free-text body.  It is included here so callers have a uniform
+            interface across create/update tool families.
+            """
             normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
             normalized_request_id = module._normalize_request_id(request_id)
             action_payload = {
@@ -3564,6 +3631,8 @@ class CalendarModule(Module):
                 "until_at": until_at,
                 "enabled": enabled,
                 "source_hint": normalized_source_hint,
+                "body": body,
+                "entity_ids": [str(e) for e in entity_ids] if entity_ids is not None else None,
             }
             idempotency_key, replay = await module._prepare_workspace_mutation(
                 action_type="workspace_butler_update",
@@ -3663,6 +3732,13 @@ class CalendarModule(Module):
                     }
 
                 result["projection_freshness"] = await module._refresh_butler_projection()
+                # Update entity associations on the projection row if entity_ids provided.
+                if entity_ids is not None and source_id is not None:
+                    await module._update_butler_event_entities(
+                        source_id=source_id,
+                        origin_ref=origin_ref,
+                        entity_ids=entity_ids,
+                    )
                 await module._finalize_workspace_mutation(
                     idempotency_key=idempotency_key,
                     action_type="workspace_butler_update",
@@ -5239,10 +5315,13 @@ class CalendarModule(Module):
         visibility: str = "default",
         recurrence_rule: str | None = None,
         description: str | None = None,
+        body: str | None = None,
         location: str | None = None,
         etag: str | None = None,
         origin_updated_at: datetime | None = None,
         metadata: dict[str, Any] | None = None,
+        source_butler: str = "unknown",
+        source_session_id: str | None = None,
     ) -> uuid.UUID:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -5252,18 +5331,19 @@ class CalendarModule(Module):
         row = await pool.fetchrow(
             """
             INSERT INTO calendar_events (
-                source_id, origin_ref, title, description, location, timezone,
+                source_id, origin_ref, title, description, body, location, timezone,
                 starts_at, ends_at, all_day, status, visibility, recurrence_rule,
-                etag, origin_updated_at, metadata
+                etag, origin_updated_at, metadata, source_butler, source_session_id
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6,
-                $7, $8, $9, $10, $11, $12,
-                $13, $14, $15::jsonb
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10, $11, $12, $13,
+                $14, $15, $16::jsonb, $17, $18
             )
             ON CONFLICT (source_id, origin_ref) DO UPDATE SET
                 title = EXCLUDED.title,
                 description = EXCLUDED.description,
+                body = EXCLUDED.body,
                 location = EXCLUDED.location,
                 timezone = EXCLUDED.timezone,
                 starts_at = EXCLUDED.starts_at,
@@ -5275,6 +5355,8 @@ class CalendarModule(Module):
                 etag = EXCLUDED.etag,
                 origin_updated_at = EXCLUDED.origin_updated_at,
                 metadata = EXCLUDED.metadata,
+                source_butler = EXCLUDED.source_butler,
+                source_session_id = EXCLUDED.source_session_id,
                 updated_at = now()
             RETURNING id
             """,
@@ -5282,6 +5364,7 @@ class CalendarModule(Module):
             origin_ref,
             title,
             description,
+            body,
             location,
             timezone,
             starts_at,
@@ -5293,10 +5376,93 @@ class CalendarModule(Module):
             etag,
             origin_updated_at,
             metadata_json,
+            source_butler,
+            source_session_id,
         )
         if row is None:
             raise RuntimeError("Projection upsert did not return calendar_events.id")
         return row["id"]
+
+    async def _upsert_event_entities(
+        self,
+        *,
+        event_id: uuid.UUID,
+        entity_ids: list[uuid.UUID],
+    ) -> None:
+        """Replace entity associations for a calendar event.
+
+        Deletes all existing links for the event and inserts the new set.
+        When entity_ids is empty, this is a no-op — existing links are
+        preserved.  Callers that intend to clear all associations must avoid
+        calling this method with an empty list; explicit clearing requires a
+        direct DELETE without a subsequent INSERT.
+        """
+        if not entity_ids:
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM calendar_event_entities WHERE event_id = $1",
+                    event_id,
+                )
+                await conn.executemany(
+                    """
+                    INSERT INTO calendar_event_entities (event_id, entity_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    [(event_id, eid) for eid in entity_ids],
+                )
+
+    async def _fetch_event_entity_ids(
+        self,
+        *,
+        event_id: uuid.UUID,
+    ) -> list[uuid.UUID]:
+        """Return entity UUIDs linked to a calendar event from the junction table."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return []
+        rows = await pool.fetch(
+            "SELECT entity_id FROM calendar_event_entities WHERE event_id = $1",
+            event_id,
+        )
+        return [row["entity_id"] for row in rows]
+
+    async def _update_butler_event_entities(
+        self,
+        *,
+        source_id: uuid.UUID,
+        origin_ref: str,
+        entity_ids: list[uuid.UUID],
+    ) -> None:
+        """Update entity associations for a butler event's projection row.
+
+        Looks up the calendar_events row by (source_id, origin_ref) and replaces
+        its entity links.  Fail-open: errors are logged but do not propagate.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        try:
+            row = await pool.fetchrow(
+                "SELECT id FROM calendar_events WHERE source_id = $1 AND origin_ref = $2",
+                source_id,
+                origin_ref,
+            )
+            if row is None:
+                return
+            await self._upsert_event_entities(event_id=row["id"], entity_ids=entity_ids)
+        except Exception as exc:
+            logger.warning(
+                "_update_butler_event_entities failed (source_id=%s, origin_ref=%s): %s",
+                source_id,
+                origin_ref,
+                exc,
+            )
 
     async def _upsert_projection_instance(
         self,
@@ -5510,11 +5676,12 @@ class CalendarModule(Module):
                 "created_at": event.created_at.isoformat() if event.created_at else None,
                 "updated_at": event.updated_at.isoformat() if event.updated_at else None,
             }
-            event_id = await self._upsert_projection_event(
+            event_db_id = await self._upsert_projection_event(
                 source_id=source_id,
                 origin_ref=event.event_id,
                 title=event.title,
                 description=event.description,
+                body=event.body,
                 location=event.location,
                 timezone=event.timezone,
                 starts_at=event.start_at,
@@ -5526,9 +5693,19 @@ class CalendarModule(Module):
                 etag=event.etag,
                 origin_updated_at=event.updated_at,
                 metadata=metadata,
+                source_butler=event.source_butler or event.butler_name or self._butler_name,
+                source_session_id=event.source_session_id,
             )
+            # Only write entity links when the event carries explicit associations.
+            # Skipping on empty list prevents sync cycles from clearing links that
+            # were attached outside of this projection path (e.g. direct mutations).
+            if event.entity_ids:
+                await self._upsert_event_entities(
+                    event_id=event_db_id,
+                    entity_ids=event.entity_ids,
+                )
             await self._upsert_projection_instance(
-                event_id=event_id,
+                event_id=event_db_id,
                 source_id=source_id,
                 origin_instance_ref=f"{event.event_id}:{event.start_at.isoformat()}",
                 timezone=event.timezone,
@@ -5683,6 +5860,7 @@ class CalendarModule(Module):
                 etag=None,
                 origin_updated_at=updated_at,
                 metadata=metadata,
+                source_butler=self._butler_name,
             )
 
             # Prune stale instances outside the new window before re-projecting.
@@ -5836,6 +6014,7 @@ class CalendarModule(Module):
                 etag=None,
                 origin_updated_at=updated_at,
                 metadata=metadata,
+                source_butler=self._butler_name,
             )
 
             # Prune stale instances outside the new window before re-projecting.
@@ -7221,12 +7400,16 @@ class CalendarModule(Module):
             "end_at": event.end_at.isoformat(),
             "timezone": event.timezone,
             "description": event.description,
+            "body": event.body,
             "location": event.location,
             "attendees": [CalendarModule._attendee_to_payload(a) for a in event.attendees],
             "recurrence_rule": event.recurrence_rule,
             "color_id": event.color_id,
             "butler_generated": event.butler_generated,
             "butler_name": event.butler_name,
+            "source_butler": event.source_butler,
+            "source_session_id": event.source_session_id,
+            "entity_ids": [str(e) for e in event.entity_ids],
             "status": event.status.value if event.status is not None else None,
             "organizer": event.organizer,
             "visibility": event.visibility.value if event.visibility is not None else None,

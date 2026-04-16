@@ -43,12 +43,15 @@ from butlers.modules.calendar import (
     CalendarConfig,
     CalendarCredentialError,
     CalendarEvent,
+    CalendarEventCreate,
+    CalendarEventUpdate,
     CalendarModule,
     CalendarProvider,
     CalendarRequestError,
     _coerce_expires_in_seconds,
     _extract_google_credential_value,
     _extract_google_private_metadata,
+    _google_event_to_calendar_event,
     _google_rfc3339,
     _parse_google_datetime,
     _safe_google_error_message,
@@ -482,3 +485,242 @@ class TestGoogleHelpers:
         generated, name = _extract_google_private_metadata(extended)
         assert generated is True
         assert name == "general"
+
+
+# ---------------------------------------------------------------------------
+# Authorship and entity association fields (core_074)
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarEventModel:
+    """CalendarEvent model includes new authorship and entity fields."""
+
+    def test_calendar_event_defaults_for_new_fields(self):
+        event = _make_event()
+        assert event.body is None
+        assert event.source_butler is None
+        assert event.source_session_id is None
+        assert event.entity_ids == []
+
+    def test_calendar_event_accepts_new_fields(self):
+        eid = uuid.uuid4()
+        event = _make_event(
+            body="Extended body text",
+            source_butler="general",
+            source_session_id="sess-abc",
+            entity_ids=[eid],
+        )
+        assert event.body == "Extended body text"
+        assert event.source_butler == "general"
+        assert event.source_session_id == "sess-abc"
+        assert event.entity_ids == [eid]
+
+    def test_calendar_event_create_accepts_body_and_entity_ids(self):
+        eid = uuid.uuid4()
+        payload = CalendarEventCreate(
+            title="Meeting",
+            start_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            body="Agenda for the meeting",
+            entity_ids=[eid],
+        )
+        assert payload.body == "Agenda for the meeting"
+        assert payload.entity_ids == [eid]
+
+    def test_calendar_event_update_accepts_body_and_entity_ids(self):
+        eid = uuid.uuid4()
+        patch = CalendarEventUpdate(body="Updated body", entity_ids=[eid])
+        assert patch.body == "Updated body"
+        assert patch.entity_ids == [eid]
+
+    def test_calendar_event_update_entity_ids_none_by_default(self):
+        patch = CalendarEventUpdate(title="New title")
+        assert patch.entity_ids is None
+
+
+class TestGoogleEventParserBodyMapping:
+    """Google event parser maps description→body (core_074 spec)."""
+
+    def _minimal_google_payload(self, **overrides: object) -> dict:
+        base: dict = {
+            "id": "google-evt-1",
+            "start": {"dateTime": "2026-03-01T09:00:00Z"},
+            "end": {"dateTime": "2026-03-01T10:00:00Z"},
+        }
+        base.update(overrides)
+        return base
+
+    def test_description_is_mapped_to_body(self):
+        payload = self._minimal_google_payload(description="Meeting agenda")
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.body == "Meeting agenda"
+
+    def test_description_field_also_preserved(self):
+        payload = self._minimal_google_payload(description="Details")
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.description == "Details"
+        assert event.body == "Details"
+
+    def test_no_description_gives_none_body(self):
+        payload = self._minimal_google_payload()
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.body is None
+        assert event.description is None
+
+    def test_summary_maps_to_title(self):
+        payload = self._minimal_google_payload(summary="Team Sync")
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.title == "Team Sync"
+
+
+class TestEventToPayloadNewFields:
+    """_event_to_payload includes body, source_butler, source_session_id, entity_ids."""
+
+    def test_payload_includes_body_and_authorship(self):
+        eid = uuid.uuid4()
+        event = _make_event(
+            body="Event body text",
+            source_butler="general",
+            source_session_id="sess-xyz",
+            entity_ids=[eid],
+        )
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["body"] == "Event body text"
+        assert payload["source_butler"] == "general"
+        assert payload["source_session_id"] == "sess-xyz"
+        assert payload["entity_ids"] == [str(eid)]
+
+    def test_payload_entity_ids_empty_list_by_default(self):
+        event = _make_event()
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["entity_ids"] == []
+        assert payload["body"] is None
+        assert payload["source_butler"] is None
+
+
+class TestCreateEventAuthorship:
+    """calendar_create_event annotates events with source_butler and session_id."""
+
+    async def test_create_event_sets_source_butler_in_result(self):
+        created = _make_event(title="BUTLER: Meeting", butler_generated=True, butler_name="general")
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        # schema="general" sets the butler name via _resolve_butler_name.
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(schema="general", db_name="butlers"),
+        )
+
+        with patch("butlers.modules.calendar._get_session_id", return_value="test-sess-123"):
+            result = await mcp.tools["calendar_create_event"](
+                title="Meeting",
+                start_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+                end_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            )
+
+        assert result["status"] == "created"
+        assert result["event"]["source_butler"] == "general"
+        assert result["event"]["source_session_id"] == "test-sess-123"
+
+    async def test_create_event_with_body_stored_in_result(self):
+        created = _make_event(title="BUTLER: Meeting", butler_generated=True, butler_name="general")
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", schema="general"),
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Meeting",
+            start_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            body="Detailed event body",
+        )
+
+        assert result["status"] == "created"
+        assert result["event"]["body"] == "Detailed event body"
+
+    async def test_create_event_with_entity_ids(self):
+        eid = uuid.uuid4()
+        created = _make_event(title="BUTLER: Meeting", butler_generated=True, butler_name="general")
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", schema="general"),
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Meeting",
+            start_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            entity_ids=[eid],
+        )
+
+        assert result["status"] == "created"
+        assert str(eid) in result["event"]["entity_ids"]
+
+
+class TestEntityAssociationHelpers:
+    """_upsert_event_entities and _fetch_event_entity_ids DB helpers."""
+
+    async def test_upsert_event_entities_no_op_on_empty_list(self):
+        """No DB calls when entity_ids is empty."""
+        mod = CalendarModule()
+        mock_pool = AsyncMock()
+        mod._db = SimpleNamespace(pool=mock_pool)
+        event_id = uuid.uuid4()
+
+        await mod._upsert_event_entities(event_id=event_id, entity_ids=[])
+
+        mock_pool.acquire.assert_not_called()
+
+    async def test_fetch_event_entity_ids_no_pool_returns_empty(self):
+        """Gracefully returns [] when no DB pool is available."""
+        mod = CalendarModule()
+        mod._db = None
+        result = await mod._fetch_event_entity_ids(event_id=uuid.uuid4())
+        assert result == []
+
+    async def test_upsert_event_entities_executes_delete_and_insert(self):
+        """Transaction deletes existing entities and inserts new ones."""
+        mod = CalendarModule()
+        event_id = uuid.uuid4()
+        entity_id = uuid.uuid4()
+
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_tx = AsyncMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.transaction = MagicMock(return_value=mock_tx)
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(return_value=mock_conn)
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        await mod._upsert_event_entities(event_id=event_id, entity_ids=[entity_id])
+
+        mock_conn.execute.assert_awaited_once()
+        delete_sql = mock_conn.execute.call_args[0][0]
+        assert "DELETE FROM calendar_event_entities" in delete_sql
+        mock_conn.executemany.assert_awaited_once()
+        insert_sql = mock_conn.executemany.call_args[0][0]
+        assert "INSERT INTO calendar_event_entities" in insert_sql
