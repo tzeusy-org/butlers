@@ -147,6 +147,77 @@ async def interaction_log(
     return result
 
 
+async def interaction_log_group(
+    pool: asyncpg.Pool,
+    group_id: uuid.UUID,
+    type: str = "group_interaction",
+    direction: str = "mutual",
+    occurred_at: datetime | None = None,
+    summary: str | None = None,
+    duration_minutes: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Log an interaction with all members of a contact group in a single call.
+
+    Resolves group membership from the group_members table and fans out
+    interaction_log() calls for each member with group_size injected into
+    the fact metadata.
+
+    Returns:
+        {"logged": N, "skipped": M, "group_size": G, "status": "ok"} on success.
+        {"logged": 0, "skipped": 0, "group_size": G, "status": "group_too_large"} if >20 members.
+        {"logged": 0, "skipped": 0, "group_size": 0, "status": "ok"} if the group is empty.
+    """
+    if direction not in _VALID_DIRECTIONS:
+        raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
+
+    # Fetch up to 21 rows so we can detect oversized groups without reading unbounded rows.
+    rows = await pool.fetch(
+        "SELECT contact_id FROM group_members WHERE group_id = $1 LIMIT 21",
+        group_id,
+    )
+
+    if not rows:
+        return {"logged": 0, "skipped": 0, "group_size": 0, "status": "ok"}
+
+    if len(rows) > 20:
+        # Fetch the exact count only when the limit was hit.
+        group_size = await pool.fetchval(
+            "SELECT COUNT(*) FROM group_members WHERE group_id = $1",
+            group_id,
+        )
+        return {"logged": 0, "skipped": 0, "group_size": group_size, "status": "group_too_large"}
+
+    members = [row["contact_id"] for row in rows]
+    group_size = len(members)
+
+    logged = 0
+    skipped = 0
+    group_metadata: dict[str, Any] = {
+        "group_size": group_size,
+        "group_id": str(group_id),
+        **(metadata or {}),
+    }
+
+    for contact_id in members:
+        result = await interaction_log(
+            pool,
+            contact_id,
+            type=type,
+            summary=summary,
+            occurred_at=occurred_at,
+            direction=direction,
+            duration_minutes=duration_minutes,
+            metadata=group_metadata,
+        )
+        if result.get("skipped") == "duplicate":
+            skipped += 1
+        else:
+            logged += 1
+
+    return {"logged": logged, "skipped": skipped, "group_size": group_size, "status": "ok"}
+
+
 async def interaction_list(
     pool: asyncpg.Pool,
     contact_id: uuid.UUID,
