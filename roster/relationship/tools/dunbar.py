@@ -70,6 +70,12 @@ TIER_WEIGHT: dict[int, float] = {
 #: Tier weights including tier 1500 (0.0 = excluded from urgency).
 TIER_WEIGHTS: dict[int, float] = {**TIER_WEIGHT, 1500: 0.0}
 
+#: Direction multipliers for interaction scoring (RFC 0013, D1).
+#: Outgoing interactions are the strongest engagement signal (owner actively chose to communicate).
+DIRECTION_WEIGHT_OUTGOING: float = 10.0
+DIRECTION_WEIGHT_MUTUAL: float = 5.0
+DIRECTION_WEIGHT_INCOMING: float = 1.0
+
 #: Exponential decay lambda: ln(2) / 30-day half-life.
 _LAMBDA: float = math.log(2) / 30.0
 
@@ -151,11 +157,25 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
 
     The decay formula is::
 
-        score = sum(exp(-lambda * days_since_interaction_i))
+        score = sum(
+            exp(-lambda * days_since_interaction_i)
+            * direction_weight
+            * (1.0 / group_size)
+        )
 
     where ``lambda = ln(2) / 30`` (30-day half-life).
 
-    Spec reference: D2 — exponential decay score from interaction facts.
+    Direction weights (RFC 0013, D1):
+    - ``outgoing`` → 10.0 (owner actively communicated)
+    - ``mutual`` → 5.0 (bidirectional exchange)
+    - ``incoming`` / NULL → 1.0 (baseline; backward compatible)
+
+    Group size divisor (RFC 0013, D2):
+    - ``group_size`` in metadata → divided by that value
+    - NULL ``group_size`` → defaults to 1.0 (DM weight; backward compatible)
+    - ``group_size < 1`` is clamped to 1.0 to prevent amplification and division by zero
+
+    Spec reference: D1, D2 — direction-weighted, group-size-divided exponential decay.
     """
     rows = await pool.fetch(
         """
@@ -173,6 +193,22 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                                 0.0
                             )
                         )
+                        * CASE f.metadata->>'direction'
+                            WHEN 'outgoing' THEN $2::float
+                            WHEN 'mutual'   THEN $3::float
+                            ELSE $4::float
+                          END
+                        * (1.0 / GREATEST(
+                            COALESCE(
+                                CASE
+                                    WHEN jsonb_typeof(f.metadata->'group_size') = 'number'
+                                    THEN (f.metadata->>'group_size')::float
+                                    ELSE NULL
+                                END,
+                                1.0
+                            ),
+                            1.0
+                          ))
                         ELSE NULL
                     END
                 ),
@@ -191,6 +227,9 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         ORDER BY score DESC
         """,
         _LAMBDA,
+        DIRECTION_WEIGHT_OUTGOING,
+        DIRECTION_WEIGHT_MUTUAL,
+        DIRECTION_WEIGHT_INCOMING,
     )
     return [
         {
