@@ -84,6 +84,8 @@ node_modules/
 .beads/backup/
 .runtime/
 .claude/commands/
+.claude/worktrees
+.claude/scheduled_tasks.lock
 .logs/
 
 # Dolt database files (added by bd init)
