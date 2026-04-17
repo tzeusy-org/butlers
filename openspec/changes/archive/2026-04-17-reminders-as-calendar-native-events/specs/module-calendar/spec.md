@@ -196,7 +196,7 @@ The calendar module's `tick()` method SHALL accept a required `source_butler` pa
 
 ### Requirement: Butler Event Management Tools
 
-The module registers MCP tools for managing butler-owned workspace events (scheduled tasks projected as calendar entries): `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`. Reminder management is handled by the dedicated `reminder_create`, `reminder_list`, and `reminder_dismiss` tools.
+The module SHALL register MCP tools for managing butler-owned workspace events (scheduled tasks projected as calendar entries): `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`. Reminder management SHALL be handled by the dedicated `reminder_create`, `reminder_list`, and `reminder_dismiss` tools.
 
 #### Scenario: Create butler event
 
@@ -226,7 +226,7 @@ The module registers MCP tools for managing butler-owned workspace events (sched
 
 ### Requirement: [TARGET-STATE] Calendar Sync and Projection
 
-Provider sync with incremental/full modes and a unified projection table for fast dashboard queries. Reminders are native calendar events and do not require separate projection logic.
+Provider sync SHALL support incremental/full modes and MUST maintain a unified projection table for fast dashboard queries. Reminders SHALL be treated as native calendar events and SHALL NOT require separate projection logic.
 
 #### Scenario: Incremental sync via sync token
 
@@ -249,7 +249,7 @@ Provider sync with incremental/full modes and a unified projection table for fas
 
 ### Requirement: Dual-Lane Ownership and Authoritativeness
 
-The projection uses a dual-lane model to separate event authority. Each `calendar_sources` row has a `lane` field: `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.
+The projection SHALL use a dual-lane model to separate event authority. Each `calendar_sources` row SHALL have a `lane` field whose value MUST be `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.
 
 - **`lane="user"`** — Provider-synced external events (meetings, appointments created by humans on Google Calendar). Google is the source of truth.
 - **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's `calendar_events` table is the source of truth. These are pushed outbound to Google for visibility but Google is never read back as authoritative for them.

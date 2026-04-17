@@ -197,6 +197,47 @@ When two entities are merged via `entity_merge()`, the target entity MUST inheri
 
 ---
 
+### Requirement: Calendar event entity junction table
+
+A `calendar_event_entities` junction table SHALL exist in each butler's calendar-owning schema to link calendar events to entities. This table enables any calendar event (reminder, scheduled task, or provider-synced event) to be associated with zero or more entities in `public.entities`.
+
+```sql
+CREATE TABLE {schema}.calendar_event_entities (
+    event_id UUID NOT NULL REFERENCES {schema}.calendar_events(id) ON DELETE CASCADE,
+    entity_id UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
+    PRIMARY KEY (event_id, entity_id)
+);
+
+CREATE INDEX idx_calendar_event_entities_entity
+ON {schema}.calendar_event_entities(entity_id);
+```
+
+Both foreign keys use `ON DELETE CASCADE` — deleting an event removes all its entity associations, and deleting an entity removes all its event associations without deleting the events themselves.
+
+**Implementation note (core_076):** `alembic/versions/core/core_076_calendar_event_columns_and_entities.py` creates this table in every butler schema that has a `calendar_events` table. The junction is read on `calendar_get_event`/`calendar_list_events` and written by `calendar_create_event`/`calendar_update_event`/`reminder_create`.
+
+#### Scenario: Entity deletion preserves calendar events
+
+- **WHEN** an entity is deleted from `public.entities`
+- **THEN** all rows in `calendar_event_entities` referencing that entity SHALL be deleted via CASCADE
+- **AND** the `calendar_events` rows themselves SHALL NOT be deleted — they lose the association but remain as events
+
+#### Scenario: Entity merge updates event associations
+
+- **WHEN** entity A is merged into entity B via `entity_merge(source=A, target=B)`
+- **THEN** `calendar_event_entities` rows with `entity_id = A` SHALL be re-pointed to `entity_id = B`
+- **AND** duplicate `(event_id, entity_id)` pairs SHALL be deduplicated (if event was already linked to both A and B, keep one row)
+
+**Implementation note:** `_repoint_calendar_event_entities()` in `src/butlers/modules/memory/tools/entities.py` performs the re-point inside the merge transaction, using `ON CONFLICT (event_id, entity_id) DO NOTHING` for deduplication.
+
+#### Scenario: Dashboard entity detail shows associated events
+
+- **WHEN** the dashboard entity detail page is rendered for entity X
+- **THEN** a query joining `calendar_event_entities` with `calendar_events` filtered by `entity_id = X` SHALL return all calendar events associated with that entity
+- **AND** events SHALL be displayed with title, start time, recurrence status, and source butler
+
+---
+
 ### Requirement: Roles not exposed to runtime MCP tools
 
 The `roles` field on entities MUST NOT be writable by runtime MCP tool callers. The `entity_create` Python function accepts an internal `roles` parameter (for daemon bootstrap), but the MCP tool registration MUST NOT expose it. The `entity_update` MCP tool MUST NOT accept `roles`.
