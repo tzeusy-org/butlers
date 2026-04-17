@@ -131,14 +131,15 @@ def _make_request_redact_hook(api_key: str) -> Any:
 
     The hook modifies the request URL in-place before it is sent, replacing the
     API key value with ``[REDACTED]`` so it never appears in httpx logs.
+
+    Must be ``async`` because ``httpx.AsyncClient`` awaits every registered event
+    hook; a sync hook returns ``None`` and triggers ``TypeError: object NoneType
+    can't be used in 'await' expression``.
     """
 
-    def _redact_request(request: httpx.Request) -> None:
+    async def _redact_request(request: httpx.Request) -> None:
         if not api_key:
             return
-        # Replace api_key value in the query string if present.
-        # Use the params dict directly — more robust than substring-matching
-        # the raw URL string, which could yield false positives.
         params = dict(request.url.params)
         if "key" in params and params["key"] == api_key:
             params["key"] = _REDACTED
