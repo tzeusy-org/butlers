@@ -5744,8 +5744,11 @@ class CalendarModule(Module):
         if pool is None:
             raise RuntimeError("Projection writes require a database pool")
 
+        normalized_source_butler = _normalize_optional_string(source_butler)
+        if normalized_source_butler and normalized_source_butler.lower() == "unknown":
+            normalized_source_butler = None
         effective_source_butler = (
-            _normalize_optional_string(source_butler)
+            normalized_source_butler
             or _normalize_optional_string(self._butler_name)
             or DEFAULT_BUTLER_NAME
         )

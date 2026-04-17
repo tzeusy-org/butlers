@@ -1152,3 +1152,32 @@ class TestCalendarModuleTick:
         updated_ids = {call[0][2] for call in execute_calls}
         assert instance_id_1 in updated_ids
         assert instance_id_2 in updated_ids
+
+
+class TestProjectionEventHelpers:
+    """Projection event writes normalize required authorship fields."""
+
+    @pytest.mark.parametrize("provided_source_butler", [None, "", "   ", "unknown"])
+    async def test_upsert_projection_event_falls_back_to_module_butler_name(
+        self, provided_source_butler: str | None
+    ) -> None:
+        mod = CalendarModule()
+        mod._butler_name = "finance"
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow.return_value = {"id": uuid.uuid4()}
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        await mod._upsert_projection_event(
+            source_id=uuid.uuid4(),
+            origin_ref="task-1",
+            title="Scheduled task",
+            timezone="UTC",
+            starts_at=datetime(2026, 4, 16, 6, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 4, 16, 6, 15, tzinfo=UTC),
+            status="confirmed",
+            source_butler=provided_source_butler,
+        )
+
+        assert mock_pool.fetchrow.await_count == 1
+        fetchrow_args = mock_pool.fetchrow.await_args.args
+        assert fetchrow_args[-2] == "finance"
