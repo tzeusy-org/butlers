@@ -249,3 +249,109 @@ async def test_claude_health_probe_not_authenticated_or_unavailable():
     with patch("butlers.cli_auth.registry.shutil.which", return_value=None):
         result2 = await probe_provider(provider, credential_store=None)
     assert result2.state == AuthHealthState.unavailable
+
+
+# ---------------------------------------------------------------------------
+# Codex backend probe — catches server-side refresh-token revocation that
+# `codex login status` alone can't see.
+# ---------------------------------------------------------------------------
+
+
+def _fake_codex_auth_file(tmp_path: Path, exp_offset: int = 86400) -> Path:
+    """Write a minimal ~/.codex/auth.json with a JWT that expires in the future."""
+    import base64 as _b64
+    import json as _json
+    import time as _time
+
+    header = _b64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    payload_json = _json.dumps({"exp": int(_time.time()) + exp_offset}).encode()
+    payload = _b64.urlsafe_b64encode(payload_json).rstrip(b"=").decode()
+    access_token = f"{header}.{payload}.sig"
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(_json.dumps({"tokens": {"access_token": access_token}}))
+    return auth_path
+
+
+async def test_codex_backend_probe_flags_revoked_token(tmp_path):
+    """A 401 from the backend downgrades the provider to not_authenticated."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    auth_path = _fake_codex_auth_file(tmp_path)
+
+    async def fake_subprocess(*_args, **_kwargs):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"Logged in using ChatGPT\n", b""))
+        return proc
+
+    class _Resp:
+        status_code = 401
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            return _Resp()
+
+    import dataclasses as _dc
+
+    codex = _dc.replace(PROVIDERS["codex"], token_path=auth_path)
+
+    with (
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
+        patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
+        patch("butlers.cli_auth.health.httpx.AsyncClient", _FakeClient),
+    ):
+        result = await probe_provider(codex)
+
+    assert result.state == AuthHealthState.not_authenticated
+    assert "401" in (result.detail or "")
+
+
+async def test_codex_backend_probe_network_error_keeps_authenticated(tmp_path):
+    """Transient network failure on the backend probe must not red-flag Codex."""
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    auth_path = _fake_codex_auth_file(tmp_path)
+
+    async def fake_subprocess(*_args, **_kwargs):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"Logged in using ChatGPT\n", b""))
+        return proc
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **k):
+            import httpx as _httpx
+
+            raise _httpx.ConnectError("network down")
+
+    import dataclasses as _dc
+
+    codex = _dc.replace(PROVIDERS["codex"], token_path=auth_path)
+
+    with (
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
+        patch("butlers.cli_auth.health.asyncio.create_subprocess_exec", fake_subprocess),
+        patch("butlers.cli_auth.health.httpx.AsyncClient", _FakeClient),
+    ):
+        result = await probe_provider(codex)
+
+    assert result.state == AuthHealthState.authenticated

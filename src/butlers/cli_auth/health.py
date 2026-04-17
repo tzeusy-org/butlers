@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+import httpx
+
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.cli_auth.session import _strip_ansi
 from butlers.credential_store import CredentialStore
@@ -23,6 +25,15 @@ from butlers.credential_store import CredentialStore
 logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT = 15  # seconds
+
+# `codex login status` only inspects the file on disk, so it reports
+# "Logged in" even after OpenAI has revoked the refresh token server-side
+# (e.g. refresh_token_reused). Hitting the models endpoint with the stored
+# access token is the cheapest way to catch that: a 401 here means the next
+# real Codex invocation will also 401 — which is the state the dashboard
+# needs to surface.
+_CODEX_BACKEND_PROBE_URL = "https://chatgpt.com/backend-api/codex/models?client_version=0.118.0"
+_CODEX_BACKEND_PROBE_TIMEOUT = 5.0  # seconds
 
 
 def _check_jwt_expiry(token_path: Path) -> tuple[bool, str | None]:
@@ -55,6 +66,39 @@ def _check_jwt_expiry(token_path: Path) -> tuple[bool, str | None]:
     except Exception:
         # Can't parse → don't block the probe
         return False, None
+
+
+async def _probe_codex_backend(token_path: Path) -> tuple[bool, str | None]:
+    """Validate the stored Codex access token against OpenAI's backend.
+
+    Returns ``(revoked, detail)``. ``revoked=True`` means OpenAI rejected the
+    token with 401 — the local file is stale and re-login is required.
+    ``revoked=False`` covers both success and transient failures (network
+    blips, non-401 HTTP errors) — we don't want a flaky probe to red-flag a
+    provider that's actually fine.
+    """
+    try:
+        data = json.loads(token_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False, None
+
+    access_token = (data.get("tokens") or {}).get("access_token")
+    if not access_token:
+        return False, None
+
+    try:
+        async with httpx.AsyncClient(timeout=_CODEX_BACKEND_PROBE_TIMEOUT) as client:
+            resp = await client.get(
+                _CODEX_BACKEND_PROBE_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+    except httpx.HTTPError as exc:
+        logger.debug("Codex backend probe network error: %s", exc)
+        return False, None
+
+    if resp.status_code == 401:
+        return True, "OpenAI rejected the stored token (401) — re-login required."
+    return False, None
 
 
 class AuthHealthState(StrEnum):
@@ -185,6 +229,17 @@ async def probe_provider(
                         provider=provider.name,
                         state=AuthHealthState.not_authenticated,
                         detail=expiry_detail or "Token expired.",
+                    )
+            # For Codex, also validate the token against OpenAI's backend —
+            # `codex login status` is file-only and misses server-side refresh
+            # token revocation.
+            if provider.name == "codex" and provider.token_path is not None:
+                revoked, revoked_detail = await _probe_codex_backend(provider.token_path)
+                if revoked:
+                    return AuthHealthResult(
+                        provider=provider.name,
+                        state=AuthHealthState.not_authenticated,
+                        detail=revoked_detail or "Backend rejected stored token.",
                     )
             return AuthHealthResult(
                 provider=provider.name,
