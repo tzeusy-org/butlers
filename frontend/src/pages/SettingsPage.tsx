@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { Loader2, Plug, Trash2 } from "lucide-react";
+import { AlertTriangle, Loader2, Plug, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -710,6 +710,60 @@ function OllamaProviderFormDialog({
 }
 
 // ---------------------------------------------------------------------------
+// CLI Auth alert banner
+// ---------------------------------------------------------------------------
+
+function CLIAuthAlertBanner() {
+  const { data: providers } = useCLIAuthProviders();
+
+  const problematic =
+    providers?.filter(
+      (p) => p.health === "not_authenticated" || p.health === "probe_failed",
+    ) ?? [];
+
+  if (problematic.length === 0) return null;
+
+  function scrollToCard() {
+    const el = document.getElementById("cli-auth-card");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-3 rounded-md border border-red-400 bg-red-50 p-4 text-red-900 shadow-sm dark:border-red-700 dark:bg-red-950/40 dark:text-red-100"
+    >
+      <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
+      <div className="flex-1 space-y-1">
+        <p className="text-sm font-semibold">
+          CLI runtime authentication required
+        </p>
+        <p className="text-sm">
+          {problematic.length === 1
+            ? `${problematic[0].display_name} is not authenticated${
+                problematic[0].health_detail
+                  ? ` — ${problematic[0].health_detail}`
+                  : "."
+              }`
+            : `${problematic.length} CLI runtimes need re-authentication: ${problematic
+                .map((p) => p.display_name)
+                .join(", ")}.`}{" "}
+          Butler runtimes using these tools will fail until you re-login.
+        </p>
+      </div>
+      <Button
+        size="sm"
+        variant="destructive"
+        onClick={scrollToCard}
+        className="shrink-0"
+      >
+        Fix now
+      </Button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // CLI Auth card
 // ---------------------------------------------------------------------------
 
@@ -791,6 +845,8 @@ export default function SettingsPage() {
           System configuration and dashboard preferences.
         </p>
       </div>
+
+      <CLIAuthAlertBanner />
 
       <ModelCatalogCard />
 
