@@ -122,30 +122,41 @@ def _exponential_backoff(
 
 
 # ---------------------------------------------------------------------------
-# API key redaction helpers for httpx event hooks
+# API key redaction via logging filter
 # ---------------------------------------------------------------------------
 
 
-def _make_request_redact_hook(api_key: str) -> Any:
-    """Return an httpx request event hook that redacts the API key from the URL.
+class _APIKeyRedactingFilter(logging.Filter):
+    """Redact the Steam API key from ``httpx`` log records.
 
-    The hook modifies the request URL in-place before it is sent, replacing the
-    API key value with ``[REDACTED]`` so it never appears in httpx logs.
+    httpx logs outgoing requests at INFO level with the full URL — including
+    the ``key=<api_key>`` query parameter. Attach this filter to the ``httpx``
+    logger for the lifetime of a client so the key is replaced with
+    ``[REDACTED]`` in any record that would otherwise leak it.
 
-    Must be ``async`` because ``httpx.AsyncClient`` awaits every registered event
-    hook; a sync hook returns ``None`` and triggers ``TypeError: object NoneType
-    can't be used in 'await' expression``.
+    Note: we must NOT redact via an httpx *request event hook*, because that
+    modifies the actual outgoing request (Steam then returns HTTP 403 because
+    it sees ``key=[REDACTED]``). Redaction belongs at the log layer only.
     """
 
-    async def _redact_request(request: httpx.Request) -> None:
-        if not api_key:
-            return
-        params = dict(request.url.params)
-        if "key" in params and params["key"] == api_key:
-            params["key"] = _REDACTED
-            request.url = request.url.copy_with(params=params)
+    def __init__(self, api_key: str) -> None:
+        super().__init__()
+        self._api_key = api_key
 
-    return _redact_request
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        if not self._api_key:
+            return True
+        if isinstance(record.msg, str) and self._api_key in record.msg:
+            record.msg = record.msg.replace(self._api_key, _REDACTED)
+        if record.args:
+            redacted_args = tuple(
+                arg.replace(self._api_key, _REDACTED)
+                if isinstance(arg, str) and self._api_key in arg
+                else arg
+                for arg in record.args
+            )
+            record.args = redacted_args
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +214,7 @@ class SteamAPIClient:
         self._backoff_max_s = backoff_max_s
         self._cache_ttl_s = cache_ttl_s
         self._rate_limit_attempt: int = 0  # tracks consecutive rate-limit hits
+        self._log_filter: _APIKeyRedactingFilter | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -211,14 +223,16 @@ class SteamAPIClient:
     async def open(self) -> None:
         """Open the HTTP client if not already open."""
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(
-                event_hooks={
-                    "request": [_make_request_redact_hook(self._api_key)],
-                }
-            )
+            self._http_client = httpx.AsyncClient()
+        if self._log_filter is None and self._api_key:
+            self._log_filter = _APIKeyRedactingFilter(self._api_key)
+            logging.getLogger("httpx").addFilter(self._log_filter)
 
     async def close(self) -> None:
         """Close the HTTP client if we own it."""
+        if self._log_filter is not None:
+            logging.getLogger("httpx").removeFilter(self._log_filter)
+            self._log_filter = None
         if self._owns_client and self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
