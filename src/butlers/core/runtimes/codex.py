@@ -769,8 +769,11 @@ class CodexAdapter(RuntimeAdapter):
         """Run the Codex CLI subprocess and parse its output."""
         proc = None
         try:
+            # Detach stdin so Codex does not treat inherited daemon pipes as
+            # additional prompt input ("Reading additional input from stdin...").
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env if env else None,
