@@ -31,6 +31,7 @@ Design notes
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -396,7 +397,7 @@ async def create_steam_account(
                 profile_url,
                 avatar_url,
                 is_primary,
-                account_metadata,
+                json.dumps(account_metadata),
             )
 
             # Persist API key if provided.
