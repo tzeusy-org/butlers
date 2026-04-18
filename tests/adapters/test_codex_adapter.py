@@ -11,6 +11,7 @@ Unique behaviors not in test_adapter_contract.py:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -181,6 +182,7 @@ async def test_invoke_behaviors():
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
     assert mock_sub.call_args[0][:2] == ("/usr/bin/codex", "exec")
+    assert mock_sub.call_args[1]["stdin"] is asyncio.subprocess.DEVNULL
 
     # HOME injection with mcp servers
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
