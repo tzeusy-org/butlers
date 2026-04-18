@@ -2522,28 +2522,44 @@ class CalendarModule(Module):
     def _coerce_config(config: Any) -> CalendarConfig:
         return config if isinstance(config, CalendarConfig) else CalendarConfig(**(config or {}))
 
+    def _resolve_effective_butler_name(self, candidate: str | None = None) -> str:
+        """Resolve the current butler identity from explicit, module, or DB context.
+
+        Precedence:
+        1. explicit ``candidate`` (trimmed, non-empty)
+        2. already-set ``self._butler_name`` if it is a concrete identity
+           (i.e. not the ``DEFAULT_BUTLER_NAME`` sentinel)
+        3. DB schema / db_name fallback (matches legacy ``register_tools`` logic)
+        4. ``self._butler_name`` if it is the default sentinel
+        5. ``DEFAULT_BUTLER_NAME``
+        """
+        candidate_normalized = _normalize_optional_string(candidate)
+        if candidate_normalized is not None and candidate_normalized.lower() != "unknown":
+            return candidate_normalized
+
+        current_normalized = _normalize_optional_string(getattr(self, "_butler_name", None))
+        if current_normalized is not None and current_normalized != DEFAULT_BUTLER_NAME:
+            return current_normalized
+
+        db = getattr(self, "_db", None)
+        if db is not None:
+            schema_normalized = _normalize_optional_string(getattr(db, "schema", None))
+            if schema_normalized is not None:
+                return schema_normalized
+
+            db_name_normalized = _normalize_optional_string(getattr(db, "db_name", None))
+            if db_name_normalized is not None:
+                return db_name_normalized.removeprefix("butler_") or DEFAULT_BUTLER_NAME
+
+        if current_normalized is not None:
+            return current_normalized
+
+        return DEFAULT_BUTLER_NAME
+
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         self._config = self._coerce_config(config)
-        if butler_name:
-            self._butler_name = butler_name
-        else:
-            # Legacy fallback for tests that do not supply butler_name.
-            schema = getattr(db, "schema", None)
-            if isinstance(schema, str) and schema.strip():
-                self._butler_name = schema.strip()
-            else:
-                db_name = getattr(db, "db_name", None)
-                if isinstance(db_name, str):
-                    normalized = db_name.strip()
-                    if normalized:
-                        self._butler_name = (
-                            normalized.removeprefix("butler_") or DEFAULT_BUTLER_NAME
-                        )
-                    else:
-                        self._butler_name = DEFAULT_BUTLER_NAME
-                else:
-                    self._butler_name = DEFAULT_BUTLER_NAME
         self._db = db
+        self._butler_name = self._resolve_effective_butler_name(butler_name)
         module = self
 
         def _tool(group: str):
@@ -5034,6 +5050,7 @@ class CalendarModule(Module):
         """
         self._config = self._coerce_config(config)
         self._db = db
+        self._butler_name = self._resolve_effective_butler_name()
         self._credential_store = credential_store
 
         provider_cls = self._PROVIDER_CLASSES.get(self._config.provider)
@@ -5744,14 +5761,7 @@ class CalendarModule(Module):
         if pool is None:
             raise RuntimeError("Projection writes require a database pool")
 
-        normalized_source_butler = _normalize_optional_string(source_butler)
-        if normalized_source_butler and normalized_source_butler.lower() == "unknown":
-            normalized_source_butler = None
-        effective_source_butler = (
-            normalized_source_butler
-            or _normalize_optional_string(self._butler_name)
-            or DEFAULT_BUTLER_NAME
-        )
+        effective_source_butler = self._resolve_effective_butler_name(source_butler)
         metadata_json = self._encode_jsonb(metadata or {})
         row = await pool.fetchrow(
             """
@@ -7298,6 +7308,7 @@ class CalendarModule(Module):
 
         session_id_str = get_current_runtime_session_id()
         origin_ref = str(uuid.uuid4())
+        resolved_source_butler = self._resolve_effective_butler_name()
 
         row = await pool.fetchrow(
             """
@@ -7322,7 +7333,7 @@ class CalendarModule(Module):
             starts_at,
             ends_at,
             recurrence_rule,
-            self._butler_name,
+            resolved_source_butler,
             session_id_str,
         )
         if row is None:
