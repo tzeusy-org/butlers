@@ -5762,6 +5762,7 @@ class CalendarModule(Module):
             raise RuntimeError("Projection writes require a database pool")
 
         effective_source_butler = self._resolve_effective_butler_name(source_butler)
+        normalized_source_session_id = _normalize_optional_string(source_session_id)
         metadata_json = self._encode_jsonb(metadata or {})
         row = await pool.fetchrow(
             """
@@ -5812,7 +5813,7 @@ class CalendarModule(Module):
             origin_updated_at,
             metadata_json,
             effective_source_butler,
-            source_session_id,
+            normalized_source_session_id,
         )
         if row is None:
             raise RuntimeError("Projection upsert did not return calendar_events.id")

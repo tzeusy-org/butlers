@@ -373,6 +373,13 @@ Provider sync with incremental/full modes and a unified projection table for fas
 - **WHEN** the butler has scheduled tasks with cron expressions
 - **THEN** a periodic background task projects them as `SOURCE_KIND_INTERNAL_SCHEDULER` entries
 
+#### Scenario: Projection authorship fields normalize missing provenance
+
+- **WHEN** `_upsert_projection_event` writes a projection row and `source_butler` is null, blank, or the sentinel `"unknown"`
+- **THEN** the write SHALL fall back to the module's canonical butler name and finally `DEFAULT_BUTLER_NAME` before inserting into `calendar_events.source_butler`
+- **AND** `source_session_id` SHALL be stripped and blank values SHALL be stored as `NULL`
+- **BECAUSE** projection authorship columns are part of the durable calendar event provenance contract and must remain canonical while satisfying the non-null database constraint
+
 ### Requirement: Dual-Lane Ownership and Authoritativeness
 
 The projection uses a dual-lane model to separate event authority. Each `calendar_sources` row has a `lane` field: `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.

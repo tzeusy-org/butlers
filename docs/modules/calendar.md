@@ -90,6 +90,11 @@ Projection sources:
 - **Scheduled tasks** -- butler cron schedules projected as calendar entries.
 - **Butler reminders** -- reminder-type events from the butler's domain.
 
+Projection authorship is normalized before write-through: blank or sentinel
+`source_butler` values fall back to the module's canonical butler name (and
+then `DEFAULT_BUTLER_NAME`), while blank `source_session_id` values are stored
+as `NULL`.
+
 Projection status is tracked as `fresh`, `stale`, or `failed`.
 
 ## Rate Limiting

@@ -39,6 +39,7 @@ from butlers.modules.base import Module
 from butlers.modules.calendar import (
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
+    DEFAULT_BUTLER_NAME,
     AttendeeInfo,
     CalendarConfig,
     CalendarCredentialError,
@@ -1181,3 +1182,51 @@ class TestProjectionEventHelpers:
         assert mock_pool.fetchrow.await_count == 1
         fetchrow_args = mock_pool.fetchrow.await_args.args
         assert fetchrow_args[-2] == "finance"
+
+    async def test_upsert_projection_event_uses_default_butler_when_names_are_blank(
+        self,
+    ) -> None:
+        mod = CalendarModule()
+        mod._butler_name = "  "
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow.return_value = {"id": uuid.uuid4()}
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        await mod._upsert_projection_event(
+            source_id=uuid.uuid4(),
+            origin_ref="reminder-1",
+            title="Reminder",
+            timezone="UTC",
+            starts_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 3, 1, 9, 15, tzinfo=UTC),
+            status="confirmed",
+            source_butler=" ",
+        )
+
+        fetchrow_args = mock_pool.fetchrow.await_args.args
+        assert fetchrow_args[-2] == DEFAULT_BUTLER_NAME
+
+    async def test_upsert_projection_event_normalizes_blank_source_session_id(
+        self,
+    ) -> None:
+        mod = CalendarModule()
+        mod._butler_name = "general"
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow.return_value = {"id": uuid.uuid4()}
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        await mod._upsert_projection_event(
+            source_id=uuid.uuid4(),
+            origin_ref="sched-1",
+            title="Scheduled task",
+            timezone="UTC",
+            starts_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            status="confirmed",
+            source_butler=None,
+            source_session_id="  ",
+        )
+
+        fetchrow_args = mock_pool.fetchrow.await_args.args
+        assert fetchrow_args[-2] == "general"
+        assert fetchrow_args[-1] is None
