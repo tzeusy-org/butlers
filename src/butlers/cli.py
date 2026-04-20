@@ -463,16 +463,59 @@ _PORT_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
 _PORT_RETRY_MAX_DELAY = 300.0  # cap at 5 minutes
 _PORT_RETRY_MAX_ATTEMPTS = 5  # skip butler after this many retries
 
+_DB_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
+_DB_RETRY_MAX_DELAY = 30.0  # cap per-attempt backoff
+_DB_RETRY_MAX_ATTEMPTS = 10  # ~140s total budget — covers Tailscale/DB blips
+
 # Butlers that must start before the alphabetical bulk.  Order matters:
 # switchboard is the routing backbone — every other butler needs it for notify().
 _PRIORITY_BUTLERS = ("switchboard",)
 
 
-def _is_port_conflict(exc: Exception) -> bool:
+def _is_port_conflict(exc: BaseException) -> bool:
     """Return True if *exc* is an OSError caused by EADDRINUSE."""
     import errno
 
     return isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EADDRINUSE
+
+
+def _is_db_unreachable(exc: BaseException) -> bool:
+    """Return True if *exc* looks like a transient DB-connect failure.
+
+    Walks the ``__cause__``/``__context__`` chain so wrapped errors (e.g.
+    asyncpg wrapping an asyncio ``OSError``) are still detected.  Matches:
+
+    - ``ConnectionRefusedError`` / ``ConnectionResetError``
+    - ``socket.gaierror`` (DNS failure)
+    - ``TimeoutError`` / ``asyncio.TimeoutError``
+    - ``OSError`` with a transient errno (ECONNREFUSED, ENETUNREACH,
+      EHOSTUNREACH, ETIMEDOUT, ECONNRESET, EPIPE)
+
+    ``EADDRINUSE`` is deliberately excluded — that's the port-conflict path.
+    """
+    import errno as _errno
+
+    transient_errnos = {
+        _errno.ECONNREFUSED,
+        _errno.ENETUNREACH,
+        _errno.EHOSTUNREACH,
+        _errno.ETIMEDOUT,
+        _errno.ECONNRESET,
+        _errno.EPIPE,
+    }
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, ConnectionRefusedError | ConnectionResetError | socket.gaierror):
+            return True
+        if isinstance(cur, TimeoutError):
+            return True
+        if isinstance(cur, OSError) and getattr(cur, "errno", None) in transient_errnos:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _ordered_configs(configs: dict[str, Path]) -> list[tuple[str, Path]]:
@@ -501,9 +544,12 @@ async def _start_all(configs: dict[str, Path]) -> None:
 
     # Start daemons: priority butlers first, then alphabetical.
     # Port conflicts retry up to _PORT_RETRY_MAX_ATTEMPTS before skipping.
+    # Transient DB-connect failures retry up to _DB_RETRY_MAX_ATTEMPTS — covers
+    # short-lived Tailscale/DB blips during startup.
     for name, config_dir in _ordered_configs(configs):
         started = False
-        attempt = 0
+        port_attempt = 0
+        db_attempt = 0
         while not started:
             daemon = ButlerDaemon(config_dir)
             try:
@@ -512,18 +558,32 @@ async def _start_all(configs: dict[str, Path]) -> None:
                 click.echo(f"  started: {name}")
                 started = True
             except Exception as exc:
-                if _is_port_conflict(exc) and attempt < _PORT_RETRY_MAX_ATTEMPTS:
-                    delay = min(_PORT_RETRY_BASE_DELAY * (2**attempt), _PORT_RETRY_MAX_DELAY)
-                    attempt += 1
+                if _is_port_conflict(exc) and port_attempt < _PORT_RETRY_MAX_ATTEMPTS:
+                    delay = min(_PORT_RETRY_BASE_DELAY * (2**port_attempt), _PORT_RETRY_MAX_DELAY)
+                    port_attempt += 1
                     click.echo(
                         f"  {name}: port in use, retrying in {delay:.0f}s"
-                        f" (attempt {attempt}/{_PORT_RETRY_MAX_ATTEMPTS})..."
+                        f" (attempt {port_attempt}/{_PORT_RETRY_MAX_ATTEMPTS})..."
                     )
                     await asyncio.sleep(delay)
                 elif _is_port_conflict(exc):
                     click.echo(
                         f"  skipped: {name}: port still in use after"
                         f" {_PORT_RETRY_MAX_ATTEMPTS} attempts"
+                    )
+                    break
+                elif _is_db_unreachable(exc) and db_attempt < _DB_RETRY_MAX_ATTEMPTS:
+                    delay = min(_DB_RETRY_BASE_DELAY * (2**db_attempt), _DB_RETRY_MAX_DELAY)
+                    db_attempt += 1
+                    click.echo(
+                        f"  {name}: DB unreachable ({exc}), retrying in {delay:.0f}s"
+                        f" (attempt {db_attempt}/{_DB_RETRY_MAX_ATTEMPTS})..."
+                    )
+                    await asyncio.sleep(delay)
+                elif _is_db_unreachable(exc):
+                    click.echo(
+                        f"  failed: {name}: DB unreachable after"
+                        f" {_DB_RETRY_MAX_ATTEMPTS} attempts: {exc}"
                     )
                     break
                 else:

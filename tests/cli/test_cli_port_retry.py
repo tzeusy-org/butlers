@@ -1,13 +1,19 @@
-"""Tests for port-conflict retry logic in _start_all."""
+"""Tests for port-conflict and DB-unreachable retry logic in _start_all."""
 
 import asyncio
 import errno
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.cli import _is_port_conflict, _ordered_configs, _start_all
+from butlers.cli import (
+    _is_db_unreachable,
+    _is_port_conflict,
+    _ordered_configs,
+    _start_all,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -17,6 +23,35 @@ def test_is_port_conflict():
     assert _is_port_conflict(OSError(errno.EADDRINUSE, "Address already in use")) is True
     assert _is_port_conflict(OSError(errno.EACCES, "Permission denied")) is False
     assert _is_port_conflict(RuntimeError("boom")) is False
+
+
+def test_is_db_unreachable_direct():
+    """Transient connection errors are detected."""
+    assert _is_db_unreachable(ConnectionRefusedError(errno.ECONNREFUSED, "refused")) is True
+    assert _is_db_unreachable(OSError(errno.ECONNREFUSED, "Connect call failed")) is True
+    assert _is_db_unreachable(OSError(errno.ETIMEDOUT, "timed out")) is True
+    assert _is_db_unreachable(OSError(errno.ENETUNREACH, "unreachable")) is True
+    assert _is_db_unreachable(socket.gaierror(-2, "nodename nor servname provided")) is True
+    assert _is_db_unreachable(TimeoutError("slow")) is True
+
+
+def test_is_db_unreachable_excludes_eaddrinuse():
+    """Port conflicts are the port-retry path, not the DB-retry path."""
+    assert _is_db_unreachable(OSError(errno.EADDRINUSE, "Address already in use")) is False
+    assert _is_db_unreachable(OSError(errno.EACCES, "Permission denied")) is False
+    assert _is_db_unreachable(RuntimeError("unrelated")) is False
+
+
+def test_is_db_unreachable_walks_cause_chain():
+    """Wrapped OSError in __cause__ is still detected."""
+    inner = OSError(errno.ECONNREFUSED, "refused")
+    try:
+        try:
+            raise inner
+        except OSError as e:
+            raise RuntimeError("wrapped") from e
+    except RuntimeError as outer:
+        assert _is_db_unreachable(outer) is True
 
 
 class TestStartAllPortRetry:
@@ -126,6 +161,87 @@ class TestStartAllPortRetry:
                     await _start_all(configs)
 
             assert call_count == 1
+
+
+class TestStartAllDbRetry:
+    @pytest.fixture
+    def configs(self, tmp_path):
+        d = tmp_path / "test_butler"
+        d.mkdir()
+        (d / "butler.toml").write_text('[butler]\nname = "test_butler"\nport = 19999\n')
+        return {"test_butler": d}
+
+    @pytest.mark.asyncio
+    async def test_retries_on_db_unreachable_then_succeeds(self, configs):
+        """Butler starts successfully after transient DB-connect failure."""
+        call_count = 0
+
+        async def _mock_start(self):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionRefusedError(
+                    errno.ECONNREFUSED, "Connect call failed ('100.105.147.86', 5432)"
+                )
+
+        with (
+            patch("butlers.daemon.ButlerDaemon") as MockDaemon,
+            patch("butlers.cli._DB_RETRY_BASE_DELAY", 0.01),
+            patch("butlers.cli._DB_RETRY_MAX_DELAY", 0.05),
+        ):
+            instance = AsyncMock()
+            instance.start = AsyncMock(side_effect=_mock_start.__get__(instance))
+            instance.shutdown = AsyncMock()
+            MockDaemon.return_value = instance
+
+            loop = asyncio.get_event_loop()
+
+            with patch("asyncio.Event") as MockEvent:
+                event_instance = AsyncMock()
+                event_instance.wait = AsyncMock()
+                event_instance.set = AsyncMock()
+                event_instance.is_set = lambda: False
+                MockEvent.return_value = event_instance
+
+                with patch.object(loop, "add_signal_handler"):
+                    await _start_all(configs)
+
+            assert call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_fails_db_unreachable_after_max_retries(self, configs):
+        """Butler fails after _DB_RETRY_MAX_ATTEMPTS consecutive DB failures."""
+        call_count = 0
+
+        async def _always_fail(self):
+            nonlocal call_count
+            call_count += 1
+            raise OSError(errno.ECONNREFUSED, "Connect call failed")
+
+        loop = asyncio.get_event_loop()
+        max_attempts = 3
+
+        with (
+            patch("butlers.daemon.ButlerDaemon") as MockDaemon,
+            patch("butlers.cli._DB_RETRY_BASE_DELAY", 0.001),
+            patch("butlers.cli._DB_RETRY_MAX_DELAY", 0.01),
+            patch("butlers.cli._DB_RETRY_MAX_ATTEMPTS", max_attempts),
+        ):
+            instance = AsyncMock()
+            instance.start = AsyncMock(side_effect=_always_fail.__get__(instance))
+            instance.shutdown = AsyncMock()
+            MockDaemon.return_value = instance
+
+            with patch("asyncio.Event") as MockEvent:
+                event_instance = AsyncMock()
+                event_instance.wait = AsyncMock()
+                MockEvent.return_value = event_instance
+
+                with patch.object(loop, "add_signal_handler"):
+                    await _start_all(configs)
+
+            # Initial attempt + max_attempts retries = max_attempts + 1 total calls
+            assert call_count == max_attempts + 1
 
 
 class TestOrderedConfigs:
