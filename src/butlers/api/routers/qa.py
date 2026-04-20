@@ -9,6 +9,7 @@ Endpoints:
 - GET  /api/qa/patrols                              — paginated patrol list
 - GET  /api/qa/patrols/{patrolId}                   — full patrol with nested findings
 - GET  /api/qa/patrols/{patrolId}/findings          — findings for a patrol
+- GET  /api/qa/findings/by-attempt/{attemptId}      — finding that dispatched an attempt
 - GET  /api/qa/investigations                       — paginated QA-originated healing attempts
                                                       (with current_phase and workflow_deadline_at)
 - GET  /api/qa/meta-review                          — QA-self-recursive findings (operator lane)
@@ -1080,6 +1081,55 @@ async def list_patrol_findings(
     return PaginatedResponse(
         data=data, meta=PaginationMeta(total=total, offset=offset, limit=limit)
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/qa/findings/by-attempt/{attempt_id} — finding that dispatched an attempt
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/findings/by-attempt/{attempt_id}",
+    response_model=ApiResponse[QaFindingRecord],
+)
+async def get_finding_by_attempt(
+    attempt_id: uuid.UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[QaFindingRecord]:
+    """Return the QA finding that dispatched a given healing attempt.
+
+    Resolves the dispatch reason for an investigation: which patrol observed it,
+    how the finding was classified, any dedup history, and the structured
+    evidence (session/request/trace identifiers) captured at discovery time.
+
+    When multiple findings reference the same attempt (rejoin on rerun of a
+    deduped fingerprint), the most recently created row is returned.
+
+    Returns 404 when no finding links to ``attempt_id``; healing attempts
+    created outside QA (retries, synthetic paths) won't have a linked finding.
+    """
+    pool = _shared_pool(db)
+
+    row = await pool.fetchrow(
+        """
+        SELECT id, patrol_id, fingerprint, source_type, source_butler, severity,
+               exception_type, event_summary, call_site, occurrence_count,
+               first_seen, last_seen, dedup_reason, healing_attempt_id,
+               source_session_trigger_source, structured_evidence, created_at
+        FROM public.qa_findings
+        WHERE healing_attempt_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        attempt_id,
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No QA finding is linked to healing attempt {attempt_id}",
+        )
+
+    return ApiResponse(data=_row_to_finding(row))
 
 
 # ---------------------------------------------------------------------------

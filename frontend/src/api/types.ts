@@ -2937,6 +2937,8 @@ export interface QaFindingRecord {
   last_seen: string;
   dedup_reason: string | null;
   healing_attempt_id: string | null;
+  source_session_trigger_source: string | null;
+  structured_evidence: Record<string, unknown> | null;
   created_at: string;
 }
 

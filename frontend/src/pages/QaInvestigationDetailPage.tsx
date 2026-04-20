@@ -11,8 +11,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useHealingAttempt } from "@/hooks/use-qa";
-import type { HealingAttempt } from "@/api/index.ts";
+import { useHealingAttempt, useQaFindingByAttempt } from "@/hooks/use-qa";
+import type { HealingAttempt, QaFindingRecord } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -81,6 +81,178 @@ function StatusBadge({ status }: { status: string }) {
     <Badge variant="outline" className={c.className}>
       {c.label}
     </Badge>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch reason card (linked QA finding)
+// ---------------------------------------------------------------------------
+
+function formatSourceType(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+function DispatchReasonCard({
+  finding,
+  isLoading,
+  isError,
+}: {
+  finding: QaFindingRecord | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Dispatch Reason</CardTitle>
+        <CardDescription>
+          Why the QA patrol flagged this and queued an investigation.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-3/4" />
+          </div>
+        ) : isError || !finding ? (
+          <p className="text-muted-foreground text-sm">
+            No QA finding is linked to this attempt. This usually means the
+            investigation was created outside the normal patrol pipeline (e.g.
+            a manual retry or a synthetic dispatch).
+          </p>
+        ) : (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
+            <dt className="text-muted-foreground font-medium">Source</dt>
+            <dd className="flex items-center gap-2">
+              <Badge variant="outline" className="font-mono">
+                {formatSourceType(finding.source_type)}
+              </Badge>
+              <span className="text-muted-foreground text-xs">via</span>
+              <Badge variant="outline" className="font-mono">
+                {finding.source_butler}
+              </Badge>
+            </dd>
+
+            <dt className="text-muted-foreground font-medium">Summary</dt>
+            <dd className="text-sm">{finding.event_summary}</dd>
+
+            <dt className="text-muted-foreground font-medium">Occurrences</dt>
+            <dd>
+              <span className="font-mono text-sm">{finding.occurrence_count}</span>
+              <span className="text-muted-foreground text-xs ml-2">
+                ({formatTs(finding.first_seen)} → {formatTs(finding.last_seen)})
+              </span>
+            </dd>
+
+            <dt className="text-muted-foreground font-medium">Patrol</dt>
+            <dd>
+              <Link
+                to={`/qa/patrols/${finding.patrol_id}`}
+                className="text-primary text-xs font-mono underline-offset-4 hover:underline"
+              >
+                {finding.patrol_id.slice(0, 8)}…
+              </Link>
+            </dd>
+
+            {finding.dedup_reason && (
+              <>
+                <dt className="text-muted-foreground font-medium">Dedup</dt>
+                <dd className="text-xs">{finding.dedup_reason}</dd>
+              </>
+            )}
+
+            {finding.source_session_trigger_source && (
+              <>
+                <dt className="text-muted-foreground font-medium">Trigger</dt>
+                <dd>
+                  <code className="text-xs">
+                    {finding.source_session_trigger_source}
+                  </code>
+                </dd>
+              </>
+            )}
+
+            {finding.structured_evidence &&
+              Object.keys(finding.structured_evidence).length > 0 && (
+                <>
+                  <dt className="text-muted-foreground font-medium self-start">
+                    Evidence
+                  </dt>
+                  <dd>
+                    <StructuredEvidence evidence={finding.structured_evidence} />
+                  </dd>
+                </>
+              )}
+          </dl>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StructuredEvidence({ evidence }: { evidence: Record<string, unknown> }) {
+  const entries = Object.entries(evidence);
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
+      {entries.map(([key, value]) => {
+        const display =
+          typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+            ? String(value)
+            : JSON.stringify(value);
+        const isSessionId = key === "session_id" && typeof value === "string";
+        return (
+          <div key={key} className="contents">
+            <dt className="text-muted-foreground font-mono">{key}</dt>
+            <dd className="font-mono break-all">
+              {isSessionId ? (
+                <Link
+                  to={`/sessions/${value}?butler=qa`}
+                  className="text-primary underline-offset-4 hover:underline"
+                >
+                  {display}
+                </Link>
+              ) : (
+                display
+              )}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Triggering sessions card
+// ---------------------------------------------------------------------------
+
+function TriggeringSessionsCard({ attempt }: { attempt: HealingAttempt }) {
+  if (!attempt.session_ids || attempt.session_ids.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Triggering Sessions</CardTitle>
+        <CardDescription>
+          Butler sessions whose failures produced this fingerprint — open one
+          to see the original traceback in context.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ul className="space-y-1 text-sm">
+          {attempt.session_ids.map((sid) => (
+            <li key={sid}>
+              <Link
+                to={`/sessions/${sid}?butler=${encodeURIComponent(attempt.butler_name)}`}
+                className="text-primary font-mono text-xs underline-offset-4 hover:underline"
+              >
+                {sid}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -251,6 +423,12 @@ function PageSkeleton() {
 export default function QaInvestigationDetailPage() {
   const { attemptId = "" } = useParams<{ attemptId: string }>();
   const { data: attempt, isLoading, isError } = useHealingAttempt(attemptId || undefined);
+  const {
+    data: findingResp,
+    isLoading: findingLoading,
+    isError: findingError,
+  } = useQaFindingByAttempt(attemptId || undefined);
+  const finding = findingResp?.data;
 
   if (!attemptId) {
     return (
@@ -361,9 +539,12 @@ export default function QaInvestigationDetailPage() {
       <Card>
         <CardHeader>
           <CardTitle>Error Context</CardTitle>
-          <CardDescription>Sanitized error details — no raw log content.</CardDescription>
+          <CardDescription>
+            Sanitized error details captured at fingerprint time. The raw
+            stack trace lives in the triggering session's transcript.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
             <dt className="text-muted-foreground font-medium">Exception</dt>
             <dd>
@@ -372,7 +553,7 @@ export default function QaInvestigationDetailPage() {
 
             <dt className="text-muted-foreground font-medium">Call site</dt>
             <dd>
-              <code className="text-xs">{attempt.call_site}</code>
+              <code className="text-xs break-all">{attempt.call_site}</code>
             </dd>
 
             {attempt.sanitized_msg && (
@@ -381,16 +562,30 @@ export default function QaInvestigationDetailPage() {
                 <dd className="text-sm">{attempt.sanitized_msg}</dd>
               </>
             )}
-
-            {attempt.error_detail && (
-              <>
-                <dt className="text-muted-foreground font-medium">Error detail</dt>
-                <dd className="text-destructive text-xs">{attempt.error_detail}</dd>
-              </>
-            )}
           </dl>
+
+          {attempt.error_detail && (
+            <div>
+              <div className="text-muted-foreground text-sm font-medium mb-2">
+                Error detail
+              </div>
+              <pre className="bg-muted text-destructive rounded-md border p-3 text-xs overflow-x-auto whitespace-pre-wrap break-words max-h-80">
+                {attempt.error_detail}
+              </pre>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {/* Dispatch reason (linked QA finding) */}
+      <DispatchReasonCard
+        finding={finding}
+        isLoading={findingLoading}
+        isError={findingError}
+      />
+
+      {/* Triggering sessions */}
+      <TriggeringSessionsCard attempt={attempt} />
 
       {/* PR card */}
       <PrCard attempt={attempt} />
@@ -403,7 +598,7 @@ export default function QaInvestigationDetailPage() {
           </CardHeader>
           <CardContent>
             <Link
-              to={`/sessions/${attempt.healing_session_id}`}
+              to={`/sessions/${attempt.healing_session_id}?butler=qa`}
               className="text-primary text-sm underline-offset-4 hover:underline"
             >
               View agent session {attempt.healing_session_id.slice(0, 8)}

@@ -631,6 +631,7 @@ export type {
 export {
   dismissQaKnownIssue,
   forceQaPatrol,
+  getQaFindingByAttempt,
   getQaInvestigations,
   getQaKnownIssues,
   getQaPatrol,

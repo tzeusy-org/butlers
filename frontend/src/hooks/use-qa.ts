@@ -15,6 +15,7 @@ import {
   getHealingAttempt,
   getQaAllowedRepos,
   getQaCircuitBreaker,
+  getQaFindingByAttempt,
   getQaInvestigations,
   getQaRepoConfig,
   getQaKnownIssues,
@@ -156,6 +157,17 @@ export function useHealingAttempt(attemptId: string | undefined) {
     queryFn: () => getHealingAttempt(attemptId!),
     enabled: !!attemptId,
     staleTime: STALE_TIME,
+  });
+}
+
+/** Fetch the QA finding that dispatched a given healing attempt (404 → no finding). */
+export function useQaFindingByAttempt(attemptId: string | undefined) {
+  return useQuery({
+    queryKey: ["qa-finding-by-attempt", attemptId],
+    queryFn: () => getQaFindingByAttempt(attemptId!),
+    enabled: !!attemptId,
+    staleTime: STALE_TIME,
+    retry: false,
   });
 }
 

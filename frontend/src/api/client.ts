@@ -3183,6 +3183,15 @@ export function getQaPatrolFindings(
   );
 }
 
+/** GET /api/qa/findings/by-attempt/:attemptId — finding that dispatched an attempt */
+export function getQaFindingByAttempt(
+  attemptId: string,
+): Promise<ApiResponse<QaFindingRecord>> {
+  return apiFetch<ApiResponse<QaFindingRecord>>(
+    `/qa/findings/by-attempt/${encodeURIComponent(attemptId)}`,
+  );
+}
+
 /** GET /api/qa/known-issues — known issues grouped by fingerprint */
 export function getQaKnownIssues(
   params?: QaKnownIssuesParams,

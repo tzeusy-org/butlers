@@ -784,6 +784,57 @@ class TestListPatrolFindings:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/qa/findings/by-attempt/{attemptId}
+# ---------------------------------------------------------------------------
+
+
+class TestGetFindingByAttempt:
+    async def test_returns_404_when_no_finding_links_to_attempt(self) -> None:
+        app, _ = _build_app(fetchrow_result=None)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/qa/findings/by-attempt/{uuid.uuid4()}")
+
+        assert response.status_code == 404
+
+    async def test_returns_linked_finding_with_evidence(self) -> None:
+        attempt_id = uuid.uuid4()
+        patrol_id = uuid.uuid4()
+        finding = _make_finding_row(
+            patrol_id=patrol_id,
+            healing_attempt_id=attempt_id,
+            dedup_reason="novel",
+            source_session_trigger_source="scheduler",
+            structured_evidence={"session_id": str(uuid.uuid4()), "trace_id": "abc"},
+        )
+        app, _ = _build_app(fetchrow_result=finding)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/qa/findings/by-attempt/{attempt_id}")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["healing_attempt_id"] == str(attempt_id)
+        assert body["data"]["dedup_reason"] == "novel"
+        assert body["data"]["source_session_trigger_source"] == "scheduler"
+        assert body["data"]["structured_evidence"]["trace_id"] == "abc"
+
+    async def test_rejects_invalid_uuid(self) -> None:
+        app, _ = _build_app()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/qa/findings/by-attempt/not-a-uuid")
+
+        assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # GET /api/qa/investigations
 # ---------------------------------------------------------------------------
 
