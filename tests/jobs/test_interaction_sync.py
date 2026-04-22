@@ -21,6 +21,7 @@ from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 # The roster job modules are loaded dynamically via the root conftest using
@@ -235,6 +236,46 @@ async def test_empty_inbox_logs_nothing():
     mock_log.assert_not_called()
     assert stats["logged"] == 0
     assert stats["processed"] == 0
+
+
+async def test_missing_calendar_table_is_skipped_without_error():
+    """Missing public.calendar_events should not increment errors."""
+    pool = _make_pool()
+    pool.fetch = AsyncMock(
+        side_effect=[
+            [],
+            asyncpg.UndefinedTableError('relation "public.calendar_events" does not exist'),
+        ]
+    )
+
+    mod = _get_rjobs()
+    run_fn = mod.run_interaction_sync
+
+    mock_log = AsyncMock(return_value={"id": str(uuid.uuid4()), "logged": True})
+    mock_state_get = AsyncMock(return_value=None)
+    mock_state_set = AsyncMock()
+
+    with (
+        patch.object(mod, "state_get", mock_state_get),
+        patch.object(mod, "state_set", mock_state_set),
+        patch(
+            "butlers.tools.relationship.interactions.interaction_log",
+            mock_log,
+        ),
+    ):
+        real_datetime = datetime
+
+        class _FixedDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return _NOW.replace(tzinfo=tz) if tz else _NOW
+
+        with patch.object(mod, "datetime", _FixedDatetime):
+            stats = await run_fn(pool)
+
+    assert stats["calendar_events_scanned"] == 0
+    assert stats["errors"] == 0
+    mock_log.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -1807,6 +1807,22 @@ async def test_interaction_sync_calendar_no_events_returns_zero(provisioned_post
         assert result["errors"] == 0
 
 
+async def test_interaction_sync_missing_calendar_table_skips_calendar_scan(
+    provisioned_postgres_pool,
+):
+    """Missing public.calendar_events degrades to a no-op instead of an error."""
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_interaction_sync_schema(pool)
+        await pool.execute("DROP TABLE public.calendar_events")
+
+        result = await run_interaction_sync(pool)
+
+        assert result["calendar_events_scanned"] == 0
+        assert result["errors"] == 0
+
+
 async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_postgres_pool):
     """A calendar event with a resolved attendee email logs an interaction fact."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
