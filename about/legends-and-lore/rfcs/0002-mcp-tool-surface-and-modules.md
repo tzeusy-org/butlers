@@ -271,6 +271,26 @@ These fields are present only when `mcp_connection_failed` is `True`. Session
 monitoring dashboards and alerting rules SHOULD key on `retry_attempted = True
 AND retry_succeeded = False` to surface persistent MCP connectivity issues.
 
+#### Streamable-HTTP Disconnect Log Filter
+
+The streamable-HTTP transport (`mcp.server.streamable_http`, tracked at MCP
+`1.26.0`) logs every failure of its internal `standalone_sse_writer` task at
+ERROR level with message `"Error in standalone SSE writer"`. When the cause is
+a client-initiated SSE disconnect — raised as `anyio.ClosedResourceError` or
+`anyio.BrokenResourceError` — the resulting traceback is noise that pollutes
+QA error dashboards without indicating a real server fault.
+
+`src/butlers/mcp_patches.py::apply_streamable_http_disconnect_patch` installs
+a narrow `logging.Filter` on `mcp.server.streamable_http.logger`. The filter
+matches records whose `msg` is exactly the upstream writer-error string AND
+whose `exc_info` names one of the two disconnect exception types. Matching
+records are rewritten in-place to DEBUG level with `exc_info` cleared; all
+other records pass through untouched. This avoids re-vendoring upstream
+method bodies, so an MCP version bump cannot silently degrade the handler:
+if upstream changes the log message or introduces new disconnect paths, the
+filter simply becomes a no-op for those paths. The patch is idempotent and
+applied once per process from `ButlerDaemon._build_mcp_http_app`.
+
 ## Integration
 
 - **RFC 0001:** Tool registration occurs during daemon startup phases 12-13.

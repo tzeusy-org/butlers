@@ -44,6 +44,7 @@ from butlers.daemon import (
     ButlerDaemon,
     _McpSseDisconnectGuard,
 )
+from butlers.mcp_patches import apply_streamable_http_disconnect_patch
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
 
@@ -731,6 +732,88 @@ async def test_sse_disconnect_guard(
 
     with pytest.raises(RuntimeError):
         await guard2(scope2, receive, noop_send)
+
+
+async def test_streamable_http_disconnect_patch_is_idempotent() -> None:
+    """Repeated calls MUST leave exactly one filter instance attached."""
+    import mcp.server.streamable_http as streamable_http
+
+    from butlers.mcp_patches import _StandaloneSseDisconnectFilter
+
+    apply_streamable_http_disconnect_patch()
+    apply_streamable_http_disconnect_patch()
+    apply_streamable_http_disconnect_patch()
+
+    filters = [
+        f for f in streamable_http.logger.filters if isinstance(f, _StandaloneSseDisconnectFilter)
+    ]
+    assert len(filters) == 1
+
+
+async def test_streamable_http_disconnect_patch_downgrades_client_disconnect(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Expected client-disconnect tracebacks MUST be downgraded to DEBUG.
+
+    Exercises the upstream logger directly so we catch behavior regressions
+    regardless of how ``_handle_get_request`` evolves internally. We log
+    exactly what upstream logs from its ``standalone_sse_writer`` inner
+    coroutine (message + exc_info) and assert the filter rewrites the record.
+    """
+    import mcp.server.streamable_http as streamable_http
+
+    apply_streamable_http_disconnect_patch()
+
+    logger = streamable_http.logger
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        try:
+            raise anyio.ClosedResourceError()
+        except anyio.ClosedResourceError:
+            logger.exception("Error in standalone SSE writer")
+
+    target = [rec for rec in caplog.records if rec.name == logger.name]
+    assert target, "expected at least one log record on the streamable_http logger"
+    rec = target[-1]
+    # Filter rewrites msg to the disconnect text at DEBUG level and strips exc_info.
+    assert rec.levelno == logging.DEBUG
+    assert rec.exc_info is None
+    assert rec.exc_text is None
+    assert rec.getMessage() == "Standalone SSE stream closed during client disconnect"
+    # The original upstream error message MUST NOT appear anywhere.
+    assert not any("Error in standalone SSE writer" in r.getMessage() for r in target)
+
+
+async def test_streamable_http_disconnect_patch_preserves_unrelated_errors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unrelated exceptions on the same logger MUST surface normally."""
+    import mcp.server.streamable_http as streamable_http
+
+    apply_streamable_http_disconnect_patch()
+
+    logger = streamable_http.logger
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            logger.exception("Error in standalone SSE writer")
+
+        # Different message + disconnect exc — also should pass through unchanged.
+        try:
+            raise anyio.ClosedResourceError()
+        except anyio.ClosedResourceError:
+            logger.exception("Something else entirely")
+
+    records = [rec for rec in caplog.records if rec.name == logger.name]
+    # Unrelated RuntimeError keeps its ERROR level and traceback.
+    runtime_rec = next(r for r in records if r.getMessage() == "Error in standalone SSE writer")
+    assert runtime_rec.levelno == logging.ERROR
+    assert runtime_rec.exc_info is not None
+
+    # Disconnect under a different message is untouched.
+    other_rec = next(r for r in records if r.getMessage() == "Something else entirely")
+    assert other_rec.levelno == logging.ERROR
+    assert other_rec.exc_info is not None
 
 
 # ---------------------------------------------------------------------------

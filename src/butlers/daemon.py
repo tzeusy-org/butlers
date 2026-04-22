@@ -88,6 +88,7 @@ from butlers.daemon_utils import (
 )
 from butlers.db import Database, schema_search_path
 from butlers.guards import _McpRuntimeSessionGuard, _McpSseDisconnectGuard
+from butlers.mcp_patches import apply_streamable_http_disconnect_patch
 from butlers.mcp_wrappers import _SpanWrappingMCP, _ToolCallLoggingMCP
 from butlers.module_state import (
     _MODULE_DISABLED_BY_KEY_SUFFIX,
@@ -608,6 +609,7 @@ class ButlerDaemon:
     @classmethod
     def _build_mcp_http_app(cls, mcp: FastMCP, *, butler_name: str) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
+        apply_streamable_http_disconnect_patch()
         # Codex and other modern MCP clients use streamable HTTP at /mcp.
         streamable_app = mcp.http_app(path="/mcp", transport="streamable-http")
         # Existing internal clients still use SSE at /sse + /messages.
