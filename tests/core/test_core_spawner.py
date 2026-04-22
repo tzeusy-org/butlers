@@ -670,6 +670,72 @@ class TestSpawnerInvocation:
         assert result2.success is False and "RuntimeError: boom" in result2.error
         assert adapter2.calls == [] and adapter2.reset_calls == 0
 
+    async def test_terminal_codex_mcp_discovery_failure_marks_session_failed(
+        self, tmp_path: Path
+    ) -> None:
+        """Repeated MCP-discovery failure must propagate as a failed session, not success."""
+        from butlers.core.runtimes import CodexAdapter
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+        async def _mock_exec(*args, **kwargs):
+            proc = AsyncMock()
+            proc.returncode = 0
+            proc.pid = 42
+            proc.communicate = AsyncMock(
+                return_value=(
+                    (
+                        json.dumps(
+                            {
+                                "type": "item.completed",
+                                "item": {
+                                    "id": "cmd1",
+                                    "type": "command_execution",
+                                    "command": "/bin/bash -lc true",
+                                    "status": "completed",
+                                    "exit_code": 0,
+                                    "aggregated_output": "",
+                                },
+                            }
+                        )
+                        + "\n"
+                        + json.dumps({"type": "result", "result": "MCP tools called: none."})
+                    ).encode(),
+                    b"",
+                )
+            )
+            return proc
+
+        with (
+            patch(
+                "butlers.core.spawner.session_create",
+                new_callable=AsyncMock,
+                return_value=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            ),
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch("butlers.core.spawner.session_process_log_write", new_callable=AsyncMock),
+            patch(
+                "butlers.core.runtimes.codex.asyncio.create_subprocess_exec",
+                side_effect=_mock_exec,
+            ),
+            patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
+        ):
+            result = await Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            ).trigger("route this", "tick")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "MCP tool discovery failed after 3 attempts" in result.error
+        assert mock_complete.await_args.kwargs["success"] is False
+
     async def test_runtime_worker_factory_used_per_trigger(self, tmp_path: Path):
         """Spawner should invoke worker adapters returned by create_worker()."""
         config_dir = tmp_path / "config"

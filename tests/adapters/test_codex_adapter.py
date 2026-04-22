@@ -185,6 +185,7 @@ async def test_invoke_behaviors():
     assert mock_sub.call_args[1]["stdin"] is asyncio.subprocess.DEVNULL
 
     # HOME injection with mcp servers
+    mock_proc.communicate = AsyncMock(return_value=(_make_mcp_stdout(), b""))
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(
             prompt="test",
@@ -323,8 +324,8 @@ async def test_retry_on_mcp_connection_failure():
     assert info["retry_succeeded"] is True
 
 
-async def test_retry_all_fail_returns_error():
-    """When all retries fail, returns an error message and empty tool_calls."""
+async def test_retry_all_fail_raises_runtime_error():
+    """When all retries fail, invoke() raises so the spawner records a failed session."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
     call_count = 0
@@ -342,17 +343,15 @@ async def test_retry_all_fail_returns_error():
         patch(_EXEC, side_effect=_mock_exec),
         patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
     ):
-        result_text, tool_calls, _ = await adapter.invoke(
-            prompt="route this",
-            system_prompt="",
-            mcp_servers=_MCP_SERVERS,
-            env={},
-        )
+        with pytest.raises(RuntimeError, match=r"MCP tool discovery failed after 3 attempts"):
+            await adapter.invoke(
+                prompt="route this",
+                system_prompt="",
+                mcp_servers=_MCP_SERVERS,
+                env={},
+            )
 
     assert call_count == 3, "Should have tried 3 times (initial + 2 retries)"
-    assert result_text is not None
-    assert "MCP tool discovery failed" in result_text
-    assert tool_calls == []
     info = adapter.last_process_info
     assert info["mcp_connection_failed"] is True
     assert info["retry_attempted"] is True
@@ -493,14 +492,14 @@ async def test_retry_provenance_result_source_first():
         patch(_EXEC, side_effect=_mock_exec),
         patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
     ):
-        result_text, tool_calls, _ = await adapter.invoke(
-            prompt="route this",
-            system_prompt="",
-            mcp_servers=_MCP_SERVERS,
-            env={},
-        )
+        with pytest.raises(RuntimeError, match=r"MCP tool discovery failed after 3 attempts"):
+            await adapter.invoke(
+                prompt="route this",
+                system_prompt="",
+                mcp_servers=_MCP_SERVERS,
+                env={},
+            )
 
-    assert "MCP tool discovery failed" in result_text
     info = adapter.last_process_info
     assert info["result_source"] == "first"
     assert info["attempt_count"] == 3

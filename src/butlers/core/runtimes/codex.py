@@ -735,18 +735,11 @@ class CodexAdapter(RuntimeAdapter):
                     )
 
                 if not retry_succeeded:
-                    logger.error(
-                        "MCP discovery failed after %d attempts — aborting session "
-                        "to prevent runaway token usage from bash-only fallback",
-                        attempt_count,
-                    )
-                    return (
-                        "Error: MCP tool discovery failed after multiple attempts. "
+                    raise RuntimeError(
+                        f"MCP tool discovery failed after {attempt_count} attempts. "
                         "The butler's MCP server was configured but the Codex CLI "
                         "could not connect to it. This session cannot proceed "
-                        "without MCP tools.",
-                        [],
-                        usage,
+                        "without MCP tools."
                     )
             else:
                 if self._last_process_info:
