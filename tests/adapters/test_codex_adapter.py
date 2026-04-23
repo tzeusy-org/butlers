@@ -182,7 +182,9 @@ async def test_invoke_behaviors():
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
     assert mock_sub.call_args[0][:2] == ("/usr/bin/codex", "exec")
-    assert mock_sub.call_args[1]["stdin"] is asyncio.subprocess.DEVNULL
+    assert mock_sub.call_args[0][-1] == "-"
+    assert mock_sub.call_args[1]["stdin"] is asyncio.subprocess.PIPE
+    mock_proc.communicate.assert_awaited_once_with(b"test")
 
     # HOME injection with mcp servers
     mock_proc.communicate = AsyncMock(return_value=(_make_mcp_stdout(), b""))
@@ -234,6 +236,31 @@ async def test_invoke_prefers_home_scoped_tempdir(tmp_path: Path, monkeypatch: p
 
     isolated_home = Path(mock_sub.call_args[1]["env"]["HOME"])
     assert isolated_home.parent == codex_dir / ".tmp"
+
+
+async def test_invoke_stdin_prompt_wraps_system_prompt():
+    """invoke() writes the composed system+user prompt to stdin when using "-"."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc):
+        await adapter.invoke(
+            prompt="Investigate",
+            system_prompt="You are the runtime.",
+            mcp_servers={},
+            env={},
+        )
+
+    mock_proc.communicate.assert_awaited_once_with(
+        b"<system_instructions>\n"
+        b"You are the runtime.\n"
+        b"</system_instructions>\n\n"
+        b"<user_prompt>\n"
+        b"Investigate\n"
+        b"</user_prompt>"
+    )
 
 
 def test_has_mcp_tool_calls():

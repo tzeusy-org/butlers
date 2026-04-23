@@ -657,10 +657,13 @@ class CodexAdapter(RuntimeAdapter):
         # Point HOME at the temp directory so the CLI finds ~/.codex/config.toml.
         env["HOME"] = str(tmp_dir)
 
-        # Delimit options from positional prompt so prompts that start with
-        # '-'/'--' are never parsed as CLI flags by codex exec.
-        cmd.append("--")
-        cmd.append(self._compose_exec_prompt(prompt=prompt, system_prompt=system_prompt))
+        # Pass the composed prompt via stdin with the explicit "-" sentinel.
+        # Recent Codex CLI builds treat any positional prompt plus non-tty stdin
+        # (including /dev/null) as "prompt + additional stdin", which emits a
+        # noisy stderr warning even on successful runs. "-" keeps prompt
+        # parsing on stdin and avoids that warning path.
+        cmd.append("-")
+        prompt_input = self._compose_exec_prompt(prompt=prompt, system_prompt=system_prompt)
 
         logger.debug("Invoking Codex CLI: %s", " ".join(cmd[:4]) + " ...")
 
@@ -675,6 +678,7 @@ class CodexAdapter(RuntimeAdapter):
                 effective_timeout,
                 cmd_for_log,
                 mcp_servers,
+                prompt_input,
             )
 
             # Retry with exponential backoff when MCP tools were configured
@@ -711,6 +715,7 @@ class CodexAdapter(RuntimeAdapter):
                         effective_timeout,
                         cmd_for_log,
                         mcp_servers,
+                        prompt_input,
                     )
                     if _has_mcp_tool_calls(retry_calls):
                         logger.info(
@@ -758,15 +763,16 @@ class CodexAdapter(RuntimeAdapter):
         timeout: int,
         cmd_for_log: str,
         mcp_servers: dict[str, Any],
+        prompt_input: str,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Run the Codex CLI subprocess and parse its output."""
         proc = None
         try:
-            # Detach stdin so Codex does not treat inherited daemon pipes as
-            # additional prompt input ("Reading additional input from stdin...").
+            # Feed the prompt through stdin using the "-" sentinel so Codex
+            # does not treat inherited daemon pipes as "additional input".
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env if env else None,
@@ -774,7 +780,7 @@ class CodexAdapter(RuntimeAdapter):
             )
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(),
+                proc.communicate(prompt_input.encode("utf-8")),
                 timeout=timeout,
             )
 
