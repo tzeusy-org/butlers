@@ -1091,7 +1091,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             """,
             scan_window_start,
         )
-    except asyncpg.UndefinedTableError:
+    except asyncpg.exceptions.UndefinedTableError:
         logger.info(
             "interaction_sync: public.calendar_events unavailable; skipping calendar-based sync"
         )

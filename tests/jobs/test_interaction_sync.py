@@ -244,7 +244,9 @@ async def test_missing_calendar_table_is_skipped_without_error():
     pool.fetch = AsyncMock(
         side_effect=[
             [],
-            asyncpg.UndefinedTableError('relation "public.calendar_events" does not exist'),
+            asyncpg.exceptions.UndefinedTableError(
+                'relation "public.calendar_events" does not exist'
+            ),
         ]
     )
 
@@ -275,6 +277,7 @@ async def test_missing_calendar_table_is_skipped_without_error():
 
     assert stats["calendar_events_scanned"] == 0
     assert stats["errors"] == 0
+    assert pool.fetch.await_count == 2
     mock_log.assert_not_called()
 
 
