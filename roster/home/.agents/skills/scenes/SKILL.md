@@ -1,3 +1,8 @@
+---
+name: scenes
+description: Create, modify, trigger, and manage smart-home scenes.
+---
+
 # Skill: Scene Composition
 
 ## Purpose

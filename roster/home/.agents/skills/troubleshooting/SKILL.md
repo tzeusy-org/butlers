@@ -1,3 +1,8 @@
+---
+name: troubleshooting
+description: Diagnose smart-home device connectivity, battery, firmware, and command issues.
+---
+
 # Skill: Device Troubleshooting
 
 ## Purpose

@@ -1,3 +1,8 @@
+---
+name: progress-digest
+description: Generate weekly learning progress digests from analytics snapshots and recent trends.
+---
+
 # Skill: Progress Digest
 
 ## Purpose

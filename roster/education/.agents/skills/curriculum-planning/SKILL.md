@@ -1,3 +1,8 @@
+---
+name: curriculum-planning
+description: Plan curricula by decomposing topics into prerequisite graphs and ordered learning paths.
+---
+
 # Skill: Curriculum Planning
 
 ## Purpose

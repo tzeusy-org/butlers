@@ -1,3 +1,8 @@
+---
+name: stale-flow-cleanup
+description: Abandon inactive teaching flows and clean up stale spaced repetition schedules.
+---
+
 # Skill: Stale Flow Cleanup
 
 ## Purpose

@@ -1,3 +1,8 @@
+---
+name: device-health-check
+description: Nightly Home Assistant device survey for offline devices, low batteries, and firmware issues.
+---
+
 # Skill: Device Health Check
 
 ## Purpose

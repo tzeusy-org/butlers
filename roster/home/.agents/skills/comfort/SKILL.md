@@ -1,3 +1,8 @@
+---
+name: comfort
+description: Manage room comfort preferences, monitor conditions, and alert on deviations.
+---
+
 # Skill: Comfort Management
 
 ## Purpose

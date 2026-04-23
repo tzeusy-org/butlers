@@ -1,3 +1,8 @@
+---
+name: weekly-energy-digest
+description: Generate a weekly home energy digest with trends, top consumers, and recommendations.
+---
+
 # Skill: Weekly Energy Digest
 
 ## Purpose

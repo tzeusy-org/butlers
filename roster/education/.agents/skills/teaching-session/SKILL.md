@@ -1,3 +1,8 @@
+---
+name: teaching-session
+description: Teach one concept at a time using Socratic scaffolding and mastery updates.
+---
+
 # Skill: Teaching Session
 
 ## Purpose

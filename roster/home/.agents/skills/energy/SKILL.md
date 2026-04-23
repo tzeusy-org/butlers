@@ -1,3 +1,8 @@
+---
+name: energy
+description: Analyze home energy consumption, detect anomalies, and recommend optimizations.
+---
+
 # Skill: Energy Awareness
 
 ## Purpose

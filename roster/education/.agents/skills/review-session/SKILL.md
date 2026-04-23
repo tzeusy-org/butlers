@@ -1,3 +1,8 @@
+---
+name: review-session
+description: Run spaced repetition review sessions, score answers, and reschedule follow-ups.
+---
+
 # Skill: Review Session
 
 ## Purpose

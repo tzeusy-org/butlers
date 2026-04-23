@@ -1,3 +1,8 @@
+---
+name: environment-report
+description: Generate a daily home environment report from Home Assistant sensor readings.
+---
+
 # Skill: Environment Report
 
 ## Purpose
