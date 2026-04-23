@@ -1244,7 +1244,6 @@ async def merge_entity(
             pool,
             source_id,
             target_id,
-            tenant_id="shared",
             extra_pools=extra_pools,
         )
     except ValueError as exc:
