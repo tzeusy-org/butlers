@@ -59,6 +59,7 @@ from butlers.core.model_routing import (
 )
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
@@ -361,6 +362,11 @@ def _merge_tool_call_records(
             merged.append(parsed_call)
 
     return _dedup_tool_calls_by_id(merged)
+
+
+def _has_non_command_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
+    """Return whether the record set includes any non-bash tool call."""
+    return any(str(call.get("name", "") or "") != "command_execution" for call in tool_calls)
 
 
 def _compose_system_prompt(
@@ -1186,6 +1192,10 @@ class Spawner:
         runtime_session_id: str | None = None
         spawner_result: SpawnerResult | None = None
         runtime_invoked = False
+        # When the MCPToolDiscoveryError handler consumes the runtime-session
+        # tool-call buffer, it stores the result here so the failure-path
+        # exception handler does not re-consume an empty buffer.
+        preconsumed_runtime_tool_calls: list[dict[str, Any]] | None = None
         routing_context = _capture_pipeline_routing_context()
         # Ledger token tracking: set as soon as the adapter reports usage so that
         # ledger recording in the finally block captures tokens even when post-invoke
@@ -1470,6 +1480,7 @@ class Spawner:
             else:
                 timeout_s = _FALLBACK_SESSION_TIMEOUT_S
             invoke_kwargs["timeout"] = timeout_s
+            merged_runtime_capture = False
             try:
                 result_text, tool_calls, usage = await asyncio.wait_for(
                     runtime.invoke(**invoke_kwargs),
@@ -1480,7 +1491,46 @@ class Spawner:
                     f"Session timed out after {timeout_s}s "
                     f"(model={model}, butler={self._config.name})"
                 )
-            if runtime_session_id:
+            except MCPToolDiscoveryError as exc:
+                executed_tool_calls = (
+                    consume_runtime_session_tool_calls(runtime_session_id)
+                    if runtime_session_id
+                    else []
+                )
+                # Always record the consumed buffer so the failure path (below)
+                # can persist these calls instead of re-consuming nothing.
+                preconsumed_runtime_tool_calls = list(executed_tool_calls)
+                merged_tool_calls = _merge_tool_call_records(
+                    exc.tool_calls,
+                    executed_tool_calls,
+                    butler_name=self._config.name,
+                )
+                if not _has_non_command_tool_calls(merged_tool_calls):
+                    raise
+
+                logger.warning(
+                    "Recovered Codex MCP discovery false-negative for butler=%s session=%s; "
+                    "runtime capture confirmed %d MCP tool call(s)",
+                    self._config.name,
+                    session_id,
+                    len([c for c in merged_tool_calls if c.get("name") != "command_execution"]),
+                )
+                result_text, tool_calls, usage = exc.result_text, merged_tool_calls, exc.usage
+                merged_runtime_capture = True
+                proc_info = runtime.last_process_info
+                if proc_info is not None:
+                    # Restore the metadata of the attempt that actually produced
+                    # ``result_text``/``usage`` so the persisted process log is
+                    # consistent with the recovered result. Without this, PID
+                    # and stderr would still reflect the first failed attempt
+                    # while the result fields reflect the recovered last attempt.
+                    if exc.last_attempt_process_info:
+                        proc_info.update(exc.last_attempt_process_info)
+                    proc_info["mcp_connection_failed"] = False
+                    proc_info["retry_succeeded"] = True
+                    proc_info["result_source"] = "runtime_capture"
+
+            if runtime_session_id and not merged_runtime_capture:
                 executed_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
                 tool_calls = _merge_tool_call_records(
                     tool_calls,
@@ -1626,8 +1676,13 @@ class Spawner:
 
             # Collect any tool calls captured before the failure (best-effort).
             # consume rather than discard so we preserve what ran before the error.
+            # If the MCP-discovery recovery path already consumed the buffer to
+            # decide whether to recover, reuse those — re-consuming here would
+            # see an empty buffer and silently drop the tool-call history.
             captured_on_failure: list[dict[str, Any]] = []
-            if runtime_session_id:
+            if preconsumed_runtime_tool_calls is not None:
+                captured_on_failure = list(preconsumed_runtime_tool_calls)
+            elif runtime_session_id:
                 captured_on_failure = consume_runtime_session_tool_calls(runtime_session_id)
             duration_ms = int((time.monotonic() - t0) * 1000)
             error_msg = f"{type(exc).__name__}: {exc}"

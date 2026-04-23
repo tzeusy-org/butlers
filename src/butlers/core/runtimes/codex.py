@@ -41,6 +41,39 @@ _SAFE_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _MCP_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
 
 
+class MCPToolDiscoveryError(RuntimeError):
+    """Codex exhausted MCP-discovery retries but still has partial session output.
+
+    The Codex adapter can only infer MCP success from its parsed JSON stream.
+    The spawner may later reconcile this with daemon-side runtime-session tool
+    capture, so preserve the partial result on the exception.
+
+    ``last_attempt_process_info`` is a snapshot of the process metadata for the
+    attempt that actually produced ``result_text``/``usage``. The adapter
+    rewrites its own ``last_process_info`` to first-attempt values to keep the
+    failure-path log shape stable; when the spawner recovers via runtime
+    capture it should swap in this snapshot so PID/stderr/exit_code align with
+    the result source.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        result_text: str | None,
+        tool_calls: list[dict[str, Any]],
+        usage: dict[str, Any] | None,
+        last_attempt_process_info: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.result_text = result_text
+        self.tool_calls = list(tool_calls)
+        self.usage = dict(usage) if isinstance(usage, dict) else None
+        self.last_attempt_process_info = (
+            dict(last_attempt_process_info) if isinstance(last_attempt_process_info, dict) else None
+        )
+
+
 def _infer_mcp_transport_from_url(url: str) -> str | None:
     """Infer MCP transport from URL path conventions.
 
@@ -717,14 +750,25 @@ class CodexAdapter(RuntimeAdapter):
                         mcp_servers,
                         prompt_input,
                     )
+                    # Preserve the most recent partial result so higher layers
+                    # can reconcile parser output with daemon-side tool-call capture.
+                    result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
                     if _has_mcp_tool_calls(retry_calls):
                         logger.info(
                             "MCP retry succeeded — tools discovered on attempt %d",
                             attempt_count,
                         )
-                        result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
                         retry_succeeded = True
                         break
+
+                # Snapshot the most-recent attempt's process info before we
+                # potentially rewrite ``self._last_process_info`` to first-attempt
+                # values for the failure-path log. The snapshot lets the spawner
+                # restore consistent diagnostics if it later recovers via
+                # daemon-side runtime tool capture.
+                last_attempt_info = (
+                    dict(self._last_process_info) if self._last_process_info else None
+                )
 
                 # Record diagnostics for session monitoring
                 if self._last_process_info:
@@ -740,11 +784,17 @@ class CodexAdapter(RuntimeAdapter):
                     )
 
                 if not retry_succeeded:
-                    raise RuntimeError(
-                        f"MCP tool discovery failed after {attempt_count} attempts. "
-                        "The butler's MCP server was configured but the Codex CLI "
-                        "could not connect to it. This session cannot proceed "
-                        "without MCP tools."
+                    raise MCPToolDiscoveryError(
+                        (
+                            f"MCP tool discovery failed after {attempt_count} attempts. "
+                            "The butler's MCP server was configured but the Codex CLI "
+                            "could not connect to it. This session cannot proceed "
+                            "without MCP tools."
+                        ),
+                        result_text=result_text,
+                        tool_calls=tool_calls,
+                        usage=usage,
+                        last_attempt_process_info=last_attempt_info,
                     )
             else:
                 if self._last_process_info:
