@@ -108,6 +108,7 @@ DECLARE
     _db_name TEXT := current_database();
     _schema TEXT;
     _role TEXT;
+    _table TEXT;
     _idx INTEGER;
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _migration_user) THEN
@@ -247,27 +248,66 @@ BEGIN
         'butler_relationship_rw'
     );
 
-    -- Chronicler projects retrospective time from all butlers' session records
-    -- and from calendar/event surfaces. Grant read-only access to every
-    -- butler schema (RFC 0014 source compatibility contracts). Projection
-    -- adapters read only; they never write outside the chronicler schema.
+    -- Chronicler reads only the specific evidence surfaces declared in RFC 0014
+    -- source compatibility contracts (butler_chronicler_rw = read-only role).
+    --
+    -- Approved evidence surfaces (v1):
+    --   {schema}.sessions               — CoreSessionsAdapter (all butler schemas)
+    --   {schema}.calendar_event_instances — CalendarCompletedAdapter (optional)
+    --
+    -- Planned (PLANNED compatibility; tables may not yet exist):
+    --   connectors.steam_play_history
+    --   connectors.owntracks_points
+    --   connectors.home_assistant_history
+    --
+    -- Adding a new evidence surface requires an explicit grant here plus a
+    -- compatibility declaration in src/butlers/chronicler/contracts.py.
+    -- Do NOT restore GRANT SELECT ON ALL TABLES — that violates RFC 0014 §D1.
     FOR _idx IN 1 .. array_length(_butler_schemas, 1) LOOP
         _schema := _butler_schemas[_idx];
         IF _schema = 'chronicler' THEN
             CONTINUE;
         END IF;
         EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _schema, 'butler_chronicler_rw');
-        EXECUTE format(
-            'GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I',
-            _schema,
-            'butler_chronicler_rw'
-        );
-        EXECUTE format(
-            'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO %I',
-            _migration_user,
-            _schema,
-            'butler_chronicler_rw'
-        );
+        -- sessions (CoreSessionsAdapter — present in every butler schema)
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = _schema AND table_name = 'sessions'
+        ) THEN
+            EXECUTE format(
+                'GRANT SELECT ON TABLE %I.sessions TO butler_chronicler_rw',
+                _schema
+            );
+        END IF;
+        -- calendar_event_instances (CalendarCompletedAdapter — optional module)
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = _schema AND table_name = 'calendar_event_instances'
+        ) THEN
+            EXECUTE format(
+                'GRANT SELECT ON TABLE %I.calendar_event_instances TO butler_chronicler_rw',
+                _schema
+            );
+        END IF;
+    END LOOP;
+
+    -- Connectors evidence surfaces for PLANNED adapters (grant when tables exist).
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _connector_schema, 'butler_chronicler_rw');
+    FOREACH _table IN ARRAY ARRAY[
+        'steam_play_history',
+        'owntracks_points',
+        'home_assistant_history'
+    ] LOOP
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = _connector_schema AND table_name = _table
+        ) THEN
+            EXECUTE format(
+                'GRANT SELECT ON TABLE %I.%I TO butler_chronicler_rw',
+                _connector_schema,
+                _table
+            );
+        END IF;
     END LOOP;
 
     -- Connector role: write access to connector schema, switchboard operational

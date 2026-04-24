@@ -340,3 +340,138 @@ def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_contain
     assert row["inherit_option"] is True
     assert row["set_option"] is True
     assert current_user == "butler_qa_rw"
+
+
+def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
+    """butler_chronicler_rw can SELECT sessions but not other butler schema tables.
+
+    RFC 0014 §D1: Chronicler LLM sessions read only named evidence surfaces.
+    The bootstrap must NOT grant SELECT ON ALL TABLES — only specific tables.
+    """
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            conn.execute(text("DROP ROLE IF EXISTS butlers"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    # Create representative tables in two butler schemas as the migration user.
+    migration_user_url = f"postgresql://butlers:butlers@{host}:{port}/butlers"
+    engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            # education.sessions — approved evidence surface
+            conn.execute(
+                text(
+                    "CREATE TABLE education.sessions ("
+                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
+                    "  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                    "  completed_at TIMESTAMPTZ,"
+                    "  trigger_source TEXT,"
+                    "  success BOOLEAN,"
+                    "  request_id TEXT,"
+                    "  duration_ms BIGINT,"
+                    "  model TEXT"
+                    ")"
+                )
+            )
+            # education.state_store — NOT an approved evidence surface
+            conn.execute(
+                text(
+                    "CREATE TABLE education.state_store ("
+                    "  key TEXT PRIMARY KEY,"
+                    "  value JSONB NOT NULL DEFAULT '{}'::jsonb"
+                    ")"
+                )
+            )
+            # general.calendar_event_instances — approved evidence surface
+            conn.execute(
+                text(
+                    "CREATE TABLE general.calendar_event_instances ("
+                    "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
+                    "  event_id UUID,"
+                    "  source_id UUID,"
+                    "  origin_instance_ref TEXT,"
+                    "  starts_at TIMESTAMPTZ,"
+                    "  ends_at TIMESTAMPTZ,"
+                    "  status TEXT,"
+                    "  timezone TEXT,"
+                    "  metadata JSONB,"
+                    "  updated_at TIMESTAMPTZ"
+                    ")"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    # Re-run init-db.sql so the existing tables receive their specific grants.
+    _run_psql_file(
+        host=host,
+        port=port,
+        user=admin_user,
+        password=admin_password,
+        database="butlers",
+        file_path=script_path,
+    )
+
+    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+    engine = create_engine(butlers_url)
+    try:
+        with engine.connect() as conn:
+            result = (
+                conn.execute(
+                    text(
+                        "SELECT "
+                        # Approved — sessions
+                        "  has_table_privilege("
+                        "    'butler_chronicler_rw',"
+                        "    'education.sessions',"
+                        "    'SELECT'"
+                        "  ) AS can_read_sessions,"
+                        # Approved — calendar_event_instances
+                        "  has_table_privilege("
+                        "    'butler_chronicler_rw',"
+                        "    'general.calendar_event_instances',"
+                        "    'SELECT'"
+                        "  ) AS can_read_calendar,"
+                        # Denied — state_store is not an evidence surface
+                        "  has_table_privilege("
+                        "    'butler_chronicler_rw',"
+                        "    'education.state_store',"
+                        "    'SELECT'"
+                        "  ) AS can_read_state_store"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+    finally:
+        engine.dispose()
+
+    assert result["can_read_sessions"] is True, (
+        "butler_chronicler_rw must be able to SELECT education.sessions "
+        "(approved RFC 0014 evidence surface)"
+    )
+    assert result["can_read_calendar"] is True, (
+        "butler_chronicler_rw must be able to SELECT general.calendar_event_instances "
+        "(approved RFC 0014 evidence surface)"
+    )
+    assert result["can_read_state_store"] is False, (
+        "butler_chronicler_rw must NOT be able to SELECT education.state_store "
+        "(not an approved RFC 0014 evidence surface — broad grants violate RFC 0014 §D1)"
+    )
