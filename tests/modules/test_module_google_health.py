@@ -352,7 +352,7 @@ class TestToolPredicateFilters:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
         result = await mcp._registered_tools["health_hr_history"](days=30)
-        assert result["predicate"] == "resting_hr_daily"
+        assert result["predicate"] == "measurement_resting_hr"
         assert result["scope"] == "health"
         assert result["days"] == 30
 
@@ -360,29 +360,29 @@ class TestToolPredicateFilters:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
         result = await mcp._registered_tools["health_hrv_history"](days=30)
-        assert result["predicate"] == "hrv_daily"
+        assert result["predicate"] == "measurement_hrv"
         assert result["scope"] == "health"
 
     async def test_spo2_history_predicate(self) -> None:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
         result = await mcp._registered_tools["health_spo2_history"](days=30)
-        assert result["predicate"] == "spo2_daily"
+        assert result["predicate"] == "measurement_spo2"
         assert result["scope"] == "health"
 
     async def test_breathing_rate_predicate(self) -> None:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
         result = await mcp._registered_tools["health_breathing_rate_history"](days=30)
-        assert result["predicate"] == "breathing_rate_daily"
+        assert result["predicate"] == "measurement_breathing_rate"
         assert result["scope"] == "health"
 
     async def test_activity_summary_predicates(self) -> None:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
         result = await mcp._registered_tools["health_activity_summary"](days=7)
-        assert "steps_daily" in result["predicates"]
-        assert "active_minutes_daily" in result["predicates"]
+        assert "measurement_steps" in result["predicates"]
+        assert "measurement_active_minutes" in result["predicates"]
         assert result["scope"] == "health"
         assert result["days"] == 7
 
@@ -396,7 +396,7 @@ class TestToolPredicateFilters:
         module, mcp = _make_connected_module()
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="health")
         result = await mcp._registered_tools["health_vo2_max_latest"]()
-        assert result["predicate"] == "vo2_max"
+        assert result["predicate"] == "measurement_vo2_max"
         assert result["scope"] == "health"
 
 

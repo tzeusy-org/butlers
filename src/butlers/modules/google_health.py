@@ -325,7 +325,7 @@ class GoogleHealthModule(Module):
             Args:
                 days: Number of days to look back (1-365, default 30).
 
-            Queries ``resting_hr_daily`` facts. Returns daily resting HR values
+            Queries ``measurement_resting_hr`` facts. Returns daily resting HR values
             plus a summary with min, max, avg, and a linear trend slope.
             """
             if not module._scopes_ok:
@@ -334,14 +334,15 @@ class GoogleHealthModule(Module):
             time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
             return {
                 "query": f"resting heart rate last {days} days",
-                "predicate": "resting_hr_daily",
+                "predicate": "measurement_resting_hr",
                 "scope": "health",
                 "days": days,
                 "time_from": time_from,
                 "instruction": (
                     f"Call memory_search with query='resting heart rate', "
                     f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'resting_hr_daily', 'time_from': {time_from!r}}}, "
+                    f"filters={{'predicate': 'measurement_resting_hr', "
+                    f"'time_from': {time_from!r}}}, "
                     f"limit=365 to retrieve resting HR facts for the last {days} days. "
                     "Compute summary: min, max, avg, and linear trend slope. "
                     f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='heart rate')!r}"
@@ -354,7 +355,7 @@ class GoogleHealthModule(Module):
             Args:
                 days: Number of days to look back (1-365, default 30).
 
-            Queries ``hrv_daily`` facts. Returns daily RMSSD values plus a
+            Queries ``measurement_hrv`` facts. Returns daily RMSSD values plus a
             summary with avg_rmssd, coverage, and trend direction.
             """
             if not module._scopes_ok:
@@ -363,14 +364,14 @@ class GoogleHealthModule(Module):
             time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
             return {
                 "query": f"HRV history last {days} days",
-                "predicate": "hrv_daily",
+                "predicate": "measurement_hrv",
                 "scope": "health",
                 "days": days,
                 "time_from": time_from,
                 "instruction": (
                     f"Call memory_search with query='heart rate variability HRV RMSSD', "
                     f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'hrv_daily', 'time_from': {time_from!r}}}, "
+                    f"filters={{'predicate': 'measurement_hrv', 'time_from': {time_from!r}}}, "
                     f"limit=365 to retrieve HRV facts for the last {days} days. "
                     "Compute summary: avg_rmssd, coverage (days with data / total days), "
                     "and trend direction (improving / stable / declining). "
@@ -391,7 +392,7 @@ class GoogleHealthModule(Module):
             Args:
                 days: Number of days to look back (1-365, default 30).
 
-            Queries ``spo2_daily`` facts. Returns daily average SpO2 values.
+            Queries ``measurement_spo2`` facts. Returns daily average SpO2 values.
             """
             if not module._scopes_ok:
                 return module._not_connected()
@@ -399,14 +400,14 @@ class GoogleHealthModule(Module):
             time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
             return {
                 "query": f"SpO2 blood oxygen last {days} days",
-                "predicate": "spo2_daily",
+                "predicate": "measurement_spo2",
                 "scope": "health",
                 "days": days,
                 "time_from": time_from,
                 "instruction": (
                     f"Call memory_search with query='blood oxygen SpO2 saturation', "
                     f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'spo2_daily', 'time_from': {time_from!r}}}, "
+                    f"filters={{'predicate': 'measurement_spo2', 'time_from': {time_from!r}}}, "
                     f"limit=365 to retrieve SpO2 facts for the last {days} days. "
                     f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='SpO2')!r}"
                 ),
@@ -418,7 +419,7 @@ class GoogleHealthModule(Module):
             Args:
                 days: Number of days to look back (1-365, default 30).
 
-            Queries ``breathing_rate_daily`` facts. Returns daily breathing rate values.
+            Queries ``measurement_breathing_rate`` facts. Returns daily breathing rate values.
             """
             if not module._scopes_ok:
                 return module._not_connected()
@@ -426,14 +427,15 @@ class GoogleHealthModule(Module):
             time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
             return {
                 "query": f"breathing rate last {days} days",
-                "predicate": "breathing_rate_daily",
+                "predicate": "measurement_breathing_rate",
                 "scope": "health",
                 "days": days,
                 "time_from": time_from,
                 "instruction": (
                     f"Call memory_search with query='breathing rate respiratory', "
                     f"types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'breathing_rate_daily', 'time_from': {time_from!r}}}, "
+                    f"filters={{'predicate': 'measurement_breathing_rate', "
+                    f"'time_from': {time_from!r}}}, "
                     f"limit=365 to retrieve breathing rate facts for the last {days} days. "
                     f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='breathing rate')!r}"
                 ),
@@ -452,7 +454,7 @@ class GoogleHealthModule(Module):
             Args:
                 days: Number of days to look back (1-90, default 7).
 
-            Queries ``steps_daily`` and ``active_minutes_daily`` facts in the range.
+            Queries ``measurement_steps`` and ``measurement_active_minutes`` facts in the range.
             Returns per-day: steps, distance_km, floors, very_active_minutes,
             fairly_active_minutes, lightly_active_minutes, sedentary_minutes.
             Aggregate: average steps, average active minutes, days meeting 10 000 steps.
@@ -463,17 +465,18 @@ class GoogleHealthModule(Module):
             time_from = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
             return {
                 "query": f"activity steps active minutes last {days} days",
-                "predicates": ["steps_daily", "active_minutes_daily"],
+                "predicates": ["measurement_steps", "measurement_active_minutes"],
                 "scope": "health",
                 "days": days,
                 "time_from": time_from,
                 "instruction": (
                     f"Call memory_search twice: "
                     f"(1) query='daily steps activity', types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'steps_daily', 'time_from': {time_from!r}}}, "
+                    f"filters={{'predicate': 'measurement_steps', 'time_from': {time_from!r}}}, "
                     f"limit=90; "
                     f"(2) query='active minutes exercise', types=['fact'], scope='health', "
-                    f"filters={{'predicate': 'active_minutes_daily', 'time_from': {time_from!r}}}, "
+                    f"filters={{'predicate': 'measurement_active_minutes', "
+                    f"'time_from': {time_from!r}}}, "
                     f"limit=90. "
                     "Join results by date. Per-day return: steps, distance_km, floors, "
                     "very_active_minutes, fairly_active_minutes, lightly_active_minutes, "
@@ -493,19 +496,19 @@ class GoogleHealthModule(Module):
         async def health_vo2_max_latest() -> dict[str, Any]:
             """Return the most recent VO2 max measurement.
 
-            Queries the ``vo2_max`` fact for the owner entity.
+            Queries the ``measurement_vo2_max`` fact for the owner entity.
             Returns: value, range_low, range_high, midpoint, and measurement date.
             """
             if not module._scopes_ok:
                 return module._not_connected()
             return {
                 "query": "latest VO2 max",
-                "predicate": "vo2_max",
+                "predicate": "measurement_vo2_max",
                 "scope": "health",
                 "instruction": (
                     "Call memory_search with query='VO2 max cardiorespiratory fitness', "
                     "types=['fact'], scope='health', "
-                    "filters={'predicate': 'vo2_max'}, limit=1 "
+                    "filters={'predicate': 'measurement_vo2_max'}, limit=1 "
                     "to retrieve the most recent VO2 max fact. "
                     "Return: value, range_low, range_high, midpoint, and measurement date. "
                     f"If no results, return: {_NO_DATA_TEMPLATE.format(metric='VO2 max')!r}"
