@@ -14,6 +14,11 @@ Fan-out: the ``activity`` resource emits two facts per envelope —
   ``measurement_steps`` and ``measurement_active_minutes`` — with distinct
   idempotency keys suffixed ``:steps`` and ``:active_minutes``.
 
+Fan-out: the ``sleep_session`` resource emits up to two facts per envelope —
+  ``sleep_session`` (always) and ``sleep_stage_summary`` (only when stage data is
+  present in ``payload.raw`` under ``stages`` or ``stageSummary``) — with distinct
+  idempotency keys suffixed ``:session`` and ``:stage_summary``.
+
 Prometheus counter ``health_wellness_ingest_total`` is incremented once per
 emitted fact with labels ``predicate`` and ``outcome``
 (success | error | skipped_* | rejected_*).
@@ -35,7 +40,7 @@ logger = logging.getLogger(__name__)
 #
 # Maps the resource segment of ``event.external_event_id`` to a tuple of
 # canonical mem_003 predicate names.  Most resources map to a single predicate;
-# ``activity`` fans out to two facts.
+# ``activity`` fans out to two facts; ``sleep_session`` fans out to up to two.
 #
 # The connector emits external_event_id in these forms:
 #   google_health:sleep_session:<session_id>   (sleep)
@@ -47,7 +52,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _RESOURCE_TO_PREDICATES: dict[str, tuple[str, ...]] = {
-    "sleep_session": ("sleep_session",),
+    "sleep_session": ("sleep_session", "sleep_stage_summary"),
     "activity": ("measurement_steps", "measurement_active_minutes"),
     "resting_hr": ("measurement_resting_hr",),
     "hrv": ("measurement_hrv",),
@@ -55,6 +60,12 @@ _RESOURCE_TO_PREDICATES: dict[str, tuple[str, ...]] = {
     "breathing_rate": ("measurement_breathing_rate",),
     "vo2_max": ("measurement_vo2_max",),
 }
+
+# Predicates that are derived from embedded sub-data within a larger envelope.
+# When their metadata extractor returns empty (data absent), the predicate is
+# silently skipped rather than aborting the whole envelope.  The primary
+# predicate for the same resource is still written.
+_OPTIONAL_PREDICATES: frozenset[str] = frozenset({"sleep_stage_summary"})
 
 # ---------------------------------------------------------------------------
 # Metadata extractors per predicate
@@ -354,6 +365,8 @@ async def translate_wellness_envelope(
             health_wellness_ingest_total.labels(
                 predicate=predicate, outcome="skipped_malformed_payload"
             ).inc()
+            if predicate in _OPTIONAL_PREDICATES:
+                continue
             return {"status": "skipped_malformed_payload"}
 
         if not metadata:
@@ -364,6 +377,8 @@ async def translate_wellness_envelope(
             health_wellness_ingest_total.labels(
                 predicate=predicate, outcome="skipped_malformed_payload"
             ).inc()
+            if predicate in _OPTIONAL_PREDICATES:
+                continue
             return {"status": "skipped_malformed_payload"}
 
         content = normalized_text or f"wellness:{predicate}:{valid_at}"

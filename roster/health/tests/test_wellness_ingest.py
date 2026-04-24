@@ -7,6 +7,7 @@ Covers:
 4. Malformed payload (missing required field) → skipped_malformed_payload
 5. Prometheus counter increments with correct labels
 6. Activity fan-out → two facts (measurement_steps + measurement_active_minutes)
+7. Sleep stage fan-out → up to two facts (sleep_session + sleep_stage_summary)
 
 All tests are unit tests (no DB required) — DB calls are mocked.
 """
@@ -94,6 +95,49 @@ def _make_daily_envelope(
         },
         "control": {
             "idempotency_key": f"google_health:{resource}:{record_date}",
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+def _make_sleep_with_stages_envelope(
+    session_id: str = "sess-stages",
+    sender_identity: str = "user@example.com",
+    stages: dict | None = None,
+    stage_key: str = "stages",
+) -> dict:
+    """Build a sleep envelope whose raw payload includes stage data.
+
+    ``stage_key`` controls which field name carries the stage data
+    (``stages`` or ``stageSummary`` — both are accepted by the extractor).
+    """
+    stage_data = stages or {"light": 120, "deep": 90, "rem": 60, "awake": 10}
+    raw = {
+        "durationMillis": 25200000,
+        "efficiency": 87,
+        "startTime": "2026-04-24T23:00:00Z",
+        stage_key: stage_data,
+    }
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": "wellness",
+            "provider": "google_health",
+            "endpoint_identity": f"google_health:user:{sender_identity}",
+        },
+        "event": {
+            "external_event_id": f"google_health:sleep_session:{session_id}",
+            "external_thread_id": None,
+            "observed_at": "2026-04-25T06:00:00Z",
+        },
+        "sender": {"identity": sender_identity},
+        "payload": {
+            "raw": raw,
+            "normalized_text": "Slept 7h 0m (87% efficiency)",
+        },
+        "control": {
+            "idempotency_key": f"google_health:sleep:{session_id}",
             "policy_tier": "default",
             "ingestion_tier": "full",
         },
@@ -434,19 +478,33 @@ class TestSenderRejection:
 
 class TestReplayIdempotency:
     async def test_idempotency_key_forwarded_to_store_fact(self) -> None:
-        """idempotency_key from control is forwarded to memory_store_fact."""
-        envelope = _make_sleep_envelope(idempotency_key="google_health:sleep:sess-abc")
+        """idempotency_key from control is forwarded to memory_store_fact with :session suffix.
+
+        sleep_session fans out to two predicates, so the base key is suffixed:
+        - sleep_session       → <base>:session
+        - sleep_stage_summary → <base>:stage_summary (only when stage data present)
+        """
+        envelope = _make_sleep_envelope(
+            idempotency_key="google_health:sleep:sess-abc",
+            raw={
+                "durationMillis": 25200000,
+                "efficiency": 87,
+                "startTime": "2026-04-24T23:00:00Z",
+            },
+        )
         result, mock_store, _ = await _call_translate(envelope)
 
         assert result["status"] == "ok"
+        # sleep_session fact uses the :session suffix
         call_kwargs = mock_store.call_args
-        assert call_kwargs.kwargs.get("idempotency_key") == "google_health:sleep:sess-abc"
+        assert call_kwargs.kwargs.get("idempotency_key") == "google_health:sleep:sess-abc:session"
 
     async def test_second_call_uses_same_idempotency_key(self) -> None:
         """Two calls with the same idempotency_key both forward it to store_fact.
 
         The store_fact layer is responsible for deduplication; we verify the key
-        is forwarded consistently across both calls.
+        is forwarded consistently across both calls.  sleep_session is now a
+        fan-out resource so the :session suffix is expected on each call.
         """
         ikey = "google_health:sleep:sess-replay"
         envelope = _make_sleep_envelope(session_id="sess-replay", idempotency_key=ikey)
@@ -491,10 +549,12 @@ class TestReplayIdempotency:
 
         assert r1["status"] == "ok"
         assert r2["status"] == "ok"
-        # Both calls forwarded the same idempotency_key
+        # Each call writes one sleep_session fact (stage data absent in default fixture)
+        # and both forward the :session-suffixed key consistently.
         assert mock_store.call_count == 2
+        expected_ikey = f"{ikey}:session"
         for c in mock_store.call_args_list:
-            assert c.kwargs.get("idempotency_key") == ikey
+            assert c.kwargs.get("idempotency_key") == expected_ikey
 
 
 # ---------------------------------------------------------------------------
@@ -622,4 +682,119 @@ class TestPrometheusCounter:
         assert result["status"] == "ok"
         # For single-predicate resources the tuple has one element
         assert expected_predicate in _RESOURCE_TO_PREDICATES[resource]
-        mock_counter.labels.assert_called_once_with(predicate=expected_predicate, outcome="success")
+        if resource == "sleep_session":
+            # sleep_session fans out: counter called for sleep_session (success) and
+            # sleep_stage_summary (skipped — no stage data in default fixture).
+            call_predicates = {
+                c.kwargs.get("predicate") for c in mock_counter.labels.call_args_list
+            }
+            assert expected_predicate in call_predicates
+            success_calls = [
+                c
+                for c in mock_counter.labels.call_args_list
+                if c.kwargs.get("predicate") == expected_predicate
+                and c.kwargs.get("outcome") == "success"
+            ]
+            assert len(success_calls) == 1, (
+                f"Expected exactly one success counter call for {expected_predicate}"
+            )
+        else:
+            mock_counter.labels.assert_called_once_with(
+                predicate=expected_predicate, outcome="success"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 7. Sleep stage fan-out
+# ---------------------------------------------------------------------------
+
+
+class TestSleepStageFanOut:
+    """sleep_session resource fans out to sleep_session + sleep_stage_summary.
+
+    sleep_stage_summary is *optional*: when stage data is absent from the
+    payload, only the sleep_session fact is written and the overall status is
+    still ``ok``.  When stage data is present, both facts are written.
+    """
+
+    async def test_both_facts_written_when_stage_data_present(self) -> None:
+        """Sleep envelope with stage data produces two facts."""
+        envelope = _make_sleep_with_stages_envelope()
+        result, mock_store, _ = await _call_translate(envelope)
+
+        assert result["status"] == "ok"
+        assert result["facts_written"] == 2
+        assert len(result["facts"]) == 2
+
+        predicates = [f["predicate"] for f in result["facts"]]
+        assert "sleep_session" in predicates
+        assert "sleep_stage_summary" in predicates
+
+        assert mock_store.await_count == 2
+
+    async def test_only_sleep_session_written_when_stage_data_absent(self) -> None:
+        """Sleep envelope without stage data writes sleep_session only (stage is optional)."""
+        envelope = _make_sleep_envelope()  # default fixture: no stages/stageSummary
+        result, mock_store, _ = await _call_translate(envelope)
+
+        assert result["status"] == "ok"
+        assert result["facts_written"] == 1
+        assert len(result["facts"]) == 1
+        assert result["facts"][0]["predicate"] == "sleep_session"
+        # Backwards-compat fields still present for single-fact result
+        assert result["predicate"] == "sleep_session"
+        assert "fact_id" in result
+
+        mock_store.assert_awaited_once()
+
+    async def test_distinct_idempotency_keys_when_stage_data_present(self) -> None:
+        """Fan-out idempotency keys are suffixed :session and :stage_summary."""
+        envelope = _make_sleep_with_stages_envelope(session_id="sess-keys")
+        base_key = envelope["control"]["idempotency_key"]  # google_health:sleep:sess-keys
+
+        result, mock_store, _ = await _call_translate(envelope)
+
+        assert result["status"] == "ok"
+        ikeys = [c.kwargs.get("idempotency_key") for c in mock_store.call_args_list]
+        assert f"{base_key}:session" in ikeys
+        assert f"{base_key}:stage_summary" in ikeys
+        assert ikeys[0] != ikeys[1]
+
+    @pytest.mark.parametrize("stage_key", ["stages", "stageSummary"])
+    async def test_stage_data_accepted_under_both_field_names(self, stage_key: str) -> None:
+        """Stage data is extracted from either 'stages' or 'stageSummary' field."""
+        stage_data = {"light": 120, "deep": 90, "rem": 60, "awake": 10}
+        envelope = _make_sleep_with_stages_envelope(stage_key=stage_key, stages=stage_data)
+        result, mock_store, _ = await _call_translate(envelope)
+
+        assert result["status"] == "ok"
+        assert result["facts_written"] == 2
+        predicates = [f["predicate"] for f in result["facts"]]
+        assert "sleep_stage_summary" in predicates
+
+    async def test_prometheus_counter_incremented_twice_when_stage_present(self) -> None:
+        """Counter is incremented once per emitted fact (two calls when stage data present)."""
+        envelope = _make_sleep_with_stages_envelope()
+        result, _, mock_counter = await _call_translate(envelope)
+
+        assert result["status"] == "ok"
+        assert mock_counter.labels.call_count == 2
+        call_predicates = {c.kwargs.get("predicate") for c in mock_counter.labels.call_args_list}
+        assert "sleep_session" in call_predicates
+        assert "sleep_stage_summary" in call_predicates
+        for c in mock_counter.labels.call_args_list:
+            assert c.kwargs.get("outcome") == "success"
+
+    async def test_prometheus_counter_incremented_twice_when_stage_absent(self) -> None:
+        """Counter is called for sleep_session (success) and sleep_stage_summary (skipped)."""
+        envelope = _make_sleep_envelope()  # no stage data
+        result, _, mock_counter = await _call_translate(envelope)
+
+        assert result["status"] == "ok"
+        assert mock_counter.labels.call_count == 2
+        outcomes = {
+            c.kwargs.get("predicate"): c.kwargs.get("outcome")
+            for c in mock_counter.labels.call_args_list
+        }
+        assert outcomes.get("sleep_session") == "success"
+        assert outcomes.get("sleep_stage_summary") == "skipped_malformed_payload"
