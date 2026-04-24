@@ -10,8 +10,11 @@ plus the standard /health and /metrics endpoints.
 
 Key behaviors:
 - FastAPI HTTP server receiving OwnTracks webhook POSTs at /owntracks/webhook
-- Bearer token authentication via CredentialStore (owntracks_webhook_token) with
-  OWNTRACKS_WEBHOOK_TOKEN env var fallback; fail-closed if no token configured
+- Webhook authentication via CredentialStore (owntracks_webhook_token) with
+  OWNTRACKS_WEBHOOK_TOKEN env var fallback; fail-closed if no token configured.
+  Accepts either ``Authorization: Bearer <token>`` or HTTP Basic auth where the
+  password equals the configured token (matches OwnTracks mobile's native
+  username/password fields; the username is ignored).
 - Payload type dispatch: location, transition, waypoints (ignored: lwt, cmd, etc.)
 - ingest.v1 envelope normalization with privacy-conservative metadata tier default
 - Timestamp-based checkpoint via cursor_store keyed by ("owntracks", endpoint_identity)
@@ -37,7 +40,7 @@ Environment variables:
   and credentials, defaults to 'butlers')
 
 Security requirements:
-- Bearer token validated with constant-time hmac.compare_digest
+- Bearer and Basic-auth tokens validated with constant-time hmac.compare_digest
 - Connector refuses to start if no token is configured (fail-closed)
 - Raw GPS coordinates are NOT stored at rest in metadata tier (default)
 - SSID is not included in normalized text in metadata tier
@@ -46,6 +49,8 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hmac
 import json
 import logging
@@ -1007,6 +1012,11 @@ class OwnTracksConnector:
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
 
+        # Main event loop captured in start(); uvicorn runs on its own thread loop,
+        # so webhook handlers hop back to this loop before touching asyncpg / MCP
+        # state — otherwise asyncio.Lock raises "bound to a different event loop".
+        self._main_loop: asyncio.AbstractEventLoop | None = None
+
         # Retention purge (OwnTracksRetention; initialized in start() when db_pool is available)
         self._retention: OwnTracksRetention | None = None
 
@@ -1018,13 +1028,13 @@ class OwnTracksConnector:
         """Full startup sequence followed by the main webhook server loop."""
         logger.info("OwnTracksConnector starting")
         self._running = True
+        self._main_loop = asyncio.get_running_loop()
 
         try:
             # Signal handlers
             try:
-                loop = asyncio.get_running_loop()
                 for sig in (signal.SIGTERM, signal.SIGINT):
-                    loop.add_signal_handler(sig, self._handle_signal)
+                    self._main_loop.add_signal_handler(sig, self._handle_signal)
             except (NotImplementedError, OSError):
                 logger.debug("OwnTracksConnector: signal handlers not supported on this platform")
 
@@ -1407,6 +1417,36 @@ class OwnTracksConnector:
     # FastAPI application builder (webhook + health + metrics)
     # ------------------------------------------------------------------
 
+    def _dispatch_event_to_main_loop(self, body: dict[str, Any]) -> None:
+        """Schedule ``_process_webhook_event`` on the connector's main loop.
+
+        The webhook handler runs inside uvicorn's thread-local event loop, but
+        the asyncpg pool and MCP client were created on the main loop and must
+        only be touched from there. ``asyncio.run_coroutine_threadsafe`` hops
+        the coroutine across loops; we do not await its future, so the HTTP
+        response returns immediately. Exceptions are logged via a callback.
+        """
+        loop = self._main_loop
+        if loop is None or loop.is_closed():
+            logger.warning(
+                "OwnTracksConnector: main loop unavailable, dropping event (type=%r)",
+                body.get("_type"),
+            )
+            return
+
+        future = asyncio.run_coroutine_threadsafe(self._process_webhook_event(body), loop)
+
+        def _log_if_failed(f: Any) -> None:
+            try:
+                f.result()
+            except Exception:
+                logger.exception(
+                    "OwnTracksConnector: background event processing failed (type=%r)",
+                    body.get("_type"),
+                )
+
+        future.add_done_callback(_log_if_failed)
+
     def _build_app(self) -> FastAPI:
         """Build the FastAPI application serving webhook, health, and metrics."""
         app = FastAPI(title="owntracks-connector")
@@ -1414,13 +1454,8 @@ class OwnTracksConnector:
         @app.post("/owntracks/webhook")
         async def webhook(request: Request) -> JSONResponse:
             """Receive OwnTracks webhook POSTs."""
-            # Validate bearer token
             auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer "):
-                raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
-
-            provided_token = auth_header[len("Bearer ") :]
-            if not hmac.compare_digest(provided_token, self._webhook_token):
+            if not _verify_webhook_auth(auth_header, self._webhook_token):
                 raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
 
             # Parse payload
@@ -1435,14 +1470,11 @@ class OwnTracksConnector:
                     detail={"error": "Missing required field: _type"},
                 )
 
-            # Process event (non-blocking: errors are logged, not raised)
-            try:
-                await self._process_webhook_event(body)
-            except Exception:
-                logger.exception(
-                    "OwnTracksConnector: error processing webhook event (type=%r)",
-                    body.get("_type"),
-                )
+            # Dispatch processing to the main event loop (where asyncpg/MCP live)
+            # and return immediately. Awaiting inline from uvicorn's thread loop
+            # deadlocks asyncpg with "Lock bound to a different event loop", and
+            # OwnTracks mobile clients drop slow responses as SocketTimeoutException.
+            self._dispatch_event_to_main_loop(body)
 
             # OwnTracks protocol requires 200 with empty JSON array on success
             return JSONResponse(content=[])
@@ -1609,61 +1641,72 @@ async def resolve_owntracks_webhook_token(
     return None
 
 
+def _verify_webhook_auth(auth_header: str, expected_token: str) -> bool:
+    """Return True if *auth_header* authenticates against *expected_token*.
+
+    Accepts two schemes:
+    - ``Bearer <token>``: token compared directly.
+    - ``Basic base64(user:password)``: password compared (username ignored).
+      This matches the OwnTracks mobile app's native username/password fields,
+      which send HTTP Basic auth.
+
+    Comparison uses ``hmac.compare_digest`` for constant-time evaluation.
+    Returns False for missing/malformed headers or token mismatch.
+    """
+    if not auth_header or not expected_token:
+        return False
+
+    expected_bytes = expected_token.strip().encode()
+    if not expected_bytes:
+        return False
+
+    parts = auth_header.split(" ", 1)
+    if len(parts) != 2:  # noqa: PLR2004
+        return False
+
+    scheme, value = parts[0].lower(), parts[1].strip()
+    if scheme == "bearer":
+        return hmac.compare_digest(value.encode(), expected_bytes)
+    if scheme == "basic":
+        try:
+            decoded = base64.b64decode(value, validate=True).decode("utf-8", errors="strict")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            return False
+        if ":" not in decoded:
+            return False
+        _, password = decoded.split(":", 1)
+        return hmac.compare_digest(password.encode(), expected_bytes)
+    return False
+
+
 def make_bearer_auth_dependency(*, token: str):
-    """Return a FastAPI dependency that validates ``Authorization: Bearer`` headers.
+    """Return a FastAPI dependency that authenticates the webhook ``Authorization`` header.
 
-    The provided *token* is compared against the ``Authorization`` header value
-    using ``hmac.compare_digest`` to prevent timing-based side-channel attacks.
+    Accepts ``Bearer <token>`` or HTTP Basic auth (password compared to *token*,
+    username ignored) — Basic support exists because OwnTracks mobile's
+    username/password fields send Basic auth natively.
 
-    Requests with a missing, malformed, or non-matching token receive HTTP 401.
-    Payload content is never logged for unauthenticated requests to prevent
-    information leakage.
-
-    Parameters
-    ----------
-    token:
-        The expected bearer token (resolved at startup via
-        :func:`resolve_owntracks_webhook_token`).
-
-    Returns
-    -------
-    Callable
-        A FastAPI dependency function suitable for use with ``Depends()``.
+    Comparison uses ``hmac.compare_digest`` for constant-time evaluation.
+    Requests with a missing, malformed, or non-matching credential receive 401.
 
     Raises
     ------
     ValueError
         If *token* is empty (fail-closed: refuse to create dependency with
-        an empty token that would match any empty-string bearer value).
+        an empty token that would match any empty credential).
     """
     normalized_token = token.strip()
     if not normalized_token:
         raise ValueError("make_bearer_auth_dependency: token must be a non-empty string")
 
-    async def _require_bearer_token(
+    async def _require_webhook_auth(
         authorization: Annotated[str | None, Header()] = None,
     ) -> None:
-        """Validate the Authorization: Bearer <token> header.
-
-        Returns HTTP 401 if the header is missing, malformed, or token mismatch.
-        Uses constant-time comparison to prevent timing attacks.
-        """
-        if authorization is None:
-            logger.debug("OwnTracks webhook: rejected request — missing Authorization header")
+        if authorization is None or not _verify_webhook_auth(authorization, normalized_token):
+            logger.debug("OwnTracks webhook: rejected request — auth failure")
             raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
 
-        parts = authorization.split(" ", 1)
-        if len(parts) != 2 or parts[0].lower() != "bearer":  # noqa: PLR2004
-            logger.debug("OwnTracks webhook: rejected request — malformed Authorization header")
-            raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
-
-        # Strip any whitespace padding from the provided token value.
-        provided_token = parts[1].strip()
-        if not hmac.compare_digest(provided_token.encode(), normalized_token.encode()):
-            logger.debug("OwnTracks webhook: rejected request — token mismatch")
-            raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
-
-    return _require_bearer_token
+    return _require_webhook_auth
 
 
 def build_webhook_app(*, token: str) -> FastAPI:

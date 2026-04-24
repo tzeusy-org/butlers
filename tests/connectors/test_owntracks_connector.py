@@ -14,9 +14,12 @@ Verifies:
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from butlers.connectors.owntracks import (
+    _verify_webhook_auth,
     build_location_envelope,
     build_location_normalized_text,
     build_transition_envelope,
@@ -121,3 +124,42 @@ def test_waypoints_envelope_schema_version() -> None:
     payload = {"_type": "waypoints", "tst": 1711447400, "tid": "ph", "waypoints": []}
     env = build_waypoints_envelope(payload, _ENDPOINT, _OBSERVED, "metadata")
     assert env["schema_version"] == "ingest.v1"
+
+
+_TOKEN = "s3cret-token"
+
+
+def _basic(user: str, password: str) -> str:
+    return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        f"Bearer {_TOKEN}",
+        _basic("zoos", _TOKEN),
+        _basic("", _TOKEN),  # OwnTracks clients may send empty username
+    ],
+)
+def test_verify_webhook_auth_accepts_valid_credentials(header: str) -> None:
+    assert _verify_webhook_auth(header, _TOKEN) is True
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "",
+        "Bearer wrong",
+        "Bearer",
+        "bogus scheme",
+        _basic("zoos", "wrong"),
+        "Basic not-base64!!",
+        "Basic " + base64.b64encode(b"no-colon-here").decode(),
+    ],
+)
+def test_verify_webhook_auth_rejects_invalid_credentials(header: str) -> None:
+    assert _verify_webhook_auth(header, _TOKEN) is False
+
+
+def test_verify_webhook_auth_rejects_empty_expected_token() -> None:
+    assert _verify_webhook_auth(f"Bearer {_TOKEN}", "") is False
