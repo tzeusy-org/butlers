@@ -187,6 +187,18 @@ def test_severity_filtering(level, event, exception, expected):
     assert _should_include_entry(entry) is expected
 
 
+def test_codex_mcp_discovery_exhaustion_excluded_from_log_scanner():
+    """Recovered Codex MCP-discovery guard logs should not page QA via log_scanner."""
+    entry = LogEntry(
+        level="error",
+        event="MCP discovery failed after 3 attempts — aborting session to prevent runaway token usage from bash-only fallback",
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.runtimes.codex",
+    )
+    assert _should_include_entry(entry) is False
+
+
 @pytest.mark.asyncio
 async def test_finding_structure_and_pii(tmp_path):
     """QaFinding fields populated; PII stripped from event_summary."""
@@ -595,3 +607,35 @@ async def test_structured_evidence_with_trigger_source(tmp_path):
     ev = findings[0].structured_evidence
     assert ev is not None
     assert ev.get("trigger_source") == "schedule"
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_codex_mcp_discovery_exhaustion_logs(tmp_path):
+    """Raw Codex MCP-discovery exhaustion logs are suppressed in favor of session_records."""
+    now = datetime.now(UTC)
+    _write(
+        tmp_path / "butlers" / "switchboard.log",
+        [
+            _line(
+                level="error",
+                event="MCP discovery failed after 3 attempts — aborting session to prevent runaway token usage from bash-only fallback",
+                ts=now,
+                butler_name="switchboard",
+                logger_name="butlers.core.runtimes.codex",
+                exception=None,
+            ),
+            _line(
+                level="error",
+                event="Database connection refused",
+                ts=now,
+                butler_name="switchboard",
+                logger_name="butlers.core.db",
+                exception="ConnectionError",
+            ),
+        ],
+    )
+
+    findings = await LogScannerSource(log_root=tmp_path).discover(lookback_minutes=15)
+
+    assert len(findings) == 1
+    assert "database connection refused" in findings[0].event_summary.lower()

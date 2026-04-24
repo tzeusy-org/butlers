@@ -221,6 +221,15 @@ def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
 
 def _should_include_entry(entry: LogEntry) -> bool:
     """Return True if this log entry qualifies for finding extraction."""
+    # Codex MCP-discovery exhaustion is better sourced from session_records:
+    # the runtime/session tables tell us whether the session actually failed,
+    # while the raw adapter log can be emitted on a path that later recovers.
+    if (
+        entry.logger == "butlers.core.runtimes.codex"
+        and "MCP discovery failed after" in entry.event
+    ):
+        return False
+
     if entry.level in _ERROR_LEVELS:
         return True
     if entry.level in _WARNING_LEVELS:
