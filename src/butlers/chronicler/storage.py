@@ -235,20 +235,79 @@ async def upsert_checkpoint(
 ) -> None:
     """Record a projection run result on ``projection_checkpoints``.
 
+    Operates on the **global** checkpoint row (``subsource = ''``).
+    For per-schema checkpoints use :func:`upsert_checkpoint_subsource`.
+
     On success: updates watermark, last_success_at, rows_projected, clears
     last_error. On failure: records last_error and last_run_at but does
     NOT advance the watermark.
+    """
+    await _upsert_checkpoint_row(
+        conn,
+        source_name=source_name,
+        subsource="",
+        watermark=watermark,
+        success=success,
+        rows_projected=rows_projected,
+        error=error,
+    )
+
+
+async def upsert_checkpoint_subsource(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+    subsource: str,
+    *,
+    watermark: datetime | None = None,
+    success: bool,
+    rows_projected: int = 0,
+    error: str | None = None,
+) -> None:
+    """Record a projection run result for a specific sub-source.
+
+    ``subsource`` is a non-empty string identifying the sub-source within
+    the adapter (e.g. a butler schema name for ``CoreSessionsAdapter``).
+    Per-sub-source rows are keyed on ``(source_name, subsource)`` and
+    tracked independently of the global checkpoint.
+    """
+    if not subsource:
+        raise ValueError("subsource must be a non-empty string")
+    await _upsert_checkpoint_row(
+        conn,
+        source_name=source_name,
+        subsource=subsource,
+        watermark=watermark,
+        success=success,
+        rows_projected=rows_projected,
+        error=error,
+    )
+
+
+async def _upsert_checkpoint_row(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    source_name: str,
+    subsource: str,
+    watermark: datetime | None,
+    success: bool,
+    rows_projected: int,
+    error: str | None,
+) -> None:
+    """Internal upsert shared by global and per-subsource checkpoint writes.
+
+    After migration 002 the primary key is ``(source_name, subsource)``
+    where ``subsource = ''`` denotes the global (adapter-level) row.
     """
     now = _utcnow()
     if success:
         await conn.execute(
             """
             INSERT INTO projection_checkpoints (
-                source_name, watermark, last_run_at, last_success_at,
+                source_name, subsource, watermark, last_run_at, last_success_at,
                 last_error, rows_projected, run_count, updated_at
             )
-            VALUES ($1, $2, $3, $3, NULL, $4, 1, $3)
-            ON CONFLICT (source_name) DO UPDATE SET
+            VALUES ($1, $2, $3, $4, $4, NULL, $5, 1, $4)
+            ON CONFLICT (source_name, subsource) DO UPDATE SET
                 watermark = COALESCE(EXCLUDED.watermark, projection_checkpoints.watermark),
                 last_run_at = EXCLUDED.last_run_at,
                 last_success_at = EXCLUDED.last_success_at,
@@ -258,6 +317,7 @@ async def upsert_checkpoint(
                 updated_at = EXCLUDED.updated_at
             """,
             source_name,
+            subsource,
             watermark,
             now,
             rows_projected,
@@ -266,34 +326,28 @@ async def upsert_checkpoint(
         await conn.execute(
             """
             INSERT INTO projection_checkpoints (
-                source_name, watermark, last_run_at, last_success_at,
+                source_name, subsource, watermark, last_run_at, last_success_at,
                 last_error, rows_projected, run_count, updated_at
             )
-            VALUES ($1, NULL, $2, NULL, $3, 0, 1, $2)
-            ON CONFLICT (source_name) DO UPDATE SET
+            VALUES ($1, $2, NULL, $3, NULL, $4, 0, 1, $3)
+            ON CONFLICT (source_name, subsource) DO UPDATE SET
                 last_run_at = EXCLUDED.last_run_at,
                 last_error = EXCLUDED.last_error,
                 run_count = projection_checkpoints.run_count + 1,
                 updated_at = EXCLUDED.updated_at
             """,
             source_name,
+            subsource,
             now,
             error,
         )
 
 
-async def get_checkpoint(
-    conn: asyncpg.Connection | asyncpg.Pool,
-    source_name: str,
-) -> ProjectionCheckpoint | None:
-    row = await conn.fetchrow(
-        "SELECT * FROM projection_checkpoints WHERE source_name = $1",
-        source_name,
-    )
-    if row is None:
-        return None
+def _row_to_checkpoint(row: asyncpg.Record) -> ProjectionCheckpoint:
+    raw_subsource = row["subsource"] if "subsource" in row.keys() else ""
     return ProjectionCheckpoint(
         source_name=row["source_name"],
+        subsource=raw_subsource if raw_subsource else None,
         watermark=row["watermark"],
         last_run_at=row["last_run_at"],
         last_success_at=row["last_success_at"],
@@ -302,6 +356,38 @@ async def get_checkpoint(
         run_count=row["run_count"],
         updated_at=row["updated_at"],
     )
+
+
+async def get_checkpoint(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+) -> ProjectionCheckpoint | None:
+    """Fetch the global checkpoint (``subsource = ''``) for a source."""
+    row = await conn.fetchrow(
+        "SELECT * FROM projection_checkpoints WHERE source_name = $1 AND subsource = ''",
+        source_name,
+    )
+    if row is None:
+        return None
+    return _row_to_checkpoint(row)
+
+
+async def get_checkpoint_subsource(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+    subsource: str,
+) -> ProjectionCheckpoint | None:
+    """Fetch the per-subsource checkpoint for ``(source_name, subsource)``."""
+    if not subsource:
+        raise ValueError("subsource must be a non-empty string")
+    row = await conn.fetchrow(
+        "SELECT * FROM projection_checkpoints WHERE source_name = $1 AND subsource = $2",
+        source_name,
+        subsource,
+    )
+    if row is None:
+        return None
+    return _row_to_checkpoint(row)
 
 
 # ── Point events ──────────────────────────────────────────────────────────
@@ -673,6 +759,7 @@ async def record_idempotency(
 
 __all__: Sequence[str] = (
     "get_checkpoint",
+    "get_checkpoint_subsource",
     "get_episode",
     "get_source_state",
     "insert_override",
@@ -686,6 +773,7 @@ __all__: Sequence[str] = (
     "record_idempotency",
     "register_source",
     "upsert_checkpoint",
+    "upsert_checkpoint_subsource",
     "upsert_episode",
     "upsert_point_event",
 )

@@ -80,9 +80,14 @@ class SourceAdapterState:
 
 @dataclass
 class ProjectionCheckpoint:
-    """Row in `chronicler.projection_checkpoints`."""
+    """Row in `chronicler.projection_checkpoints`.
+
+    ``subsource`` is ``None`` for global (adapter-level) checkpoints and a
+    non-empty string (e.g. the butler schema name) for per-sub-source rows.
+    """
 
     source_name: str
+    subsource: str | None = None
     watermark: datetime | None = None
     last_run_at: datetime | None = None
     last_success_at: datetime | None = None

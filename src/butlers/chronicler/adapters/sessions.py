@@ -40,7 +40,9 @@ from butlers.chronicler.models import (
     Privacy,
 )
 from butlers.chronicler.storage import (
+    get_checkpoint_subsource,
     link_event_to_episode,
+    upsert_checkpoint_subsource,
     upsert_episode,
     upsert_point_event,
 )
@@ -77,11 +79,25 @@ class CoreSessionsAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
     ) -> AdapterResult:
+        """Project sessions from each butler schema using per-schema watermarks.
+
+        Each schema's projection cursor is tracked independently via
+        ``(source_name, schema)`` in ``projection_checkpoints``. The ``since``
+        argument (global adapter watermark from the base ``run()`` method) is
+        used only as a fallback for schemas that have no per-schema checkpoint
+        yet (first run after migration).
+
+        ``AdapterResult.watermark`` is set to the minimum per-schema watermark
+        after all schemas are projected. This gives the base class's checkpoint
+        write a conservative summary value — it does not affect per-schema
+        correctness.
+        """
         result = AdapterResult(source_name=self.source_name)
-        latest_watermark: datetime | None = since
+        schema_watermarks: list[datetime] = []
 
         for schema in self.butler_schemas:
-            schema_rows, schema_watermark = await self._fetch_sessions(pool, schema, since)
+            schema_since = await self._get_schema_watermark(chronicler_pool, schema, fallback=since)
+            schema_rows, schema_watermark = await self._fetch_sessions(pool, schema, schema_since)
             if schema_rows is None:
                 # Schema missing / optional source unavailable — degrade.
                 result.warnings.append(f"sessions table missing for schema {schema!r}; skipping")
@@ -96,13 +112,40 @@ class CoreSessionsAdapter(ProjectionAdapter):
                     result.episodes_closed += 1
                 result.rows_projected += 1
 
-            if schema_watermark is not None and (
-                latest_watermark is None or schema_watermark > latest_watermark
-            ):
-                latest_watermark = schema_watermark
+            if schema_watermark is not None:
+                await upsert_checkpoint_subsource(
+                    chronicler_pool,
+                    self.source_name,
+                    schema,
+                    watermark=schema_watermark,
+                    success=True,
+                    rows_projected=len(schema_rows),
+                )
+                schema_watermarks.append(schema_watermark)
+            elif schema_since is not None:
+                # Include the existing watermark for schemas with no new rows
+                # to keep the global summary conservative.
+                schema_watermarks.append(schema_since)
 
-        result.watermark = latest_watermark
+        # Report the minimum per-schema watermark so the base class writes a
+        # conservative global summary. A schema with no new rows contributes
+        # its existing per-schema watermark (or None) to this floor.
+        if schema_watermarks:
+            result.watermark = min(schema_watermarks)
         return result
+
+    async def _get_schema_watermark(
+        self,
+        chronicler_pool: asyncpg.Pool,
+        schema: str,
+        *,
+        fallback: datetime | None,
+    ) -> datetime | None:
+        """Return the per-schema watermark, falling back to ``fallback``."""
+        cp = await get_checkpoint_subsource(chronicler_pool, self.source_name, schema)
+        if cp is not None and cp.watermark is not None:
+            return cp.watermark
+        return fallback
 
     async def _fetch_sessions(
         self,
