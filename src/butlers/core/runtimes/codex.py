@@ -173,6 +173,62 @@ def _has_mcp_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
     return any(tc.get("name") != "command_execution" for tc in tool_calls)
 
 
+def _should_retry_mcp_discovery(
+    *,
+    mcp_servers: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+    process_info: dict[str, Any] | None,
+) -> bool:
+    """Return whether zero-tool output likely reflects MCP discovery failure.
+
+    A successful Codex session with configured MCP servers is still allowed to
+    produce a plain text answer with no tool calls. Treating every such session
+    as a transport failure manufactures false ``MCPToolDiscoveryError``
+    failures for legitimate no-tool replies.
+
+    We only enter the retry/error path when there is affirmative evidence that
+    Codex expected tool access but likely missed the MCP registration:
+    - bash-only ``command_execution`` output (the common degraded fallback), or
+    - stderr diagnostics that mention MCP / transport / connection failures.
+    """
+    if not mcp_servers or _has_mcp_tool_calls(tool_calls):
+        return False
+
+    if any(tc.get("name") == "command_execution" for tc in tool_calls):
+        return True
+
+    stderr = ""
+    if isinstance(process_info, dict):
+        raw_stderr = process_info.get("stderr")
+        if isinstance(raw_stderr, str):
+            stderr = raw_stderr
+        elif raw_stderr:
+            stderr = str(raw_stderr)
+
+    lowered = stderr.lower()
+    # Use specific failure-state phrases rather than bare tokens like "mcp" or
+    # "connect", which appear in benign progress/status diagnostics (e.g.
+    # "MCP connection established") and would otherwise re-introduce the false
+    # positives this helper exists to prevent.
+    markers = (
+        "mcp tool discovery failed",
+        "mcp discovery failed",
+        "mcp connection failed",
+        "failed to connect",
+        "failed to start mcp",
+        "rmcp",
+        "connection refused",
+        "connection reset",
+        "timed out",
+        "transport error",
+        "streamable_http",
+        "text/event-stream",
+        "method not allowed",
+        "unsupported media type",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
     """Return True when an event object appears to encode a tool call."""
     obj_type = str(obj.get("type", ""))
@@ -774,7 +830,11 @@ class CodexAdapter(RuntimeAdapter):
             # but the CLI failed to discover them (intermittent MCP connection
             # failure).  Codex CLI v0.121.0 has a race where it can start
             # processing the prompt before MCP tools are fully registered.
-            mcp_failed = mcp_servers and not _has_mcp_tool_calls(tool_calls)
+            mcp_failed = _should_retry_mcp_discovery(
+                mcp_servers=mcp_servers,
+                tool_calls=tool_calls,
+                process_info=self._last_process_info,
+            )
             if mcp_failed:
                 # Snapshot first-attempt process info before retries overwrite it.
                 first_info = dict(self._last_process_info) if self._last_process_info else None

@@ -373,6 +373,26 @@ def _make_bash_only_stdout() -> bytes:
     ).encode()
 
 
+def _make_text_only_stdout() -> bytes:
+    """Build Codex JSON-lines output with a valid plain-text-only answer."""
+    return (
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "msg1",
+                    "type": "agent_message",
+                    "text": "Here is a direct answer that does not need tools.",
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {"type": "result", "result": "Here is a direct answer that does not need tools."}
+        )
+    ).encode()
+
+
 _MCP_SERVERS = {"switchboard": {"url": "http://localhost:41100/mcp"}}
 
 
@@ -468,6 +488,38 @@ async def test_no_retry_without_mcp_servers():
         await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
 
     assert call_count == 1, "Should NOT retry when no MCP servers configured"
+
+
+async def test_no_retry_when_mcp_servers_present_but_response_is_text_only():
+    """Plain text replies remain valid even when MCP servers are configured."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(_make_text_only_stdout(), b""))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        result_text, tool_calls, _ = await adapter.invoke(
+            prompt="say hello directly",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    assert call_count == 1, "Plain text sessions must not be retried as MCP failures"
+    assert result_text is not None
+    assert "Here is a direct answer that does not need tools." in result_text
+    assert tool_calls == []
+    info = adapter.last_process_info
+    assert info["mcp_connection_failed"] is False
+    assert info["attempt_count"] == 1
 
 
 async def test_qa_context_single_execution_bash_only():
