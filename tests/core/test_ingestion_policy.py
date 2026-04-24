@@ -39,6 +39,7 @@ from butlers.ingestion_policy import (
     _match_mime_type,
     _match_sender_address,
     _match_sender_domain,
+    _match_source_channel,
     _match_substring,
 )
 from butlers.ingestion_policy_metrics import (
@@ -265,6 +266,17 @@ def test_all_matchers() -> None:
     ]
     assert ev_mic.evaluate(_voice_envelope(mic_id="kitchen")).action == "block"
     assert ev_mic.evaluate(_voice_envelope(mic_id="bedroom")).action == "pass_through"
+
+    # source_channel: match, no match, wildcard, empty-channel wildcard rejection
+    assert "source_channel" in _KNOWN_RULE_TYPES
+    owntracks_env = IngestionEnvelope(source_channel="owntracks")
+    email_env = IngestionEnvelope(source_channel="email")
+    empty_env = IngestionEnvelope(source_channel="")
+    assert _match_source_channel(owntracks_env, {"source_channel": "owntracks"})
+    assert not _match_source_channel(email_env, {"source_channel": "owntracks"})
+    assert _match_source_channel(owntracks_env, {"source_channel": "*"})
+    assert not _match_source_channel(empty_env, {"source_channel": "*"})
+    assert not _match_source_channel(owntracks_env, {"source_channel": ""})
 
 
 # ---------------------------------------------------------------------------

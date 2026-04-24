@@ -51,6 +51,7 @@ _KNOWN_RULE_TYPES = frozenset(
         "chat_id",
         "channel_id",
         "mic_id",
+        "source_channel",
     }
 )
 
@@ -356,6 +357,24 @@ def _match_mic_id(envelope: IngestionEnvelope, condition: dict[str, Any]) -> boo
     return envelope.raw_key.strip().lower() == target
 
 
+def _match_source_channel(envelope: IngestionEnvelope, condition: dict[str, Any]) -> bool:
+    """Match on the envelope's ``source_channel`` (e.g. ``'owntracks'``, ``'email'``).
+
+    Condition schema: ``{"source_channel": "owntracks"}``. Comparison is exact
+    and case-sensitive; the ``"*"`` wildcard matches any non-empty channel.
+
+    Intended for high-volume, low-semantic-value channels (like location pings)
+    where a ``'skip'`` action bypasses the LLM classification session while the
+    row still lands in ``public.ingestion_events`` for direct DB querying.
+    """
+    target = str(condition.get("source_channel", "")).strip()
+    if not target:
+        return False
+    if target == "*":
+        return bool(envelope.source_channel)
+    return envelope.source_channel == target
+
+
 # Map rule_type → matcher function
 _MATCHERS: dict[str, Any] = {
     "sender_domain": _match_sender_domain,
@@ -366,6 +385,7 @@ _MATCHERS: dict[str, Any] = {
     "chat_id": _match_chat_id,
     "channel_id": _match_channel_id,
     "mic_id": _match_mic_id,
+    "source_channel": _match_source_channel,
 }
 
 
