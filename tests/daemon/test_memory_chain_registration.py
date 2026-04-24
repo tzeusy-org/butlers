@@ -68,13 +68,18 @@ class TestMemoryChainRegistration:
         migration_files = sorted(
             f.name for f in chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
         )
-        assert migration_files == ["001_memory_schema.py", "002_seed_predicates.py"]
+        assert migration_files == [
+            "001_memory_schema.py",
+            "002_seed_predicates.py",
+            "003_wellness_predicates.py",
+        ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
 
         _EXPECTED_CHAIN = [
             ("001_memory_schema.py", "mem_001", None),
             ("002_seed_predicates.py", "mem_002", "mem_001"),
+            ("003_wellness_predicates.py", "mem_003", "mem_002"),
         ]
 
         def _load_migration(filename: str):
@@ -100,13 +105,13 @@ class TestMemoryChainRegistration:
         root = _load_migration(_EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_002"
+        current = "mem_003"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
             path.append(current)
         path.reverse()
-        assert path == ["mem_001", "mem_002"]
+        assert path == ["mem_001", "mem_002", "mem_003"]
 
 
 class TestRelationshipChainRegistration:

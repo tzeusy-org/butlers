@@ -98,15 +98,36 @@ def _infer_mcp_transport_from_url(url: str) -> str | None:
 
 
 def _looks_like_transport_failure(error_detail: str) -> bool:
-    """Best-effort detection for MCP transport mismatch failures."""
+    """Best-effort detection for MCP transport / discovery / connection failures.
+
+    Used both to enrich post-hoc transport-mismatch error messages
+    (``_augment_transport_error_detail``) and to decide whether a zero-tool-call
+    Codex session should be retried as a suspected MCP discovery failure
+    (``_should_retry_mcp_discovery``).
+
+    Markers are deliberately specific failure-state phrases — bare tokens like
+    ``"mcp"`` or ``"connect"`` would match benign progress diagnostics
+    (e.g. ``"MCP connection established"``) and re-introduce false positives.
+    """
     lowered = error_detail.lower()
     markers = (
-        "rmcp startup failed",
+        # Codex CLI MCP discovery / startup failures
+        "mcp tool discovery failed",
+        "mcp discovery failed",
+        "mcp connection failed",
+        "failed to start mcp",
+        "rmcp",
+        # Generic transport / connection failures
+        "failed to connect",
+        "connection refused",
+        "connection reset",
+        "timed out",
+        "transport",
+        # HTTP-level transport mismatch hints
         "streamable_http",
         "text/event-stream",
         "method not allowed",
         "unsupported media type",
-        "transport",
     )
     return any(marker in lowered for marker in markers)
 
@@ -189,7 +210,8 @@ def _should_retry_mcp_discovery(
     We only enter the retry/error path when there is affirmative evidence that
     Codex expected tool access but likely missed the MCP registration:
     - bash-only ``command_execution`` output (the common degraded fallback), or
-    - stderr diagnostics that mention MCP / transport / connection failures.
+    - stderr that matches a known MCP / transport / connection failure marker
+      (see ``_looks_like_transport_failure``).
     """
     if not mcp_servers or _has_mcp_tool_calls(tool_calls):
         return False
@@ -205,28 +227,7 @@ def _should_retry_mcp_discovery(
         elif raw_stderr:
             stderr = str(raw_stderr)
 
-    lowered = stderr.lower()
-    # Use specific failure-state phrases rather than bare tokens like "mcp" or
-    # "connect", which appear in benign progress/status diagnostics (e.g.
-    # "MCP connection established") and would otherwise re-introduce the false
-    # positives this helper exists to prevent.
-    markers = (
-        "mcp tool discovery failed",
-        "mcp discovery failed",
-        "mcp connection failed",
-        "failed to connect",
-        "failed to start mcp",
-        "rmcp",
-        "connection refused",
-        "connection reset",
-        "timed out",
-        "transport error",
-        "streamable_http",
-        "text/event-stream",
-        "method not allowed",
-        "unsupported media type",
-    )
-    return any(marker in lowered for marker in markers)
+    return _looks_like_transport_failure(stderr)
 
 
 def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
