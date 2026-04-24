@@ -21,6 +21,7 @@ from butlers.api.routers.oauth import (
     _generate_state,
     _store_state,
     _validate_and_consume_state,
+    _widen_scopes,
 )
 
 pytestmark = pytest.mark.unit
@@ -89,6 +90,49 @@ def _make_app(
 # ---------------------------------------------------------------------------
 # State store (unit)
 # ---------------------------------------------------------------------------
+
+
+class TestWidenScopes:
+    """Unit tests for the _widen_scopes helper."""
+
+    def test_adds_missing_scopes(self):
+        base = "openid email"
+        granted = ["openid", "https://www.googleapis.com/auth/calendar"]
+        result = _widen_scopes(base, granted)
+        parts = result.split()
+        assert "openid" in parts
+        assert "email" in parts
+        assert "https://www.googleapis.com/auth/calendar" in parts
+
+    def test_no_duplicates(self):
+        base = "openid email"
+        granted = ["openid", "email"]
+        result = _widen_scopes(base, granted)
+        parts = result.split()
+        assert parts.count("openid") == 1
+        assert parts.count("email") == 1
+
+    def test_empty_granted_scopes_returns_original(self):
+        base = "openid email"
+        result = _widen_scopes(base, [])
+        assert result == base
+
+    def test_preserves_requested_scope_order(self):
+        base = "openid email profile"
+        granted = ["https://www.googleapis.com/auth/calendar"]
+        result = _widen_scopes(base, granted)
+        parts = result.split()
+        # First three must be the requested scopes in original order.
+        assert parts[:3] == ["openid", "email", "profile"]
+        # Calendar appended after.
+        assert parts[3] == "https://www.googleapis.com/auth/calendar"
+
+    def test_never_removes_scopes_from_base(self):
+        base = "openid email https://www.googleapis.com/auth/calendar"
+        granted = ["openid"]  # granted is a subset of base
+        result = _widen_scopes(base, granted)
+        parts = set(result.split())
+        assert "https://www.googleapis.com/auth/calendar" in parts
 
 
 class TestStateStore:
@@ -301,6 +345,184 @@ class TestScopeSetSelector:
         scope_list = _extract_scope_param(resp.json()["authorization_url"])
         # No duplicate entries in the scope list.
         assert len(scope_list) == len(set(scope_list))
+
+
+# ---------------------------------------------------------------------------
+# Scope widening (bu-xmirt)
+# ---------------------------------------------------------------------------
+
+_GET_ACCOUNT_PATCH = "butlers.api.routers.oauth.get_google_account"
+
+_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
+_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+_HEALTH_SCOPES = frozenset(
+    [
+        "https://www.googleapis.com/auth/googlehealth.sleep",
+        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+    ]
+)
+
+
+def _make_mock_account(granted_scopes: list[str]) -> MagicMock:
+    """Return a minimal GoogleAccount mock with the given granted_scopes."""
+    account = MagicMock()
+    account.granted_scopes = granted_scopes
+    account.is_primary = False
+    account.status = "active"
+    return account
+
+
+def _make_app_with_scope_widening(
+    app,
+    *,
+    existing_granted_scopes: list[str],
+    account_hint: str = "user@example.com",
+):
+    """Wire app so get_google_account returns an account with given granted_scopes.
+
+    Uses patch context manager rather than DB-level mock so we can control
+    the granted_scopes precisely without reimplementing the full asyncpg row
+    adapter.  The fixture is consumed by the test via the returned patch context.
+    """
+    return _make_app(app), _make_mock_account(existing_granted_scopes)
+
+
+class TestScopeWidening:
+    """Scope-widening: union granted_scopes into the requested scope_set."""
+
+    async def test_single_set_request_unions_granted_scopes(self, app):
+        """GET /google/start?scope_set=health with a hinted account that has calendar+drive
+        granted must return an auth URL that includes calendar+drive+health+base."""
+        _make_app(app)
+        existing_granted = [
+            _CALENDAR_SCOPE,
+            _DRIVE_SCOPE,
+            _DRIVE_READONLY_SCOPE,
+        ]
+        mock_account = _make_mock_account(existing_granted)
+        with patch(_GET_ACCOUNT_PATCH, AsyncMock(return_value=mock_account)):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/start",
+                    params={
+                        "redirect": "false",
+                        "scope_set": "health",
+                        "account_hint": "user@example.com",
+                    },
+                )
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # Health scopes present (requested set).
+        assert _HEALTH_SCOPES.issubset(scopes)
+        # Previously-granted scopes are retained (scope-widening).
+        assert _CALENDAR_SCOPE in scopes
+        assert _DRIVE_SCOPE in scopes
+        assert _DRIVE_READONLY_SCOPE in scopes
+        # Base scopes always present.
+        assert "openid" in scopes
+
+    async def test_multi_set_request_unions_granted_scopes(self, app):
+        """GET /google/start?scope_set=health with multiple sets still unions granted_scopes."""
+        _make_app(app)
+        existing_granted = [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
+        ]
+        mock_account = _make_mock_account(existing_granted)
+        with patch(_GET_ACCOUNT_PATCH, AsyncMock(return_value=mock_account)):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/start",
+                    params={
+                        "redirect": "false",
+                        "scope_set": "calendar,health",
+                        "account_hint": "user@example.com",
+                        "force_consent": "true",
+                    },
+                )
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # Requested sets are present.
+        assert _HEALTH_SCOPES.issubset(scopes)
+        assert _CALENDAR_SCOPE in scopes
+        # Previously-granted Gmail scopes are unioned in.
+        assert "https://www.googleapis.com/auth/gmail.modify" in scopes
+
+    async def test_no_account_hint_no_widening(self, app):
+        """Without account_hint, no DB lookup is done — only the requested set is returned."""
+        _make_app(app)
+        # Even if get_google_account would be callable it must NOT be called without a hint.
+        with patch(
+            _GET_ACCOUNT_PATCH, AsyncMock(side_effect=AssertionError("should not be called"))
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/start",
+                    params={"redirect": "false", "scope_set": "health"},
+                )
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # Health scopes present.
+        assert _HEALTH_SCOPES.issubset(scopes)
+        # Calendar not requested and no account to widen from.
+        assert _CALENDAR_SCOPE not in scopes
+
+    async def test_unknown_account_hint_treated_as_no_hint(self, app):
+        """When account_hint is provided but the account is not found, no widening occurs."""
+        from butlers.google_account_registry import GoogleAccountNotFoundError
+
+        _make_app(app)
+        with (
+            patch(
+                _GET_ACCOUNT_PATCH, AsyncMock(side_effect=GoogleAccountNotFoundError("not found"))
+            ),
+            patch("butlers.api.routers.oauth._check_account_limit", AsyncMock(return_value=None)),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/start",
+                    params={
+                        "redirect": "false",
+                        "scope_set": "health",
+                        "account_hint": "unknown@example.com",
+                    },
+                )
+        # Must succeed (not 400) — unknown account hint is treated as a new account.
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # Health scopes are present (the requested set).
+        assert _HEALTH_SCOPES.issubset(scopes)
+        # No calendar without widening.
+        assert _CALENDAR_SCOPE not in scopes
+
+    async def test_no_scope_set_backward_compat_not_affected(self, app):
+        """Omitting scope_set is not affected by scope-widening logic at all."""
+        _make_app(app)
+        existing_granted = [_CALENDAR_SCOPE, _DRIVE_SCOPE]
+        mock_account = _make_mock_account(existing_granted)
+        # Even if get_google_account returns an account, no widening on default path.
+        with patch(_GET_ACCOUNT_PATCH, AsyncMock(return_value=mock_account)):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/start",
+                    params={"redirect": "false", "account_hint": "user@example.com"},
+                )
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # Default composition must not include health scopes.
+        assert _HEALTH_SCOPES.isdisjoint(scopes)
 
 
 # ---------------------------------------------------------------------------

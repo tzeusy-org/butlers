@@ -276,6 +276,34 @@ def _compose_scopes_from_sets(set_names: list[str]) -> str:
     return " ".join(scopes)
 
 
+def _widen_scopes(scope_str: str, granted_scopes: list[str]) -> str:
+    """Union ``granted_scopes`` into ``scope_str`` (scope-widening, never scope-replacement).
+
+    Preserves the original scope order and appends any previously-granted scopes
+    that are not yet present in the requested scope string.  The result is always
+    a superset of ``scope_str`` — scopes are never removed.
+
+    Parameters
+    ----------
+    scope_str:
+        Space-separated OAuth scope string derived from the requested scope_set.
+    granted_scopes:
+        Scopes already stored in ``public.google_accounts.granted_scopes`` for
+        the hinted account.  Only this account's scopes are unioned — cross-account
+        scope leakage is prevented by the caller.
+
+    Returns
+    -------
+    str
+        Widened space-separated OAuth scope string.
+    """
+    # dict.fromkeys preserves insertion order while deduplicating.
+    merged: dict[str, None] = dict.fromkeys(scope_str.split())
+    for scope in granted_scopes:
+        merged.setdefault(scope, None)
+    return " ".join(merged)
+
+
 # ---------------------------------------------------------------------------
 # In-memory CSRF state store
 # State entries expire after 10 minutes.
@@ -473,12 +501,16 @@ async def oauth_google_start(
         scopes = _get_scopes()
     # --- Account limit check ---
     # Only check if this would be a new account (not a re-auth of an existing one).
+    # Also capture the existing account's granted_scopes for scope-widening below.
     shared_pool = _get_shared_pool(db_manager)
+    _hinted_account_granted_scopes: list[str] | None = None
     if shared_pool is not None and account_hint:
         # Check if this email already exists — if it does, it's a re-auth, skip limit check.
         try:
-            await get_google_account(shared_pool, account=account_hint)
+            existing = await get_google_account(shared_pool, account=account_hint)
             # Account exists — re-auth, no limit check needed.
+            # Capture granted_scopes for scope-widening (scope-set requests only).
+            _hinted_account_granted_scopes = list(existing.granted_scopes)
         except GoogleAccountNotFoundError:
             # New account — check the limit.
             try:
@@ -513,6 +545,16 @@ async def oauth_google_start(
             )
         except Exception:  # noqa: BLE001
             pass  # DB unavailable — proceed without limit check
+
+    # --- Scope-widening: union granted_scopes from the hinted account ---
+    # When a scope_set is explicitly requested and the hinted account already has
+    # granted scopes, union those into the requested scope set so that re-auth to
+    # add a new scope set never downgrades previously-granted scopes for other sets.
+    # Only applies when scope_set was provided; backward-compat (no scope_set) path
+    # is left unchanged.  Cross-account scope leakage is prevented because we only
+    # union the *hinted account's* own granted_scopes.
+    if requested_sets is not None and _hinted_account_granted_scopes:
+        scopes = _widen_scopes(scopes, _hinted_account_granted_scopes)
 
     client_id, _ = await _resolve_app_credentials(db_manager)
     redirect_uri = _get_redirect_uri()
