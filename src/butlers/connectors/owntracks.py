@@ -1071,15 +1071,20 @@ class OwnTracksConnector:
             app = self._build_app()
             self._start_health_server(app)
 
-            # Phase 7: Start heartbeat
+            # Phase 7 & 8: Start heartbeat only if identity is already resolved.
+            # With the placeholder ``owntracks:unknown`` we'd pollute the registry
+            # with a zombie row that survives every restart; wait until the first
+            # webhook event carries a ``tid`` and let _endpoint_identity_ready()
+            # start the heartbeat under the real identity.
             assert self._heartbeat is not None
-            self._heartbeat.start()
-
-            # Phase 8: Send initial heartbeat
-            try:
-                await self._heartbeat._send_heartbeat()
-            except Exception as exc:
-                logger.debug("OwnTracksConnector: initial heartbeat failed (non-fatal): %s", exc)
+            if self._config.tracker_id_override:
+                self._heartbeat.start()
+                try:
+                    await self._heartbeat._send_heartbeat()
+                except Exception as exc:
+                    logger.debug(
+                        "OwnTracksConnector: initial heartbeat failed (non-fatal): %s", exc
+                    )
 
             # Phase 9: Start retention purge task
             if self._db_pool is not None:
@@ -1154,13 +1159,18 @@ class OwnTracksConnector:
             get_checkpoint=self._get_checkpoint_info,
         )
 
-    def _endpoint_identity_ready(self) -> None:
+    async def _endpoint_identity_ready(self) -> None:
         """Re-initialize identity-bound components once the real endpoint identity is known.
 
-        Called once when the first event's ``tid`` resolves the endpoint identity from the
-        placeholder ``owntracks:unknown`` to the actual device tracker ID.  This keeps
+        Called when the first event's ``tid`` resolves the endpoint identity from the
+        placeholder ``owntracks:unknown`` to the actual device tracker ID. Keeps
         ConnectorMetrics labels, FilteredEventBuffer flush keys, IngestionPolicyEvaluator
-        scope, and HeartbeatConfig endpoint all consistent with the real identity.
+        scope, and HeartbeatConfig endpoint consistent with the real identity.
+
+        The heartbeat task is replaced: the old one (still registering heartbeats under
+        the stale identity) is stopped, a new one is constructed with the resolved
+        identity, and started. Without this, the placeholder identity keeps ticking
+        forever while the real identity's row goes stale on the dashboard.
         """
         self._metrics = ConnectorMetrics(
             connector_type=_CONNECTOR_TYPE,
@@ -1178,7 +1188,16 @@ class OwnTracksConnector:
             endpoint_identity=self._endpoint_identity,
         )
 
+        old_heartbeat = self._heartbeat
+        if old_heartbeat is not None:
+            try:
+                await old_heartbeat.stop()
+            except Exception:
+                logger.exception("OwnTracksConnector: failed to stop previous heartbeat task")
+
         self._init_heartbeat()
+        assert self._heartbeat is not None
+        self._heartbeat.start()
 
     # ------------------------------------------------------------------
     # Webhook event processing
@@ -1202,7 +1221,7 @@ class OwnTracksConnector:
             resolved = f"owntracks:{tid}"
             if resolved != self._endpoint_identity:
                 self._endpoint_identity = resolved
-                self._endpoint_identity_ready()
+                await self._endpoint_identity_ready()
 
         # Track event counter for today (task 6.3)
         now_date = datetime.now(UTC).date()
