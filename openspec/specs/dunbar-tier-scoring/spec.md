@@ -25,7 +25,7 @@ The system SHALL compute a decay score for each contact by summing exponentially
 
 #### Scenario: Contextual event type weighting
 - **WHEN** computing the decay contribution of an interaction fact
-- **AND** `facts.metadata->>'type'` is `interview` or `calendar_event`
+- **AND** `facts.metadata->>'type'` is `email`, `interview`, or `calendar_event`
 - **THEN** the contribution MUST be multiplied by `0.2`
 - **AND** all other interaction types MUST use the default type multiplier `1.0`
 

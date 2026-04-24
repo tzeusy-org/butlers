@@ -891,6 +891,45 @@ async def test_interview_interactions_are_downweighted(dunbar_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_email_interactions_are_downweighted(dunbar_pool):
+    """A few transactional emails should not score like direct personal calls."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    email = await _make_contact(dunbar_pool, "EmailOnly")
+    call = await _make_contact(dunbar_pool, "DirectCallForEmail")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{email['id']}",
+        occurred_at,
+        json.dumps({"type": "email", "direction": "outgoing"}),
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{call['id']}",
+        occurred_at,
+        json.dumps({"type": "call", "direction": "outgoing"}),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    ratio = score_map[email["id"]] / score_map[call["id"]]
+    assert abs(ratio - 0.2) < 1e-9
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_scores_ordered_descending(dunbar_pool):
     """compute_dunbar_scores returns results ordered by score descending."""
     from butlers.tools.relationship.dunbar import compute_dunbar_scores

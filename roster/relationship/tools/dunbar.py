@@ -211,6 +211,7 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                         * CASE f.metadata->>'type'
                             WHEN 'interview'      THEN $5::float
                             WHEN 'calendar_event' THEN $5::float
+                            WHEN 'email'          THEN $5::float
                             ELSE $6::float
                           END
                         * (1.0 / GREATEST(
