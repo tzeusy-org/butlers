@@ -777,6 +777,120 @@ async def test_null_group_size_defaults_to_1x(dunbar_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_connector_extracted_mentions_do_not_count_as_direct_interactions(dunbar_pool):
+    """LLM-extracted facts from connector context can mention a person without direct contact."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    mentioned = await _make_contact(dunbar_pool, "MentionedPerson")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', 'Talked about MentionedPerson', 'relationship', 'active',
+                $2, $3::jsonb)
+        """,
+        f"contact:{mentioned['id']}",
+        occurred_at,
+        json.dumps(
+            {
+                "type": "chat_message",
+                "direction": "mutual",
+                "extra_metadata": {
+                    "source_channel": "telegram_user_client",
+                    "request_id": "req-123",
+                    "related_contact_name": "MentionedPerson",
+                },
+            }
+        ),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    assert score_map[mentioned["id"]] == 0.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_interaction_sync_connector_events_still_count(dunbar_pool):
+    """Direct interactions created by interaction_sync remain valid Dunbar evidence."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    direct = await _make_contact(dunbar_pool, "DirectChat")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{direct['id']}",
+        occurred_at,
+        json.dumps(
+            {
+                "type": "telegram_user_client",
+                "direction": "incoming",
+                "extra_metadata": {
+                    "source": "interaction_sync",
+                    "message_count": 1,
+                    "group_size": 1,
+                },
+            }
+        ),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    assert score_map[direct["id"]] > 0.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_interview_interactions_are_downweighted(dunbar_pool):
+    """A one-off interview should not carry the same social weight as a direct call."""
+    import json
+
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    interview = await _make_contact(dunbar_pool, "InterviewOnly")
+    call = await _make_contact(dunbar_pool, "DirectCall")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{interview['id']}",
+        occurred_at,
+        json.dumps({"type": "interview", "direction": "outgoing"}),
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
+        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        """,
+        f"contact:{call['id']}",
+        occurred_at,
+        json.dumps({"type": "call", "direction": "outgoing"}),
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["score"] for s in scores}
+
+    ratio = score_map[interview["id"]] / score_map[call["id"]]
+    assert abs(ratio - 0.2) < 1e-9
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_scores_ordered_descending(dunbar_pool):
     """compute_dunbar_scores returns results ordered by score descending."""
     from butlers.tools.relationship.dunbar import compute_dunbar_scores

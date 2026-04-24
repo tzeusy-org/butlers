@@ -76,6 +76,11 @@ DIRECTION_WEIGHT_OUTGOING: float = 10.0
 DIRECTION_WEIGHT_MUTUAL: float = 5.0
 DIRECTION_WEIGHT_INCOMING: float = 1.0
 
+#: Transactional/contextual events are weaker social-layer evidence than
+#: direct messages, calls, or manually logged catch-ups.
+INTERACTION_TYPE_WEIGHT_CONTEXTUAL_EVENT: float = 0.2
+INTERACTION_TYPE_WEIGHT_DEFAULT: float = 1.0
+
 #: Exponential decay lambda: ln(2) / 30-day half-life.
 _LAMBDA: float = math.log(2) / 30.0
 
@@ -175,6 +180,11 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     - NULL ``group_size`` → defaults to 1.0 (DM weight; backward compatible)
     - ``group_size < 1`` is clamped to 1.0 to prevent amplification and division by zero
 
+    Connector context guard:
+    - LLM-extracted facts carrying connector provenance in ``extra_metadata`` are
+      treated as mention/context facts, not direct interactions, unless they were
+      emitted by the deterministic ``interaction_sync`` job.
+
     Spec reference: D1, D2 — direction-weighted, group-size-divided exponential decay.
     """
     rows = await pool.fetch(
@@ -197,6 +207,11 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                             WHEN 'outgoing' THEN $2::float
                             WHEN 'mutual'   THEN $3::float
                             ELSE $4::float
+                          END
+                        * CASE f.metadata->>'type'
+                            WHEN 'interview'      THEN $5::float
+                            WHEN 'calendar_event' THEN $5::float
+                            ELSE $6::float
                           END
                         * (1.0 / GREATEST(
                             COALESCE(
@@ -221,6 +236,20 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
             AND f.predicate = 'interaction'
             AND f.scope     = 'relationship'
             AND f.validity  = 'active'
+            AND (
+                f.metadata->'extra_metadata'->>'source' = 'interaction_sync'
+                OR NOT COALESCE(
+                    (f.metadata->'extra_metadata') ?| ARRAY[
+                        'source_channel',
+                        'request_id',
+                        'source_sender_identity',
+                        'source_thread_identity',
+                        'passive_ingest',
+                        'related_contact_name'
+                    ],
+                    false
+                )
+            )
         WHERE c.listed    = true
           AND c.entity_id IS NOT NULL
         GROUP BY c.id, c.entity_id
@@ -230,6 +259,8 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         DIRECTION_WEIGHT_OUTGOING,
         DIRECTION_WEIGHT_MUTUAL,
         DIRECTION_WEIGHT_INCOMING,
+        INTERACTION_TYPE_WEIGHT_CONTEXTUAL_EVENT,
+        INTERACTION_TYPE_WEIGHT_DEFAULT,
     )
     return [
         {

@@ -23,11 +23,26 @@ The system SHALL compute a decay score for each contact by summing exponentially
   - `'incoming'` → 1.0 (baseline passive receipt)
   - NULL or unknown → 1.0 (backward compatibility)
 
+#### Scenario: Contextual event type weighting
+- **WHEN** computing the decay contribution of an interaction fact
+- **AND** `facts.metadata->>'type'` is `interview` or `calendar_event`
+- **THEN** the contribution MUST be multiplied by `0.2`
+- **AND** all other interaction types MUST use the default type multiplier `1.0`
+
 #### Scenario: Group size dilution
 - **WHEN** computing the decay contribution of an interaction fact
 - **THEN** the contribution MUST be divided by `group_size` read from `facts.metadata->>'group_size'`
 - **AND** if `group_size` is NULL or absent, it MUST default to 1.0 (DM weight)
 - **AND** `group_size` MUST be clamped to a minimum of 1.0 to prevent division by zero
+
+#### Scenario: Connector-extracted mentions do not count as direct interactions
+- **WHEN** an interaction fact carries connector provenance in `facts.metadata->'extra_metadata'` such as `source_channel`, `request_id`, `source_sender_identity`, `source_thread_identity`, `passive_ingest`, or `related_contact_name`
+- **AND** it was not emitted by the deterministic `interaction_sync` job
+- **THEN** the fact MUST NOT contribute to the Dunbar decay score
+
+#### Scenario: Interaction sync facts count as direct interactions
+- **WHEN** an interaction fact has `facts.metadata->'extra_metadata'->>'source' = 'interaction_sync'`
+- **THEN** the fact MUST contribute to the Dunbar decay score subject to the normal direction, type, and group-size multipliers
 
 #### Scenario: Score for a contact with no interactions
 - **WHEN** a contact has zero interaction facts
