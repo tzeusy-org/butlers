@@ -47,6 +47,7 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -84,6 +85,9 @@ logger = logging.getLogger(__name__)
 
 _CONNECTOR_TYPE = "spotify"
 _CONNECTOR_CHANNEL = "spotify_user_client"
+
+# Durable evidence table for Chronicler projection (RFC 0014 §D9).
+_SESSION_EVIDENCE_TABLE = "connectors.spotify_listening_sessions"
 _CONNECTOR_PROVIDER = "spotify"
 
 # Spotify API URLs
@@ -699,6 +703,74 @@ def build_session_summary_envelope(
             "ingestion_tier": "full",
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Durable session evidence persistence (Chronicler read surface, RFC 0014)
+# ---------------------------------------------------------------------------
+
+
+async def persist_session_summary(
+    pool: asyncpg.Pool,
+    *,
+    endpoint_identity: str,
+    spotify_user_id: str,
+    session: ListeningSession,
+) -> bool:
+    """Write a closed listening session to the durable evidence table.
+
+    Idempotent — uses ON CONFLICT DO NOTHING on ``idempotency_key``.
+    Returns True if the row was inserted, False if it already existed.
+
+    This table is the Chronicler-readable evidence surface for
+    ``spotify.session_summary`` (RFC 0014 §D9).  The connector writes here
+    directly (connector_writer role) on every clean session close.  Errors
+    are caught and logged; failure to persist does NOT abort the ingest
+    submission path.
+
+    Args:
+        pool: asyncpg connection pool (connector_writer role).
+        endpoint_identity: Connector endpoint identity string.
+        spotify_user_id: Spotify user ID (from /me).
+        session: Closed ``ListeningSession`` instance.
+
+    Returns:
+        True if a new row was inserted; False if a duplicate was skipped.
+    """
+    session_start_ms = int(session.started_at.timestamp() * 1000)
+    idempotency_key = f"spotify:{endpoint_identity}:session:{session_start_ms}"
+    ended_at = session.drain_started_at or datetime.now(UTC)
+    duration_s = int(max(0.0, (ended_at - session.started_at).total_seconds()))
+
+    result = await pool.fetchval(
+        f"""
+        INSERT INTO {_SESSION_EVIDENCE_TABLE} (
+            idempotency_key,
+            endpoint_identity,
+            spotify_user_id,
+            started_at,
+            ended_at,
+            duration_seconds,
+            track_count,
+            track_names,
+            context_uri,
+            context_name
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING id
+        """,
+        idempotency_key,
+        endpoint_identity,
+        spotify_user_id,
+        session.started_at,
+        ended_at,
+        duration_s,
+        session.track_count,
+        json.dumps(list(session.track_names)),
+        session.context_uri,
+        session.context_name,
+    )
+    return result is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1677,10 +1749,43 @@ class SpotifyConnector:
             self._last_recently_played_cursor = str(last_cursor_ms)
 
     async def _emit_session_summary(self, session: ListeningSession, observed_at: str) -> None:
-        """Emit a session summary ingest envelope."""
+        """Emit a session summary ingest envelope and persist to evidence table.
+
+        The ingest submission path (Switchboard) is unchanged.  In addition,
+        the session is persisted to ``connectors.spotify_listening_sessions``
+        which is the durable evidence surface for Chronicler (RFC 0014 §D9).
+        Evidence persistence failures are logged and do not abort the ingest.
+        """
         if session.track_count == 0:
             return
 
+        # ── Durable evidence write (Chronicler read surface) ──────────────
+        if self._cursor_pool is not None and self._endpoint_identity and self._spotify_user_id:
+            try:
+                inserted = await persist_session_summary(
+                    self._cursor_pool,
+                    endpoint_identity=self._endpoint_identity,
+                    spotify_user_id=self._spotify_user_id,
+                    session=session,
+                )
+                if inserted:
+                    logger.debug(
+                        "SpotifyConnector: persisted session evidence start=%s tracks=%d",
+                        session.started_at.isoformat(),
+                        session.track_count,
+                    )
+                else:
+                    logger.debug(
+                        "SpotifyConnector: duplicate session evidence skipped start=%s",
+                        session.started_at.isoformat(),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "SpotifyConnector: failed to persist session evidence (non-fatal): %s",
+                    exc,
+                )
+
+        # ── Ingest submission (Switchboard) ───────────────────────────────
         envelope = build_session_summary_envelope(
             endpoint_identity=self._endpoint_identity,
             spotify_user_id=self._spotify_user_id,

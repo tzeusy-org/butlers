@@ -28,6 +28,7 @@ from butlers.connectors.spotify import (
     build_context_start_envelope,
     build_listening_digest_envelope,
     build_session_summary_envelope,
+    persist_session_summary,
 )
 
 _ENDPOINT = "spotify_user_client:spotify:user123"
@@ -410,3 +411,192 @@ def test_new_session_after_full_drain(tracker: ListeningSessionTracker) -> None:
     assert closed == []
     assert tracker.current_session is not None
     assert tracker.current_session.track_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Durable evidence persistence — persist_session_summary
+# ---------------------------------------------------------------------------
+
+
+def _make_closed_session(
+    started_at: datetime = _NOW,
+    drain_started_at: datetime | None = None,
+    track_names: list[str] | None = None,
+    context_uri: str | None = "spotify:playlist:abc",
+    context_name: str | None = "Test Playlist",
+) -> ListeningSession:
+    """Build a closed ListeningSession for persist_session_summary tests."""
+    s = ListeningSession(
+        started_at=started_at,
+        context_uri=context_uri,
+        track_names=track_names or ["Song A", "Song B"],
+        last_digest_at=started_at,
+    )
+    s.context_name = context_name
+    s.drain_started_at = drain_started_at or (started_at + timedelta(minutes=30))
+    return s
+
+
+@pytest.mark.asyncio
+async def test_persist_session_summary_inserts_row() -> None:
+    """persist_session_summary executes the expected INSERT statement."""
+    import json
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value="some-uuid")
+
+    session = _make_closed_session()
+    result = await persist_session_summary(
+        pool,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+    )
+
+    assert result is True
+    pool.fetchval.assert_awaited_once()
+    call_args = pool.fetchval.call_args
+    query: str = call_args.args[0]
+    assert "spotify_listening_sessions" in query
+    assert "ON CONFLICT" in query
+    assert "DO NOTHING" in query
+
+    # Positional args: idempotency_key, endpoint_identity, spotify_user_id,
+    #                  started_at, ended_at, duration_seconds, track_count,
+    #                  track_names (json), context_uri, context_name
+    positional = call_args.args[1:]
+    idempotency_key = positional[0]
+    assert idempotency_key.startswith("spotify:")
+    assert _ENDPOINT in idempotency_key
+
+    track_names_json = positional[7]
+    assert isinstance(track_names_json, str)
+    assert json.loads(track_names_json) == ["Song A", "Song B"]
+
+
+@pytest.mark.asyncio
+async def test_persist_session_summary_duplicate_returns_false() -> None:
+    """Returns False when ON CONFLICT DO NOTHING silently discards the insert."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=None)  # no RETURNING row → duplicate
+
+    session = _make_closed_session()
+    result = await persist_session_summary(
+        pool,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+    )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_persist_session_summary_idempotency_key_deterministic() -> None:
+    """Same session produces the same idempotency key on every call."""
+    session = _make_closed_session(started_at=_NOW)
+
+    pool1 = AsyncMock()
+    pool1.fetchval = AsyncMock(return_value="uuid-1")
+    pool2 = AsyncMock()
+    pool2.fetchval = AsyncMock(return_value="uuid-2")
+
+    await persist_session_summary(
+        pool1,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+    )
+    await persist_session_summary(
+        pool2,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+    )
+
+    key1 = pool1.fetchval.call_args.args[1]
+    key2 = pool2.fetchval.call_args.args[1]
+    assert key1 == key2
+
+
+@pytest.mark.asyncio
+async def test_emit_session_summary_persists_to_evidence_table() -> None:
+    """_emit_session_summary calls persist_session_summary when cursor_pool is available."""
+    from unittest.mock import patch
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    cursor_pool_mock = AsyncMock()
+    connector._cursor_pool = cursor_pool_mock
+    connector._submit_envelope = AsyncMock()
+    connector._ingestion_policy = None
+
+    session = _make_closed_session()
+
+    with patch(
+        "butlers.connectors.spotify.persist_session_summary", new_callable=AsyncMock
+    ) as mock_persist:
+        mock_persist.return_value = True
+        await connector._emit_session_summary(session, _OBSERVED)
+
+    mock_persist.assert_awaited_once_with(
+        cursor_pool_mock,
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        session=session,
+    )
+    connector._submit_envelope.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_emit_session_summary_evidence_failure_is_non_fatal() -> None:
+    """Persist failure must not abort ingest submission."""
+    from unittest.mock import patch
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._cursor_pool = AsyncMock()
+    connector._submit_envelope = AsyncMock()
+    connector._ingestion_policy = None
+
+    session = _make_closed_session()
+
+    with patch(
+        "butlers.connectors.spotify.persist_session_summary", new_callable=AsyncMock
+    ) as mock_persist:
+        mock_persist.side_effect = RuntimeError("DB is down")
+        await connector._emit_session_summary(session, _OBSERVED)
+
+    # Ingest submission must still happen despite the persist failure.
+    connector._submit_envelope.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_emit_session_summary_skips_persist_without_cursor_pool() -> None:
+    """No persist attempt when cursor_pool is None (graceful degradation)."""
+    from unittest.mock import patch
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._cursor_pool = None  # explicitly no pool
+    connector._submit_envelope = AsyncMock()
+    connector._ingestion_policy = None
+
+    session = _make_closed_session()
+
+    with patch(
+        "butlers.connectors.spotify.persist_session_summary", new_callable=AsyncMock
+    ) as mock_persist:
+        await connector._emit_session_summary(session, _OBSERVED)
+
+    mock_persist.assert_not_awaited()
+    connector._submit_envelope.assert_awaited_once()
