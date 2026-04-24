@@ -1,0 +1,156 @@
+"""Source compatibility contract registry for Chronicler adapters.
+
+Per RFC 0014 §D2 every source adapter MUST declare its
+``chronicler_compatibility`` before projection runs against it. This
+module defines the initial declarations baked into the Chronicler boot
+path, plus helpers that seed the runtime table and enforce the
+lint/check that future timestamped OpenSpec source specs declare
+compatibility (or explicitly mark themselves ``not_time_bearing``).
+
+The baked-in declarations are the authoritative initial state. Adapters
+may refine ``active``/``inactive_reason`` at runtime; they MUST NOT
+overwrite the compatibility label at runtime.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import replace
+
+import asyncpg
+
+from butlers.chronicler.models import Compatibility, SourceAdapterState
+from butlers.chronicler.storage import register_source
+
+# ── Initial source declarations (RFC 0014 §D2) ─────────────────────────────
+
+INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
+    # Supported — projection adapters ship in v1.
+    SourceAdapterState(
+        source_name="core.sessions",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="<butler_schema>.sessions (per-schema; fan-out read)",
+        boundary_semantics=(
+            "started_at → session_started point event; "
+            "completed_at → session_completed point event; "
+            "(started_at, completed_at) → work episode when both present"
+        ),
+        optional_schema=False,
+    ),
+    SourceAdapterState(
+        source_name="google_calendar.completed",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="calendar module completed-instance view",
+        boundary_semantics=(
+            "completed non-cancelled instances → scheduled-block episode; "
+            "(instance_start, instance_end) bound the episode; "
+            "provider dedup semantics apply"
+        ),
+        optional_schema=True,
+    ),
+    # Deferred pending durable evidence surface (see bu-pa4e0.9).
+    SourceAdapterState(
+        source_name="spotify.session_summary",
+        chronicler_compatibility=Compatibility.DEFERRED,
+        read_surface=None,
+        boundary_semantics=(
+            "deferred pending durable summary evidence table/view with "
+            "stable start/end, retention, source refs, and idempotency keys"
+        ),
+        optional_schema=True,
+    ),
+    # Deferred (Google Health).
+    SourceAdapterState(
+        source_name="google_health.measurements",
+        chronicler_compatibility=Compatibility.DEFERRED,
+        read_surface=None,
+        boundary_semantics="deferred per RFC 0014",
+        optional_schema=True,
+    ),
+    # Planned (not yet implemented, but future adapter slots reserved).
+    SourceAdapterState(
+        source_name="steam.play_history",
+        chronicler_compatibility=Compatibility.PLANNED,
+        read_surface="connectors.steam_play_history",
+        boundary_semantics="play sessions with start/end → play episodes",
+        optional_schema=True,
+    ),
+    SourceAdapterState(
+        source_name="owntracks.points",
+        chronicler_compatibility=Compatibility.PLANNED,
+        read_surface="connectors.owntracks_points",
+        boundary_semantics="location point events and derived movement episodes",
+        optional_schema=True,
+    ),
+    SourceAdapterState(
+        source_name="home_assistant.history",
+        chronicler_compatibility=Compatibility.PLANNED,
+        read_surface="connectors.home_assistant_history",
+        boundary_semantics="state changes as point events; derived presence episodes",
+        optional_schema=True,
+    ),
+    # Explicitly not time-bearing.
+    SourceAdapterState(
+        source_name="core.session_process_logs",
+        chronicler_compatibility=Compatibility.NOT_TIME_BEARING,
+        read_surface=None,
+        boundary_semantics="TTL diagnostic logs; not authoritative retrospective time",
+        optional_schema=False,
+    ),
+)
+
+
+def supported_source_names() -> tuple[str, ...]:
+    return tuple(
+        s.source_name
+        for s in INITIAL_SOURCES
+        if s.chronicler_compatibility == Compatibility.SUPPORTED
+    )
+
+
+def deferred_source_names() -> tuple[str, ...]:
+    return tuple(
+        s.source_name
+        for s in INITIAL_SOURCES
+        if s.chronicler_compatibility == Compatibility.DEFERRED
+    )
+
+
+def planned_source_names() -> tuple[str, ...]:
+    return tuple(
+        s.source_name
+        for s in INITIAL_SOURCES
+        if s.chronicler_compatibility == Compatibility.PLANNED
+    )
+
+
+def find_source(source_name: str) -> SourceAdapterState | None:
+    for s in INITIAL_SOURCES:
+        if s.source_name == source_name:
+            return replace(s)
+    return None
+
+
+async def seed_source_registry(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    sources: Iterable[SourceAdapterState] | None = None,
+) -> int:
+    """Upsert every initial source declaration into ``source_adapter_state``.
+
+    Idempotent. Returns the number of registrations applied.
+    """
+    count = 0
+    for state in sources if sources is not None else INITIAL_SOURCES:
+        await register_source(conn, state)
+        count += 1
+    return count
+
+
+__all__ = [
+    "INITIAL_SOURCES",
+    "deferred_source_names",
+    "find_source",
+    "planned_source_names",
+    "seed_source_registry",
+    "supported_source_names",
+]

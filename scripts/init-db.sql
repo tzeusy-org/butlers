@@ -44,6 +44,7 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 DO $$
 DECLARE
     _butler_schemas TEXT[] := ARRAY[
+        'chronicler',
         'education',
         'finance',
         'general',
@@ -59,6 +60,7 @@ DECLARE
     _connector_schema TEXT := 'connectors';
     _switchboard_schema TEXT := 'switchboard';
     _managed_schemas TEXT[] := ARRAY[
+        'chronicler',
         'education',
         'finance',
         'general',
@@ -73,6 +75,7 @@ DECLARE
         'connectors'
     ];
     _butler_roles TEXT[] := ARRAY[
+        'butler_chronicler_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -87,6 +90,7 @@ DECLARE
     ];
     _connector_role TEXT := 'connector_writer';
     _all_runtime_roles TEXT[] := ARRAY[
+        'butler_chronicler_rw',
         'butler_education_rw',
         'butler_finance_rw',
         'butler_general_rw',
@@ -242,6 +246,29 @@ BEGIN
         _switchboard_schema,
         'butler_relationship_rw'
     );
+
+    -- Chronicler projects retrospective time from all butlers' session records
+    -- and from calendar/event surfaces. Grant read-only access to every
+    -- butler schema (RFC 0014 source compatibility contracts). Projection
+    -- adapters read only; they never write outside the chronicler schema.
+    FOR _idx IN 1 .. array_length(_butler_schemas, 1) LOOP
+        _schema := _butler_schemas[_idx];
+        IF _schema = 'chronicler' THEN
+            CONTINUE;
+        END IF;
+        EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _schema, 'butler_chronicler_rw');
+        EXECUTE format(
+            'GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I',
+            _schema,
+            'butler_chronicler_rw'
+        );
+        EXECUTE format(
+            'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO %I',
+            _migration_user,
+            _schema,
+            'butler_chronicler_rw'
+        );
+    END LOOP;
 
     -- Connector role: write access to connector schema, switchboard operational
     -- tables, and shared public tables.

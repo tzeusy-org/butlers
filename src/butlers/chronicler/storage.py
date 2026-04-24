@@ -1,0 +1,691 @@
+"""Chronicler storage and query helpers.
+
+Idempotent upserts, correction overlays, overlap queries, checkpoint
+updates, and source registration. All operations scope to the
+``chronicler`` schema via the runtime search_path (set by the butler
+daemon through ``butler_chronicler_rw``).
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+import asyncpg
+
+from butlers.chronicler.models import (
+    Compatibility,
+    CorrectedEpisode,
+    CorrectedPointEvent,
+    Episode,
+    LinkRelation,
+    Override,
+    OverrideTarget,
+    PointEvent,
+    Precision,
+    Privacy,
+    ProjectionCheckpoint,
+    SourceAdapterState,
+)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _coerce_payload(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+        except json.JSONDecodeError:
+            return {"raw": value}
+        if isinstance(loaded, dict):
+            return loaded
+        return {"raw": loaded}
+    return {"raw": value}
+
+
+def _row_to_point_event(row: asyncpg.Record) -> PointEvent:
+    return PointEvent(
+        id=row["id"],
+        source_name=row["source_name"],
+        source_ref=row["source_ref"],
+        event_type=row["event_type"],
+        occurred_at=row["occurred_at"],
+        precision=Precision(row["precision"]),
+        title=row["title"],
+        payload=_coerce_payload(row["payload"]),
+        privacy=Privacy(row["privacy"]),
+        retention_days=row["retention_days"],
+        tombstone_at=row["tombstone_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_episode(row: asyncpg.Record) -> Episode:
+    return Episode(
+        id=row["id"],
+        source_name=row["source_name"],
+        source_ref=row["source_ref"],
+        episode_type=row["episode_type"],
+        start_at=row["start_at"],
+        end_at=row["end_at"],
+        precision=Precision(row["precision"]),
+        title=row["title"],
+        payload=_coerce_payload(row["payload"]),
+        privacy=Privacy(row["privacy"]),
+        retention_days=row["retention_days"],
+        tombstone_at=row["tombstone_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_corrected_episode(row: asyncpg.Record) -> CorrectedEpisode:
+    return CorrectedEpisode(
+        id=row["id"],
+        source_name=row["source_name"],
+        source_ref=row["source_ref"],
+        episode_type=row["episode_type"],
+        start_at=row["start_at"],
+        end_at=row["end_at"],
+        precision=Precision(row["precision"]),
+        title=row["title"],
+        payload=_coerce_payload(row["payload"]),
+        privacy=Privacy(row["privacy"]),
+        retention_days=row["retention_days"],
+        tombstone_at=row["tombstone_at"],
+        canonical_start_at=row["canonical_start_at"],
+        canonical_end_at=row["canonical_end_at"],
+        canonical_title=row["canonical_title"],
+        canonical_privacy=Privacy(row["canonical_privacy"]),
+        corrected_at=row["corrected_at"],
+        correction_note=row["correction_note"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_corrected_point_event(row: asyncpg.Record) -> CorrectedPointEvent:
+    return CorrectedPointEvent(
+        id=row["id"],
+        source_name=row["source_name"],
+        source_ref=row["source_ref"],
+        event_type=row["event_type"],
+        occurred_at=row["occurred_at"],
+        precision=Precision(row["precision"]),
+        title=row["title"],
+        payload=_coerce_payload(row["payload"]),
+        privacy=Privacy(row["privacy"]),
+        retention_days=row["retention_days"],
+        tombstone_at=row["tombstone_at"],
+        canonical_occurred_at=row["canonical_occurred_at"],
+        canonical_title=row["canonical_title"],
+        canonical_privacy=Privacy(row["canonical_privacy"]),
+        corrected_at=row["corrected_at"],
+        correction_note=row["correction_note"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+# ── Source registration ────────────────────────────────────────────────────
+
+
+async def register_source(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    state: SourceAdapterState,
+) -> None:
+    """Upsert a source adapter registration.
+
+    Does not flip ``active`` — adapters activate themselves on first
+    successful run via :func:`mark_source_active`.
+    """
+    await conn.execute(
+        """
+        INSERT INTO source_adapter_state (
+            source_name, chronicler_compatibility, read_surface,
+            boundary_semantics, optional_schema, schema_version,
+            registered_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), now())
+        ON CONFLICT (source_name) DO UPDATE SET
+            chronicler_compatibility = EXCLUDED.chronicler_compatibility,
+            read_surface = EXCLUDED.read_surface,
+            boundary_semantics = EXCLUDED.boundary_semantics,
+            optional_schema = EXCLUDED.optional_schema,
+            schema_version = EXCLUDED.schema_version,
+            updated_at = now()
+        """,
+        state.source_name,
+        state.chronicler_compatibility.value,
+        state.read_surface,
+        state.boundary_semantics,
+        state.optional_schema,
+        state.schema_version,
+        state.registered_at,
+    )
+
+
+async def mark_source_active(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+    *,
+    active: bool,
+    inactive_reason: str | None = None,
+) -> None:
+    """Toggle a source adapter's active flag."""
+    await conn.execute(
+        """
+        UPDATE source_adapter_state
+        SET active = $2,
+            inactive_reason = $3,
+            updated_at = now()
+        WHERE source_name = $1
+        """,
+        source_name,
+        active,
+        None if active else inactive_reason,
+    )
+
+
+async def get_source_state(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+) -> SourceAdapterState | None:
+    row = await conn.fetchrow(
+        "SELECT * FROM source_adapter_state WHERE source_name = $1",
+        source_name,
+    )
+    if row is None:
+        return None
+    return SourceAdapterState(
+        source_name=row["source_name"],
+        chronicler_compatibility=Compatibility(row["chronicler_compatibility"]),
+        read_surface=row["read_surface"],
+        boundary_semantics=row["boundary_semantics"],
+        optional_schema=row["optional_schema"],
+        active=row["active"],
+        inactive_reason=row["inactive_reason"],
+        schema_version=row["schema_version"],
+        registered_at=row["registered_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+# ── Checkpoints ────────────────────────────────────────────────────────────
+
+
+async def upsert_checkpoint(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+    *,
+    watermark: datetime | None = None,
+    success: bool,
+    rows_projected: int = 0,
+    error: str | None = None,
+) -> None:
+    """Record a projection run result on ``projection_checkpoints``.
+
+    On success: updates watermark, last_success_at, rows_projected, clears
+    last_error. On failure: records last_error and last_run_at but does
+    NOT advance the watermark.
+    """
+    now = _utcnow()
+    if success:
+        await conn.execute(
+            """
+            INSERT INTO projection_checkpoints (
+                source_name, watermark, last_run_at, last_success_at,
+                last_error, rows_projected, run_count, updated_at
+            )
+            VALUES ($1, $2, $3, $3, NULL, $4, 1, $3)
+            ON CONFLICT (source_name) DO UPDATE SET
+                watermark = COALESCE(EXCLUDED.watermark, projection_checkpoints.watermark),
+                last_run_at = EXCLUDED.last_run_at,
+                last_success_at = EXCLUDED.last_success_at,
+                last_error = NULL,
+                rows_projected = projection_checkpoints.rows_projected + EXCLUDED.rows_projected,
+                run_count = projection_checkpoints.run_count + 1,
+                updated_at = EXCLUDED.updated_at
+            """,
+            source_name,
+            watermark,
+            now,
+            rows_projected,
+        )
+    else:
+        await conn.execute(
+            """
+            INSERT INTO projection_checkpoints (
+                source_name, watermark, last_run_at, last_success_at,
+                last_error, rows_projected, run_count, updated_at
+            )
+            VALUES ($1, NULL, $2, NULL, $3, 0, 1, $2)
+            ON CONFLICT (source_name) DO UPDATE SET
+                last_run_at = EXCLUDED.last_run_at,
+                last_error = EXCLUDED.last_error,
+                run_count = projection_checkpoints.run_count + 1,
+                updated_at = EXCLUDED.updated_at
+            """,
+            source_name,
+            now,
+            error,
+        )
+
+
+async def get_checkpoint(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+) -> ProjectionCheckpoint | None:
+    row = await conn.fetchrow(
+        "SELECT * FROM projection_checkpoints WHERE source_name = $1",
+        source_name,
+    )
+    if row is None:
+        return None
+    return ProjectionCheckpoint(
+        source_name=row["source_name"],
+        watermark=row["watermark"],
+        last_run_at=row["last_run_at"],
+        last_success_at=row["last_success_at"],
+        last_error=row["last_error"],
+        rows_projected=row["rows_projected"],
+        run_count=row["run_count"],
+        updated_at=row["updated_at"],
+    )
+
+
+# ── Point events ──────────────────────────────────────────────────────────
+
+
+async def upsert_point_event(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    event: PointEvent,
+) -> PointEvent:
+    """Idempotent upsert on ``(source_name, source_ref)``.
+
+    Updates mutable fields (title, payload, precision, privacy,
+    retention, tombstone, occurred_at) so replays with corrected source
+    data are reflected.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO point_events (
+            source_name, source_ref, event_type, occurred_at, precision,
+            title, payload, privacy, retention_days, tombstone_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+        ON CONFLICT (source_name, source_ref) DO UPDATE SET
+            event_type = EXCLUDED.event_type,
+            occurred_at = EXCLUDED.occurred_at,
+            precision = EXCLUDED.precision,
+            title = EXCLUDED.title,
+            payload = EXCLUDED.payload,
+            privacy = EXCLUDED.privacy,
+            retention_days = EXCLUDED.retention_days,
+            tombstone_at = EXCLUDED.tombstone_at,
+            updated_at = now()
+        RETURNING *
+        """,
+        event.source_name,
+        event.source_ref,
+        event.event_type,
+        event.occurred_at,
+        event.precision.value,
+        event.title,
+        json.dumps(event.payload),
+        event.privacy.value,
+        event.retention_days,
+        event.tombstone_at,
+    )
+    return _row_to_point_event(row)
+
+
+# ── Episodes ──────────────────────────────────────────────────────────────
+
+
+async def upsert_episode(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    episode: Episode,
+) -> Episode:
+    """Idempotent upsert on ``(source_name, source_ref)``.
+
+    Open-ended episodes (``end_at IS NULL``) are permitted. Replays that
+    close an open episode update ``end_at`` in place.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO episodes (
+            source_name, source_ref, episode_type, start_at, end_at,
+            precision, title, payload, privacy, retention_days, tombstone_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+        ON CONFLICT (source_name, source_ref) DO UPDATE SET
+            episode_type = EXCLUDED.episode_type,
+            start_at = EXCLUDED.start_at,
+            end_at = EXCLUDED.end_at,
+            precision = EXCLUDED.precision,
+            title = EXCLUDED.title,
+            payload = EXCLUDED.payload,
+            privacy = EXCLUDED.privacy,
+            retention_days = EXCLUDED.retention_days,
+            tombstone_at = EXCLUDED.tombstone_at,
+            updated_at = now()
+        RETURNING *
+        """,
+        episode.source_name,
+        episode.source_ref,
+        episode.episode_type,
+        episode.start_at,
+        episode.end_at,
+        episode.precision.value,
+        episode.title,
+        json.dumps(episode.payload),
+        episode.privacy.value,
+        episode.retention_days,
+        episode.tombstone_at,
+    )
+    return _row_to_episode(row)
+
+
+# ── Episode-event links ───────────────────────────────────────────────────
+
+
+async def link_event_to_episode(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    episode_id: UUID,
+    event_id: UUID,
+    relation: LinkRelation = LinkRelation.SUPPORTS,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO episode_event_links (episode_id, event_id, relation)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (episode_id, event_id, relation) DO NOTHING
+        """,
+        episode_id,
+        event_id,
+        relation.value,
+    )
+
+
+async def list_episode_events(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    episode_id: UUID,
+) -> list[CorrectedPointEvent]:
+    rows = await conn.fetch(
+        """
+        SELECT v.*
+        FROM episode_event_links l
+        JOIN v_point_events_corrected v ON v.id = l.event_id
+        WHERE l.episode_id = $1
+        ORDER BY v.occurred_at ASC
+        """,
+        episode_id,
+    )
+    return [_row_to_corrected_point_event(r) for r in rows]
+
+
+# ── Read queries (corrected views by default) ─────────────────────────────
+
+
+async def get_episode(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    episode_id: UUID,
+    *,
+    include_tombstoned: bool = False,
+) -> CorrectedEpisode | None:
+    clause = "" if include_tombstoned else "AND tombstone_at IS NULL"
+    row = await conn.fetchrow(
+        f"SELECT * FROM v_episodes_corrected WHERE id = $1 {clause}",
+        episode_id,
+    )
+    if row is None:
+        return None
+    return _row_to_corrected_episode(row)
+
+
+async def list_episodes(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    start_from: datetime | None = None,
+    start_to: datetime | None = None,
+    source_name: str | None = None,
+    episode_type: str | None = None,
+    overlaps_with: tuple[datetime, datetime] | None = None,
+    include_tombstoned: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[CorrectedEpisode]:
+    clauses: list[str] = []
+    args: list[Any] = []
+    if not include_tombstoned:
+        clauses.append("tombstone_at IS NULL")
+    if start_from is not None:
+        args.append(start_from)
+        clauses.append(f"start_at >= ${len(args)}")
+    if start_to is not None:
+        args.append(start_to)
+        clauses.append(f"start_at < ${len(args)}")
+    if source_name is not None:
+        args.append(source_name)
+        clauses.append(f"source_name = ${len(args)}")
+    if episode_type is not None:
+        args.append(episode_type)
+        clauses.append(f"episode_type = ${len(args)}")
+    if overlaps_with is not None:
+        window_start, window_end = overlaps_with
+        args.append(window_end)
+        clauses.append(f"start_at < ${len(args)}")
+        args.append(window_start)
+        clauses.append(f"(end_at IS NULL OR end_at > ${len(args)})")
+    where_clause = " AND ".join(clauses) if clauses else "TRUE"
+    args.append(limit)
+    args.append(offset)
+    rows = await conn.fetch(
+        f"""
+        SELECT * FROM v_episodes_corrected
+        WHERE {where_clause}
+        ORDER BY start_at DESC
+        LIMIT ${len(args) - 1} OFFSET ${len(args)}
+        """,
+        *args,
+    )
+    return [_row_to_corrected_episode(r) for r in rows]
+
+
+async def list_point_events(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    occurred_from: datetime | None = None,
+    occurred_to: datetime | None = None,
+    source_name: str | None = None,
+    event_type: str | None = None,
+    include_tombstoned: bool = False,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[CorrectedPointEvent]:
+    clauses: list[str] = []
+    args: list[Any] = []
+    if not include_tombstoned:
+        clauses.append("tombstone_at IS NULL")
+    if occurred_from is not None:
+        args.append(occurred_from)
+        clauses.append(f"occurred_at >= ${len(args)}")
+    if occurred_to is not None:
+        args.append(occurred_to)
+        clauses.append(f"occurred_at < ${len(args)}")
+    if source_name is not None:
+        args.append(source_name)
+        clauses.append(f"source_name = ${len(args)}")
+    if event_type is not None:
+        args.append(event_type)
+        clauses.append(f"event_type = ${len(args)}")
+    where_clause = " AND ".join(clauses) if clauses else "TRUE"
+    args.append(limit)
+    args.append(offset)
+    rows = await conn.fetch(
+        f"""
+        SELECT * FROM v_point_events_corrected
+        WHERE {where_clause}
+        ORDER BY occurred_at DESC
+        LIMIT ${len(args) - 1} OFFSET ${len(args)}
+        """,
+        *args,
+    )
+    return [_row_to_corrected_point_event(r) for r in rows]
+
+
+async def list_overlapping_episodes(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    episode_id: UUID,
+) -> list[CorrectedEpisode]:
+    """Return corrected episodes whose time span overlaps the target.
+
+    Includes the target episode's own row; callers may filter it out
+    client-side if undesired.
+    """
+    row = await conn.fetchrow(
+        "SELECT start_at, end_at FROM v_episodes_corrected WHERE id = $1",
+        episode_id,
+    )
+    if row is None:
+        return []
+    start = row["start_at"]
+    end = row["end_at"] or start
+    rows = await conn.fetch(
+        """
+        SELECT * FROM v_episodes_corrected
+        WHERE tombstone_at IS NULL
+          AND start_at <= $2
+          AND (end_at IS NULL OR end_at >= $1)
+        ORDER BY start_at DESC
+        """,
+        start,
+        end,
+    )
+    return [_row_to_corrected_episode(r) for r in rows]
+
+
+# ── Corrections / overrides ───────────────────────────────────────────────
+
+
+async def insert_override(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    override: Override,
+) -> Override:
+    row = await conn.fetchrow(
+        """
+        INSERT INTO overrides (
+            target_kind, target_id, corrected_start_at, corrected_end_at,
+            corrected_title, corrected_privacy, corrected_tombstone_at,
+            note, submitted_by
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, created_at
+        """,
+        override.target_kind.value,
+        override.target_id,
+        override.corrected_start_at,
+        override.corrected_end_at,
+        override.corrected_title,
+        override.corrected_privacy.value if override.corrected_privacy else None,
+        override.corrected_tombstone_at,
+        override.note,
+        override.submitted_by,
+    )
+    override.id = row["id"]
+    override.created_at = row["created_at"]
+    return override
+
+
+async def list_overrides_for(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    target_kind: OverrideTarget,
+    target_id: UUID,
+) -> list[Override]:
+    rows = await conn.fetch(
+        """
+        SELECT * FROM overrides
+        WHERE target_kind = $1 AND target_id = $2
+        ORDER BY created_at DESC
+        """,
+        target_kind.value,
+        target_id,
+    )
+    result: list[Override] = []
+    for r in rows:
+        result.append(
+            Override(
+                id=r["id"],
+                target_kind=OverrideTarget(r["target_kind"]),
+                target_id=r["target_id"],
+                corrected_start_at=r["corrected_start_at"],
+                corrected_end_at=r["corrected_end_at"],
+                corrected_title=r["corrected_title"],
+                corrected_privacy=(
+                    Privacy(r["corrected_privacy"]) if r["corrected_privacy"] is not None else None
+                ),
+                corrected_tombstone_at=r["corrected_tombstone_at"],
+                note=r["note"],
+                submitted_by=r["submitted_by"],
+                created_at=r["created_at"],
+            )
+        )
+    return result
+
+
+# ── Idempotency key registry (optional batch-level dedup) ─────────────────
+
+
+async def record_idempotency(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    source_name: str,
+    key: str,
+) -> bool:
+    """Record a batch-level idempotency key. Returns True iff it was new."""
+    row = await conn.fetchrow(
+        """
+        INSERT INTO idempotency_keys (source_name, key)
+        VALUES ($1, $2)
+        ON CONFLICT (source_name, key) DO UPDATE SET
+            last_seen_at = now(),
+            hit_count = idempotency_keys.hit_count + 1
+        RETURNING (xmax = 0) AS inserted
+        """,
+        source_name,
+        key,
+    )
+    return bool(row["inserted"])
+
+
+__all__: Sequence[str] = (
+    "get_checkpoint",
+    "get_episode",
+    "get_source_state",
+    "insert_override",
+    "link_event_to_episode",
+    "list_episode_events",
+    "list_episodes",
+    "list_overlapping_episodes",
+    "list_overrides_for",
+    "list_point_events",
+    "mark_source_active",
+    "record_idempotency",
+    "register_source",
+    "upsert_checkpoint",
+    "upsert_episode",
+    "upsert_point_event",
+)

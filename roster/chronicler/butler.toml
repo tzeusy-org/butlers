@@ -1,0 +1,44 @@
+[butler]
+name = "chronicler"
+port = 41110
+description = "Retrospective time butler: reconstructs lived past time from other butlers' timestamped evidence as point events and overlapping episodes, with source provenance and correction history"
+
+[butler.runtime_seed]
+max_concurrent_sessions = 2
+liveness_ttl_seconds = 300
+route_contract_min = 1
+route_contract_max = 1
+
+[butler.db]
+name = "butlers"
+schema = "chronicler"
+
+[butler.switchboard]
+url = "http://localhost:41100/mcp"
+
+# Projection adapters run as scheduled jobs, NOT as modules or connectors.
+# Chronicler does not own any connector and does not ingest external events.
+
+[[butler.schedule]]
+name = "chronicler_project_sessions"
+cron = "*/15 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_sessions"
+
+[[butler.schedule]]
+name = "chronicler_project_calendar"
+cron = "10 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_calendar"
+
+[[butler.schedule]]
+name = "chronicler_day_close"
+cron = "5 1 * * *"
+dispatch_mode = "prompt"
+prompt = """
+Run the Chronicler day-close interpretation for yesterday:
+- Fetch the bounded episode/event bundle for yesterday via chronicler_list_episodes / chronicler_list_events.
+- Produce a brief day-close summary that cites source refs.
+- Do NOT invoke per-event LLM calls — this is one single interpretation over the bundle.
+- If the bundle is empty, exit silently.
+"""

@@ -1,293 +1,274 @@
-# RFC 0014: Chronicler Time Butler
+# RFC 0014: Chronicler Retrospective Time Butler
 
-**Status:** Draft
+**Status:** Accepted
 **Date:** 2026-04-24
 
 ## Summary
 
-Chronicler is the retrospective Time Butler. It reconstructs the owner's lived
-time from evidence already present in the system: Spotify listening sessions,
-Steam play activity, OwnTracks location transitions, completed calendar events,
-communication metadata, and butler session logs. Chronicler owns a derived
-temporal model of overlapping episodes and point-in-time events. It is not a
-planner, scheduler, router, or productivity judge.
+Chronicler is a retrospective "time butler" that reconstructs lived past time
+from derived events and episodes produced by existing butlers, modules, and
+connectors. It projects timestamped evidence from approved source surfaces
+(canonical `sessions`, completed calendar instances, durable Spotify session
+summaries, etc.) into two Chronicler-owned storage shapes: **point events**
+(things that happened at an instant) and **episodes** (things that took a
+span of time). Episodes MAY overlap. Every Chronicler record preserves source
+provenance, boundary precision, and privacy/retention metadata; none of it
+is computed on the fly for interactive queries.
 
-The design is cost-conservative: Chronicler MUST NOT run an LLM pass over every
-ingestion event. Most timeline construction is deterministic projection. LLM
-interpretation is sparse and reserved for day-close summaries, ambiguity
-resolution, explicit drilldowns, and correction assistance.
+Chronicler is **retrospective-only**. It does not plan, schedule, nudge, or
+dispatch anything. It is a domain butler (not a staffer), has no ingress
+routing authority, owns no connectors, and never ingests raw input directly
+from an external service. It reads from other butlers' approved read surfaces
+via migration-tracked views and its own projection checkpoints.
 
-This RFC is a draft scope-expansion proposal. It does not amend the current
-`about/heart-and-soul/v1.md` scope gate by itself. Until Heart and Soul is
-updated, references to Chronicler's first release mean the proposed Chronicler
-initial release, not the already-scoped v1 system.
+Chronicler does **not** replace the operational `/api/timeline` route that
+aggregates current sessions and notifications across butlers. It adds a new
+namespace `/api/chronicler/*` for reconstructed time.
 
 ## Motivation
 
-Butlers already collect rich evidence about the owner's life, but that evidence
-is spread across source-specific systems. Spotify knows listening, Steam knows
-gaming, OwnTracks knows movement, Calendar knows planned events after they pass,
-Relationship knows interaction history, and the core session log knows agent
-work. None of these sources answers the cross-cutting question:
+The Butlers ecosystem already captures time-bearing signals across many
+surfaces: LLM session records, Google Calendar events, Spotify listening
+sessions, Steam play history, OwnTracks location points, Home Assistant
+state history. These live in butler-specific or connector-specific tables
+and are optimized for each owner's operational needs (e.g. `sessions` is
+append-only, some connector tables have short retention).
 
-> What was I doing with my time?
+When the user wants to answer "what did I do yesterday?" or "how much time
+did I spend listening to music last week?" there is currently no coherent
+retrospective view. Each butler could re-derive a partial view against its
+own tables, but that would:
 
-The answer should be evidence-backed, retrospective, and honest about
-uncertainty. The owner may have been listening to music while commuting; a chat
-message may have arrived during a work block; a calendar meeting may have been
-scheduled but not actually attended. A correct model must preserve overlap,
-source provenance, and boundary uncertainty instead of forcing life into a
-single exclusive activity lane.
+1. Cross schema boundaries repeatedly (violating RFC 0006).
+2. Produce inconsistent overlap/precision/provenance semantics.
+3. Re-compute expensive projections per query.
+4. Miss the fact that real retrospective views naturally overlap: a commute
+   (OwnTracks) happens while listening to music (Spotify) while no work
+   session is active (sessions). Overlap is the common case, not an error.
+
+Chronicler centralizes retrospective reconstruction into one butler that:
+
+- Owns one schema (`chronicler`) with one role (`butler_chronicler_rw`).
+- Projects each approved source surface into point events and/or episodes
+  using deterministic, idempotent, checkpointed adapters.
+- Preserves source refs, precision, and uncertainty in every row.
+- Supports user corrections without discarding the original projection.
+- Never invokes an LLM per ingestion event (see "Sparse Interpretation").
 
 ## Design
 
-### Butler Identity
+### D1: Data Model Overview
 
-Chronicler is a domain butler, not a staffer.
+Chronicler owns the `chronicler` schema. Core tables are:
 
-**Why it is a butler:** its domain is lived time, attention, routine, and
-retrospection. Its primary user is the owner, and its user-facing questions are
-life-domain questions: "Where did my afternoon go?", "How much time did I spend
-gaming this week?", "What was happening around 8pm last night?"
+- `point_events` — things that happened at an instant (e.g. "session started",
+  "arrived at home"). One timestamp, no duration.
+- `episodes` — things that took a span of time (e.g. "listening session",
+  "scheduled meeting attended", "work session"). Start + optional end;
+  open-ended episodes are allowed (end NULL) when the source is live or
+  the end has not yet been observed.
+- `episode_event_links` — many-to-many between episodes and the point events
+  that support them. A single episode MAY be derived from or accompanied by
+  multiple evidence events (e.g. a work episode may have "session_started"
+  and "session_completed" point events as boundary evidence).
+- `overrides` — user-supplied corrections that supersede the canonical
+  projection for a specific record. Corrections NEVER delete the original
+  row; they layer on top via a corrected view.
+- `projection_checkpoints` — per-source-adapter cursor state (last watermark,
+  last run time, last error).
+- `source_adapter_state` — per-source adapter registration, schema version,
+  enabled/disabled, current health.
+- `idempotency_keys` — stable keys for every projected row keyed on
+  `(source_name, source_ref)` so replays never duplicate.
 
-**Why it is not a staffer:** it does not route messages, broker system state,
-own connectors, enforce ingestion policy, or direct other butlers. It may run
-deterministic projection jobs, but implementation style does not define service
-type. Staffers serve the agent ecosystem; Chronicler serves the owner's life.
+Every row on `point_events`, `episodes`, and `overrides` carries:
 
-### Retrospective Scope
+- `source_name` (text) — name of the adapter that produced this row.
+- `source_ref` (text) — opaque stable reference back to the source record.
+- `precision` (enum: `exact`, `minute`, `hour`, `day`, `unknown`) — boundary
+  precision declared by the source.
+- `privacy` (enum: `normal`, `sensitive`, `restricted`) — retention and
+  visibility class inherited from the source declaration.
+- `retention_days` (int or NULL) — retention policy, NULL means inherit
+  Chronicler default.
+- `tombstone_at` (timestamptz, nullable) — soft-delete marker; rows past
+  tombstone are excluded from default views.
 
-Chronicler's initial release models lived and past time only.
+### D2: Source Compatibility Contracts
 
-- Completed calendar events may become evidence after their end time.
-- Current activity MAY remain open until source-specific closure rules can
-  finalize it.
-- Future commitments, agenda planning, forecasting, time blocking, and
-  recommendations are out of scope.
-- Deadlines and scheduled tasks are out of scope unless they produced actual
-  activity evidence.
+Each source adapter MUST declare a **compatibility record** before projection
+runs against it. The declaration is stored via `source_adapter_state` and
+includes:
 
-Chronicler is a historian, not a planner.
+- `source_name` — unique string (e.g. `core.sessions`, `google_calendar.completed`,
+  `spotify.session_summary`).
+- `chronicler_compatibility` — one of:
+  - `supported` — adapter is live and projecting.
+  - `deferred` — intentionally out of scope for the current release.
+  - `not_time_bearing` — the source explicitly carries no retrospectively
+    meaningful time data (e.g. static catalog rows).
+  - `planned` — future support, not yet implemented.
+- `read_surface` — schema-qualified view or table Chronicler reads from
+  (migration-tracked, read-only).
+- `boundary_semantics` — how to interpret start/end/timestamp in the source.
+- `optional_schema` — if the source's schema is optional (module not
+  installed on this deployment), the adapter MUST degrade gracefully.
 
-### Temporal Primitives
+Initial declarations (v1 of Chronicler):
 
-Chronicler maintains two first-class primitives:
+| Source | Status | Read surface |
+|---|---|---|
+| `core.sessions` | supported | `public.sessions` (cross-butler view) |
+| `google_calendar.completed` | supported | calendar module completed-instance view |
+| `spotify.session_summary` | deferred pending durable evidence surface | — |
+| `steam.play_history` | planned | — |
+| `owntracks.points` | planned | — |
+| `home_assistant.history` | planned | — |
+| `google_health.*` | deferred | — |
+| TTL diagnostic process logs | not_time_bearing | — |
 
-1. **Events**: point-in-time facts such as "email received", "Steam achievement
-   unlocked", "track changed", or "butler session started".
-2. **Episodes**: bounded or open intervals such as "Spotify listening session",
-   "train commute", "chat burst", "gaming session", or "agent investigation".
+A lint/check MUST ensure any new OpenSpec source spec with timestamp fields
+declares either `chronicler_compatibility` or `not_time_bearing=true`.
 
-Episodes can overlap. Events can occur inside zero, one, or many episodes.
-Chronicler MUST NOT collapse overlapping source activity into a single primary
-activity during projection. Primary-activity judgments are presentation or
-summary decisions and must preserve provenance.
+### D3: Adapter Contract
 
-### Boundary Provenance
+Each Chronicler adapter:
 
-Episodes do not always have clean starts or stops. Chronicler MUST distinguish
-"the activity ended at this time" from "the system stopped seeing evidence after
-this time."
+- Reads from its declared `read_surface` only.
+- Produces `point_events` and/or `episodes` with stable `source_ref` values
+  so replays are idempotent.
+- Writes to `projection_checkpoints` on every run (success or failure)
+  with watermark + error detail.
+- Never invokes an LLM per event.
+- Degrades gracefully if its optional schema is missing (marks its state
+  `inactive`, records the reason, exits cleanly).
+- Runs under cron dispatch (`dispatch_mode=job`) from the Chronicler
+  butler's schedule, not as a connector.
 
-Each episode records boundary semantics:
+### D4: Corrections Model
 
-| Field | Values |
-|-------|--------|
-| `start_boundary` | `explicit`, `inferred` |
-| `end_boundary` | `explicit`, `inferred`, `timeout`, `unknown` |
+User corrections are layered via `overrides`:
 
-Examples:
+- Each override row references the canonical row and supplies updated
+  fields (start, end, title, privacy, tombstone, or free-form notes).
+- The canonical row is never updated. Replays re-project canonical values;
+  overrides are re-applied on read.
+- A corrected view (`v_episodes_corrected`, `v_point_events_corrected`)
+  exposes the effective rows. Default API reads use the corrected view.
+- Correction history is exposed via `GET /api/chronicler/episodes/{id}/corrections`.
 
-- Spotify session: explicit when a session summary or stop signal is available;
-  timeout/inferred when no playback is observed after an idle threshold.
-- Steam session: explicit on status/game change; inferred from polling gaps when
-  the final stop is not directly observed.
-- OwnTracks dwell: explicit on leave transition; inferred from later location
-  updates when no leave event exists.
-- Chat/email burst: inferred from inactivity threshold.
-- Butler session: explicit via `completed_at`; timeout/error via session status.
+### D5: Sparse Interpretation Guardrails
 
-### Cost Model
+Chronicler MAY invoke an LLM for bounded Tier 2 interpretation paths:
 
-Chronicler uses three tiers:
+- **Day-close summary** — one LLM call per day-close cron tick, input is
+  a token-bounded episode/event bundle for the closing day.
+- **Explicit drilldown** — one LLM call when the user asks "what was that
+  meeting about?" with an episode ID and the bundle for that episode.
+- **Ambiguity resolution** — one LLM call when two overlapping episodes
+  conflict irreconcilably.
+- **Correction assistance** — one LLM call to format a correction response
+  when the user submits a natural-language correction.
 
-| Tier | Name | Cost | Use |
-|------|------|------|-----|
-| Tier 0 | Direct projection | No LLM | Typed events/sessions already expose temporal structure. |
-| Tier 1 | Deterministic aggregation | No LLM | Group source records into bursts, dwell windows, or sessions. |
-| Tier 2 | Sparse interpretation | LLM | Summaries, ambiguity resolution, explicit drilldowns, and correction assistance. |
+The guardrails:
 
-Chronicler MUST NOT depend on an LLM pass for every ingestion event. Projection
-runs asynchronously from persisted evidence and is checkpointed/idempotent.
+- Projection adapters MUST NOT call LLMs under any path.
+- Tier 2 paths MUST assert `len(input_bundle) <= MAX_TIER_2_INPUT_BYTES`
+  at call time and fail fast otherwise.
+- Tier 2 paths MUST preserve provenance in output (cite source refs).
+- Tests MUST exercise the no-LLM invariant for every adapter.
 
-### Switchboard Routing Boundary
+### D6: Switchboard Routing Boundary
 
-Switchboard routes to Chronicler only for explicit user requests. Passive
-activity awareness is not a routing competition between Chronicler and domain
-butlers.
+Switchboard classification metadata is updated so:
 
-Examples:
+- **Explicit retrospective time-review** requests route to Chronicler:
+  - "what did I do yesterday / last week"
+  - "how much time did I spend on X"
+  - "when did I last do Y" (retrospective-only)
+  - "fix the start time of my 3pm meeting yesterday" (correction intent)
+- **Passive timestamped events** (Spotify now-playing, Steam game started,
+  OwnTracks point, Home Assistant state change, Google Health reading) MUST
+  continue routing to their owning domain butlers. Chronicler's projection
+  runs asynchronously on schedule.
+- **Domain-next-action questions** stay with the owning butler:
+  - "recommend me music" → Lifestyle, not Chronicler.
+  - "schedule lunch with X" → whoever owns calendar intent (Lifestyle for
+    taste-linked, Relationship for social, etc.).
+- **Lifestyle domain overlap** (e.g. "what was that song I was listening to
+  during my run") stays with Lifestyle for taste/preference angle;
+  Chronicler handles the chronological slice if the question is
+  unambiguously retrospective.
 
-- "What did I do yesterday afternoon?" routes to Chronicler.
-- "How much time did I spend gaming this week?" routes to Chronicler.
-- A Spotify playback event is not routed to Chronicler by classification; it is
-  consumed by Chronicler's projection job from persisted evidence.
-- A Spotify event may still serve Lifestyle as taste evidence through Lifestyle's
-  own contracts.
+### D7: API Surface
 
-### Source Ownership
+All Chronicler API routes live under `/api/chronicler/*`. The existing
+`/api/timeline` route (cross-butler sessions + notifications) is preserved
+untouched.
 
-Chronicler owns temporal projection, not source truth.
+- `GET /api/chronicler/events` — list point events with filters.
+- `GET /api/chronicler/episodes` — list episodes with filters.
+- `GET /api/chronicler/episodes/{id}` — single episode detail (corrected).
+- `GET /api/chronicler/episodes/{id}/events` — supporting events for an
+  episode via `episode_event_links`.
+- `GET /api/chronicler/episodes/{id}/corrections` — correction history.
+- `POST /api/chronicler/episodes/{id}/corrections` — submit a correction.
 
-- Spotify/Steam/Lifestyle own media and hobby meaning.
-- OwnTracks/Travel/Home own movement and place semantics.
-- Relationship owns interaction meaning and contact context.
-- Health owns physiological and wellness meaning.
-- Calendar owns event management.
-- Core owns session records and ingestion lineage.
+All responses include provenance fields (source_name, source_ref,
+precision, privacy). All list endpoints support cursor pagination.
 
-Chronicler reads compatible evidence and creates derived events/episodes with
-source references. It does not mutate source records or overwrite specialist
-domain truth.
+### D8: Heart-and-Soul Position
 
-### Evidence Access Topology
+Chronicler is added to `about/heart-and-soul/v1.md` under Butlers as the
+ninth domain butler. The vision update is minimal: "Chronicler reconstructs
+lived past time from other butlers' timestamped evidence; it does not plan,
+ingest, or notify."
 
-Chronicler APIs, dashboard queries, and Chronicler LLM sessions read
-Chronicler-owned derived tables only. Source evidence is imported by deterministic
-projection jobs, not by ad hoc cross-schema queries during interactive requests.
+## Non-Goals
 
-Each source uses the approved adapter evidence path for this draft:
+- Chronicler does NOT ingest raw external data. Adapters read from
+  migration-tracked read surfaces that other butlers/connectors own.
+- Chronicler does NOT own any connector.
+- Chronicler does NOT route user messages (it has no Switchboard authority).
+- Chronicler does NOT plan or schedule anything.
+- Chronicler does NOT store raw source payloads; only projected rows with
+  source refs.
+- Chronicler does NOT replace `/api/timeline` — it adds a separate
+  namespace.
+- Chronicler does NOT project every time-bearing source in v1. The initial
+  set is intentionally small (sessions + completed calendar); further
+  sources are declared as `planned` or `deferred`.
 
-1. **Read-only adapter path:** Chronicler reads source-specific evidence through
-   migration-tracked, least-privilege read-only views/grants. Adapter queries are
-   deterministic batch work and must use guard patterns such as `to_regclass(...)`
-   when optional source schemas/tables may be absent.
-2. **Canonical evidence path:** deferred. A shared temporal evidence write
-   surface requires a later RFC/spec defining table ownership, write authority,
-   ACLs, provenance, retention, and migration contract before any source writes
-   to it.
+## Migration and Rollout
 
-Adapters must not depend on `public.ingestion_events` alone for semantic
-projection. `public.ingestion_events` is lineage metadata; source-specific raw
-or summarized evidence must be explicitly named in each adapter contract.
+1. Bootstrap schema and role (`scripts/init-db.sql` updated, migration tests
+   added).
+2. Register Chronicler in `roster/` with `butler.toml` and manifesto.
+3. Apply migrations (Chronicler chain at `roster/chronicler/migrations/`).
+4. Enable adapters one at a time, starting with `core.sessions`.
+5. Add API routes (read + correction).
+6. Update Switchboard routing guidance and classification prompt.
+7. Add guardrail tests.
 
-### Correction and Override
+## Open Questions
 
-Chronicler's initial release supports owner corrections. Corrections do not
-rewrite source evidence. They create override records or superseding derived
-episodes with provenance.
+- **Does Chronicler expose MCP tools?** v1 says yes, minimal — primarily
+  read-side helpers (`chronicler_list_episodes`, `chronicler_get_episode`,
+  `chronicler_submit_correction`). MCP tool surface is intentionally small
+  because Chronicler's primary interaction surface is the dashboard API.
+- **Correction conflict resolution?** Later overrides win. Multi-party
+  correction is not a v1 concern (single-user system).
+- **Episode merging?** Out of scope for v1. Overlap is allowed and not
+  reconciled automatically.
 
-Examples:
+## References
 
-- "That was not commuting; I was walking to lunch."
-- "The music session continued until 10:15."
-- "This calendar event did not happen."
-
-The original source evidence remains queryable. Corrected views prefer active
-overrides while preserving the audit trail.
-
-### Privacy and Retention Inheritance
-
-Chronicler projections inherit source privacy constraints. Projected records
-must carry privacy tier, source reference, and retention/precision metadata.
-Sensitive sources such as location and communications must not be retained at a
-higher precision or for a longer period than the source contract permits unless
-a specific Chronicler retention policy is documented and accepted.
-
-When source evidence is purged, Chronicler may retain lower-precision derived
-episodes only if the retained fields satisfy the source privacy policy. The
-projection contract must define what survives, what is tombstoned, and what
-source references become non-dereferenceable.
-
-### Chronicler Compatibility Contract
-
-Once this RFC is accepted, future timestamped sources MUST declare Chronicler
-compatibility in their proposal/spec or explicitly state that they carry no
-time-bearing evidence. A compatible source emits or exposes evidence that
-Chronicler can project without bespoke LLM interpretation.
-
-Each source compatibility note MUST specify:
-
-| Field | Meaning |
-|-------|---------|
-| `source_name` | Stable source name, e.g. `fitbit`, `spotify`, `owntracks`. |
-| `source_kind` | `connector`, `module`, `butler`, or `core`. |
-| `supported_outputs` | `events`, `episodes`, or `both`. |
-| `time_fields` | Point timestamp or interval fields exposed by the source. |
-| `boundary_semantics` | Whether start/end boundaries are explicit, inferred, timeout-based, or unknown. |
-| `source_ref_format` | Stable reference Chronicler can store and later dereference. |
-| `taxonomy_mapping` | Event/episode type mappings into Chronicler's taxonomy. |
-| `confidence_semantics` | How source confidence should be interpreted. |
-| `privacy_tier` | Sensitivity/retention expectations for the source evidence. |
-| `idempotency_key` | Stable key for projection upserts. |
-| `projection_path` | `canonical_evidence` or `chronicler_adapter`. |
-
-Two integration paths are recognized, but only the adapter path is in scope for
-this draft:
-
-1. **Adapter path:** Chronicler owns a deterministic source adapter that reads
-   source-specific tables/events and projects them into Chronicler events and
-   episodes.
-2. **Canonical evidence path:** deferred until a separate RFC/spec defines the
-   shared table, ACL/write matrix, provenance, retention, and migration contract.
-
-For the proposed initial release, existing sources may use adapters because
-their current contracts differ. Projection ownership stays with Chronicler either
-way: Fitbit owns health truth; Chronicler owns lived-time projection.
-
-### Initial Source Set
-
-The proposed initial release includes only sources with durable, lower-ambiguity
-evidence contracts:
-
-- Butler/agent sessions from canonical session records.
-- Completed calendar instances, deduplicated using the calendar workspace
-  projection semantics.
-- Spotify session summaries where durable start/end evidence exists.
-
-Steam play deltas, OwnTracks dwell/commute episodes, fine-grained Spotify track
-timelines, communication bursts, Home Assistant, live-listener, and future
-Fitbit-like sources are deferred until their source evidence contracts explicitly
-define durable time fields, closure semantics, privacy/retention behavior, and
-idempotency.
-
-## Integration
-
-- **RFC 0003:** Switchboard routing remains the entry point for explicit user
-  requests. Chronicler does not compete for passive source events.
-- **RFC 0006:** Chronicler has its own schema. Any cross-schema reads must use
-  migration-tracked, least-privilege access.
-- **RFC 0009:** Context signals can be projected as time evidence, but
-  Chronicler does not replace the context bus.
-- **RFC 0010:** Deterministic cross-source batch reads may reuse the
-  cost-justified exception pattern only when the reuse criteria hold: read-only,
-  deterministic, batch, auditable, and materially cheaper than MCP fan-out.
-- **RFC 0011:** Proactive insights remain brokered by Switchboard. Chronicler may
-  propose insights later, but the proposed initial release does not require
-  proactive recommendations.
-- **RFC 0007 / dashboard visibility:** `/timeline` is already an operational
-  system-event route. This RFC does not claim that route for Chronicler. A
-  future dashboard proposal must either choose a distinct user-facing route or
-  explicitly amend the existing dashboard timeline contract.
-
-## Alternatives Considered
-
-**Put timeline ownership in General.** Rejected because General is already the
-catch-all memory surface. Lived time is a rich domain that deserves its own
-manifesto and boundaries.
-
-**Put timeline ownership in Lifestyle.** Rejected because Lifestyle owns taste,
-media, food, entertainment, and hobbies. Chronicler needs to include work,
-movement, calendar, communication, agent work, and health-adjacent sources.
-
-**Make Chronicler a staffer.** Rejected because its primary user is the owner,
-not the agent ecosystem. Projection-heavy internals do not make a domain butler
-infrastructure.
-
-**Route every source event to Chronicler through Switchboard.** Rejected because
-it creates ambiguous routing competition with domain butlers and would increase
-LLM cost. Chronicler consumes persisted evidence asynchronously instead.
-
-**LLM-interpret every ingestion event.** Rejected as too expensive and
-unnecessary. Typed source events and deterministic aggregation provide most of
-the useful temporal structure.
+- RFC 0001 (daemon lifecycle) — Chronicler uses standard butler lifecycle.
+- RFC 0002 (modules) — Chronicler's adapters are NOT modules; they are
+  internal projection jobs dispatched by the scheduler.
+- RFC 0003 (switchboard) — routing boundary rules (D6).
+- RFC 0006 (database isolation) — Chronicler owns its schema; read
+  surfaces from other schemas are migration-tracked views.
+- RFC 0009 (context bus) — Chronicler MAY read context but does not write.
+- RFC 0010 (cross-butler briefing) — precedent for Chronicler's
+  cross-schema read surface pattern.

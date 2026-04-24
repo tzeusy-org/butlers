@@ -50,6 +50,51 @@ _FOOD_INTENT_RE = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+# Retrospective time-review intents (RFC 0014 §D6).
+# Only explicit retrospective asks route to Chronicler. Domain
+# next-action questions (e.g. "recommend music") and scheduling intents
+# stay with the owning butler / calendar-capable butler.
+_RETROSPECTIVE_INTENT_RE = re.compile(
+    r"\b("
+    r"what did i (?:do|have|eat|watch|listen(?:ed)?(?: to)?|play(?:ed)?) "
+    r"(?:yesterday|last (?:night|week|month|weekend)|today)|"
+    r"when did i last|"
+    r"how (?:much|many hours|long)(?: time)? (?:did|have) i "
+    r"(?:spend|spent|work(?:ed)?|listen(?:ed)?|play(?:ed)?|watch(?:ed)?)"
+    r"[^\n]{0,60}?\b(?:yesterday|today|last (?:night|week|month|weekend)|this (?:week|month))|"
+    r"time (?:i )?spent (?:on|listening|playing|watching|working)|"
+    r"recap (?:of )?(?:my )?(?:yesterday|last (?:week|night|month|weekend)|day)|"
+    r"what happened (?:yesterday|last (?:week|night|month|weekend))|"
+    r"looking back|retrospective"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+# Correction intents against a retrospective record (also Chronicler).
+_RETROSPECTIVE_CORRECTION_RE = re.compile(
+    r"\b("
+    r"fix (?:the )?(?:start|end|timestamp|(?:start|end) time|time)"
+    r"(?: of)?|"
+    r"actually (?:that|the meeting|the session)|"
+    r"correct (?:the )?(?:start|end|timestamp|title|(?:start|end) time|time)"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def is_retrospective_time_intent(text: str) -> bool:
+    """True iff the text is an explicit retrospective time-review request.
+
+    Used by the Switchboard classifier to prefer Chronicler routing only
+    for unambiguously retrospective asks. Passive timestamped events
+    (Spotify playback change, Steam game started, OwnTracks point,
+    Google Health reading) never hit this helper — they arrive through
+    connector ingestion, not user-message classification.
+    """
+    if _RETROSPECTIVE_INTENT_RE.search(text):
+        return True
+    if _RETROSPECTIVE_CORRECTION_RE.search(text):
+        return True
+    return False
 
 
 def _normalize_modules(raw_modules: Any) -> set[str]:
@@ -132,6 +177,21 @@ def _build_routing_guidance(butlers: list[dict[str, Any]]) -> str:
     if _calendar_capable_butlers(butlers):
         lines.append(
             "- For calendar/scheduling intents, prefer butlers that list calendar capability."
+        )
+
+    if "chronicler" in butler_names:
+        lines.append(
+            "- Route ONLY explicit retrospective time-review requests to the\n"
+            "  chronicler butler: 'what did I do yesterday', 'how much time did I\n"
+            "  spend listening', 'when did I last go running', 'recap of last week',\n"
+            "  or corrections to a past event ('fix the start time of yesterday's\n"
+            "  meeting', 'actually that session ended at 4pm').\n"
+            "- Domain-next-action questions (e.g. 'recommend me music',\n"
+            "  'schedule lunch with Alice') stay with the owning butler, NOT\n"
+            "  chronicler.\n"
+            "- Passive timestamped events (Spotify now-playing, Steam game started,\n"
+            "  OwnTracks points, Google Health readings) NEVER route to chronicler;\n"
+            "  they continue to route to their owning domain butler."
         )
 
     if "lifestyle" in butler_names:

@@ -1,81 +1,94 @@
+# Chronicler — Retrospective Time Butler
+
 ## Why
 
-Butlers already collect rich timestamped evidence about the owner's life:
-Spotify listening, Steam play activity, OwnTracks location transitions,
-completed calendar events, communication metadata, and agent sessions. The
-evidence is useful but fragmented by source and domain. No current capability
-answers the retrospective question: "What was I doing with my time?"
+The Butlers ecosystem already captures time-bearing signals across many
+surfaces (LLM sessions, Google Calendar events, Spotify listening sessions,
+Steam play history, OwnTracks location points, Home Assistant state history)
+but has no coherent retrospective view. When the user asks "what did I do
+yesterday?" or "how much time did I spend listening to music last week?",
+each butler today would have to re-derive its own partial view against its
+own schema, violating Rule 3 (MCP-only cross-butler communication) or
+re-computing expensive projections per query.
 
-A user-facing lived-time timeline should be the first consumer of a deeper
-capability, not the capability itself. The existing `/timeline` route is already
-an operational event stream, so this proposal intentionally leaves the final
-dashboard route unresolved. The system needs a retrospective Time Butler that
-owns a derived temporal model of lived time while preserving source provenance,
-overlap, and uncertainty.
+Chronicler centralizes retrospective reconstruction into one domain butler
+that reads from approved migration-tracked source surfaces, writes to its
+own schema, preserves source provenance + precision + uncertainty on every
+row, supports user corrections without losing originals, and never runs an
+LLM per ingestion event. RFC 0014 defines the full contract.
 
 ## What Changes
 
-- Add **Chronicler**, the retrospective Time Butler.
-- Add a Chronicler-owned temporal model with point events, overlapping episodes,
-  source links, boundary provenance, and owner overrides.
-- Build episodes/events from persisted evidence streams using three cost tiers:
-  direct projection, deterministic aggregation, and sparse LLM interpretation.
-- Keep passive timeline construction out of Switchboard routing competition.
-  Switchboard routes to Chronicler only for explicit user requests.
-- Define a Chronicler compatibility contract for future timestamped sources
-  such as Fitbit.
-- Leave the user-facing dashboard route unresolved for now. The existing
-  `/timeline` route is already specified as an operational event stream; this
-  change does not claim that route or specify UX design.
+- **New domain butler `chronicler`** (`roster/chronicler/`): `butler.toml`,
+  `MANIFESTO.md`, `CLAUDE.md`/`AGENTS.md`, migrations, dashboard API routes.
+  Domain butler (not staffer). No connector ownership, no ingress routing.
+- **Schema bootstrap** (`scripts/init-db.sql`): add `chronicler` schema and
+  `butler_chronicler_rw` runtime role with grants.
+- **Storage primitives** (`roster/chronicler/migrations/001_chronicler_tables.py`):
+  `point_events`, `episodes`, `episode_event_links`, `overrides`,
+  `projection_checkpoints`, `source_adapter_state`, `idempotency_keys`,
+  and corrected views.
+- **Source compatibility contracts**: declarations for `core.sessions`
+  (supported), `google_calendar.completed` (supported),
+  `spotify.session_summary` (deferred pending durable evidence surface),
+  `google_health.*` (deferred), with a lint check for future timestamped
+  specs missing `chronicler_compatibility`.
+- **Projection adapters**: `core.sessions` (butler/agent session records
+  → lifecycle events + work episodes) and `google_calendar.completed`
+  (completed non-cancelled instances → scheduled-block episodes). Spotify
+  adapter is gated on a durable summary evidence surface and shipped as
+  a follow-up bead if no such surface exists.
+- **Dashboard API** (`roster/chronicler/api/`): `/api/chronicler/events`,
+  `/api/chronicler/episodes`, `/api/chronicler/episodes/{id}`,
+  `/api/chronicler/episodes/{id}/events`,
+  `/api/chronicler/episodes/{id}/corrections` (GET + POST). The existing
+  `/api/timeline` route is preserved — it is the operational cross-butler
+  session/notification stream and remains distinct from Chronicler.
+- **Switchboard routing**: guidance text updated so explicit retrospective
+  time-review requests route to Chronicler while passive timestamped
+  events and domain-next-action questions continue routing to their
+  owning butlers.
+- **Sparse interpretation guardrails**: Tier 2 LLM entry points for
+  day-close summary, drilldown, ambiguity resolution, correction
+  assistance, with token-bounded input assertions. Projection adapters
+  MUST NOT call LLMs; guardrail tests enforce the invariant.
+- **Heart-and-Soul update** (`about/heart-and-soul/v1.md`): Chronicler
+  added as the ninth domain butler.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `butler-chronicler`: Domain butler for retrospective lived-time
-  reconstruction.
-- `chronicler-source-compatibility`: Contract requiring future timestamped
-  sources to declare how Chronicler can consume their evidence.
+- `butler-chronicler`: Retrospective time reconstruction butler with point
+  events, overlapping episodes, correction overlay, source adapters, and
+  `/api/chronicler/*` API surface.
 
 ### Modified Capabilities
 
-- `butler-switchboard`: Routes explicit time-review/timeline requests to
-  Chronicler, but does not route every passive source event to Chronicler.
-- `chronicler-api`: Exposes Chronicler-owned read and correction endpoints under
-  `/api/chronicler/*`; this change does not claim the operational `/timeline`
-  route.
-_None for dashboard UI in this change. Dashboard route/UX is explicitly deferred._
+- `butler-switchboard`: Routing guidance recognizes Chronicler for explicit
+  retrospective time-review requests. Passive timestamped events continue
+  routing to owning domain butlers.
 
 ## Impact
 
-- **Roster:** New `roster/chronicler/` butler identity and manifesto.
-- **Database:** New Chronicler schema tables for events, episodes, links,
-  overrides, projection checkpoints, and source adapter metadata.
-- **Projection jobs:** Deterministic adapters for initial sources: core session
-  records, completed calendar instances, and durable Spotify session summaries.
-  Steam, OwnTracks, communication bursts, fine-grained Spotify track timelines,
-  Home Assistant, live-listener, and Fitbit-like sources are candidate future
-  sources, not initial adapters.
-- **Switchboard:** Classification prompt/schema update for explicit Chronicler
-  intents only.
-- **Dashboard/API:** Future read APIs under a Chronicler-owned namespace such as
-  `/api/chronicler/*` for time review queries, episode correction, and source
-  provenance. The UI route is TBD and must not conflict with the existing
-  operational `/timeline`.
-- **No connector ingestion change required for the initial release:** Existing
-  sources can be consumed through adapters where durable evidence contracts
-  exist. New timestamped sources should include a Chronicler compatibility note
-  or explicit deferral.
+- New `chronicler` schema and `butler_chronicler_rw` role in `scripts/init-db.sql`.
+- New roster directory `roster/chronicler/`.
+- New Alembic chain `roster/chronicler/migrations/` (branch label `chronicler`).
+- New FastAPI router `roster/chronicler/api/router.py` auto-discovered
+  by `src/butlers/api/router_discovery.py`.
+- Switchboard classification guidance text updated in
+  `roster/switchboard/tools/routing/classify.py`.
+- New source compatibility lint in `tests/` that fails when a future
+  timestamped OpenSpec source spec omits `chronicler_compatibility`.
+- RFC 0014 added at `about/legends-and-lore/rfcs/0014-chronicler-time-butler.md`.
 
-## Non-Goals
+## Deferred
 
-- Future agenda, schedule planning, forecasting, or time-blocking.
-- Productivity scoring or judgment.
-- LLM interpretation of every ingestion event.
-- Making Chronicler the global context broker or router.
-- Replacing specialist domain truth in Lifestyle, Relationship, Health, Travel,
-  Home, Calendar, or core session records.
-- UX design for `/timeline`.
-- Claiming the existing operational `/timeline` route.
-- Treating the already-scoped v1 system as amended before Heart and Soul is
-  explicitly updated.
+- **Spotify fine-grained track timeline**: explicitly out of scope. Only
+  durable session summaries feed Chronicler if/when the durable evidence
+  surface exists.
+- **Google Health**: deferred per RFC 0014.
+- **Steam / OwnTracks / Home Assistant projection adapters**: declared as
+  `planned` but not implemented in this change.
+- **Automatic episode merging / reconciliation**: out of scope; overlap
+  is the expected case.
