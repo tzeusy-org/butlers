@@ -1,5 +1,5 @@
 ---
-skill: memory-taxonomy
+name: memory-taxonomy
 description: Health domain memory classification — taxonomy, permanence levels, and example fact patterns for storing health knowledge with entity resolution
 version: 2.0.0
 tools_required:

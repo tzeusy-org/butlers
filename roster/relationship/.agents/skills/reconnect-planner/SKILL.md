@@ -1,5 +1,5 @@
 ---
-skill: reconnect-planner
+name: reconnect-planner
 description: Identify overdue contacts ranked by Dunbar tier-weighted urgency and plan reconnection outreach
 version: 2.0.0
 tags: [relationship, outreach, planning, dunbar]

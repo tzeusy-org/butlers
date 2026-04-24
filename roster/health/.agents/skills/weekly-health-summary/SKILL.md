@@ -1,5 +1,5 @@
 ---
-skill: weekly-health-summary
+name: weekly-health-summary
 description: Scheduled weekly health digest — weight trend, medication adherence, symptom patterns, and notable changes
 version: 1.0.0
 trigger: scheduled

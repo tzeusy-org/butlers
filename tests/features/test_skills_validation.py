@@ -69,3 +69,55 @@ def test_list_valid_skills_edge_cases(tmp_path: Path) -> None:
     result = list_valid_skills(skills)
     result_names = sorted([p.name for p in result])
     assert result_names == ["a", "a-b-c", "a123", "ab-cd", "abc", "skill-123-test"]
+
+
+def test_repo_skill_files_use_yaml_frontmatter() -> None:
+    """Repo skill files must use Codex-compatible YAML frontmatter."""
+    repo_root = Path(__file__).resolve().parents[2]
+    skill_files = sorted(repo_root.glob("roster/**/SKILL.md"))
+
+    missing_frontmatter: list[str] = []
+    missing_name: list[str] = []
+    mismatched_name: list[str] = []
+
+    for skill_file in skill_files:
+        text = skill_file.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        rel_path = skill_file.relative_to(repo_root).as_posix()
+
+        if len(lines) < 3 or lines[0].strip() != "---":
+            missing_frontmatter.append(rel_path)
+            continue
+
+        try:
+            closing_index = lines.index("---", 1)
+        except ValueError:
+            missing_frontmatter.append(rel_path)
+            continue
+
+        frontmatter = lines[1:closing_index]
+        name_line = next(
+            (line for line in frontmatter if line and line.lstrip().startswith("name:")),
+            None,
+        )
+        if name_line is None:
+            missing_name.append(rel_path)
+            continue
+
+        parts = name_line.split(":", 1)
+        if len(parts) < 2:
+            missing_name.append(rel_path)
+            continue
+
+        skill_name = parts[1].strip().strip("'\"")
+        if not skill_name:
+            missing_name.append(rel_path)
+            continue
+
+        expected_name = skill_file.parent.name
+        if skill_name != expected_name:
+            mismatched_name.append(f"{rel_path} -> {skill_name!r} != {expected_name!r}")
+
+    assert missing_frontmatter == []
+    assert missing_name == []
+    assert mismatched_name == []

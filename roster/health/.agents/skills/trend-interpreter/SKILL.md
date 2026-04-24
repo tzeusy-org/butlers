@@ -1,5 +1,5 @@
 ---
-skill: trend-interpreter
+name: trend-interpreter
 description: Interpret measurement trends and flag potential anomalies in health data
 version: 1.0.0
 tools_required:
