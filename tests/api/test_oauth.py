@@ -19,6 +19,8 @@ from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
     _generate_state,
+    _has_health_scope,
+    _is_google_health_test_mode,
     _store_state,
     _validate_and_consume_state,
     _widen_scopes,
@@ -752,3 +754,204 @@ class TestOAuthStatus:
         assert "google" in body
         assert "state" in body["google"]
         assert "connected" in body["google"]
+
+
+# ---------------------------------------------------------------------------
+# Google Health test-mode metadata flag (unit helpers)
+# ---------------------------------------------------------------------------
+
+
+class TestHealthTestModeHelpers:
+    """Unit tests for _is_google_health_test_mode and _has_health_scope."""
+
+    def test_test_mode_off_by_default(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", raising=False)
+        assert _is_google_health_test_mode() is False
+
+    @pytest.mark.parametrize("val", ["1", "true", "True", "TRUE", "yes", "YES", "on", "ON"])
+    def test_test_mode_truthy_values(self, monkeypatch, val):
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", val)
+        assert _is_google_health_test_mode() is True
+
+    @pytest.mark.parametrize("val", ["0", "false", "no", ""])
+    def test_test_mode_falsy_values(self, monkeypatch, val):
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", val)
+        assert _is_google_health_test_mode() is False
+
+    def test_has_health_scope_googlehealth(self):
+        assert _has_health_scope("https://www.googleapis.com/auth/googlehealth.readings") is True
+
+    def test_has_health_scope_fitness(self):
+        assert _has_health_scope("https://www.googleapis.com/auth/fitness.activity.read") is True
+
+    def test_has_health_scope_not_present(self):
+        scope = "https://www.googleapis.com/auth/gmail.readonly openid email"
+        assert _has_health_scope(scope) is False
+
+    def test_has_health_scope_none(self):
+        assert _has_health_scope(None) is False
+
+    def test_has_health_scope_empty(self):
+        assert _has_health_scope("") is False
+
+
+# ---------------------------------------------------------------------------
+# OAuth callback — Google Health test-mode metadata writes
+# ---------------------------------------------------------------------------
+
+_HEALTH_SCOPE = "https://www.googleapis.com/auth/fitness.activity.read openid email"
+_NON_HEALTH_SCOPE = "https://www.googleapis.com/auth/gmail.readonly openid email"
+
+_FAKE_HEALTH_TOKEN = {
+    "access_token": "ya29.fake-health",
+    "refresh_token": "1//fake-health-refresh",
+    "scope": _HEALTH_SCOPE,
+    "token_type": "Bearer",
+    "expires_in": 3600,
+}
+
+_GET_ACCOUNT_PATCH = "butlers.api.routers.oauth.get_google_account"
+_SET_META_PATCH = "butlers.api.routers.oauth._set_account_health_test_mode"
+
+
+def _make_callback_app_with_account(app, *, entity_id: uuid.UUID):
+    """Wire app so get_google_account returns a mock with the given entity_id."""
+    secrets = {
+        "GOOGLE_OAUTH_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "test-secret",
+    }
+    conn = AsyncMock()
+
+    async def _fetchrow(query, *args):
+        key = args[0] if args else None
+        value = secrets.get(key) if key else None
+        return {"secret_value": value} if value else None
+
+    conn.fetchrow.side_effect = _fetchrow
+    conn.execute = AsyncMock(return_value="OK")
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = _acquire
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool.return_value = pool
+    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    return app, pool
+
+
+class TestHealthTestModeCallback:
+    async def test_sets_flag_when_health_scope_and_test_mode(self, app, monkeypatch):
+        """Callback sets google_health_test_mode when health scope granted + test mode active."""
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", "true")
+        entity_id = uuid.uuid4()
+        fake_account = MagicMock()
+        fake_account.entity_id = entity_id
+
+        app, _pool = _make_callback_app_with_account(app, entity_id=entity_id)
+        state = _generate_state()
+        _store_state(state)
+
+        with (
+            patch(_EXCHANGE_PATCH, AsyncMock(return_value=_FAKE_HEALTH_TOKEN)),
+            patch(_USERINFO_PATCH, AsyncMock(return_value=_FAKE_USERINFO)),
+            patch(_GET_ACCOUNT_PATCH, AsyncMock(return_value=fake_account)),
+            patch(_SET_META_PATCH, AsyncMock()) as mock_set_meta,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"code": "auth-code", "state": state},
+                )
+        assert resp.status_code == 200
+        mock_set_meta.assert_called_once_with(_pool, entity_id=entity_id)
+
+    async def test_does_not_set_flag_when_prod_mode(self, app, monkeypatch):
+        """Callback does NOT set flag when health scope granted but client is NOT in test mode."""
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", raising=False)
+        entity_id = uuid.uuid4()
+        fake_account = MagicMock()
+        fake_account.entity_id = entity_id
+
+        app, _pool = _make_callback_app_with_account(app, entity_id=entity_id)
+        state = _generate_state()
+        _store_state(state)
+
+        with (
+            patch(_EXCHANGE_PATCH, AsyncMock(return_value=_FAKE_HEALTH_TOKEN)),
+            patch(_USERINFO_PATCH, AsyncMock(return_value=_FAKE_USERINFO)),
+            patch(_GET_ACCOUNT_PATCH, AsyncMock(return_value=fake_account)),
+            patch(_SET_META_PATCH, AsyncMock()) as mock_set_meta,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"code": "auth-code", "state": state},
+                )
+        assert resp.status_code == 200
+        mock_set_meta.assert_not_called()
+
+    async def test_does_not_set_flag_when_no_health_scope(self, app, monkeypatch):
+        """Callback does NOT set flag when health scope not in grant, even in test mode."""
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", "true")
+        entity_id = uuid.uuid4()
+        fake_account = MagicMock()
+        fake_account.entity_id = entity_id
+
+        non_health_token = {**_FAKE_HEALTH_TOKEN, "scope": _NON_HEALTH_SCOPE}
+
+        app, _pool = _make_callback_app_with_account(app, entity_id=entity_id)
+        state = _generate_state()
+        _store_state(state)
+
+        with (
+            patch(_EXCHANGE_PATCH, AsyncMock(return_value=non_health_token)),
+            patch(_USERINFO_PATCH, AsyncMock(return_value=_FAKE_USERINFO)),
+            patch(_GET_ACCOUNT_PATCH, AsyncMock(return_value=fake_account)),
+            patch(_SET_META_PATCH, AsyncMock()) as mock_set_meta,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"code": "auth-code", "state": state},
+                )
+        assert resp.status_code == 200
+        mock_set_meta.assert_not_called()
+
+    async def test_idempotent_second_callback(self, app, monkeypatch):
+        """Running the callback a second time (same account) calls set_meta again — idempotent."""
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", "true")
+        entity_id = uuid.uuid4()
+        fake_account = MagicMock()
+        fake_account.entity_id = entity_id
+
+        app, _pool = _make_callback_app_with_account(app, entity_id=entity_id)
+
+        with (
+            patch(_EXCHANGE_PATCH, AsyncMock(return_value=_FAKE_HEALTH_TOKEN)),
+            patch(_USERINFO_PATCH, AsyncMock(return_value=_FAKE_USERINFO)),
+            patch(_GET_ACCOUNT_PATCH, AsyncMock(return_value=fake_account)),
+            patch(_SET_META_PATCH, AsyncMock()) as mock_set_meta,
+        ):
+            for _ in range(2):
+                state = _generate_state()
+                _store_state(state)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/oauth/google/callback",
+                        params={"code": "auth-code", "state": state},
+                    )
+                assert resp.status_code == 200
+
+        # Called twice (once per callback invocation), and the SQL itself is idempotent.
+        assert mock_set_meta.call_count == 2

@@ -400,6 +400,69 @@ def _get_dashboard_url() -> str | None:
     return val or None
 
 
+def _is_google_health_test_mode() -> bool:
+    """Return True when the OAuth client is configured in test mode.
+
+    Detection strategy: explicit config flag GOOGLE_OAUTH_CLIENT_TEST_MODE.
+
+    This is option (a) from the design choices — a simple, explicit environment
+    variable that self-hosted deployments set when they register an OAuth client
+    under a project still in Google's "Testing" publishing status.  The
+    alternative approaches (Cloud Console API probe or refresh-token TTL
+    heuristic) were rejected:
+      - Cloud Console API adds an extra authenticated HTTP round-trip and
+        requires additional IAM permissions not part of the standard OAuth flow.
+      - TTL heuristics are fragile because Google does not expose token
+        expiry deterministically in the token-exchange response.
+    """
+    val = os.environ.get("GOOGLE_OAUTH_CLIENT_TEST_MODE", "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _has_health_scope(scope_str: str | None) -> bool:
+    """Return True when the granted scope list contains any Google Health scope.
+
+    Google Health scopes share the URL prefix ``https://www.googleapis.com/auth/fitness``
+    or the ``https://www.googleapis.com/auth/health.*`` / ``googlehealth.*`` family.
+    We match any scope that contains ``googlehealth`` or starts with the fitness
+    API prefix, covering both the legacy Fitness REST API and the newer Health
+    Connect scopes.
+    """
+    if not scope_str:
+        return False
+    for scope in scope_str.split():
+        s = scope.lower()
+        if "googlehealth" in s or s.startswith("https://www.googleapis.com/auth/fitness"):
+            return True
+    return False
+
+
+async def _set_account_health_test_mode(
+    pool: Any,
+    *,
+    entity_id: uuid.UUID,
+) -> None:
+    """Set metadata.google_health_test_mode = true on the google_accounts row.
+
+    Uses jsonb_set() so other metadata keys are preserved.  The operation is
+    idempotent — running the callback a second time leaves the row unchanged.
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE public.google_accounts
+            SET metadata = jsonb_set(
+                metadata,
+                '{google_health_test_mode}',
+                'true'::jsonb,
+                true
+            )
+            WHERE entity_id = $1
+            """,
+            entity_id,
+        )
+
+
 async def _resolve_app_credentials(db_manager: Any = None) -> tuple[str, str]:
     """Resolve client_id and client_secret from DB-backed secret storage.
 
@@ -743,6 +806,7 @@ async def oauth_google_callback(
     # --- Resolve or create account in registry ---
     shared_pool = _get_shared_pool(db_manager)
     is_new_account: bool | None = None
+    resolved_entity_id: uuid.UUID | None = None
 
     if shared_pool is not None and account_email:
         # Try to find existing account.
@@ -750,6 +814,7 @@ async def oauth_google_callback(
             existing_account = await get_google_account(shared_pool, account=account_email)
             # Account exists — update credentials.
             is_new_account = False
+            resolved_entity_id = existing_account.entity_id
             if refresh_token:
                 # Update refresh token on existing companion entity.
                 await _update_account_refresh_token(
@@ -776,17 +841,19 @@ async def oauth_google_callback(
 
             scope_list = [s for s in scope.split() if s] if scope else []
             try:
-                await create_google_account(
+                new_account = await create_google_account(
                     shared_pool,
                     email=account_email,
                     display_name=account_display_name,
                     scopes=scope_list,
                     refresh_token=refresh_token,
                 )
+                resolved_entity_id = new_account.entity_id
             except GoogleAccountAlreadyExistsError:
                 # Race condition — treat as re-auth.
                 is_new_account = False
                 existing_account = await get_google_account(shared_pool, account=account_email)
+                resolved_entity_id = existing_account.entity_id
                 if refresh_token:
                     await _update_account_refresh_token(
                         shared_pool,
@@ -800,6 +867,24 @@ async def oauth_google_callback(
     elif shared_pool is None:
         # No shared pool — fall back to legacy single-account credential storage.
         pass
+
+    # --- Google Health test-mode metadata flag ---
+    # When the OAuth client is in test mode (GOOGLE_OAUTH_CLIENT_TEST_MODE=true) AND
+    # the granted scope list includes a Google Health scope, record this on the account
+    # row so the dashboard can surface an expiry warning (refresh tokens expire in 7 days
+    # for unverified apps).  The write is idempotent and best-effort — failures are
+    # logged but do not abort the callback.
+    if shared_pool is not None and resolved_entity_id is not None:
+        if _is_google_health_test_mode() and _has_health_scope(scope):
+            try:
+                await _set_account_health_test_mode(shared_pool, entity_id=resolved_entity_id)
+                logger.info("Google Health test-mode flag set on entity %s", resolved_entity_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to set google_health_test_mode metadata on entity %s: %s",
+                    resolved_entity_id,
+                    exc,
+                )
 
     # --- Persist app credentials and legacy refresh token ---
     # Secret material (client_secret, refresh_token) is NEVER logged in plaintext.
