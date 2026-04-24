@@ -16,8 +16,8 @@ their own structure and tooling.
 |--------|-----------|----------|---------|------------|
 | **Heart and Soul** | `about/heart-and-soul/` | **WHY** does this exist? | Vision, 7 non-negotiable rules, scope boundaries, anti-patterns | [vision.md](heart-and-soul/vision.md) |
 | **Craft and Care** | `about/craft-and-care/` | **HOW SHOULD WORK BE EXECUTED WELL?** | Engineering bar, testing discipline, review expectations, observability, security, maintainability | [README.md](craft-and-care/README.md) |
-| **Legends and Lore** | `about/legends-and-lore/` | **HOW** will it work? | 13 RFCs defining wire contracts, state machines, data models | [README.md](legends-and-lore/README.md) |
-| **Spec and Spine** | `openspec/` | **WHAT** exactly must be built? | 141 capability specs with WHEN/THEN scenarios | `openspec/specs/` |
+| **Legends and Lore** | `about/legends-and-lore/` | **HOW** will it work? | RFCs defining wire contracts, state machines, data models | [README.md](legends-and-lore/README.md) |
+| **Spec and Spine** | `openspec/` | **WHAT** exactly must be built? | Capability specs with WHEN/THEN scenarios | `openspec/specs/` |
 | **Lay and Land** | `about/lay-and-land/` | **WHERE** does everything live? | Component maps, data flow, dependencies, deployment topology | [README.md](lay-and-land/README.md) |
 
 ### Traceability Chain
@@ -86,7 +86,7 @@ a contract test that projects from the highest-level artefact downward.
    Scope debates end here.
 3. **[Craft and Care README](craft-and-care/README.md)** — The engineering bar:
    testing, verification, review, observability, security, and maintainability.
-4. **[Legends and Lore README](legends-and-lore/README.md)** — Index of 13 RFCs in
+4. **[Legends and Lore README](legends-and-lore/README.md)** — Index of RFCs in
    recommended data-flow reading order.
 5. **[components.md](lay-and-land/components.md)** — Every runtime piece,
    what it owns, and its stability level.

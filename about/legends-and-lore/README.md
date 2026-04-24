@@ -31,6 +31,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0011](rfcs/0011-proactive-insight-delivery.md) | Proactive Insight Delivery Protocol | Three-phase insight pipeline (butler generation, Switchboard brokering, notify delivery), anti-spam budget/cooldown/adaptive ratchet, `propose_insight_candidate` MCP tool, `intent='insight'` notify extension. |
 | [0012](rfcs/0012-finance-transaction-data-model.md) | Finance Transaction Data Model | Dedicated `finance.transactions` table with typed columns replacing SPO-primary storage, eight supporting tables, tiered deduplication, materialized spending summaries, 4-phase migration path. |
 | [0013](rfcs/0013-dunbar-group-aware-interaction-scoring.md) | Dunbar Group-Aware Interaction Scoring | Direction-weighted scoring (outgoing 10x, mutual 5x, incoming 1x), group-size-divided scoring (1/n dilution), connector-level participant gating (>20 excluded), interaction_log_group batch tool, interaction_sync group-aware pre-grouping. |
+| [0014](rfcs/0014-chronicler-time-butler.md) | Chronicler Time Butler | **Draft.** Retrospective Time Butler contract: overlapping episodes/events, boundary provenance, sparse LLM interpretation, Switchboard routing boundary, correction model, and future source compatibility contract. |
 
 ## Conventions
 
