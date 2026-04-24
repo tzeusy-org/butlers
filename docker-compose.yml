@@ -290,6 +290,29 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  connector-steam:
+    image: butlers-app:latest
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/steam", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.steam"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: steam
+      CONNECTOR_CHANNEL: gaming
+      CONNECTOR_HEALTH_PORT: "40089"
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      butlers-up:
+        condition: service_healthy
+      oauth-gate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   connector-live-listener:
     build:
       context: .

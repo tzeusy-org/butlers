@@ -8,9 +8,10 @@ and Prometheus metrics.
 Key design choices:
 - Multi-account: queries public.steam_accounts for active accounts at startup,
   spawns independent asyncio tasks per account.
-- 5 independent per-account pollers, each with its own interval and backoff:
-  recently_played (5 min), achievements (15 min), online_status (5 min),
-  friends (60 min), game_library (24 h).
+- 4 independent per-account pollers, each with its own interval and backoff:
+  recently_played (5 min), online_status (5 min),
+  friends (60 min), game_library (24 h). Achievement polling is disabled;
+  `steam_get_achievements` remains available as an on-demand MCP tool.
 - Delta detection via SHA-256 state hashing: stores last-known snapshot in
   connectors.steam_cursors; emits events only when state changes.
 - Crash-safe cursor persistence: cursors survive restarts, preventing duplicate
@@ -80,10 +81,12 @@ _DEFAULT_HEARTBEAT_INTERVAL_S = 60
 _DEFAULT_MAX_TRACKED_GAMES = 10
 
 # Default poll intervals per data type (seconds).
+# Note: achievements polling is intentionally omitted — the connector does not
+# currently poll for achievement unlocks. The `_poll_achievements` method and
+# `steam_get_achievements` MCP tool remain available for on-demand queries.
 _DEFAULT_INTERVALS: dict[str, int] = {
     "recently_played": 300,  # 5 min
     "online_status": 300,  # 5 min
-    "achievements": 900,  # 15 min
     "friends": 3600,  # 60 min
     "game_library": 86400,  # 24 h
 }
@@ -1622,7 +1625,13 @@ class SteamConnector:
             steam_id = row["steam_id"]
             steam_account_id: uuid.UUID | None = row["id"]
             api_key = row["api_key"]
-            metadata = dict(row["metadata"]) if row["metadata"] else {}
+            raw_metadata = row["metadata"]
+            if raw_metadata is None:
+                metadata: dict[str, Any] = {}
+            elif isinstance(raw_metadata, str):
+                metadata = json.loads(raw_metadata) if raw_metadata else {}
+            else:
+                metadata = dict(raw_metadata)
             endpoint_identity = f"steam:user:{steam_id}"
 
             if not api_key:

@@ -347,10 +347,13 @@ class SteamAPIClient:
 
         players: list[dict[str, Any]] = []
         for batch in _batch(steam_ids, _BATCH_SIZE_LIMIT):
+            # GetPlayerSummaries v2 returns {"players": [...]}. v1 returns
+            # {"players": {"player": [...]}}, which callers do not expect.
             result = await self.request(
                 "ISteamUser",
                 "GetPlayerSummaries",
                 params={"steamids": ",".join(batch)},
+                version=2,
             )
             players.extend(result.get("players", []))
 

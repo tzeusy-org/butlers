@@ -110,6 +110,13 @@ class SteamAccount:
 
     @classmethod
     def _from_row(cls, row: Any) -> SteamAccount:
+        raw_metadata = row["metadata"]
+        if raw_metadata is None:
+            metadata: dict[str, Any] = {}
+        elif isinstance(raw_metadata, str):
+            metadata = json.loads(raw_metadata) if raw_metadata else {}
+        else:
+            metadata = dict(raw_metadata)
         return cls(
             id=row["id"],
             entity_id=row["entity_id"],
@@ -121,7 +128,7 @@ class SteamAccount:
             status=row["status"],
             connected_at=row["connected_at"],
             last_poll_at=row["last_poll_at"],
-            metadata=dict(row["metadata"]) if row["metadata"] else {},
+            metadata=metadata,
         )
 
 

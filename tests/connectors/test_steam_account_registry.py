@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -131,6 +132,20 @@ class TestSteamAccountFromRow:
         meta = {"poll_intervals": {"recently_played": 120}}
         row2 = _make_account_row(metadata=meta)
         assert SteamAccount._from_row(row2).metadata == meta
+
+    def test_metadata_as_json_string(self) -> None:
+        """asyncpg returns JSONB as a string when no codec is registered.
+
+        The shared dashboard credential pool has no JSONB codec, so metadata
+        arrives as a string and ``_from_row`` must json-decode it.
+        """
+        meta = {"poll_intervals": {"recently_played": 120}}
+        row = _make_account_row(metadata=json.dumps(meta))  # type: ignore[arg-type]
+        assert SteamAccount._from_row(row).metadata == meta
+
+        # Empty JSONB ('{}') also round-trips to an empty dict
+        row_empty = _make_account_row(metadata="{}")  # type: ignore[arg-type]
+        assert SteamAccount._from_row(row_empty).metadata == {}
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +320,6 @@ class TestCreateSteamAccount:
         {} (expected str, got dict)`` and surfaced as "Failed to register the Steam
         account due to an internal error" in the dashboard.
         """
-        import json
-
         conn = _FakeConn()
         pool = _make_pool(conn)
         meta = {"poll_intervals": {"recently_played": 60}}
