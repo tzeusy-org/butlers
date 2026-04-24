@@ -20,7 +20,7 @@ def butler_toml() -> dict:
 def test_chronicler_butler_identity(butler_toml: dict) -> None:
     butler = butler_toml["butler"]
     assert butler["name"] == "chronicler"
-    assert butler["port"] == 41110
+    assert butler["port"] == 41111
     assert "retrospective" in butler["description"].lower()
 
 
