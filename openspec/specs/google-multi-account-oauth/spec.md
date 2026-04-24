@@ -80,3 +80,81 @@ The OAuth callback SHALL resolve the authenticated Google account and store cred
 - **WHEN** the OAuth start endpoint generates a CSRF state token
 - **THEN** the state store entry SHALL include `account_hint` (if provided) and `force_consent` flag
 - **AND** the callback SHALL read these from the state store during resolution
+
+### Requirement: Scope Set Registry
+
+The OAuth start endpoint SHALL accept a `scope_set` query parameter enumerating one or more named scope sets to include in the authorization URL.
+
+#### Scenario: Registered scope sets
+
+- **WHEN** the scope catalog is consulted
+- **THEN** it SHALL enumerate named scope sets including at least:
+  - `base` — `openid email profile`
+  - `calendar` — `https://www.googleapis.com/auth/calendar` and related read variants
+  - `drive` — `https://www.googleapis.com/auth/drive.readonly` and related variants
+  - `gmail` — existing Gmail scopes already used by `connector-gmail`
+  - `health` — `https://www.googleapis.com/auth/googlehealth.sleep`, `https://www.googleapis.com/auth/googlehealth.activity_and_fitness`, `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements`
+- **AND** the `base` set SHALL always be included implicitly
+
+#### Scenario: Single-set request
+
+- **WHEN** `GET /api/oauth/google/start?scope_set=health` is called
+- **THEN** the authorization URL SHALL include the `health` set's scopes unioned with any scopes already stored in `granted_scopes` for the hinted account
+- **AND** SHALL implicitly include the `base` set
+
+#### Scenario: Multi-set request
+
+- **WHEN** `GET /api/oauth/google/start?scope_set=calendar,drive,health&force_consent=true&account_hint=owner@example.com` is called
+- **THEN** the authorization URL SHALL include the union of scopes for all three requested sets (plus `base`)
+- **AND** the callback SHALL update `granted_scopes` with the full union after successful consent
+
+#### Scenario: Unknown scope set
+
+- **WHEN** `GET /api/oauth/google/start?scope_set=bogus` is called
+- **THEN** the endpoint SHALL return HTTP 400 with `{"error": "unknown_scope_set", "scope_set": "bogus", "known": [...]}`
+
+#### Scenario: Backward compatibility for callers that omit scope_set
+
+- **WHEN** `GET /api/oauth/google/start` is called with no `scope_set` parameter
+- **THEN** the endpoint SHALL behave as it does today (existing default scope composition)
+- **AND** Google Health scopes SHALL only be included when explicitly requested via `scope_set=health`
+
+### Requirement: Google Health Scopes are Restricted
+
+#### Scenario: Restricted-scope documentation in the OAuth catalog
+
+- **WHEN** a developer or operator reads the Google OAuth scope catalog source
+- **THEN** each Google Health scope entry SHALL carry an inline comment noting that the scope is Restricted, production-mode use requires a one-time privacy and security review, and test mode is sufficient for single-developer / single-user self-hosting (subject to 7-day refresh token expiry)
+
+#### Scenario: Test-mode awareness in the OAuth callback
+
+- **WHEN** the OAuth callback completes for a Google Health scope grant and the OAuth client is in test mode
+- **THEN** the callback SHALL set `metadata.google_health_test_mode = true` on the `google_accounts` row
+
+### Requirement: Additive Schema Support for Test-Mode Tracking
+
+#### Scenario: Metadata JSONB column
+
+- **WHEN** the `public.google_accounts` schema is migrated
+- **THEN** it SHALL include a `metadata JSONB NOT NULL DEFAULT '{}'::jsonb` column (if not already present)
+- **AND** `metadata.google_health_test_mode` SHALL be written only by the OAuth callback; absence of the key means not test mode
+
+#### Scenario: Last-refresh timestamp column
+
+- **WHEN** the OAuth callback issues or refreshes a token for a `google_accounts` row
+- **THEN** `public.google_accounts.last_token_refresh_at TIMESTAMPTZ` SHALL be updated to `now()`
+- **AND** the dashboard's 7-day test-mode expiry heuristic SHALL read this column
+
+### Requirement: Scope-Selective Revocation
+
+#### Scenario: Revoke Google Health scopes only
+
+- **WHEN** `DELETE /api/connectors/google-health/disconnect` is invoked
+- **THEN** the pipeline SHALL call Google's token-revocation endpoint scoped to the three Google Health scopes
+- **AND** SHALL update `public.google_accounts.granted_scopes` to remove the three entries while preserving `calendar`, `drive`, and other granted scopes
+- **AND** SHALL NOT delete the `google_accounts` row or the companion entity
+
+#### Scenario: Full account disconnect preserves semantics
+
+- **WHEN** an owner fully disconnects a Google account via `DELETE /api/oauth/google/accounts/<id>`
+- **THEN** all Google Health scopes SHALL be revoked alongside any other granted scopes (union revocation; no change to existing behaviour)

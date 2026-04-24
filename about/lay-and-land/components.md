@@ -152,6 +152,10 @@ Switchboard. They are transport-only adapters: they normalize events to the
 | **Telegram Userbot** | `connectors/telegram_user_client.py` | Telegram user account (Telethon) | -- | Evolving |
 | **Discord** | `connectors/discord_user.py` | Discord Gateway WebSocket | 40084 | Draft |
 | **Live Listener** | `connectors/live_listener/` | Microphone audio -> VAD -> transcription -> ingest | 40091 | Evolving |
+| **Spotify** | `connectors/spotify.py` | Spotify Web API playback state polling | 40083 | Stable |
+| **OwnTracks** | `connectors/owntracks.py` | OwnTracks HTTP webhook for location and waypoint events | 40086 | Stable |
+| **Steam** | `connectors/steam.py` | Steam Web API game-session poller | 40089 | Stable |
+| **Google Health** | `connectors/google_health.py` | Google Health API wellness polling (sleep, HR, HRV, SpO2, activity) | 40090 | Stable |
 
 ### Shared connector infrastructure
 
