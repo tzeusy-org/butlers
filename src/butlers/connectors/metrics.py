@@ -87,6 +87,13 @@ attachment_type_distribution_total = Counter(
     labelnames=["connector_type", "endpoint_identity", "media_type"],
 )
 
+# Health butler wellness ingest metrics
+health_wellness_ingest_total = Counter(
+    "health_wellness_ingest_total",
+    "Total wellness ingest events by predicate and outcome",
+    labelnames=["predicate", "outcome"],
+)
+
 # Dunbar group-aware interaction gating (RFC 0013)
 interaction_gated_total = Counter(
     "butlers_interaction_gated_total",

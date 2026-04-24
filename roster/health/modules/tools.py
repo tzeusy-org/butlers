@@ -21,6 +21,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.health import medications as _meds
     from butlers.tools.health import reports as _reports
     from butlers.tools.health import research as _research
+    from butlers.tools.health import wellness_ingest as _wellness
 
     # Build a group-aware tool decorator: returns @mcp.tool() when the
     # group is enabled, or a no-op passthrough when disabled.
@@ -329,4 +330,27 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """Summarize research entries, optionally scoped by condition or tags."""
         return await _research.research_summarize(
             module._get_pool(), condition_id=condition_id, tags=tags
+        )
+
+    # =================================================================
+    # Wellness ingest tool
+    # =================================================================
+
+    @mcp.tool()
+    async def wellness_ingest_envelope(context: dict[str, Any]) -> dict[str, Any]:
+        """Ingest a wellness/google_health envelope and persist it as a health fact.
+
+        Called exactly once when input.context carries a source.channel='wellness'
+        envelope from the google_health connector. Translates the ingest.v1 envelope
+        into a temporal fact stored in the health butler's memory store.
+
+        Returns a dict with 'status' (ok | rejected_non_primary_sender |
+        skipped_unknown_predicate | skipped_malformed_payload | error), and on
+        success, 'fact_id' and 'predicate'.
+        """
+        from butlers.modules.memory.tools import get_embedding_engine
+
+        embedding_engine = get_embedding_engine()
+        return await _wellness.translate_wellness_envelope(
+            module._get_pool(), embedding_engine, context
         )
