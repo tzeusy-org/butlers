@@ -79,7 +79,12 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-type IngestionRuleType = "sender_domain" | "sender_address" | "header_condition" | "mime_type";
+type IngestionRuleType =
+  | "sender_domain"
+  | "sender_address"
+  | "header_condition"
+  | "mime_type"
+  | "source_channel";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -90,6 +95,23 @@ const RULE_TYPES: { value: IngestionRuleType; label: string }[] = [
   { value: "sender_address", label: "Sender Address" },
   { value: "header_condition", label: "Email Header" },
   { value: "mime_type", label: "MIME Attachment Type" },
+  { value: "source_channel", label: "Source Channel" },
+];
+
+/** Known ingestion source_channel values (matches public.ingestion_events.source_channel). */
+const KNOWN_SOURCE_CHANNELS = [
+  "owntracks",
+  "email",
+  "telegram_bot",
+  "telegram_user_client",
+  "whatsapp_user_client",
+  "discord_user",
+  "spotify_user_client",
+  "google_calendar",
+  "google_drive",
+  "home_assistant",
+  "live_listener",
+  "steam",
 ];
 
 const GLOBAL_ACTIONS = [
@@ -214,6 +236,8 @@ function formatCondition(
     }
     case "mime_type":
       return `mime = ${condition.type}`;
+    case "source_channel":
+      return `source_channel ${condition.source_channel === "*" ? "= any" : `= ${condition.source_channel}`}`;
     default:
       return JSON.stringify(condition);
   }
@@ -328,6 +352,24 @@ function testRuleLocally(
         matched: false,
         reason: "MIME conditions can only be tested against real messages.",
       };
+    case "source_channel": {
+      const target = String(condition.source_channel ?? "").trim();
+      if (!target) return { matched: false, reason: "No source channel configured in rule." };
+      if (target === "*") {
+        const matched = input.length > 0;
+        return {
+          matched,
+          reason: matched ? `Any non-empty channel matches.` : `Input is empty.`,
+        };
+      }
+      const matched = input === target.toLowerCase();
+      return {
+        matched,
+        reason: matched
+          ? `Channel "${target}" matches.`
+          : `"${testInput.trim()}" does not match "${target}".`,
+      };
+    }
     default:
       return { matched: false, reason: `Rule type "${ruleType}" cannot be tested locally.` };
   }
@@ -457,6 +499,33 @@ function MimeTypeCondition({ condition, onChange }: ConditionEditorProps) {
   );
 }
 
+function SourceChannelCondition({ condition, onChange }: ConditionEditorProps) {
+  return (
+    <div className="space-y-1">
+      <Label htmlFor="source-channel-input">Source channel</Label>
+      <Input
+        id="source-channel-input"
+        list="source-channel-suggestions"
+        placeholder="e.g. owntracks (or * for any)"
+        value={String(condition.source_channel ?? "")}
+        onChange={(e) =>
+          onChange({ ...condition, source_channel: e.target.value.toLowerCase().trim() })
+        }
+        data-testid="condition-source-channel"
+      />
+      <datalist id="source-channel-suggestions">
+        {KNOWN_SOURCE_CHANNELS.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
+      <p className="text-xs text-muted-foreground">
+        Matches the envelope&rsquo;s <code>source_channel</code> field exactly. Useful for
+        bypassing LLM classification on high-volume channels (e.g. OwnTracks location pings).
+      </p>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Rule editor drawer
 // ---------------------------------------------------------------------------
@@ -478,6 +547,8 @@ function defaultConditionForType(ruleType: IngestionRuleType): Record<string, un
       return { header: "", op: "present", value: null };
     case "mime_type":
       return { type: "" };
+    case "source_channel":
+      return { source_channel: "" };
   }
 }
 
@@ -590,6 +661,10 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
       setError("MIME type is required.");
       return;
     }
+    if (ruleType === "source_channel" && !String(condition.source_channel ?? "").trim()) {
+      setError("Source channel is required.");
+      return;
+    }
     if (!isConnector && isRouteAction && !routeTarget.trim()) {
       setError("Route target butler is required.");
       return;
@@ -698,7 +773,16 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
                   >
                     <option value="gmail">Gmail</option>
                     <option value="telegram-bot">Telegram Bot</option>
+                    <option value="telegram-user-client">Telegram User</option>
+                    <option value="whatsapp-user-client">WhatsApp User</option>
                     <option value="discord">Discord</option>
+                    <option value="owntracks">OwnTracks</option>
+                    <option value="home-assistant">Home Assistant</option>
+                    <option value="google-calendar">Google Calendar</option>
+                    <option value="google-drive">Google Drive</option>
+                    <option value="spotify">Spotify</option>
+                    <option value="live-listener">Live Listener</option>
+                    <option value="steam">Steam</option>
                   </select>
                 </div>
                 <div className="space-y-1">
@@ -752,6 +836,9 @@ function RuleEditorDrawer({ open, onOpenChange, editRule }: RuleEditorDrawerProp
             )}
             {ruleType === "mime_type" && (
               <MimeTypeCondition condition={condition} onChange={setCondition} />
+            )}
+            {ruleType === "source_channel" && (
+              <SourceChannelCondition condition={condition} onChange={setCondition} />
             )}
           </div>
 

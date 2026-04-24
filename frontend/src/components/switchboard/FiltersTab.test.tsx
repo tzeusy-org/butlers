@@ -368,6 +368,7 @@ describe("FiltersTab", () => {
     expect(optionValues).toContain("sender_address");
     expect(optionValues).toContain("header_condition");
     expect(optionValues).toContain("mime_type");
+    expect(optionValues).toContain("source_channel");
   });
 
   it("shows sender domain condition fields by default in new rule editor", () => {
@@ -462,6 +463,23 @@ describe("FiltersTab", () => {
     });
     const mimeInput = document.querySelector('[data-testid="condition-mime"]');
     expect(mimeInput).not.toBeNull();
+  });
+
+  it("changes condition fields when rule type changes to source_channel", () => {
+    render();
+    act(() => {
+      const newBtn = container.querySelector('[data-testid="new-rule-btn"]') as HTMLButtonElement;
+      newBtn?.click();
+    });
+    act(() => {
+      const select = document.querySelector(
+        '[data-testid="rule-type-select"]',
+      ) as HTMLSelectElement;
+      select.value = "source_channel";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const channelInput = document.querySelector('[data-testid="condition-source-channel"]');
+    expect(channelInput).not.toBeNull();
   });
 
   it("shows validation error when saving with empty domain", () => {
