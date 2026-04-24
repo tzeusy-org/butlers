@@ -101,8 +101,7 @@ def upgrade() -> None:
     for schema in _BUTLER_SCHEMAS:
         op.execute(
             _role_exists_guard(
-                f"EXECUTE 'REVOKE SELECT ON ALL TABLES IN SCHEMA {_q(schema)} "
-                f"FROM {_role()}';"
+                f"EXECUTE 'REVOKE SELECT ON ALL TABLES IN SCHEMA {_q(schema)} FROM {_role()}';"
             )
         )
 
@@ -151,8 +150,7 @@ def downgrade() -> None:
     for schema in _BUTLER_SCHEMAS:
         op.execute(
             _role_exists_guard(
-                f"EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA {_q(schema)} "
-                f"TO {_role()}';"
+                f"EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA {_q(schema)} TO {_role()}';"
             )
         )
         op.execute(
