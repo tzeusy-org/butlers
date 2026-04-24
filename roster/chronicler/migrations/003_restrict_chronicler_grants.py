@@ -72,45 +72,74 @@ _ROLE = "butler_chronicler_rw"
 _CONNECTOR_SCHEMA = "connectors"
 
 
+def _role_exists_guard(body: str) -> str:
+    """Wrap ``body`` SQL in a DO block that runs only if ``_ROLE`` exists.
+
+    ``scripts/init-db.sql`` is responsible for creating ``butler_chronicler_rw``.
+    When that script has not been re-run since chronicler was added, the role is
+    absent and plain REVOKE/GRANT statements raise UndefinedObject. Guarding
+    each statement keeps the migration idempotent: with no role there are no
+    grants to narrow, and a subsequent init-db.sql run will issue the correct
+    (narrow) grants directly.
+    """
+    return f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_lit(_ROLE)}) THEN
+                RETURN;
+            END IF;
+            {body}
+        END
+        $$
+    """
+
+
 def upgrade() -> None:
     # ── 1. Revoke blanket cross-schema SELECT from butler schemas ──────────
     # Replaces the loop in PR #1106 that granted SELECT ON ALL TABLES.
     # This narrows the footprint to RFC 0014-declared evidence surfaces only.
     for schema in _BUTLER_SCHEMAS:
-        op.execute(f"REVOKE SELECT ON ALL TABLES IN SCHEMA {_q(schema)} FROM {_role()}")
+        op.execute(
+            _role_exists_guard(
+                f"EXECUTE 'REVOKE SELECT ON ALL TABLES IN SCHEMA {_q(schema)} "
+                f"FROM {_role()}';"
+            )
+        )
 
     # ── 2. Grant specific evidence tables per butler schema ────────────────
     for schema in _BUTLER_SCHEMAS:
         for table in _PER_SCHEMA_EVIDENCE_TABLES:
-            op.execute(f"""
-                DO $$
-                BEGIN
+            op.execute(
+                _role_exists_guard(
+                    f"""
                     IF EXISTS (
                         SELECT 1 FROM information_schema.tables
                         WHERE table_schema = {_lit(schema)}
                           AND table_name   = {_lit(table)}
                     ) THEN
-                        GRANT SELECT ON TABLE {_q(schema)}.{_q(table)} TO {_role()};
+                        EXECUTE 'GRANT SELECT ON TABLE {_q(schema)}.{_q(table)} '
+                                'TO {_role()}';
                     END IF;
-                END
-                $$
-            """)
+                    """
+                )
+            )
 
     # ── 3. Grant specific connector evidence surfaces (PLANNED) ───────────
     for table in _CONNECTOR_EVIDENCE_TABLES:
-        op.execute(f"""
-            DO $$
-            BEGIN
+        op.execute(
+            _role_exists_guard(
+                f"""
                 IF EXISTS (
                     SELECT 1 FROM information_schema.tables
                     WHERE table_schema = {_lit(_CONNECTOR_SCHEMA)}
                       AND table_name   = {_lit(table)}
                 ) THEN
-                    GRANT SELECT ON TABLE {_q(_CONNECTOR_SCHEMA)}.{_q(table)} TO {_role()};
+                    EXECUTE 'GRANT SELECT ON TABLE {_q(_CONNECTOR_SCHEMA)}.{_q(table)} '
+                            'TO {_role()}';
                 END IF;
-            END
-            $$
-        """)
+                """
+            )
+        )
 
 
 def downgrade() -> None:
@@ -120,18 +149,23 @@ def downgrade() -> None:
     # so this works regardless of whether the migration user is named "butlers"
     # or something else (see scripts/init-db.sql _migration_user detection).
     for schema in _BUTLER_SCHEMAS:
-        op.execute(f"GRANT SELECT ON ALL TABLES IN SCHEMA {_q(schema)} TO {_role()}")
-        op.execute(f"""
-            DO $$
-            BEGIN
+        op.execute(
+            _role_exists_guard(
+                f"EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA {_q(schema)} "
+                f"TO {_role()}';"
+            )
+        )
+        op.execute(
+            _role_exists_guard(
+                f"""
                 EXECUTE format(
                     'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA {_q(schema)} '
                     'GRANT SELECT ON TABLES TO {_role()}',
                     current_user
                 );
-            END
-            $$
-        """)
+                """
+            )
+        )
 
 
 # ── helpers ────────────────────────────────────────────────────────────────

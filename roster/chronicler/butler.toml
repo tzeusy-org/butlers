@@ -1,6 +1,6 @@
 [butler]
 name = "chronicler"
-port = 41110
+port = 41111
 description = "Retrospective time butler: reconstructs lived past time from other butlers' timestamped evidence as point events and overlapping episodes, with source provenance and correction history"
 
 [butler.runtime_seed]
