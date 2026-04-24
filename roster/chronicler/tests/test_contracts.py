@@ -24,10 +24,12 @@ def test_initial_sources_include_calendar_completed() -> None:
     assert "google_calendar.completed" in names
 
 
-def test_spotify_session_summary_is_deferred() -> None:
+def test_spotify_session_summary_is_supported() -> None:
+    """PR #1117 (bu-7k61u) promoted spotify.session_summary from DEFERRED → SUPPORTED."""
     state = find_source("spotify.session_summary")
     assert state is not None
-    assert state.chronicler_compatibility == Compatibility.DEFERRED
+    assert state.chronicler_compatibility == Compatibility.SUPPORTED
+    assert state.read_surface == "connectors.spotify_listening_sessions"
 
 
 def test_google_health_is_deferred() -> None:
