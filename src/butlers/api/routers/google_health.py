@@ -281,7 +281,8 @@ async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
                           AND external_event_id NOT LIKE 'google_health:sleep_session:%'
                     ) AS daily_summaries_7d
                 FROM public.ingestion_events
-                WHERE source_provider = $1
+                WHERE source_channel = 'wellness'
+                  AND source_provider = $1
                   AND received_at >= now() - interval '7 days'
                 """,
                 _CONNECTOR_TYPE,

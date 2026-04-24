@@ -317,6 +317,31 @@ class TestFetchIngestCounts:
         await _fetch_ingest_counts(pool)
         assert captured_args == ["google_health"]
 
+    async def test_query_includes_source_channel_filter(self):
+        """Verify the SQL filters by source_channel = 'wellness', matching _fetch_last_ingest_at."""
+        captured_queries: list[str] = []
+        conn = AsyncMock()
+
+        async def capture_fetchrow(query, *args):
+            captured_queries.append(query)
+            return {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+
+        conn.fetchrow = AsyncMock(side_effect=capture_fetchrow)
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        pool = MagicMock()
+        pool.acquire = _acquire
+
+        await _fetch_ingest_counts(pool)
+        assert captured_queries, "fetchrow was not called"
+        assert "source_channel = 'wellness'" in captured_queries[0], (
+            "_fetch_ingest_counts must filter by source_channel = 'wellness' "
+            "to stay aligned with _fetch_last_ingest_at"
+        )
+
 
 # ---------------------------------------------------------------------------
 # GET /status — integration-ish via ASGITransport
