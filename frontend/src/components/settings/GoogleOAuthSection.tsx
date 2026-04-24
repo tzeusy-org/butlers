@@ -2,13 +2,15 @@
  * GoogleOAuthSection — embeddable Google OAuth management section.
  *
  * Extracted from SettingsPage so it can be composed inside the IntegrationsCard.
- * Shows connected Google accounts with connect/disconnect/re-auth actions.
+ * Shows connected Google accounts with connect/disconnect/re-auth actions
+ * and a per-account scope-set picker that replaces the read-only
+ * ``granted_scopes`` CSV display.
  */
 
 import { useState } from "react";
 
 import type { GoogleAccount, OAuthCredentialState } from "@/api/index.ts";
-import { getGoogleOAuthStartUrl } from "@/api/index.ts";
+import { getGoogleOAuthStartUrl, GOOGLE_HEALTH_SCOPES } from "@/api/index.ts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDisconnectGoogleHealth } from "@/hooks/use-google-health";
 import {
   useDisconnectAccount,
   useGoogleAccounts,
@@ -165,6 +168,258 @@ function DisconnectAccountDialog({
 }
 
 // ---------------------------------------------------------------------------
+// Scope-set picker
+//
+// Three rows, one per scope-set registered in ``GOOGLE_SCOPE_SETS`` on the
+// backend (see ``src/butlers/api/routers/oauth.py``). Each row shows the
+// current grant state derived by checking whether ``granted_scopes``
+// contains *all* of that set's full scope URLs, and a toggle button that
+// either starts the OAuth consent flow (grant) or, for Google Health,
+// triggers the scope-selective disconnect endpoint (revoke).
+//
+// Revoking Calendar or Drive is intentionally NOT supported inline — those
+// scope sets currently have no per-scope revocation endpoint, and the
+// owner can still fully disconnect the account via the existing
+// "Disconnect" button. The Calendar and Drive rows therefore render a
+// disabled state when granted, with a small "via full disconnect" hint.
+// ---------------------------------------------------------------------------
+
+/** Calendar scope URLs — keep in lockstep with GOOGLE_SCOPE_SETS["calendar"]. */
+const CALENDAR_SCOPES: readonly string[] = [
+  "https://www.googleapis.com/auth/calendar",
+];
+
+/** Drive scope URLs — keep in lockstep with GOOGLE_SCOPE_SETS["drive"]. */
+const DRIVE_SCOPES: readonly string[] = [
+  "https://www.googleapis.com/auth/drive.readonly",
+  "https://www.googleapis.com/auth/drive",
+];
+
+type ScopeSetKey = "calendar" | "drive" | "health";
+
+interface ScopeSetDescriptor {
+  key: ScopeSetKey;
+  label: string;
+  description: string;
+  scopes: readonly string[];
+  /**
+   * Whether the scope set supports scope-selective revocation. Only
+   * ``health`` has a backend endpoint for this today; the others fall
+   * back to the full-account disconnect flow.
+   */
+  selectiveRevokeSupported: boolean;
+  /** CTA copy for the ungranted state. */
+  grantLabel: string;
+  /** Confirm-modal copy when revoking a selectively-revocable scope set. */
+  revokeConfirmCopy?: string;
+  /** CTA shown on the ungranted row when it's the Google Health set. */
+  grantHint?: string;
+}
+
+const SCOPE_SETS: ReadonlyArray<ScopeSetDescriptor> = [
+  {
+    key: "calendar",
+    label: "Calendar",
+    description:
+      "Read, create, and update events on your Google Calendars.",
+    scopes: CALENDAR_SCOPES,
+    selectiveRevokeSupported: false,
+    grantLabel: "Grant Calendar",
+  },
+  {
+    key: "drive",
+    label: "Drive",
+    description:
+      "Read and manage files in Google Drive (used by Drive-ingestion modules).",
+    scopes: DRIVE_SCOPES,
+    selectiveRevokeSupported: false,
+    grantLabel: "Grant Drive",
+  },
+  {
+    key: "health",
+    label: "Google Health",
+    description:
+      "Ingest sleep, heart rate, HRV, SpO2, breathing rate, and activity for the Health butler.",
+    scopes: GOOGLE_HEALTH_SCOPES,
+    selectiveRevokeSupported: true,
+    grantLabel: "Connect Google Health",
+    revokeConfirmCopy:
+      "This revokes Google Health access only. Calendar and Drive remain connected.",
+    grantHint:
+      "Connect Google Health to enable sleep, HR, HRV, and activity ingestion for the Health butler.",
+  },
+];
+
+function isScopeSetGranted(
+  granted: string[] | null | undefined,
+  required: readonly string[],
+): boolean {
+  if (!granted || granted.length === 0) return false;
+  const set = new Set(granted);
+  return required.every((scope) => set.has(scope));
+}
+
+function ScopeSetRevokeConfirmDialog({
+  label,
+  copy,
+  onConfirm,
+  onDismiss,
+  pending,
+  error,
+}: {
+  label: string;
+  copy: string;
+  onConfirm: () => void;
+  onDismiss: () => void;
+  pending: boolean;
+  error: string | null;
+}) {
+  return (
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Revoke {label} access?</DialogTitle>
+        <DialogDescription>{copy}</DialogDescription>
+      </DialogHeader>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <DialogFooter>
+        <Button variant="outline" onClick={onDismiss} disabled={pending}>
+          Cancel
+        </Button>
+        <Button variant="destructive" onClick={onConfirm} disabled={pending}>
+          {pending ? "Revoking..." : `Revoke ${label}`}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  );
+}
+
+function ScopeSetPickerRow({
+  descriptor,
+  account,
+}: {
+  descriptor: ScopeSetDescriptor;
+  account: GoogleAccount;
+}) {
+  const [revokeOpen, setRevokeOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const disconnectHealth = useDisconnectGoogleHealth();
+
+  const granted = isScopeSetGranted(account.granted_scopes, descriptor.scopes);
+
+  const grantUrl = getGoogleOAuthStartUrl({
+    accountHint: account.email ?? undefined,
+    forceConsent: true,
+    scopeSet: descriptor.key,
+  });
+
+  async function handleConfirmRevoke() {
+    setError(null);
+    try {
+      // Only Google Health has a scope-selective revocation endpoint;
+      // the other sets' selectiveRevokeSupported flag is false so this
+      // button is never rendered for them.
+      if (descriptor.key === "health") {
+        await disconnectHealth.mutateAsync();
+      }
+      setRevokeOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to revoke scope set.");
+    }
+  }
+
+  return (
+    <div className="flex items-start justify-between gap-3 py-1.5">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium">{descriptor.label}</p>
+          {granted ? (
+            <Badge variant="secondary" className="text-xs">
+              Granted
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-xs">
+              Not granted
+            </Badge>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {descriptor.description}
+        </p>
+        {!granted && descriptor.grantHint && (
+          <p className="text-xs text-muted-foreground mt-0.5 italic">
+            {descriptor.grantHint}
+          </p>
+        )}
+      </div>
+      <div className="shrink-0">
+        {granted ? (
+          descriptor.selectiveRevokeSupported ? (
+            <Dialog open={revokeOpen} onOpenChange={setRevokeOpen}>
+              <DialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  data-testid={`scope-set-revoke-${descriptor.key}`}
+                >
+                  Disconnect
+                </Button>
+              </DialogTrigger>
+              <ScopeSetRevokeConfirmDialog
+                label={descriptor.label}
+                copy={descriptor.revokeConfirmCopy ?? ""}
+                onConfirm={handleConfirmRevoke}
+                onDismiss={() => setRevokeOpen(false)}
+                pending={disconnectHealth.isPending}
+                error={error}
+              />
+            </Dialog>
+          ) : (
+            <span
+              className="text-xs text-muted-foreground"
+              data-testid={`scope-set-revoke-${descriptor.key}`}
+            >
+              via full disconnect
+            </span>
+          )
+        ) : (
+          <a
+            href={grantUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid={`scope-set-grant-${descriptor.key}`}
+          >
+            <Button variant="outline" size="sm">
+              {descriptor.grantLabel}
+            </Button>
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScopeSetPicker({ account }: { account: GoogleAccount }) {
+  return (
+    <div className="mt-2 rounded-md border border-border/60 bg-muted/20 p-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-2">
+        Scope sets
+      </p>
+      <div className="divide-y divide-border/40">
+        {SCOPE_SETS.map((descriptor) => (
+          <ScopeSetPickerRow
+            key={descriptor.key}
+            descriptor={descriptor}
+            account={account}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Single account row
 // ---------------------------------------------------------------------------
 
@@ -211,11 +466,13 @@ function GoogleAccountRow({ account }: { account: GoogleAccount }) {
               <> &middot; Last refresh: {formatTimestamp(account.last_token_refresh_at)}</>
             )}
           </p>
-          {account.granted_scopes.length > 0 && (
-            <p className="text-xs text-muted-foreground mt-0.5 font-mono break-all">
-              Scopes: {account.granted_scopes.join(", ")}
-            </p>
-          )}
+          {/*
+            Scope-set picker replaces the pre-existing read-only CSV display
+            of granted_scopes. See "Per-Account Scope Set Picker" in
+            openspec/changes/google-health-connector/specs/
+            dashboard-google-accounts/spec.md.
+          */}
+          <ScopeSetPicker account={account} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {!account.is_primary && account.status === "active" && (

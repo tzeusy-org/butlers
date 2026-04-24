@@ -41,6 +41,7 @@ from butlers.api.routers.cli_auth import router as cli_auth_router
 from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.costs import router as costs_router
 from butlers.api.routers.general_settings import router as general_settings_router
+from butlers.api.routers.google_health import router as google_health_router
 from butlers.api.routers.healing import router as healing_router
 from butlers.api.routers.home_assistant import router as home_assistant_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
@@ -247,6 +248,7 @@ def create_app(
     app.include_router(owntracks_router)
     app.include_router(home_assistant_router)
     app.include_router(spotify_router)
+    app.include_router(google_health_router)
     app.include_router(steam_router)
     app.include_router(telegram_auth_router)
     app.include_router(whatsapp_router)

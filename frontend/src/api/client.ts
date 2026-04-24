@@ -1667,14 +1667,23 @@ export function getOAuthStartUrl(): string {
   return `${API_BASE_URL}/oauth/google/start`;
 }
 
-/** Build the URL to start an OAuth flow for a new or existing Google account. */
+/** Build the URL to start an OAuth flow for a new or existing Google account.
+ *
+ * ``scopeSet`` selects one or more named scope sets registered in
+ * ``GOOGLE_SCOPE_SETS`` on the backend (e.g. ``"health"`` or
+ * ``"calendar,drive"``). Omitting ``scopeSet`` reproduces the pre-existing
+ * default scope composition — callers that only needed Calendar/Drive/
+ * Gmail continue to work without modification.
+ */
 export function getGoogleOAuthStartUrl(opts?: {
   accountHint?: string;
   forceConsent?: boolean;
+  scopeSet?: string;
 }): string {
   const params = new URLSearchParams();
   if (opts?.accountHint) params.set("account_hint", opts.accountHint);
   if (opts?.forceConsent) params.set("force_consent", "true");
+  if (opts?.scopeSet) params.set("scope_set", opts.scopeSet);
   const qs = params.toString();
   return `${API_BASE_URL}/oauth/google/start${qs ? `?${qs}` : ""}`;
 }
@@ -1705,6 +1714,41 @@ export function disconnectAccount(
 /** Fetch per-account credential status. */
 export function getAccountStatus(accountId: string): Promise<GoogleAccountStatus> {
   return apiFetch<GoogleAccountStatus>(`/oauth/google/accounts/${accountId}/status`);
+}
+
+// ---------------------------------------------------------------------------
+// Google Health connector API functions
+// ---------------------------------------------------------------------------
+
+import type {
+  GoogleHealthDisconnectResponse,
+  GoogleHealthStatusResponse,
+} from "./types.ts";
+
+/**
+ * Google Health scope URLs. Full URLs (not short names) are stored on
+ * ``public.google_accounts.granted_scopes`` exactly as Google returns
+ * them in the token response, so scope-presence checks compare against
+ * these exact strings. Kept in sync with:
+ *   src/butlers/api/routers/oauth.py ::GOOGLE_SCOPE_SETS["health"]
+ *   src/butlers/api/routers/google_health.py ::GOOGLE_HEALTH_SCOPE_URLS
+ */
+export const GOOGLE_HEALTH_SCOPES = [
+  "https://www.googleapis.com/auth/googlehealth.sleep",
+  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+] as const;
+
+/** Fetch the Google Health connector status (state, scopes, counts, flags). */
+export function getGoogleHealthStatus(): Promise<GoogleHealthStatusResponse> {
+  return apiFetch<GoogleHealthStatusResponse>("/connectors/google-health/status");
+}
+
+/** Scope-selectively disconnect Google Health — preserves Calendar/Drive. */
+export function disconnectGoogleHealth(): Promise<GoogleHealthDisconnectResponse> {
+  return apiFetch<GoogleHealthDisconnectResponse>("/connectors/google-health/disconnect", {
+    method: "DELETE",
+  });
 }
 
 // ---------------------------------------------------------------------------

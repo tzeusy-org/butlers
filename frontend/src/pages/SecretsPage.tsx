@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SecretFormModal } from "@/components/secrets/SecretFormModal";
 import { UserSecretFormModal } from "@/components/secrets/UserSecretFormModal";
 import { SecretsTable } from "@/components/secrets/SecretsTable";
+import { GoogleHealthStatusCard } from "@/components/settings/GoogleHealthStatusCard";
 import { GoogleOAuthSection } from "@/components/settings/GoogleOAuthSection";
 import { SpotifySection } from "@/components/settings/SpotifySetupCard";
 import { HomeAssistantSection } from "@/components/settings/HomeAssistantSetupCard";
@@ -206,8 +207,15 @@ function UserSecretsSection() {
         <Card>
           <CardContent className="pt-6">
             <div className="divide-y">
-              <div className="pb-6">
+              <div className="pb-6 space-y-4">
                 <GoogleOAuthSection />
+                {/*
+                  Status card renders only when the primary Google account
+                  has the three Google Health scopes granted — otherwise the
+                  scope-set picker inside GoogleOAuthSection surfaces the
+                  CTA. See "Health-card state when scopes absent" scenario.
+                */}
+                <GoogleHealthStatusCard />
               </div>
               <div className="py-6">
                 <SpotifySection />

@@ -3161,3 +3161,44 @@ export interface RuntimeConfigPatchResponse {
   config: RuntimeConfigResponse;
   restart_required: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Google Health connector status + scope-selective disconnect
+// ---------------------------------------------------------------------------
+
+/**
+ * Operational state of the Google Health connector.
+ *
+ * ``not_configured`` is a dashboard-only state surfaced when no primary
+ * Google account exists yet; the connector itself never reports this
+ * value over its heartbeat.
+ */
+export type GoogleHealthConnectorState =
+  | "healthy"
+  | "degraded"
+  | "error"
+  | "not_configured";
+
+/** Response from GET /api/connectors/google-health/status. */
+export interface GoogleHealthStatusResponse {
+  connected: boolean;
+  /** Full Google Health scope URLs on the primary account's granted_scopes. */
+  scopes_granted: string[];
+  /** Most recent ingest timestamp (ISO 8601), or null when none has occurred. */
+  last_ingest_at: string | null;
+  /** Last token refresh timestamp, or null. */
+  last_token_refresh_at: string | null;
+  /** Most recently observed X-RateLimit-Remaining, or null (distinct from 0). */
+  rate_limit_remaining: number | null;
+  /** metadata.google_health_test_mode on the primary Google account row. */
+  test_mode: boolean;
+  state: GoogleHealthConnectorState;
+}
+
+/** Response from DELETE /api/connectors/google-health/disconnect. */
+export interface GoogleHealthDisconnectResponse {
+  success: boolean;
+  message: string;
+  /** Scope URLs that were stripped from granted_scopes. */
+  scopes_removed: string[];
+}
