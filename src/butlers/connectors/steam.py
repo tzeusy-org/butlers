@@ -8,10 +8,12 @@ and Prometheus metrics.
 Key design choices:
 - Multi-account: queries public.steam_accounts for active accounts at startup,
   spawns independent asyncio tasks per account.
-- 4 independent per-account pollers, each with its own interval and backoff:
-  recently_played (5 min), online_status (5 min),
-  friends (60 min), game_library (24 h). Achievement polling is disabled;
-  `steam_get_achievements` remains available as an on-demand MCP tool.
+- 2 independent per-account pollers, each with its own interval and backoff:
+  recently_played (5 min) and online_status (5 min). Friends, game_library,
+  and achievements polling are disabled — they produced noise without
+  matching the owner's event goals (game start/stop). The
+  `steam_get_achievements`, `steam_list_friends`, and `steam_list_owned_games`
+  MCP tools remain available for on-demand queries.
 - Delta detection via SHA-256 state hashing: stores last-known snapshot in
   connectors.steam_cursors; emits events only when state changes.
 - Crash-safe cursor persistence: cursors survive restarts, preventing duplicate
@@ -81,14 +83,15 @@ _DEFAULT_HEARTBEAT_INTERVAL_S = 60
 _DEFAULT_MAX_TRACKED_GAMES = 10
 
 # Default poll intervals per data type (seconds).
-# Note: achievements polling is intentionally omitted — the connector does not
-# currently poll for achievement unlocks. The `_poll_achievements` method and
-# `steam_get_achievements` MCP tool remain available for on-demand queries.
+# Note: achievements, friends, and game_library polling are intentionally
+# omitted. The connector targets game-session signals (start/stop), so the
+# remaining background pollers are recently_played and online_status.
+# Dropped data types still have poll/envelope code present; their MCP tools
+# (`steam_get_achievements`, `steam_list_friends`, `steam_list_owned_games`)
+# remain available for on-demand queries from butlers.
 _DEFAULT_INTERVALS: dict[str, int] = {
     "recently_played": 300,  # 5 min
     "online_status": 300,  # 5 min
-    "friends": 3600,  # 60 min
-    "game_library": 86400,  # 24 h
 }
 
 # Transient error backoff: initial 5 s, max 300 s
