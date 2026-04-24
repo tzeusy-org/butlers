@@ -155,6 +155,155 @@ class TestOAuthStart:
 
 
 # ---------------------------------------------------------------------------
+# OAuth start — scope_set selector (bu-k5l35.1.3)
+# ---------------------------------------------------------------------------
+
+
+def _extract_scope_param(authorization_url: str) -> list[str]:
+    """Extract and split the `scope` query parameter from a Google auth URL."""
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(authorization_url)
+    qs = parse_qs(parsed.query)
+    raw = qs.get("scope", [""])[0]
+    return raw.split() if raw else []
+
+
+class TestScopeSetSelector:
+    """Verify the scope_set query param behaviour on /api/oauth/google/start."""
+
+    _HEALTH_SCOPES = frozenset(
+        [
+            "https://www.googleapis.com/auth/googlehealth.sleep",
+            "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+            "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+        ]
+    )
+    _BASE_SCOPES = frozenset(["openid", "email", "profile"])
+
+    async def test_scope_set_health_produces_full_health_scope_urls(self, app):
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={"redirect": "false", "scope_set": "health"},
+            )
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # All three Google Health scopes present as full URLs.
+        assert self._HEALTH_SCOPES.issubset(scopes)
+        # Base scopes (openid/email/profile) are always implicitly included.
+        assert self._BASE_SCOPES.issubset(scopes)
+        # Calendar and Drive are NOT included when only 'health' is requested.
+        assert "https://www.googleapis.com/auth/calendar" not in scopes
+        assert "https://www.googleapis.com/auth/drive" not in scopes
+
+    async def test_scope_set_multi_set_composes_union(self, app):
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={
+                    "redirect": "false",
+                    "scope_set": "calendar,drive,health",
+                    "force_consent": "true",
+                    "account_hint": "owner@example.com",
+                },
+            )
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # Union of all three sets plus base.
+        assert self._BASE_SCOPES.issubset(scopes)
+        assert self._HEALTH_SCOPES.issubset(scopes)
+        assert "https://www.googleapis.com/auth/calendar" in scopes
+        assert "https://www.googleapis.com/auth/drive" in scopes
+
+    async def test_scope_set_unknown_returns_400_with_actionable_json(self, app):
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={"redirect": "false", "scope_set": "bogus"},
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"] == "unknown_scope_set"
+        assert body["scope_set"] == "bogus"
+        # Known sets list is returned so the caller can self-correct.
+        assert "health" in body["known"]
+        assert "calendar" in body["known"]
+        assert "drive" in body["known"]
+        assert "base" in body["known"]
+
+    async def test_scope_set_unknown_in_multi_set_returns_400(self, app):
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={"redirect": "false", "scope_set": "calendar,bogus,health"},
+            )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"] == "unknown_scope_set"
+        assert body["scope_set"] == "bogus"
+
+    async def test_scope_set_omitted_preserves_backward_compat(self, app):
+        """Omitting scope_set yields the pre-change default scope composition."""
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp_default = await client.get("/api/oauth/google/start", params={"redirect": "false"})
+        assert resp_default.status_code == 200
+        default_scopes = set(_extract_scope_param(resp_default.json()["authorization_url"]))
+        # Default composition must cover gmail, calendar, drive, contacts, and base.
+        assert self._BASE_SCOPES.issubset(default_scopes)
+        assert "https://www.googleapis.com/auth/gmail.modify" in default_scopes
+        assert "https://www.googleapis.com/auth/calendar" in default_scopes
+        assert "https://www.googleapis.com/auth/drive" in default_scopes
+        # Health scopes MUST NOT leak into the default composition — they are
+        # only granted when scope_set=health is explicitly requested.
+        assert self._HEALTH_SCOPES.isdisjoint(default_scopes)
+
+    async def test_scope_set_empty_string_treated_as_omitted(self, app):
+        """scope_set= (empty) falls back to default composition for backward compat."""
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start", params={"redirect": "false", "scope_set": ""}
+            )
+        assert resp.status_code == 200
+        scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
+        # Health scopes MUST NOT leak when the selector is empty.
+        assert self._HEALTH_SCOPES.isdisjoint(scopes)
+
+    async def test_scope_set_base_explicit_no_duplicates(self, app):
+        """Requesting base explicitly should not duplicate the base scopes."""
+        _make_app(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/oauth/google/start",
+                params={"redirect": "false", "scope_set": "base,health"},
+            )
+        assert resp.status_code == 200
+        scope_list = _extract_scope_param(resp.json()["authorization_url"])
+        # No duplicate entries in the scope list.
+        assert len(scope_list) == len(set(scope_list))
+
+
+# ---------------------------------------------------------------------------
 # OAuth callback
 # ---------------------------------------------------------------------------
 

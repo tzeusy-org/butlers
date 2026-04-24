@@ -191,6 +191,12 @@ def test_channel_provider_pairing_and_registry():
             "google_drive:user:user@example.com",
             "google_drive:user:user@example.com",
         ),
+        (
+            "wellness",
+            "google_health",
+            "google_health:user:1234567890",
+            "1234567890",
+        ),
     ]
     for channel, provider, endpoint, sender in valid_pairs:
         env = _build_valid_ingest_envelope(
@@ -206,6 +212,11 @@ def test_channel_provider_pairing_and_registry():
         ("telegram_bot", "whatsapp", "bot_test", "user123"),
         ("google_calendar", "gmail", "gcal:user@example.com", "user@example.com"),
         ("telegram_bot", "google_drive", "bot_test", "user123"),
+        # wellness channel only accepts google_health provider in v1.
+        ("wellness", "fitbit", "google_health:user:1234567890", "1234567890"),
+        ("wellness", "steam", "google_health:user:1234567890", "1234567890"),
+        # google_health provider is not valid for other channels.
+        ("gaming", "google_health", "google_health:user:1234567890", "1234567890"),
     ]
     for channel, provider, endpoint, sender in invalid_pairs:
         env = _build_valid_ingest_envelope(
@@ -224,6 +235,7 @@ def test_channel_provider_pairing_and_registry():
         "home_assistant": frozenset({"home_assistant"}),
         "gaming": frozenset({"steam"}),
         "google_drive": frozenset({"google_drive"}),
+        "wellness": frozenset({"google_health"}),
     }
     for channel, providers in expected.items():
         assert channel in _ALLOWED_PROVIDERS_BY_CHANNEL

@@ -165,21 +165,65 @@ GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 _DEFAULT_REDIRECT_URI = "http://localhost:41200/api/oauth/google/callback"
-_DEFAULT_SCOPES = " ".join(
-    [
+
+# ---------------------------------------------------------------------------
+# Named scope-set registry
+# ---------------------------------------------------------------------------
+#
+# `scope_set` query param on /google/start selects one or more named sets.
+# Each set maps to a list of fully-qualified Google OAuth scope URLs.
+#
+# Google Health scopes (in the 'health' set below) are classified RESTRICTED
+# by Google and require a one-time privacy and security review of the OAuth
+# client before they can be granted in production mode. Test mode is
+# sufficient for single-developer / single-user self-hosting, subject to a
+# 7-day refresh token expiry — the OAuth callback records a metadata flag
+# on the google_accounts row so the dashboard can surface a warning banner.
+# See: https://developers.google.com/health/about
+
+GOOGLE_SCOPE_SETS: dict[str, list[str]] = {
+    # Identity basics — always included implicitly so userinfo calls succeed.
+    "base": [
         "openid",
         "email",
         "profile",
+    ],
+    "calendar": [
+        "https://www.googleapis.com/auth/calendar",
+    ],
+    "drive": [
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive",
+    ],
+    "gmail": [
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/calendar",
+    ],
+    "contacts": [
         "https://www.googleapis.com/auth/contacts",
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/contacts.other.readonly",
         "https://www.googleapis.com/auth/directory.readonly",
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive",
-    ]
+    ],
+    # RESTRICTED scopes — require Google privacy/security review for
+    # production mode. Test mode (developer-added users) does not require
+    # verification but has a 7-day refresh token expiry.
+    "health": [
+        "https://www.googleapis.com/auth/googlehealth.sleep",
+        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+    ],
+}
+
+# Default scope composition when no scope_set query param is provided.
+# Matches pre-change behaviour: gmail + calendar + contacts + drive + base.
+# Existing callers (Calendar/Drive/Gmail bring-up) get the same scope string
+# they got before the scope_set selector was introduced.
+_DEFAULT_SCOPE_SETS: tuple[str, ...] = ("base", "gmail", "calendar", "contacts", "drive")
+_DEFAULT_SCOPES = " ".join(
+    dict.fromkeys(
+        scope for set_name in _DEFAULT_SCOPE_SETS for scope in GOOGLE_SCOPE_SETS[set_name]
+    )
 )
 
 # Required scopes for full butler functionality.
@@ -189,6 +233,48 @@ _REQUIRED_SCOPES = frozenset(
         "https://www.googleapis.com/auth/calendar",
     ]
 )
+
+
+def _parse_scope_set_param(raw: str | None) -> list[str] | None:
+    """Parse a `scope_set` query value into a list of set names.
+
+    Accepts either a single name (``scope_set=health``) or a comma-separated
+    list (``scope_set=calendar,drive,health``). Whitespace around names is
+    trimmed. Empty entries are dropped.
+
+    Returns ``None`` when the input is ``None`` or empty after trimming, which
+    signals "no scope_set supplied — fall back to default scope composition"
+    for backward compatibility with callers that do not use the selector.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    return [name for name in (part.strip() for part in stripped.split(",")) if name]
+
+
+def _compose_scopes_from_sets(set_names: list[str]) -> str:
+    """Compose an OAuth scope string from the named sets, always including 'base'.
+
+    Deduplicates while preserving first-occurrence order. Raises ``ValueError``
+    when any requested set name is unknown — the caller converts that into a
+    400 response with actionable JSON.
+    """
+    unknown = [name for name in set_names if name not in GOOGLE_SCOPE_SETS]
+    if unknown:
+        raise ValueError(unknown[0])
+
+    # 'base' is always implicitly included so userinfo calls succeed.
+    ordered_sets = ["base", *set_names] if "base" not in set_names else list(set_names)
+
+    # dict.fromkeys preserves first-occurrence order across sets while dropping duplicates.
+    scopes: dict[str, None] = {}
+    for set_name in ordered_sets:
+        for scope in GOOGLE_SCOPE_SETS[set_name]:
+            scopes.setdefault(scope, None)
+    return " ".join(scopes)
+
 
 # ---------------------------------------------------------------------------
 # In-memory CSRF state store
@@ -340,6 +426,15 @@ async def oauth_google_start(
         description="When true, adds prompt=consent to the authorization URL to force "
         "Google to return a new refresh token (useful for scope upgrades or re-authorization).",
     ),
+    scope_set: str | None = Query(
+        default=None,
+        description="Optional named scope set(s) to include in the authorization URL. "
+        "Accepts a single name (e.g. 'health') or a comma-separated list "
+        "(e.g. 'calendar,drive,health'). The 'base' set (openid/email/profile) is "
+        "always included implicitly. When omitted, falls back to the pre-existing "
+        "default scope composition (base+gmail+calendar+contacts+drive) for "
+        "backward compatibility with callers that do not use the selector.",
+    ),
     db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Begin the Google OAuth authorization flow.
@@ -350,7 +445,32 @@ async def oauth_google_start(
 
     Supports multi-account flows via ``account_hint`` (pre-selects account)
     and ``force_consent`` (forces refresh token re-issuance for scope upgrades).
+
+    The ``scope_set`` parameter selects one or more named scope sets from
+    ``GOOGLE_SCOPE_SETS``. Unknown set names return HTTP 400 with an
+    actionable JSON error. Omitting ``scope_set`` is identical to the
+    pre-change behaviour so existing Calendar/Drive/Gmail callers are
+    not broken.
     """
+    # --- Resolve scope composition ---
+    # scope_set is parsed BEFORE the account limit check so unknown-set errors
+    # do not get masked by a 409 account-limit response.
+    requested_sets = _parse_scope_set_param(scope_set)
+    if requested_sets is not None:
+        try:
+            scopes = _compose_scopes_from_sets(requested_sets)
+        except ValueError as exc:
+            unknown_name = str(exc)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": "unknown_scope_set",
+                    "scope_set": unknown_name,
+                    "known": sorted(GOOGLE_SCOPE_SETS.keys()),
+                },
+            )
+    else:
+        scopes = _get_scopes()
     # --- Account limit check ---
     # Only check if this would be a new account (not a re-auth of an existing one).
     shared_pool = _get_shared_pool(db_manager)
@@ -396,7 +516,6 @@ async def oauth_google_start(
 
     client_id, _ = await _resolve_app_credentials(db_manager)
     redirect_uri = _get_redirect_uri()
-    scopes = _get_scopes()
 
     state = _generate_state()
     _store_state(state, account_hint=account_hint, force_consent=force_consent)
@@ -422,10 +541,11 @@ async def oauth_google_start(
     authorization_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
     logger.info(
-        "Google OAuth flow started (state=%s..., account_hint=%s, force_consent=%s)",
+        "Google OAuth flow started (state=%s..., account_hint=%s, force_consent=%s, scope_set=%s)",
         state[:8],
         account_hint,
         force_consent,
+        requested_sets,
     )
 
     if redirect:
