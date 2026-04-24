@@ -1480,9 +1480,9 @@ class SteamAccountPoller:
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard via MCP."""
         try:
-            await self._mcp_client.call_tool("ingest_v1", envelope)
+            await self._mcp_client.call_tool("ingest", envelope)
             self._metrics.record_ingest_submission(status="success")
-            self._metrics.record_source_api_call(api_method="ingest_v1", status="success")
+            self._metrics.record_source_api_call(api_method="ingest", status="success")
         except Exception as exc:
             self._metrics.record_ingest_submission(status="error")
             logger.warning(

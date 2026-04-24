@@ -40,6 +40,7 @@ VALID_CONNECTOR_TYPES = {
     "live_listener",
     "owntracks",
     "spotify",
+    "steam",
     "telegram_bot",
     "telegram_user_client",
     "whatsapp_user_client",
