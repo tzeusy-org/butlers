@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import {
-  GoogleHealthStatusCard,
-  computeTokenExpiry,
-} from "@/components/settings/GoogleHealthStatusCard";
+import { GoogleHealthStatusCard } from "@/components/settings/GoogleHealthStatusCard";
+import { computeTokenExpiry } from "@/components/settings/GoogleHealthStatusCard.utils";
 import { useGoogleHealthStatus } from "@/hooks/use-google-health";
 import { useGoogleAccounts } from "@/hooks/use-secrets";
 import { computeTestModeBannerVariant } from "@/lib/google-health-test-mode";
