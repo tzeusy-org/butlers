@@ -25,6 +25,7 @@ import os
 import pwd
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -678,6 +679,7 @@ class CodexAdapter(RuntimeAdapter):
         """
         binary = self._get_binary()
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
+        _spawn_start = time.monotonic()
 
         # Build command
         cmd = [
@@ -757,6 +759,16 @@ class CodexAdapter(RuntimeAdapter):
                 mcp_servers,
                 prompt_input,
             )
+            # Record total spawn-to-completion latency for instrumentation.
+            if self._last_process_info is not None:
+                spawn_latency_ms = int((time.monotonic() - _spawn_start) * 1000)
+                self._last_process_info["spawn_latency_ms"] = spawn_latency_ms
+                self._last_process_info["mcp_server_count"] = len(mcp_servers)
+                logger.debug(
+                    "Codex spawn latency=%dms mcp_servers=%d",
+                    spawn_latency_ms,
+                    len(mcp_servers),
+                )
 
             # Retry with exponential backoff when MCP tools were configured
             # but the CLI failed to discover them (intermittent MCP connection

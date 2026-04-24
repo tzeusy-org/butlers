@@ -354,11 +354,22 @@ async def run_startup(daemon: Any) -> None:
     # 14. Start FastMCP SSE server on configured port
     await daemon._start_mcp_server()
 
-    # 14b. Start durable buffer workers and scanner (switchboard only)
+    # 14b. Warm up MCP endpoints (best-effort, non-blocking for daemon boot).
+    # Fires initialize + tools/list against the butler's own endpoint (and any
+    # extra endpoints) so the first real Codex spawn hits warm server-side
+    # caches/pools instead of cold ones.  Failures are logged at WARNING level
+    # and never propagate — the warmup task runs in the background so it does
+    # not hold up the remaining startup steps.
+    asyncio.create_task(
+        _warmup_mcp_endpoints_best_effort(daemon),
+        name=f"mcp-warmup-{daemon.config.name}",
+    )
+
+    # 14c. Start durable buffer workers and scanner (switchboard only)
     if daemon._buffer is not None:
         await daemon._buffer.start()
 
-    # 14c. Recover unprocessed route_inbox rows (non-staffer butlers only)
+    # 14d. Recover unprocessed route_inbox rows (non-staffer butlers only)
     # Rows that were accepted but never processed due to a crash are re-dispatched
     # as a background task so that long-running LLM sessions don't block startup
     # (and therefore don't prevent other butlers from starting in `butlers up`).
@@ -393,6 +404,32 @@ async def run_startup(daemon: Any) -> None:
         )
     else:
         logger.info("Butler %s started on port %d", daemon.config.name, daemon.config.port)
+
+
+async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:
+    """Background task: warm up MCP endpoints after server is listening.
+
+    Runs after ``_start_mcp_server()`` completes.  Fires initialize + tools/list
+    against the butler's own endpoint.  Switchboard-exposed endpoints are not
+    yet wired at the time the daemon starts, so only the butler's own endpoint
+    is targeted here.
+
+    All failures are swallowed — this task must never surface exceptions that
+    would propagate to unhandled task machinery.
+    """
+    try:
+        from butlers.core.mcp_warmup import warmup_mcp_endpoints
+
+        await warmup_mcp_endpoints(
+            daemon.config.name,
+            butler_port=daemon.config.port,
+        )
+    except Exception:
+        logger.warning(
+            "MCP endpoint warmup failed for butler=%s (best-effort, startup continues)",
+            daemon.config.name,
+            exc_info=True,
+        )
 
 
 async def run_shutdown(daemon: Any) -> None:
