@@ -352,6 +352,89 @@ class TestOAuthCallback:
 
 
 # ---------------------------------------------------------------------------
+# Google Health contact_info registration (bu-k5l35.2)
+# ---------------------------------------------------------------------------
+
+
+class TestGoogleHealthContactInfoRegistration:
+    """Covers the pre-registration contract from connector-google-health spec.
+
+    When ``scope_set=health`` is granted, the callback upserts a
+    ``public.contact_info(type='google_health', value=<google_user_id>)``
+    row on the owner entity's contact so the Switchboard can resolve
+    ``sender.identity`` without creating a temp contact.
+    """
+
+    async def test_upsert_contact_info_calls_on_conflict_do_nothing(self):
+        """The upsert uses ON CONFLICT (type, value) DO NOTHING for idempotency."""
+        from butlers.api.routers.oauth import _register_google_health_contact_info
+
+        conn = AsyncMock()
+        owner_entity_id = uuid.uuid4()
+        owner_contact_id = uuid.uuid4()
+
+        async def _fetchval(query, *args):
+            if "FROM public.entities" in query:
+                return owner_entity_id
+            if "FROM public.contacts" in query:
+                return owner_contact_id
+            return None
+
+        conn.fetchval.side_effect = _fetchval
+        conn.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        @asynccontextmanager
+        async def _txn():
+            yield
+
+        conn.transaction = lambda: _txn()
+
+        pool = MagicMock()
+        pool.acquire = _acquire
+
+        await _register_google_health_contact_info(pool, google_user_id="owner@example.com")
+
+        # Verify the INSERT was executed with ON CONFLICT DO NOTHING clause.
+        assert conn.execute.await_count == 1
+        sql = conn.execute.await_args.args[0]
+        assert "INSERT INTO public.contact_info" in sql
+        assert "ON CONFLICT" in sql
+        assert "DO NOTHING" in sql
+        # Values: contact_id, google_user_id
+        assert conn.execute.await_args.args[1] == owner_contact_id
+        assert conn.execute.await_args.args[2] == "owner@example.com"
+
+    async def test_upsert_skipped_when_no_owner_entity(self):
+        """No-op when owner entity not yet bootstrapped — does not raise."""
+        from butlers.api.routers.oauth import _register_google_health_contact_info
+
+        conn = AsyncMock()
+        conn.fetchval.return_value = None  # no owner entity
+        conn.execute = AsyncMock()
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        @asynccontextmanager
+        async def _txn():
+            yield
+
+        conn.transaction = lambda: _txn()
+
+        pool = MagicMock()
+        pool.acquire = _acquire
+
+        await _register_google_health_contact_info(pool, google_user_id="owner@example.com")
+        # No INSERT performed.
+        assert conn.execute.await_count == 0
+
+
+# ---------------------------------------------------------------------------
 # OAuth status endpoint
 # ---------------------------------------------------------------------------
 

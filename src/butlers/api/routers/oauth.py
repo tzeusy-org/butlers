@@ -793,6 +793,20 @@ async def oauth_google_callback(
     )
     logger.info("Scope granted: %s", scope)
 
+    # If the grant included Google Health RESTRICTED scopes, pre-register a
+    # public.contact_info(type='google_health') row linked to the owner entity
+    # so the Switchboard can resolve `sender.identity` on wellness envelopes
+    # via a known contact instead of creating a temp contact. Idempotent —
+    # re-runs produce no duplicate row. See openspec requirement "Owner
+    # Contact Info Registration" in connector-google-health/spec.md.
+    if shared_pool is not None and account_email and scope and "googlehealth." in scope:
+        try:
+            await _register_google_health_contact_info(shared_pool, google_user_id=account_email)
+        except Exception as exc:  # noqa: BLE001
+            # Non-fatal: the connector will keep running in degraded mode
+            # until the contact_info row is present.
+            logger.warning("Failed to upsert google_health contact_info (non-fatal): %s", exc)
+
     # Notify the Gmail connector to reload accounts immediately so it picks up the
     # new/updated refresh token without waiting for the next periodic rescan.
     gmail_health_port = int(os.environ.get("GMAIL_CONNECTOR_HEALTH_PORT", "40082"))
@@ -822,6 +836,73 @@ async def oauth_google_callback(
         )
 
     return JSONResponse(content=success_payload.model_dump())
+
+
+async def _register_google_health_contact_info(
+    pool: Any,
+    *,
+    google_user_id: str,
+) -> None:
+    """Upsert a ``public.contact_info(type='google_health')`` row on the owner contact.
+
+    This is called from the OAuth callback when ``scope_set=health`` is
+    granted, satisfying the ``connector-google-health`` spec requirement
+    'Owner Contact Info Registration' — the Switchboard resolves
+    ``sender.identity = <google_user_id>`` on wellness envelopes via this
+    row, avoiding the temp-contact path used for unknown senders.
+
+    The function is idempotent — re-running pairing for the same account
+    produces no duplicate row (``ON CONFLICT (type, value) DO NOTHING``).
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Locate the owner entity by role.
+            owner_entity_id = await conn.fetchval(
+                """
+                SELECT id FROM public.entities
+                WHERE 'owner' = ANY(roles)
+                LIMIT 1
+                """
+            )
+            if owner_entity_id is None:
+                # Owner entity not bootstrapped yet — skip. The daemon
+                # bootstraps this on startup; if it's absent here it will
+                # be created before the connector's first poll.
+                logger.debug("Skipping google_health contact_info upsert — no owner entity")
+                return
+
+            # Find an existing contact linked to the owner entity. If none,
+            # create a minimal one. In a fresh install the owner contact
+            # row is bootstrapped by the daemon; this fallback guarantees
+            # the upsert succeeds even on partial installs.
+            owner_contact_id = await conn.fetchval(
+                """
+                SELECT id FROM public.contacts
+                WHERE entity_id = $1
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                owner_entity_id,
+            )
+            if owner_contact_id is None:
+                owner_contact_id = await conn.fetchval(
+                    """
+                    INSERT INTO public.contacts (name, entity_id, metadata)
+                    VALUES ('Owner', $1, '{}'::jsonb)
+                    RETURNING id
+                    """,
+                    owner_entity_id,
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO public.contact_info (contact_id, type, value, secured)
+                VALUES ($1, 'google_health', $2, false)
+                ON CONFLICT (type, value) DO NOTHING
+                """,
+                owner_contact_id,
+                google_user_id,
+            )
 
 
 async def _update_account_refresh_token(

@@ -1,0 +1,1633 @@
+"""Google Health connector runtime — passive per-owner wellness ingestion.
+
+This connector polls the Google Health API at ``https://health.googleapis.com/v4/``
+for the primary Google account's wellness data (sleep, heart-rate, HRV, SpO2,
+breathing-rate, steps, active-minutes, VO2 max), detects new or changed
+records via state diffing, normalises events into ``ingest.v1`` envelopes,
+and submits them to the Switchboard.
+
+Archetype: passive signal connector (mirror of ``connector-spotify`` and
+``connector-steam``). No per-chat buffering, no discretion layer, no
+interactive replies. Single-owner: polls only the primary Google account
+regardless of how many non-primary accounts exist.
+
+Key behaviours
+--------------
+
+- Owner resolution via :func:`butlers.google_account_registry.get_google_account`
+  (primary account only). The Google user identifier recorded in
+  ``source.endpoint_identity`` and ``sender.identity`` is the account's
+  *email* — it is the stable identifier Google Health persists in
+  ``public.google_accounts`` today, and RFC 0004 identity resolution hinges
+  on a matching ``public.contact_info`` row being upserted during OAuth
+  callback for ``scope_set=health``.
+- Scope gate: connector stays in ``degraded`` until all three
+  RESTRICTED Google Health scope URLs are present on the primary account's
+  ``granted_scopes``. Scope checks run every 300 s and on each poll-loop
+  entry.
+- OAuth tokens: refresh-token access is delegated to the shared Google
+  credential pipeline via :func:`butlers.google_credentials.load_google_credentials`.
+  Access tokens live only in memory. No ``CredentialStore.resolve()`` for
+  refresh tokens. No environment-variable fallbacks. Per
+  ``about/heart-and-soul/security.md`` Tier-2 contract.
+- Per-resource polling loops: sleep sessions / daily activity / resting HR
+  at 30-min cadence, HRV / SpO2 / breathing rate at 60-min, VO2 max daily.
+  First-run backfill walks the trailing ``GOOGLE_HEALTH_BACKFILL_DAYS``
+  days (default 30) of daily summaries.
+- Cursor persistence: each resource's cursor is stored via
+  :mod:`butlers.connectors.cursor_store` under
+  ``(connector_type="google_health", endpoint_identity="google_health:user:<id>:<resource>")``.
+  The envelope's ``source.endpoint_identity`` remains the 3-segment
+  canonical ``google_health:user:<id>``; the ``:<resource>`` suffix is used
+  ONLY in the cursor key.
+- Base-spec obligations: source filter gate via
+  :class:`butlers.ingestion_policy.IngestionPolicyEvaluator` scoped
+  ``connector:google_health:<endpoint_identity>``, filtered-events batch
+  flush to ``connectors.filtered_events``, replay-queue drain at the top of
+  each poll cycle.
+- Rate-limit handling: honours ``Retry-After`` on HTTP 429; falls back to
+  exponential backoff with jitter. Cursors never advance on a failed
+  request.
+- Heartbeat states: ``healthy`` | ``degraded`` | ``error`` (no ``broken``
+  state, per base-spec v2).
+
+Environment variables
+---------------------
+
+``SWITCHBOARD_MCP_URL`` (required)
+    URL of the Switchboard's MCP endpoint.
+``GOOGLE_HEALTH_BACKFILL_DAYS`` (optional, default 30)
+    First-run backfill window in days.
+``GOOGLE_HEALTH_POLL_SLEEP_S`` (optional, default 1800)
+    Per-resource cadence for sleep sessions. Overrides the default.
+``GOOGLE_HEALTH_POLL_ACTIVITY_S`` (optional, default 1800)
+    Cadence for daily activity / steps / resting HR.
+``GOOGLE_HEALTH_POLL_HEALTH_METRICS_S`` (optional, default 3600)
+    Cadence for HRV / SpO2 / breathing rate.
+``GOOGLE_HEALTH_POLL_VO2_MAX_S`` (optional, default 86400)
+    Cadence for VO2 max.
+``GOOGLE_HEALTH_SCOPE_RECHECK_S`` (optional, default 300)
+    Scope re-check cadence when running degraded.
+``CONNECTOR_HEALTH_PORT`` (optional, default 40086)
+    Health/metrics HTTP port.
+``CONNECTOR_HEARTBEAT_INTERVAL_S`` (optional, default 120)
+    Heartbeat submission cadence.
+``CONNECTOR_MAX_INFLIGHT`` (optional, default 8)
+    Max concurrent envelope submissions.
+``CONNECTOR_BUTLER_DB_NAME`` (optional)
+    Local butler DB — hosts ``switchboard.connector_registry`` for cursors.
+``BUTLER_SHARED_DB_NAME`` (optional, default ``butlers``)
+    Shared DB — hosts ``public.google_accounts``, ``public.entity_info``,
+    ``public.contact_info``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import signal
+import time
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from threading import Thread
+from typing import TYPE_CHECKING, Any
+
+import httpx
+import uvicorn
+from fastapi import FastAPI
+from prometheus_client import Counter, Gauge, generate_latest
+
+from butlers.connectors.cursor_store import load_cursor, save_cursor
+from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.google_health_client import (
+    GoogleHealthClient,
+    GoogleHealthCredentialError,
+    GoogleHealthError,
+    GoogleHealthRateLimitError,
+    exponential_backoff_delay,
+)
+from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
+from butlers.connectors.metrics import ConnectorMetrics
+from butlers.core.logging import configure_logging
+from butlers.credential_store import CredentialStore, shared_db_name_from_env
+from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
+from butlers.google_account_registry import (
+    GoogleAccount,
+    MissingGoogleCredentialsError,
+    get_google_account,
+)
+from butlers.google_credentials import (
+    InvalidGoogleCredentialsError,
+    load_google_credentials,
+)
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+
+if TYPE_CHECKING:
+    import asyncpg
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_CONNECTOR_TYPE = "google_health"
+_CONNECTOR_CHANNEL = "wellness"
+_CONNECTOR_PROVIDER = "google_health"
+
+# Full Google Health RESTRICTED scope URLs (per openspec spec and the OAuth
+# scope-set registry in src/butlers/api/routers/oauth.py). Scope check is an
+# AND across all three — partial grants leave the connector degraded.
+GOOGLE_HEALTH_SCOPES: frozenset[str] = frozenset(
+    {
+        "https://www.googleapis.com/auth/googlehealth.sleep",
+        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+    }
+)
+
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_TOKEN_REFRESH_BUFFER_S = 60  # refresh access token 60s before expiry
+
+# Default per-resource polling cadences (seconds).
+_DEFAULT_POLL_INTERVALS: dict[str, int] = {
+    "sleep": 1800,
+    "activity": 1800,
+    "resting_hr": 1800,
+    "hrv": 3600,
+    "spo2": 3600,
+    "breathing_rate": 3600,
+    "vo2_max": 86400,
+}
+
+# Default first-run backfill window in days.
+_DEFAULT_BACKFILL_DAYS = 30
+
+# Default scope re-check cadence when in degraded.
+_DEFAULT_SCOPE_RECHECK_S = 300
+
+_DEFAULT_HEALTH_PORT = 40086
+_DEFAULT_MAX_INFLIGHT = 8
+
+
+# ---------------------------------------------------------------------------
+# Google Health-specific Prometheus metrics
+# ---------------------------------------------------------------------------
+
+google_health_polls_total = Counter(
+    "connector_google_health_polls_total",
+    "Total Google Health per-resource poll cycles",
+    labelnames=["endpoint_identity", "resource", "outcome"],
+)
+
+google_health_envelopes_total = Counter(
+    "connector_google_health_envelopes_total",
+    "Ingest.v1 envelopes emitted per resource",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_rate_limit_remaining = Gauge(
+    "connector_google_health_rate_limit_remaining",
+    "Google Health API X-RateLimit-Remaining observed on the last call per resource",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_rate_limit_events_total = Counter(
+    "connector_google_health_rate_limit_events_total",
+    "Total HTTP 429 responses observed per resource",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_scope_missing_total = Counter(
+    "connector_google_health_scope_missing_total",
+    "Count of startup / re-check cycles that found missing Google Health scopes",
+    labelnames=["endpoint_identity"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Resource bundle definitions
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResourceBundle:
+    """Metadata for a single Google Health data-type bundle.
+
+    Attributes
+    ----------
+    resource:
+        Short key used in cursor identities, idempotency keys, metric
+        labels, and external_event_ids. Must match the predicate-taxonomy
+        keys in ``openspec/changes/google-health-connector/design.md`` §D5.
+    endpoint_path:
+        Relative path on ``health.googleapis.com/v4`` that is polled.
+        Exact path is confirmed at implementation time and recorded in
+        ``research-notes.md`` — the connector defaults to the
+        ``/users/me/dataTypes/<type>/<suffix>`` pattern suggested by the
+        Google Health migration guide.
+    poll_interval_key:
+        Environment-variable suffix controlling cadence overrides.
+    default_interval_s:
+        Fallback cadence when no override is present.
+    category:
+        ``"sleep"`` or ``"daily"`` — affects external_event_id shape.
+    normalized_summary:
+        Human-readable summary template used in ``payload.normalized_text``.
+    """
+
+    resource: str
+    endpoint_path: str
+    poll_interval_key: str
+    default_interval_s: int
+    category: str
+    normalized_summary: str
+
+
+# Per-resource bundles. Endpoint paths follow the documented v4 structure
+# (users/me/dataTypes/...); the final segment is confirmed during reconciliation
+# in .2.4 and recorded in research-notes.md. Polling respects
+# `_DEFAULT_POLL_INTERVALS` overrides per resource.
+RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
+    ResourceBundle(
+        resource="sleep",
+        endpoint_path="/users/me/dataTypes/sleep/sessions",
+        poll_interval_key="GOOGLE_HEALTH_POLL_SLEEP_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["sleep"],
+        category="sleep",
+        normalized_summary="Slept {duration_label} ({efficiency}% efficiency)",
+    ),
+    ResourceBundle(
+        resource="activity",
+        endpoint_path="/users/me/dataTypes/activity/daily",
+        poll_interval_key="GOOGLE_HEALTH_POLL_ACTIVITY_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["activity"],
+        category="daily",
+        normalized_summary="Steps: {value}",
+    ),
+    ResourceBundle(
+        resource="resting_hr",
+        endpoint_path="/users/me/dataTypes/heartRate/resting/daily",
+        poll_interval_key="GOOGLE_HEALTH_POLL_ACTIVITY_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["resting_hr"],
+        category="daily",
+        normalized_summary="Resting HR: {value} bpm",
+    ),
+    ResourceBundle(
+        resource="hrv",
+        endpoint_path="/users/me/dataTypes/heartRateVariability/daily",
+        poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["hrv"],
+        category="daily",
+        normalized_summary="HRV: {value} ms",
+    ),
+    ResourceBundle(
+        resource="spo2",
+        endpoint_path="/users/me/dataTypes/oxygenSaturation/daily",
+        poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["spo2"],
+        category="daily",
+        normalized_summary="SpO2: avg {value}%",
+    ),
+    ResourceBundle(
+        resource="breathing_rate",
+        endpoint_path="/users/me/dataTypes/respiratoryRate/daily",
+        poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["breathing_rate"],
+        category="daily",
+        normalized_summary="Breathing: {value} bpm",
+    ),
+    ResourceBundle(
+        resource="vo2_max",
+        endpoint_path="/users/me/dataTypes/vo2Max/daily",
+        poll_interval_key="GOOGLE_HEALTH_POLL_VO2_MAX_S",
+        default_interval_s=_DEFAULT_POLL_INTERVALS["vo2_max"],
+        category="daily",
+        normalized_summary="VO2 Max: {value}",
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GoogleHealthConnectorConfig:
+    """Configuration for the Google Health connector runtime."""
+
+    switchboard_mcp_url: str
+    channel: str = _CONNECTOR_CHANNEL
+    provider: str = _CONNECTOR_PROVIDER
+
+    backfill_days: int = _DEFAULT_BACKFILL_DAYS
+    scope_recheck_s: int = _DEFAULT_SCOPE_RECHECK_S
+
+    max_inflight: int = _DEFAULT_MAX_INFLIGHT
+    health_port: int = _DEFAULT_HEALTH_PORT
+
+    # Resolved per-resource intervals (seconds).
+    poll_intervals: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def from_env(cls) -> GoogleHealthConnectorConfig:
+        """Load configuration from process environment.
+
+        ``SWITCHBOARD_MCP_URL`` is required. Everything else falls back to
+        the documented defaults — see the module-level docstring for the
+        full list of variables.
+        """
+        switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL", "").strip()
+        if not switchboard_mcp_url:
+            raise ValueError("SWITCHBOARD_MCP_URL is required")
+
+        def _int(key: str, default: int) -> int:
+            raw = os.environ.get(key, "").strip()
+            if not raw:
+                return default
+            try:
+                return int(raw)
+            except ValueError:
+                logger.warning("Invalid value for %s=%r, using default %d", key, raw, default)
+                return default
+
+        poll_intervals: dict[str, int] = {}
+        for bundle in RESOURCE_BUNDLES:
+            poll_intervals[bundle.resource] = _int(
+                bundle.poll_interval_key, bundle.default_interval_s
+            )
+
+        return cls(
+            switchboard_mcp_url=switchboard_mcp_url,
+            backfill_days=_int("GOOGLE_HEALTH_BACKFILL_DAYS", _DEFAULT_BACKFILL_DAYS),
+            scope_recheck_s=_int("GOOGLE_HEALTH_SCOPE_RECHECK_S", _DEFAULT_SCOPE_RECHECK_S),
+            max_inflight=_int("CONNECTOR_MAX_INFLIGHT", _DEFAULT_MAX_INFLIGHT),
+            health_port=_int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
+            poll_intervals=poll_intervals,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Envelope builders
+# ---------------------------------------------------------------------------
+
+
+def _endpoint_identity_for_user(google_user_id: str) -> str:
+    """Canonical 3-segment endpoint identity for a Google Health envelope."""
+    return f"google_health:user:{google_user_id}"
+
+
+def _cursor_endpoint_identity(google_user_id: str, resource: str) -> str:
+    """Per-resource cursor key — appends `:<resource>` to the canonical identity.
+
+    The ``cursor_store`` primitive uses a 2-tuple
+    ``(connector_type, endpoint_identity)`` so per-resource dimension is
+    encoded into the endpoint_identity SUFFIX. The envelope's
+    ``source.endpoint_identity`` (returned by
+    :func:`_endpoint_identity_for_user`) remains the canonical form — only
+    cursors carry the resource suffix.
+    """
+    return f"google_health:user:{google_user_id}:{resource}"
+
+
+def _format_daily_summary_value(resource: str, record: dict[str, Any]) -> str:
+    """Extract a human-readable scalar from a daily-summary record.
+
+    Falls back to ``"?"`` when the raw record lacks a recognised value
+    field. Used only for ``payload.normalized_text`` — the structured
+    ``payload.raw`` carries the full response.
+    """
+    for key in ("value", "count", "avg", "average", "midpoint"):
+        val = record.get(key)
+        if val is not None:
+            return str(val)
+    return "?"
+
+
+def _format_sleep_duration_label(duration_ms: int) -> str:
+    """Render a sleep-session duration as e.g. ``"7h 23m"``."""
+    minutes = max(0, duration_ms // 60000)
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours > 0:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def build_sleep_session_envelope(
+    *,
+    endpoint_identity: str,
+    google_user_id: str,
+    session_id: str,
+    session_record: dict[str, Any],
+    observed_at: str,
+) -> dict[str, Any]:
+    """Build an ingest.v1 envelope for a Google Health sleep session."""
+    duration_ms = int(
+        session_record.get("durationMillis") or session_record.get("duration_ms") or 0
+    )
+    efficiency = session_record.get("efficiency") or session_record.get("efficiencyPercent") or "?"
+    duration_label = _format_sleep_duration_label(duration_ms)
+    normalized_text = f"Slept {duration_label} ({efficiency}% efficiency)"
+
+    external_event_id = f"google_health:sleep_session:{session_id}"
+    idempotency_key = f"google_health:sleep:{session_id}"
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _CONNECTOR_CHANNEL,
+            "provider": _CONNECTOR_PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": external_event_id,
+            "external_thread_id": None,
+            "observed_at": observed_at,
+        },
+        "sender": {
+            "identity": google_user_id,
+        },
+        "payload": {
+            "raw": dict(session_record),
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": idempotency_key,
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+def build_daily_summary_envelope(
+    *,
+    endpoint_identity: str,
+    google_user_id: str,
+    resource: str,
+    record_date: str,
+    record: dict[str, Any],
+    normalized_summary_template: str,
+    observed_at: str,
+) -> dict[str, Any]:
+    """Build an ingest.v1 envelope for a daily-summary Google Health record.
+
+    ``record_date`` is the YYYY-MM-DD date the summary applies to (the
+    ``valid_at`` axis in downstream Health butler facts).
+    """
+    value_str = _format_daily_summary_value(resource, record)
+    normalized_text = normalized_summary_template.format(value=value_str)
+
+    external_event_id = f"google_health:{resource}:{record_date}"
+    idempotency_key = f"google_health:{resource}:{record_date}"
+
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": _CONNECTOR_CHANNEL,
+            "provider": _CONNECTOR_PROVIDER,
+            "endpoint_identity": endpoint_identity,
+        },
+        "event": {
+            "external_event_id": external_event_id,
+            "external_thread_id": None,
+            "observed_at": observed_at,
+        },
+        "sender": {
+            "identity": google_user_id,
+        },
+        "payload": {
+            "raw": dict(record),
+            "normalized_text": normalized_text,
+        },
+        "control": {
+            "idempotency_key": idempotency_key,
+            "policy_tier": "default",
+            "ingestion_tier": "full",
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Contact-info registration (called from OAuth callback for scope_set=health)
+# ---------------------------------------------------------------------------
+
+
+async def upsert_google_health_contact_info(
+    pool: asyncpg.Pool,
+    *,
+    google_user_id: str,
+    owner_entity_id: uuid.UUID,
+) -> None:
+    """Upsert the owner's ``public.contact_info`` row for Google Health.
+
+    RFC 0004 identity resolution looks up ``sender.identity`` via
+    ``public.contact_info(type, value)`` and expects a single matching row
+    linked to a contact whose entity has the ``owner`` role. This helper
+    is idempotent — re-running pairing produces no duplicate row.
+
+    The connector does NOT call this at ingestion time; it is called by
+    the OAuth callback when ``scope_set=health`` completes successfully.
+    The function is exposed from the connector module because the contact
+    shape is owned by the connector's contract.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Ensure an owner contact exists linked to the owner entity.
+            owner_contact = await conn.fetchrow(
+                """
+                SELECT id
+                FROM public.contacts
+                WHERE entity_id = $1
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                owner_entity_id,
+            )
+
+            if owner_contact is None:
+                # Create a minimal contact row for the owner if none exists.
+                owner_contact = await conn.fetchrow(
+                    """
+                    INSERT INTO public.contacts (name, entity_id, metadata)
+                    VALUES ($1, $2, '{}'::jsonb)
+                    RETURNING id
+                    """,
+                    "Owner",
+                    owner_entity_id,
+                )
+            contact_id = owner_contact["id"]
+
+            await conn.execute(
+                """
+                INSERT INTO public.contact_info (contact_id, type, value, secured)
+                VALUES ($1, 'google_health', $2, false)
+                ON CONFLICT (type, value) DO NOTHING
+                """,
+                contact_id,
+                google_user_id,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Per-resource state
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ResourceState:
+    """Runtime state per polled resource bundle."""
+
+    bundle: ResourceBundle
+    next_poll_monotonic: float = 0.0  # time.monotonic() of next scheduled poll
+    last_poll_at: datetime | None = None
+    last_cursor: str | None = None
+    backfill_done: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Main connector class
+# ---------------------------------------------------------------------------
+
+
+class GoogleHealthConnector:
+    """Single-owner Google Health polling connector.
+
+    Responsible for:
+
+    - Owner account discovery + scope verification.
+    - Access-token acquisition via the shared Google credential pipeline.
+    - Per-resource polling loops with 2-tuple cursor persistence.
+    - Envelope construction, filter-gate evaluation, and Switchboard submission.
+    - Heartbeat, metrics, health endpoint, filtered-event flush, replay drain.
+    """
+
+    def __init__(
+        self,
+        config: GoogleHealthConnectorConfig,
+        shared_pool: asyncpg.Pool | None = None,
+        cursor_pool: asyncpg.Pool | None = None,
+    ) -> None:
+        self._config = config
+        self._shared_pool = shared_pool
+        self._cursor_pool = cursor_pool
+
+        # Resolved on startup
+        self._google_account: GoogleAccount | None = None
+        self._google_user_id: str = ""  # email (stable primary-account identifier)
+        self._endpoint_identity: str = ""
+
+        # Cached refresh-token material resolved from the shared pipeline.
+        self._client_id: str | None = None
+        self._client_secret: str | None = None
+        self._refresh_token: str | None = None
+
+        # Cached in-memory access token (never persisted).
+        self._access_token: str | None = None
+        self._token_expires_at: datetime | None = None
+
+        # HTTP clients
+        self._http_client: httpx.AsyncClient | None = None
+        self._api_client: GoogleHealthClient | None = None
+
+        # Switchboard MCP client
+        self._mcp_client = CachedMCPClient(
+            config.switchboard_mcp_url,
+            client_name="google-health-connector",
+        )
+
+        # Per-resource state
+        self._resources: dict[str, ResourceState] = {
+            bundle.resource: ResourceState(bundle=bundle) for bundle in RESOURCE_BUNDLES
+        }
+
+        # Degraded / error flags
+        self._scope_missing: bool = True  # start degraded until verified
+        self._account_missing: bool = True
+        self._auth_error: bool = False
+        self._auth_error_message: str | None = None
+        self._last_source_api_ok: bool | None = None
+
+        # Shared infra (created after identity resolution)
+        self._metrics = ConnectorMetrics(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity="",
+        )
+        self._heartbeat: ConnectorHeartbeat | None = None
+        self._ingestion_policy: IngestionPolicyEvaluator | None = None
+        self._filtered_event_buffer: FilteredEventBuffer | None = None
+
+        self._semaphore = asyncio.Semaphore(config.max_inflight)
+
+        # Health server
+        self._health_server: uvicorn.Server | None = None
+        self._health_thread: Thread | None = None
+
+        # Shutdown / lifecycle
+        self._shutdown_event = asyncio.Event()
+        self._running = False
+        self._start_time = time.time()
+
+        # Checkpoint (aggregated across resources — latest poll timestamp)
+        self._last_checkpoint_save: float | None = None
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Full startup sequence followed by the main poll loop."""
+        logger.info("GoogleHealthConnector starting")
+
+        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._running = True
+
+        try:
+            # Signal handlers
+            try:
+                loop = asyncio.get_running_loop()
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    loop.add_signal_handler(sig, self._handle_signal)
+            except (NotImplementedError, OSError):
+                logger.debug("GoogleHealthConnector: signal handlers unsupported")
+
+            # Phase 1: Resolve owner account + scopes. Non-fatal if missing — we
+            # simply stay in degraded and re-check.
+            await self._resolve_owner_and_scopes(initial=True)
+
+            # Phase 2: Post-identity init (metrics, heartbeat, policy, filter buffer).
+            # Uses a sentinel identity "degraded" when owner not yet resolved so
+            # the heartbeat can still report state.
+            self._post_identity_init()
+
+            # Phase 3: Load per-resource cursors (only when identity resolved).
+            await self._load_all_cursors()
+
+            # Phase 4: Wait for Switchboard.
+            try:
+                await wait_for_switchboard_ready(self._config.switchboard_mcp_url)
+            except TimeoutError:
+                logger.warning(
+                    "GoogleHealthConnector: Switchboard readiness probe timed out; proceeding"
+                )
+
+            # Phase 5: Health server.
+            self._start_health_server()
+
+            # Phase 6: Heartbeat.
+            assert self._heartbeat is not None
+            self._heartbeat.start()
+            try:
+                await self._heartbeat._send_heartbeat()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("GoogleHealthConnector: initial heartbeat failed: %s", exc)
+
+            # Phase 7: Main loop.
+            await self._main_loop()
+        finally:
+            await self._shutdown()
+
+    async def stop(self) -> None:
+        """Request a graceful shutdown."""
+        if not self._shutdown_event.is_set():
+            logger.info("GoogleHealthConnector: stop() requested")
+            self._shutdown_event.set()
+
+    def _handle_signal(self) -> None:
+        logger.info("GoogleHealthConnector: received shutdown signal")
+        self._shutdown_event.set()
+
+    async def _shutdown(self) -> None:
+        logger.info("GoogleHealthConnector: shutting down")
+        self._running = False
+
+        # Final heartbeat + stop.
+        if self._heartbeat is not None:
+            try:
+                await self._heartbeat._send_heartbeat()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("GoogleHealthConnector: final heartbeat failed: %s", exc)
+            await self._heartbeat.stop()
+
+        if self._health_server is not None:
+            self._health_server.should_exit = True
+
+        if self._api_client is not None:
+            await self._api_client.aclose()
+
+        if self._http_client is not None:
+            await self._http_client.aclose()
+
+        logger.info("GoogleHealthConnector: shutdown complete")
+
+    # ------------------------------------------------------------------
+    # Owner / scope resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_owner_and_scopes(self, *, initial: bool = False) -> None:
+        """Re-query the primary Google account and verify scopes.
+
+        Sets ``_google_account``, ``_google_user_id``, ``_endpoint_identity``,
+        and the ``_scope_missing`` / ``_account_missing`` flags.  Non-fatal —
+        if scopes are missing the connector simply stays degraded.
+        """
+        if self._shared_pool is None:
+            self._account_missing = True
+            self._scope_missing = True
+            if initial:
+                logger.warning(
+                    "GoogleHealthConnector: no shared DB pool — starting in degraded mode"
+                )
+            return
+
+        try:
+            account = await get_google_account(self._shared_pool, account=None)
+        except MissingGoogleCredentialsError:
+            self._account_missing = True
+            self._scope_missing = True
+            self._google_account = None
+            if initial:
+                logger.warning(
+                    "GoogleHealthConnector: no primary Google account — starting in degraded mode"
+                )
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._account_missing = True
+            self._scope_missing = True
+            logger.warning("GoogleHealthConnector: account discovery failed (non-fatal): %s", exc)
+            return
+
+        self._google_account = account
+        self._account_missing = False
+
+        granted = frozenset(account.granted_scopes or [])
+        missing_scopes = GOOGLE_HEALTH_SCOPES - granted
+        self._scope_missing = bool(missing_scopes)
+
+        if self._scope_missing:
+            google_health_scope_missing_total.labels(
+                endpoint_identity=_endpoint_identity_for_user(account.email or "unknown")
+            ).inc()
+            if initial:
+                logger.warning(
+                    "GoogleHealthConnector: primary account %s missing Google Health scopes: %s",
+                    account.email,
+                    sorted(missing_scopes),
+                )
+
+        # Derive user identity from the account's email.  Per design this is
+        # the stable user identifier recorded in `public.google_accounts` and
+        # in the OAuth-callback-registered `public.contact_info` row.
+        user_id = account.email or str(account.id)
+        self._google_user_id = user_id
+        self._endpoint_identity = _endpoint_identity_for_user(user_id)
+
+    # ------------------------------------------------------------------
+    # Post-identity initialization
+    # ------------------------------------------------------------------
+
+    def _post_identity_init(self) -> None:
+        """Initialise metrics/heartbeat/policy/filter-buffer using the best-known identity.
+
+        The connector still starts heartbeating even when the identity is
+        not yet resolved (degraded state) so operators can observe the
+        degraded signal from Prometheus / dashboard.
+        """
+        identity_label = self._endpoint_identity or "google_health:degraded"
+
+        self._metrics = ConnectorMetrics(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=identity_label,
+        )
+
+        self._ingestion_policy = IngestionPolicyEvaluator(
+            scope=f"connector:{_CONNECTOR_TYPE}:{identity_label}",
+            db_pool=self._shared_pool,
+        )
+
+        self._filtered_event_buffer = FilteredEventBuffer(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=identity_label,
+        )
+
+        hb_config = HeartbeatConfig.from_env(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=identity_label,
+        )
+        self._heartbeat = ConnectorHeartbeat(
+            config=hb_config,
+            mcp_client=self._mcp_client,
+            metrics=self._metrics,
+            get_health_state=self._get_health_state,
+        )
+
+    # ------------------------------------------------------------------
+    # Credential resolution — shared Google pipeline
+    # ------------------------------------------------------------------
+
+    async def _resolve_credentials(self) -> bool:
+        """Resolve (client_id, client_secret, refresh_token) via the shared pipeline.
+
+        Returns ``True`` if credentials are now available, ``False`` otherwise.
+        Never raises on missing credentials — the connector stays in degraded
+        state until OAuth callback populates the required rows.
+        """
+        if self._shared_pool is None or self._google_account is None:
+            return False
+
+        try:
+            store = CredentialStore(self._shared_pool)
+            creds = await load_google_credentials(
+                store, pool=self._shared_pool, account=self._google_account.email
+            )
+        except InvalidGoogleCredentialsError as exc:
+            logger.warning("GoogleHealthConnector: stored credentials invalid: %s", exc)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GoogleHealthConnector: credential resolution failed (non-fatal): %s", exc
+            )
+            return False
+
+        if creds is None:
+            return False
+
+        self._client_id = creds.client_id
+        self._client_secret = creds.client_secret
+        self._refresh_token = creds.refresh_token
+        return True
+
+    async def _mint_access_token(self) -> str:
+        """Mint a fresh access token via Google's OAuth token endpoint.
+
+        Tokens live in memory only — never written to disk, logs, or DB.
+        The refresh token is sourced from the shared Google credential
+        pipeline (``load_google_credentials``), not from ``CredentialStore.resolve``
+        or ``os.environ``.  Per ``about/heart-and-soul/security.md`` Tier-2
+        contract for Google integrations.
+        """
+        if not (self._client_id and self._client_secret and self._refresh_token):
+            if not await self._resolve_credentials():
+                raise GoogleHealthCredentialError(
+                    "Google Health credentials are not configured. "
+                    "Run OAuth with scope_set=health to authorize."
+                )
+
+        assert self._http_client is not None
+        try:
+            resp = await self._http_client.post(
+                _GOOGLE_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": self._refresh_token,
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                },
+                timeout=15,
+            )
+        except httpx.TransportError as exc:
+            raise GoogleHealthError(f"Token refresh transport error: {exc}") from exc
+
+        if resp.status_code != 200:
+            body = resp.text[:200]
+            # Treat any non-200 as terminal — invalidates the refresh token
+            # from the connector's perspective. The connector will mark the
+            # account revoked and transition degraded.
+            raise GoogleHealthCredentialError(
+                f"Google token refresh failed: HTTP {resp.status_code}: {body}"
+            )
+
+        data = resp.json()
+        access_token = data.get("access_token")
+        if not access_token:
+            raise GoogleHealthCredentialError("Token response missing access_token")
+
+        expires_in = int(data.get("expires_in", 3600))
+        self._access_token = access_token
+        self._token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+        return access_token
+
+    async def _get_access_token(self) -> str:
+        """Return a usable access token, refreshing if near expiry."""
+        now = datetime.now(UTC)
+        if (
+            self._access_token
+            and self._token_expires_at
+            and now < self._token_expires_at - timedelta(seconds=_TOKEN_REFRESH_BUFFER_S)
+        ):
+            return self._access_token
+        return await self._mint_access_token()
+
+    async def _mark_account_revoked(self) -> None:
+        """Mark the google account row as revoked — single-owner v1 guard.
+
+        Called when the connector observes a persistent 401 after refresh.
+        The dashboard picks up the new status and surfaces a re-consent CTA.
+        """
+        if self._shared_pool is None or self._google_account is None:
+            return
+        try:
+            async with self._shared_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE public.google_accounts
+                    SET status = 'revoked'
+                    WHERE id = $1
+                    """,
+                    self._google_account.id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GoogleHealthConnector: failed to mark account revoked (non-fatal): %s", exc
+            )
+
+    # ------------------------------------------------------------------
+    # API client
+    # ------------------------------------------------------------------
+
+    def _ensure_api_client(self) -> GoogleHealthClient:
+        """Lazily instantiate the Google Health API client.
+
+        The client delegates token acquisition to :meth:`_get_access_token`
+        via the callable contract on
+        :class:`GoogleHealthClient`.
+        """
+        if self._api_client is None:
+            assert self._http_client is not None
+            self._api_client = GoogleHealthClient(
+                token_fetcher=self._get_access_token,
+                client=self._http_client,
+            )
+        return self._api_client
+
+    # ------------------------------------------------------------------
+    # Cursor persistence
+    # ------------------------------------------------------------------
+
+    async def _load_all_cursors(self) -> None:
+        """Load per-resource cursors from the switchboard registry."""
+        if self._cursor_pool is None or not self._google_user_id:
+            return
+        for state in self._resources.values():
+            endpoint = _cursor_endpoint_identity(self._google_user_id, state.bundle.resource)
+            try:
+                cursor = await load_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint)
+                if cursor is not None:
+                    state.last_cursor = cursor
+                    state.backfill_done = True
+                    logger.info(
+                        "GoogleHealthConnector: loaded cursor resource=%s cursor=%s",
+                        state.bundle.resource,
+                        cursor,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "GoogleHealthConnector: failed to load cursor %s: %s",
+                    state.bundle.resource,
+                    exc,
+                )
+
+    async def _save_cursor(self, state: ResourceState, cursor_value: str) -> None:
+        """Persist the cursor for one resource after a successful poll."""
+        if self._cursor_pool is None or not self._google_user_id:
+            return
+        endpoint = _cursor_endpoint_identity(self._google_user_id, state.bundle.resource)
+        try:
+            await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint, cursor_value)
+            state.last_cursor = cursor_value
+            self._last_checkpoint_save = time.time()
+            self._metrics.record_checkpoint_save("success")
+        except Exception as exc:  # noqa: BLE001
+            self._metrics.record_checkpoint_save("error")
+            logger.warning(
+                "GoogleHealthConnector: failed to save cursor %s: %s",
+                state.bundle.resource,
+                exc,
+            )
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
+    async def _main_loop(self) -> None:
+        """Top-level poll scheduler.
+
+        Runs per-resource polls when due. When the connector is in degraded
+        state (missing scopes / account / credentials), sleeps on
+        ``scope_recheck_s`` and re-resolves owner + scopes. Base-spec
+        obligations (replay drain, filtered-event flush) fire every cycle.
+        """
+        logger.info(
+            "GoogleHealthConnector: entering main loop (intervals=%s backfill_days=%d)",
+            self._config.poll_intervals,
+            self._config.backfill_days,
+        )
+
+        while self._running and not self._shutdown_event.is_set():
+            # Always drain replay queue — runs even in degraded mode so a
+            # backlog does not build up while scopes are missing.
+            await self._drain_replay()
+
+            # Degraded-mode wait path.
+            if self._scope_missing or self._account_missing or self._auth_error:
+                await self._resolve_owner_and_scopes()
+                if self._scope_missing or self._account_missing or self._auth_error:
+                    try:
+                        await asyncio.wait_for(
+                            self._shutdown_event.wait(),
+                            timeout=self._config.scope_recheck_s,
+                        )
+                        break
+                    except TimeoutError:
+                        pass
+                    continue
+                # Scopes acquired — re-init identity-dependent state.
+                logger.info("GoogleHealthConnector: scopes granted — transitioning healthy")
+                self._post_identity_init()
+                await self._load_all_cursors()
+
+            now = time.monotonic()
+            next_due: float = now + self._shortest_interval()
+
+            for state in self._resources.values():
+                if state.next_poll_monotonic > now:
+                    next_due = min(next_due, state.next_poll_monotonic)
+                    continue
+                try:
+                    await self._poll_resource(state)
+                except GoogleHealthCredentialError as exc:
+                    logger.error(
+                        "GoogleHealthConnector: credential error — transitioning degraded: %s",
+                        exc,
+                    )
+                    self._auth_error = True
+                    self._auth_error_message = str(exc)
+                    await self._mark_account_revoked()
+                    break
+                except GoogleHealthRateLimitError as exc:
+                    delay = exc.retry_after
+                    if delay is None:
+                        delay = exponential_backoff_delay(1)
+                    google_health_rate_limit_events_total.labels(
+                        endpoint_identity=self._endpoint_identity,
+                        resource=state.bundle.resource,
+                    ).inc()
+                    logger.warning(
+                        "GoogleHealthConnector: 429 on %s — retry after %.1fs",
+                        state.bundle.resource,
+                        delay,
+                    )
+                    # Do NOT advance the cursor — reschedule after the delay.
+                    state.next_poll_monotonic = time.monotonic() + delay
+                    next_due = min(next_due, state.next_poll_monotonic)
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    self._last_source_api_ok = False
+                    logger.warning(
+                        "GoogleHealthConnector: poll error resource=%s (non-fatal): %s",
+                        state.bundle.resource,
+                        exc,
+                        exc_info=True,
+                    )
+                    google_health_polls_total.labels(
+                        endpoint_identity=self._endpoint_identity,
+                        resource=state.bundle.resource,
+                        outcome="error",
+                    ).inc()
+                    interval = self._config.poll_intervals.get(
+                        state.bundle.resource, state.bundle.default_interval_s
+                    )
+                    state.next_poll_monotonic = time.monotonic() + interval
+                    next_due = min(next_due, state.next_poll_monotonic)
+                    continue
+                else:
+                    interval = self._config.poll_intervals.get(
+                        state.bundle.resource, state.bundle.default_interval_s
+                    )
+                    state.next_poll_monotonic = time.monotonic() + interval
+                    next_due = min(next_due, state.next_poll_monotonic)
+
+            # Base-spec obligation — flush filtered events every cycle.
+            await self._flush_filtered_events()
+
+            # Sleep until the next resource is due.
+            sleep_for = max(1.0, next_due - time.monotonic())
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=sleep_for)
+                break
+            except TimeoutError:
+                pass
+
+    def _shortest_interval(self) -> float:
+        """Return the shortest cadence across all resources (seconds)."""
+        if not self._config.poll_intervals:
+            return _DEFAULT_POLL_INTERVALS["sleep"]
+        return float(min(self._config.poll_intervals.values()))
+
+    # ------------------------------------------------------------------
+    # Per-resource poll
+    # ------------------------------------------------------------------
+
+    async def _poll_resource(self, state: ResourceState) -> None:
+        """Poll a single resource, emit envelopes, advance cursor."""
+        client = self._ensure_api_client()
+        bundle = state.bundle
+
+        since, until = self._compute_window(state)
+        params = self._build_params(bundle, state, since, until)
+
+        data = await client.get_json(bundle.endpoint_path, params=params)
+
+        # Observe rate-limit headers per resource for metrics visibility.
+        headers = client.last_rate_limit_headers
+        remaining_raw = headers.get("X-RateLimit-Remaining")
+        if remaining_raw is not None:
+            try:
+                google_health_rate_limit_remaining.labels(
+                    endpoint_identity=self._endpoint_identity,
+                    resource=bundle.resource,
+                ).set(float(remaining_raw))
+            except ValueError:
+                pass
+
+        records = _extract_records(data)
+        now = datetime.now(UTC)
+        observed_at = now.isoformat()
+        emitted = 0
+        latest_cursor = state.last_cursor
+
+        for record in records:
+            record_id = _record_identity(bundle, record)
+            if record_id is None:
+                continue
+            if state.last_cursor and record_id == state.last_cursor:
+                # Same record as cursor — spec mandates no duplicate emission.
+                # Cursor value stays unchanged; poll timestamp updated below.
+                continue
+
+            if bundle.category == "sleep":
+                envelope = build_sleep_session_envelope(
+                    endpoint_identity=self._endpoint_identity,
+                    google_user_id=self._google_user_id,
+                    session_id=record_id,
+                    session_record=record,
+                    observed_at=observed_at,
+                )
+            else:
+                envelope = build_daily_summary_envelope(
+                    endpoint_identity=self._endpoint_identity,
+                    google_user_id=self._google_user_id,
+                    resource=bundle.resource,
+                    record_date=record_id,
+                    record=record,
+                    normalized_summary_template=bundle.normalized_summary,
+                    observed_at=observed_at,
+                )
+            await self._submit_envelope(envelope, resource=bundle.resource)
+            emitted += 1
+            latest_cursor = record_id
+
+        google_health_envelopes_total.labels(
+            endpoint_identity=self._endpoint_identity,
+            resource=bundle.resource,
+        ).inc(emitted)
+
+        if latest_cursor and latest_cursor != state.last_cursor:
+            await self._save_cursor(state, latest_cursor)
+
+        state.last_poll_at = now
+        state.backfill_done = True
+
+        google_health_polls_total.labels(
+            endpoint_identity=self._endpoint_identity,
+            resource=bundle.resource,
+            outcome="success",
+        ).inc()
+        self._last_source_api_ok = True
+
+    def _compute_window(self, state: ResourceState) -> tuple[datetime, datetime]:
+        """Compute [since, until] for the next poll.
+
+        On first run (no cursor), backfills ``backfill_days`` days.
+        Otherwise starts from the last observed record's date (or the
+        last poll timestamp, whichever is available).
+        """
+        now = datetime.now(UTC)
+        if state.backfill_done and state.last_poll_at:
+            # Re-poll from a tight trailing window (1 day) so we catch late
+            # device syncs while still converging on the cursor quickly.
+            since = max(state.last_poll_at - timedelta(days=1), now - timedelta(days=7))
+        else:
+            since = now - timedelta(days=self._config.backfill_days)
+        return since, now
+
+    def _build_params(
+        self,
+        bundle: ResourceBundle,
+        state: ResourceState,
+        since: datetime,
+        until: datetime,
+    ) -> dict[str, Any]:
+        """Build the Google Health query params for the resource.
+
+        The Google Health API uses ``startTime`` / ``endTime`` RFC3339
+        parameters on the canonical dataTypes surface (confirmed during
+        implementation reconciliation; see ``research-notes.md``). The
+        ``view=reconciled`` parameter opts into the Reconciled Stream where
+        supported, per D5.
+        """
+        params: dict[str, Any] = {
+            "startTime": since.isoformat(),
+            "endTime": until.isoformat(),
+            "view": "reconciled",
+        }
+        return params
+
+    # ------------------------------------------------------------------
+    # Submission
+    # ------------------------------------------------------------------
+
+    async def _submit_envelope(self, envelope: dict[str, Any], *, resource: str) -> None:
+        """Evaluate filter gate and submit to Switchboard.
+
+        Filtered events land in :class:`FilteredEventBuffer` (status=filtered).
+        Submission errors land in the same buffer (status=error).
+        """
+        source = envelope.get("source", {})
+        event = envelope.get("event", {})
+        sender = envelope.get("sender", {})
+        payload = envelope.get("payload", {})
+        control = envelope.get("control", {})
+
+        ing_env = IngestionEnvelope(
+            source_channel=source.get("channel", ""),
+            raw_key=sender.get("identity", ""),
+            thread_id=event.get("external_thread_id"),
+        )
+
+        if self._ingestion_policy is not None:
+            try:
+                decision = self._ingestion_policy.evaluate(ing_env)
+                if not decision.allowed:
+                    logger.debug(
+                        "GoogleHealthConnector: event blocked by policy: %s",
+                        event.get("external_event_id"),
+                    )
+                    if self._filtered_event_buffer is not None:
+                        self._filtered_event_buffer.record(
+                            external_message_id=event.get("external_event_id", ""),
+                            source_channel=source.get("channel", ""),
+                            sender_identity=sender.get("identity", ""),
+                            subject_or_preview=payload.get("normalized_text", "")[:100],
+                            filter_reason=FilteredEventBuffer.reason_policy_rule(
+                                scope=self._ingestion_policy.scope,
+                                action=decision.action,
+                                rule_type=decision.matched_rule_type or "unknown",
+                            ),
+                            full_payload=FilteredEventBuffer.full_payload(
+                                channel=source.get("channel", ""),
+                                provider=source.get("provider", ""),
+                                endpoint_identity=source.get("endpoint_identity", ""),
+                                external_event_id=event.get("external_event_id", ""),
+                                external_thread_id=event.get("external_thread_id"),
+                                observed_at=event.get("observed_at", ""),
+                                sender_identity=sender.get("identity", ""),
+                                raw=payload.get("raw"),
+                                normalized_text=payload.get("normalized_text", ""),
+                                policy_tier=control.get("policy_tier", "default"),
+                            ),
+                        )
+                    return
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("GoogleHealthConnector: policy evaluation error (fail-open): %s", exc)
+
+        async with self._semaphore:
+            start_t = time.perf_counter()
+            try:
+                result = await self._mcp_client.call_tool("ingest", envelope)
+                latency = time.perf_counter() - start_t
+                status = "success"
+                if isinstance(result, dict):
+                    resp_status = result.get("status", "")
+                    if resp_status == "duplicate":
+                        status = "duplicate"
+                    elif resp_status not in ("accepted", "queued", "duplicate"):
+                        logger.warning(
+                            "GoogleHealthConnector: unexpected ingest response: %s", result
+                        )
+                self._metrics.record_ingest_submission(status, latency)
+                self._last_source_api_ok = True
+            except Exception as exc:  # noqa: BLE001
+                latency = time.perf_counter() - start_t
+                self._metrics.record_ingest_submission("error", latency)
+                self._metrics.record_error("ingest_error", "submit")
+                logger.warning("GoogleHealthConnector: ingest submission failed: %s", exc)
+                if self._filtered_event_buffer is not None:
+                    self._filtered_event_buffer.record(
+                        external_message_id=event.get("external_event_id", ""),
+                        source_channel=source.get("channel", ""),
+                        sender_identity=sender.get("identity", ""),
+                        subject_or_preview=payload.get("normalized_text", "")[:100],
+                        filter_reason=FilteredEventBuffer.reason_submission_error(),
+                        full_payload=envelope,
+                        status="error",
+                        error_detail=str(exc),
+                    )
+
+    async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
+        """Submit directly to Switchboard — bypasses filter gate (replay path)."""
+        await self._mcp_client.call_tool("ingest", envelope)
+
+    async def _flush_filtered_events(self) -> None:
+        if self._shared_pool is None or self._filtered_event_buffer is None:
+            return
+        if len(self._filtered_event_buffer) == 0:
+            return
+        try:
+            await self._filtered_event_buffer.flush(self._shared_pool)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GoogleHealthConnector: filtered event flush failed: %s", exc)
+
+    async def _drain_replay(self) -> None:
+        if self._shared_pool is None or not self._endpoint_identity:
+            return
+        try:
+            await drain_replay_pending(
+                pool=self._shared_pool,
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=self._endpoint_identity,
+                submit_fn=self._submit_to_ingest_direct,
+                drain_logger=logger,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("GoogleHealthConnector: replay drain failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Health / heartbeat callbacks
+    # ------------------------------------------------------------------
+
+    def _get_health_state(self) -> tuple[str, str | None]:
+        """Return (state, error_message) for heartbeat — only healthy|degraded|error."""
+        if self._auth_error:
+            return "error", self._auth_error_message or "token_invalid"
+        if self._account_missing:
+            return "degraded", "no_primary_account"
+        if self._scope_missing:
+            return "degraded", "scope_missing"
+        if self._last_source_api_ok is False:
+            return "degraded", "source_api_unreachable"
+        return "healthy", None
+
+    # ------------------------------------------------------------------
+    # Health HTTP server
+    # ------------------------------------------------------------------
+
+    def _start_health_server(self) -> None:
+        app = FastAPI(title="google-health-connector-health")
+
+        @app.get("/health")
+        async def health() -> dict[str, Any]:
+            state, error = self._get_health_state()
+            uptime_s = int(time.time() - self._start_time)
+            return {
+                "status": state,
+                "connector_type": _CONNECTOR_TYPE,
+                "endpoint_identity": self._endpoint_identity,
+                "uptime_seconds": uptime_s,
+                "scope_missing": self._scope_missing,
+                "account_missing": self._account_missing,
+                "auth_error": self._auth_error,
+                "resources": {
+                    name: {
+                        "last_poll_at": state_.last_poll_at.isoformat()
+                        if state_.last_poll_at
+                        else None,
+                        "last_cursor": state_.last_cursor,
+                        "backfill_done": state_.backfill_done,
+                    }
+                    for name, state_ in self._resources.items()
+                },
+                "error": error,
+            }
+
+        @app.get("/metrics")
+        async def metrics() -> bytes:
+            return generate_latest()
+
+        port = self._config.health_port
+        try:
+            sock = make_health_socket("127.0.0.1", port)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GoogleHealthConnector: could not bind health socket on %d: %s", port, exc
+            )
+            return
+
+        uvicorn_config = uvicorn.Config(
+            app=app, host="127.0.0.1", port=port, log_level="warning", access_log=False
+        )
+        server = uvicorn.Server(uvicorn_config)
+        self._health_server = server
+
+        def _run() -> None:
+            asyncio.run(server.serve(sockets=[sock]))
+
+        thread = Thread(target=_run, daemon=True, name="google-health-health-server")
+        thread.start()
+        self._health_thread = thread
+        logger.info("GoogleHealthConnector: health server started on port %d", port)
+
+
+# ---------------------------------------------------------------------------
+# Response parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_records(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract an iterable of record dicts from a Google Health response.
+
+    Google Health API responses typically nest records under one of
+    ``sessions``, ``dataPoints``, or ``items`` depending on the endpoint.
+    This helper returns the first list it finds (falling back to ``[]``).
+    """
+    if not isinstance(data, dict):
+        return []
+    for key in ("sessions", "dataPoints", "items", "records"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return [v for v in value if isinstance(v, dict)]
+    return []
+
+
+def _record_identity(bundle: ResourceBundle, record: dict[str, Any]) -> str | None:
+    """Return the stable identifier for a record, or ``None`` if unavailable.
+
+    For sleep sessions this is the ``session_id``. For daily summaries it
+    is the date portion of the ``start_time`` / ``date`` field, normalised
+    to YYYY-MM-DD.
+    """
+    if bundle.category == "sleep":
+        session_id = record.get("session_id") or record.get("id")
+        if session_id:
+            return str(session_id)
+        # Fallback: synthesise from startTime so idempotency holds.
+        start = record.get("startTime") or record.get("start_time")
+        return str(start) if start else None
+
+    # Daily summary: key on the date the record applies to.
+    for key in ("date", "startTime", "start_time"):
+        raw = record.get(key)
+        if not raw:
+            continue
+        raw_str = str(raw)
+        if "T" in raw_str:
+            return raw_str.split("T", 1)[0]
+        return raw_str[:10]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+async def run_google_health_connector() -> None:
+    """Main async entry point for the Google Health connector."""
+    configure_logging()
+    logger.info("Google Health connector starting")
+
+    config = GoogleHealthConnectorConfig.from_env()
+
+    import asyncpg
+
+    db_params = db_params_from_env()
+    shared_db_name = shared_db_name_from_env()
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "public")
+    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers").strip() or "butlers"
+
+    shared_pool: asyncpg.Pool | None = None
+    try:
+        pool_kwargs: dict[str, Any] = {
+            "host": str(db_params.get("host") or "localhost"),
+            "port": int(db_params.get("port") or 5432),
+            "user": str(db_params.get("user") or "butlers"),
+            "password": str(db_params.get("password") or "butlers"),
+            "database": shared_db_name,
+            "min_size": 1,
+            "max_size": 5,
+            "command_timeout": 10,
+        }
+        if shared_schema:
+            try:
+                pool_kwargs["server_settings"] = {"search_path": schema_search_path(shared_schema)}
+            except ValueError:
+                pass
+        ssl = db_params.get("ssl")
+        if ssl is not None:
+            pool_kwargs["ssl"] = ssl
+        pool_kwargs["setup"] = connector_setup_role
+
+        try:
+            shared_pool = await asyncpg.create_pool(**pool_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if should_retry_with_ssl_disable(exc, pool_kwargs.get("ssl")):
+                pool_kwargs["ssl"] = "disable"
+                shared_pool = await asyncpg.create_pool(**pool_kwargs)
+            else:
+                raise
+
+        logger.info("Google Health connector: shared pool established (db=%s)", shared_db_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Google Health connector: shared pool failed (degraded mode): %s", exc)
+        shared_pool = None
+
+    cursor_pool: asyncpg.Pool | None = None
+    try:
+        from butlers.connectors.cursor_store import create_cursor_pool
+
+        cursor_params = db_params_from_env()
+        cursor_pool = await create_cursor_pool(
+            host=str(cursor_params.get("host") or "localhost"),
+            port=int(cursor_params.get("port") or 5432),
+            user=str(cursor_params.get("user") or "butlers"),
+            password=str(cursor_params.get("password") or "butlers"),
+            database=local_db_name,
+            ssl=str(cursor_params["ssl"]) if cursor_params.get("ssl") is not None else None,
+        )
+        logger.info("Google Health connector: cursor pool established (db=%s)", local_db_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Google Health connector: cursor pool failed (checkpoint persistence disabled): %s",
+            exc,
+        )
+        cursor_pool = None
+
+    connector = GoogleHealthConnector(
+        config=config,
+        shared_pool=shared_pool,
+        cursor_pool=cursor_pool,
+    )
+
+    try:
+        await connector.start()
+    finally:
+        if cursor_pool is not None:
+            await cursor_pool.close()
+        if shared_pool is not None:
+            await shared_pool.close()
+
+
+def main() -> None:
+    """Synchronous entry point used by ``python -m butlers.connectors.google_health``."""
+    asyncio.run(run_google_health_connector())
+
+
+if __name__ == "__main__":
+    main()
