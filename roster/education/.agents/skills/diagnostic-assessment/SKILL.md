@@ -1,6 +1,7 @@
 ---
 name: diagnostic-assessment
 description: Run adaptive pre-teaching probes to estimate current knowledge and seed mastery.
+version: 1.0.0
 ---
 
 # Skill: Diagnostic Assessment

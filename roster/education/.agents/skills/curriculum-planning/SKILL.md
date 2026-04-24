@@ -1,6 +1,7 @@
 ---
 name: curriculum-planning
 description: Plan curricula by decomposing topics into prerequisite graphs and ordered learning paths.
+version: 1.0.0
 ---
 
 # Skill: Curriculum Planning

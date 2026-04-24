@@ -1,6 +1,7 @@
 ---
 name: review-session
 description: Run spaced repetition review sessions, score answers, and reschedule follow-ups.
+version: 1.0.0
 ---
 
 # Skill: Review Session
