@@ -21,6 +21,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import pwd
 import re
 import shutil
 from pathlib import Path
@@ -39,6 +41,11 @@ _SAFE_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # Each entry triggers one retry attempt with the given delay beforehand.
 # Exponential backoff: 2s, 5s → 3 total attempts (initial + 2 retries).
 _MCP_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+_BENIGN_STDERR_LINES = frozenset(
+    {
+        "Reading additional input from stdin...",
+    }
+)
 
 
 class MCPToolDiscoveryError(RuntimeError):
@@ -238,6 +245,45 @@ def _find_codex_binary() -> str:
     return path
 
 
+def _pwd_home() -> Path | None:
+    """Return the passwd-backed home dir for the current uid when available."""
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, OSError):
+        return None
+
+
+def _resolve_canonical_home(real_home: str | None) -> Path | None:
+    """Resolve a stable home dir for Codex auth/temp state.
+
+    Some parent processes run with ``HOME`` already pointing at a transient
+    session directory like ``~/.codex/.tmp/<session>``. Treating that nested
+    temp dir as canonical breaks auth lookup once the parent session is
+    cleaned up and can also cause Codex to create temp dirs inside temp dirs.
+    """
+    env_home = (
+        Path(real_home).expanduser() if isinstance(real_home, str) and real_home.strip() else None
+    )
+    if env_home and env_home.parent.name == ".tmp" and env_home.parent.parent.name == ".codex":
+        return _pwd_home() or env_home.parent.parent.parent
+    return env_home or _pwd_home()
+
+
+def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
+    """Prefer actionable Codex failure details over benign stderr noise."""
+    stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    filtered_stderr_lines = [line for line in stderr_lines if line not in _BENIGN_STDERR_LINES]
+    if filtered_stderr_lines:
+        return "\n".join(filtered_stderr_lines)
+    stderr_clean = stderr.strip()
+    if stderr_clean:
+        return stderr_clean
+    stdout_clean = stdout.strip()
+    if stdout_clean:
+        return stdout_clean
+    return f"exit code {returncode}"
+
+
 def _parse_codex_output(
     stdout: str, stderr: str, returncode: int
 ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
@@ -270,7 +316,7 @@ def _parse_codex_output(
         (result_text, tool_calls, usage)
     """
     if returncode != 0:
-        error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+        error_detail = _select_error_detail(stderr, stdout, returncode)
         logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
         return (f"Error: {error_detail}", [], None)
 
@@ -657,10 +703,8 @@ class CodexAdapter(RuntimeAdapter):
         # applied after the MCP client has already initialised with an empty
         # server list.  Writing a config file and pointing HOME at its parent
         # ensures the CLI discovers MCP servers during its earliest init phase.
-        import os as _os  # noqa: PLC0415
-
-        real_home = _os.environ.get("HOME", "")
-        tmp_dir_obj = _create_isolated_home_tempdir(real_home)
+        real_home = _resolve_canonical_home(os.environ.get("HOME", ""))
+        tmp_dir_obj = _create_isolated_home_tempdir(str(real_home) if real_home else None)
         tmp_dir = Path(tmp_dir_obj.name)
 
         codex_config_dir = tmp_dir / ".codex"
@@ -676,10 +720,10 @@ class CodexAdapter(RuntimeAdapter):
         # cleanup.  This also prevents the "refresh_token_reused" error that
         # occurred when concurrent invocations each copied a stale token.
         if real_home:
-            real_auth = Path(real_home) / ".codex" / "auth.json"
+            real_auth = real_home / ".codex" / "auth.json"
             tmp_auth = codex_config_dir / "auth.json"
             if real_auth.is_file():
-                _os.symlink(real_auth, tmp_auth)
+                os.symlink(real_auth, tmp_auth)
                 logger.debug("Symlinked Codex auth.json: %s → %s", tmp_auth, real_auth)
             else:
                 logger.warning(
@@ -851,7 +895,7 @@ class CodexAdapter(RuntimeAdapter):
             }
 
             if returncode != 0:
-                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                error_detail = _select_error_detail(stderr, stdout, returncode)
                 error_detail = _augment_transport_error_detail(error_detail, mcp_servers)
                 logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")

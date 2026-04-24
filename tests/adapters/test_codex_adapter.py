@@ -26,6 +26,8 @@ from butlers.core.runtimes.codex import (
     _has_mcp_tool_calls,
     _infer_mcp_transport_from_url,
     _parse_codex_output,
+    _resolve_canonical_home,
+    _select_error_detail,
 )
 
 pytestmark = pytest.mark.unit
@@ -204,6 +206,14 @@ async def test_invoke_behaviors():
         with pytest.raises(RuntimeError, match="Codex CLI exited with code 1: Error: rate limit"):
             await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
 
+    # Benign stdin notice should not mask the real error
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"", b"Reading additional input from stdin...\nError: rate limit")
+    )
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError, match="Codex CLI exited with code 1: Error: rate limit"):
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
     # Transport failure includes diagnostics
     mock_proc.communicate = AsyncMock(
         return_value=(b"", b"rmcp startup failed: 405 Method Not Allowed")
@@ -263,12 +273,65 @@ async def test_invoke_stdin_prompt_wraps_system_prompt():
     )
 
 
+async def test_invoke_uses_passwd_home_when_home_is_nested_codex_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """invoke() should ignore transient ``~/.codex/.tmp/<session>`` HOME values."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    real_home = tmp_path / "real-home"
+    (real_home / ".codex").mkdir(parents=True)
+    session_home = real_home / ".codex" / ".tmp" / "session-123"
+    session_home.mkdir(parents=True)
+    (real_home / ".codex" / "auth.json").write_text("{}")
+
+    class _PwRecord:
+        pw_dir = str(real_home)
+
+    monkeypatch.setenv("HOME", str(session_home))
+    monkeypatch.setattr("butlers.core.runtimes.codex.pwd.getpwuid", lambda _uid: _PwRecord())
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
+    isolated_home = Path(mock_sub.call_args[1]["env"]["HOME"])
+    assert isolated_home.parent == real_home / ".codex" / ".tmp"
+
+
 def test_has_mcp_tool_calls():
     """_has_mcp_tool_calls distinguishes MCP tools from bash-only sessions."""
     assert not _has_mcp_tool_calls([])
     assert not _has_mcp_tool_calls([{"name": "command_execution"}])
     assert _has_mcp_tool_calls([{"name": "mcp__switchboard__route_to_butler"}])
     assert _has_mcp_tool_calls([{"name": "command_execution"}, {"name": "route_to_butler"}])
+
+
+def test_select_error_detail_filters_benign_stdin_notice():
+    """Benign stdin notices should not become the reported failure headline."""
+    detail = _select_error_detail(
+        "Reading additional input from stdin...\nError: rate limit",
+        "",
+        1,
+    )
+    assert detail == "Error: rate limit"
+
+
+def test_resolve_canonical_home_collapses_nested_codex_tmp_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Nested ``~/.codex/.tmp/<session>`` homes resolve back to the real home."""
+    real_home = tmp_path / "real-home"
+    session_home = real_home / ".codex" / ".tmp" / "session-123"
+    session_home.mkdir(parents=True)
+
+    class _PwRecord:
+        pw_dir = str(real_home)
+
+    monkeypatch.setattr("butlers.core.runtimes.codex.pwd.getpwuid", lambda _uid: _PwRecord())
+    assert _resolve_canonical_home(str(session_home)) == real_home
 
 
 def _make_mcp_stdout() -> bytes:
