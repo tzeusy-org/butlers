@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { GoogleHealthStatusCard } from "@/components/settings/GoogleHealthStatusCard";
+import {
+  GoogleHealthStatusCard,
+  computeTokenExpiry,
+} from "@/components/settings/GoogleHealthStatusCard";
 import { useGoogleHealthStatus } from "@/hooks/use-google-health";
 import { useGoogleAccounts } from "@/hooks/use-secrets";
 import { computeTestModeBannerVariant } from "@/lib/google-health-test-mode";
@@ -262,5 +265,159 @@ describe("GoogleHealthStatusCard", () => {
     mockStatus({ isLoading: true });
     const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
     expect(html).toContain("Google Health");
+  });
+
+  // -------------------------------------------------------------------------
+  // Token expiry row
+  // -------------------------------------------------------------------------
+
+  it("renders token expiry countdown for test-mode account", () => {
+    mockAccounts([{ id: "a", is_primary: true, granted_scopes: HEALTH_SCOPES }]);
+    // refreshed 2 days ago → ~5 days remaining (exact hours depend on wall-clock)
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString();
+    mockStatus({
+      data: {
+        state: "healthy",
+        connected: true,
+        scopes_granted: HEALTH_SCOPES,
+        last_ingest_at: null,
+        last_token_refresh_at: twoDaysAgo,
+        rate_limit_remaining: null,
+        test_mode: true,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
+      },
+    });
+    const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
+    expect(html).toContain("gh-token-expiry-row");
+    expect(html).toContain("Estimated expiry");
+    // Should contain a countdown in the form "in ~Xd Yh"
+    expect(html).toMatch(/in ~\d+d \d+h/);
+  });
+
+  it("renders 'Long-lived' expiry for production-mode account", () => {
+    mockAccounts([{ id: "a", is_primary: true, granted_scopes: HEALTH_SCOPES }]);
+    mockStatus({
+      data: {
+        state: "healthy",
+        connected: true,
+        scopes_granted: HEALTH_SCOPES,
+        last_ingest_at: null,
+        last_token_refresh_at: "2026-04-01T00:00:00Z",
+        rate_limit_remaining: null,
+        test_mode: false,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
+      },
+    });
+    const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
+    expect(html).toContain("gh-token-expiry-row");
+    expect(html).toContain("Long-lived (production mode)");
+  });
+
+  it("renders 'Unknown' expiry when last_token_refresh_at is null in test mode", () => {
+    mockAccounts([{ id: "a", is_primary: true, granted_scopes: HEALTH_SCOPES }]);
+    mockStatus({
+      data: {
+        state: "healthy",
+        connected: true,
+        scopes_granted: HEALTH_SCOPES,
+        last_ingest_at: null,
+        last_token_refresh_at: null,
+        rate_limit_remaining: null,
+        test_mode: true,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
+      },
+    });
+    const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
+    expect(html).toContain("gh-token-expiry-row");
+    expect(html).toContain("Unknown");
+  });
+
+  // -------------------------------------------------------------------------
+  // Refresh indicator
+  // -------------------------------------------------------------------------
+
+  it("shows refresh indicator when isFetching is true", () => {
+    mockAccounts([{ id: "a", is_primary: true, granted_scopes: HEALTH_SCOPES }]);
+    mockStatus({
+      isFetching: true,
+      data: {
+        state: "healthy",
+        connected: true,
+        scopes_granted: HEALTH_SCOPES,
+        last_ingest_at: null,
+        last_token_refresh_at: null,
+        rate_limit_remaining: null,
+        test_mode: false,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
+      },
+    });
+    const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
+    expect(html).toContain("gh-refresh-indicator");
+  });
+
+  it("hides refresh indicator when isFetching is false", () => {
+    mockAccounts([{ id: "a", is_primary: true, granted_scopes: HEALTH_SCOPES }]);
+    mockStatus({
+      isFetching: false,
+      data: {
+        state: "healthy",
+        connected: true,
+        scopes_granted: HEALTH_SCOPES,
+        last_ingest_at: null,
+        last_token_refresh_at: null,
+        rate_limit_remaining: null,
+        test_mode: false,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
+      },
+    });
+    const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
+    expect(html).not.toContain("gh-refresh-indicator");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeTokenExpiry pure helper
+// ---------------------------------------------------------------------------
+
+describe("computeTokenExpiry", () => {
+  const now = new Date("2026-04-24T12:00:00Z");
+
+  it("returns 'Long-lived (production mode)' for production accounts", () => {
+    expect(computeTokenExpiry(false, null, now)).toBe("Long-lived (production mode)");
+    expect(computeTokenExpiry(false, "2026-04-20T00:00:00Z", now)).toBe(
+      "Long-lived (production mode)",
+    );
+  });
+
+  it("returns 'Unknown' when last_token_refresh_at is null in test mode", () => {
+    expect(computeTokenExpiry(true, null, now)).toBe("Unknown");
+  });
+
+  it("returns 'Unknown' for an invalid timestamp in test mode", () => {
+    expect(computeTokenExpiry(true, "not-a-date", now)).toBe("Unknown");
+  });
+
+  it("returns countdown string for test-mode with valid refresh timestamp", () => {
+    // refreshed 2 days ago → 5 days 0 hours remaining
+    const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 3600 * 1000).toISOString();
+    expect(computeTokenExpiry(true, twoDaysAgo, now)).toBe("in ~5d 0h");
+  });
+
+  it("returns 'Expired' when token is past the 7-day window", () => {
+    const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 3600 * 1000).toISOString();
+    expect(computeTokenExpiry(true, eightDaysAgo, now)).toBe("Expired");
+  });
+
+  it("correctly rounds down partial hours", () => {
+    // refreshed 3 days and 2.5 hours ago → 3 days and ~21.5 hours remaining → 3d 21h
+    const refreshedAt = new Date(
+      now.getTime() - (3 * 24 + 2.5) * 3600 * 1000,
+    ).toISOString();
+    expect(computeTokenExpiry(true, refreshedAt, now)).toBe("in ~3d 21h");
   });
 });

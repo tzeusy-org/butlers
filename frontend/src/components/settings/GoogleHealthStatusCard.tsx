@@ -17,6 +17,7 @@
  */
 
 import { formatDistanceToNow } from "date-fns";
+import { Loader2 } from "lucide-react";
 
 import {
   getGoogleOAuthStartUrl,
@@ -83,6 +84,50 @@ function formatRelative(iso: string | null): string {
     return formatDistanceToNow(date, { addSuffix: true });
   } catch {
     return iso;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Token expiry estimate — exported for unit testing.
+// ---------------------------------------------------------------------------
+
+/** Seven-day expiry window used for test-mode OAuth tokens (ms). */
+const TEST_MODE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Returns a human-readable token expiry estimate string.
+ *
+ * - ``test_mode === true``: counts down from ``last_token_refresh_at + 7 days``.
+ * - ``test_mode === false``: long-lived production token.
+ * - ``last_token_refresh_at`` absent in test mode: "Unknown".
+ *
+ * Exported so callers can unit-test the pure logic without rendering the card.
+ */
+export function computeTokenExpiry(
+  testMode: boolean,
+  lastTokenRefreshAt: string | null,
+  now: Date = new Date(),
+): string {
+  if (!testMode) {
+    return "Long-lived (production mode)";
+  }
+  if (!lastTokenRefreshAt) {
+    return "Unknown";
+  }
+  try {
+    const refreshDate = new Date(lastTokenRefreshAt);
+    if (Number.isNaN(refreshDate.getTime())) return "Unknown";
+    const expiryMs = refreshDate.getTime() + TEST_MODE_TOKEN_TTL_MS;
+    const remainingMs = expiryMs - now.getTime();
+    if (remainingMs <= 0) {
+      return "Expired";
+    }
+    const totalSeconds = Math.floor(remainingMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    return `in ~${days}d ${hours}h`;
+  } catch {
+    return "Unknown";
   }
 }
 
@@ -209,6 +254,13 @@ function StatusCardBody({ data }: { data: GoogleHealthStatusResponse }) {
         </div>
       )}
 
+      <div data-testid="gh-token-expiry-row">
+        <p className="text-xs text-muted-foreground">Estimated expiry</p>
+        <p className="text-sm">
+          {computeTokenExpiry(data.test_mode, data.last_token_refresh_at)}
+        </p>
+      </div>
+
       {data.state === "error" && (
         <div
           role="alert"
@@ -265,7 +317,15 @@ export function GoogleHealthStatusCard() {
   return (
     <Card data-testid="google-health-status-card">
       <CardHeader>
-        <CardTitle className="text-base">Google Health</CardTitle>
+        <CardTitle className="text-base flex items-center gap-2">
+          Google Health
+          {statusQuery.isFetching && (
+            <Loader2
+              data-testid="gh-refresh-indicator"
+              className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+            />
+          )}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {statusQuery.isLoading && !statusQuery.data ? (
