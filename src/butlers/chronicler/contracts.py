@@ -48,14 +48,15 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
-    # Deferred pending durable evidence surface (see bu-pa4e0.9).
+    # Spotify listening sessions — evidence surface landed in PR #1115 (bu-e5jmh).
     SourceAdapterState(
         source_name="spotify.session_summary",
-        chronicler_compatibility=Compatibility.DEFERRED,
-        read_surface=None,
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.spotify_listening_sessions",
         boundary_semantics=(
-            "deferred pending durable summary evidence table/view with "
-            "stable start/end, retention, source refs, and idempotency keys"
+            "one listening episode per session row; "
+            "(started_at, ended_at) bound the episode; "
+            "per-track events deferred (bu-pa4e0.10)"
         ),
         optional_schema=True,
     ),

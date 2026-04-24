@@ -17,10 +17,12 @@ from __future__ import annotations
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
+from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 
 __all__ = [
     "AdapterResult",
     "CalendarCompletedAdapter",
     "CoreSessionsAdapter",
     "ProjectionAdapter",
+    "SpotifySessionAdapter",
 ]
