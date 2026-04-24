@@ -86,3 +86,5 @@ read_only = true
 groups = ["core", "entity", "preferences"]
 
 [modules.google_drive]
+
+[modules.google_health]
