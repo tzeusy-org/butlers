@@ -527,6 +527,29 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  connector-google-health:
+    image: butlers-app:latest
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google-health", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_health"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: google_health
+      CONNECTOR_CHANNEL: wellness
+      CONNECTOR_HEALTH_PORT: "40090"
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      butlers-up:
+        condition: service_healthy
+      oauth-gate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # ── Hotreload profile ─────────────────────────────────────────────────
   # Volume-mount source for live code changes. Use --scale butlers-up=0
   # --scale dashboard-api=0 to prevent conflicts (handled by dev-compose.sh).

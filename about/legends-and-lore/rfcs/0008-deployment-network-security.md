@@ -80,6 +80,7 @@ A service on an `internal: true` network cannot reach any address outside Docker
 | connector-telegram-user | x | x | | x | Telegram MTProto |
 | connector-gmail | x | x | | x | Gmail API |
 | connector-live-listener | x | x | | x | Audio processing APIs |
+| connector-google-health | x | x | | x | Google Health API (health.googleapis.com) |
 
 ### Egress Firewall
 
