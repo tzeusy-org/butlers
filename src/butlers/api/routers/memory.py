@@ -728,13 +728,25 @@ async def _compute_entity_dunbar_map(
         logger.debug("Dunbar scoring failed; skipping enrichment", exc_info=True)
         return {}
 
-    return {
-        str(entry["entity_id"]): {
+    result: dict[str, dict[str, float | int | None]] = {}
+    for entry in ranked:
+        entity_id = entry.get("entity_id")
+        if entity_id is None:
+            continue
+
+        eid = str(entity_id)
+        score = float(entry.get("dunbar_score") or 0.0)
+        existing = result.get(eid)
+        existing_score = float(existing.get("dunbar_score") or 0.0) if existing else -1.0
+        if existing is not None and existing_score >= score:
+            continue
+
+        result[eid] = {
             "dunbar_tier": entry["dunbar_tier"],
             "dunbar_score": entry["dunbar_score"],
         }
-        for entry in ranked
-    }
+
+    return result
 
 
 @router.get("/entities", response_model=PaginatedResponse[EntitySummary])

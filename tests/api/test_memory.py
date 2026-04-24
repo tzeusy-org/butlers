@@ -6,6 +6,7 @@ Keeps: paginated list structures, 503/404 error paths, key data transforms.
 
 from __future__ import annotations
 
+import importlib
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -135,6 +136,39 @@ async def test_memory_activity_returns_list(app):
         resp = await client.get("/api/memory/activity")
     assert resp.status_code == 200
     assert isinstance(resp.json()["data"], list)
+
+
+async def test_entity_dunbar_map_keeps_highest_score_for_duplicate_contacts(monkeypatch):
+    """Duplicate contacts linked to one entity must not let a zero-score row overwrite scoring."""
+    from butlers.api.routers.memory import _compute_entity_dunbar_map
+
+    entity_id = "44ee78b3-ee93-422c-a218-d3cced54e936"
+
+    async def _fake_compute_tier_ranking(_pool):
+        return [
+            {
+                "contact_id": "13af008d-a650-426e-a0d2-93dccd4254ff",
+                "entity_id": entity_id,
+                "dunbar_tier": 15,
+                "dunbar_score": 4.77,
+            },
+            {
+                "contact_id": "cdfdeb4c-2674-417c-8b10-10dc860969d2",
+                "entity_id": entity_id,
+                "dunbar_tier": 1500,
+                "dunbar_score": 0.0,
+            },
+        ]
+
+    dunbar_module = importlib.import_module("butlers.tools.relationship.dunbar")
+    monkeypatch.setattr(dunbar_module, "compute_tier_ranking", _fake_compute_tier_ranking)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+
+    result = await _compute_entity_dunbar_map(mock_db)
+
+    assert result[entity_id] == {"dunbar_tier": 15, "dunbar_score": 4.77}
 
 
 async def test_get_entity_paginates_recent_facts_and_includes_session_id(app):
