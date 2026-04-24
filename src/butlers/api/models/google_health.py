@@ -83,6 +83,19 @@ class GoogleHealthStatusResponse(BaseModel):
     state: GoogleHealthConnectorState
     """Machine-readable state flag — healthy / degraded / error / not_configured."""
 
+    sleep_sessions_7d: int = 0
+    """Count of sleep-session ingestion events in the last 7 days.
+
+    Derived from ``public.ingestion_events`` rows whose
+    ``external_event_id`` matches ``google_health:sleep_session:*``."""
+
+    daily_summaries_7d: int = 0
+    """Count of daily-summary ingestion events in the last 7 days.
+
+    Derived from ``public.ingestion_events`` rows whose
+    ``external_event_id`` matches ``google_health:*:*`` but NOT
+    ``google_health:sleep_session:*``."""
+
 
 class GoogleHealthDisconnectResponse(BaseModel):
     """Response for DELETE /api/connectors/google-health/disconnect.

@@ -118,6 +118,8 @@ describe("GoogleHealthStatusCard", () => {
         last_token_refresh_at: "2026-04-24T10:00:00Z",
         rate_limit_remaining: 500,
         test_mode: false,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
       },
     });
     const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
@@ -137,6 +139,8 @@ describe("GoogleHealthStatusCard", () => {
         last_token_refresh_at: null,
         rate_limit_remaining: null,
         test_mode: false,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
       },
     });
     const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
@@ -156,6 +160,8 @@ describe("GoogleHealthStatusCard", () => {
         last_token_refresh_at: recent,
         rate_limit_remaining: null,
         test_mode: true,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
       },
     });
     const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
@@ -176,6 +182,8 @@ describe("GoogleHealthStatusCard", () => {
         last_token_refresh_at: old,
         rate_limit_remaining: null,
         test_mode: true,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
       },
     });
     const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
@@ -195,11 +203,58 @@ describe("GoogleHealthStatusCard", () => {
         last_token_refresh_at: null,
         rate_limit_remaining: null,
         test_mode: false,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
       },
     });
     const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
     expect(html).toContain("error state");
     expect(html).toContain("scope_set=health");
+  });
+
+  it("renders sleep session and daily summary 7-day counts", () => {
+    mockAccounts([{ id: "a", is_primary: true, granted_scopes: HEALTH_SCOPES }]);
+    mockStatus({
+      data: {
+        state: "healthy",
+        connected: true,
+        scopes_granted: HEALTH_SCOPES,
+        last_ingest_at: null,
+        last_token_refresh_at: null,
+        rate_limit_remaining: null,
+        test_mode: false,
+        sleep_sessions_7d: 3,
+        daily_summaries_7d: 28,
+      },
+    });
+    const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
+    expect(html).toContain("gh-sleep-sessions-7d");
+    expect(html).toContain("Sleep sessions (7d)");
+    expect(html).toContain(">3<");
+    expect(html).toContain("gh-daily-summaries-7d");
+    expect(html).toContain("Daily summaries (7d)");
+    expect(html).toContain(">28<");
+  });
+
+  it("renders zero counts when no events have been ingested", () => {
+    mockAccounts([{ id: "a", is_primary: true, granted_scopes: HEALTH_SCOPES }]);
+    mockStatus({
+      data: {
+        state: "degraded",
+        connected: false,
+        scopes_granted: HEALTH_SCOPES,
+        last_ingest_at: null,
+        last_token_refresh_at: null,
+        rate_limit_remaining: null,
+        test_mode: false,
+        sleep_sessions_7d: 0,
+        daily_summaries_7d: 0,
+      },
+    });
+    const html = renderToStaticMarkup(<GoogleHealthStatusCard />);
+    // Rows are always rendered; counts show 0 when empty.
+    expect(html).toContain("gh-sleep-sessions-7d");
+    expect(html).toContain("gh-daily-summaries-7d");
   });
 
   it("renders loading skeleton before first data arrives", () => {

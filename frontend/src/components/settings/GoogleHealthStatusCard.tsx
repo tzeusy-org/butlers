@@ -186,6 +186,17 @@ function StatusCardBody({ data }: { data: GoogleHealthStatusResponse }) {
         </div>
       )}
 
+      <div className="grid grid-cols-2 gap-3">
+        <div data-testid="gh-sleep-sessions-7d">
+          <p className="text-xs text-muted-foreground">Sleep sessions (7d)</p>
+          <p className="text-sm font-medium">{data.sleep_sessions_7d}</p>
+        </div>
+        <div data-testid="gh-daily-summaries-7d">
+          <p className="text-xs text-muted-foreground">Daily summaries (7d)</p>
+          <p className="text-sm font-medium">{data.daily_summaries_7d}</p>
+        </div>
+      </div>
+
       {/*
         Rate-limit headroom row is hidden whenever rate_limit_remaining is
         null — the connector has not yet observed an X-RateLimit header.

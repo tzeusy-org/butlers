@@ -3193,6 +3193,10 @@ export interface GoogleHealthStatusResponse {
   /** metadata.google_health_test_mode on the primary Google account row. */
   test_mode: boolean;
   state: GoogleHealthConnectorState;
+  /** Count of sleep-session ingestion events in the last 7 days. */
+  sleep_sessions_7d: number;
+  /** Count of daily-summary ingestion events in the last 7 days. */
+  daily_summaries_7d: number;
 }
 
 /** Response from DELETE /api/connectors/google-health/disconnect. */

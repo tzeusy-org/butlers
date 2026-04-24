@@ -29,6 +29,7 @@ from butlers.api.routers.google_health import (
     GOOGLE_HEALTH_SCOPE_URLS,
     _derive_state,
     _extract_rate_limit_remaining,
+    _fetch_ingest_counts,
     _filter_health_scopes,
     _parse_jsonb_metadata,
 )
@@ -52,18 +53,24 @@ def _make_shared_pool(
     *,
     primary_row: dict | None,
     last_ingest_at: datetime | None = None,
+    ingest_counts: dict | None = None,
     captured_updates: list | None = None,
 ):
     """Return a mock shared pool that responds with ``primary_row`` etc.
 
+    ``ingest_counts`` (if provided) is returned for the ``_fetch_ingest_counts``
+    fetchrow call; defaults to ``{sleep_sessions_7d: 0, daily_summaries_7d: 0}``.
     ``captured_updates`` (if provided) collects the args of the UPDATE call
     so tests can assert what was written back.
     """
+    resolved_counts = ingest_counts or {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
     conn = AsyncMock()
 
     async def fake_fetchrow(query, *args):
         if "FROM public.google_accounts" in query:
             return primary_row
+        if "FROM public.ingestion_events" in query:
+            return resolved_counts
         return None
 
     async def fake_fetchval(query, *args):
@@ -99,6 +106,7 @@ def _make_db(
     *,
     primary_row: dict | None = None,
     last_ingest_at: datetime | None = None,
+    ingest_counts: dict | None = None,
     heartbeat_row: dict | None = None,
     captured_updates: list | None = None,
     shared_available: bool = True,
@@ -106,6 +114,7 @@ def _make_db(
     shared_pool = _make_shared_pool(
         primary_row=primary_row,
         last_ingest_at=last_ingest_at,
+        ingest_counts=ingest_counts,
         captured_updates=captured_updates,
     )
     switchboard_pool = _make_switchboard_pool(heartbeat_row)
@@ -234,6 +243,82 @@ class TestHelpers:
 
 
 # ---------------------------------------------------------------------------
+# Unit tests: _fetch_ingest_counts
+# ---------------------------------------------------------------------------
+
+
+class TestFetchIngestCounts:
+    async def test_returns_zeros_when_pool_is_none(self):
+        result = await _fetch_ingest_counts(None)
+        assert result == {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+
+    async def test_returns_zeros_when_row_is_none(self):
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        pool = MagicMock()
+        pool.acquire = _acquire
+
+        result = await _fetch_ingest_counts(pool)
+        assert result == {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+
+    async def test_returns_zeros_on_db_error(self):
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(side_effect=Exception("db error"))
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        pool = MagicMock()
+        pool.acquire = _acquire
+
+        result = await _fetch_ingest_counts(pool)
+        assert result == {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+
+    async def test_separates_sleep_from_daily_counts(self):
+        # The SQL uses FILTER clauses to count each type. Mock the row
+        # that the query would return with a realistic mix.
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value={"sleep_sessions_7d": 5, "daily_summaries_7d": 14})
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        pool = MagicMock()
+        pool.acquire = _acquire
+
+        result = await _fetch_ingest_counts(pool)
+        assert result == {"sleep_sessions_7d": 5, "daily_summaries_7d": 14}
+
+    async def test_passes_connector_type_as_query_param(self):
+        """Verify the query is parameterised with the connector type constant."""
+        captured_args: list = []
+        conn = AsyncMock()
+
+        async def capture_fetchrow(query, *args):
+            captured_args.extend(args)
+            return {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+
+        conn.fetchrow = AsyncMock(side_effect=capture_fetchrow)
+
+        @asynccontextmanager
+        async def _acquire():
+            yield conn
+
+        pool = MagicMock()
+        pool.acquire = _acquire
+
+        await _fetch_ingest_counts(pool)
+        assert captured_args == ["google_health"]
+
+
+# ---------------------------------------------------------------------------
 # GET /status — integration-ish via ASGITransport
 # ---------------------------------------------------------------------------
 
@@ -314,6 +399,46 @@ class TestGetStatus:
         assert body["rate_limit_remaining"] == 123
         assert body["last_ingest_at"] is not None
         assert body["last_token_refresh_at"] is not None
+        # Count fields are always present in the response shape.
+        assert "sleep_sessions_7d" in body
+        assert "daily_summaries_7d" in body
+
+    async def test_response_includes_ingest_counts(self):
+        now = datetime.now(UTC)
+        db = _make_db(
+            primary_row={
+                "id": uuid.uuid4(),
+                "entity_id": uuid.uuid4(),
+                "email": "owner@example.com",
+                "granted_scopes": list(_ALL_HEALTH_SCOPES),
+                "status": "active",
+                "last_token_refresh_at": None,
+                "metadata": {},
+            },
+            heartbeat_row={"state": "healthy", "last_heartbeat_at": now},
+            ingest_counts={"sleep_sessions_7d": 7, "daily_summaries_7d": 21},
+        )
+        app = _make_app(db)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/google-health/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["sleep_sessions_7d"] == 7
+        assert body["daily_summaries_7d"] == 21
+
+    async def test_response_counts_default_to_zero_when_none_ingested(self):
+        db = _make_db(primary_row=None)
+        app = _make_app(db)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/connectors/google-health/status")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["sleep_sessions_7d"] == 0
+        assert body["daily_summaries_7d"] == 0
 
     async def test_rate_limit_remaining_is_null_when_header_never_observed(self):
         # metadata has no rate_limit_remaining key → field MUST be null, not 0.

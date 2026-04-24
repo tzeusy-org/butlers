@@ -252,6 +252,51 @@ async def _fetch_last_ingest_at(shared_pool: Any) -> datetime | None:
     return value
 
 
+async def _fetch_ingest_counts(shared_pool: Any) -> dict[str, int]:
+    """Return 7-day ingestion counts split by record type.
+
+    Returns a dict with keys ``sleep_sessions_7d`` and ``daily_summaries_7d``.
+
+    Both counts are computed in a single SQL statement using ``FILTER`` clauses
+    to avoid N+1 queries.
+
+    Pattern rules (validated against ``src/butlers/connectors/google_health.py``):
+    - Sleep sessions:   ``external_event_id LIKE 'google_health:sleep_session:%'``
+    - Daily summaries:  ``external_event_id LIKE 'google_health:%:%'``
+                        AND NOT ``LIKE 'google_health:sleep_session:%'``
+    """
+    default: dict[str, int] = {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
+    if shared_pool is None:
+        return default
+    try:
+        async with shared_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    count(*) FILTER (
+                        WHERE external_event_id LIKE 'google_health:sleep_session:%'
+                    ) AS sleep_sessions_7d,
+                    count(*) FILTER (
+                        WHERE external_event_id LIKE 'google_health:%:%'
+                          AND external_event_id NOT LIKE 'google_health:sleep_session:%'
+                    ) AS daily_summaries_7d
+                FROM public.ingestion_events
+                WHERE source_provider = $1
+                  AND received_at >= now() - interval '7 days'
+                """,
+                _CONNECTOR_TYPE,
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to query ingest counts for Google Health", exc_info=True)
+        return default
+    if row is None:
+        return default
+    return {
+        "sleep_sessions_7d": int(row["sleep_sessions_7d"] or 0),
+        "daily_summaries_7d": int(row["daily_summaries_7d"] or 0),
+    }
+
+
 async def _fetch_heartbeat_row(switchboard_pool: Any) -> dict[str, Any] | None:
     """Return the most-recent connector_registry row for Google Health, or None.
 
@@ -379,6 +424,7 @@ async def get_google_health_status(
     account = await _fetch_primary_google_account(shared_pool)
     heartbeat = await _fetch_heartbeat_row(switchboard_pool)
     last_ingest_at = await _fetch_last_ingest_at(shared_pool)
+    ingest_counts = await _fetch_ingest_counts(shared_pool)
 
     granted = list(account["granted_scopes"] or []) if account else []
     granted_health = _filter_health_scopes(granted)
@@ -419,6 +465,8 @@ async def get_google_health_status(
         rate_limit_remaining=rate_limit_remaining,
         test_mode=test_mode,
         state=state,
+        sleep_sessions_7d=ingest_counts["sleep_sessions_7d"],
+        daily_summaries_7d=ingest_counts["daily_summaries_7d"],
     )
 
 
