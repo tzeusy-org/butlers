@@ -183,6 +183,45 @@ class StubModuleFailStartup(Module):
         self.shutdown_called = True
 
 
+class _FakeSocket:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.bound: tuple[str, int] | None = None
+        self.backlog: int | None = None
+        self.closed = False
+
+    def setsockopt(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def bind(self, address: tuple[str, int]) -> None:
+        self.bound = address
+
+    def listen(self, backlog: int) -> None:
+        self.backlog = backlog
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeUvicornConfig:
+    def __init__(self, app: Any, **kwargs: Any) -> None:
+        self.app = app
+        self.kwargs = kwargs
+        self.backlog = 2048
+
+
+class _DelayedStartedServer:
+    def __init__(self, config: Any) -> None:
+        self.config = config
+        self.started = False
+        self.should_exit = False
+
+    async def serve(self, sockets: list[Any] | None = None) -> None:
+        await asyncio.sleep(0.05)
+        self.started = True
+        while not self.should_exit:
+            await asyncio.sleep(0.01)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
@@ -650,6 +689,35 @@ async def test_shutdown_stops_mcp_server(butler_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 # MCP server startup
 # ---------------------------------------------------------------------------
+
+
+async def test_start_mcp_server_waits_until_uvicorn_reports_started(butler_dir: Path) -> None:
+    """Startup must not advance until the local /mcp server is actually ready."""
+    from butlers.config import load_config
+
+    daemon = ButlerDaemon(butler_dir)
+    daemon.config = load_config(butler_dir)
+    daemon.mcp = RuntimeFastMCP("test-butler")
+
+    with (
+        patch.object(ButlerDaemon, "_build_mcp_http_app", return_value=object()),
+        patch("butlers.daemon.uvicorn.Config", _FakeUvicornConfig),
+        patch("butlers.daemon.uvicorn.Server", _DelayedStartedServer),
+        patch("butlers.daemon.socket.socket", _FakeSocket),
+    ):
+        await daemon._start_mcp_server()
+
+    assert daemon._server is not None
+    assert daemon._server.started is True
+    assert daemon._server_task is not None
+    assert daemon._mcp_socket is not None
+
+    daemon._server.should_exit = True
+    await asyncio.wait_for(daemon._server_task, timeout=1)
+    daemon._mcp_socket.close()
+    daemon._server_task = None
+    daemon._server = None
+    daemon._mcp_socket = None
 
 
 def test_build_mcp_http_app_routes_and_health() -> None:
