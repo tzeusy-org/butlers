@@ -36,18 +36,13 @@ _D1_PAIRS: list[tuple[str, str, str]] = [
 
 
 @pytest.mark.parametrize("source_name,episode_type,expected", _D1_PAIRS)
-def test_category_for_known_pairs(
-    source_name: str, episode_type: str, expected: str
-) -> None:
+def test_category_for_known_pairs(source_name: str, episode_type: str, expected: str) -> None:
     """Every D1 mapping must return a non-'other' category."""
     result = category_for(source_name, episode_type)
     assert result == expected, (
-        f"category_for({source_name!r}, {episode_type!r}) → {result!r}; "
-        f"expected {expected!r}"
+        f"category_for({source_name!r}, {episode_type!r}) → {result!r}; expected {expected!r}"
     )
-    assert result != "other", (
-        f"Mapping for ({source_name!r}, {episode_type!r}) must not be 'other'"
-    )
+    assert result != "other", f"Mapping for ({source_name!r}, {episode_type!r}) must not be 'other'"
 
 
 def test_category_for_unknown_pair_returns_other() -> None:
@@ -95,11 +90,7 @@ def test_all_supported_sources_have_non_other_category() -> None:
 # ── Guardrail: no LLM imports ──────────────────────────────────────────────
 
 _AGGREGATIONS_MODULE = (
-    Path(__file__).parent.parent.parent
-    / "src"
-    / "butlers"
-    / "chronicler"
-    / "aggregations.py"
+    Path(__file__).parent.parent.parent / "src" / "butlers" / "chronicler" / "aggregations.py"
 )
 
 _FORBIDDEN_IMPORTS = frozenset({"anthropic", "openai", "claude_agent_sdk"})
@@ -123,6 +114,4 @@ def test_aggregations_no_llm_imports() -> None:
                 if root in _FORBIDDEN_IMPORTS:
                     violations.append(node.module)
 
-    assert not violations, (
-        f"aggregations.py must not import LLM packages; found: {violations}"
-    )
+    assert not violations, f"aggregations.py must not import LLM packages; found: {violations}"

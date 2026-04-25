@@ -8,6 +8,29 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class SubsourceCheckpoint(BaseModel):
+    """Per-subsource projection checkpoint detail."""
+
+    subsource: str
+    last_run_at: datetime | None = None
+    last_error: str | None = None
+
+
+class SourceStateRow(BaseModel):
+    """Runtime state for a single source adapter, joined with projection checkpoints."""
+
+    source_name: str
+    chronicler_compatibility: str
+    read_surface: str | None = None
+    boundary_semantics: str | None = None
+    optional_schema: bool
+    active: bool
+    inactive_reason: str | None = None
+    last_run_at: datetime | None = None
+    last_error: str | None = None
+    subsource_checkpoints: list[SubsourceCheckpoint] | None = None
+
+
 class ChroniclerPointEvent(BaseModel):
     id: str
     source_name: str
@@ -83,5 +106,7 @@ __all__ = [
     "ChroniclerEpisode",
     "ChroniclerOverride",
     "ChroniclerPointEvent",
+    "SourceStateRow",
+    "SubsourceCheckpoint",
     "SubmitCorrectionRequest",
 ]

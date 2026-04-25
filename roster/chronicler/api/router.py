@@ -20,7 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
-from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 
 _models_path = Path(__file__).parent / "models.py"
 _spec = importlib.util.spec_from_file_location("chronicler_api_models", _models_path)
@@ -32,6 +32,8 @@ if _spec is not None and _spec.loader is not None:
     ChroniclerPointEvent = _models.ChroniclerPointEvent
     ChroniclerEpisode = _models.ChroniclerEpisode
     ChroniclerOverride = _models.ChroniclerOverride
+    SourceStateRow = _models.SourceStateRow
+    SubsourceCheckpoint = _models.SubsourceCheckpoint
     SubmitCorrectionRequest = _models.SubmitCorrectionRequest
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
@@ -419,3 +421,92 @@ async def submit_episode_correction(
         body.submitted_by,
     )
     return _row_to_override(row)
+
+
+# ── GET /api/chronicler/source-state ─────────────────────────────────────
+
+
+def _rows_to_source_state(
+    adapter_rows: list[Any],
+    checkpoint_rows: list[Any],
+) -> list[SourceStateRow]:
+    """Build SourceStateRow list from adapter state and checkpoint rows.
+
+    Joins projection_checkpoints rows to their parent source_adapter_state row.
+    ``last_run_at`` and ``last_error`` are the latest values across all subsources.
+    ``subsource_checkpoints`` contains the per-subsource detail array.
+    """
+    from collections import defaultdict
+
+    # Group checkpoint rows by source_name.
+    checkpoints_by_source: dict[str, list[Any]] = defaultdict(list)
+    for cp in checkpoint_rows:
+        checkpoints_by_source[cp["source_name"]].append(cp)
+
+    results: list[SourceStateRow] = []
+    for row in adapter_rows:
+        sn = row["source_name"]
+        cps = checkpoints_by_source.get(sn, [])
+
+        # Aggregate: latest last_run_at and latest last_error across subsources.
+        last_run_at: datetime | None = None
+        last_error: str | None = None
+        for cp in cps:
+            cp_run = cp["last_run_at"]
+            if cp_run is not None and (last_run_at is None or cp_run > last_run_at):
+                last_run_at = cp_run
+                last_error = cp["last_error"]
+
+        subsource_checkpoints = [
+            SubsourceCheckpoint(
+                subsource=cp["subsource"],
+                last_run_at=cp["last_run_at"],
+                last_error=cp["last_error"],
+            )
+            for cp in cps
+        ] or None
+
+        results.append(
+            SourceStateRow(
+                source_name=sn,
+                chronicler_compatibility=row["chronicler_compatibility"],
+                read_surface=row["read_surface"],
+                boundary_semantics=row["boundary_semantics"],
+                optional_schema=row["optional_schema"],
+                active=row["active"],
+                inactive_reason=row["inactive_reason"],
+                last_run_at=last_run_at,
+                last_error=last_error,
+                subsource_checkpoints=subsource_checkpoints,
+            )
+        )
+
+    return results
+
+
+@router.get("/source-state", response_model=ApiResponse[list[SourceStateRow]])
+async def list_source_state(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[SourceStateRow]]:
+    """Return one record per registered source adapter joined with its projection checkpoints.
+
+    Records are returned sorted by ``source_name ASC``.
+    An empty ``source_adapter_state`` table returns ``{"data": [], "meta": {}}``.
+    """
+    pool = _pool(db)
+
+    adapter_rows = await pool.fetch(
+        "SELECT source_name, chronicler_compatibility, read_surface, boundary_semantics,"
+        " optional_schema, active, inactive_reason"
+        " FROM source_adapter_state"
+        " ORDER BY source_name ASC"
+    )
+
+    checkpoint_rows = await pool.fetch(
+        "SELECT source_name, subsource, last_run_at, last_error"
+        " FROM projection_checkpoints"
+        " ORDER BY source_name ASC, subsource ASC"
+    )
+
+    data = _rows_to_source_state(adapter_rows, checkpoint_rows)
+    return ApiResponse[list[SourceStateRow]](data=data)
