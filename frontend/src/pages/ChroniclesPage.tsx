@@ -14,7 +14,6 @@
 // ---------------------------------------------------------------------------
 
 import { useTimeWindow } from "@/hooks/use-time-window"
-import type { TimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
@@ -24,28 +23,6 @@ import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 import { useChroniclesAggregates } from "@/hooks/use-chronicles"
-
-// ---------------------------------------------------------------------------
-// Widget-region placeholder — accepts the active time window
-// ---------------------------------------------------------------------------
-
-interface WidgetRegionProps {
-  label: string
-  description: string
-  timeWindow: TimeWindow
-}
-
-// timeWindow is accepted so widget implementations can destructure it once
-// they replace the placeholder. The prop is intentionally unused here.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function WidgetRegionPlaceholder({ label, description, timeWindow: _tw }: WidgetRegionProps) {
-  return (
-    <section aria-label={label} className="rounded-lg border bg-card p-6 min-h-48">
-      <h2 className="text-sm font-medium text-muted-foreground mb-2">{label}</h2>
-      <p className="text-sm text-muted-foreground italic">{description}</p>
-    </section>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Page
