@@ -210,6 +210,26 @@ The Gmail connector assigns `control.policy_tier` before submitting to the Switc
 
 The Switchboard's `DurableBuffer` dequeues in tier order with FIFO within each tier. A starvation guard (`max_consecutive_same_tier`, default 10) forces a lower-tier dequeue after N consecutive same-tier dequeues when lower-priority queues are non-empty.
 
+### Conversation-History Decomposition and Fan-Out
+
+Batching connectors (e.g. `telegram_user_client`, `whatsapp_user_client`) submit conversation windows as single `ingest.v1` envelopes tagged with `control.payload_type = "conversation_history"`. The Switchboard pipeline detects this tag **before** the standard LLM classification step and routes the envelope through the decomposition branch instead.
+
+**Detection.** At pipeline entry the classifier checks `raw_payload.control.payload_type`. When the value is `"conversation_history"` and the triage decision is `pass_through` (no deterministic rule matched), the pipeline enters the decomposition branch. A triage-level `route_to` bypass still takes priority: if a deterministic rule matched, direct routing runs and decomposition is skipped. Likewise, `skip` and `metadata_only` triage outcomes are handled by the existing early-return path before the decomposition check is reached.
+
+**Decomposition.** The decomposition step invokes the signal-extraction LLM prompt directly (not via Claude Code skill framework) with the full conversation window and the registered butler schema registry. The LLM returns a JSON array of extraction objects. Each object carries:
+
+- `signal_type` — domain label (e.g. `"finance"`, `"health"`, `"relationship"`)
+- `target_butler` — destination butler name
+- `tool_name` and `tool_args` — the MCP tool call to deliver
+- `excerpts` — cherry-picked array of `{sender, text, timestamp, message_id}` objects relevant to this signal
+- `confidence` — `HIGH | MEDIUM | LOW`
+
+A single conversation message may appear in the excerpts of more than one conceptual message when it is relevant to multiple domains; this duplication is intentional.
+
+**Fan-out.** For each conceptual message produced by signal extraction, the pipeline calls the existing `route()` mechanism once, passing the cherry-picked excerpts as the routed payload. Fan-out calls run sequentially. Results are recorded per-butler in `dispatch_outcomes` on the parent `message_inbox` row using the same `{butler_name: {status, error, timestamp}}` schema used by standard routing. When fan-out completes (fully or partially), `lifecycle_state` is set to `"routed"` and `decomposition_output` stores the full signal-extraction JSON (including `signals`, `model`, `latency_ms`, and `token_usage`).
+
+**Empty-decomposition short-circuit (design decision D6).** When signal extraction returns an empty array, the pipeline logs the outcome and terminates without invoking any LLM classification or `route()` call. The `message_inbox` row is updated with `decomposition_output = {"signals": [], "reason": "no_signals_extracted"}` and `lifecycle_state = "decomposed_empty"`. A counter metric `butlers.pipeline.decomposition_empty` is incremented with `source_channel` and `connector_type` labels for dashboard visibility.
+
 ### Heartbeat Protocol
 
 Connectors send `connector.heartbeat.v1` envelopes every 2 minutes via the `connector.heartbeat` MCP tool. The Switchboard derives liveness: `online` (< 2 min since last heartbeat), `stale` (2-4 min), `offline` (> 4 min).
@@ -222,6 +242,8 @@ Connectors send `connector.heartbeat.v1` envelopes every 2 minutes via the `conn
 - **RFC 0005:** Trace context propagates through the `control.trace_context` and `request_context.trace_context` fields.
 - **RFC 0006:** `routing_log`, `triage_rules`, `route_inbox`, and `ingestion_events` tables live in the switchboard schema.
 - **RFC 0011:** The insight broker module runs within the Switchboard daemon. Candidate submissions arrive as `propose_insight_candidate` MCP tool calls, and the delivery cycle runs as a Switchboard scheduled task.
+- **`openspec/specs/conversation-decomposition/`:** Normative requirements for signal extraction, cherry-picked excerpts, fan-out, and empty-decomposition storage. The section above is the RFC-level design contract; that spec governs the behavioral requirements.
+- **`openspec/specs/module-pipeline/`:** Pipeline requirements for the Decomposition Branch, Decomposition-to-Routing Fan-Out, and Empty Decomposition Short-Circuit sit before the deprecated direct-wiring section in that spec.
 
 ## Alternatives Considered
 
