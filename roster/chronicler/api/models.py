@@ -155,6 +155,22 @@ class SubmitCorrectionRequest(BaseModel):
     submitted_by: str = "user"
 
 
+class DayCloseFreshResponse(BaseModel):
+    """Cache hit: fresh prose with provenance."""
+
+    prose: str
+    provenance_refs: list[str]
+    cache_built_at: datetime
+
+
+class DayCloseStaleResponse(BaseModel):
+    """Cache stale: one or more source rows changed after cache_built_at."""
+
+    stale: bool = True
+    cache_built_at: datetime
+    last_invalidating_event_at: datetime
+
+
 __all__ = [
     "AggregateByDayRow",
     "CategoryBucket",
@@ -162,6 +178,8 @@ __all__ = [
     "ChroniclerEpisode",
     "ChroniclerOverride",
     "ChroniclerPointEvent",
+    "DayCloseFreshResponse",
+    "DayCloseStaleResponse",
     "SourceBreakdownEntry",
     "SourceStateRow",
     "SubsourceCheckpoint",
