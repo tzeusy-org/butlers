@@ -1,5 +1,12 @@
 # Self-Healing Dispatch
 
+> **Status: Deprecated** — Superseded by RFC 0015 (QA Staffer Discovery & Investigation
+> Pipeline). The unified QA investigation dispatch pipeline (`qa-investigation-dispatch`)
+> replaces this spec. The `healing-*` substrate specs (`healing-anonymizer`,
+> `healing-model-tier`, `healing-session-tracking`, `healing-worktree`) remain active as
+> shared implementation substrate reused by QA. See the migration path in RFC 0015
+> §"Legacy Self-Healing Deprecation".
+
 ## Purpose
 
 Shared decision engine that evaluates whether an error warrants spawning a healing agent. Used by BOTH the self-healing module (primary path — butler agent calls `report_error` MCP tool) and the spawner fallback (secondary path — hard crashes where the agent couldn't self-report). Applies a multi-gate check sequence and, if all gates pass, creates a worktree and launches a recovery workflow. That workflow may span multiple runtime sessions under a separate overall investigation deadline.

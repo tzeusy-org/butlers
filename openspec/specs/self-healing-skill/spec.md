@@ -1,5 +1,11 @@
 # Self-Healing Skill
 
+> **Status: Deprecated** — Superseded by RFC 0015 (QA Staffer Discovery & Investigation
+> Pipeline). The skill content at `roster/shared/skills/self-healing/` is preserved for
+> reference; once the `report_error` → `report_finding` relay migration is complete
+> (RFC 0015 §"Legacy Self-Healing Deprecation"), the skill text should be updated to
+> reflect the new relay path and this spec archived.
+
 ## Purpose
 
 A shared skill installed in `roster/shared/skills/self-healing/` that teaches all butler agents the protocol for interacting with the self-healing module's MCP tools. The skill is referenced from `BUTLER_SKILLS.md` so it's automatically included in every butler's system prompt. It defines when to report errors, what context to include, and how to interpret healing status responses.

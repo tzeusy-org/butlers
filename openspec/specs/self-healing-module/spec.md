@@ -1,5 +1,12 @@
 # Self-Healing Module
 
+> **Status: Deprecated** — Superseded by RFC 0015 (QA Staffer Discovery & Investigation
+> Pipeline). The QA Staffer's `butler_reports` discovery source and `report_finding` MCP
+> tool replace the per-butler `self_healing` module's `report_error` tool as the primary
+> reactive relay path. Existing `report_error` implementations should be migrated to relay
+> via `switchboard_client.call_tool("route", {"target_butler": "qa", ...})`. See the
+> migration path in RFC 0015 §"Legacy Self-Healing Deprecation".
+
 ## Purpose
 
 A butler module (`modules/self_healing/`) that registers MCP tools on every butler's MCP server, providing the **primary** entry point for self-healing. When a butler agent encounters an unexpected error during a session, it calls the `report_error` tool with structured error context and its own diagnostic reasoning. The module handles fingerprinting, deduplication gate checks, and dispatching a healing agent — all within the MCP server process. This is architecturally superior to daemon-only detection because the butler agent has richer context (its reasoning, what it was trying to do, why it thinks the error occurred) than a bare exception + traceback.
