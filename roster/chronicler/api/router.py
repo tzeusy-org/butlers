@@ -436,12 +436,10 @@ def _rows_to_source_state(
     ``last_run_at`` and ``last_error`` are the latest values across all subsources.
     ``subsource_checkpoints`` contains the per-subsource detail array.
     """
-    from collections import defaultdict
-
     # Group checkpoint rows by source_name.
-    checkpoints_by_source: dict[str, list[Any]] = defaultdict(list)
+    checkpoints_by_source: dict[str, list[Any]] = {}
     for cp in checkpoint_rows:
-        checkpoints_by_source[cp["source_name"]].append(cp)
+        checkpoints_by_source.setdefault(cp["source_name"], []).append(cp)
 
     results: list[SourceStateRow] = []
     for row in adapter_rows:
