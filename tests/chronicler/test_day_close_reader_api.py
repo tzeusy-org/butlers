@@ -500,6 +500,9 @@ def _extract_sql_strings(source: str) -> list[str]:
     return sql_fragments
 
 
+_SQL_KEYWORDS = frozenset({"lateral", "only", "unnest", "lateral"})
+
+
 def _extract_relation_names(sql: str) -> list[str]:
     import re
 
@@ -507,7 +510,8 @@ def _extract_relation_names(sql: str) -> list[str]:
     relations = []
     for tok in tokens:
         bare = tok.split(".")[-1].lower().strip()
-        relations.append(bare)
+        if bare not in _SQL_KEYWORDS:
+            relations.append(bare)
     return relations
 
 

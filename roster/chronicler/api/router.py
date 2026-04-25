@@ -1190,26 +1190,24 @@ async def get_day_close_cache(
             -- that were updated (possibly moving their window) after cache was built.
             -- Catches updates that push the episode outside the cached window.
             SELECT e.updated_at AS ts
-            FROM episodes e
-            JOIN tier2_cache c ON c.cache_key = $4
-            WHERE e.source_ref = ANY(
-                SELECT jsonb_array_elements_text(c.provenance_refs)
-            )
-              AND e.updated_at > $3
+            FROM tier2_cache c
+            CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
+            JOIN episodes e ON e.source_ref = ref
+            WHERE c.cache_key = $4
               AND c.superseded_at IS NULL
+              AND e.updated_at > $3
 
             UNION ALL
 
             -- provenance-ref staleness: point_events cited by this cache entry
             -- that were updated (possibly moving their window) after cache was built.
             SELECT p.updated_at AS ts
-            FROM point_events p
-            JOIN tier2_cache c ON c.cache_key = $4
-            WHERE p.source_ref = ANY(
-                SELECT jsonb_array_elements_text(c.provenance_refs)
-            )
-              AND p.updated_at > $3
+            FROM tier2_cache c
+            CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
+            JOIN point_events p ON p.source_ref = ref
+            WHERE c.cache_key = $4
               AND c.superseded_at IS NULL
+              AND p.updated_at > $3
         ) invalidators
         """,
         start_at,
