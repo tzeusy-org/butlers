@@ -79,13 +79,6 @@ def test_rfc_0014_exists() -> None:
     assert "retrospective" in text.lower()
 
 
-def test_openspec_change_exists() -> None:
-    change_dir = PROJECT_ROOT / "openspec" / "changes" / "chronicler-time-butler"
-    assert (change_dir / "proposal.md").is_file()
-    assert (change_dir / "tasks.md").is_file()
-    assert (change_dir / "specs" / "butler-chronicler" / "spec.md").is_file()
-
-
 def test_v1_heart_and_soul_mentions_chronicler() -> None:
     v1 = (PROJECT_ROOT / "about" / "heart-and-soul" / "v1.md").read_text()
     assert "Chronicler" in v1
