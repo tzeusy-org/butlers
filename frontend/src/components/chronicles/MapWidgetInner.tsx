@@ -32,6 +32,11 @@ export interface MapPoint {
   label?: string
   /** Optional category string from the lane taxonomy (used for future coloring). */
   category?: string
+  /**
+   * Privacy tier inherited from the linked episode.
+   * Points with privacy_tier "sensitive" are never plotted on the map.
+   */
+  privacy_tier?: string
 }
 
 export interface MapWidgetInnerProps {
@@ -80,11 +85,14 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markersRef = useRef<maplibreGl.Marker[]>([])
 
+  // Sensitive points are never plotted — filter them out before rendering.
+  const visiblePoints = points.filter((p) => p.privacy_tier !== "sensitive")
+
   // hasPoints determines whether the map container is rendered.  The map
   // initialisation effect depends on this flag so that React re-runs the
   // effect (and mounts a fresh map instance) whenever the component switches
   // between the empty-state overlay and the real map container.
-  const hasPoints = points.length > 0
+  const hasPoints = visiblePoints.length > 0
 
   // Initialise the map once the container is present; tear down on unmount or
   // when the component transitions back to the empty state.
@@ -124,11 +132,11 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
     }
     markersRef.current = []
 
-    if (points.length === 0) return
+    if (visiblePoints.length === 0) return
 
     const bounds = new maplibreGl.LngLatBounds()
 
-    for (const point of points) {
+    for (const point of visiblePoints) {
       const popup = point.label
         ? new maplibreGl.Popup({ offset: 25 }).setText(point.label)
         : undefined
@@ -146,9 +154,9 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
     }
 
     map.fitBounds(bounds, { padding: 48, maxZoom: 14 })
-  }, [points])
+  }, [visiblePoints])
 
-  if (points.length === 0) {
+  if (visiblePoints.length === 0) {
     return (
       <div className={`relative w-full ${height} flex items-center justify-center`}>
         <EmptyState

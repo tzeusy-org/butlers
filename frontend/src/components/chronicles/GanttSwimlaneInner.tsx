@@ -298,7 +298,7 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, onHover }:
   return (
     <g
       role="img"
-      aria-label={episode.canonical_title ?? episode.source_name}
+      aria-label={isSensitive ? SENSITIVE_GENERIC_LABEL : (episode.canonical_title ?? episode.source_name)}
       data-testid={`gantt-bar-${episode.id}`}
       style={{ cursor: "pointer" }}
       onMouseEnter={(e) => {
@@ -357,8 +357,34 @@ interface GanttTooltipProps {
   windowEndMs: number
 }
 
+const SENSITIVE_GENERIC_LABEL = "Private activity"
+
 function GanttTooltip({ tooltip, windowEndMs }: GanttTooltipProps) {
   const { x, y, episode, isOpen } = tooltip
+
+  const isSensitive = episode.canonical_privacy === "sensitive"
+
+  // Sensitive episodes: show only the generic label — never title, source,
+  // precision, or timing details that could leak content.
+  if (isSensitive) {
+    return (
+      <div
+        role="tooltip"
+        data-testid="gantt-tooltip"
+        style={{
+          position: "fixed",
+          left: x + 12,
+          top: y - 12,
+          pointerEvents: "none",
+          zIndex: 50,
+        }}
+        className="rounded-md border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-md"
+      >
+        <p className="font-medium">{SENSITIVE_GENERIC_LABEL}</p>
+        <p className="text-yellow-600 mt-0.5 text-xs">Sensitive</p>
+      </div>
+    )
+  }
 
   const startMs = parseMs(episode.canonical_start_at)
   const rawEndMs = parseMs(episode.canonical_end_at)
@@ -410,9 +436,6 @@ function GanttTooltip({ tooltip, windowEndMs }: GanttTooltipProps) {
       <p className="text-muted-foreground">
         {startLabel} – {endLabel}
       </p>
-      {episode.canonical_privacy === "sensitive" && (
-        <p className="text-yellow-600 mt-0.5 text-xs">Sensitive</p>
-      )}
       {isOpen && <p className="text-blue-500 mt-0.5 text-xs">Episode ongoing</p>}
     </div>
   )

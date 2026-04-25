@@ -132,6 +132,46 @@ describe("MapWidgetInner height prop", () => {
 })
 
 // ---------------------------------------------------------------------------
+// MapWidgetInner — sensitive point exclusion (privacy contract)
+// ---------------------------------------------------------------------------
+
+describe("MapWidgetInner sensitive point exclusion", () => {
+  it("does NOT render a map container when only sensitive points are provided", () => {
+    const sensitivePoint: MapPoint = {
+      lng: 103.8,
+      lat: 1.35,
+      label: "Secret location",
+      privacy_tier: "sensitive",
+    }
+    const html = renderToStaticMarkup(<MapWidgetInner points={[sensitivePoint]} />)
+    // All supplied points are sensitive — widget must show empty state, not the map.
+    expect(html).not.toContain("map-container")
+    expect(html).toContain("No location data")
+  })
+
+  it("renders only non-sensitive points when mixed privacy_tier values are provided", () => {
+    const normalPoint: MapPoint = { lng: 2.35, lat: 48.86, label: "Paris" }
+    const sensitivePoint: MapPoint = {
+      lng: 103.8,
+      lat: 1.35,
+      label: "Secret location",
+      privacy_tier: "sensitive",
+    }
+    const html = renderToStaticMarkup(
+      <MapWidgetInner points={[normalPoint, sensitivePoint]} />,
+    )
+    // Normal point keeps the map rendered.
+    expect(html).toContain("map-container")
+  })
+
+  it("renders map container when points have no privacy_tier set", () => {
+    const point: MapPoint = { lng: 0, lat: 0 }
+    const html = renderToStaticMarkup(<MapWidgetInner points={[point]} />)
+    expect(html).toContain("map-container")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // MapPoint type contract (compile-time guard via explicit cast)
 // ---------------------------------------------------------------------------
 
@@ -150,5 +190,10 @@ describe("MapPoint type", () => {
   it("accepts optional category field", () => {
     const point: MapPoint = { lng: 1, lat: 2, category: "travel" }
     expect(point.category).toBe("travel")
+  })
+
+  it("accepts optional privacy_tier field", () => {
+    const point: MapPoint = { lng: 1, lat: 2, privacy_tier: "sensitive" }
+    expect(point.privacy_tier).toBe("sensitive")
   })
 })
