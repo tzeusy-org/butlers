@@ -18,6 +18,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -308,6 +309,83 @@ class TestEntityCache:
         )
 
         assert "sensor.gone" not in ha_module._entity_cache
+
+    @pytest.mark.parametrize(
+        ("event_type", "method_name", "task_attr"),
+        [
+            ("area_registry_updated", "_fetch_area_registry", "_area_refresh_task"),
+            ("entity_registry_updated", "_fetch_entity_registry", "_entity_refresh_task"),
+        ],
+    )
+    async def test_registry_update_events_refresh_in_background(
+        self,
+        ha_module: HomeAssistantModule,
+        event_type: str,
+        method_name: str,
+        task_attr: str,
+    ) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _refresh() -> None:
+            started.set()
+            await release.wait()
+
+        with patch.object(ha_module, method_name, new=AsyncMock(side_effect=_refresh)) as refresh:
+            dispatch_task = asyncio.create_task(
+                ha_module._dispatch_ws_message(
+                    {"type": "event", "event": {"event_type": event_type, "data": {}}}
+                )
+            )
+            await asyncio.sleep(0)
+            assert dispatch_task.done()
+            await dispatch_task
+            await asyncio.wait_for(started.wait(), timeout=0.1)
+
+            task = getattr(ha_module, task_attr)
+            assert task is not None
+            assert not task.done()
+            assert refresh.await_count == 1
+
+            release.set()
+            await asyncio.wait_for(task, timeout=0.1)
+            assert getattr(ha_module, task_attr) is None
+
+    @pytest.mark.parametrize(
+        ("event_type", "method_name"),
+        [
+            ("area_registry_updated", "_fetch_area_registry"),
+            ("entity_registry_updated", "_fetch_entity_registry"),
+        ],
+    )
+    async def test_registry_update_events_dedupe_inflight_refresh(
+        self,
+        ha_module: HomeAssistantModule,
+        event_type: str,
+        method_name: str,
+    ) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _refresh() -> None:
+            started.set()
+            await release.wait()
+
+        with patch.object(ha_module, method_name, new=AsyncMock(side_effect=_refresh)) as refresh:
+            await ha_module._dispatch_ws_message(
+                {"type": "event", "event": {"event_type": event_type, "data": {}}}
+            )
+            await asyncio.wait_for(started.wait(), timeout=0.1)
+            await ha_module._dispatch_ws_message(
+                {"type": "event", "event": {"event_type": event_type, "data": {}}}
+            )
+
+            assert refresh.await_count == 1
+
+            release.set()
+            task = ha_module._area_refresh_task or ha_module._entity_refresh_task
+            assert task is not None
+            await asyncio.wait_for(task, timeout=0.1)
 
 
 # ---------------------------------------------------------------------------

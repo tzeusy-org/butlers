@@ -210,6 +210,8 @@ class HomeAssistantModule(Module):
         self._ws_reconnect_task: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._snapshot_task: asyncio.Task[None] | None = None
+        self._area_refresh_task: asyncio.Task[None] | None = None
+        self._entity_refresh_task: asyncio.Task[None] | None = None
         # Shutdown flag
         self._shutdown: bool = False
         # Last pong receipt time (monotonic)
@@ -367,6 +369,8 @@ class HomeAssistantModule(Module):
                 self._ws_reconnect_task,
                 self._poll_task,
                 self._snapshot_task,
+                self._area_refresh_task,
+                self._entity_refresh_task,
             )
             if t is not None and not t.done()
         ]
@@ -380,6 +384,8 @@ class HomeAssistantModule(Module):
         self._ws_reconnect_task = None
         self._poll_task = None
         self._snapshot_task = None
+        self._area_refresh_task = None
+        self._entity_refresh_task = None
 
         # Fail all pending WebSocket commands
         for fut in self._ws_pending.values():
@@ -979,11 +985,44 @@ class HomeAssistantModule(Module):
 
         elif event_type == "area_registry_updated":
             logger.debug("HomeAssistantModule: area_registry_updated event; refreshing.")
-            await self._fetch_area_registry()
+            self._schedule_registry_refresh("area")
 
         elif event_type == "entity_registry_updated":
             logger.debug("HomeAssistantModule: entity_registry_updated event; refreshing.")
-            await self._fetch_entity_registry()
+            self._schedule_registry_refresh("entity")
+
+    def _schedule_registry_refresh(self, registry_type: str) -> None:
+        """Refresh HA registries off the WS read loop to avoid self-deadlock."""
+        if registry_type == "area":
+            task_attr = "_area_refresh_task"
+            refresh = self._fetch_area_registry
+        elif registry_type == "entity":
+            task_attr = "_entity_refresh_task"
+            refresh = self._fetch_entity_registry
+        else:
+            raise ValueError(f"Unknown registry_type: {registry_type!r}")
+
+        existing = getattr(self, task_attr)
+        if existing is not None and not existing.done():
+            return
+
+        task = asyncio.create_task(refresh())
+        setattr(self, task_attr, task)
+
+        def _cleanup(done_task: asyncio.Task[None]) -> None:
+            if getattr(self, task_attr) is done_task:
+                setattr(self, task_attr, None)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                logger.warning(
+                    "HomeAssistantModule: %s registry refresh task failed: %r",
+                    registry_type,
+                    exc,
+                )
+
+        task.add_done_callback(_cleanup)
 
     def _handle_ws_result(self, msg: dict[str, Any]) -> None:
         """Correlate a WS result message with a pending command future."""
