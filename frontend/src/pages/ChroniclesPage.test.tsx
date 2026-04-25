@@ -80,6 +80,9 @@ vi.mock("@/components/chronicles/TimeWindowPicker", () => ({
 vi.mock("@/components/chronicles/MapWidget", () => ({
   MapWidget: () => null,
 }));
+vi.mock("@/components/chronicles/GanttSwimlane", () => ({
+  GanttSwimlane: () => null,
+}));
 vi.mock("@/components/chronicles/AggregatePieChart", () => ({
   AggregatePieChart: () => null,
 }));

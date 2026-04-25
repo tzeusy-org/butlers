@@ -14,37 +14,15 @@
 // ---------------------------------------------------------------------------
 
 import { useTimeWindow } from "@/hooks/use-time-window"
-import type { TimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
+import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
 import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar"
 import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 import { useChroniclesAggregates } from "@/hooks/use-chronicles"
-
-// ---------------------------------------------------------------------------
-// Widget-region placeholder — accepts the active time window
-// ---------------------------------------------------------------------------
-
-interface WidgetRegionProps {
-  label: string
-  description: string
-  timeWindow: TimeWindow
-}
-
-// timeWindow is accepted so widget implementations can destructure it once
-// they replace the placeholder. The prop is intentionally unused here.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function WidgetRegionPlaceholder({ label, description, timeWindow: _tw }: WidgetRegionProps) {
-  return (
-    <section aria-label={label} className="rounded-lg border bg-card p-6 min-h-48">
-      <h2 className="text-sm font-medium text-muted-foreground mb-2">{label}</h2>
-      <p className="text-sm text-muted-foreground italic">{description}</p>
-    </section>
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -56,6 +34,7 @@ export default function ChroniclesPage() {
 
   // When the time window ends more than 24h ago, disable polling entirely.
   // Otherwise use the user-configured interval (pause/resume still respected).
+  // Gantt and Aggregations both consume refetchInterval.
   const refetchInterval = timeWindow.pollingDisabled
     ? (false as const)
     : autoRefreshControl.refetchInterval
@@ -100,11 +79,14 @@ export default function ChroniclesPage() {
       <TimeWindowPicker window={timeWindow} />
 
       {/* Gantt area */}
-      <WidgetRegionPlaceholder
-        label="Gantt area"
-        description="Timeline / Gantt widget — coming soon."
-        timeWindow={timeWindow}
-      />
+      <section aria-label="Gantt area" className="rounded-lg border bg-card p-6">
+        <h2 className="text-sm font-medium text-muted-foreground mb-4">Gantt area</h2>
+        <GanttSwimlane
+          windowStart={timeWindow.from}
+          windowEnd={timeWindow.to}
+          refetchInterval={refetchInterval}
+        />
+      </section>
 
       {/* Map area */}
       <section aria-label="Map area" className="rounded-lg border bg-card p-6">
