@@ -303,7 +303,7 @@ def chronicler_app(chronicler_pool):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = chronicler_pool
 
-    app = create_app()
+    app = create_app(api_key="")
 
     for butler_name, router_module in app.state.butler_routers:
         if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
@@ -318,11 +318,16 @@ def chronicler_app(chronicler_pool):
 # ---------------------------------------------------------------------------
 
 
-def _p95_ms(times_ns: list[int]) -> float:
-    """Return P95 latency in milliseconds from a list of nanosecond durations."""
-    times_ms = [t / 1_000_000 for t in times_ns]
-    # statistics.quantiles(data, n=100) returns 99 cut points; index 94 is P95
-    return statistics.quantiles(times_ms, n=100)[94]
+def _calculate_metrics(latencies_ns: list[int]) -> tuple[float, float, float]:
+    """Return (P50, P95, P99) in milliseconds from a list of nanosecond durations.
+
+    statistics.quantiles(data, n=100) returns 99 cut points:
+    - index 94 is P95
+    - index 98 is P99
+    """
+    times_ms = [t / 1_000_000 for t in latencies_ns]
+    qs = statistics.quantiles(times_ms, n=100)
+    return statistics.median(times_ms), qs[94], qs[98]
 
 
 # ---------------------------------------------------------------------------
@@ -361,9 +366,7 @@ async def test_aggregate_by_category_p95_latency(chronicler_app):
             assert resp.status_code == 200
             latencies_ns.append(elapsed)
 
-    p95 = _p95_ms(latencies_ns)
-    p50 = statistics.median([t / 1_000_000 for t in latencies_ns])
-    p99 = statistics.quantiles([t / 1_000_000 for t in latencies_ns], n=100)[98]
+    p50, p95, p99 = _calculate_metrics(latencies_ns)
 
     # Record measurements for visibility (printed on failure and captured in CI output)
     print(
@@ -416,9 +419,7 @@ async def test_aggregate_by_day_p95_latency(chronicler_app):
             assert resp.status_code == 200
             latencies_ns.append(elapsed)
 
-    p95 = _p95_ms(latencies_ns)
-    p50 = statistics.median([t / 1_000_000 for t in latencies_ns])
-    p99 = statistics.quantiles([t / 1_000_000 for t in latencies_ns], n=100)[98]
+    p50, p95, p99 = _calculate_metrics(latencies_ns)
 
     print(
         f"\naggregate_by_day latency over {_MEASURE_ITERS} iterations "
