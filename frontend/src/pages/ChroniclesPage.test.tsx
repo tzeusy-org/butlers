@@ -15,6 +15,13 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import ChroniclesPage from "@/pages/ChroniclesPage";
 
 // ---------------------------------------------------------------------------
+// Mocks needed for SourceStateBadgeStrip (uses TanStack Query)
+// ---------------------------------------------------------------------------
+vi.mock("@/hooks/use-chronicles", () => ({
+  useChroniclesSourceState: () => ({ data: undefined, isLoading: false, isError: false }),
+}));
+
+// ---------------------------------------------------------------------------
 // Mocks needed for TimelinePage (it pulls several hooks and components)
 // ---------------------------------------------------------------------------
 vi.mock("@/hooks/use-butlers", () => ({

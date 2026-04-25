@@ -16,6 +16,7 @@ import { useTimeWindow } from "@/hooks/use-time-window"
 import type { TimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
+import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
 
 // ---------------------------------------------------------------------------
 // Widget-region placeholder — accepts the active time window
@@ -55,6 +56,9 @@ export default function ChroniclesPage() {
           Retrospective view of lived past time reconstructed from butler evidence.
         </p>
       </div>
+
+      {/* Source adapter state badge strip */}
+      <SourceStateBadgeStrip />
 
       {/* Time window picker */}
       <TimeWindowPicker window={timeWindow} />
