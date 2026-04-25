@@ -13,6 +13,8 @@ Covers:
 - Sorting: total_seconds DESC, then category ASC
 - Response envelope: ApiResponse<CategoryBuckets> with start_at/end_at/tz
 - Parameter validation: missing params, bad tz, end_at <= start_at
+  — all 400 responses use the ErrorResponse envelope {error: {code, message, butler}}
+  — no partial bucket records returned on 4xx
 """
 
 from __future__ import annotations
@@ -98,7 +100,11 @@ async def test_missing_start_at_returns_400():
         )
     assert resp.status_code == 400
     body = resp.json()
-    assert body["detail"]["code"] == "missing_parameter"
+    assert "error" in body, f"Expected ErrorResponse envelope, got: {body}"
+    assert "data" not in body, "4xx must not include partial data"
+    assert body["error"]["code"] == "missing_parameter"
+    assert body["error"]["butler"] == "chronicler"
+    assert body["error"]["message"]
 
 
 @pytest.mark.unit
@@ -113,7 +119,11 @@ async def test_missing_end_at_returns_400():
         )
     assert resp.status_code == 400
     body = resp.json()
-    assert body["detail"]["code"] == "missing_parameter"
+    assert "error" in body, f"Expected ErrorResponse envelope, got: {body}"
+    assert "data" not in body, "4xx must not include partial data"
+    assert body["error"]["code"] == "missing_parameter"
+    assert body["error"]["butler"] == "chronicler"
+    assert body["error"]["message"]
 
 
 @pytest.mark.unit
@@ -129,7 +139,11 @@ async def test_end_at_equal_to_start_at_returns_400():
         )
     assert resp.status_code == 400
     body = resp.json()
-    assert body["detail"]["code"] == "invalid_time_range"
+    assert "error" in body, f"Expected ErrorResponse envelope, got: {body}"
+    assert "data" not in body, "4xx must not include partial data"
+    assert body["error"]["code"] == "invalid_time_range"
+    assert body["error"]["butler"] == "chronicler"
+    assert body["error"]["message"]
 
 
 @pytest.mark.unit
@@ -147,7 +161,11 @@ async def test_end_at_before_start_at_returns_400():
         )
     assert resp.status_code == 400
     body = resp.json()
-    assert body["detail"]["code"] == "invalid_time_range"
+    assert "error" in body, f"Expected ErrorResponse envelope, got: {body}"
+    assert "data" not in body, "4xx must not include partial data"
+    assert body["error"]["code"] == "invalid_time_range"
+    assert body["error"]["butler"] == "chronicler"
+    assert body["error"]["message"]
 
 
 @pytest.mark.unit
@@ -166,7 +184,11 @@ async def test_unrecognized_timezone_returns_400():
         )
     assert resp.status_code == 400
     body = resp.json()
-    assert body["detail"]["code"] == "invalid_timezone"
+    assert "error" in body, f"Expected ErrorResponse envelope, got: {body}"
+    assert "data" not in body, "4xx must not include partial data"
+    assert body["error"]["code"] == "invalid_timezone"
+    assert body["error"]["butler"] == "chronicler"
+    assert body["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
