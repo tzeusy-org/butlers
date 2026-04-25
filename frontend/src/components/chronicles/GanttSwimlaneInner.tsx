@@ -223,10 +223,11 @@ interface EpisodeBarProps {
   laneY: number           // y offset of this lane's top in the SVG
   svgWidth: number        // pixel width of the SVG bar area
   colour: string
-  onHover: (state: TooltipState | null, svgRect?: DOMRect) => void
+  patternId: string | null  // hatch pattern id if sensitive, else null
+  onHover: (state: TooltipState | null) => void
 }
 
-function EpisodeBar({ positioned, laneY, svgWidth, colour, onHover }: EpisodeBarProps) {
+function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, onHover }: EpisodeBarProps) {
   const { episode, row, xPct, widthPct, isOpen } = positioned
   const isSensitive = episode.canonical_privacy === "sensitive"
 
@@ -236,7 +237,6 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, onHover }: EpisodeBar
   const h = LANE_HEIGHT
 
   const barId = `bar-${episode.id}`
-  const patternId = `hatch-${episode.id}`
 
   return (
     <g
@@ -245,27 +245,10 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, onHover }: EpisodeBar
       data-testid={`gantt-bar-${episode.id}`}
       style={{ cursor: "pointer" }}
       onMouseEnter={(e) => {
-        const svgEl = (e.currentTarget as SVGElement).closest("svg")
-        const rect = svgEl?.getBoundingClientRect()
-        onHover({ x: e.clientX, y: e.clientY, episode, isOpen }, rect)
+        onHover({ x: e.clientX, y: e.clientY, episode, isOpen })
       }}
       onMouseLeave={() => onHover(null)}
     >
-      {isSensitive && (
-        <defs>
-          <pattern
-            id={patternId}
-            patternUnits="userSpaceOnUse"
-            width={8}
-            height={8}
-            patternTransform="rotate(45)"
-          >
-            <rect width={8} height={8} fill={colour} fillOpacity={0.3} />
-            <line x1={0} y1={0} x2={0} y2={8} stroke={colour} strokeWidth={3} strokeOpacity={0.6} />
-          </pattern>
-        </defs>
-      )}
-
       {/* Bar body */}
       <rect
         id={barId}
@@ -275,7 +258,7 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, onHover }: EpisodeBar
         height={h}
         rx={BAR_RADIUS}
         ry={BAR_RADIUS}
-        fill={isSensitive ? `url(#${patternId})` : colour}
+        fill={isSensitive && patternId ? `url(#${patternId})` : colour}
         stroke={colour}
         strokeWidth={isSensitive ? 1 : 0}
         fillOpacity={isSensitive ? 1 : 0.85}
@@ -465,6 +448,27 @@ export function GanttSwimlaneInner({
             aria-label="Gantt timeline"
             role="img"
           >
+            {/* Hatch patterns for sensitive episodes — one per category colour */}
+            <defs>
+              {lanes.map((lane) => {
+                const colour = laneColour(lane.category)
+                const id = `hatch-${lane.category}`
+                return (
+                  <pattern
+                    key={id}
+                    id={id}
+                    patternUnits="userSpaceOnUse"
+                    width={8}
+                    height={8}
+                    patternTransform="rotate(45)"
+                  >
+                    <rect width={8} height={8} fill={colour} fillOpacity={0.3} />
+                    <line x1={0} y1={0} x2={0} y2={8} stroke={colour} strokeWidth={3} strokeOpacity={0.6} />
+                  </pattern>
+                )
+              })}
+            </defs>
+
             {/* Lane background alternating stripes */}
             {lanes.map((lane, i) => (
               <rect
@@ -496,18 +500,26 @@ export function GanttSwimlaneInner({
             })}
 
             {/* Episode bars per lane */}
-            {lanes.map((lane) =>
-              lane.episodes.map((positioned) => (
+            {lanes.map((lane) => {
+              const colour = laneColour(lane.category)
+              // Hatch pattern is defined once per category in <defs> above.
+              const categoryPatternId = `hatch-${lane.category}`
+              return lane.episodes.map((positioned) => (
                 <EpisodeBar
                   key={positioned.episode.id}
                   positioned={positioned}
                   laneY={lane.yOffset}
                   svgWidth={SVG_WIDTH}
-                  colour={laneColour(lane.category)}
+                  colour={colour}
+                  patternId={
+                    positioned.episode.canonical_privacy === "sensitive"
+                      ? categoryPatternId
+                      : null
+                  }
                   onHover={(state) => setTooltip(state)}
                 />
-              )),
-            )}
+              ))
+            })}
 
             {/* Time axis */}
             {ticks.map((ms) => {

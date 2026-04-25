@@ -269,9 +269,10 @@ describe("GanttSwimlaneInner sensitive episode", () => {
         windowEnd={WINDOW_END}
       />,
     )
-    // A <pattern> element must be present for the hatch fill
+    // A <pattern> element must be present for the hatch fill (keyed per category).
     expect(html).toContain("<pattern")
-    expect(html).toContain("hatch-ep-sensitive")
+    // Pattern is keyed by category (source_name), not episode id.
+    expect(html).toContain("hatch-work")
   })
 
   it("renders the bar element for a sensitive episode", () => {
