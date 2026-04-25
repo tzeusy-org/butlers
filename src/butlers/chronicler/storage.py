@@ -773,20 +773,11 @@ async def upsert_tier2_cache(
     """Idempotent INSERT-or-UPDATE for a Tier 2 day-close cache entry.
 
     Idempotency key is ``cache_key`` (PRIMARY KEY on the table).  When a row
-    already exists for the key:
-    - The previous row's ``superseded_at`` is set to ``now()`` in the same
-      statement (via a CTE) so historical entries are soft-versioned.
-    - The row is replaced with the new prose, window, and provenance.
-
-    Because ``tier2_cache`` has no separate row ID (cache_key is the PK),
-    "soft versioning" means we:
-    1. UPDATE the existing row to stamp ``superseded_at = now()``,
-    2. Then immediately overwrite it with the new data.
-
-    This is equivalent to the spec's "superseded_at semantics": after the
-    upsert the row carries the new prose AND records that any prior entry for
-    the same key was superseded.  A separate audit log is outside the v1
-    scope per §D8.
+    already exists for the key it is replaced with the new prose, window, and
+    provenance.  ``superseded_at`` is left NULL so the row remains "active"
+    (queries filter ``WHERE superseded_at IS NULL``).  The column is reserved
+    for a future multi-row versioning scheme per §D8; setting it on the live
+    row would silently drop it from all active-entry indexes.
 
     Args:
         conn: asyncpg connection or pool.
@@ -799,47 +790,26 @@ async def upsert_tier2_cache(
             inside the DB, useful for testing).
     """
     refs_json = json.dumps(provenance_refs)
-    if cache_built_at is None:
-        await conn.execute(
-            """
-            INSERT INTO tier2_cache
-                (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
-            VALUES ($1, $2, $3, $4, $5::jsonb, now())
-            ON CONFLICT (cache_key) DO UPDATE
-                SET prose            = EXCLUDED.prose,
-                    start_at         = EXCLUDED.start_at,
-                    end_at           = EXCLUDED.end_at,
-                    provenance_refs  = EXCLUDED.provenance_refs,
-                    cache_built_at   = now(),
-                    superseded_at    = now()
-            """,
-            cache_key,
-            start_at,
-            end_at,
-            prose,
-            refs_json,
-        )
-    else:
-        await conn.execute(
-            """
-            INSERT INTO tier2_cache
-                (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-            ON CONFLICT (cache_key) DO UPDATE
-                SET prose            = EXCLUDED.prose,
-                    start_at         = EXCLUDED.start_at,
-                    end_at           = EXCLUDED.end_at,
-                    provenance_refs  = EXCLUDED.provenance_refs,
-                    cache_built_at   = EXCLUDED.cache_built_at,
-                    superseded_at    = now()
-            """,
-            cache_key,
-            start_at,
-            end_at,
-            prose,
-            refs_json,
-            cache_built_at,
-        )
+    await conn.execute(
+        """
+        INSERT INTO tier2_cache
+            (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
+        VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6, now()))
+        ON CONFLICT (cache_key) DO UPDATE
+            SET prose            = EXCLUDED.prose,
+                start_at         = EXCLUDED.start_at,
+                end_at           = EXCLUDED.end_at,
+                provenance_refs  = EXCLUDED.provenance_refs,
+                cache_built_at   = EXCLUDED.cache_built_at,
+                superseded_at    = NULL
+        """,
+        cache_key,
+        start_at,
+        end_at,
+        prose,
+        refs_json,
+        cache_built_at,
+    )
 
 
 __all__: Sequence[str] = (
