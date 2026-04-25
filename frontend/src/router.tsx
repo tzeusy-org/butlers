@@ -37,6 +37,7 @@ import QaOverviewPage from './pages/QaOverviewPage.tsx'
 import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
 import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
 import QaInvestigationsPage from './pages/QaInvestigationsPage.tsx'
+import ChroniclesPage from './pages/ChroniclesPage.tsx'
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
@@ -88,6 +89,8 @@ export const router = createBrowserRouter(
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
         { path: '/education', element: <EducationPage /> },
+        // Chronicler routes
+        { path: '/chronicles', element: <ChroniclesPage /> },
         // QA Staffer routes
         { path: '/qa', element: <QaOverviewPage /> },
         { path: '/qa/patrols/:patrolId', element: <QaPatrolDetailPage /> },
