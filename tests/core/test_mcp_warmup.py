@@ -227,3 +227,32 @@ class TestWarmupMcpEndpoints:
 
         assert called_urls == ["http://localhost:9999/mcp"]
         assert len(results) == 1
+
+
+class TestWarmupMcpUrls:
+    """warmup_mcp_urls operates on explicit URL lists."""
+
+    async def test_dedupes_explicit_urls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Duplicate URLs are only warmed once."""
+        from butlers.core.mcp_warmup import warmup_mcp_urls
+
+        monkeypatch.delenv("BUTLERS_MCP_WARMUP_DISABLED", raising=False)
+
+        called_urls: list[str] = []
+
+        async def fake_warmup(url: str, *, butler_name: str) -> dict[str, Any]:
+            called_urls.append(url)
+            return {"url": url, "success": True, "latency_ms": 1, "tool_count": 0, "error": None}
+
+        with patch("butlers.core.mcp_warmup._warmup_endpoint", side_effect=fake_warmup):
+            results = await warmup_mcp_urls(
+                "dedupe-test",
+                [
+                    "http://localhost:8500/mcp",
+                    "http://localhost:8500/mcp",
+                    "http://localhost:8600/mcp",
+                ],
+            )
+
+        assert called_urls == ["http://localhost:8500/mcp", "http://localhost:8600/mcp"]
+        assert len(results) == 2

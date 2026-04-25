@@ -153,32 +153,35 @@ async def warmup_mcp_endpoints(
     butler_port: int,
     extra_urls: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Warm up all MCP endpoints this butler will use in Codex spawns.
+    """Warm up the butler's own MCP endpoint plus any extra URLs.
 
-    Fires initialize + tools/list against:
-      1. The butler's own endpoint: ``http://localhost:{butler_port}/mcp``
-      2. Any additional URLs in *extra_urls* (e.g. Switchboard-exposed endpoints).
+    This is a convenience wrapper around :func:`warmup_mcp_urls`.
+    """
+    own_url = f"http://localhost:{butler_port}/mcp"
+    return await warmup_mcp_urls(butler_name, [own_url, *(extra_urls or [])])
 
-    Returns a list of per-endpoint result dicts (see :func:`_warmup_endpoint`).
 
-    Failure is best-effort: the function never raises.  If the kill-switch is
+async def warmup_mcp_urls(
+    butler_name: str,
+    urls: list[str],
+) -> list[dict[str, Any]]:
+    """Warm up an explicit list of MCP endpoint URLs.
+
+    Fires initialize + tools/list against each unique URL and returns a list of
+    per-endpoint result dicts (see :func:`_warmup_endpoint`).
+
+    Failure is best-effort: the function never raises. If the kill-switch is
     set, it logs at INFO level and returns an empty list immediately.
-
-    Parameters
-    ----------
-    butler_name:
-        Butler name, used in log messages only.
-    butler_port:
-        TCP port on which the butler's own MCP server is listening.
-    extra_urls:
-        Additional MCP endpoint URLs to warm up beyond the butler's own endpoint.
     """
     if _is_disabled():
         logger.info("MCP warmup disabled (%s=1) for butler=%s", _KILL_SWITCH_ENV, butler_name)
         return []
 
-    own_url = f"http://localhost:{butler_port}/mcp"
-    all_urls = [own_url] + list(extra_urls or [])
+    all_urls = list(
+        dict.fromkeys(url.strip() for url in urls if isinstance(url, str) and url.strip())
+    )
+    if not all_urls:
+        return []
 
     tasks = [
         asyncio.create_task(_warmup_endpoint(url, butler_name=butler_name)) for url in all_urls

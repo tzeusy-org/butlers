@@ -670,6 +670,58 @@ class TestSpawnerInvocation:
         assert result2.success is False and "RuntimeError: boom" in result2.error
         assert adapter2.calls == [] and adapter2.reset_calls == 0
 
+    async def test_pre_spawn_mcp_warmup_runs_once_per_endpoint(self, tmp_path: Path) -> None:
+        """First MCP-backed spawn warms the endpoint; later spawns reuse it."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(port=9410)
+        adapter = MockAdapter(result_text="ok", capture=True)
+
+        warmup_results = [
+            {
+                "url": "http://localhost:9410/mcp",
+                "success": True,
+                "latency_ms": 5,
+                "tool_count": 3,
+                "error": None,
+            }
+        ]
+
+        with patch(
+            "butlers.core.mcp_warmup.warmup_mcp_urls",
+            new_callable=AsyncMock,
+            return_value=warmup_results,
+        ) as mock_warmup:
+            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+            first = await spawner.trigger("hello", "schedule:first")
+            second = await spawner.trigger("again", "schedule:second")
+
+        assert first.success is True
+        assert second.success is True
+        mock_warmup.assert_awaited_once_with("test-butler", ["http://localhost:9410/mcp"])
+        assert len(adapter.calls) == 2
+
+    async def test_pre_spawn_mcp_warmup_failure_does_not_block_session(
+        self, tmp_path: Path
+    ) -> None:
+        """Warmup failures are best-effort; the runtime still runs."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(port=9420)
+        adapter = MockAdapter(result_text="ok", capture=True)
+
+        with patch(
+            "butlers.core.mcp_warmup.warmup_mcp_urls",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("warmup exploded"),
+        ) as mock_warmup:
+            spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+            result = await spawner.trigger("hello", "schedule:test")
+
+        assert result.success is True
+        mock_warmup.assert_awaited_once_with("test-butler", ["http://localhost:9420/mcp"])
+        assert len(adapter.calls) == 1
+
     async def test_terminal_codex_mcp_discovery_failure_marks_session_failed(
         self, tmp_path: Path
     ) -> None:

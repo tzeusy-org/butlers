@@ -49,7 +49,7 @@ from butlers.core.general_settings import (
     load_general_settings,
 )
 from butlers.core.logging import resolve_log_root
-from butlers.core.mcp_urls import runtime_mcp_url
+from butlers.core.mcp_urls import canonical_runtime_mcp_url, runtime_mcp_url
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
@@ -820,6 +820,8 @@ class Spawner:
         self._in_flight_event.set()  # Initially no in-flight sessions
         self._metrics = ButlerMetrics(butler_name=config.name)
         self._metrics.ensure_registered()
+        self._mcp_warmup_lock = asyncio.Lock()
+        self._warmed_mcp_urls: set[str] = set()
         # Self-healing module reference — wired by the daemon after module startup.
         # When non-None, the spawner fallback fires on hard crashes.
         self._healing_module: Any = None
@@ -1173,6 +1175,73 @@ class Spawner:
         """Return the number of currently in-flight runtime sessions."""
         return len(self._in_flight)
 
+    @staticmethod
+    def _normalize_mcp_warmup_url(url: str) -> str | None:
+        """Return a canonical warmup URL without per-session query params."""
+        if not isinstance(url, str) or not url.strip():
+            return None
+        parsed = urlsplit(canonical_runtime_mcp_url(url.strip()))
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
+
+    async def _ensure_mcp_endpoints_warmed(self, mcp_servers: dict[str, Any]) -> None:
+        """Best-effort one-time MCP warmup before the first MCP-backed spawn.
+
+        Daemon startup also schedules background warmup, but that task is
+        intentionally fire-and-forget. A session triggered immediately after
+        boot can therefore still beat the background task and hit a cold MCP
+        server. Warm once on the spawn path so the first real Codex session
+        does not depend on startup timing.
+        """
+        if not mcp_servers:
+            return
+
+        candidate_urls = [
+            normalized
+            for normalized in (
+                self._normalize_mcp_warmup_url(server_cfg.get("url", ""))
+                for server_cfg in mcp_servers.values()
+                if isinstance(server_cfg, dict)
+            )
+            if normalized is not None
+        ]
+        if not candidate_urls:
+            return
+
+        async with self._mcp_warmup_lock:
+            pending_urls = [
+                url for url in dict.fromkeys(candidate_urls) if url not in self._warmed_mcp_urls
+            ]
+            if not pending_urls:
+                return
+
+            try:
+                from butlers.core.mcp_warmup import warmup_mcp_urls
+
+                results = await warmup_mcp_urls(self._config.name, pending_urls)
+            except Exception:
+                logger.warning(
+                    "Pre-spawn MCP warmup failed for butler=%s; continuing without warmup",
+                    self._config.name,
+                    exc_info=True,
+                )
+                return
+
+            warmed_now = 0
+            for result in results:
+                url = result.get("url")
+                if result.get("success") and isinstance(url, str) and url:
+                    self._warmed_mcp_urls.add(url)
+                    warmed_now += 1
+
+            if warmed_now:
+                logger.debug(
+                    "Pre-spawn MCP warmup completed for butler=%s warmed_urls=%d",
+                    self._config.name,
+                    warmed_now,
+                )
+
     async def _run(
         self,
         prompt: str,
@@ -1459,6 +1528,8 @@ class Spawner:
                         "url": mcp_url,
                     },
                 }
+
+            await self._ensure_mcp_endpoints_warmed(mcp_servers)
 
             # Invoke via runtime adapter
             runtime_invoked = True
