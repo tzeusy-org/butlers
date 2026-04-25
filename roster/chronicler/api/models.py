@@ -7,6 +7,36 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+# ── Aggregate models ───────────────────────────────────────────────────────
+
+
+class SourceBreakdownEntry(BaseModel):
+    """Per-source contribution within an aggregate bucket."""
+
+    source_name: str
+    total_seconds: float
+    episode_count: int
+    tombstoned: bool = False
+
+
+class AggregateByDayRow(BaseModel):
+    """One (day, category) bucket from GET /api/chronicler/aggregate/by-day."""
+
+    day: str
+    """ISO-8601 date string for the bucket's calendar day (YYYY-MM-DD)."""
+    category: str
+    total_seconds: float
+    episode_count: int
+    day_start: datetime
+    """Inclusive start of the calendar day in the requested timezone."""
+    day_end: datetime
+    """Exclusive end of the calendar day in the requested timezone."""
+    source_breakdown: list[SourceBreakdownEntry] = Field(default_factory=list)
+    precision: str
+    """Least-precise precision value across contributing rows."""
+    retention_floor_days: int | None = None
+    """Shortest non-NULL retention_days across contributing rows, or None."""
+
 
 class SubsourceCheckpoint(BaseModel):
     """Per-subsource projection checkpoint detail."""
@@ -103,9 +133,11 @@ class SubmitCorrectionRequest(BaseModel):
 
 
 __all__ = [
+    "AggregateByDayRow",
     "ChroniclerEpisode",
     "ChroniclerOverride",
     "ChroniclerPointEvent",
+    "SourceBreakdownEntry",
     "SourceStateRow",
     "SubsourceCheckpoint",
     "SubmitCorrectionRequest",
