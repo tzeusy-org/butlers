@@ -1,14 +1,50 @@
 // ---------------------------------------------------------------------------
-// ChroniclesPage — shell skeleton (bu-ig72b)
+// ChroniclesPage — Chronicles dashboard (bu-ig72b)
 //
-// Placeholder page for the Chronicler dashboard surface. Each labelled widget
-// region will be filled by follow-up issues:
+// Widget regions will be filled by follow-up issues:
 //   - Gantt area (bu-ig72b.5)
 //   - Map area (bu-ig72b.6)
 //   - Aggregations area (bu-ig72b.7)
+//
+// Time window state lives here and flows down to all three widget regions
+// via props so each widget can filter its data to the selected range.
+// Auto-refresh wiring (bu-C5) will read the `pollingDisabled` flag from
+// the `TimeWindow` object returned by `useTimeWindow`.
+// ---------------------------------------------------------------------------
+
+import { useTimeWindow } from "@/hooks/use-time-window"
+import type { TimeWindow } from "@/hooks/use-time-window"
+import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
+
+// ---------------------------------------------------------------------------
+// Widget-region placeholder — accepts the active time window
+// ---------------------------------------------------------------------------
+
+interface WidgetRegionProps {
+  label: string
+  description: string
+  timeWindow: TimeWindow
+}
+
+// timeWindow is accepted so widget implementations can destructure it once
+// they replace the placeholder. The prop is intentionally unused here.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function WidgetRegionPlaceholder({ label, description, timeWindow: _tw }: WidgetRegionProps) {
+  return (
+    <section aria-label={label} className="rounded-lg border bg-card p-6 min-h-48">
+      <h2 className="text-sm font-medium text-muted-foreground mb-2">{label}</h2>
+      <p className="text-sm text-muted-foreground italic">{description}</p>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Page
 // ---------------------------------------------------------------------------
 
 export default function ChroniclesPage() {
+  const timeWindow = useTimeWindow()
+
   return (
     <div className="space-y-6">
       {/* Page heading */}
@@ -19,23 +55,29 @@ export default function ChroniclesPage() {
         </p>
       </div>
 
+      {/* Time window picker */}
+      <TimeWindowPicker window={timeWindow} />
+
       {/* Gantt area */}
-      <section aria-label="Gantt area" className="rounded-lg border bg-card p-6 min-h-48">
-        <h2 className="text-sm font-medium text-muted-foreground mb-2">Gantt area</h2>
-        <p className="text-sm text-muted-foreground italic">Timeline / Gantt widget — coming soon.</p>
-      </section>
+      <WidgetRegionPlaceholder
+        label="Gantt area"
+        description="Timeline / Gantt widget — coming soon."
+        timeWindow={timeWindow}
+      />
 
       {/* Map area */}
-      <section aria-label="Map area" className="rounded-lg border bg-card p-6 min-h-48">
-        <h2 className="text-sm font-medium text-muted-foreground mb-2">Map area</h2>
-        <p className="text-sm text-muted-foreground italic">Location map widget — coming soon.</p>
-      </section>
+      <WidgetRegionPlaceholder
+        label="Map area"
+        description="Location map widget — coming soon."
+        timeWindow={timeWindow}
+      />
 
       {/* Aggregations area */}
-      <section aria-label="Aggregations area" className="rounded-lg border bg-card p-6 min-h-48">
-        <h2 className="text-sm font-medium text-muted-foreground mb-2">Aggregations area</h2>
-        <p className="text-sm text-muted-foreground italic">Time aggregations widget — coming soon.</p>
-      </section>
+      <WidgetRegionPlaceholder
+        label="Aggregations area"
+        description="Time aggregations widget — coming soon."
+        timeWindow={timeWindow}
+      />
     </div>
   )
 }
