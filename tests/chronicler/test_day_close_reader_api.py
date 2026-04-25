@@ -568,9 +568,10 @@ class TestDayCloseCorrectedStartAtPointEventStaleness:
         """
         source = _ROUTER_PATH.read_text()
         # The point_event branch must join point_events (not just episodes)
-        assert "JOIN point_events pe ON pe.id = o.target_id AND o.target_kind = 'point_event'" in source, (
-            "Signal 9 SQL branch missing: expected point_events JOIN with target_kind='point_event'"
-        )
+        assert (
+            "JOIN point_events pe ON pe.id = o.target_id AND o.target_kind = 'point_event'"
+            in source
+        ), "Signal 9 SQL branch missing: expected point_events JOIN with target_kind='point_event'"
 
     async def test_episode_signal_does_not_catch_point_event_overrides(self):
         """Episode branch (signal 8) filters target_kind='episode' — does not catch point_event overrides.
