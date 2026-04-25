@@ -14,9 +14,9 @@ import logging
 import sys
 import zoneinfo
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -49,6 +49,8 @@ if _spec is not None and _spec.loader is not None:
     SourceBreakdownEntry = _models.SourceBreakdownEntry
     CategoryBucket = _models.CategoryBucket
     CategoryBuckets = _models.CategoryBuckets
+    DayCloseFreshResponse = _models.DayCloseFreshResponse
+    DayCloseStaleResponse = _models.DayCloseStaleResponse
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -979,3 +981,162 @@ async def aggregate_by_day(
 
     # Sort by (day ASC, category ASC) — already guaranteed by sorted() above.
     return result
+
+
+# ── GET /api/chronicler/aggregate/day-close ───────────────────────────────
+
+
+@router.get(
+    "/aggregate/day-close",
+    response_model=Annotated[
+        DayCloseFreshResponse | DayCloseStaleResponse,
+        "Fresh prose or stale marker",
+    ],
+)
+async def get_day_close_cache(
+    date_param: date = Query(..., alias="date", description="YYYY-MM-DD date for day-close window"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> DayCloseFreshResponse | DayCloseStaleResponse:
+    """Return cached day-close prose OR a stale marker.
+
+    Looks up ``tier2_cache`` by ``cache_key=day_close:{YYYY-MM-DD}``.
+    Returns 404 if no cache entry exists.
+
+    If a cache entry exists, checks whether any episode, point_event, or
+    override row in the cached window [start_at, end_at) has been modified
+    (tombstoned, updated, or created) after ``cache_built_at``.
+
+    - **Fresh:** returns ``{prose, provenance_refs, cache_built_at}``.
+    - **Stale:** returns ``{stale: true, cache_built_at, last_invalidating_event_at}``.
+
+    No LLM is invoked on this path.
+    """
+    pool = _pool(db)
+
+    cache_key = f"day_close:{date_param.isoformat()}"
+
+    # ── Step 1: fetch the cache row ──────────────────────────────────────
+    cache_row = await pool.fetchrow(
+        """
+        SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs
+        FROM tier2_cache
+        WHERE cache_key = $1
+          AND superseded_at IS NULL
+        """,
+        cache_key,
+    )
+
+    if cache_row is None:
+        raise HTTPException(status_code=404, detail=f"No day-close cache entry for {date_param}")
+
+    start_at = cache_row["start_at"]
+    end_at = cache_row["end_at"]
+    cache_built_at = cache_row["cache_built_at"]
+
+    # ── Step 2: query staleness signals in the cached window ─────────────
+    # Five signals per spec:
+    #   episodes.tombstone_at  > cache_built_at
+    #   episodes.updated_at    > cache_built_at
+    #   point_events.tombstone_at > cache_built_at
+    #   point_events.updated_at   > cache_built_at
+    #   overrides.created_at   > cache_built_at  (for window-overlapping overrides)
+    #
+    # Window condition for episodes / point_events:
+    #   rows whose time span overlaps [start_at, end_at)
+    #   i.e. start_at_col < end_at AND (end_at_col IS NULL OR end_at_col > start_at)
+    #
+    # For overrides we join back to the underlying episode/point_event to
+    # scope them to the same window.  We use a single UNION query to get
+    # the MAX timestamp in one round-trip.
+    staleness_row = await pool.fetchrow(
+        """
+        SELECT MAX(ts) AS last_invalidating_event_at
+        FROM (
+            -- episodes.tombstone_at
+            SELECT tombstone_at AS ts
+            FROM episodes
+            WHERE tombstone_at > $3
+              AND start_at < $2
+              AND (end_at IS NULL OR end_at > $1)
+
+            UNION ALL
+
+            -- episodes.updated_at
+            SELECT updated_at AS ts
+            FROM episodes
+            WHERE updated_at > $3
+              AND start_at < $2
+              AND (end_at IS NULL OR end_at > $1)
+
+            UNION ALL
+
+            -- point_events.tombstone_at
+            SELECT tombstone_at AS ts
+            FROM point_events
+            WHERE tombstone_at > $3
+              AND occurred_at >= $1
+              AND occurred_at < $2
+
+            UNION ALL
+
+            -- point_events.updated_at
+            SELECT updated_at AS ts
+            FROM point_events
+            WHERE updated_at > $3
+              AND occurred_at >= $1
+              AND occurred_at < $2
+
+            UNION ALL
+
+            -- overrides scoped via episode window
+            SELECT o.created_at AS ts
+            FROM overrides o
+            JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'
+            WHERE o.created_at > $3
+              AND e.start_at < $2
+              AND (e.end_at IS NULL OR e.end_at > $1)
+
+            UNION ALL
+
+            -- overrides scoped via point_event window
+            SELECT o.created_at AS ts
+            FROM overrides o
+            JOIN point_events p ON p.id = o.target_id AND o.target_kind = 'point_event'
+            WHERE o.created_at > $3
+              AND p.occurred_at >= $1
+              AND p.occurred_at < $2
+        ) invalidators
+        """,
+        start_at,
+        end_at,
+        cache_built_at,
+    )
+
+    last_invalidating_event_at = (
+        staleness_row["last_invalidating_event_at"] if staleness_row else None
+    )
+
+    if last_invalidating_event_at is not None:
+        return DayCloseStaleResponse(
+            stale=True,
+            cache_built_at=cache_built_at,
+            last_invalidating_event_at=last_invalidating_event_at,
+        )
+
+    # Fresh path: return prose + provenance_refs
+    raw_refs = cache_row["provenance_refs"]
+    if isinstance(raw_refs, str):
+        try:
+            provenance_refs = json.loads(raw_refs)
+        except json.JSONDecodeError:
+            provenance_refs = []
+    elif isinstance(raw_refs, list):
+        provenance_refs = raw_refs
+    else:
+        provenance_refs = []
+
+    return DayCloseFreshResponse(
+        prose=cache_row["prose"],
+        provenance_refs=provenance_refs,
+        cache_built_at=cache_built_at,
+    )

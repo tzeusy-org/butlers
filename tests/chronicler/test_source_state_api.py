@@ -318,6 +318,7 @@ _KNOWN_CHRONICLER_RELATIONS = frozenset(
         "v_episodes_corrected",
         "v_point_events_corrected",
         "v_latest_overrides",
+        "tier2_cache",
     }
 )
 
