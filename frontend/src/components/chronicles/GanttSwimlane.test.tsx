@@ -289,6 +289,23 @@ describe("GanttSwimlaneInner sensitive episode", () => {
     )
     expect(html).toContain("gantt-bar-ep-sensitive2")
   })
+
+  it("uses generic aria-label for sensitive bar — never leaks title", () => {
+    const ep = makeEpisode({
+      id: "ep-sensitive-aria",
+      canonical_privacy: "sensitive",
+      canonical_title: "Secret project Alpha",
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("Private activity")
+    expect(html).not.toContain("Secret project Alpha")
+  })
 })
 
 // ---------------------------------------------------------------------------
