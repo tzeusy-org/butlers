@@ -14,7 +14,7 @@
 import maplibreGl, { type Map as MapLibreMap } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { MapPin } from "lucide-react"
-import { useEffect, useRef } from "react"
+import { useEffect, useMemo, useRef } from "react"
 
 import { EmptyState } from "@/components/ui/empty-state"
 
@@ -86,7 +86,12 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
   const markersRef = useRef<maplibreGl.Marker[]>([])
 
   // Sensitive points are never plotted — filter them out before rendering.
-  const visiblePoints = points.filter((p) => p.privacy_tier !== "sensitive")
+  // Memoised to avoid recreating the array on every render (stable reference
+  // prevents the marker-sync useEffect from firing spuriously).
+  const visiblePoints = useMemo(
+    () => points.filter((p) => p.privacy_tier !== "sensitive"),
+    [points],
+  )
 
   // hasPoints determines whether the map container is rendered.  The map
   // initialisation effect depends on this flag so that React re-runs the
