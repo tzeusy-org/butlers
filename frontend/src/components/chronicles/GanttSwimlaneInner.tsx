@@ -243,12 +243,12 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
   const endMs = isOpen ? windowEndMs : rawEndMs
   const durationMs = isNaN(startMs) || isNaN(endMs) ? null : endMs - startMs
   const durationLabel = durationMs !== null ? formatDuration(durationMs) : "?"
-  const startLabel = isNaN(startMs) ? "?" : new Date(startMs).toLocaleTimeString()
+  const startLabel = isNaN(startMs) ? "?" : new Date(startMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
   const endLabel = isOpen
     ? "ongoing"
     : isNaN(rawEndMs)
     ? "?"
-    : new Date(rawEndMs).toLocaleTimeString()
+    : new Date(rawEndMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
 
   return (
     <Tooltip>
@@ -311,14 +311,14 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
         ) : (
           <>
             <p className="font-medium">{episode.canonical_title ?? episode.source_name}</p>
-            <p className="opacity-70">
-              Source: <span className="opacity-100">{episode.source_name}</span>
+            <p>
+              <span className="opacity-70">Source: </span>{episode.source_name}
             </p>
-            <p className="opacity-70">
-              Precision: <span className="opacity-100">{episode.precision}</span>
+            <p>
+              <span className="opacity-70">Precision: </span>{episode.precision}
             </p>
-            <p className="opacity-70">
-              Duration: <span className="opacity-100">{durationLabel}</span>
+            <p>
+              <span className="opacity-70">Duration: </span>{durationLabel}
             </p>
             <p className="opacity-70">
               {startLabel} – {endLabel}
