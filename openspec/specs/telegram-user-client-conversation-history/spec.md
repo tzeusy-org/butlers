@@ -24,10 +24,10 @@ The connector SHALL accumulate incoming messages in per-chat buffers instead of 
 - **THEN** the buffer SHALL be force-flushed immediately to prevent unbounded memory growth
 
 ### Requirement: Timed Flush Interval
-The connector SHALL flush each chat's buffer after a configurable time interval (default: 10 minutes).
+The connector SHALL flush each chat's buffer after a configurable time interval (default: 30 minutes).
 
 #### Scenario: Flush interval trigger
-- **WHEN** >= `TELEGRAM_USER_FLUSH_INTERVAL_S` seconds (default: 600) have elapsed since the last flush for chat `C`
+- **WHEN** >= `flush_interval_s` seconds (default: 1800) have elapsed since the last flush for chat `C`
 - **AND** chat `C`'s buffer is non-empty
 - **THEN** the connector flushes chat `C`'s buffer
 
@@ -50,7 +50,7 @@ On flush, the connector SHALL fetch surrounding conversation context from the ch
 #### Scenario: History fetch on flush
 - **WHEN** chat `C`'s buffer is flushed
 - **THEN** the connector fetches up to `TELEGRAM_USER_HISTORY_MAX_MESSAGES` (default: 50) recent messages from chat `C`
-- **AND** the fetch window extends back to at least `TELEGRAM_USER_HISTORY_TIME_WINDOW_M` minutes (default: 30) before the oldest buffered message
+- **AND** the fetch window extends back to at least `TELEGRAM_USER_HISTORY_TIME_WINDOW_M` minutes (default: 35) before the oldest buffered message
 
 #### Scenario: History merged with buffered messages
 - **WHEN** history is fetched for a flush
@@ -92,6 +92,7 @@ Flushed conversation snippets SHALL be submitted as a single ingest.v1 envelope 
   - `payload.normalized_text` = concatenated text of NEW (buffered) messages only, with sender prefixes
   - `payload.conversation_history` = ordered list of all context messages (history + new)
   - `control.idempotency_key` = `"tg_batch:<chat_id>:<min_msg_id>:<max_msg_id>"`
+  - `control.payload_type` = `"conversation_history"`
 
 #### Scenario: Conversation history entry format
 - **WHEN** `payload.conversation_history` is populated
@@ -137,7 +138,7 @@ The checkpoint SHALL advance only after successful batch submission.
 #### Scenario: New environment variables
 - **WHEN** the connector starts
 - **THEN** the following environment variables are recognized:
-  - `TELEGRAM_USER_FLUSH_INTERVAL_S` (default: 600) — seconds between flushes per chat
+  - `TELEGRAM_USER_FLUSH_INTERVAL_S` (default: 1800) — seconds between flushes per chat
   - `TELEGRAM_USER_HISTORY_MAX_MESSAGES` (default: 50) — max messages to fetch for history context
-  - `TELEGRAM_USER_HISTORY_TIME_WINDOW_M` (default: 30) — minutes to look back for history context
+  - `TELEGRAM_USER_HISTORY_TIME_WINDOW_M` (default: 35) — minutes to look back for history context
   - `TELEGRAM_USER_BUFFER_MAX_MESSAGES` (default: 200) — per-chat buffer cap before force-flush

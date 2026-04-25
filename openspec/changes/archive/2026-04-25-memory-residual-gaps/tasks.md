@@ -31,6 +31,10 @@
 - [ ] 5.2 Add `embedding_versions` table creation to the same migration with seed row for `all-MiniLM-L6-v2`
 - [ ] 5.3 Verify migration chain integrity (down_revision = mem_020, revision = mem_021)
 
+<!-- DEFERRED (sync 2026-04-25): Gap 5 (`public.memory_catalog` migration) is UNFIXED in main. The `memory-catalog-schema` delta spec was NOT synced into `openspec/specs/` during archive; tracked separately as a follow-up bead. -->
+
+<!-- DEFERRED (sync 2026-04-25): Gap 8 (migration integration test suite) is UNFIXED in main. The `memory-migration-integration-tests` delta spec was NOT synced during archive; tracked separately as a follow-up bead. -->
+
 ## 6. Migration: public.memory_catalog (mem_022)
 
 - [ ] 6.1 Create `022_shared_memory_catalog.py` migration with schema-qualified `public.memory_catalog` DDL

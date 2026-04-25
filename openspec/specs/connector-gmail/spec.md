@@ -215,7 +215,7 @@ Connector-side triage rules evaluated before ingest to determine ingestion tier.
 - **AND** if no rule matches, the default action is `pass_through` (Tier 1)
 
 ### Requirement: Attachment Handling
-The connector implements metadata-first lazy fetching with per-MIME-type size limits and fetch mode policies.
+The connector implements metadata-first lazy fetching with per-MIME-type size limits and fetch mode policies. Fetched attachments are stored in the S3-compatible blob store; blob refs use the `s3://` scheme.
 
 #### Scenario: Attachment policy map (ATTACHMENT_POLICY)
 - **WHEN** the connector processes attachments
@@ -237,14 +237,15 @@ The connector implements metadata-first lazy fetching with per-MIME-type size li
 - **THEN** only metadata (reference, size, MIME type, filename) is recorded at ingest time — no payload download
 - **AND** on-demand fetch occurs when a butler actually needs the content, with idempotent re-fetch semantics
 
-#### Scenario: Eager fetch — calendar attachments
+#### Scenario: Eager fetch — calendar attachments stored in S3
 - **WHEN** a `text/calendar` attachment is within the 1 MB limit
-- **THEN** it is downloaded immediately at ingest time and stored in BlobStore
+- **THEN** it is downloaded immediately at ingest time and stored in the S3-compatible BlobStore
+- **AND** the `blob_ref` column SHALL contain an `s3://` URI
 - **AND** `.ics` attachments bypass LLM routing classification and route directly to the calendar module
 
 #### Scenario: [TARGET-STATE] Attachment reference persistence
 - **WHEN** attachment metadata is collected at ingest time
-- **THEN** a row is written to `switchboard.attachment_refs` with `message_id`, `attachment_id`, `filename`, `media_type`, `size_bytes`, `fetched` (boolean), `blob_ref` (nullable)
+- **THEN** a row is written to `switchboard.attachment_refs` with `message_id`, `attachment_id`, `filename`, `media_type`, `size_bytes`, `fetched` (boolean), `blob_ref` (nullable, `s3://` scheme when populated)
 
 #### Scenario: Attachment metrics
 - **WHEN** attachments are processed

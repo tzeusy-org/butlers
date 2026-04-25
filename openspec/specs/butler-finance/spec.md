@@ -66,7 +66,7 @@ The finance butler runtime instances SHALL follow additional behavioral guidelin
 - **THEN** the runtime SHALL inform the user about the minimum data requirements
 - **AND** it SHALL suggest importing historical data using the `historical-data-import` skill if no historical import has been performed
 
-### Requirement: CRUD-to-SPO migration -- finance domain
+### Requirement: CRUD-to-SPO migration -- finance domain (bu-ddb.4)
 The finance butler migrates transaction tools to use the dedicated `finance.transactions` table as primary storage, with SPO facts as a secondary mirror for memory/recall.
 
 #### Scenario: Transaction tools as dedicated table wrappers with SPO mirroring

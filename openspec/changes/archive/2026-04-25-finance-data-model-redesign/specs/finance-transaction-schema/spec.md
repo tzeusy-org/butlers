@@ -40,7 +40,7 @@ The `finance.transactions` table SHALL include columns for intelligence features
 
 #### Scenario: Transaction type classification
 - **WHEN** a transaction is recorded
-- **THEN** the `type TEXT` column SHALL classify the transaction as one of: `'purchase'`, `'refund'`, `'transfer'`, `'payment'`, `'fee'`, `'interest'`, `'atm'`, `'deposit'`, `'other'`
+- **THEN** the `type TEXT` column SHALL classify the transaction as one of: `'purchase'`, `'refund'`, `'transfer'`, `'fee'`, `'adjustment'`, `'other'`
 - **AND** it SHALL default to `'purchase'`
 
 #### Scenario: Recurring charge detection flags

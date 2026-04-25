@@ -6,7 +6,7 @@
 The migration from SPO fact storage to dedicated table storage SHALL follow four phases to ensure zero data loss and backward compatibility.
 
 #### Scenario: Phase 1 -- Schema enhancement (non-breaking)
-- **WHEN** the migration `finance_002` runs
+- **WHEN** the migration `finance_006` runs
 - **THEN** it SHALL add all new columns to `finance.transactions` via `ALTER TABLE ADD COLUMN IF NOT EXISTS`
 - **AND** it SHALL create all new tables (`categories`, `merchant_mappings`, `recurring_groups`, `import_batches`, `balance_snapshots`, `budgets`, `transaction_corrections`)
 - **AND** it SHALL create the `spending_summaries` materialized view
@@ -43,8 +43,8 @@ The schema changes SHALL be implemented as an Alembic migration following the pr
 
 #### Scenario: Migration file placement
 - **WHEN** the migration is created
-- **THEN** it SHALL be placed at `roster/finance/migrations/versions/002_intelligence_tables.py`
-- **AND** it SHALL have `revision = "finance_002"` and `down_revision = "finance_001"`
+- **THEN** it SHALL be placed at `roster/finance/migrations/006_intelligence_tables.py`
+- **AND** it SHALL have `revision = "finance_006"` and `down_revision = "finance_005"`
 - **AND** it SHALL include both `upgrade()` and `downgrade()` functions
 
 #### Scenario: Migration downgrade safety

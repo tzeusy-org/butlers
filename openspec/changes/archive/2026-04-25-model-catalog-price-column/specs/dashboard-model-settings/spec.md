@@ -35,7 +35,7 @@ The dashboard settings page SHALL include a model catalog management section wit
 
 #### Scenario: Price column shows known pricing
 
-- **WHEN** a catalog entry's `model_id` matches an entry in the pricing map (after stripping the `opencode-go/` prefix if present)
+- **WHEN** a catalog entry's `model_id` matches an entry in the pricing map (`pricing.toml` keys include the `opencode-go/` prefix where applicable; no client-side stripping is performed)
 - **THEN** the Price column SHALL display the input and output prices formatted as `$X.XX / $Y.YY` per 1M tokens
 
 #### Scenario: Price column shows free for zero-cost models
