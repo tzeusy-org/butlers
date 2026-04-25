@@ -757,6 +757,61 @@ async def record_idempotency(
     return bool(row["inserted"])
 
 
+# ── Tier 2 cache (day-close prose summaries) ──────────────────────────────
+
+
+async def upsert_tier2_cache(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    cache_key: str,
+    start_at: datetime,
+    end_at: datetime,
+    prose: str,
+    provenance_refs: list[Any],
+    cache_built_at: datetime | None = None,
+) -> None:
+    """Idempotent INSERT-or-UPDATE for a Tier 2 day-close cache entry.
+
+    Idempotency key is ``cache_key`` (PRIMARY KEY on the table).  When a row
+    already exists for the key it is replaced with the new prose, window, and
+    provenance.  ``superseded_at`` is left NULL so the row remains "active"
+    (queries filter ``WHERE superseded_at IS NULL``).  The column is reserved
+    for a future multi-row versioning scheme per §D8; setting it on the live
+    row would silently drop it from all active-entry indexes.
+
+    Args:
+        conn: asyncpg connection or pool.
+        cache_key: Primary key string, e.g. ``day_close:2026-04-25``.
+        start_at: Start of the window covered by this summary.
+        end_at: End of the window covered by this summary.
+        prose: LLM-generated prose summary.
+        provenance_refs: List of source_ref strings cited in the prose.
+        cache_built_at: Override for the build timestamp (defaults to ``now()``
+            inside the DB, useful for testing).
+    """
+    refs_json = json.dumps(provenance_refs)
+    await conn.execute(
+        """
+        INSERT INTO tier2_cache
+            (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
+        VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6, now()))
+        ON CONFLICT (cache_key) DO UPDATE
+            SET prose            = EXCLUDED.prose,
+                start_at         = EXCLUDED.start_at,
+                end_at           = EXCLUDED.end_at,
+                provenance_refs  = EXCLUDED.provenance_refs,
+                cache_built_at   = EXCLUDED.cache_built_at,
+                superseded_at    = NULL
+        """,
+        cache_key,
+        start_at,
+        end_at,
+        prose,
+        refs_json,
+        cache_built_at,
+    )
+
+
 __all__: Sequence[str] = (
     "get_checkpoint",
     "get_checkpoint_subsource",
@@ -776,4 +831,5 @@ __all__: Sequence[str] = (
     "upsert_checkpoint_subsource",
     "upsert_episode",
     "upsert_point_event",
+    "upsert_tier2_cache",
 )

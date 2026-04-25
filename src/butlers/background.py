@@ -133,6 +133,7 @@ async def scheduler_loop(
     tick_fn: Callable[..., Coroutine[Any, Any, Any]],
     get_switchboard_client: Callable[[], Any],
     get_db: Callable[[], Any],
+    completion_hooks: dict[str, Any] | None = None,
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -169,6 +170,10 @@ async def scheduler_loop(
     get_db:
         Zero-argument callable that returns the current Database instance (or
         ``None``).  Same laziness rationale as ``get_switchboard_client``.
+    completion_hooks:
+        Optional mapping of ``task_name → async callable`` forwarded to
+        ``tick_fn`` on each invocation.  See ``tick()`` for the hook signature.
+        When ``None``, no hooks are registered.
     """
 
     async def _scheduler_notify_fn(envelope: dict) -> None:
@@ -222,6 +227,7 @@ async def scheduler_loop(
                     stagger_key=butler_name,
                     butler_name=butler_name,
                     notify_fn=_scheduler_notify_fn,
+                    completion_hooks=completion_hooks,
                 )
             )
             try:
