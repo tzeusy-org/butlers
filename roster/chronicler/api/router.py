@@ -1103,7 +1103,7 @@ async def get_day_close_cache(
     cache_built_at = cache_row["cache_built_at"]
 
     # ── Step 2: query staleness signals in the cached window ─────────────
-    # Eight signals:
+    # Nine signals:
     #   episodes.tombstone_at  > cache_built_at  (window-scoped)
     #   episodes.updated_at    > cache_built_at  (window-scoped)
     #   point_events.tombstone_at > cache_built_at  (window-scoped)
@@ -1112,6 +1112,7 @@ async def get_day_close_cache(
     #   episodes cited in provenance_refs but now outside the window (updated_at signal)
     #   point_events cited in provenance_refs but now outside the window (updated_at signal)
     #   overrides that move an episode INTO the window via corrected_start_at
+    #   overrides that move a point_event INTO the window via corrected_start_at
     #
     # Window condition for episodes / point_events (signals 1-4):
     #   rows whose time span overlaps [start_at, end_at)
@@ -1225,6 +1226,19 @@ async def get_day_close_cache(
             SELECT o.created_at AS ts
             FROM overrides o
             JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'
+            WHERE o.created_at > $3
+              AND o.corrected_start_at >= $1
+              AND o.corrected_start_at < $2
+
+            UNION ALL
+
+            -- corrected_start_at staleness: an override that moves a point_event INTO
+            -- the cached window by setting corrected_start_at within [start_at, end_at).
+            -- The point_event's original occurred_at may lie outside the window, so
+            -- signals 1-5 would miss it.  Parallel to the episode branch above.
+            SELECT o.created_at AS ts
+            FROM overrides o
+            JOIN point_events pe ON pe.id = o.target_id AND o.target_kind = 'point_event'
             WHERE o.created_at > $3
               AND o.corrected_start_at >= $1
               AND o.corrected_start_at < $2
