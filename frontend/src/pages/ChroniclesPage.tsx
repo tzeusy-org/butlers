@@ -8,8 +8,9 @@
 //
 // Time window state lives here and flows down to all three widget regions
 // via props so each widget can filter its data to the selected range.
-// Auto-refresh wiring (bu-C5) will read the `pollingDisabled` flag from
-// the `TimeWindow` object returned by `useTimeWindow`.
+// Auto-refresh is gated by `pollingDisabled` from `useTimeWindow`:
+//   - Today / recent windows (pollingDisabled=false): 30s polling by default.
+//   - Older windows (pollingDisabled=true): no polling.
 // ---------------------------------------------------------------------------
 
 import { useTimeWindow } from "@/hooks/use-time-window"
@@ -17,6 +18,8 @@ import type { TimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
+import { useAutoRefresh } from "@/hooks/use-auto-refresh"
+import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 
 // ---------------------------------------------------------------------------
 // Widget-region placeholder — accepts the active time window
@@ -46,15 +49,34 @@ function WidgetRegionPlaceholder({ label, description, timeWindow: _tw }: Widget
 
 export default function ChroniclesPage() {
   const timeWindow = useTimeWindow()
+  const autoRefreshControl = useAutoRefresh(30_000)
+
+  // When the time window ends more than 24h ago, disable polling entirely.
+  // Otherwise use the user-configured interval (pause/resume still respected).
+  // Widget regions (Gantt, Aggregations) will consume this once implemented.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const refetchInterval = timeWindow.pollingDisabled
+    ? (false as const)
+    : autoRefreshControl.refetchInterval
 
   return (
     <div className="space-y-6">
       {/* Page heading */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Chronicles</h1>
-        <p className="text-muted-foreground mt-1">
-          Retrospective view of lived past time reconstructed from butler evidence.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Chronicles</h1>
+          <p className="text-muted-foreground mt-1">
+            Retrospective view of lived past time reconstructed from butler evidence.
+          </p>
+        </div>
+        {!timeWindow.pollingDisabled && (
+          <AutoRefreshToggle
+            enabled={autoRefreshControl.enabled}
+            interval={autoRefreshControl.interval}
+            onToggle={autoRefreshControl.setEnabled}
+            onIntervalChange={autoRefreshControl.setInterval}
+          />
+        )}
       </div>
 
       {/* Source adapter state badge strip */}
@@ -85,3 +107,4 @@ export default function ChroniclesPage() {
     </div>
   )
 }
+
