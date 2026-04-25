@@ -14,9 +14,9 @@ import logging
 import sys
 import zoneinfo
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -31,6 +31,7 @@ from butlers.api.models import (
     PaginationMeta,
 )
 from butlers.chronicler.aggregations import category_for
+from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 
 _models_path = Path(__file__).parent / "models.py"
 _spec = importlib.util.spec_from_file_location("chronicler_api_models", _models_path)
@@ -51,6 +52,8 @@ if _spec is not None and _spec.loader is not None:
     CategoryBuckets = _models.CategoryBuckets
     DayCloseFreshResponse = _models.DayCloseFreshResponse
     DayCloseStaleResponse = _models.DayCloseStaleResponse
+    DayCloseRefreshRequest = _models.DayCloseRefreshRequest
+    DayCloseRefreshResponse = _models.DayCloseRefreshResponse
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -64,6 +67,28 @@ BUTLER_DB = "chronicler"
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
     raise RuntimeError("DatabaseManager not initialized")
+
+
+class DayCloseDispatchCallable(Protocol):
+    """Protocol for the day-close dispatch callable injected via _get_day_close_dispatch_fn.
+
+    Accepts a prompt string and returns a SpawnerResult-compatible object.
+    The handler calls write_day_close_cache() with the result.
+    """
+
+    async def __call__(self, *, prompt: str, trigger_source: str) -> Any: ...
+
+
+def _get_day_close_dispatch_fn() -> DayCloseDispatchCallable | None:
+    """Dependency stub — returns None by default.
+
+    Returns None when running without an in-process spawner (e.g. standalone
+    API mode, tests).  Override via ``app.dependency_overrides`` to inject the
+    real spawner dispatch when the butler daemon is available.
+
+    When None, the refresh endpoint returns 503.
+    """
+    return None
 
 
 def _pool(db: DatabaseManager):
@@ -1183,4 +1208,132 @@ async def get_day_close_cache(
         prose=cache_row["prose"],
         provenance_refs=provenance_refs,
         cache_built_at=cache_built_at,
+    )
+
+
+# ── POST /api/chronicler/aggregate/day-close/refresh ─────────────────────────
+
+_REFRESH_RATE_LIMIT_HOURS = 24
+
+
+@router.post(
+    "/aggregate/day-close/refresh",
+    response_model=DayCloseRefreshResponse,
+    status_code=200,
+)
+async def refresh_day_close(
+    body: DayCloseRefreshRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+    dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
+) -> DayCloseRefreshResponse:
+    """Re-invoke the day-close Tier-2 path on demand (rate-limited: 1 per 24 h per date/tz).
+
+    Checks whether a ``tier2_cache`` row for ``day_close:{date}`` was built within
+    the last 24 hours.  If so, returns 429 with ``code=day_close_rate_limited`` and
+    ``details.retry_after_seconds``.
+
+    Otherwise, re-dispatches the ``chronicler_day_close`` scheduled prompt via the
+    injected dispatch callable and writes a fresh ``tier2_cache`` row via
+    ``write_day_close_cache()``.
+
+    Returns 503 when no dispatch callable is wired (standalone/test mode without spawner).
+    """
+    # ── Validate timezone ─────────────────────────────────────────────────────
+    try:
+        zoneinfo.ZoneInfo(body.tz)
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError):
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_timezone",
+                    message=f"Unrecognized IANA timezone: {body.tz!r}",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    pool = _pool(db)
+    cache_key = f"day_close:{body.date.isoformat()}"
+    now = datetime.now(UTC)
+
+    # ── Rate-limit check ──────────────────────────────────────────────────────
+    existing_row = await pool.fetchrow(
+        """
+        SELECT cache_built_at
+        FROM tier2_cache
+        WHERE cache_key = $1
+          AND superseded_at IS NULL
+        """,
+        cache_key,
+    )
+
+    if existing_row is not None:
+        cache_built_at: datetime = existing_row["cache_built_at"]
+        age = now - cache_built_at
+        if age < timedelta(hours=_REFRESH_RATE_LIMIT_HOURS):
+            retry_after = int((timedelta(hours=_REFRESH_RATE_LIMIT_HOURS) - age).total_seconds())
+            return JSONResponse(
+                status_code=429,
+                content=ErrorResponse(
+                    error=ErrorDetail(
+                        code="day_close_rate_limited",
+                        message=(
+                            f"A day-close refresh for {cache_key!r} was performed recently. "
+                            f"Retry after {retry_after} seconds."
+                        ),
+                        butler="chronicler",
+                        details={"retry_after_seconds": retry_after},
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+    # ── Dispatch guard ────────────────────────────────────────────────────────
+    if dispatch_fn is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Day-close dispatch is not available in this deployment mode.",
+        )
+
+    # ── Look up the chronicler_day_close prompt from scheduled_tasks ──────────
+    task_row = await pool.fetchrow(
+        "SELECT prompt FROM scheduled_tasks WHERE name = $1 AND enabled = true",
+        DAY_CLOSE_TASK_NAME,
+    )
+    if task_row is None or not task_row["prompt"]:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Scheduled task {DAY_CLOSE_TASK_NAME!r} not found or has no prompt.",
+        )
+
+    # ── Dispatch — re-uses the same prompt as the cron schedule ───────────────
+    result = await dispatch_fn(
+        prompt=task_row["prompt"],
+        trigger_source=f"api:day_close_refresh:{body.date.isoformat()}",
+    )
+
+    # ── Write the fresh cache row ─────────────────────────────────────────────
+    run_at = datetime.now(UTC)
+    await write_day_close_cache(
+        pool,
+        task_name=DAY_CLOSE_TASK_NAME,
+        result=result,
+        run_at=run_at,
+    )
+
+    # Fetch the freshly-written row to return the authoritative cache_built_at.
+    new_row = await pool.fetchrow(
+        "SELECT cache_built_at FROM tier2_cache WHERE cache_key = $1 AND superseded_at IS NULL",
+        cache_key,
+    )
+    if new_row is None:
+        # Dispatch succeeded but write was a no-op (e.g. result had no output).
+        raise HTTPException(
+            status_code=502,
+            detail="Day-close dispatch completed but no cache row was written.",
+        )
+
+    return DayCloseRefreshResponse(
+        cache_key=cache_key,
+        cache_built_at=new_row["cache_built_at"],
     )

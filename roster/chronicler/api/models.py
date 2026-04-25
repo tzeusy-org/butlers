@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -171,6 +171,22 @@ class DayCloseStaleResponse(BaseModel):
     last_invalidating_event_at: datetime
 
 
+class DayCloseRefreshRequest(BaseModel):
+    """Request body for POST /aggregate/day-close/refresh."""
+
+    date: date
+    """YYYY-MM-DD date to refresh the day-close cache for."""
+    tz: str = "UTC"
+    """IANA timezone used to compute the day window (default UTC)."""
+
+
+class DayCloseRefreshResponse(BaseModel):
+    """Response body for a successful day-close refresh."""
+
+    cache_key: str
+    cache_built_at: datetime
+
+
 __all__ = [
     "AggregateByDayRow",
     "CategoryBucket",
@@ -178,6 +194,8 @@ __all__ = [
     "ChroniclerEpisode",
     "ChroniclerOverride",
     "ChroniclerPointEvent",
+    "DayCloseRefreshRequest",
+    "DayCloseRefreshResponse",
     "DayCloseFreshResponse",
     "DayCloseStaleResponse",
     "SourceBreakdownEntry",
