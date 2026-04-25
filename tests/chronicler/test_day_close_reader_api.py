@@ -8,7 +8,10 @@ Covers:
 - Stale due to point_events.tombstone_at > cache_built_at.
 - Stale due to point_events.updated_at > cache_built_at.
 - Stale due to overrides.created_at > cache_built_at (episode override).
+- Stale due to provenance-ref episode updated outside cached window.
+- Stale due to provenance-ref point_event updated outside cached window.
 - Stale tie-break: last_invalidating_event_at is the MAX of all signals.
+- Staleness query passes cache_key as 4th parameter.
 - Guardrail: router.py imports no LLM packages.
 - Guardrail: SQL in router.py only references chronicler.* relations.
 """
@@ -339,6 +342,99 @@ class TestDayCloseReaderStaleness:
         assert "2026-04-24T02:00:00" in body["cache_built_at"]
 
 
+class TestDayCloseProvenanceRefStaleness:
+    """Staleness signal: cited rows updated to move outside the cached window.
+
+    The provenance-ref branches (signals 6 and 7) detect when an episode or
+    point_event cited in tier2_cache.provenance_refs has been updated after
+    cache_built_at — even if its current time range is now outside the cached
+    window so the window-scoped branches would miss it.
+    """
+
+    def _stale_row(self, ts: datetime) -> _Row:
+        return _row({"last_invalidating_event_at": ts})
+
+    async def test_stale_due_to_provenance_episode_updated_outside_window(self):
+        """Episode cited in provenance_refs updated outside cached window triggers stale.
+
+        This is the core regression scenario: the episode was originally in
+        the window (and thus cited), but was later updated to move its
+        start_at/end_at outside [cache_start, cache_end).  The window-scoped
+        branches miss it; the provenance-ref branch catches it.
+        """
+        # Cache row cites an episode source_ref.
+        cr = _cache_row(provenance_refs=["core.sessions:session-abc"])
+        # Staleness query returns a non-null timestamp (the updated_at of the
+        # cited episode, now outside the window).
+        stale_row = self._stale_row(_T_AFTER)
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["stale"] is True
+        assert "last_invalidating_event_at" in body
+        assert "prose" not in body
+
+    async def test_stale_due_to_provenance_point_event_updated_outside_window(self):
+        """Point event cited in provenance_refs updated outside cached window triggers stale."""
+        cr = _cache_row(provenance_refs=["spotify.track_play:play-xyz"])
+        stale_row = self._stale_row(_T_AFTER)
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["stale"] is True
+        assert "prose" not in body
+
+    async def test_staleness_query_passes_cache_key_as_fourth_parameter(self):
+        """Staleness fetchrow is called with cache_key as the 4th positional argument.
+
+        The provenance-ref branches join against tier2_cache by cache_key ($4).
+        This test verifies the correct argument is passed.
+        """
+        cr = _cache_row(provenance_refs=["core.sessions:abc"])
+        stale_row = _row({"last_invalidating_event_at": None})
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+
+        # pool.fetchrow called twice: once for cache lookup, once for staleness.
+        assert pool.fetchrow.call_count == 2
+        staleness_call = pool.fetchrow.call_args_list[1]
+        # positional args after the SQL string: start_at, end_at, cache_built_at, cache_key
+        call_args = staleness_call[0]  # positional args tuple
+        assert len(call_args) == 5, f"Expected SQL + 4 args, got {len(call_args)} args"
+        # 5th element (index 4) is cache_key
+        assert call_args[4] == "day_close:2026-04-23"
+
+    async def test_fresh_cache_with_provenance_refs_no_stale(self):
+        """Provenance-ref branches do not trigger stale when no updates occurred."""
+        cr = _cache_row(provenance_refs=["core.sessions:session-abc"])
+        # MAX returns NULL → fresh
+        stale_row = _row({"last_invalidating_event_at": None})
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "stale" not in body
+        assert body["prose"] == "Yesterday was a productive day."
+
+
 # ---------------------------------------------------------------------------
 # Guardrail: no LLM imports in router.py
 # ---------------------------------------------------------------------------
@@ -404,6 +500,9 @@ def _extract_sql_strings(source: str) -> list[str]:
     return sql_fragments
 
 
+_SQL_KEYWORDS = frozenset({"lateral", "only", "unnest", "lateral"})
+
+
 def _extract_relation_names(sql: str) -> list[str]:
     import re
 
@@ -411,7 +510,8 @@ def _extract_relation_names(sql: str) -> list[str]:
     relations = []
     for tok in tokens:
         bare = tok.split(".")[-1].lower().strip()
-        relations.append(bare)
+        if bare not in _SQL_KEYWORDS:
+            relations.append(bare)
     return relations
 
 

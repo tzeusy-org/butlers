@@ -1103,16 +1103,25 @@ async def get_day_close_cache(
     cache_built_at = cache_row["cache_built_at"]
 
     # ── Step 2: query staleness signals in the cached window ─────────────
-    # Five signals per spec:
-    #   episodes.tombstone_at  > cache_built_at
-    #   episodes.updated_at    > cache_built_at
-    #   point_events.tombstone_at > cache_built_at
-    #   point_events.updated_at   > cache_built_at
+    # Seven signals:
+    #   episodes.tombstone_at  > cache_built_at  (window-scoped)
+    #   episodes.updated_at    > cache_built_at  (window-scoped)
+    #   point_events.tombstone_at > cache_built_at  (window-scoped)
+    #   point_events.updated_at   > cache_built_at  (window-scoped)
     #   overrides.created_at   > cache_built_at  (for window-overlapping overrides)
+    #   episodes cited in provenance_refs but now outside the window (updated_at signal)
+    #   point_events cited in provenance_refs but now outside the window (updated_at signal)
     #
-    # Window condition for episodes / point_events:
+    # Window condition for episodes / point_events (signals 1-4):
     #   rows whose time span overlaps [start_at, end_at)
     #   i.e. start_at_col < end_at AND (end_at_col IS NULL OR end_at_col > start_at)
+    #
+    # Signals 6-7 (provenance-ref staleness): an episode or point_event that was
+    # cited when the cache was built may have been updated to move its time range
+    # OUTSIDE the cached window.  The window filter above would then miss it.
+    # Fix: join against the source_ref values stored in tier2_cache.provenance_refs
+    # so updates to those specific rows trigger staleness regardless of their
+    # current window position.
     #
     # For overrides we join back to the underlying episode/point_event to
     # scope them to the same window.  We use a single UNION query to get
@@ -1174,11 +1183,37 @@ async def get_day_close_cache(
             WHERE o.created_at > $3
               AND p.occurred_at >= $1
               AND p.occurred_at < $2
+
+            UNION ALL
+
+            -- provenance-ref staleness: episodes cited by this cache entry
+            -- that were updated (possibly moving their window) after cache was built.
+            -- Catches updates that push the episode outside the cached window.
+            SELECT e.updated_at AS ts
+            FROM tier2_cache c
+            CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
+            JOIN episodes e ON e.source_ref = ref
+            WHERE c.cache_key = $4
+              AND c.superseded_at IS NULL
+              AND e.updated_at > $3
+
+            UNION ALL
+
+            -- provenance-ref staleness: point_events cited by this cache entry
+            -- that were updated (possibly moving their window) after cache was built.
+            SELECT p.updated_at AS ts
+            FROM tier2_cache c
+            CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
+            JOIN point_events p ON p.source_ref = ref
+            WHERE c.cache_key = $4
+              AND c.superseded_at IS NULL
+              AND p.updated_at > $3
         ) invalidators
         """,
         start_at,
         end_at,
         cache_built_at,
+        cache_key,
     )
 
     last_invalidating_event_at = (
