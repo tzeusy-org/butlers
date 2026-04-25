@@ -13,6 +13,7 @@ import json
 import logging
 import sys
 import zoneinfo
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -633,8 +634,6 @@ async def aggregate_by_category(
     # ── Aggregate in Python ────────────────────────────────────────────
     # group by (category, source_name) to build per-source breakdowns,
     # then roll up to per-category buckets.
-    from collections import defaultdict
-
     cat_src: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "total_seconds": 0.0,
@@ -854,8 +853,6 @@ async def aggregate_by_day(
     #   "precision_values": list[str],
     #   "retention_days_values": list[int | None],
     # }
-    from collections import defaultdict
-
     day_cat_src: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "total_seconds": 0.0,
