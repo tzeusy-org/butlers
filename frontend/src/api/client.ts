@@ -218,6 +218,15 @@ import type {
   RuntimeConfigPatchResponse,
   HealingAttempt,
   HealingAttemptsParams,
+  ChroniclerAggregateByCategoryParams,
+  ChroniclerAggregateByDayParams,
+  ChroniclerAggregateByDayRow,
+  ChroniclerCategoryBuckets,
+  ChroniclerDayCloseParams,
+  ChroniclerDayCloseResponse,
+  ChroniclerEpisode,
+  ChroniclerEpisodesParams,
+  ChroniclerSourceStateRow,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3394,4 +3403,70 @@ export function patchRuntimeConfig(
       body: JSON.stringify(body),
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Chronicler
+// ---------------------------------------------------------------------------
+
+/** Fetch paginated chronicler episodes. Defaults: include_tombstoned=false. */
+export function getChroniclerEpisodes(
+  params?: ChroniclerEpisodesParams,
+): Promise<{ data: ChroniclerEpisode[]; meta: { total: number; offset: number; limit: number; has_more: boolean } }> {
+  const sp = new URLSearchParams();
+  if (params?.source_name) sp.set("source_name", params.source_name);
+  if (params?.episode_type) sp.set("episode_type", params.episode_type);
+  if (params?.start_from) sp.set("start_from", params.start_from);
+  if (params?.start_to) sp.set("start_to", params.start_to);
+  if (params?.overlaps_start) sp.set("overlaps_start", params.overlaps_start);
+  if (params?.overlaps_end) sp.set("overlaps_end", params.overlaps_end);
+  if (params?.include_tombstoned != null)
+    sp.set("include_tombstoned", String(params.include_tombstoned));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch(qs ? `/chronicler/episodes?${qs}` : "/chronicler/episodes");
+}
+
+/** Fetch category aggregates for a time window. Restricted excluded by default. */
+export function getChroniclerAggregateByCategory(
+  params: ChroniclerAggregateByCategoryParams,
+): Promise<{ data: ChroniclerCategoryBuckets; meta: Record<string, unknown> }> {
+  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
+  if (params.tz) sp.set("tz", params.tz);
+  if (params.privacy_tier) sp.set("privacy_tier", params.privacy_tier);
+  if (params.include_tombstoned != null)
+    sp.set("include_tombstoned", String(params.include_tombstoned));
+  return apiFetch(`/chronicler/aggregate/by-category?${sp.toString()}`);
+}
+
+/** Fetch time-bucketed episode durations grouped by (day, category). */
+export function getChroniclerAggregateByDay(
+  params: ChroniclerAggregateByDayParams,
+): Promise<ChroniclerAggregateByDayRow[]> {
+  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
+  if (params.tz) sp.set("tz", params.tz);
+  if (params.category) sp.set("category", params.category);
+  if (params.include_tombstoned != null)
+    sp.set("include_tombstoned", String(params.include_tombstoned));
+  return apiFetch(`/chronicler/aggregate/by-day?${sp.toString()}`);
+}
+
+/** Fetch source adapter state joined with projection checkpoints (singleton, sorted by source_name). */
+export function getChroniclerSourceState(): Promise<{ data: ChroniclerSourceStateRow[]; meta: Record<string, unknown> }> {
+  return apiFetch("/chronicler/source-state");
+}
+
+/**
+ * Fetch the day-close cache entry for a window.
+ * Returns fresh prose or a stale marker. 404 if no cache entry exists.
+ */
+export function getChroniclerDayClose(
+  params: ChroniclerDayCloseParams,
+): Promise<ChroniclerDayCloseResponse> {
+  const sp = new URLSearchParams({
+    window_start: params.window_start,
+    window_end: params.window_end,
+  });
+  return apiFetch(`/chronicler/aggregate/day-close?${sp.toString()}`);
 }

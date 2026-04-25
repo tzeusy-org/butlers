@@ -3206,3 +3206,165 @@ export interface GoogleHealthDisconnectResponse {
   /** Scope URLs that were stripped from granted_scopes. */
   scopes_removed: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Chronicler dashboard types
+// ---------------------------------------------------------------------------
+
+/** Per-source contribution within an aggregate bucket. */
+export interface ChroniclerSourceBreakdownEntry {
+  source_name: string;
+  total_seconds: number;
+  episode_count: number;
+  tombstoned: boolean;
+}
+
+/** One category bucket from GET /api/chronicler/aggregate/by-category. */
+export interface ChroniclerCategoryBucket {
+  category: string;
+  total_seconds: number;
+  episode_count: number;
+  source_breakdown: ChroniclerSourceBreakdownEntry[];
+  /** Least-precise precision value across contributing rows. */
+  precision: string;
+  /** Shortest non-NULL retention_days across contributing rows, or null. */
+  retention_floor_days: number | null;
+}
+
+/** Response envelope for GET /api/chronicler/aggregate/by-category. */
+export interface ChroniclerCategoryBuckets {
+  start_at: string;
+  end_at: string;
+  tz: string;
+  /** Sorted by total_seconds DESC, then category ASC. */
+  buckets: ChroniclerCategoryBucket[];
+}
+
+/** Query parameters for GET /api/chronicler/aggregate/by-category. */
+export interface ChroniclerAggregateByCategoryParams {
+  start_at: string;
+  end_at: string;
+  tz?: string;
+  /** Comma-separated privacy tiers to include. Default: exclude restricted. */
+  privacy_tier?: string;
+  include_tombstoned?: boolean;
+}
+
+/** One (day, category) bucket from GET /api/chronicler/aggregate/by-day. */
+export interface ChroniclerAggregateByDayRow {
+  /** ISO-8601 date string YYYY-MM-DD for the bucket's calendar day. */
+  day: string;
+  category: string;
+  total_seconds: number;
+  episode_count: number;
+  /** Inclusive start of the calendar day in the requested timezone. */
+  day_start: string;
+  /** Exclusive end of the calendar day in the requested timezone. */
+  day_end: string;
+  source_breakdown: ChroniclerSourceBreakdownEntry[];
+  /** Least-precise precision value across contributing rows. */
+  precision: string;
+  /** Shortest non-NULL retention_days across contributing rows, or null. */
+  retention_floor_days: number | null;
+}
+
+/** Query parameters for GET /api/chronicler/aggregate/by-day. */
+export interface ChroniclerAggregateByDayParams {
+  start_at: string;
+  end_at: string;
+  tz?: string;
+  category?: string;
+  include_tombstoned?: boolean;
+}
+
+/** Per-subsource projection checkpoint detail. */
+export interface ChroniclerSubsourceCheckpoint {
+  subsource: string;
+  last_run_at: string | null;
+  last_error: string | null;
+}
+
+/** Runtime state for a single source adapter, joined with projection checkpoints. */
+export interface ChroniclerSourceStateRow {
+  source_name: string;
+  chronicler_compatibility: string;
+  read_surface: string | null;
+  boundary_semantics: string | null;
+  optional_schema: boolean;
+  active: boolean;
+  inactive_reason: string | null;
+  last_run_at: string | null;
+  last_error: string | null;
+  subsource_checkpoints: ChroniclerSubsourceCheckpoint[] | null;
+}
+
+/** Query parameters for GET /api/chronicler/episodes. */
+export interface ChroniclerEpisodesParams {
+  source_name?: string;
+  episode_type?: string;
+  start_from?: string;
+  start_to?: string;
+  overlaps_start?: string;
+  overlaps_end?: string;
+  include_tombstoned?: boolean;
+  offset?: number;
+  limit?: number;
+}
+
+/** A single Chronicler episode (corrected view). */
+export interface ChroniclerEpisode {
+  id: string;
+  source_name: string;
+  source_ref: string;
+  episode_type: string;
+  start_at: string;
+  end_at: string | null;
+  precision: string;
+  title: string | null;
+  payload: Record<string, unknown>;
+  privacy: string;
+  retention_days: number | null;
+  tombstone_at: string | null;
+  canonical_start_at: string;
+  canonical_end_at: string | null;
+  canonical_title: string | null;
+  canonical_privacy: string;
+  corrected_at: string | null;
+  correction_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Fresh day-close cache response: prose + provenance refs.
+ * Returned when cache_built_at >= all invalidating events in the window.
+ */
+export interface ChroniclerDayCloseFreshResponse {
+  stale: false;
+  prose: string;
+  provenance_refs: string[];
+  cache_built_at: string;
+}
+
+/**
+ * Stale day-close cache response: cache exists but has been invalidated.
+ * Returned when any episode/point_event/override in the window changed after cache_built_at.
+ */
+export interface ChroniclerDayCloseStaleResponse {
+  stale: true;
+  cache_built_at: string;
+  last_invalidating_event_at: string;
+}
+
+/** Union of fresh and stale day-close responses. */
+export type ChroniclerDayCloseResponse =
+  | ChroniclerDayCloseFreshResponse
+  | ChroniclerDayCloseStaleResponse;
+
+/** Query parameters for GET /api/chronicler/aggregate/day-close. */
+export interface ChroniclerDayCloseParams {
+  /** ISO-8601 date string (YYYY-MM-DD) or datetime for the window start. */
+  window_start: string;
+  /** ISO-8601 date string (YYYY-MM-DD) or datetime for the window end. */
+  window_end: string;
+}

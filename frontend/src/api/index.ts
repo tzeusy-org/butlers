@@ -694,3 +694,28 @@ export type {
   RuntimeConfigPatch,
   RuntimeConfigPatchResponse,
 } from "./types.ts";
+
+export {
+  getChroniclerAggregateByCategory,
+  getChroniclerAggregateByDay,
+  getChroniclerDayClose,
+  getChroniclerEpisodes,
+  getChroniclerSourceState,
+} from "./client.ts";
+
+export type {
+  ChroniclerAggregateByCategoryParams,
+  ChroniclerAggregateByDayParams,
+  ChroniclerAggregateByDayRow,
+  ChroniclerCategoryBucket,
+  ChroniclerCategoryBuckets,
+  ChroniclerDayCloseParams,
+  ChroniclerDayCloseFreshResponse,
+  ChroniclerDayCloseResponse,
+  ChroniclerDayCloseStaleResponse,
+  ChroniclerEpisode,
+  ChroniclerEpisodesParams,
+  ChroniclerSourceBreakdownEntry,
+  ChroniclerSourceStateRow,
+  ChroniclerSubsourceCheckpoint,
+} from "./types.ts";
