@@ -42,20 +42,20 @@ def _make_episode_row(
     *,
     source_name: str = "core.sessions",
     episode_type: str = "work",
-    canonical_start_at: datetime,
-    canonical_end_at: datetime | None = None,
+    start_at: datetime,
+    end_at: datetime | None = None,
     precision: str = "exact",
-    canonical_privacy: str = "normal",
+    privacy: str = "normal",
     retention_days: int | None = None,
     tombstone_at: datetime | None = None,
 ) -> dict[str, Any]:
     return {
         "source_name": source_name,
         "episode_type": episode_type,
-        "canonical_start_at": canonical_start_at,
-        "canonical_end_at": canonical_end_at,
+        "start_at": start_at,
+        "end_at": end_at,
         "precision": precision,
-        "canonical_privacy": canonical_privacy,
+        "privacy": privacy,
         "retention_days": retention_days,
         "tombstone_at": tombstone_at,
     }
@@ -189,8 +189,8 @@ async def test_single_episode_one_day():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=start,
-            canonical_end_at=end,
+            start_at=start,
+            end_at=end,
         )
     ]
     app, _ = _build_app(rows)
@@ -228,8 +228,8 @@ async def test_episode_spans_two_days_splits_correctly():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=start,
-            canonical_end_at=end,
+            start_at=start,
+            end_at=end,
         )
     ]
     app, _ = _build_app(rows)
@@ -260,14 +260,14 @@ async def test_multiple_categories_separate_rows():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
         ),
         _make_episode_row(
             source_name="spotify.session_summary",
             episode_type="listening_episode",
-            canonical_start_at=day_start + timedelta(hours=2),
-            canonical_end_at=day_start + timedelta(hours=3),
+            start_at=day_start + timedelta(hours=2),
+            end_at=day_start + timedelta(hours=3),
         ),
     ]
     app, _ = _build_app(rows)
@@ -296,14 +296,14 @@ async def test_category_filter_excludes_other_categories():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
         ),
         _make_episode_row(
             source_name="spotify.session_summary",
             episode_type="listening_episode",
-            canonical_start_at=day_start + timedelta(hours=2),
-            canonical_end_at=day_start + timedelta(hours=3),
+            start_at=day_start + timedelta(hours=2),
+            end_at=day_start + timedelta(hours=3),
         ),
     ]
     app, _ = _build_app(rows)
@@ -336,9 +336,9 @@ async def test_sensitive_episodes_contribute_to_totals():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=2),
-            canonical_privacy="sensitive",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=2),
+            privacy="sensitive",
         ),
     ]
     app, _ = _build_app(rows)
@@ -376,8 +376,8 @@ async def test_tombstoned_episodes_excluded_by_default():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
             tombstone_at=day_start - timedelta(hours=1),
         ),
     ]
@@ -403,8 +403,8 @@ async def test_include_tombstoned_flag_passes_rows_through():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
             tombstone_at=day_start - timedelta(hours=1),
         ),
     ]
@@ -439,15 +439,15 @@ async def test_precision_carries_least_precise():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
             precision="exact",
         ),
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start + timedelta(hours=2),
-            canonical_end_at=day_start + timedelta(hours=3),
+            start_at=day_start + timedelta(hours=2),
+            end_at=day_start + timedelta(hours=3),
             precision="hour",
         ),
     ]
@@ -476,22 +476,22 @@ async def test_retention_floor_days_minimum_non_null():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
             retention_days=90,
         ),
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start + timedelta(hours=2),
-            canonical_end_at=day_start + timedelta(hours=3),
+            start_at=day_start + timedelta(hours=2),
+            end_at=day_start + timedelta(hours=3),
             retention_days=30,
         ),
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start + timedelta(hours=4),
-            canonical_end_at=day_start + timedelta(hours=5),
+            start_at=day_start + timedelta(hours=4),
+            end_at=day_start + timedelta(hours=5),
             retention_days=None,  # NULL inherits default
         ),
     ]
@@ -520,8 +520,8 @@ async def test_retention_floor_days_null_when_all_null():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
             retention_days=None,
         ),
     ]
@@ -563,8 +563,8 @@ async def test_dst_spring_forward_23h_day():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=spring_day_start_utc,
-            canonical_end_at=spring_day_end_utc,
+            start_at=spring_day_start_utc,
+            end_at=spring_day_end_utc,
         )
     ]
     app, _ = _build_app(rows)
@@ -617,8 +617,8 @@ async def test_dst_fall_back_25h_day():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=fall_day_start_utc,
-            canonical_end_at=fall_day_end_utc,
+            start_at=fall_day_start_utc,
+            end_at=fall_day_end_utc,
         )
     ]
     app, _ = _build_app(rows)
@@ -669,14 +669,14 @@ async def test_dst_spring_forward_episode_before_and_after_transition():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=pre_start,
-            canonical_end_at=pre_end,
+            start_at=pre_start,
+            end_at=pre_end,
         ),
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=post_start,
-            canonical_end_at=post_end,
+            start_at=post_start,
+            end_at=post_end,
         ),
     ]
     app, _ = _build_app(rows)
@@ -713,8 +713,8 @@ async def test_dst_fall_back_episode_in_repeated_hour():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=ep_start,
-            canonical_end_at=ep_end,
+            start_at=ep_start,
+            end_at=ep_end,
         )
     ]
     app, _ = _build_app(rows)
@@ -751,14 +751,14 @@ async def test_result_sorted_by_day_then_category():
         _make_episode_row(
             source_name="spotify.session_summary",
             episode_type="listening_episode",
-            canonical_start_at=base + timedelta(days=1),
-            canonical_end_at=base + timedelta(days=1, hours=1),
+            start_at=base + timedelta(days=1),
+            end_at=base + timedelta(days=1, hours=1),
         ),
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=base,
-            canonical_end_at=base + timedelta(hours=1),
+            start_at=base,
+            end_at=base + timedelta(hours=1),
         ),
     ]
     app, _ = _build_app(rows)
@@ -791,8 +791,8 @@ async def test_response_includes_day_start_and_day_end():
         _make_episode_row(
             source_name="core.sessions",
             episode_type="work",
-            canonical_start_at=day_start,
-            canonical_end_at=day_start + timedelta(hours=1),
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
         )
     ]
     app, _ = _build_app(rows)

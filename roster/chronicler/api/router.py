@@ -586,17 +586,19 @@ async def aggregate_by_day(
     # ── Fetch raw episode rows from the corrected view ─────────────────
     # Only select relations from the chronicler schema (v_episodes_corrected).
     # No LLM. No cross-schema references.
+    # Use the corrected start_at/end_at columns so user-submitted overrides
+    # are honoured in window filtering and duration arithmetic.
     clauses: list[str] = [
-        "canonical_start_at < $2",
-        "(canonical_end_at IS NULL OR canonical_end_at > $1)",
+        "start_at < $2",
+        "(end_at IS NULL OR end_at > $1)",
     ]
     args: list[Any] = [start_at, end_at]
 
     if not include_tombstoned:
         clauses.append("tombstone_at IS NULL")
 
-    # Exclude restricted episodes by default.
-    clauses.append("canonical_privacy != 'restricted'")
+    # Exclude restricted episodes by default (use corrected privacy column).
+    clauses.append("privacy != 'restricted'")
 
     where = "WHERE " + " AND ".join(clauses)
 
@@ -605,10 +607,10 @@ async def aggregate_by_day(
         SELECT
             source_name,
             episode_type,
-            canonical_start_at,
-            canonical_end_at,
+            start_at,
+            end_at,
             precision,
-            canonical_privacy,
+            privacy,
             retention_days,
             tombstone_at
         FROM v_episodes_corrected
@@ -623,7 +625,7 @@ async def aggregate_by_day(
     local_end = end_at.astimezone(tzinfo)
 
     first_day = local_start.date()
-    last_day = (local_end - timedelta(seconds=1)).astimezone(tzinfo).date()
+    last_day = (local_end - timedelta(microseconds=1)).astimezone(tzinfo).date()
 
     # Build a mapping: day_str -> (day_start_utc, day_end_utc)
     day_bounds: dict[str, tuple[datetime, datetime]] = {}
@@ -663,8 +665,8 @@ async def aggregate_by_day(
     )
 
     for row in rows:
-        ep_start: datetime = row["canonical_start_at"]
-        ep_end: datetime | None = row["canonical_end_at"]
+        ep_start: datetime = row["start_at"]
+        ep_end: datetime | None = row["end_at"]
         source_name: str = row["source_name"]
         episode_type: str = row["episode_type"]
         precision: str = row["precision"]
@@ -674,6 +676,20 @@ async def aggregate_by_day(
         ep_category = category_for(source_name, episode_type)
         if category is not None and ep_category != category:
             continue
+
+        if ep_category == "other":
+            logger.warning(
+                "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+                source_name,
+                episode_type,
+            )
+
+        if is_tombstoned:
+            logger.warning(
+                "chronicler.aggregate.tombstoned_episode source=%s episode_type=%s",
+                source_name,
+                episode_type,
+            )
 
         # If end_at is NULL treat as open-ended — only count the portion
         # that falls within each day window.
@@ -694,21 +710,6 @@ async def aggregate_by_day(
             bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
             bucket["precision_values"].append(precision)
             bucket["retention_days_values"].append(retention_days)
-
-            if is_tombstoned:
-                # Log unmapped / tombstoned drift for observability.
-                logger.warning(
-                    "chronicler.aggregate.tombstoned_episode source=%s episode_type=%s",
-                    source_name,
-                    episode_type,
-                )
-
-        if ep_category == "other":
-            logger.warning(
-                "chronicler.aggregate.unmapped_source=%s episode_type=%s",
-                source_name,
-                episode_type,
-            )
 
     # ── Build final response rows ──────────────────────────────────────
     # First group day_cat_src by (day, category) to produce per-bucket source breakdowns.
