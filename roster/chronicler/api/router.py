@@ -1290,9 +1290,15 @@ async def refresh_day_close(
 
     # ── Dispatch guard ────────────────────────────────────────────────────────
     if dispatch_fn is None:
-        raise HTTPException(
+        return JSONResponse(
             status_code=503,
-            detail="Day-close dispatch is not available in this deployment mode.",
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="dispatch_unavailable",
+                    message="Day-close dispatch is not available in this deployment mode.",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
         )
 
     # ── Look up the chronicler_day_close prompt from scheduled_tasks ──────────
@@ -1301,9 +1307,15 @@ async def refresh_day_close(
         DAY_CLOSE_TASK_NAME,
     )
     if task_row is None or not task_row["prompt"]:
-        raise HTTPException(
+        return JSONResponse(
             status_code=503,
-            detail=f"Scheduled task {DAY_CLOSE_TASK_NAME!r} not found or has no prompt.",
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="task_not_found",
+                    message=f"Scheduled task {DAY_CLOSE_TASK_NAME!r} not found or has no prompt.",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
         )
 
     # ── Dispatch — re-uses the same prompt as the cron schedule ───────────────
@@ -1313,7 +1325,10 @@ async def refresh_day_close(
     )
 
     # ── Write the fresh cache row ─────────────────────────────────────────────
-    run_at = datetime.now(UTC)
+    # Anchor run_at to the requested date so _compute_day_window targets body.date.
+    # _compute_day_window returns yesterday = run_at.date() - 1, so we pass
+    # midnight of body.date + 1 day to ensure the computed window covers body.date.
+    run_at = datetime.combine(body.date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
     await write_day_close_cache(
         pool,
         task_name=DAY_CLOSE_TASK_NAME,
@@ -1328,9 +1343,15 @@ async def refresh_day_close(
     )
     if new_row is None:
         # Dispatch succeeded but write was a no-op (e.g. result had no output).
-        raise HTTPException(
+        return JSONResponse(
             status_code=502,
-            detail="Day-close dispatch completed but no cache row was written.",
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="cache_write_failed",
+                    message="Day-close dispatch completed but no cache row was written.",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
         )
 
     return DayCloseRefreshResponse(
