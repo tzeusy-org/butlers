@@ -764,12 +764,21 @@ async def sync_schedules(
 
 
 async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
-    """Return True if *column* exists in *table* in the connected database."""
+    """Return True if *column* exists in *table* within the pool's current schema.
+
+    Filtering by ``current_schema()`` is critical: butler pools share the
+    Postgres database and only differ by their ``search_path``.  Without the
+    schema filter, a check against (e.g.) ``chronicler.scheduled_tasks``
+    spuriously returns True because another butler's schema has the column,
+    and the subsequent query then fails with "column does not exist".
+    """
     result = await pool.fetchval(
         """
         SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
-            WHERE table_name = $1 AND column_name = $2
+            WHERE table_schema = current_schema()
+              AND table_name = $1
+              AND column_name = $2
         )
         """,
         table,
