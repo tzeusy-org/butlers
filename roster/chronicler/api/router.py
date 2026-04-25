@@ -572,26 +572,41 @@ async def aggregate_by_category(
     """
     # ── Parameter validation ───────────────────────────────────────────
     if start_at is None or end_at is None:
-        raise HTTPException(
+        return JSONResponse(
             status_code=400,
-            detail={"code": "missing_parameter", "message": "start_at and end_at are required"},
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="missing_parameter",
+                    message="start_at and end_at are required",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
         )
 
     if end_at <= start_at:
-        raise HTTPException(
+        return JSONResponse(
             status_code=400,
-            detail={
-                "code": "invalid_time_range",
-                "message": "end_at must be strictly after start_at",
-            },
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_time_range",
+                    message="end_at must be strictly after start_at",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
         )
 
     try:
         zoneinfo.ZoneInfo(tz)
     except (zoneinfo.ZoneInfoNotFoundError, KeyError):
-        raise HTTPException(
+        return JSONResponse(
             status_code=400,
-            detail={"code": "invalid_timezone", "message": f"Unrecognized IANA timezone: {tz!r}"},
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_timezone",
+                    message=f"Unrecognized IANA timezone: {tz!r}",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
         )
 
     # ── Resolve privacy filter ─────────────────────────────────────────
