@@ -34,7 +34,8 @@ graph TB
         HOM["Home"]
         LIF["Lifestyle"]
         MSG["Messenger"]
-        QA["QA"]
+        QA["QA Staffer"]
+        CHR["Chronicler"]
     end
 
     subgraph Infra["Infrastructure"]
@@ -69,6 +70,7 @@ graph TB
     SW -- "route.v1 / MCP" --> HOM
     SW -- "route.v1 / MCP" --> LIF
     SW -- "route.v1 / MCP" --> MSG
+    SW -- "route.v1 / MCP" --> CHR
 
     Core --> PG
     Core --> S3
@@ -90,6 +92,7 @@ butler in the roster runs one daemon instance.
 | **Scheduler** | `core/scheduler.py` | Cron-driven task dispatch. Syncs TOML schedule definitions to DB on startup. Internal asyncio tick loop fires due tasks. | Stable |
 | **State Store** | `core/state.py` | Key-value JSONB store. Arbitrary per-butler state accessible via MCP tools. | Stable |
 | **Session Log** | `core/sessions.py` | Append-only record of every LLM CLI invocation: trigger source, duration, token counts, cost, tool calls. | Stable |
+| **Runtime Config** | `core/runtime_config.py` | Per-butler `runtime_config` DB table and TTL-cached `RuntimeConfigAccessor`. Seeded from `[butler.runtime_seed]` in `butler.toml` on first boot; managed thereafter via dashboard. Hot fields (model, runtime_type, args, session_timeout_s) take effect within 30s; cold fields (core_groups, max_concurrent, max_queued) require restart. | Stable |
 | **Route Inbox** | `core/route_inbox.py` | Durable work queue for async route dispatch. Persists `route.execute` payloads before returning `accepted`. Background task processes; crash recovery re-dispatches stuck rows. | Stable |
 | **Model Routing** | `core/model_routing.py` | Catalog-based dynamic model selection with per-butler overrides. Complexity tiers (trivial through discretion) map to model/runtime pairs. Token quota enforcement. | Maturing |
 | **Runtime Adapters** | `core/runtimes/` | Pluggable adapters for Claude Code, Codex, Gemini, and OpenCode. Each adapter knows how to build CLI arguments, parse output, and extract cost data. | Maturing |
@@ -196,6 +199,46 @@ It runs as a standard ButlerDaemon with additional Switchboard-specific tools.
 
 ---
 
+## 4a. Chronicler (`roster/chronicler/`)
+
+The Chronicler is a domain butler that reconstructs past time from
+already-captured evidence across the ecosystem. It owns retrospective time
+reconstruction with point events, overlapping episodes, correction overlays,
+and source projection adapters. It is routing-eligible (Switchboard routes
+explicit retrospective requests to it) but does not ingest externally, plan,
+schedule, dispatch, or notify. Per RFC 0014.
+
+| Sub-component | Source | Responsibility | Stability |
+|---|---|---|---|
+| **Source Adapters** | `roster/chronicler/modules/` | Per-source projection adapters (sessions, Google Calendar, Spotify, Google Health). Reads from approved migration-tracked source surfaces via scheduled jobs. No LLM per-event invocation. | Maturing |
+| **Point Events Store** | `chronicler` schema | Stores instantaneous evidence with source provenance, precision, privacy, retention, and tombstone support. Idempotent replay via `(source_name, source_ref)` key. | Maturing |
+| **Episodes Store** | `chronicler` schema | Stores span-shaped evidence. Overlapping episodes from different sources are preserved without merging. | Maturing |
+| **Correction Overlay** | `chronicler.overrides` | User corrections layer on top of canonical projections without mutating canonical rows. Later override wins. | Maturing |
+| **Chronicler API** | `roster/chronicler/api/` | Auto-discovered routes under `/api/chronicler/*`: events, episodes, episode detail, episode events, episode corrections. Distinct from the operational `/api/timeline` route. | Maturing |
+
+---
+
+## 4b. QA Staffer (`roster/qa/`)
+
+The QA Staffer is a permanently-running infrastructure agent (type =
+`"staffer"`) that acts as the system-wide SRE for the Butlers ecosystem. It
+owns the patrol loop lifecycle, pluggable discovery source architecture, and
+the unified quality assurance function: it discovers errors across multiple
+channels, triages and deduplicates findings, dispatches investigation agents,
+and raises anonymized PRs. It is excluded from user-message routing and daily
+briefing contributions per the staffer archetype contract.
+
+| Sub-component | Source | Responsibility | Stability |
+|---|---|---|---|
+| **Patrol Loop** | `src/butlers/core/qa/` | Scheduler-driven cycle (default 10 min). Creates a `public.qa_patrols` record, polls all enabled discovery sources, passes combined findings through triage, dispatches novel investigations up to concurrency cap, and updates the patrol record. Includes overlap prevention and crash recovery. | Maturing |
+| **Discovery Sources** | `src/butlers/core/qa/sources/` | Pluggable `DiscoverySource` protocol. Ships with three v1 sources: `log_scanner` (reads `logs/butlers/`, `logs/connectors/`, `logs/uvicorn/` for ERROR/WARNING entries), `session_records` (queries `public.v_qa_recent_failures` SQL view), `butler_reports` (reactive in-memory buffer drained from `report_finding` MCP tool calls). All sources use tool-based filtering — no LLM per-event invocation. | Maturing |
+| **Triage** | `src/butlers/core/qa/triage.py` | Source-agnostic deduplication. Cross-references each finding's fingerprint against active `healing_attempts`, `qa_dismissals`, and a local cooldown cache. Determines which findings are novel and warrant investigation dispatch. | Maturing |
+| **Dispatch** | `src/butlers/core/qa/dispatch.py` | Unified investigation lifecycle. Applies the 10-gate sequence (no-recursion, opt-in, fingerprint, severity, novelty, cooldown, concurrency cap, circuit breaker, model resolution). Creates worktrees, spawns sandboxed investigation agents via the spawner, monitors deadlines, creates anonymized PRs via `BUTLERS_QA_GH_TOKEN`, records outcomes in `public.healing_attempts`. Subsumes and replaces per-butler self-healing dispatch. | Maturing |
+| **Anonymizer** | `src/butlers/core/healing/anonymizer.py` | Strips user-identifiable content from error summaries and session messages before storage in `qa_findings` and before passing to investigation agents. | Evolving |
+| **Dashboard** | `roster/qa/api/` | Auto-discovered QA dashboard routes under `/api/qa/*`: patrol list, patrol detail, investigation list, investigation detail, known issues, summary statistics. Frontend at `/qa` showing patrol history, investigation pipeline (Kanban), known issues tracker, and discovery source breakdown. | Maturing |
+
+---
+
 ## 5. Dashboard
 
 The Dashboard provides a web UI for monitoring and managing the butler fleet.
@@ -217,6 +260,9 @@ updates), state, and timeline.
 Each butler can define custom API routes in `roster/{butler}/api/router.py`.
 These are auto-discovered at startup by `router_discovery.py` and mounted under
 `/api/{butler}/`. Each must export a module-level `router` (APIRouter instance).
+Current auto-discovered route namespaces include `/api/chronicler/*` (retrospective
+time reads and corrections, see §4a) and the QA dashboard routes under `/api/qa/*`
+(patrol and investigation data, see §4b).
 
 ---
 
