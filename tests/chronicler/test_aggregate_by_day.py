@@ -887,6 +887,8 @@ _CHRONICLER_RELATIONS = frozenset(
         "source_adapter_state",
         "projection_checkpoints",
         "tier2_cache",
+        # Core butler tables present in every butler schema:
+        "scheduled_tasks",
     }
 )
 

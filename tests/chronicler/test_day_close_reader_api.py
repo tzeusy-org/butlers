@@ -382,6 +382,8 @@ _KNOWN_CHRONICLER_RELATIONS = frozenset(
         "v_point_events_corrected",
         "v_latest_overrides",
         "tier2_cache",
+        # Core butler tables present in every butler schema:
+        "scheduled_tasks",
     }
 )
 
