@@ -40,8 +40,7 @@ export interface StreakCalloutsProps {
 
 export function StreakCallouts({ episodeParams, refetchInterval }: StreakCalloutsProps) {
   const { data } = useChroniclesEpisodes(episodeParams, { refetchInterval })
-  const episodes = data?.data ?? []
-  const streaks = useMemo(() => findLongestStreaks(episodes), [episodes])
+  const streaks = useMemo(() => findLongestStreaks(data?.data ?? []), [data])
 
   // Hide entirely when no streaks pass the 30-min threshold
   if (streaks.length === 0) return null
