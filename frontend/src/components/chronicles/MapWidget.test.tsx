@@ -1,0 +1,154 @@
+// ---------------------------------------------------------------------------
+// Tests for MapWidget — bu-ig72b.14
+//
+// Strategy: unit tests that cover the public interface and inner logic without
+// requiring a real WebGL context. We mock maplibre-gl so tests exercise our
+// component logic — empty state, map container rendering — without spawning
+// a real map instance. React component rendering uses renderToStaticMarkup
+// (same pattern as existing component tests in this codebase).
+// ---------------------------------------------------------------------------
+
+import { describe, expect, it, vi } from "vitest"
+import { renderToStaticMarkup } from "react-dom/server"
+
+// ---------------------------------------------------------------------------
+// Mock maplibre-gl before any component imports.
+// Must be hoisted — vi.mock is hoisted automatically by vitest.
+// ---------------------------------------------------------------------------
+
+vi.mock("maplibre-gl", async () => {
+  class MockMap {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    constructor(..._args: unknown[]) {}
+    isStyleLoaded() { return true }
+    fitBounds() {}
+    remove() {}
+    on() {}
+    off() {}
+  }
+
+  class MockMarker {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    setLngLat(..._args: unknown[]) { return this }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    addTo(..._args: unknown[]) { return this }
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    setPopup(..._args: unknown[]) { return this }
+    remove() {}
+  }
+
+  class MockPopup {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    setText(..._args: unknown[]) { return this }
+  }
+
+  class MockLngLatBounds {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    extend(..._args: unknown[]) { return this }
+  }
+
+  const mock = {
+    Map: MockMap,
+    Marker: MockMarker,
+    Popup: MockPopup,
+    LngLatBounds: MockLngLatBounds,
+  }
+  return { default: mock, ...mock }
+})
+
+// Mock the CSS import so jsdom/server rendering doesn't choke on it.
+vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}))
+
+// ---------------------------------------------------------------------------
+// Imports after mocks are registered.
+// ---------------------------------------------------------------------------
+
+import { MapWidgetInner } from "./MapWidgetInner"
+import type { MapPoint } from "./MapWidget"
+
+// ---------------------------------------------------------------------------
+// MapWidgetInner — empty state (zero points)
+// ---------------------------------------------------------------------------
+
+describe("MapWidgetInner empty state", () => {
+  it("renders 'No location data' heading when points array is empty", () => {
+    const html = renderToStaticMarkup(<MapWidgetInner points={[]} />)
+    expect(html).toContain("No location data")
+  })
+
+  it("renders the descriptive empty-state text when points is empty", () => {
+    const html = renderToStaticMarkup(<MapWidgetInner points={[]} />)
+    expect(html).toContain("Location points will appear here")
+  })
+
+  it("does NOT render a map container when points is empty", () => {
+    const html = renderToStaticMarkup(<MapWidgetInner points={[]} />)
+    // The map container has data-testid="map-container"
+    expect(html).not.toContain("map-container")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// MapWidgetInner — with points
+// ---------------------------------------------------------------------------
+
+describe("MapWidgetInner with points", () => {
+  const samplePoints: MapPoint[] = [
+    { lng: 103.8, lat: 1.35, label: "Singapore" },
+    { lng: 2.35, lat: 48.86, label: "Paris" },
+  ]
+
+  it("renders the map container element when points are provided", () => {
+    const html = renderToStaticMarkup(<MapWidgetInner points={samplePoints} />)
+    expect(html).toContain("map-container")
+  })
+
+  it("does NOT render the empty-state heading when points are provided", () => {
+    const html = renderToStaticMarkup(<MapWidgetInner points={samplePoints} />)
+    expect(html).not.toContain("No location data")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// MapWidgetInner — height prop
+// ---------------------------------------------------------------------------
+
+describe("MapWidgetInner height prop", () => {
+  it("applies default h-80 height class to the empty-state container", () => {
+    const html = renderToStaticMarkup(<MapWidgetInner points={[]} />)
+    expect(html).toContain("h-80")
+  })
+
+  it("applies custom height class when height prop is provided", () => {
+    const html = renderToStaticMarkup(<MapWidgetInner points={[]} height="h-96" />)
+    expect(html).toContain("h-96")
+  })
+
+  it("applies height class to map container when points are provided", () => {
+    const points: MapPoint[] = [{ lng: 0, lat: 0 }]
+    const html = renderToStaticMarkup(<MapWidgetInner points={points} height="h-96" />)
+    expect(html).toContain("h-96")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// MapPoint type contract (compile-time guard via explicit cast)
+// ---------------------------------------------------------------------------
+
+describe("MapPoint type", () => {
+  it("accepts required lng/lat fields", () => {
+    const point: MapPoint = { lng: 0, lat: 0 }
+    expect(point.lng).toBe(0)
+    expect(point.lat).toBe(0)
+  })
+
+  it("accepts optional label field", () => {
+    const point: MapPoint = { lng: 1, lat: 2, label: "Home" }
+    expect(point.label).toBe("Home")
+  })
+
+  it("accepts optional category field", () => {
+    const point: MapPoint = { lng: 1, lat: 2, category: "travel" }
+    expect(point.category).toBe("travel")
+  })
+})
