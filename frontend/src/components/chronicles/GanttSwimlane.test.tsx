@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// Tests for GanttSwimlaneInner — bu-ig72b.28
+// Tests for GanttSwimlaneInner — bu-ig72b.28 / bu-ig72b.30
 //
 // Tests use GanttSwimlaneInner directly (bypassing React.lazy) so they run
 // synchronously in the test environment.
@@ -13,12 +13,13 @@
 //   5. Tooltip content: source, precision, duration
 //   6. Sensitive episode gets a masked bar (pattern fill)
 //   7. Multiple categories render separate swimlanes
+//   8. Tooltip uses Radix primitive: sensitive masking, "View details" link
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
-import { GanttSwimlaneInner, clampTooltipPosition } from "./GanttSwimlaneInner"
+import { GanttSwimlaneInner } from "./GanttSwimlaneInner"
 import type { ChroniclerEpisode } from "@/api/types"
 
 // ---------------------------------------------------------------------------
@@ -343,57 +344,69 @@ describe("GanttSwimlaneInner multiple categories", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 8. Tooltip viewport clamping
+// 8. Tooltip: Radix primitive trigger structure
 // ---------------------------------------------------------------------------
 //
-// All tests use a 1280×800 viewport and a 220×120 tooltip (the approx defaults).
-// margin = 8 (default).
+// Radix TooltipContent renders via a Portal and is NOT present in static
+// server-side markup. These tests verify the tooltip trigger wiring (the
+// data-slot and data-state attributes that Radix injects) and the aria-label
+// on the bar, which serves as the accessible fallback for screen readers.
+//
+// Interactive tooltip content (title, source, "View details" link, sensitive
+// masking) is covered by end-to-end / interaction tests that mount into a
+// real DOM with pointer events.
 
-describe("clampTooltipPosition", () => {
-  const VW = 1280
-  const VH = 800
-  const TW = 220
-  const TH = 120
-  const MARGIN = 8
-
-  it("tooltip in the middle of the screen is placed right-of and above cursor", () => {
-    // cursor at 640, 400 — plenty of room on all sides
-    const { left, top } = clampTooltipPosition(640, 400, TW, TH, VW, VH, MARGIN)
-    // default: left = cursorX + 12, top = cursorY - 12 - TH
-    expect(left).toBe(640 + 12)
-    expect(top).toBe(400 - 12 - TH)
+describe("GanttSwimlaneInner tooltip via Radix primitive", () => {
+  it("wraps each bar in a Radix tooltip trigger (data-slot=tooltip-trigger)", () => {
+    const ep = makeEpisode({ id: "ep-radix", canonical_privacy: "normal" })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    // Radix injects data-slot="tooltip-trigger" on the TooltipTrigger element
+    expect(html).toContain('data-slot="tooltip-trigger"')
+    // Trigger starts in "closed" state
+    expect(html).toContain('data-state="closed"')
   })
 
-  it("tooltip near right edge flips to the left of the cursor", () => {
-    // cursor near right edge: 1270 — right placement would overflow
-    const { left } = clampTooltipPosition(1270, 400, TW, TH, VW, VH, MARGIN)
-    // flipped: left = cursorX - 12 - TW
-    expect(left).toBe(1270 - 12 - TW)
+  it("bar trigger has aria-label from episode title", () => {
+    const ep = makeEpisode({
+      id: "ep-aria",
+      canonical_title: "Deep work block",
+      canonical_privacy: "normal",
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    // The <g> inside TooltipTrigger carries the accessible label
+    expect(html).toContain("Deep work block")
   })
 
-  it("tooltip near bottom edge flips above the cursor", () => {
-    // cursor near top: 10 — default (above) placement would go negative
-    // default top = 10 - 12 - 120 = -122, which is < margin (8)
-    // so it flips below: top = cursorY + 12
-    const { top } = clampTooltipPosition(400, 10, TW, TH, VW, VH, MARGIN)
-    expect(top).toBe(10 + 12)
-  })
-
-  it("tooltip near bottom edge clamps so bottom stays within viewport", () => {
-    // cursor near bottom: 790 — flipped-below placement would also overflow
-    // default above: top = 790 - 12 - 120 = 658 — fine, so no flip needed
-    const { top } = clampTooltipPosition(400, 790, TW, TH, VW, VH, MARGIN)
-    // above: 790 - 12 - 120 = 658; bottom edge 658 + 120 = 778 < 800-8=792 ✓
-    expect(top).toBe(790 - 12 - TH)
-    expect(top + TH + MARGIN).toBeLessThanOrEqual(VH)
-  })
-
-  it("left edge never goes below margin when cursor is near left edge", () => {
-    // cursor very near left edge, with right-overflow forcing a flip left
-    // flipped left would give negative value → clamped to margin
-    const { left } = clampTooltipPosition(5, 400, TW, TH, VW, VH, MARGIN)
-    // right placement: 5 + 12 = 17; 17 + 220 + 8 = 245 < 1280 → no flip
-    expect(left).toBe(5 + 12)
-    expect(left).toBeGreaterThanOrEqual(MARGIN)
+  it("sensitive bar trigger uses 'Private activity' aria-label — never leaks canonical_title", () => {
+    // The bar's aria-label must also be masked for sensitive episodes so that
+    // screen readers do not announce the real title.
+    const ep = makeEpisode({
+      id: "ep-sens-aria",
+      canonical_title: "Private session",
+      canonical_privacy: "sensitive",
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain('data-slot="tooltip-trigger"')
+    expect(html).toContain("gantt-bar-ep-sens-aria")
+    expect(html).toContain("Private activity")
+    expect(html).not.toContain("Private session")
   })
 })

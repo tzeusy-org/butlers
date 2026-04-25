@@ -12,14 +12,21 @@
 // with a dashed right edge + arrow indicator.
 //
 // Sensitive episodes (canonical_privacy = "sensitive") are rendered as
-// masked (hatched) bars — full visual placeholder for bu-D3.
+// masked (hatched) bars and show only "Private activity" in the tooltip.
 //
-// A hover tooltip surfaces: source, precision, duration.
+// A hover tooltip (Radix UI primitive) surfaces: title, source, precision,
+// duration, and a drilldown link to /chronicles/episodes/{id}.
 // ---------------------------------------------------------------------------
 
-import { useMemo, useState } from "react"
+import { useMemo } from "react"
 
 import type { ChroniclerEpisode } from "@/api/types"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import type { Category } from "./lane-taxonomy"
 import { LANE_TAXONOMY } from "./lane-taxonomy"
 
@@ -34,11 +41,6 @@ const LANE_PADDING_BOTTOM = 6   // px below last bar in a lane
 const LABEL_WIDTH = 90          // px for the lane label column
 const BAR_RADIUS = 3            // px border-radius on bars
 const OPEN_ARROW_WIDTH = 8      // px for the open-episode arrowhead
-
-// Tooltip viewport clamping
-const TOOLTIP_MARGIN = 8        // px gap between tooltip edge and viewport edge
-const TOOLTIP_APPROX_WIDTH = 220 // estimated tooltip width (px) for clamping
-const TOOLTIP_APPROX_HEIGHT = 120 // estimated tooltip height (px) for clamping
 
 // ---------------------------------------------------------------------------
 // Types
@@ -213,67 +215,8 @@ function laneColour(category: Category): string {
 }
 
 // ---------------------------------------------------------------------------
-// Tooltip position clamping
-// ---------------------------------------------------------------------------
-
-/**
- * Compute clamped tooltip position so it stays within the viewport.
- *
- * The tooltip is normally placed 12px right of and 12px above the cursor.
- * When that placement would overflow the viewport (minus margin), the tooltip
- * flips to the other side of the cursor instead of simply clamping, so it
- * does not overlap the bar under the pointer.
- *
- * Exported for unit testing.
- */
-// eslint-disable-next-line react-refresh/only-export-components
-export function clampTooltipPosition(
-  cursorX: number,
-  cursorY: number,
-  tooltipW: number,
-  tooltipH: number,
-  viewportW: number,
-  viewportH: number,
-  margin: number = TOOLTIP_MARGIN,
-): { left: number; top: number } {
-  const OFFSET_X = 12
-  const OFFSET_Y = 12
-
-  // Default: right of cursor, above cursor
-  let left = cursorX + OFFSET_X
-  let top = cursorY - OFFSET_Y - tooltipH
-
-  // Flip horizontally if right edge would exceed viewport
-  if (left + tooltipW + margin > viewportW) {
-    left = cursorX - OFFSET_X - tooltipW
-  }
-  // Clamp left edge to margin (never off-screen to the left either)
-  if (left < margin) {
-    left = margin
-  }
-
-  // Flip vertically if top edge would go above viewport
-  if (top < margin) {
-    top = cursorY + OFFSET_Y
-  }
-  // Clamp bottom edge to viewport - margin
-  if (top + tooltipH + margin > viewportH) {
-    top = viewportH - tooltipH - margin
-  }
-
-  return { left, top }
-}
-
-// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
-
-interface TooltipState {
-  x: number
-  y: number
-  episode: ChroniclerEpisode
-  isOpen: boolean
-}
 
 interface EpisodeBarProps {
   positioned: PositionedEpisode
@@ -281,10 +224,10 @@ interface EpisodeBarProps {
   svgWidth: number        // pixel width of the SVG bar area
   colour: string
   patternId: string | null  // hatch pattern id if sensitive, else null
-  onHover: (state: TooltipState | null) => void
+  windowEndMs: number
 }
 
-function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, onHover }: EpisodeBarProps) {
+function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndMs }: EpisodeBarProps) {
   const { episode, row, xPct, widthPct, isOpen } = positioned
   const isSensitive = episode.canonical_privacy === "sensitive"
 
@@ -295,149 +238,104 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, onHover }:
 
   const barId = `bar-${episode.id}`
 
-  return (
-    <g
-      role="img"
-      aria-label={isSensitive ? SENSITIVE_GENERIC_LABEL : (episode.canonical_title ?? episode.source_name)}
-      data-testid={`gantt-bar-${episode.id}`}
-      style={{ cursor: "pointer" }}
-      onMouseEnter={(e) => {
-        onHover({ x: e.clientX, y: e.clientY, episode, isOpen })
-      }}
-      onMouseLeave={() => onHover(null)}
-    >
-      {/* Bar body */}
-      <rect
-        id={barId}
-        x={x}
-        y={y}
-        width={isOpen ? Math.max(w - OPEN_ARROW_WIDTH, 2) : w}
-        height={h}
-        rx={BAR_RADIUS}
-        ry={BAR_RADIUS}
-        fill={isSensitive && patternId ? `url(#${patternId})` : colour}
-        stroke={colour}
-        strokeWidth={isSensitive ? 1 : 0}
-        fillOpacity={isSensitive ? 1 : 0.85}
-      />
-
-      {/* Open episode: dashed right edge + arrow */}
-      {isOpen && (
-        <>
-          <line
-            x1={x + w - OPEN_ARROW_WIDTH}
-            y1={y}
-            x2={x + w - OPEN_ARROW_WIDTH}
-            y2={y + h}
-            stroke={colour}
-            strokeWidth={1.5}
-            strokeDasharray="3 2"
-          />
-          <polygon
-            points={`
-              ${x + w - OPEN_ARROW_WIDTH},${y + h / 2 - 4}
-              ${x + w},${y + h / 2}
-              ${x + w - OPEN_ARROW_WIDTH},${y + h / 2 + 4}
-            `}
-            fill={colour}
-            fillOpacity={0.85}
-          />
-        </>
-      )}
-    </g>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Hover tooltip (absolutely positioned over the SVG container)
-// ---------------------------------------------------------------------------
-
-interface GanttTooltipProps {
-  tooltip: TooltipState
-  windowEndMs: number
-}
-
-const SENSITIVE_GENERIC_LABEL = "Private activity"
-
-function GanttTooltip({ tooltip, windowEndMs }: GanttTooltipProps) {
-  const { x, y, episode, isOpen } = tooltip
-
-  const isSensitive = episode.canonical_privacy === "sensitive"
-
-  // Sensitive episodes: show only the generic label — never title, source,
-  // precision, or timing details that could leak content.
-  if (isSensitive) {
-    return (
-      <div
-        role="tooltip"
-        data-testid="gantt-tooltip"
-        style={{
-          position: "fixed",
-          left: x + 12,
-          top: y - 12,
-          pointerEvents: "none",
-          zIndex: 50,
-        }}
-        className="rounded-md border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-md"
-      >
-        <p className="font-medium">{SENSITIVE_GENERIC_LABEL}</p>
-        <p className="text-yellow-600 mt-0.5 text-xs">Sensitive</p>
-      </div>
-    )
-  }
-
   const startMs = parseMs(episode.canonical_start_at)
   const rawEndMs = parseMs(episode.canonical_end_at)
   const endMs = isOpen ? windowEndMs : rawEndMs
   const durationMs = isNaN(startMs) || isNaN(endMs) ? null : endMs - startMs
-
-  const startLabel = isNaN(startMs) ? "?" : new Date(startMs).toLocaleTimeString()
+  const durationLabel = durationMs !== null ? formatDuration(durationMs) : "?"
+  const startLabel = isNaN(startMs) ? "?" : new Date(startMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
   const endLabel = isOpen
     ? "ongoing"
     : isNaN(rawEndMs)
     ? "?"
-    : new Date(rawEndMs).toLocaleTimeString()
-  const durationLabel = durationMs !== null ? formatDuration(durationMs) : "?"
-
-  const viewportW = typeof window !== "undefined" ? window.innerWidth : 1280
-  const viewportH = typeof window !== "undefined" ? window.innerHeight : 800
-  const { left, top } = clampTooltipPosition(
-    x,
-    y,
-    TOOLTIP_APPROX_WIDTH,
-    TOOLTIP_APPROX_HEIGHT,
-    viewportW,
-    viewportH,
-  )
+    : new Date(rawEndMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
 
   return (
-    <div
-      role="tooltip"
-      data-testid="gantt-tooltip"
-      style={{
-        position: "fixed",
-        left,
-        top,
-        pointerEvents: "none",
-        zIndex: 50,
-      }}
-      className="rounded-md border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-md"
-    >
-      <p className="font-medium">{episode.canonical_title ?? episode.source_name}</p>
-      <p className="text-muted-foreground mt-0.5">
-        Source: <span className="text-foreground">{episode.source_name}</span>
-      </p>
-      <p className="text-muted-foreground">
-        Precision: <span className="text-foreground">{episode.precision}</span>
-      </p>
-      <p className="text-muted-foreground">
-        Duration: <span className="text-foreground">{durationLabel}</span>
-      </p>
-      <p className="text-muted-foreground">
-        {startLabel} – {endLabel}
-      </p>
-      {isOpen && <p className="text-blue-500 mt-0.5 text-xs">Episode ongoing</p>}
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <g
+          role="img"
+          aria-label={isSensitive ? "Private activity" : (episode.canonical_title ?? episode.source_name)}
+          data-testid={`gantt-bar-${episode.id}`}
+          style={{ cursor: "pointer" }}
+        >
+          {/* Bar body */}
+          <rect
+            id={barId}
+            x={x}
+            y={y}
+            width={isOpen ? Math.max(w - OPEN_ARROW_WIDTH, 2) : w}
+            height={h}
+            rx={BAR_RADIUS}
+            ry={BAR_RADIUS}
+            fill={isSensitive && patternId ? `url(#${patternId})` : colour}
+            stroke={colour}
+            strokeWidth={isSensitive ? 1 : 0}
+            fillOpacity={isSensitive ? 1 : 0.85}
+          />
+
+          {/* Open episode: dashed right edge + arrow */}
+          {isOpen && (
+            <>
+              <line
+                x1={x + w - OPEN_ARROW_WIDTH}
+                y1={y}
+                x2={x + w - OPEN_ARROW_WIDTH}
+                y2={y + h}
+                stroke={colour}
+                strokeWidth={1.5}
+                strokeDasharray="3 2"
+              />
+              <polygon
+                points={`
+                  ${x + w - OPEN_ARROW_WIDTH},${y + h / 2 - 4}
+                  ${x + w},${y + h / 2}
+                  ${x + w - OPEN_ARROW_WIDTH},${y + h / 2 + 4}
+                `}
+                fill={colour}
+                fillOpacity={0.85}
+              />
+            </>
+          )}
+        </g>
+      </TooltipTrigger>
+      <TooltipContent
+        data-testid="gantt-tooltip"
+        className="w-56 space-y-0.5 text-xs"
+      >
+        {isSensitive ? (
+          <>
+            <p className="font-medium">Private activity</p>
+            <p className="text-yellow-600 mt-0.5">Sensitive</p>
+          </>
+        ) : (
+          <>
+            <p className="font-medium">{episode.canonical_title ?? episode.source_name}</p>
+            <p>
+              <span className="opacity-70">Source: </span>{episode.source_name}
+            </p>
+            <p>
+              <span className="opacity-70">Precision: </span>{episode.precision}
+            </p>
+            <p>
+              <span className="opacity-70">Duration: </span>{durationLabel}
+            </p>
+            <p className="opacity-70">
+              {startLabel} – {endLabel}
+            </p>
+            {isOpen && <p className="opacity-70 italic">Episode ongoing</p>}
+            <p className="pt-0.5">
+              <a
+                href={`/chronicles/episodes/${episode.id}`}
+                className="underline opacity-70 hover:opacity-100"
+              >
+                View details →
+              </a>
+            </p>
+          </>
+        )}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -472,8 +370,6 @@ export function GanttSwimlaneInner({
   windowStart,
   windowEnd,
 }: GanttSwimlaneInnerProps) {
-  const [tooltip, setTooltip] = useState<TooltipState | null>(null)
-
   const windowStartMs = windowStart.getTime()
   const windowEndMs = windowEnd.getTime()
   const windowDuration = windowEndMs - windowStartMs
@@ -503,154 +399,148 @@ export function GanttSwimlaneInner({
   const totalSvgHeight = lanes.reduce((sum, l) => sum + l.laneHeight, 0) + AXIS_HEIGHT
 
   return (
-    <div className="relative" data-testid="gantt-container">
-      {/* Label column + SVG area side-by-side */}
-      <div className="flex">
-        {/* Label column */}
-        <div
-          className="shrink-0 select-none"
-          style={{ width: LABEL_WIDTH, paddingTop: 0 }}
-          aria-hidden
-        >
-          {lanes.map((lane) => (
-            <div
-              key={lane.category}
-              className="flex items-center text-xs font-medium text-muted-foreground pr-2"
-              style={{ height: lane.laneHeight }}
-            >
-              <span
-                className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5 shrink-0"
-                style={{ backgroundColor: laneColour(lane.category) }}
-              />
-              {LANE_TAXONOMY[lane.category].label}
-            </div>
-          ))}
-          {/* Spacer for axis row */}
-          <div style={{ height: AXIS_HEIGHT }} />
-        </div>
-
-        {/* SVG bar area — responsive width, logical viewBox */}
-        <div className="grow min-w-0 relative" data-testid="gantt-svg-wrapper">
-          <svg
-            viewBox={`0 0 ${SVG_WIDTH} ${totalSvgHeight}`}
-            preserveAspectRatio="none"
-            width="100%"
-            height={totalSvgHeight}
-            aria-label="Gantt timeline"
-            role="img"
+    <TooltipProvider>
+      <div className="relative" data-testid="gantt-container">
+        {/* Label column + SVG area side-by-side */}
+        <div className="flex">
+          {/* Label column */}
+          <div
+            className="shrink-0 select-none"
+            style={{ width: LABEL_WIDTH, paddingTop: 0 }}
+            aria-hidden
           >
-            {/* Hatch patterns for sensitive episodes — one per category colour */}
-            <defs>
-              {lanes.map((lane) => {
-                const colour = laneColour(lane.category)
-                const id = `hatch-${lane.category}`
-                return (
-                  <pattern
-                    key={id}
-                    id={id}
-                    patternUnits="userSpaceOnUse"
-                    width={8}
-                    height={8}
-                    patternTransform="rotate(45)"
-                  >
-                    <rect width={8} height={8} fill={colour} fillOpacity={0.3} />
-                    <line x1={0} y1={0} x2={0} y2={8} stroke={colour} strokeWidth={3} strokeOpacity={0.6} />
-                  </pattern>
-                )
-              })}
-            </defs>
-
-            {/* Lane background alternating stripes */}
-            {lanes.map((lane, i) => (
-              <rect
+            {lanes.map((lane) => (
+              <div
                 key={lane.category}
-                x={0}
-                y={lane.yOffset}
-                width={SVG_WIDTH}
-                height={lane.laneHeight}
-                fill={i % 2 === 0 ? "rgba(0,0,0,0.02)" : "rgba(0,0,0,0.04)"}
-              />
+                className="flex items-center text-xs font-medium text-muted-foreground pr-2"
+                style={{ height: lane.laneHeight }}
+              >
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5 shrink-0"
+                  style={{ backgroundColor: laneColour(lane.category) }}
+                />
+                {LANE_TAXONOMY[lane.category].label}
+              </div>
             ))}
+            {/* Spacer for axis row */}
+            <div style={{ height: AXIS_HEIGHT }} />
+          </div>
 
-            {/* Tick grid lines */}
-            {ticks.map((ms) => {
-              const xPct = (ms - windowStartMs) / windowDuration
-              const x = xPct * SVG_WIDTH
-              return (
-                <line
-                  key={ms}
-                  x1={x}
-                  y1={0}
-                  x2={x}
-                  y2={totalSvgHeight - AXIS_HEIGHT}
-                  stroke="currentColor"
-                  strokeOpacity={0.08}
-                  strokeWidth={1}
+          {/* SVG bar area — responsive width, logical viewBox */}
+          <div className="grow min-w-0 relative" data-testid="gantt-svg-wrapper">
+            <svg
+              viewBox={`0 0 ${SVG_WIDTH} ${totalSvgHeight}`}
+              preserveAspectRatio="none"
+              width="100%"
+              height={totalSvgHeight}
+              aria-label="Gantt timeline"
+              role="img"
+            >
+              {/* Hatch patterns for sensitive episodes — one per category colour */}
+              <defs>
+                {lanes.map((lane) => {
+                  const colour = laneColour(lane.category)
+                  const id = `hatch-${lane.category}`
+                  return (
+                    <pattern
+                      key={id}
+                      id={id}
+                      patternUnits="userSpaceOnUse"
+                      width={8}
+                      height={8}
+                      patternTransform="rotate(45)"
+                    >
+                      <rect width={8} height={8} fill={colour} fillOpacity={0.3} />
+                      <line x1={0} y1={0} x2={0} y2={8} stroke={colour} strokeWidth={3} strokeOpacity={0.6} />
+                    </pattern>
+                  )
+                })}
+              </defs>
+
+              {/* Lane background alternating stripes */}
+              {lanes.map((lane, i) => (
+                <rect
+                  key={lane.category}
+                  x={0}
+                  y={lane.yOffset}
+                  width={SVG_WIDTH}
+                  height={lane.laneHeight}
+                  fill={i % 2 === 0 ? "rgba(0,0,0,0.02)" : "rgba(0,0,0,0.04)"}
                 />
-              )
-            })}
+              ))}
 
-            {/* Episode bars per lane */}
-            {lanes.map((lane) => {
-              const colour = laneColour(lane.category)
-              // Hatch pattern is defined once per category in <defs> above.
-              const categoryPatternId = `hatch-${lane.category}`
-              return lane.episodes.map((positioned) => (
-                <EpisodeBar
-                  key={positioned.episode.id}
-                  positioned={positioned}
-                  laneY={lane.yOffset}
-                  svgWidth={SVG_WIDTH}
-                  colour={colour}
-                  patternId={
-                    positioned.episode.canonical_privacy === "sensitive"
-                      ? categoryPatternId
-                      : null
-                  }
-                  onHover={(state) => setTooltip(state)}
-                />
-              ))
-            })}
-
-            {/* Time axis */}
-            {ticks.map((ms) => {
-              const xPct = (ms - windowStartMs) / windowDuration
-              const x = xPct * SVG_WIDTH
-              return (
-                <g key={ms}>
+              {/* Tick grid lines */}
+              {ticks.map((ms) => {
+                const xPct = (ms - windowStartMs) / windowDuration
+                const x = xPct * SVG_WIDTH
+                return (
                   <line
+                    key={ms}
                     x1={x}
-                    y1={totalSvgHeight - AXIS_HEIGHT}
+                    y1={0}
                     x2={x}
-                    y2={totalSvgHeight - AXIS_HEIGHT + 4}
+                    y2={totalSvgHeight - AXIS_HEIGHT}
                     stroke="currentColor"
-                    strokeOpacity={0.4}
+                    strokeOpacity={0.08}
                     strokeWidth={1}
                   />
-                  <text
-                    x={x}
-                    y={totalSvgHeight - 6}
-                    textAnchor="middle"
-                    fontSize={10}
-                    fill="currentColor"
-                    fillOpacity={0.5}
-                  >
-                    {formatTickLabel(ms, windowDuration)}
-                  </text>
-                </g>
-              )
-            })}
-          </svg>
+                )
+              })}
+
+              {/* Episode bars per lane */}
+              {lanes.map((lane) => {
+                const colour = laneColour(lane.category)
+                // Hatch pattern is defined once per category in <defs> above.
+                const categoryPatternId = `hatch-${lane.category}`
+                return lane.episodes.map((positioned) => (
+                  <EpisodeBar
+                    key={positioned.episode.id}
+                    positioned={positioned}
+                    laneY={lane.yOffset}
+                    svgWidth={SVG_WIDTH}
+                    colour={colour}
+                    patternId={
+                      positioned.episode.canonical_privacy === "sensitive"
+                        ? categoryPatternId
+                        : null
+                    }
+                    windowEndMs={windowEndMs}
+                  />
+                ))
+              })}
+
+              {/* Time axis */}
+              {ticks.map((ms) => {
+                const xPct = (ms - windowStartMs) / windowDuration
+                const x = xPct * SVG_WIDTH
+                return (
+                  <g key={ms}>
+                    <line
+                      x1={x}
+                      y1={totalSvgHeight - AXIS_HEIGHT}
+                      x2={x}
+                      y2={totalSvgHeight - AXIS_HEIGHT + 4}
+                      stroke="currentColor"
+                      strokeOpacity={0.4}
+                      strokeWidth={1}
+                    />
+                    <text
+                      x={x}
+                      y={totalSvgHeight - 6}
+                      textAnchor="middle"
+                      fontSize={10}
+                      fill="currentColor"
+                      fillOpacity={0.5}
+                    >
+                      {formatTickLabel(ms, windowDuration)}
+                    </text>
+                  </g>
+                )
+              })}
+            </svg>
+          </div>
         </div>
       </div>
-
-      {/* Hover tooltip — rendered outside SVG so it's not clipped */}
-      {tooltip && (
-        <GanttTooltip
-          tooltip={tooltip}
-          windowEndMs={windowEndMs}
-        />
-      )}
-    </div>
+    </TooltipProvider>
   )
 }
