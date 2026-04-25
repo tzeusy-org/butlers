@@ -10,7 +10,9 @@ Covers:
 - Stale due to overrides.created_at > cache_built_at (episode override).
 - Stale due to provenance-ref episode updated outside cached window.
 - Stale due to provenance-ref point_event updated outside cached window.
-- Stale due to override corrected_start_at moving episode into cached window.
+- Stale due to override corrected_start_at moving episode into cached window (signal 8).
+- Stale due to override corrected_start_at moving point_event into cached window (signal 9).
+- target_kind filtering: episode branch does not catch point_event overrides and vice versa.
 - Stale tie-break: last_invalidating_event_at is the MAX of all signals.
 - Staleness query passes cache_key as 4th parameter.
 - Guardrail: router.py imports no LLM packages.
@@ -500,6 +502,96 @@ class TestDayCloseCorrectedStartAtStaleness:
         )
         assert "corrected_start_at < $2" in source, (
             "Signal 8 SQL branch missing: expected 'corrected_start_at < $2' in staleness query"
+        )
+
+
+class TestDayCloseCorrectedStartAtPointEventStaleness:
+    """Staleness signal 9: override sets corrected_start_at on a point_event inside the cached window.
+
+    An override created after cache_built_at that moves a point_event INTO the
+    cached window via corrected_start_at triggers staleness.  The point_event's
+    original occurred_at lies outside [cache_start, cache_end), so signals 1-5
+    (which scope via the point_event's current occurred_at) would miss it.
+
+    This is the sibling signal to signal 8 (episode corrected_start_at) and
+    ensures target_kind='point_event' overrides are caught independently.
+    """
+
+    def _stale_row(self, ts: datetime) -> _Row:
+        return _row({"last_invalidating_event_at": ts})
+
+    async def test_stale_due_to_point_event_corrected_start_at_inside_window(self):
+        """Override on a point_event with corrected_start_at inside [start, end) → stale.
+
+        Scenario:
+        - Point event originally has occurred_at outside [_CACHE_START, _CACHE_END).
+        - After the cache was built, an override sets corrected_start_at to a
+          timestamp inside the window, pulling the point_event into scope.
+        - The staleness query must detect this via the point_event corrected_start_at branch.
+        """
+        cr = _cache_row()
+        # Simulate the DB returning a non-null MAX from the point_event corrected_start_at branch.
+        stale_row = self._stale_row(_T_AFTER)
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["stale"] is True
+        assert "last_invalidating_event_at" in body
+        assert "prose" not in body
+
+    async def test_no_stale_when_point_event_corrected_start_at_outside_window(self):
+        """Override on a point_event with corrected_start_at outside window does not stale."""
+        cr = _cache_row()
+        # MAX returns NULL — no corrected_start_at override on point_event falls inside the window.
+        stale_row = _row({"last_invalidating_event_at": None})
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "stale" not in body
+        assert body["prose"] == "Yesterday was a productive day."
+
+    async def test_point_event_corrected_start_at_branch_sql_present_in_router(self):
+        """The point_event corrected_start_at staleness branch (signal 9) is present in the SQL.
+
+        Verifies the router SQL joins overrides to point_events for target_kind='point_event'
+        with corrected_start_at window check, so refactors cannot silently drop signal 9.
+        """
+        source = _ROUTER_PATH.read_text()
+        # The point_event branch must join point_events (not just episodes)
+        assert "JOIN point_events pe ON pe.id = o.target_id AND o.target_kind = 'point_event'" in source, (
+            "Signal 9 SQL branch missing: expected point_events JOIN with target_kind='point_event'"
+        )
+
+    async def test_episode_signal_does_not_catch_point_event_overrides(self):
+        """Episode branch (signal 8) filters target_kind='episode' — does not catch point_event overrides.
+
+        Verifies the episode corrected_start_at branch explicitly filters by
+        target_kind='episode' so the two branches are independent.
+        """
+        source = _ROUTER_PATH.read_text()
+        assert "JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'" in source, (
+            "Signal 8 SQL branch missing target_kind='episode' filter"
+        )
+
+    async def test_point_event_signal_does_not_catch_episode_overrides(self):
+        """Point_event branch (signal 9) filters target_kind='point_event' — does not catch episode overrides.
+
+        Verifies the point_event corrected_start_at branch explicitly filters by
+        target_kind='point_event' so the two branches remain independent.
+        """
+        source = _ROUTER_PATH.read_text()
+        assert "o.target_kind = 'point_event'" in source, (
+            "Signal 9 SQL branch missing target_kind='point_event' filter"
         )
 
 
