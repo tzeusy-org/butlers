@@ -931,6 +931,80 @@ def build_waypoints_envelope(
 
 
 # ---------------------------------------------------------------------------
+# Durable location point evidence persistence (Chronicler read surface, RFC 0014)
+# ---------------------------------------------------------------------------
+
+_LOCATION_EVIDENCE_TABLE = "connectors.owntracks_points"
+
+
+async def persist_location_point(
+    pool: asyncpg.Pool,
+    *,
+    endpoint_identity: str,
+    tst: int,
+    lat: float,
+    lon: float,
+    accuracy: float | None,
+    trigger: str | None,
+    raw_payload: dict[str, Any],
+) -> bool:
+    """Write a location point to the durable evidence table.
+
+    Idempotent — uses ON CONFLICT DO NOTHING on ``idempotency_key``.
+    Returns True if the row was inserted, False if it already existed.
+
+    This table is the Chronicler-readable evidence surface for
+    ``owntracks.points`` (RFC 0014 §D9).  The connector writes here
+    directly (connector_writer role) on every accepted location event.
+    Errors are caught and logged; failure to persist does NOT abort the
+    ingest submission path.
+
+    Args:
+        pool: asyncpg connection pool (connector_writer role).
+        endpoint_identity: Connector endpoint identity string.
+        tst: OwnTracks device timestamp (Unix seconds).
+        lat: Latitude in decimal degrees.
+        lon: Longitude in decimal degrees.
+        accuracy: GPS accuracy in metres, or None if not reported.
+        trigger: OwnTracks ``t`` trigger field (e.g. ``"p"``, ``"c"``), or None.
+        raw_payload: Full OwnTracks webhook payload for archival use.
+
+    Returns:
+        True if a new row was inserted; False if a duplicate was skipped.
+    """
+    import json as _json
+
+    idempotency_key = f"owntracks:{endpoint_identity}:{tst}:location"
+    ts = datetime.fromtimestamp(tst, tz=UTC)
+
+    result = await pool.fetchval(
+        f"""
+        INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
+            idempotency_key,
+            ts,
+            lat,
+            lon,
+            accuracy,
+            trigger,
+            endpoint_identity,
+            raw_payload
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING id
+        """,
+        idempotency_key,
+        ts,
+        lat,
+        lon,
+        accuracy,
+        trigger,
+        endpoint_identity,
+        _json.dumps(raw_payload),
+    )
+    return result is not None
+
+
+# ---------------------------------------------------------------------------
 # Main connector class
 # ---------------------------------------------------------------------------
 
@@ -1338,6 +1412,25 @@ class OwnTracksConnector:
         tst = body.get("tst")
         if tst is not None:
             await self._save_checkpoint(int(tst))
+
+        # Persist durable location evidence for Chronicler (RFC 0014 §D9)
+        if payload_type == "location" and self._db_pool is not None and tst is not None:
+            try:
+                await persist_location_point(
+                    self._db_pool,
+                    endpoint_identity=self._endpoint_identity,
+                    tst=int(tst),
+                    lat=float(body.get("lat", 0.0)),
+                    lon=float(body.get("lon", 0.0)),
+                    accuracy=float(body["acc"]) if body.get("acc") is not None else None,
+                    trigger=body.get("t") or None,
+                    raw_payload=body,
+                )
+            except Exception:
+                logger.warning(
+                    "OwnTracksConnector: failed to persist location evidence (non-fatal)",
+                    exc_info=True,
+                )
 
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
         if self._db_pool is not None:

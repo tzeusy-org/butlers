@@ -78,9 +78,12 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
     ),
     SourceAdapterState(
         source_name="owntracks.points",
-        chronicler_compatibility=Compatibility.PLANNED,
+        chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.owntracks_points",
-        boundary_semantics="location point events and derived movement episodes",
+        boundary_semantics=(
+            "one location point event per GPS fix; "
+            "contiguous fixes within 30 min → movement_episode rollup"
+        ),
         optional_schema=True,
     ),
     SourceAdapterState(
