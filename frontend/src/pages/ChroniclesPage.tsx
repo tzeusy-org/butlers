@@ -19,9 +19,10 @@ import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
 import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar"
-import { useChroniclesAggregates } from "@/hooks/use-chronicles"
+import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
+import { useChroniclesAggregates } from "@/hooks/use-chronicles"
 
 // ---------------------------------------------------------------------------
 // Widget-region placeholder — accepts the active time window
@@ -64,12 +65,13 @@ export default function ChroniclesPage() {
     end_at: timeWindow.to.toISOString(),
   }
 
-  const { byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
+  const { byCategory, byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
     refetchInterval,
     enabled: true,
   })
 
   const byDayRows = byDay.data ?? []
+  const categoryBuckets = byCategory.data?.data.buckets ?? []
 
   return (
     <div className="space-y-6">
@@ -113,7 +115,10 @@ export default function ChroniclesPage() {
       {/* Aggregations area */}
       <section aria-label="Aggregations area" className="rounded-lg border bg-card p-6">
         <h2 className="text-sm font-medium text-muted-foreground mb-4">Aggregations area</h2>
-        <AggregateStackedBar data={byDayRows} />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <AggregateStackedBar data={byDayRows} />
+          <AggregatePieChart buckets={categoryBuckets} />
+        </div>
       </section>
     </div>
   )

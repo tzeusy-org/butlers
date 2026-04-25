@@ -80,6 +80,9 @@ vi.mock("@/components/chronicles/TimeWindowPicker", () => ({
 vi.mock("@/components/chronicles/MapWidget", () => ({
   MapWidget: () => null,
 }));
+vi.mock("@/components/chronicles/AggregatePieChart", () => ({
+  AggregatePieChart: () => null,
+}));
 
 // Mocks needed for TimelinePage (regression guard)
 vi.mock("@/hooks/use-butlers", () => ({
