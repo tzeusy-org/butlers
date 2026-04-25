@@ -10,6 +10,9 @@ This package hosts Chronicler-internal primitives:
   registry (initial sources + deferred sources).
 - :mod:`butlers.chronicler.adapters` — projection adapters (sessions,
   calendar, etc.) that run as scheduled jobs.
+- :mod:`butlers.chronicler.aggregations` — pure deterministic helpers
+  (e.g. ``category_for``) used by aggregate endpoints and episode lists.
+  No I/O, no LLM.
 - :mod:`butlers.chronicler.interpretation` — Tier 2 LLM entry points
   with token-bounded input guardrails.
 
