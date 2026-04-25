@@ -133,7 +133,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                                accuracy, trigger, event, endpoint_identity,
                                raw_payload, recorded_at
                         FROM {_EVIDENCE_TABLE}
-                        ORDER BY ts ASC
+                        ORDER BY ts ASC, id ASC
                         LIMIT $1
                         """,
                         self.batch_limit,
@@ -146,7 +146,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                                raw_payload, recorded_at
                         FROM {_EVIDENCE_TABLE}
                         WHERE ts > $1
-                        ORDER BY ts ASC
+                        ORDER BY ts ASC, id ASC
                         LIMIT $2
                         """,
                         since,

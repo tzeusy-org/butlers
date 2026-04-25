@@ -436,6 +436,55 @@ async def test_since_filter_passed_to_query() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Deterministic ordering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_order_by_includes_id_tiebreaker_without_since() -> None:
+    """ORDER BY clause must include id ASC as a tie-breaker when since=None.
+
+    Same-timestamp sessions in the evidence table have non-deterministic ordering
+    without a secondary sort key, which can cause rows to be missed or duplicated
+    at batch boundaries when paginating with a watermark.
+    """
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    adapter = SpotifySessionAdapter()
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    query: str = conn.fetch.call_args.args[0]
+    assert "ORDER BY started_at ASC, id ASC" in query
+
+
+@pytest.mark.asyncio
+async def test_order_by_includes_id_tiebreaker_with_since() -> None:
+    """ORDER BY clause must include id ASC as a tie-breaker when since is given."""
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    adapter = SpotifySessionAdapter()
+    cp = _chronicler_pool()
+    since = _NOW - timedelta(hours=1)
+
+    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
+        await adapter.project(pool, chronicler_pool=cp, since=since)
+
+    query: str = conn.fetch.call_args.args[0]
+    assert "ORDER BY started_at ASC, id ASC" in query
+
+
+# ---------------------------------------------------------------------------
 # Deferred per-track events NOT produced
 # ---------------------------------------------------------------------------
 

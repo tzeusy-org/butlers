@@ -111,7 +111,7 @@ class SteamPlayAdapter(ProjectionAdapter):
                         SELECT id, steam_id, steam_account_id, app_id, app_name,
                                date, playtime_minutes, recorded_at
                         FROM {_EVIDENCE_TABLE}
-                        ORDER BY recorded_at ASC
+                        ORDER BY recorded_at ASC, id ASC
                         LIMIT $1
                         """,
                         self.batch_limit,
@@ -123,7 +123,7 @@ class SteamPlayAdapter(ProjectionAdapter):
                                date, playtime_minutes, recorded_at
                         FROM {_EVIDENCE_TABLE}
                         WHERE recorded_at > $1
-                        ORDER BY recorded_at ASC
+                        ORDER BY recorded_at ASC, id ASC
                         LIMIT $2
                         """,
                         since,

@@ -112,7 +112,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
                                duration_seconds, track_count, track_names,
                                context_uri, context_name, recorded_at
                         FROM {_EVIDENCE_TABLE}
-                        ORDER BY started_at ASC
+                        ORDER BY started_at ASC, id ASC
                         LIMIT $1
                         """,
                         self.batch_limit,
@@ -126,7 +126,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
                                context_uri, context_name, recorded_at
                         FROM {_EVIDENCE_TABLE}
                         WHERE started_at > $1
-                        ORDER BY started_at ASC
+                        ORDER BY started_at ASC, id ASC
                         LIMIT $2
                         """,
                         since,
