@@ -10,6 +10,7 @@ Covers:
 - Stale due to overrides.created_at > cache_built_at (episode override).
 - Stale due to provenance-ref episode updated outside cached window.
 - Stale due to provenance-ref point_event updated outside cached window.
+- Stale due to override corrected_start_at moving episode into cached window.
 - Stale tie-break: last_invalidating_event_at is the MAX of all signals.
 - Staleness query passes cache_key as 4th parameter.
 - Guardrail: router.py imports no LLM packages.
@@ -433,6 +434,73 @@ class TestDayCloseProvenanceRefStaleness:
         body = resp.json()
         assert "stale" not in body
         assert body["prose"] == "Yesterday was a productive day."
+
+
+class TestDayCloseCorrectedStartAtStaleness:
+    """Staleness signal 8: override sets corrected_start_at inside the cached window.
+
+    An override created after cache_built_at that moves an episode INTO the
+    cached window via corrected_start_at triggers staleness.  The episode's
+    original start_at lies outside [cache_start, cache_end), so signals 1-5
+    (which scope via the episode's current window position) would miss it.
+    """
+
+    def _stale_row(self, ts: datetime) -> _Row:
+        return _row({"last_invalidating_event_at": ts})
+
+    async def test_stale_due_to_corrected_start_at_inside_window(self):
+        """Override created after cache_built_at with corrected_start_at inside [start, end) → stale.
+
+        Scenario:
+        - Episode originally starts outside [_CACHE_START, _CACHE_END).
+        - After the cache was built, an override sets corrected_start_at to a
+          timestamp inside the window, pulling the episode into scope.
+        - The staleness query must detect this via corrected_start_at.
+        """
+        cr = _cache_row()
+        # Simulate the DB returning a non-null MAX from the corrected_start_at branch.
+        stale_row = self._stale_row(_T_AFTER)
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["stale"] is True
+        assert "last_invalidating_event_at" in body
+        assert "prose" not in body
+
+    async def test_no_stale_when_corrected_start_at_outside_window(self):
+        """Override with corrected_start_at outside the window does not trigger stale."""
+        cr = _cache_row()
+        # MAX returns NULL — no corrected_start_at override falls inside the window.
+        stale_row = _row({"last_invalidating_event_at": None})
+        pool = _mock_pool(fetchrow_side_effect=[cr, stale_row])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=2026-04-23")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "stale" not in body
+        assert body["prose"] == "Yesterday was a productive day."
+
+    async def test_corrected_start_at_branch_sql_present_in_router(self):
+        """The corrected_start_at staleness branch is present in the router SQL.
+
+        Verifies that the query contains the corrected_start_at window check
+        so structural SQL refactors cannot silently drop signal 8.
+        """
+        source = _ROUTER_PATH.read_text()
+        assert "corrected_start_at >= $1" in source, (
+            "Signal 8 SQL branch missing: expected 'corrected_start_at >= $1' in staleness query"
+        )
+        assert "corrected_start_at < $2" in source, (
+            "Signal 8 SQL branch missing: expected 'corrected_start_at < $2' in staleness query"
+        )
 
 
 # ---------------------------------------------------------------------------

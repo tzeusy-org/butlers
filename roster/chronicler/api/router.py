@@ -1103,7 +1103,7 @@ async def get_day_close_cache(
     cache_built_at = cache_row["cache_built_at"]
 
     # ── Step 2: query staleness signals in the cached window ─────────────
-    # Seven signals:
+    # Eight signals:
     #   episodes.tombstone_at  > cache_built_at  (window-scoped)
     #   episodes.updated_at    > cache_built_at  (window-scoped)
     #   point_events.tombstone_at > cache_built_at  (window-scoped)
@@ -1111,6 +1111,7 @@ async def get_day_close_cache(
     #   overrides.created_at   > cache_built_at  (for window-overlapping overrides)
     #   episodes cited in provenance_refs but now outside the window (updated_at signal)
     #   point_events cited in provenance_refs but now outside the window (updated_at signal)
+    #   overrides that move an episode INTO the window via corrected_start_at
     #
     # Window condition for episodes / point_events (signals 1-4):
     #   rows whose time span overlaps [start_at, end_at)
@@ -1122,6 +1123,12 @@ async def get_day_close_cache(
     # Fix: join against the source_ref values stored in tier2_cache.provenance_refs
     # so updates to those specific rows trigger staleness regardless of their
     # current window position.
+    #
+    # Signal 8 (corrected_start_at staleness): an override created after the cache
+    # was built that sets corrected_start_at within [start_at, end_at) pulls an
+    # episode that was originally OUTSIDE the cached window INTO scope.  Signals
+    # 1-5 miss this because they scope overrides via the episode's original
+    # start_at/end_at.  We detect it by checking corrected_start_at directly.
     #
     # For overrides we join back to the underlying episode/point_event to
     # scope them to the same window.  We use a single UNION query to get
@@ -1208,6 +1215,19 @@ async def get_day_close_cache(
             WHERE c.cache_key = $4
               AND c.superseded_at IS NULL
               AND p.updated_at > $3
+
+            UNION ALL
+
+            -- corrected_start_at staleness: an override that moves an episode INTO
+            -- the cached window by setting corrected_start_at within [start_at, end_at).
+            -- The episode's original start_at may lie outside the window, so signals
+            -- 1-5 would miss it.  We detect it via corrected_start_at directly.
+            SELECT o.created_at AS ts
+            FROM overrides o
+            JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'
+            WHERE o.created_at > $3
+              AND o.corrected_start_at >= $1
+              AND o.corrected_start_at < $2
         ) invalidators
         """,
         start_at,
