@@ -181,25 +181,14 @@ async def _discover_chronicler_projection_schemas(
             SELECT table_schema
             FROM information_schema.tables
             WHERE table_name = $1
-              AND table_schema NOT IN (
-                    'connector',
-                    'information_schema',
-                    'pg_catalog',
-                    'public',
-                    'shared'
-              )
+              AND table_schema != ALL($2::text[])
               AND table_schema NOT LIKE 'pg_%'
             ORDER BY table_schema ASC
             """,
             table_name,
+            list(_CHRONICLER_INTERNAL_SCHEMAS),
         )
-    return tuple(
-        schema
-        for row in rows
-        if isinstance((schema := row["table_schema"]), str)
-        and schema not in _CHRONICLER_INTERNAL_SCHEMAS
-        and not schema.startswith("pg_")
-    )
+    return tuple(row["table_schema"] for row in rows)
 
 
 async def _run_chronicler_project_sessions_job(

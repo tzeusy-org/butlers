@@ -61,9 +61,6 @@ async def test_discover_chronicler_projection_schemas_filters_internal_names() -
     pool, conn = _pool_with_schema_rows(
         "general",
         "relationship",
-        "public",
-        "shared",
-        "pg_toast_temp_123",
     )
 
     schemas = await _discover_chronicler_projection_schemas(pool, table_name="sessions")
