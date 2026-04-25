@@ -20,7 +20,9 @@ DEFAULT_TRUSTED_ROUTE_CALLERS: tuple[str, ...] = ("switchboard",)
 # Pattern matching ${VAR_NAME} — supports alphanumeric + underscore variable names.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _DB_SCHEMA_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_CONSOLIDATED_DB_NAME = "butlers"
+CONSOLIDATED_DB_NAME = "butlers"
+# Backwards-compatible alias for the historical private name.
+_CONSOLIDATED_DB_NAME = CONSOLIDATED_DB_NAME
 
 
 class ConfigError(Exception):

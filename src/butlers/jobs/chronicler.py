@@ -8,10 +8,9 @@ from typing import Any
 import asyncpg
 
 from butlers.chronicler.adapters import CalendarCompletedAdapter, CoreSessionsAdapter
+from butlers.chronicler.adapters.base import ProjectionAdapter
 from butlers.chronicler.contracts import seed_source_registry
-from butlers.config import ButlerType, list_butlers
-
-_CONSOLIDATED_DB_NAME = "butlers"
+from butlers.config import CONSOLIDATED_DB_NAME, ButlerType, list_butlers
 
 
 def _discover_chronicler_source_schemas() -> tuple[str, ...]:
@@ -26,7 +25,7 @@ def _discover_chronicler_source_schemas() -> tuple[str, ...]:
     for config in list_butlers():
         if config.type != ButlerType.BUTLER:
             continue
-        if config.db_name != _CONSOLIDATED_DB_NAME or not config.db_schema:
+        if config.db_name != CONSOLIDATED_DB_NAME or not config.db_schema:
             continue
         schemas.append(config.db_schema)
     return tuple(sorted(set(schemas)))
@@ -36,7 +35,7 @@ async def _run_adapters(
     *,
     pool: asyncpg.Pool,
     source_schemas: tuple[str, ...],
-    adapters: Sequence[Any],
+    adapters: Sequence[ProjectionAdapter],
 ) -> dict[str, Any]:
     await seed_source_registry(pool)
 
