@@ -4,7 +4,7 @@
 // Widget regions will be filled by follow-up issues:
 //   - Gantt area (bu-ig72b.5)
 //   - Map area (bu-ig72b.14)
-//   - Aggregations area (bu-ig72b.7)
+//   - Aggregations area (bu-ig72b.7, bu-ig72b.33)
 //
 // Time window state lives here and flows down to all three widget regions
 // via props so each widget can filter its data to the selected range.
@@ -18,6 +18,8 @@ import type { TimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
+import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar"
+import { useChroniclesAggregates } from "@/hooks/use-chronicles"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 
@@ -53,11 +55,21 @@ export default function ChroniclesPage() {
 
   // When the time window ends more than 24h ago, disable polling entirely.
   // Otherwise use the user-configured interval (pause/resume still respected).
-  // Widget regions (Gantt, Aggregations) will consume this once implemented.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const refetchInterval = timeWindow.pollingDisabled
     ? (false as const)
     : autoRefreshControl.refetchInterval
+
+  const aggregateParams = {
+    start_at: timeWindow.from.toISOString(),
+    end_at: timeWindow.to.toISOString(),
+  }
+
+  const { byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
+    refetchInterval,
+    enabled: true,
+  })
+
+  const byDayRows = byDay.data ?? []
 
   return (
     <div className="space-y-6">
@@ -99,11 +111,10 @@ export default function ChroniclesPage() {
       </section>
 
       {/* Aggregations area */}
-      <WidgetRegionPlaceholder
-        label="Aggregations area"
-        description="Time aggregations widget — coming soon."
-        timeWindow={timeWindow}
-      />
+      <section aria-label="Aggregations area" className="rounded-lg border bg-card p-6">
+        <h2 className="text-sm font-medium text-muted-foreground mb-4">Aggregations area</h2>
+        <AggregateStackedBar data={byDayRows} />
+      </section>
     </div>
   )
 }
