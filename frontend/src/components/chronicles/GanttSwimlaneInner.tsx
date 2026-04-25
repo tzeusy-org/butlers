@@ -35,6 +35,11 @@ const LABEL_WIDTH = 90          // px for the lane label column
 const BAR_RADIUS = 3            // px border-radius on bars
 const OPEN_ARROW_WIDTH = 8      // px for the open-episode arrowhead
 
+// Tooltip viewport clamping
+const TOOLTIP_MARGIN = 8        // px gap between tooltip edge and viewport edge
+const TOOLTIP_APPROX_WIDTH = 220 // estimated tooltip width (px) for clamping
+const TOOLTIP_APPROX_HEIGHT = 120 // estimated tooltip height (px) for clamping
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -208,6 +213,58 @@ function laneColour(category: Category): string {
 }
 
 // ---------------------------------------------------------------------------
+// Tooltip position clamping
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute clamped tooltip position so it stays within the viewport.
+ *
+ * The tooltip is normally placed 12px right of and 12px above the cursor.
+ * When that placement would overflow the viewport (minus margin), the tooltip
+ * flips to the other side of the cursor instead of simply clamping, so it
+ * does not overlap the bar under the pointer.
+ *
+ * Exported for unit testing.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function clampTooltipPosition(
+  cursorX: number,
+  cursorY: number,
+  tooltipW: number,
+  tooltipH: number,
+  viewportW: number,
+  viewportH: number,
+  margin: number = TOOLTIP_MARGIN,
+): { left: number; top: number } {
+  const OFFSET_X = 12
+  const OFFSET_Y = 12
+
+  // Default: right of cursor, above cursor
+  let left = cursorX + OFFSET_X
+  let top = cursorY - OFFSET_Y - tooltipH
+
+  // Flip horizontally if right edge would exceed viewport
+  if (left + tooltipW + margin > viewportW) {
+    left = cursorX - OFFSET_X - tooltipW
+  }
+  // Clamp left edge to margin (never off-screen to the left either)
+  if (left < margin) {
+    left = margin
+  }
+
+  // Flip vertically if top edge would go above viewport
+  if (top < margin) {
+    top = cursorY + OFFSET_Y
+  }
+  // Clamp bottom edge to viewport - margin
+  if (top + tooltipH + margin > viewportH) {
+    top = viewportH - tooltipH - margin
+  }
+
+  return { left, top }
+}
+
+// ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
@@ -316,14 +373,25 @@ function GanttTooltip({ tooltip, windowEndMs }: GanttTooltipProps) {
     : new Date(rawEndMs).toLocaleTimeString()
   const durationLabel = durationMs !== null ? formatDuration(durationMs) : "?"
 
+  const viewportW = typeof window !== "undefined" ? window.innerWidth : 1280
+  const viewportH = typeof window !== "undefined" ? window.innerHeight : 800
+  const { left, top } = clampTooltipPosition(
+    x,
+    y,
+    TOOLTIP_APPROX_WIDTH,
+    TOOLTIP_APPROX_HEIGHT,
+    viewportW,
+    viewportH,
+  )
+
   return (
     <div
       role="tooltip"
       data-testid="gantt-tooltip"
       style={{
         position: "fixed",
-        left: x + 12,
-        top: y - 12,
+        left,
+        top,
         pointerEvents: "none",
         zIndex: 50,
       }}

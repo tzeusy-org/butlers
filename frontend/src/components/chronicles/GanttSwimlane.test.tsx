@@ -18,7 +18,7 @@
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
-import { GanttSwimlaneInner } from "./GanttSwimlaneInner"
+import { GanttSwimlaneInner, clampTooltipPosition } from "./GanttSwimlaneInner"
 import type { ChroniclerEpisode } from "@/api/types"
 
 // ---------------------------------------------------------------------------
@@ -322,5 +322,61 @@ describe("GanttSwimlaneInner multiple categories", () => {
     )
     expect(html).toContain("gantt-bar-ep-m1")
     expect(html).toContain("gantt-bar-ep-m2")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 8. Tooltip viewport clamping
+// ---------------------------------------------------------------------------
+//
+// All tests use a 1280×800 viewport and a 220×120 tooltip (the approx defaults).
+// margin = 8 (default).
+
+describe("clampTooltipPosition", () => {
+  const VW = 1280
+  const VH = 800
+  const TW = 220
+  const TH = 120
+  const MARGIN = 8
+
+  it("tooltip in the middle of the screen is placed right-of and above cursor", () => {
+    // cursor at 640, 400 — plenty of room on all sides
+    const { left, top } = clampTooltipPosition(640, 400, TW, TH, VW, VH, MARGIN)
+    // default: left = cursorX + 12, top = cursorY - 12 - TH
+    expect(left).toBe(640 + 12)
+    expect(top).toBe(400 - 12 - TH)
+  })
+
+  it("tooltip near right edge flips to the left of the cursor", () => {
+    // cursor near right edge: 1270 — right placement would overflow
+    const { left } = clampTooltipPosition(1270, 400, TW, TH, VW, VH, MARGIN)
+    // flipped: left = cursorX - 12 - TW
+    expect(left).toBe(1270 - 12 - TW)
+  })
+
+  it("tooltip near bottom edge flips above the cursor", () => {
+    // cursor near top: 10 — default (above) placement would go negative
+    // default top = 10 - 12 - 120 = -122, which is < margin (8)
+    // so it flips below: top = cursorY + 12
+    const { top } = clampTooltipPosition(400, 10, TW, TH, VW, VH, MARGIN)
+    expect(top).toBe(10 + 12)
+  })
+
+  it("tooltip near bottom edge clamps so bottom stays within viewport", () => {
+    // cursor near bottom: 790 — flipped-below placement would also overflow
+    // default above: top = 790 - 12 - 120 = 658 — fine, so no flip needed
+    const { top } = clampTooltipPosition(400, 790, TW, TH, VW, VH, MARGIN)
+    // above: 790 - 12 - 120 = 658; bottom edge 658 + 120 = 778 < 800-8=792 ✓
+    expect(top).toBe(790 - 12 - TH)
+    expect(top + TH + MARGIN).toBeLessThanOrEqual(VH)
+  })
+
+  it("left edge never goes below margin when cursor is near left edge", () => {
+    // cursor very near left edge, with right-overflow forcing a flip left
+    // flipped left would give negative value → clamped to margin
+    const { left } = clampTooltipPosition(5, 400, TW, TH, VW, VH, MARGIN)
+    // right placement: 5 + 12 = 17; 17 + 220 + 8 = 245 < 1280 → no flip
+    expect(left).toBe(5 + 12)
+    expect(left).toBeGreaterThanOrEqual(MARGIN)
   })
 })
