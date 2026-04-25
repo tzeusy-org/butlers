@@ -1356,6 +1356,7 @@ async def tick(
     metrics: ButlerMetrics | None = None,
     butler_name: str | None = None,
     notify_fn=None,
+    completion_hooks: dict[str, Any] | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -1402,6 +1403,17 @@ async def tick(
             When ``None``, due notifications are left ``pending`` and retried
             on the next tick.  The scheduler loop in the daemon wires this to
             the butler's own notify delivery path.
+        completion_hooks: Optional mapping of ``task_name → async callable``
+            invoked after a prompt-mode task dispatches (regardless of
+            success/failure).  Signature::
+
+                async def hook(*, task_name: str, result: Any, run_at: datetime) -> None: ...
+
+            Hooks are called with the task name, the dispatch result (a
+            SpawnerResult or None), and the wall-clock time the tick fired.
+            Hook exceptions are logged and swallowed — a hook failure never
+            blocks task progression or advances to the next tick.
+            Job-mode tasks do NOT trigger completion hooks.
 
     Returns:
         The number of tasks successfully dispatched (cron + deadline).
@@ -1486,6 +1498,7 @@ async def tick(
             until_at = row["until_at"]
 
             result_json: str | None = None
+            dispatch_result: Any = None
             try:
                 if dispatch_mode == _DISPATCH_MODE_PROMPT:
                     # Prepend seasonal context to the prompt when active seasons exist.
@@ -1500,7 +1513,8 @@ async def tick(
                     }
                     if max_token_budget is not None:
                         dispatch_kwargs["max_token_budget"] = max_token_budget
-                    result = await dispatch_fn(**dispatch_kwargs)
+                    dispatch_result = await dispatch_fn(**dispatch_kwargs)
+                    result = dispatch_result
                 elif dispatch_mode == _DISPATCH_MODE_JOB:
                     result = await dispatch_fn(
                         job_name=job_name,
@@ -1529,6 +1543,19 @@ async def tick(
                         task_name=name,
                         outcome="failure",
                     )
+
+            # Fire completion hook for prompt-mode tasks (after success or failure).
+            # Hooks are butler-specific post-processing (e.g. cache writes).
+            # A hook exception is logged and swallowed — it never blocks task progression.
+            if dispatch_mode == _DISPATCH_MODE_PROMPT and completion_hooks:
+                hook = completion_hooks.get(name)
+                if hook is not None:
+                    try:
+                        await hook(task_name=name, result=dispatch_result, run_at=now)
+                    except Exception:
+                        logger.exception(
+                            "Completion hook for scheduled task %r raised; continuing", name
+                        )
 
             # Always advance next_run_at whether dispatch succeeded or failed.
             # If the computed next run would exceed until_at, auto-disable the task.

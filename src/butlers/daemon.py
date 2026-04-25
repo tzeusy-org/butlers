@@ -905,6 +905,14 @@ class ButlerDaemon:
             logger.warning("Scheduler loop: DB or spawner not ready, loop will not run")
             return
 
+        # Build butler-specific completion hooks.
+        # The chronicler day-close hook persists the prose output to tier2_cache.
+        completion_hooks = None
+        if self.config.name == "chronicler":
+            from butlers.chronicler.day_close_writer import build_day_close_completion_hooks
+
+            completion_hooks = build_day_close_completion_hooks(self.db.pool)
+
         daemon = self
         await _background.scheduler_loop(
             pool=self.db.pool,
@@ -914,6 +922,7 @@ class ButlerDaemon:
             tick_fn=_tick,
             get_switchboard_client=lambda: daemon.switchboard_client,
             get_db=lambda: daemon.db,
+            completion_hooks=completion_hooks,
         )
 
     async def _liveness_reporter_loop(self) -> None:

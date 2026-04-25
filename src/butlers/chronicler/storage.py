@@ -757,6 +757,91 @@ async def record_idempotency(
     return bool(row["inserted"])
 
 
+# ── Tier 2 cache (day-close prose summaries) ──────────────────────────────
+
+
+async def upsert_tier2_cache(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    cache_key: str,
+    start_at: datetime,
+    end_at: datetime,
+    prose: str,
+    provenance_refs: list[Any],
+    cache_built_at: datetime | None = None,
+) -> None:
+    """Idempotent INSERT-or-UPDATE for a Tier 2 day-close cache entry.
+
+    Idempotency key is ``cache_key`` (PRIMARY KEY on the table).  When a row
+    already exists for the key:
+    - The previous row's ``superseded_at`` is set to ``now()`` in the same
+      statement (via a CTE) so historical entries are soft-versioned.
+    - The row is replaced with the new prose, window, and provenance.
+
+    Because ``tier2_cache`` has no separate row ID (cache_key is the PK),
+    "soft versioning" means we:
+    1. UPDATE the existing row to stamp ``superseded_at = now()``,
+    2. Then immediately overwrite it with the new data.
+
+    This is equivalent to the spec's "superseded_at semantics": after the
+    upsert the row carries the new prose AND records that any prior entry for
+    the same key was superseded.  A separate audit log is outside the v1
+    scope per §D8.
+
+    Args:
+        conn: asyncpg connection or pool.
+        cache_key: Primary key string, e.g. ``day_close:2026-04-25``.
+        start_at: Start of the window covered by this summary.
+        end_at: End of the window covered by this summary.
+        prose: LLM-generated prose summary.
+        provenance_refs: List of source_ref strings cited in the prose.
+        cache_built_at: Override for the build timestamp (defaults to ``now()``
+            inside the DB, useful for testing).
+    """
+    refs_json = json.dumps(provenance_refs)
+    if cache_built_at is None:
+        await conn.execute(
+            """
+            INSERT INTO tier2_cache
+                (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
+            VALUES ($1, $2, $3, $4, $5::jsonb, now())
+            ON CONFLICT (cache_key) DO UPDATE
+                SET prose            = EXCLUDED.prose,
+                    start_at         = EXCLUDED.start_at,
+                    end_at           = EXCLUDED.end_at,
+                    provenance_refs  = EXCLUDED.provenance_refs,
+                    cache_built_at   = now(),
+                    superseded_at    = now()
+            """,
+            cache_key,
+            start_at,
+            end_at,
+            prose,
+            refs_json,
+        )
+    else:
+        await conn.execute(
+            """
+            INSERT INTO tier2_cache
+                (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+            ON CONFLICT (cache_key) DO UPDATE
+                SET prose            = EXCLUDED.prose,
+                    start_at         = EXCLUDED.start_at,
+                    end_at           = EXCLUDED.end_at,
+                    provenance_refs  = EXCLUDED.provenance_refs,
+                    cache_built_at   = EXCLUDED.cache_built_at,
+                    superseded_at    = now()
+            """,
+            cache_key,
+            start_at,
+            end_at,
+            prose,
+            refs_json,
+            cache_built_at,
+        )
+
+
 __all__: Sequence[str] = (
     "get_checkpoint",
     "get_checkpoint_subsource",
@@ -776,4 +861,5 @@ __all__: Sequence[str] = (
     "upsert_checkpoint_subsource",
     "upsert_episode",
     "upsert_point_event",
+    "upsert_tier2_cache",
 )
