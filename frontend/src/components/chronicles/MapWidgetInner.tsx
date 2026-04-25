@@ -80,7 +80,14 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markersRef = useRef<maplibreGl.Marker[]>([])
 
-  // Initialise the map once on mount; tear down on unmount.
+  // hasPoints determines whether the map container is rendered.  The map
+  // initialisation effect depends on this flag so that React re-runs the
+  // effect (and mounts a fresh map instance) whenever the component switches
+  // between the empty-state overlay and the real map container.
+  const hasPoints = points.length > 0
+
+  // Initialise the map once the container is present; tear down on unmount or
+  // when the component transitions back to the empty state.
   useEffect(() => {
     if (!containerRef.current) return
 
@@ -104,7 +111,7 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
       map.remove()
       mapRef.current = null
     }
-  }, [])
+  }, [hasPoints])
 
   // Sync markers and fit bounds whenever points change.
   useEffect(() => {
