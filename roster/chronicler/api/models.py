@@ -19,6 +19,29 @@ class SourceBreakdownEntry(BaseModel):
     tombstoned: bool = False
 
 
+class CategoryBucket(BaseModel):
+    """One category bucket from GET /api/chronicler/aggregate/by-category."""
+
+    category: str
+    total_seconds: float
+    episode_count: int
+    source_breakdown: list[SourceBreakdownEntry] = Field(default_factory=list)
+    precision: str
+    """Least-precise precision value across contributing rows."""
+    retention_floor_days: int | None = None
+    """Shortest non-NULL retention_days across contributing rows, or None."""
+
+
+class CategoryBuckets(BaseModel):
+    """Response envelope for GET /api/chronicler/aggregate/by-category."""
+
+    start_at: datetime
+    end_at: datetime
+    tz: str
+    buckets: list[CategoryBucket] = Field(default_factory=list)
+    """Sorted by total_seconds DESC, then category ASC."""
+
+
 class AggregateByDayRow(BaseModel):
     """One (day, category) bucket from GET /api/chronicler/aggregate/by-day."""
 
@@ -134,6 +157,8 @@ class SubmitCorrectionRequest(BaseModel):
 
 __all__ = [
     "AggregateByDayRow",
+    "CategoryBucket",
+    "CategoryBuckets",
     "ChroniclerEpisode",
     "ChroniclerOverride",
     "ChroniclerPointEvent",

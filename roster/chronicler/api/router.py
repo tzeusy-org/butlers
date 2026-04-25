@@ -39,6 +39,8 @@ if _spec is not None and _spec.loader is not None:
     SubmitCorrectionRequest = _models.SubmitCorrectionRequest
     AggregateByDayRow = _models.AggregateByDayRow
     SourceBreakdownEntry = _models.SourceBreakdownEntry
+    CategoryBucket = _models.CategoryBucket
+    CategoryBuckets = _models.CategoryBuckets
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -530,6 +532,206 @@ def _least_precise(values: list[str]) -> str:
     if not values:
         return "unknown"
     return min(values, key=lambda p: _PRECISION_ORDER.index(p) if p in _PRECISION_ORDER else -1)
+
+
+# ── GET /api/chronicler/aggregate/by-category ────────────────────────────
+
+
+@router.get("/aggregate/by-category", response_model=ApiResponse[CategoryBuckets])
+async def aggregate_by_category(
+    start_at: datetime | None = Query(None, description="Inclusive window start (UTC or tz-aware)"),
+    end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
+    tz: str = Query("UTC", description="IANA timezone for display purposes"),
+    privacy_tier: str | None = Query(
+        None,
+        description=(
+            "Comma-separated privacy values to include (e.g. 'normal,sensitive'). "
+            "Default: exclude restricted (include normal and sensitive)."
+        ),
+    ),
+    include_tombstoned: bool = Query(False),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[CategoryBuckets]:
+    """Return total episode duration bucketed by category across the requested window.
+
+    Buckets are sorted by ``total_seconds DESC``, then ``category ASC`` for
+    deterministic ordering.  Restricted episodes are excluded by default.
+    Tombstoned episodes are excluded unless ``include_tombstoned=true``.
+    Open episodes (``end_at IS NULL``) are clipped to ``query_end`` so that
+    in-progress activities are counted up to the window boundary.
+    """
+    # ── Parameter validation ───────────────────────────────────────────
+    if start_at is None or end_at is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "missing_parameter", "message": "start_at and end_at are required"},
+        )
+
+    if end_at <= start_at:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_time_range",
+                "message": "end_at must be strictly after start_at",
+            },
+        )
+
+    try:
+        zoneinfo.ZoneInfo(tz)
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_timezone", "message": f"Unrecognized IANA timezone: {tz!r}"},
+        )
+
+    # ── Resolve privacy filter ─────────────────────────────────────────
+    # Default: include 'normal' and 'sensitive'; exclude 'restricted'.
+    if privacy_tier is not None:
+        allowed_tiers = {t.strip() for t in privacy_tier.split(",") if t.strip()}
+    else:
+        allowed_tiers = {"normal", "sensitive"}
+
+    pool = _pool(db)
+
+    # ── Fetch raw episode rows from the corrected view ─────────────────
+    # Read from v_episodes_corrected using start_at/end_at/privacy so that
+    # user-submitted overrides are honoured.
+    clauses: list[str] = [
+        "start_at < $2",
+        "(end_at IS NULL OR end_at > $1)",
+    ]
+    args: list[Any] = [start_at, end_at]
+
+    if not include_tombstoned:
+        clauses.append("tombstone_at IS NULL")
+
+    # Build privacy IN clause from allowed_tiers.
+    tier_placeholders = ", ".join(f"${len(args) + i + 1}" for i in range(len(allowed_tiers)))
+    for tier in sorted(allowed_tiers):
+        args.append(tier)
+    clauses.append(f"privacy IN ({tier_placeholders})")
+
+    where = "WHERE " + " AND ".join(clauses)
+
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            source_name,
+            episode_type,
+            start_at,
+            end_at,
+            precision,
+            privacy,
+            retention_days,
+            tombstone_at
+        FROM v_episodes_corrected
+        {where}
+        """,
+        *args,
+    )
+
+    # ── Aggregate in Python ────────────────────────────────────────────
+    # group by (category, source_name) to build per-source breakdowns,
+    # then roll up to per-category buckets.
+    from collections import defaultdict
+
+    cat_src: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {
+            "total_seconds": 0.0,
+            "episode_count": 0,
+            "tombstoned": False,
+            "precision_values": [],
+            "retention_days_values": [],
+        }
+    )
+
+    for row in rows:
+        ep_start: datetime = row["start_at"]
+        ep_end: datetime | None = row["end_at"]
+        source_name: str = row["source_name"]
+        episode_type: str = row["episode_type"]
+        precision: str = row["precision"]
+        retention_days: int | None = row["retention_days"]
+        is_tombstoned: bool = row["tombstone_at"] is not None
+
+        ep_category = category_for(source_name, episode_type)
+
+        if ep_category == "other":
+            logger.warning(
+                "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+                source_name,
+                episode_type,
+            )
+
+        # Clip open episodes to query_end.
+        ep_end_resolved = ep_end if ep_end is not None else end_at
+
+        # Duration = LEAST(end_at, query_end) - GREATEST(start_at, query_start), clamped at 0.
+        overlap_start = max(ep_start, start_at)
+        overlap_end = min(ep_end_resolved, end_at)
+        if overlap_end <= overlap_start:
+            continue
+        overlap_seconds = (overlap_end - overlap_start).total_seconds()
+
+        bucket_key = (ep_category, source_name)
+        bucket = cat_src[bucket_key]
+        bucket["total_seconds"] += overlap_seconds
+        bucket["episode_count"] += 1
+        bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
+        bucket["precision_values"].append(precision)
+        bucket["retention_days_values"].append(retention_days)
+
+    # Roll up per-(category, source) to per-category buckets.
+    cat_buckets: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "total_seconds": 0.0,
+            "episode_count": 0,
+            "source_breakdown": [],
+            "precision_values": [],
+            "retention_days_values": [],
+        }
+    )
+
+    for (ep_category, source_name), src_data in cat_src.items():
+        bucket = cat_buckets[ep_category]
+        bucket["total_seconds"] += src_data["total_seconds"]
+        bucket["episode_count"] += src_data["episode_count"]
+        bucket["precision_values"].extend(src_data["precision_values"])
+        bucket["retention_days_values"].extend(src_data["retention_days_values"])
+        bucket["source_breakdown"].append(
+            SourceBreakdownEntry(
+                source_name=source_name,
+                total_seconds=src_data["total_seconds"],
+                episode_count=src_data["episode_count"],
+                tombstoned=src_data["tombstoned"],
+            )
+        )
+
+    # Build CategoryBucket list sorted by total_seconds DESC, category ASC.
+    result_buckets: list[CategoryBucket] = []
+    for ep_category, data in cat_buckets.items():
+        non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
+        result_buckets.append(
+            CategoryBucket(
+                category=ep_category,
+                total_seconds=data["total_seconds"],
+                episode_count=data["episode_count"],
+                source_breakdown=data["source_breakdown"],
+                precision=_least_precise(data["precision_values"]),
+                retention_floor_days=min(non_null_retentions) if non_null_retentions else None,
+            )
+        )
+
+    result_buckets.sort(key=lambda b: (-b.total_seconds, b.category))
+
+    return ApiResponse[CategoryBuckets](
+        data=CategoryBuckets(
+            start_at=start_at,
+            end_at=end_at,
+            tz=tz,
+            buckets=result_buckets,
+        )
+    )
 
 
 # ── GET /api/chronicler/aggregate/by-day ─────────────────────────────────
