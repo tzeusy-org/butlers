@@ -19,6 +19,7 @@ from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
+from butlers.chronicler.adapters.steam import SteamPlayAdapter
 
 __all__ = [
     "AdapterResult",
@@ -27,4 +28,5 @@ __all__ = [
     "OwnTracksPointAdapter",
     "ProjectionAdapter",
     "SpotifySessionAdapter",
+    "SteamPlayAdapter",
 ]

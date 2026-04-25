@@ -68,12 +68,16 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         boundary_semantics="deferred per RFC 0014",
         optional_schema=True,
     ),
-    # Planned (not yet implemented, but future adapter slots reserved).
+    # Steam daily playtime aggregates — adapter landed in bu-x8trk.
     SourceAdapterState(
         source_name="steam.play_history",
-        chronicler_compatibility=Compatibility.PLANNED,
+        chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.steam_play_history",
-        boundary_semantics="play sessions with start/end → play episodes",
+        boundary_semantics=(
+            "one play_episode per daily aggregate row; "
+            "(date midnight UTC, date midnight UTC + playtime_minutes) bound the episode; "
+            "precision=day (daily aggregates, not exact session timestamps)"
+        ),
         optional_schema=True,
     ),
     SourceAdapterState(
