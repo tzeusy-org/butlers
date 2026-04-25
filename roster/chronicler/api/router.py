@@ -12,7 +12,8 @@ import importlib.util
 import json
 import logging
 import sys
-from datetime import datetime
+import zoneinfo
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -21,6 +22,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.chronicler.aggregations import category_for
 
 _models_path = Path(__file__).parent / "models.py"
 _spec = importlib.util.spec_from_file_location("chronicler_api_models", _models_path)
@@ -35,6 +37,8 @@ if _spec is not None and _spec.loader is not None:
     SourceStateRow = _models.SourceStateRow
     SubsourceCheckpoint = _models.SubsourceCheckpoint
     SubmitCorrectionRequest = _models.SubmitCorrectionRequest
+    AggregateByDayRow = _models.AggregateByDayRow
+    SourceBreakdownEntry = _models.SourceBreakdownEntry
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -508,3 +512,248 @@ async def list_source_state(
 
     data = _rows_to_source_state(adapter_rows, checkpoint_rows)
     return ApiResponse[list[SourceStateRow]](data=data)
+
+
+# ── Precision ordering ─────────────────────────────────────────────────────
+
+# Ordered least-precise → most-precise.  Lower index = less precise.
+_PRECISION_ORDER = ["unknown", "day", "hour", "minute", "exact"]
+
+
+def _least_precise(values: list[str]) -> str:
+    """Return the least-precise precision value from a list.
+
+    If a value is not in the known ordering it is treated as less precise
+    than ``unknown`` so that unrecognized tokens never silently inflate
+    confidence.
+    """
+    if not values:
+        return "unknown"
+    return min(values, key=lambda p: _PRECISION_ORDER.index(p) if p in _PRECISION_ORDER else -1)
+
+
+# ── GET /api/chronicler/aggregate/by-day ─────────────────────────────────
+
+
+@router.get("/aggregate/by-day", response_model=list[AggregateByDayRow])
+async def aggregate_by_day(
+    start_at: datetime | None = Query(None, description="Inclusive window start (UTC or tz-aware)"),
+    end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
+    tz: str = Query("UTC", description="IANA timezone for day-boundary computation"),
+    category: str | None = Query(None, description="Optional category filter"),
+    include_tombstoned: bool = Query(False),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[AggregateByDayRow]:
+    """Return time-bucketed episode durations grouped by (day, category).
+
+    Day boundaries are resolved in the requested IANA timezone so that
+    DST-extended (25 h) and DST-shortened (23 h) days are treated as
+    single buckets with actual-duration semantics.  Each row includes
+    ``day_start`` / ``day_end`` timestamps in the requested timezone so
+    callers can verify bucket boundaries without re-deriving DST rules.
+
+    Restricted episodes are excluded by default.  Sensitive episodes
+    contribute to duration totals but their identifying fields are not
+    surfaced.  Tombstoned episodes are excluded unless
+    ``include_tombstoned=true`` is supplied.
+    """
+    # ── Parameter validation ───────────────────────────────────────────
+    if start_at is None or end_at is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "missing_parameter", "message": "start_at and end_at are required"},
+        )
+
+    if end_at <= start_at:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_time_range",
+                "message": "end_at must be strictly after start_at",
+            },
+        )
+
+    try:
+        tzinfo = zoneinfo.ZoneInfo(tz)
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_timezone", "message": f"Unrecognized IANA timezone: {tz!r}"},
+        )
+
+    pool = _pool(db)
+
+    # ── Fetch raw episode rows from the corrected view ─────────────────
+    # Only select relations from the chronicler schema (v_episodes_corrected).
+    # No LLM. No cross-schema references.
+    clauses: list[str] = [
+        "canonical_start_at < $2",
+        "(canonical_end_at IS NULL OR canonical_end_at > $1)",
+    ]
+    args: list[Any] = [start_at, end_at]
+
+    if not include_tombstoned:
+        clauses.append("tombstone_at IS NULL")
+
+    # Exclude restricted episodes by default.
+    clauses.append("canonical_privacy != 'restricted'")
+
+    where = "WHERE " + " AND ".join(clauses)
+
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            source_name,
+            episode_type,
+            canonical_start_at,
+            canonical_end_at,
+            precision,
+            canonical_privacy,
+            retention_days,
+            tombstone_at
+        FROM v_episodes_corrected
+        {where}
+        """,
+        *args,
+    )
+
+    # ── Enumerate calendar days in the requested timezone ──────────────
+    # Compute the first and last local calendar day that overlaps the window.
+    local_start = start_at.astimezone(tzinfo)
+    local_end = end_at.astimezone(tzinfo)
+
+    first_day = local_start.date()
+    last_day = (local_end - timedelta(seconds=1)).astimezone(tzinfo).date()
+
+    # Build a mapping: day_str -> (day_start_utc, day_end_utc)
+    day_bounds: dict[str, tuple[datetime, datetime]] = {}
+    current_day = first_day
+    while current_day <= last_day:
+        ds = datetime(current_day.year, current_day.month, current_day.day, 0, 0, 0, tzinfo=tzinfo)
+        next_day = current_day + timedelta(days=1)
+        de = datetime(next_day.year, next_day.month, next_day.day, 0, 0, 0, tzinfo=tzinfo)
+        day_bounds[current_day.isoformat()] = (ds, de)
+        current_day = next_day
+
+    if not day_bounds:
+        return []
+
+    # ── Aggregate in Python ────────────────────────────────────────────
+    # Group by (day_str, category, source_name) and sum overlap seconds.
+    # This avoids pushing category_for() logic into SQL and keeps it
+    # in the Python layer where the category taxonomy lives.
+
+    # day_cat_src[(day, category, source_name)] = {
+    #   "total_seconds": float,
+    #   "episode_count": int,
+    #   "tombstoned": bool,
+    #   "precision_values": list[str],
+    #   "retention_days_values": list[int | None],
+    # }
+    from collections import defaultdict
+
+    day_cat_src: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
+        lambda: {
+            "total_seconds": 0.0,
+            "episode_count": 0,
+            "tombstoned": False,
+            "precision_values": [],
+            "retention_days_values": [],
+        }
+    )
+
+    for row in rows:
+        ep_start: datetime = row["canonical_start_at"]
+        ep_end: datetime | None = row["canonical_end_at"]
+        source_name: str = row["source_name"]
+        episode_type: str = row["episode_type"]
+        precision: str = row["precision"]
+        retention_days: int | None = row["retention_days"]
+        is_tombstoned: bool = row["tombstone_at"] is not None
+
+        ep_category = category_for(source_name, episode_type)
+        if category is not None and ep_category != category:
+            continue
+
+        # If end_at is NULL treat as open-ended — only count the portion
+        # that falls within each day window.
+        ep_end_resolved = ep_end if ep_end is not None else end_at
+
+        for day_str, (ds, de) in day_bounds.items():
+            # Overlap = max(0, min(ep_end, de) - max(ep_start, ds))
+            overlap_start = max(ep_start, ds)
+            overlap_end = min(ep_end_resolved, de)
+            if overlap_end <= overlap_start:
+                continue
+            overlap_seconds = (overlap_end - overlap_start).total_seconds()
+
+            bucket_key = (day_str, ep_category, source_name)
+            bucket = day_cat_src[bucket_key]
+            bucket["total_seconds"] += overlap_seconds
+            bucket["episode_count"] += 1
+            bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
+            bucket["precision_values"].append(precision)
+            bucket["retention_days_values"].append(retention_days)
+
+            if is_tombstoned:
+                # Log unmapped / tombstoned drift for observability.
+                logger.warning(
+                    "chronicler.aggregate.tombstoned_episode source=%s episode_type=%s",
+                    source_name,
+                    episode_type,
+                )
+
+        if ep_category == "other":
+            logger.warning(
+                "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+                source_name,
+                episode_type,
+            )
+
+    # ── Build final response rows ──────────────────────────────────────
+    # First group day_cat_src by (day, category) to produce per-bucket source breakdowns.
+    day_cat: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {
+            "total_seconds": 0.0,
+            "episode_count": 0,
+            "source_breakdown": [],
+            "precision_values": [],
+            "retention_days_values": [],
+        }
+    )
+
+    for (day_str, ep_category, source_name), src_data in day_cat_src.items():
+        bucket = day_cat[(day_str, ep_category)]
+        bucket["total_seconds"] += src_data["total_seconds"]
+        bucket["episode_count"] += src_data["episode_count"]
+        bucket["precision_values"].extend(src_data["precision_values"])
+        bucket["retention_days_values"].extend(src_data["retention_days_values"])
+        bucket["source_breakdown"].append(
+            SourceBreakdownEntry(
+                source_name=source_name,
+                total_seconds=src_data["total_seconds"],
+                episode_count=src_data["episode_count"],
+                tombstoned=src_data["tombstoned"],
+            )
+        )
+
+    result: list[AggregateByDayRow] = []
+    for (day_str, ep_category), data in sorted(day_cat.items()):
+        ds, de = day_bounds[day_str]
+        non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
+        result.append(
+            AggregateByDayRow(
+                day=day_str,
+                category=ep_category,
+                total_seconds=data["total_seconds"],
+                episode_count=data["episode_count"],
+                day_start=ds,
+                day_end=de,
+                source_breakdown=data["source_breakdown"],
+                precision=_least_precise(data["precision_values"]),
+                retention_floor_days=min(non_null_retentions) if non_null_retentions else None,
+            )
+        )
+
+    # Sort by (day ASC, category ASC) — already guaranteed by sorted() above.
+    return result
