@@ -9,7 +9,7 @@
 // hook is wired up; no further refactoring is needed.
 // ---------------------------------------------------------------------------
 
-import { useCallback } from "react"
+import { useCallback, useMemo } from "react"
 import { useSearchParams } from "react-router"
 import { endOfDay, format, isValid, parseISO, startOfDay, subDays } from "date-fns"
 
@@ -81,48 +81,40 @@ export function useTimeWindow(): UseTimeWindowResult {
   const fromParam = searchParams.get(PARAM_FROM)
   const toParam = searchParams.get(PARAM_TO)
 
-  let from: Date
-  let to: Date
-  let preset: PresetKey
-
-  if (fromParam && toParam) {
-    const parsedFrom = parseISO(fromParam)
-    const parsedTo = parseISO(toParam)
-    if (isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo) {
-      from = startOfDay(parsedFrom)
-      to = endOfDay(parsedTo)
-      // Detect named presets so the buttons stay highlighted.
-      const wk = weekWindow()
-      const td = todayWindow()
-      if (
-        formatWindowDate(from) === formatWindowDate(wk.from) &&
-        formatWindowDate(to) === formatWindowDate(wk.to)
-      ) {
-        preset = "week"
-      } else if (
-        formatWindowDate(from) === formatWindowDate(td.from) &&
-        formatWindowDate(to) === formatWindowDate(td.to)
-      ) {
-        preset = "today"
-      } else {
-        preset = "custom"
+  // Memoize the parsed window so child widgets get stable Date references and
+  // don't trigger redundant re-renders / useEffect re-runs when the parent
+  // re-renders without the URL params actually changing.
+  const window = useMemo((): TimeWindow => {
+    if (fromParam && toParam) {
+      const parsedFrom = parseISO(fromParam)
+      const parsedTo = parseISO(toParam)
+      if (isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo) {
+        const from = startOfDay(parsedFrom)
+        const to = endOfDay(parsedTo)
+        // Detect named presets so the buttons stay highlighted.
+        const wk = weekWindow()
+        const td = todayWindow()
+        let preset: PresetKey
+        if (
+          formatWindowDate(from) === formatWindowDate(wk.from) &&
+          formatWindowDate(to) === formatWindowDate(wk.to)
+        ) {
+          preset = "week"
+        } else if (
+          formatWindowDate(from) === formatWindowDate(td.from) &&
+          formatWindowDate(to) === formatWindowDate(td.to)
+        ) {
+          preset = "today"
+        } else {
+          preset = "custom"
+        }
+        return { from, to, preset, pollingDisabled: isPollingDisabled(to) }
       }
-    } else {
-      // Invalid params — fall back to today
-      const td = todayWindow()
-      from = td.from
-      to = td.to
-      preset = "today"
     }
-  } else {
-    // No URL params — default is today
+    // No params or invalid params — fall back to today
     const td = todayWindow()
-    from = td.from
-    to = td.to
-    preset = "today"
-  }
-
-  const pollingDisabled = isPollingDisabled(to)
+    return { from: td.from, to: td.to, preset: "today", pollingDisabled: isPollingDisabled(td.to) }
+  }, [fromParam, toParam])
 
   const setPreset = useCallback(
     (p: "today" | "week") => {
@@ -155,5 +147,5 @@ export function useTimeWindow(): UseTimeWindowResult {
     [setSearchParams],
   )
 
-  return { from, to, preset, pollingDisabled, setPreset, setCustomRange }
+  return { ...window, setPreset, setCustomRange }
 }
