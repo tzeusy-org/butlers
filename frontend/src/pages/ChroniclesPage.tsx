@@ -13,6 +13,7 @@
 //   - Older windows (pollingDisabled=true): no polling.
 // ---------------------------------------------------------------------------
 
+import { useMemo } from "react"
 import { useTimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
@@ -20,9 +21,10 @@ import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
 import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar"
 import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart"
+import { StreakCallouts } from "@/components/chronicles/StreakCallouts"
+import { useChroniclesAggregates } from "@/hooks/use-chronicles"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
-import { useChroniclesAggregates } from "@/hooks/use-chronicles"
 
 // ---------------------------------------------------------------------------
 // Page
@@ -39,10 +41,26 @@ export default function ChroniclesPage() {
     ? (false as const)
     : autoRefreshControl.refetchInterval
 
-  const aggregateParams = {
-    start_at: timeWindow.from.toISOString(),
-    end_at: timeWindow.to.toISOString(),
-  }
+  const windowFrom = timeWindow.from.toISOString()
+  const windowTo = timeWindow.to.toISOString()
+
+  const aggregateParams = useMemo(
+    () => ({
+      start_at: windowFrom,
+      end_at: windowTo,
+    }),
+    [windowFrom, windowTo],
+  )
+
+  // Episodes params use overlaps_start/overlaps_end to fetch all episodes
+  // that fall within the active time window.
+  const episodesParams = useMemo(
+    () => ({
+      overlaps_start: windowFrom,
+      overlaps_end: windowTo,
+    }),
+    [windowFrom, windowTo],
+  )
 
   const { byCategory, byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
     refetchInterval,
@@ -97,6 +115,10 @@ export default function ChroniclesPage() {
       {/* Aggregations area */}
       <section aria-label="Aggregations area" className="rounded-lg border bg-card p-6">
         <h2 className="text-sm font-medium text-muted-foreground mb-4">Aggregations area</h2>
+        <StreakCallouts
+          episodeParams={episodesParams}
+          refetchInterval={refetchInterval}
+        />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <AggregateStackedBar data={byDayRows} />
           <AggregatePieChart buckets={categoryBuckets} />
