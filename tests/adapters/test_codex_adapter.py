@@ -26,6 +26,7 @@ from butlers.core.runtimes.codex import (
     _has_mcp_tool_calls,
     _infer_mcp_transport_from_url,
     _parse_codex_output,
+    _prefer_ipv4_loopback,
     _resolve_canonical_home,
     _select_error_detail,
 )
@@ -60,7 +61,7 @@ def test_build_config_file(tmp_path: Path):
     )
     assert config_path == tmp_path / ".codex" / "config.toml"
     content = config_path.read_text()
-    assert "[mcp_servers.my-butler]" in content and 'url = "http://localhost:9100/mcp"' in content
+    assert "[mcp_servers.my-butler]" in content and 'url = "http://127.0.0.1:9100/mcp"' in content
     assert 'transport = "streamable_http"' in content
     # Transport URL inference
     assert _infer_mcp_transport_from_url("http://localhost:41100/mcp") == "streamable_http"
@@ -81,6 +82,18 @@ def test_build_config_file(tmp_path: Path):
         and "unsafe" not in content2
         and "9200" not in content2
     )
+
+
+def test_prefer_ipv4_loopback_rewrites_only_bare_localhost():
+    """Codex MCP config should rewrite only exact localhost loopback URLs."""
+    assert _prefer_ipv4_loopback("http://localhost:9100/mcp") == "http://127.0.0.1:9100/mcp"
+    assert (
+        _prefer_ipv4_loopback("http://localhost:9100/mcp?runtime_session_id=sess-1")
+        == "http://127.0.0.1:9100/mcp?runtime_session_id=sess-1"
+    )
+    assert _prefer_ipv4_loopback("http://127.0.0.1:9100/mcp") == "http://127.0.0.1:9100/mcp"
+    assert _prefer_ipv4_loopback("http://[::1]:9100/mcp") == "http://[::1]:9100/mcp"
+    assert _prefer_ipv4_loopback("https://example.com/mcp") == "https://example.com/mcp"
 
 
 def test_parse_codex_output_and_extract_tool_call():

@@ -28,7 +28,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
@@ -95,6 +95,38 @@ def _infer_mcp_transport_from_url(url: str) -> str | None:
     if normalized_path.endswith("/sse"):
         return "sse"
     return None
+
+
+def _prefer_ipv4_loopback(url: str) -> str:
+    """Rewrite bare ``localhost`` URLs to IPv4 loopback for Codex MCP.
+
+    The daemon currently binds its MCP socket on an IPv4 listener. Some Codex
+    CLI builds appear to prefer ``::1`` for ``localhost`` and do not reliably
+    fall back to ``127.0.0.1`` for MCP discovery, which manifests as repeated
+    "could not connect to it" retries even though the butler is up.
+
+    Restrict the rewrite to exact ``localhost`` hosts so remote endpoints and
+    explicit IP literals preserve their original meaning.
+    """
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() != "localhost":
+        return url
+
+    netloc = parsed.netloc
+    if parsed.username is not None:
+        userinfo = parsed.username
+        if parsed.password is not None:
+            userinfo += f":{parsed.password}"
+        host_port = "127.0.0.1"
+        if parsed.port is not None:
+            host_port += f":{parsed.port}"
+        netloc = f"{userinfo}@{host_port}"
+    else:
+        netloc = "127.0.0.1"
+        if parsed.port is not None:
+            netloc += f":{parsed.port}"
+
+    return urlunparse(parsed._replace(netloc=netloc))
 
 
 def _looks_like_transport_failure(error_detail: str) -> bool:
@@ -1019,11 +1051,14 @@ class CodexAdapter(RuntimeAdapter):
             if not isinstance(url, str) or not url.strip():
                 continue
 
-            escaped_url = url.strip().replace("\\", "\\\\").replace('"', '\\"')
+            rewritten_url = _prefer_ipv4_loopback(url.strip())
+            escaped_url = rewritten_url.replace("\\", "\\\\").replace('"', '\\"')
             toml_lines.append(f"[mcp_servers.{server_name}]")
             toml_lines.append(f'url = "{escaped_url}"')
 
-            normalized_transport, inferred_transport = _resolve_transport_details(server_cfg, url)
+            normalized_transport, inferred_transport = _resolve_transport_details(
+                server_cfg, rewritten_url
+            )
             if normalized_transport == "streamable_http" or (
                 normalized_transport is None and inferred_transport == "streamable_http"
             ):
