@@ -775,7 +775,7 @@ async def aggregate_by_day(
                     message="start_at and end_at are required",
                     butler="chronicler",
                 )
-            ).model_dump(),
+            ).model_dump(exclude_none=True),
         )
 
     if end_at <= start_at:
@@ -787,7 +787,7 @@ async def aggregate_by_day(
                     message="end_at must be strictly after start_at",
                     butler="chronicler",
                 )
-            ).model_dump(),
+            ).model_dump(exclude_none=True),
         )
 
     try:
@@ -801,7 +801,7 @@ async def aggregate_by_day(
                     message=f"Unrecognized IANA timezone: {tz!r}",
                     butler="chronicler",
                 )
-            ).model_dump(),
+            ).model_dump(exclude_none=True),
         )
 
     pool = _pool(db)
