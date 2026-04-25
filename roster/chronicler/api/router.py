@@ -1009,7 +1009,9 @@ async def aggregate_by_day(
     ],
 )
 async def get_day_close_cache(
-    date_param: date = Query(..., alias="date", description="YYYY-MM-DD date for day-close window"),
+    date_param: str | None = Query(
+        None, alias="date", description="YYYY-MM-DD date for day-close window"
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> DayCloseFreshResponse | DayCloseStaleResponse:
     """Return cached day-close prose OR a stale marker.
@@ -1026,9 +1028,36 @@ async def get_day_close_cache(
 
     No LLM is invoked on this path.
     """
+    # ── Parameter validation ───────────────────────────────────────────
+    if date_param is None:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="missing_parameter",
+                    message="date is required",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    try:
+        parsed_date = date.fromisoformat(date_param)
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_date_format",
+                    message=f"date must be a valid YYYY-MM-DD date; got {date_param!r}",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
     pool = _pool(db)
 
-    cache_key = f"day_close:{date_param.isoformat()}"
+    cache_key = f"day_close:{parsed_date.isoformat()}"
 
     # ── Step 1: fetch the cache row ──────────────────────────────────────
     cache_row = await pool.fetchrow(
@@ -1042,7 +1071,7 @@ async def get_day_close_cache(
     )
 
     if cache_row is None:
-        raise HTTPException(status_code=404, detail=f"No day-close cache entry for {date_param}")
+        raise HTTPException(status_code=404, detail=f"No day-close cache entry for {parsed_date}")
 
     start_at = cache_row["start_at"]
     end_at = cache_row["end_at"]

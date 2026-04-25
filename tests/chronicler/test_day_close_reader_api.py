@@ -154,6 +154,66 @@ class TestDayCloseReaderCacheMiss:
         assert "2026-04-23" in resp.json()["detail"]
 
 
+class TestDayCloseReaderValidation:
+    """400 error envelopes for missing / malformed parameters."""
+
+    async def test_missing_date_returns_400_envelope(self):
+        """Omitting the required date param → 400 with missing_parameter envelope."""
+        pool = _mock_pool(fetchrow_side_effect=[None])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close")
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
+        assert body["error"]["code"] == "missing_parameter"
+        assert body["error"]["butler"] == "chronicler"
+        assert "data" not in body
+
+    async def test_invalid_date_format_returns_400_envelope(self):
+        """Supplying a non-YYYY-MM-DD date string → 400 with invalid_date_format envelope."""
+        pool = _mock_pool(fetchrow_side_effect=[None])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=not-a-date")
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
+        assert body["error"]["code"] == "invalid_date_format"
+        assert body["error"]["butler"] == "chronicler"
+        assert "data" not in body
+
+    async def test_invalid_date_format_partial_date(self):
+        """Supplying a partial date (MM-DD) → 400 with invalid_date_format envelope."""
+        pool = _mock_pool(fetchrow_side_effect=[None])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close?date=04-23")
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_date_format"
+        assert body["error"]["butler"] == "chronicler"
+
+    async def test_400_response_has_no_details_field_when_none(self):
+        """ErrorResponse with no details → details key absent from serialized output (exclude_none)."""
+        pool = _mock_pool(fetchrow_side_effect=[None])
+        app = _make_app(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/aggregate/day-close")
+        assert resp.status_code == 400
+        body = resp.json()
+        # details field must not appear when None (exclude_none=True)
+        assert "details" not in body["error"]
+
+
 class TestDayCloseReaderFreshCache:
     async def test_fresh_cache_returns_prose_and_provenance(self):
         """No staleness signals → fresh response with prose + provenance_refs."""
