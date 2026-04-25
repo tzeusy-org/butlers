@@ -91,7 +91,7 @@ function FlatNavLink({
       end={item.end}
       onClick={onNavClick}
       className={({ isActive }) => navLinkClassName(isActive, collapsed, indented)}
-      title={collapsed ? item.label : undefined}
+      title={collapsed ? (item.tooltip ?? item.label) : undefined}
     >
       {/* First letter as icon placeholder */}
       <span

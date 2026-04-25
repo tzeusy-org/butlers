@@ -12,6 +12,8 @@ export interface NavFlatItem {
   butler?: string
   /** If set, a React key used to look up a live badge count from the badge registry. */
   badgeKey?: string
+  /** If set, used as the tooltip text instead of the label (e.g. for items needing disambiguation). */
+  tooltip?: string
 }
 
 /** A collapsible group of navigation links. */
@@ -67,6 +69,7 @@ export const navSections: NavSection[] = [
       { path: '/education', label: 'Education', butler: 'education' },
       { path: '/health/measurements', label: 'Health' },
       { path: '/calendar', label: 'Calendar' },
+      { path: '/chronicles', label: 'Chronicles', butler: 'chronicler', tooltip: 'Retrospective lived-time reconstruction' },
     ],
   },
   {

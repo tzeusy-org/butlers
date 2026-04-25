@@ -311,6 +311,93 @@ describe("Sidebar", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Chronicles nav entry (bu-ig72b.13)
+  // -------------------------------------------------------------------------
+
+  describe("Chronicles nav entry", () => {
+    it("shows Chronicles link when chronicler butler is present", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      render();
+
+      const chroniclesLink = container.querySelector('a[href="/chronicles"]');
+      expect(chroniclesLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(chroniclesLink?.textContent).toContain("Chronicles");
+    });
+
+    it("hides Chronicles link when chronicler butler is absent", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      render();
+
+      expect(container.querySelector('a[href="/chronicles"]')).toBeNull();
+      expect(container.textContent).not.toContain("Chronicles");
+    });
+
+    it("places Chronicles in Dedicated Butlers section (not Telemetry)", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      render();
+
+      const headings = container.querySelectorAll("h3");
+      const dedicatedHeading = Array.from(headings).find(
+        (h) => h.textContent === "Dedicated Butlers",
+      );
+      const telemetryHeading = Array.from(headings).find(
+        (h) => h.textContent === "Telemetry",
+      );
+      expect(dedicatedHeading).toBeTruthy();
+      expect(telemetryHeading).toBeTruthy();
+
+      const dedicatedSection = dedicatedHeading!.closest("button")!.parentElement;
+      expect(dedicatedSection?.querySelector('a[href="/chronicles"]')).toBeTruthy();
+
+      // Telemetry starts collapsed — expand to check Chronicles is NOT there
+      const telemetryButton = telemetryHeading!.closest("button")!;
+      act(() => {
+        telemetryButton.click();
+      });
+      const telemetrySection = telemetryButton.parentElement;
+      expect(telemetrySection?.querySelector('a[href="/chronicles"]')).toBeNull();
+    });
+
+    it("uses disambiguation tooltip text on Chronicles link when sidebar is collapsed", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      // Render with collapsed sidebar
+      act(() => {
+        root.render(
+          <MemoryRouter initialEntries={["/"]}>
+            <Sidebar collapsed={true} />
+          </MemoryRouter>,
+        );
+      });
+
+      const chroniclesLink = container.querySelector('a[href="/chronicles"]');
+      expect(chroniclesLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(chroniclesLink?.getAttribute("title")).toBe(
+        "Retrospective lived-time reconstruction",
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Relationships group wiring (butlers-x3ki.3)
   // -------------------------------------------------------------------------
 
