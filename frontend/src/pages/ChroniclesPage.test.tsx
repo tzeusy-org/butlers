@@ -32,13 +32,14 @@ let _lastDefaultInterval: number | undefined;
 // Mocks
 // ---------------------------------------------------------------------------
 
-// Mocks needed for SourceStateBadgeStrip and AggregateStackedBar (uses TanStack Query)
+// Mocks needed for SourceStateBadgeStrip, AggregateStackedBar, and StreakCallouts (uses TanStack Query)
 vi.mock("@/hooks/use-chronicles", () => ({
   useChroniclesSourceState: () => ({ data: undefined, isLoading: false, isError: false }),
   useChroniclesAggregates: () => ({
     byCategory: { data: undefined, isLoading: false, isError: false },
     byDay: { data: [], isLoading: false, isError: false },
   }),
+  useChroniclesEpisodes: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 vi.mock("@/hooks/use-time-window", () => ({
