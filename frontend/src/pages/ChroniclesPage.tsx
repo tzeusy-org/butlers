@@ -3,7 +3,7 @@
 //
 // Widget regions will be filled by follow-up issues:
 //   - Gantt area (bu-ig72b.5)
-//   - Map area (bu-ig72b.6)
+//   - Map area (bu-ig72b.14)
 //   - Aggregations area (bu-ig72b.7)
 //
 // Time window state lives here and flows down to all three widget regions
@@ -15,6 +15,7 @@
 import { useTimeWindow } from "@/hooks/use-time-window"
 import type { TimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
+import { MapWidget } from "@/components/chronicles/MapWidget"
 
 // ---------------------------------------------------------------------------
 // Widget-region placeholder — accepts the active time window
@@ -66,11 +67,10 @@ export default function ChroniclesPage() {
       />
 
       {/* Map area */}
-      <WidgetRegionPlaceholder
-        label="Map area"
-        description="Location map widget — coming soon."
-        timeWindow={timeWindow}
-      />
+      <section aria-label="Map area" className="rounded-lg border bg-card p-6">
+        <h2 className="text-sm font-medium text-muted-foreground mb-4">Map area</h2>
+        <MapWidget points={[]} />
+      </section>
 
       {/* Aggregations area */}
       <WidgetRegionPlaceholder
