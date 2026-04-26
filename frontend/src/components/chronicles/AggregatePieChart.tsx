@@ -16,6 +16,8 @@
 // ---------------------------------------------------------------------------
 
 import type { ChroniclerCategoryBucket } from "@/api/types"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
 import { LANE_TAXONOMY } from "./lane-taxonomy"
 import type { Category } from "./lane-taxonomy"
 import {
@@ -102,6 +104,44 @@ function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
 }
 
 // ---------------------------------------------------------------------------
+// Loading skeleton
+// ---------------------------------------------------------------------------
+
+function PieChartSkeleton() {
+  return (
+    <div
+      className="flex h-64 items-center justify-center"
+      data-testid="pie-skeleton"
+      role="status"
+      aria-label="Loading pie chart"
+    >
+      {/* Circle placeholder for the pie */}
+      <Skeleton className="h-48 w-48 rounded-full" />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Error fallback
+// ---------------------------------------------------------------------------
+
+function PieChartErrorFallback({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div
+      className="flex h-48 flex-col items-center justify-center gap-3 text-sm text-muted-foreground"
+      data-testid="pie-error"
+    >
+      <p>Failed to load category breakdown.</p>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Empty state
 // ---------------------------------------------------------------------------
 
@@ -111,7 +151,7 @@ function EmptyState() {
       data-testid="pie-empty-state"
       className="flex items-center justify-center h-48 text-sm text-muted-foreground italic"
     >
-      No activity data for this time window.
+      No activity recorded for this window.
     </div>
   )
 }
@@ -123,6 +163,12 @@ function EmptyState() {
 export interface AggregatePieChartProps {
   /** Category buckets from `useChroniclesAggregates`, already sorted by total_seconds DESC. */
   buckets: ChroniclerCategoryBucket[]
+  /** Show loading skeleton while data is being fetched. */
+  isLoading?: boolean
+  /** Show error fallback when the query failed. */
+  isError?: boolean
+  /** Called when the user clicks the retry button in the error state. */
+  onRetry?: () => void
 }
 
 /**
@@ -131,7 +177,15 @@ export interface AggregatePieChartProps {
  * Slice colours come from `LANE_TAXONOMY[category].hex`.
  * Slices are displayed in API sort order (total_seconds DESC).
  */
-export function AggregatePieChart({ buckets }: AggregatePieChartProps) {
+export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: AggregatePieChartProps) {
+  if (isLoading) {
+    return <PieChartSkeleton />
+  }
+
+  if (isError) {
+    return <PieChartErrorFallback onRetry={onRetry} />
+  }
+
   if (buckets.length === 0) {
     return <EmptyState />
   }

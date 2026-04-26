@@ -163,9 +163,12 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
 
   if (visiblePoints.length === 0) {
     return (
-      <div className={`relative w-full ${height} flex items-center justify-center`}>
+      <div
+        className={`relative w-full ${height} flex items-center justify-center`}
+        data-testid="map-empty"
+      >
         <EmptyState
-          title="No location data"
+          title="No activity recorded for this window"
           description="Location points will appear here when the chronicler detects travel or place events in the current window."
           icon={<MapPin />}
         />

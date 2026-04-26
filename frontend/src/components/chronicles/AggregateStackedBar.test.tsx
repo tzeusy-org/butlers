@@ -49,7 +49,7 @@ function makeRow(
 describe("AggregateStackedBar — empty state", () => {
   it("renders empty-state message when data is empty", () => {
     const html = renderToStaticMarkup(<AggregateStackedBar data={[]} />)
-    expect(html).toContain("No activity data available")
+    expect(html).toContain("No activity recorded for this window")
   })
 })
 

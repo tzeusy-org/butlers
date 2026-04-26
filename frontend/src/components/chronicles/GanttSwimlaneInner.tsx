@@ -391,7 +391,7 @@ export function GanttSwimlaneInner({
         className="flex items-center justify-center rounded-md border border-dashed py-12 text-muted-foreground text-sm"
         data-testid="gantt-empty"
       >
-        No episodes in this time window.
+        No activity recorded for this window.
       </div>
     )
   }

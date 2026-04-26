@@ -18,6 +18,8 @@ import {
   YAxis,
 } from "recharts"
 
+import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
 import { LANE_TAXONOMY, type Category } from "./lane-taxonomy"
 import { pivotByDay } from "./aggregate-stacked-bar-utils"
 import type { ChroniclerAggregateByDayRow } from "@/api/types"
@@ -122,18 +124,90 @@ const SORTED_CATEGORIES = (Object.keys(LANE_TAXONOMY) as Category[]).sort(
 )
 
 // ---------------------------------------------------------------------------
+// Loading skeleton
+// ---------------------------------------------------------------------------
+
+function StackedBarSkeleton() {
+  return (
+    <div
+      className="flex h-[280px] flex-col gap-2 py-4"
+      data-testid="stacked-bar-skeleton"
+      role="status"
+      aria-label="Loading stacked bar chart"
+    >
+      {/* Y-axis + bar columns side by side */}
+      <div className="flex h-full gap-2">
+        <Skeleton className="w-12 h-full rounded-md" />
+        <div className="flex flex-1 items-end gap-1">
+          {Array.from({ length: 7 }, (_, i) => (
+            <Skeleton
+              key={i}
+              className="flex-1 rounded-md"
+              style={{ height: `${40 + (i % 3) * 20}%` }}
+            />
+          ))}
+        </div>
+      </div>
+      {/* X-axis labels */}
+      <div className="flex gap-1 pl-14">
+        {Array.from({ length: 7 }, (_, i) => (
+          <Skeleton key={i} className="flex-1 h-3 rounded" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Error fallback
+// ---------------------------------------------------------------------------
+
+function StackedBarErrorFallback({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div
+      className="flex h-48 flex-col items-center justify-center gap-3 text-sm text-muted-foreground"
+      data-testid="stacked-bar-error"
+    >
+      <p>Failed to load activity data.</p>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export interface AggregateStackedBarProps {
   data: ChroniclerAggregateByDayRow[]
+  /** Show loading skeleton while data is being fetched. */
+  isLoading?: boolean
+  /** Show error fallback when the query failed. */
+  isError?: boolean
+  /** Called when the user clicks the retry button in the error state. */
+  onRetry?: () => void
 }
 
-export function AggregateStackedBar({ data }: AggregateStackedBarProps) {
+export function AggregateStackedBar({ data, isLoading, isError, onRetry }: AggregateStackedBarProps) {
+  if (isLoading) {
+    return <StackedBarSkeleton />
+  }
+
+  if (isError) {
+    return <StackedBarErrorFallback onRetry={onRetry} />
+  }
+
   if (data.length === 0) {
     return (
-      <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
-        No activity data available for this time window.
+      <div
+        className="flex h-48 items-center justify-center text-sm text-muted-foreground"
+        data-testid="stacked-bar-empty"
+      >
+        No activity recorded for this window.
       </div>
     )
   }

@@ -11,9 +11,10 @@
 //   <MapWidget points={[]} />   {/* renders empty state */}
 // ---------------------------------------------------------------------------
 
-import { lazy, Suspense } from "react"
+import { Component, lazy, Suspense, type ReactNode } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
 
 import type { MapWidgetInnerProps } from "./MapWidgetInner"
 
@@ -30,7 +31,70 @@ const MapWidgetInner = lazy(() =>
 // ---------------------------------------------------------------------------
 
 function MapLoadingSkeleton({ height = "h-80" }: { height?: string }) {
-  return <Skeleton className={`w-full ${height} rounded-md`} />
+  return (
+    <Skeleton
+      className={`w-full ${height} rounded-md`}
+      data-testid="map-skeleton"
+      role="status"
+      aria-label="Loading map"
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Error fallback — shown when the lazy chunk or map render throws.
+// ---------------------------------------------------------------------------
+
+function MapErrorFallback({ height = "h-80", onRetry }: { height?: string; onRetry?: () => void }) {
+  return (
+    <div
+      className={`flex flex-col items-center justify-center w-full ${height} gap-3 rounded-md border border-dashed text-sm text-muted-foreground`}
+      data-testid="map-error"
+    >
+      <p>Failed to load the map.</p>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Error boundary — catches render and lazy-load errors in MapWidgetInner.
+// ---------------------------------------------------------------------------
+
+interface MapErrorBoundaryState {
+  hasError: boolean
+}
+
+interface MapErrorBoundaryProps {
+  height?: string
+  children: ReactNode
+}
+
+class MapErrorBoundary extends Component<MapErrorBoundaryProps, MapErrorBoundaryState> {
+  constructor(props: MapErrorBoundaryProps) {
+    super(props)
+    this.state = { hasError: false }
+  }
+
+  static getDerivedStateFromError(): MapErrorBoundaryState {
+    return { hasError: true }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <MapErrorFallback
+          height={this.props.height}
+          onRetry={() => this.setState({ hasError: false })}
+        />
+      )
+    }
+    return this.props.children
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -47,12 +111,15 @@ export type { MapWidgetInnerProps as MapWidgetProps }
  *
  * - Lazy-loads maplibre-gl into a separate async chunk.
  * - Shows a loading skeleton while the chunk is fetching.
+ * - Shows an error fallback (with retry) if the lazy chunk or map render throws.
  * - Delegates empty-state rendering to MapWidgetInner.
  */
 export function MapWidget(props: MapWidgetInnerProps) {
   return (
-    <Suspense fallback={<MapLoadingSkeleton height={props.height} />}>
-      <MapWidgetInner {...props} />
-    </Suspense>
+    <MapErrorBoundary height={props.height}>
+      <Suspense fallback={<MapLoadingSkeleton height={props.height} />}>
+        <MapWidgetInner {...props} />
+      </Suspense>
+    </MapErrorBoundary>
   )
 }

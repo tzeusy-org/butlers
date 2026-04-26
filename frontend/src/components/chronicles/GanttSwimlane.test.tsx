@@ -68,7 +68,7 @@ describe("GanttSwimlaneInner empty state", () => {
       />,
     )
     expect(html).toContain("gantt-empty")
-    expect(html).toContain("No episodes in this time window")
+    expect(html).toContain("No activity recorded for this window")
   })
 
   it("does NOT render the SVG container when episodes is empty", () => {

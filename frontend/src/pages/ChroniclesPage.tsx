@@ -70,6 +70,10 @@ export default function ChroniclesPage() {
   const byDayRows = byDay.data ?? []
   const categoryBuckets = byCategory.data?.data.buckets ?? []
 
+  // Refetch callbacks for error retry buttons
+  function handleByDayRetry() { void byDay.refetch() }
+  function handleByCategoryRetry() { void byCategory.refetch() }
+
   return (
     <div className="space-y-6">
       {/* Page heading */}
@@ -120,8 +124,18 @@ export default function ChroniclesPage() {
           refetchInterval={refetchInterval}
         />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <AggregateStackedBar data={byDayRows} />
-          <AggregatePieChart buckets={categoryBuckets} />
+          <AggregateStackedBar
+            data={byDayRows}
+            isLoading={byDay.isLoading}
+            isError={byDay.isError}
+            onRetry={handleByDayRetry}
+          />
+          <AggregatePieChart
+            buckets={categoryBuckets}
+            isLoading={byCategory.isLoading}
+            isError={byCategory.isError}
+            onRetry={handleByCategoryRetry}
+          />
         </div>
       </section>
     </div>

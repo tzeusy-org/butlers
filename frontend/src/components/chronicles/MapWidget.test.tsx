@@ -71,9 +71,9 @@ import type { MapPoint } from "./MapWidget"
 // ---------------------------------------------------------------------------
 
 describe("MapWidgetInner empty state", () => {
-  it("renders 'No location data' heading when points array is empty", () => {
+  it("renders 'No activity recorded for this window' heading when points array is empty", () => {
     const html = renderToStaticMarkup(<MapWidgetInner points={[]} />)
-    expect(html).toContain("No location data")
+    expect(html).toContain("No activity recorded for this window")
   })
 
   it("renders the descriptive empty-state text when points is empty", () => {
@@ -105,7 +105,7 @@ describe("MapWidgetInner with points", () => {
 
   it("does NOT render the empty-state heading when points are provided", () => {
     const html = renderToStaticMarkup(<MapWidgetInner points={samplePoints} />)
-    expect(html).not.toContain("No location data")
+    expect(html).not.toContain("No activity recorded for this window")
   })
 })
 
@@ -146,7 +146,7 @@ describe("MapWidgetInner sensitive point exclusion", () => {
     const html = renderToStaticMarkup(<MapWidgetInner points={[sensitivePoint]} />)
     // All supplied points are sensitive — widget must show empty state, not the map.
     expect(html).not.toContain("map-container")
-    expect(html).toContain("No location data")
+    expect(html).toContain("No activity recorded for this window")
   })
 
   it("renders only non-sensitive points when mixed privacy_tier values are provided", () => {

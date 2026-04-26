@@ -13,6 +13,7 @@
 import { useMemo } from "react"
 import type { ChroniclerEpisodesParams } from "@/api/types"
 import { useChroniclesEpisodes } from "@/hooks/use-chronicles"
+import { Skeleton } from "@/components/ui/skeleton"
 import { LANE_TAXONOMY } from "./lane-taxonomy"
 import { findLongestStreaks } from "./streak-utils"
 
@@ -39,8 +40,27 @@ export interface StreakCalloutsProps {
 }
 
 export function StreakCallouts({ episodeParams, refetchInterval }: StreakCalloutsProps) {
-  const { data } = useChroniclesEpisodes(episodeParams, { refetchInterval })
+  const { data, isLoading, isError } = useChroniclesEpisodes(episodeParams, { refetchInterval })
   const streaks = useMemo(() => findLongestStreaks(data?.data ?? []), [data])
+
+  // Show loading skeleton while episode data is being fetched
+  if (isLoading && !data) {
+    return (
+      <div
+        className="flex flex-wrap gap-2 mb-4"
+        data-testid="streak-skeleton"
+        role="status"
+        aria-label="Loading streaks"
+      >
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-7 w-28 rounded-full" />
+        ))}
+      </div>
+    )
+  }
+
+  // Silently hide on error — streaks are supplementary and error would clutter the page
+  if (isError) return null
 
   // Hide entirely when no streaks pass the 30-min threshold
   if (streaks.length === 0) return null

@@ -17,6 +17,7 @@
 import { lazy, Suspense } from "react"
 
 import { Skeleton } from "@/components/ui/skeleton"
+import { Button } from "@/components/ui/button"
 import { useChroniclesEpisodes } from "@/hooks/use-chronicles"
 import type { ChroniclerEpisodesParams } from "@/api/types"
 
@@ -33,7 +34,42 @@ const GanttSwimlaneInner = lazy(() =>
 // ---------------------------------------------------------------------------
 
 function GanttLoadingSkeleton() {
-  return <Skeleton className="w-full h-40 rounded-md" />
+  return (
+    <div
+      className="space-y-2"
+      data-testid="gantt-skeleton"
+      role="status"
+      aria-label="Loading Gantt chart"
+    >
+      {/* Simulate 4 swimlane rows */}
+      {Array.from({ length: 4 }, (_, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <Skeleton className="h-4 w-20 rounded" />
+          <Skeleton className="h-5 flex-1 rounded-md" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Error fallback
+// ---------------------------------------------------------------------------
+
+function GanttErrorFallback({ onRetry }: { onRetry?: () => void }) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center rounded-md border border-dashed py-12 gap-3 text-sm text-muted-foreground"
+      data-testid="gantt-error"
+    >
+      <p>Failed to load timeline data.</p>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -65,12 +101,16 @@ export function GanttSwimlane({ windowStart, windowEnd, refetchInterval }: Gantt
     limit: 500,
   }
 
-  const { data, isLoading } = useChroniclesEpisodes(params, { refetchInterval })
+  const { data, isLoading, isError, refetch } = useChroniclesEpisodes(params, { refetchInterval })
 
   const episodes = data?.data ?? []
 
   if (isLoading && episodes.length === 0) {
     return <GanttLoadingSkeleton />
+  }
+
+  if (isError) {
+    return <GanttErrorFallback onRetry={() => { void refetch() }} />
   }
 
   return (
