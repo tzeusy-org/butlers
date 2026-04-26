@@ -152,15 +152,12 @@ async def _post_refresh(app: Any, date: str = "2026-04-24", tz: str = "UTC") -> 
 class TestDayCloseRefreshRateLimit:
     async def test_rate_limit_returns_429_when_cache_built_within_24h(self):
         """If cache_built_at is within the last 24 h, endpoint returns 429."""
-        pool = _mock_pool(fetchrow_returns=_row({"cache_built_at": _T_WITHIN_24H}))
+        # Use a live timestamp so the age stays within the 24h window regardless of when the test
+        # runs. A fixed past timestamp (e.g. _T_WITHIN_24H) becomes stale as time passes and
+        # causes the rate-limit check to fall through, producing a 503 instead of 429.
+        cache_built_at = datetime.now(UTC) - timedelta(hours=1)
+        pool = _mock_pool(fetchrow_returns=_row({"cache_built_at": cache_built_at}))
         app = _make_app_no_dispatch(pool)
-
-        # Patch datetime.now so the test is deterministic.
-        with patch(
-            "roster.chronicler.api.router.datetime" if False else __name__,
-            # We'll patch the `now` call inside the handler via freezegun-style approach
-        ):
-            pass  # We rely on the DB row timestamp being in the past by a small amount.
 
         resp = await _post_refresh(app)
         assert resp.status_code == 429
