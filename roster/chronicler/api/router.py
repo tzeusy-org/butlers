@@ -1687,7 +1687,7 @@ async def refresh_day_close(
     db: DatabaseManager = Depends(_get_db_manager),
     dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
 ) -> DayCloseRefreshResponse:
-    """Re-invoke the day-close Tier-2 path on demand (rate-limited: 1 per 24 h per date/tz).
+    """Re-invoke the day-close Tier-2 path on demand (rate-limited: 1 per 24 h per date).
 
     Checks whether a ``tier2_cache`` row for ``day_close:{date}`` was built within
     the last 24 hours.  If so, returns 429 with ``code=day_close_rate_limited`` and

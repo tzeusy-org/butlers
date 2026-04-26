@@ -189,15 +189,17 @@ The endpoint SHALL be:
 
 The API SHALL expose a read endpoint for cached `chronicler_day_close` Tier-2 prose AND a re-invocation endpoint that triggers the existing scheduled day-close path on demand. The read endpoint SHALL detect staleness against the canonical `chronicler.episodes`, `chronicler.point_events`, and `chronicler.overrides` rows in the cached window. The re-invocation endpoint SHALL be rate-limited and SHALL NOT introduce a new LLM call path beyond the one already declared in RFC 0014 §D5.
 
+**UTC-only contract:** The day window is always computed in UTC. The cache key is `day_close:{YYYY-MM-DD}` (UTC date). Local-timezone display conversion is a client-side responsibility. A `tz` parameter may be accepted by the refresh endpoint body for forward-compatibility but SHALL NOT alter the UTC window computation or the cache key in this version.
+
 The endpoints SHALL be:
 
-- `GET /api/chronicler/aggregate/day-close?date=YYYY-MM-DD&tz=...`
-- `POST /api/chronicler/aggregate/day-close/refresh` (body: `{date, tz}`)
+- `GET /api/chronicler/aggregate/day-close?date=YYYY-MM-DD`
+- `POST /api/chronicler/aggregate/day-close/refresh` (body: `{date}`)
 
 #### Scenario: Cache hit returns prose with provenance
 
 - **WHEN** a client requests `GET /api/chronicler/aggregate/day-close`
-  for a `(date, tz)` whose cache entry is fresh
+  for a `date` whose cache entry is fresh
 - **THEN** the API SHALL return the cached `prose` text plus
   `provenance_refs` (the source-ref tuples cited by the prose) and
   `cache_built_at`
@@ -205,7 +207,7 @@ The endpoints SHALL be:
 
 #### Scenario: Stale cache surfaces stale marker
 
-- **WHEN** a client requests the day-close endpoint for a `(date, tz)`
+- **WHEN** a client requests the day-close endpoint for a `date`
   where any episode, point event, or override in the cached window has
   been tombstoned, updated, or created with a timestamp greater than the
   cache's `cache_built_at`
@@ -270,7 +272,7 @@ The endpoints SHALL be:
 #### Scenario: User-clicked refresh re-invokes existing path
 
 - **WHEN** a client POSTs to `/api/chronicler/aggregate/day-close/refresh`
-  for a `(date, tz)`
+  for a `date`
 - **THEN** the API SHALL re-invoke the existing scheduled
   `chronicler_day_close` Tier-2 entry point (RFC 0014 §D5) and, on
   success, write a new cache entry with a fresh `cache_built_at`
@@ -280,7 +282,7 @@ The endpoints SHALL be:
 
 #### Scenario: Refresh rate limit enforced
 
-- **WHEN** a client POSTs the refresh endpoint for a `(date, tz)` that
+- **WHEN** a client POSTs the refresh endpoint for a `date` that
   has already been refreshed within the last 24 hours by any caller
 - **THEN** the API SHALL respond `429 Too Many Requests` with `code:
   day_close_rate_limited`
