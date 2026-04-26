@@ -382,6 +382,161 @@ async def test_sensitive_episodes_contribute_to_totals():
 
 
 # ---------------------------------------------------------------------------
+# Privacy tier filtering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_privacy_tier_omitted_uses_default():
+    """Omitting privacy_tier includes normal and sensitive episodes (excludes restricted)."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    # Mock returns both normal and sensitive rows; restricted would be filtered by SQL.
+    rows = [
+        _make_episode_row(
+            source_name="core.sessions",
+            episode_type="work",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
+            privacy="normal",
+        ),
+        _make_episode_row(
+            source_name="core.sessions",
+            episode_type="work",
+            start_at=day_start + timedelta(hours=2),
+            end_at=day_start + timedelta(hours=3),
+            privacy="sensitive",
+        ),
+    ]
+    app, mock_pool = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/aggregate/by-day",
+            params={
+                "start_at": "2024-03-15T00:00:00Z",
+                "end_at": "2024-03-16T00:00:00Z",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["total_seconds"] == pytest.approx(7200.0)
+    # Verify the SQL was called with the default IN ('normal', 'sensitive') clause.
+    call_args = mock_pool.fetch.call_args
+    sql = call_args[0][0]
+    assert "privacy IN" in sql
+
+
+@pytest.mark.unit
+async def test_privacy_tier_single_value():
+    """privacy_tier=normal includes only normal episodes."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            source_name="core.sessions",
+            episode_type="work",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
+            privacy="normal",
+        ),
+    ]
+    app, mock_pool = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/aggregate/by-day",
+            params={
+                "start_at": "2024-03-15T00:00:00Z",
+                "end_at": "2024-03-16T00:00:00Z",
+                "privacy_tier": "normal",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["total_seconds"] == pytest.approx(3600.0)
+    # Verify the SQL includes the privacy IN clause.
+    call_args = mock_pool.fetch.call_args
+    sql = call_args[0][0]
+    assert "privacy IN" in sql
+
+
+@pytest.mark.unit
+async def test_privacy_tier_multiple_values():
+    """privacy_tier=normal,sensitive includes both tiers."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            source_name="core.sessions",
+            episode_type="work",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
+            privacy="normal",
+        ),
+        _make_episode_row(
+            source_name="core.sessions",
+            episode_type="work",
+            start_at=day_start + timedelta(hours=2),
+            end_at=day_start + timedelta(hours=3),
+            privacy="sensitive",
+        ),
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/aggregate/by-day",
+            params={
+                "start_at": "2024-03-15T00:00:00Z",
+                "end_at": "2024-03-16T00:00:00Z",
+                "privacy_tier": "normal,sensitive",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["total_seconds"] == pytest.approx(7200.0)
+
+
+@pytest.mark.unit
+async def test_privacy_tier_restricted_only_includes_restricted():
+    """privacy_tier=restricted allows restricted episodes through the SQL filter."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            source_name="core.sessions",
+            episode_type="work",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=2),
+            privacy="restricted",
+        ),
+    ]
+    app, mock_pool = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/chronicler/aggregate/by-day",
+            params={
+                "start_at": "2024-03-15T00:00:00Z",
+                "end_at": "2024-03-16T00:00:00Z",
+                "privacy_tier": "restricted",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["total_seconds"] == pytest.approx(7200.0)
+    # Verify IN clause was built from the explicit tier.
+    call_args = mock_pool.fetch.call_args
+    sql = call_args[0][0]
+    assert "privacy IN" in sql
+
+
+# ---------------------------------------------------------------------------
 # Tombstone handling
 # ---------------------------------------------------------------------------
 

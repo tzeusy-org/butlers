@@ -1120,6 +1120,13 @@ async def aggregate_by_day(
     end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
     tz: str = Query("UTC", description="IANA timezone for day-boundary computation"),
     category: str | None = Query(None, description="Optional category filter"),
+    privacy_tier: str | None = Query(
+        None,
+        description=(
+            "Comma-separated privacy values to include (e.g. 'normal,sensitive'). "
+            "Default: exclude restricted (include normal and sensitive)."
+        ),
+    ),
     include_tombstoned: bool = Query(False),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> list[AggregateByDayRow]:
@@ -1193,8 +1200,17 @@ async def aggregate_by_day(
         if not include_tombstoned:
             clauses.append("tombstone_at IS NULL")
 
-        # Exclude restricted episodes by default (use corrected privacy column).
-        clauses.append("privacy != 'restricted'")
+        # Resolve privacy filter — default: include 'normal' and 'sensitive'; exclude 'restricted'.
+        if privacy_tier is not None:
+            allowed_tiers = {t.strip() for t in privacy_tier.split(",") if t.strip()}
+        else:
+            allowed_tiers = {"normal", "sensitive"}
+
+        # Build privacy IN clause from allowed_tiers.
+        tier_placeholders = ", ".join(f"${len(args) + i + 1}" for i in range(len(allowed_tiers)))
+        for tier in sorted(allowed_tiers):
+            args.append(tier)
+        clauses.append(f"privacy IN ({tier_placeholders})")
 
         where = "WHERE " + " AND ".join(clauses)
 

@@ -34,7 +34,9 @@ _ROUTER_PATH = Path(__file__).resolve().parents[2] / "roster" / "chronicler" / "
 # Helpers
 # ---------------------------------------------------------------------------
 
-_T_OUTSIDE_24H = datetime(2026, 4, 25, 6, 0, 0, tzinfo=UTC) - timedelta(hours=25)  # built 25 hours ago (outside limit)
+_T_OUTSIDE_24H = datetime(2026, 4, 25, 6, 0, 0, tzinfo=UTC) - timedelta(
+    hours=25
+)  # built 25 hours ago (outside limit)
 
 _CACHE_KEY = "day_close:2026-04-24"
 
