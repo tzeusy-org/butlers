@@ -1,32 +1,61 @@
-import { useState } from "react"
-import { RefreshCw } from "lucide-react"
-import { useQueryClient } from "@tanstack/react-query"
-import { Button } from "@/components/ui/button"
-import { chroniclesKeys } from "@/hooks/use-chronicles"
-
 /**
- * Manual refresh control for historical (static) chronicles windows.
+ * ManualRefreshButton — window-scoped cache invalidation for the Chronicles dashboard.
  *
- * Rendered when `timeWindow.pollingDisabled === true` (older windows where
- * auto-refresh is suppressed). Triggers a TanStack invalidation for ALL
- * chronicles queries (by-day, by-category, day-close, source-state, point
- * events) so the user can pull fresh data on demand.
+ * Accepts a `timeWindow` prop ({ from: Date; to: Date }) and invalidates only the
+ * TanStack Query cache entries that belong to that exact window, leaving cache
+ * entries for other windows untouched.
  *
- * Shows a spinner while the refetch is in flight. Hidden for live/today
- * windows where auto-refresh is active.
+ * Families invalidated on click:
+ *   - chroniclesKeys.byDay({ start_at, end_at })
+ *   - chroniclesKeys.byCategory({ start_at, end_at })
+ *   - chroniclesKeys.dayClose({ window_start, window_end })
+ *   - chroniclesKeys.sourceState()            (singleton — no window params)
+ *   - chroniclesKeys.pointEvents({ since, until, limit })
+ *
+ * The button is disabled and shows a spinner while any invalidation is in flight.
+ * Visible UX: "Refresh" / "Refreshing" with a spinner (aria-busy=true while busy).
  */
-export function ManualRefreshButton() {
-  const queryClient = useQueryClient()
-  const [isRefreshing, setIsRefreshing] = useState(false)
+
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { chroniclesKeys } from "@/hooks/use-chronicles";
+
+export interface ManualRefreshButtonTimeWindow {
+  from: Date;
+  to: Date;
+}
+
+interface ManualRefreshButtonProps {
+  timeWindow: ManualRefreshButtonTimeWindow;
+}
+
+export function ManualRefreshButton({ timeWindow }: ManualRefreshButtonProps) {
+  const queryClient = useQueryClient();
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   async function handleRefresh() {
-    if (isRefreshing) return
-    setIsRefreshing(true)
-    try {
-      await queryClient.invalidateQueries({ queryKey: chroniclesKeys.all })
-    } finally {
-      setIsRefreshing(false)
-    }
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+
+    const windowFrom = timeWindow.from.toISOString();
+    const windowTo = timeWindow.to.toISOString();
+
+    // Derive the exact param shapes that ChroniclesPage passes to each hook.
+    const aggregateParams = { start_at: windowFrom, end_at: windowTo };
+    const dayCloseParams = { window_start: windowFrom, window_end: windowTo };
+    const pointEventsParams = { since: windowFrom, until: windowTo, limit: 500 };
+
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.byDay(aggregateParams) }),
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.byCategory(aggregateParams) }),
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.dayClose(dayCloseParams) }),
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.sourceState() }),
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.pointEvents(pointEventsParams) }),
+    ]);
+
+    setIsRefreshing(false);
   }
 
   return (
@@ -34,13 +63,18 @@ export function ManualRefreshButton() {
       variant="outline"
       size="sm"
       className="h-8 text-xs"
-      onClick={() => void handleRefresh()}
       disabled={isRefreshing}
       aria-busy={isRefreshing}
-      aria-label="Refresh chronicles data"
+      onClick={() => void handleRefresh()}
     >
-      <RefreshCw className={isRefreshing ? "animate-spin" : ""} />
-      {isRefreshing ? "Refreshing…" : "Refresh"}
+      {isRefreshing ? (
+        <>
+          <Loader2 className="animate-spin" />
+          Refreshing
+        </>
+      ) : (
+        "Refresh"
+      )}
     </Button>
-  )
+  );
 }

@@ -201,26 +201,24 @@ export default function ChroniclesPage() {
             Retrospective view of lived past time reconstructed from butler evidence.
           </p>
         </div>
-        {!timeWindow.pollingDisabled && (
-          <AutoRefreshToggle
-            enabled={autoRefreshControl.enabled}
-            interval={autoRefreshControl.interval}
-            onToggle={autoRefreshControl.setEnabled}
-            onIntervalChange={autoRefreshControl.setInterval}
-          />
-        )}
+        <div className="flex items-center gap-2">
+          <ManualRefreshButton timeWindow={timeWindow} />
+          {!timeWindow.pollingDisabled && (
+            <AutoRefreshToggle
+              enabled={autoRefreshControl.enabled}
+              interval={autoRefreshControl.interval}
+              onToggle={autoRefreshControl.setEnabled}
+              onIntervalChange={autoRefreshControl.setInterval}
+            />
+          )}
+        </div>
       </div>
 
       {/* Source adapter state badge strip */}
       <SourceStateBadgeStrip />
 
-      {/* Time window picker + manual refresh for static windows */}
-      <div className="flex items-center gap-3">
-        <div className="flex-1">
-          <TimeWindowPicker window={timeWindow} />
-        </div>
-        {timeWindow.pollingDisabled && <ManualRefreshButton />}
-      </div>
+      {/* Time window picker */}
+      <TimeWindowPicker window={timeWindow} />
 
       {/* Scrubber (D12) — single playhead control for Gantt cursor and map marker */}
       <section aria-label="Scrubber" className="rounded-lg border bg-card px-6 py-4">
