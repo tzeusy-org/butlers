@@ -13,11 +13,12 @@
 //   - Older windows (pollingDisabled=true): no polling.
 // ---------------------------------------------------------------------------
 
-import { useMemo } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { useTimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
+import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
 import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar"
 import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart"
@@ -33,6 +34,17 @@ import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 export default function ChroniclesPage() {
   const timeWindow = useTimeWindow()
   const autoRefreshControl = useAutoRefresh(30_000)
+
+  // Episode drawer state — holds the ID of the clicked episode, or null.
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null)
+
+  const handleEpisodeClick = useCallback((episodeId: string) => {
+    setSelectedEpisodeId(episodeId)
+  }, [])
+
+  const handleDrawerClose = useCallback(() => {
+    setSelectedEpisodeId(null)
+  }, [])
 
   // When the time window ends more than 24h ago, disable polling entirely.
   // Otherwise use the user-configured interval (pause/resume still respected).
@@ -103,6 +115,7 @@ export default function ChroniclesPage() {
           windowStart={timeWindow.from}
           windowEnd={timeWindow.to}
           refetchInterval={refetchInterval}
+          onEpisodeClick={handleEpisodeClick}
         />
       </section>
 
@@ -124,6 +137,13 @@ export default function ChroniclesPage() {
           <AggregatePieChart buckets={categoryBuckets} />
         </div>
       </section>
+
+      {/* Episode drilldown drawer — Tier-2 LLM path (RFC 0014 §D5) */}
+      <EpisodeDrawer
+        episodeId={selectedEpisodeId}
+        open={selectedEpisodeId !== null}
+        onClose={handleDrawerClose}
+      />
     </div>
   )
 }
