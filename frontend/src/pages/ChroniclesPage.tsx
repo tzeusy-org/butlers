@@ -38,6 +38,7 @@ import { StreakCallouts } from "@/components/chronicles/StreakCallouts"
 import { useChroniclesAggregates, useChroniclesPointEvents } from "@/hooks/use-chronicles"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
+import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton"
 import type { ChroniclerEventsParams } from "@/api/types"
 import { MapPanContext, useMapPanContextValue } from "@/components/chronicles/map-pan-store"
 
@@ -213,8 +214,13 @@ export default function ChroniclesPage() {
       {/* Source adapter state badge strip */}
       <SourceStateBadgeStrip />
 
-      {/* Time window picker */}
-      <TimeWindowPicker window={timeWindow} />
+      {/* Time window picker + manual refresh for static windows */}
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <TimeWindowPicker window={timeWindow} />
+        </div>
+        {timeWindow.pollingDisabled && <ManualRefreshButton />}
+      </div>
 
       {/* Scrubber (D12) — single playhead control for Gantt cursor and map marker */}
       <section aria-label="Scrubber" className="rounded-lg border bg-card px-6 py-4">

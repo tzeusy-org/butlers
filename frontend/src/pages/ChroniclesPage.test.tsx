@@ -11,6 +11,9 @@
  *     - pollingDisabled=false → refetchInterval is the configured interval.
  *     - AutoRefreshToggle is hidden when pollingDisabled=true.
  *     - AutoRefreshToggle is visible when pollingDisabled=false.
+ *   - Manual refresh button (bu-hzqr0):
+ *     - ManualRefreshButton is rendered when pollingDisabled=true (historical window).
+ *     - ManualRefreshButton is hidden when pollingDisabled=false (live window).
  *   - OwnTracks trail derivation from pointEvents (bu-ig72b.35):
  *     - Sensitive events excluded from trailPoints.
  *     - Only events with lat/lon in payload included.
@@ -115,6 +118,15 @@ vi.mock("@/components/ui/auto-refresh-toggle", () => ({
 vi.mock("@/components/chronicles/TimeWindowPicker", () => ({
   TimeWindowPicker: () => null,
 }));
+
+// Track whether ManualRefreshButton was rendered (for bu-hzqr0 tests).
+let _manualRefreshButtonRendered = false;
+vi.mock("@/components/chronicles/ManualRefreshButton", () => ({
+  ManualRefreshButton: () => {
+    _manualRefreshButtonRendered = true;
+    return <span data-testid="manual-refresh-button-stub">Refresh</span>;
+  },
+}));
 vi.mock("@/components/chronicles/Scrubber", () => ({
   Scrubber: () => null,
 }));
@@ -156,6 +168,7 @@ function renderChroniclesPage(): string {
   _autoRefreshToggleProps = null;
   _lastDefaultInterval = undefined;
   _capturedMapWidgetTrailPoints = undefined;
+  _manualRefreshButtonRendered = false;
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={["/chronicles"]}>
       <Routes>
@@ -255,6 +268,26 @@ describe("ChroniclesPage useAutoRefresh integration", () => {
     // Toggle is still shown (user can resume), but enabled=false
     expect(_autoRefreshToggleProps).not.toBeNull();
     expect(_autoRefreshToggleProps?.enabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Manual refresh button — ChroniclesPage conditional rendering (bu-hzqr0)
+// ---------------------------------------------------------------------------
+
+describe("ChroniclesPage manual refresh button", () => {
+  it("renders ManualRefreshButton when pollingDisabled=true (historical window)", () => {
+    _pollingDisabled = true;
+    const html = renderChroniclesPage();
+    // Either the stub text appears in HTML or the tracking flag was set.
+    expect(_manualRefreshButtonRendered).toBe(true);
+    expect(html).toContain("Refresh");
+  });
+
+  it("does not render ManualRefreshButton when pollingDisabled=false (live window)", () => {
+    _pollingDisabled = false;
+    renderChroniclesPage();
+    expect(_manualRefreshButtonRendered).toBe(false);
   });
 });
 
