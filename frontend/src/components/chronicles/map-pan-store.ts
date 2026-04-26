@@ -11,9 +11,15 @@
 //   - No geocoding service.  Unparseable locations are a silent no-op.
 //   - This store MUST NOT conflict with the bu-ig72b.23 playhead store; it
 //     lives in a separate context and separate file.
+//
+// Performance note (bu-bhuk7): useMapPanContextValue() wraps the returned
+// object in useMemo so that MapPanContext.Provider receives a stable reference
+// on every parent render.  Without the memo, a new { register, panTo } object
+// literal is produced each render cycle, causing every context consumer to
+// re-render even when neither callback has changed.
 // ---------------------------------------------------------------------------
 
-import { createContext, useCallback, useContext, useRef } from "react"
+import { createContext, useCallback, useContext, useMemo, useRef } from "react"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,6 +55,10 @@ MapPanContext.displayName = "MapPanContext"
  * Example:
  *   const mapPanValue = useMapPanContextValue()
  *   return <MapPanContext.Provider value={mapPanValue}>...</MapPanContext.Provider>
+ *
+ * The returned object is memoised so the Provider value reference is stable
+ * across parent re-renders — both `register` and `panTo` are stable
+ * useCallback refs, so the useMemo dependency array never changes.
  */
 export function useMapPanContextValue(): MapPanContextValue {
   const fnRef = useRef<MapPanFn | null>(null)
@@ -61,7 +71,7 @@ export function useMapPanContextValue(): MapPanContextValue {
     fnRef.current?.(lat, lng)
   }, [])
 
-  return { register, panTo }
+  return useMemo(() => ({ register, panTo }), [register, panTo])
 }
 
 // ---------------------------------------------------------------------------
