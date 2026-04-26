@@ -3368,3 +3368,57 @@ export interface ChroniclerDayCloseParams {
   /** ISO-8601 date string (YYYY-MM-DD) or datetime for the window end. */
   window_end: string;
 }
+
+/** A single Chronicler point event (corrected view). */
+export interface ChroniclerPointEvent {
+  id: string;
+  source_name: string;
+  source_ref: string;
+  event_type: string;
+  occurred_at: string;
+  precision: string;
+  title: string | null;
+  payload: Record<string, unknown>;
+  privacy: string;
+  retention_days: number | null;
+  tombstone_at: string | null;
+  canonical_occurred_at: string;
+  canonical_title: string | null;
+  canonical_privacy: string;
+  corrected_at: string | null;
+  correction_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A single Chronicler override record. */
+export interface ChroniclerOverride {
+  id: string;
+  target_kind: string;
+  target_id: string;
+  corrected_start_at: string | null;
+  corrected_end_at: string | null;
+  corrected_title: string | null;
+  corrected_privacy: string | null;
+  corrected_tombstone_at: string | null;
+  note: string | null;
+  submitted_by: string | null;
+  created_at: string;
+}
+
+/**
+ * Response from POST /api/chronicler/aggregate/day-close/refresh.
+ * Returned when dispatch succeeds and a fresh cache row is written.
+ */
+export interface ChroniclerDayCloseRefreshResponse {
+  cache_key: string;
+  cache_built_at: string;
+}
+
+/** Request body for POST /api/chronicler/aggregate/day-close/refresh. */
+export interface ChroniclerDayCloseRefreshRequest {
+  /** ISO-8601 date (YYYY-MM-DD). */
+  date: string;
+  /** IANA timezone. Default "UTC". */
+  tz?: string;
+}

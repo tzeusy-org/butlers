@@ -81,6 +81,11 @@ export interface GanttSwimlaneProps {
   windowEnd: Date
   /** Override refetch interval (ms). Pass false to disable. Default 30s. */
   refetchInterval?: number | false
+  /**
+   * Called with the episode ID when the user explicitly clicks an episode bar.
+   * Wire this up to open the EpisodeDrawer.
+   */
+  onEpisodeClick?: (episodeId: string) => void
 }
 
 /**
@@ -92,7 +97,7 @@ export interface GanttSwimlaneProps {
  * - Restricted episodes are excluded at the server layer by default.
  * - Sensitive episodes rendered as masked bars (bu-D3 follow-up).
  */
-export function GanttSwimlane({ windowStart, windowEnd, refetchInterval }: GanttSwimlaneProps) {
+export function GanttSwimlane({ windowStart, windowEnd, refetchInterval, onEpisodeClick }: GanttSwimlaneProps) {
   // Build query params scoped to the visible time window.
   // overlaps_start/overlaps_end returns episodes that overlap [windowStart, windowEnd].
   const params: ChroniclerEpisodesParams = {
@@ -119,6 +124,7 @@ export function GanttSwimlane({ windowStart, windowEnd, refetchInterval }: Gantt
         episodes={episodes}
         windowStart={windowStart}
         windowEnd={windowEnd}
+        onEpisodeClick={onEpisodeClick}
       />
     </Suspense>
   )

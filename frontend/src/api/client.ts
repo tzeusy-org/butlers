@@ -223,9 +223,13 @@ import type {
   ChroniclerAggregateByDayRow,
   ChroniclerCategoryBuckets,
   ChroniclerDayCloseParams,
+  ChroniclerDayCloseRefreshRequest,
+  ChroniclerDayCloseRefreshResponse,
   ChroniclerDayCloseResponse,
   ChroniclerEpisode,
   ChroniclerEpisodesParams,
+  ChroniclerOverride,
+  ChroniclerPointEvent,
   ChroniclerSourceStateRow,
 } from "./types.ts";
 
@@ -3469,4 +3473,47 @@ export function getChroniclerDayClose(
     window_end: params.window_end,
   });
   return apiFetch(`/chronicler/aggregate/day-close?${sp.toString()}`);
+}
+
+/** Fetch a single Chronicler episode by ID (corrected view). 404 if not found. */
+export function getChroniclerEpisode(episodeId: string): Promise<ChroniclerEpisode> {
+  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}`);
+}
+
+/**
+ * Fetch point events linked to an episode.
+ * Returns an empty list if the episode has no linked events.
+ * 404 if the episode does not exist.
+ */
+export function getChroniclerEpisodeEvents(episodeId: string): Promise<ChroniclerPointEvent[]> {
+  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/events`);
+}
+
+/**
+ * Fetch the correction history for an episode, sorted by created_at DESC.
+ * Returns an empty list if no corrections exist.
+ * 404 if the episode does not exist.
+ */
+export function getChroniclerEpisodeCorrections(
+  episodeId: string,
+): Promise<ChroniclerOverride[]> {
+  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/corrections`);
+}
+
+/**
+ * Trigger a day-close Tier-2 refresh (rate-limited: once per 24 h per date).
+ *
+ * Returns 429 with code "day_close_rate_limited" when called too soon after
+ * the last refresh. The caller should check `error.status === 429` and disable
+ * the Explain button accordingly.
+ *
+ * Returns 503 when the in-process spawner is not wired (standalone/test mode).
+ */
+export function postChroniclerDayCloseRefresh(
+  body: ChroniclerDayCloseRefreshRequest,
+): Promise<ChroniclerDayCloseRefreshResponse> {
+  return apiFetch("/chronicler/aggregate/day-close/refresh", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }

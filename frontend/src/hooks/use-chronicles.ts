@@ -17,19 +17,24 @@
  * Tombstone defaults: include_tombstoned defaults to false in all hooks.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getChroniclerAggregateByCategory,
   getChroniclerAggregateByDay,
   getChroniclerDayClose,
+  getChroniclerEpisode,
+  getChroniclerEpisodeCorrections,
+  getChroniclerEpisodeEvents,
   getChroniclerEpisodes,
   getChroniclerSourceState,
+  postChroniclerDayCloseRefresh,
 } from "@/api/client.ts";
 import type {
   ChroniclerAggregateByCategoryParams,
   ChroniclerAggregateByDayParams,
   ChroniclerDayCloseParams,
+  ChroniclerDayCloseRefreshRequest,
   ChroniclerEpisodesParams,
 } from "@/api/types.ts";
 
@@ -41,6 +46,10 @@ export const chroniclesKeys = {
   all: ["chronicles"] as const,
   episodes: (params?: ChroniclerEpisodesParams) =>
     [...chroniclesKeys.all, "episodes", params] as const,
+  episode: (id: string) => [...chroniclesKeys.all, "episode", id] as const,
+  episodeEvents: (id: string) => [...chroniclesKeys.all, "episode-events", id] as const,
+  episodeCorrections: (id: string) =>
+    [...chroniclesKeys.all, "episode-corrections", id] as const,
   byCategory: (params: ChroniclerAggregateByCategoryParams) =>
     [...chroniclesKeys.all, "aggregate-by-category", params] as const,
   byDay: (params: ChroniclerAggregateByDayParams) =>
@@ -144,5 +153,93 @@ export function useChroniclesDayClose(
     queryFn: () => getChroniclerDayClose(params),
     refetchInterval: options?.refetchInterval ?? false,
     enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch a single Chronicler episode by ID (corrected view).
+ *
+ * Returns undefined while loading. Throws ApiError with status 404
+ * if the episode is not found.
+ *
+ * Disabled when episodeId is falsy — callers may pass null/undefined when
+ * no episode is selected without triggering a fetch.
+ */
+export function useChroniclerEpisode(
+  episodeId: string | null | undefined,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.episode(episodeId ?? ""),
+    queryFn: () => getChroniclerEpisode(episodeId!),
+    enabled: options?.enabled !== false && !!episodeId,
+    refetchInterval: options?.refetchInterval ?? false,
+  });
+}
+
+/**
+ * Fetch point events linked to an episode.
+ *
+ * Returns an empty array when there are no linked events.
+ * Disabled when episodeId is falsy.
+ */
+export function useChroniclerEpisodeEvents(
+  episodeId: string | null | undefined,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.episodeEvents(episodeId ?? ""),
+    queryFn: () => getChroniclerEpisodeEvents(episodeId!),
+    enabled: options?.enabled !== false && !!episodeId,
+    refetchInterval: options?.refetchInterval ?? false,
+  });
+}
+
+/**
+ * Fetch the correction history for an episode (sorted by created_at DESC).
+ *
+ * Returns an empty array when there are no corrections.
+ * Disabled when episodeId is falsy.
+ */
+export function useChroniclerEpisodeCorrections(
+  episodeId: string | null | undefined,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.episodeCorrections(episodeId ?? ""),
+    queryFn: () => getChroniclerEpisodeCorrections(episodeId!),
+    enabled: options?.enabled !== false && !!episodeId,
+    refetchInterval: options?.refetchInterval ?? false,
+  });
+}
+
+/**
+ * Mutation hook for the Tier-2 "Explain this episode" / day-close refresh.
+ *
+ * This is the SINGLE Tier-2 LLM path exposed on the chronicles page per
+ * RFC 0014 §D5. It must be:
+ *   - Explicit-click triggered (never automatic).
+ *   - Rate-limited by the backend (1 per 24 h per date).
+ *   - UI disabled while the rate-limit window is active.
+ *
+ * Rate-limit detection: when the mutation fails with ApiError status 429
+ * and code "day_close_rate_limited", the caller should disable the button
+ * and surface the retry_after_seconds from the error details.
+ *
+ * On success, invalidates the day-close query cache so any adjacent widget
+ * picks up the fresh prose automatically.
+ */
+export function useChroniclerExplain() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (body: ChroniclerDayCloseRefreshRequest) =>
+      postChroniclerDayCloseRefresh(body),
+    onSuccess: () => {
+      // Invalidate day-close cache for this date so stale prose is refetched.
+      // We can't reconstruct the exact DayCloseParams key here, so we
+      // invalidate by partial key prefix.
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
+    },
   });
 }

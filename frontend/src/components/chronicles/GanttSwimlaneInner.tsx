@@ -66,6 +66,8 @@ export interface GanttSwimlaneInnerProps {
   episodes: ChroniclerEpisode[]
   windowStart: Date
   windowEnd: Date
+  /** Called with the episode ID when the user explicitly clicks a bar. */
+  onEpisodeClick?: (episodeId: string) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -225,9 +227,10 @@ interface EpisodeBarProps {
   colour: string
   patternId: string | null  // hatch pattern id if sensitive, else null
   windowEndMs: number
+  onEpisodeClick?: (episodeId: string) => void
 }
 
-function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndMs }: EpisodeBarProps) {
+function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndMs, onEpisodeClick }: EpisodeBarProps) {
   const { episode, row, xPct, widthPct, isOpen } = positioned
   const isSensitive = episode.canonical_privacy === "sensitive"
 
@@ -250,14 +253,19 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
     ? "?"
     : new Date(rawEndMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
 
+  function handleClick() {
+    onEpisodeClick?.(episode.id)
+  }
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <g
-          role="img"
+          role="button"
           aria-label={isSensitive ? "Private activity" : (episode.canonical_title ?? episode.source_name)}
           data-testid={`gantt-bar-${episode.id}`}
           style={{ cursor: "pointer" }}
+          onClick={handleClick}
         >
           {/* Bar body */}
           <rect
@@ -369,6 +377,7 @@ export function GanttSwimlaneInner({
   episodes,
   windowStart,
   windowEnd,
+  onEpisodeClick,
 }: GanttSwimlaneInnerProps) {
   const windowStartMs = windowStart.getTime()
   const windowEndMs = windowEnd.getTime()
@@ -505,6 +514,7 @@ export function GanttSwimlaneInner({
                         : null
                     }
                     windowEndMs={windowEndMs}
+                    onEpisodeClick={onEpisodeClick}
                   />
                 ))
               })}
