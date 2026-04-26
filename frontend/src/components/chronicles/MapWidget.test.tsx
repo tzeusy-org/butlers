@@ -64,6 +64,7 @@ vi.mock("maplibre-gl/dist/maplibre-gl.css", () => ({}))
 // ---------------------------------------------------------------------------
 
 import { MapWidgetInner } from "./MapWidgetInner"
+import { buildTrailGeoJSON } from "./trail-geojson"
 import type { MapPoint } from "./MapWidget"
 
 // ---------------------------------------------------------------------------
@@ -195,5 +196,100 @@ describe("MapPoint type", () => {
   it("accepts optional privacy_tier field", () => {
     const point: MapPoint = { lng: 1, lat: 2, privacy_tier: "sensitive" }
     expect(point.privacy_tier).toBe("sensitive")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildTrailGeoJSON — OwnTracks trail GeoJSON builder (bu-ig72b.35)
+// ---------------------------------------------------------------------------
+
+describe("buildTrailGeoJSON", () => {
+  it("returns an empty FeatureCollection when given zero points", () => {
+    const result = buildTrailGeoJSON([])
+    expect(result.type).toBe("FeatureCollection")
+    expect(result.features).toHaveLength(0)
+  })
+
+  it("returns an empty FeatureCollection for a single point (LineString needs ≥2)", () => {
+    const result = buildTrailGeoJSON([{ lng: 103.8, lat: 1.35 }])
+    expect(result.type).toBe("FeatureCollection")
+    expect(result.features).toHaveLength(0)
+  })
+
+  it("returns a FeatureCollection with one LineString feature for two points", () => {
+    const result = buildTrailGeoJSON([
+      { lng: 103.8, lat: 1.35 },
+      { lng: 2.35, lat: 48.86 },
+    ])
+    expect(result.type).toBe("FeatureCollection")
+    expect(result.features).toHaveLength(1)
+    const feature = result.features[0]
+    expect(feature.type).toBe("Feature")
+    expect(feature.geometry.type).toBe("LineString")
+  })
+
+  it("builds coordinates in [lng, lat] order (GeoJSON spec)", () => {
+    const result = buildTrailGeoJSON([
+      { lng: 103.8, lat: 1.35 },
+      { lng: 2.35, lat: 48.86 },
+    ])
+    // geometry is GeoJSON.LineString — access coordinates directly
+    const geom = result.features[0].geometry
+    expect(geom.type).toBe("LineString")
+    const coords = (geom as { type: string; coordinates: number[][] }).coordinates
+    expect(coords[0]).toEqual([103.8, 1.35])
+    expect(coords[1]).toEqual([2.35, 48.86])
+  })
+
+  it("preserves the order of input points (caller is responsible for sorting)", () => {
+    const points = [
+      { lng: 1.0, lat: 10.0 },
+      { lng: 2.0, lat: 20.0 },
+      { lng: 3.0, lat: 30.0 },
+    ]
+    const result = buildTrailGeoJSON(points)
+    const geom = result.features[0].geometry
+    const coords = (geom as { type: string; coordinates: number[][] }).coordinates
+    expect(coords).toHaveLength(3)
+    expect(coords[0]).toEqual([1.0, 10.0])
+    expect(coords[2]).toEqual([3.0, 30.0])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// MapWidgetInner — trailPoints prop contract (bu-ig72b.35)
+// ---------------------------------------------------------------------------
+
+describe("MapWidgetInner trailPoints prop", () => {
+  it("accepts trailPoints prop without error when map container is rendered", () => {
+    // Provide a visible point so the map container renders, then pass trailPoints.
+    const html = renderToStaticMarkup(
+      <MapWidgetInner
+        points={[{ lng: 103.8, lat: 1.35 }]}
+        trailPoints={[
+          { lng: 103.8, lat: 1.35 },
+          { lng: 2.35, lat: 48.86 },
+        ]}
+      />,
+    )
+    // The map container is rendered when visible points exist.
+    expect(html).toContain("map-container")
+  })
+
+  it("accepts empty trailPoints without error", () => {
+    const html = renderToStaticMarkup(
+      <MapWidgetInner
+        points={[{ lng: 103.8, lat: 1.35 }]}
+        trailPoints={[]}
+      />,
+    )
+    expect(html).toContain("map-container")
+  })
+
+  it("omitting trailPoints (undefined) does not affect map rendering", () => {
+    const html = renderToStaticMarkup(
+      <MapWidgetInner points={[{ lng: 0, lat: 0 }]} />,
+    )
+    expect(html).toContain("map-container")
   })
 })

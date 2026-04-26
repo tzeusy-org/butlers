@@ -11,6 +11,10 @@
  *     - pollingDisabled=false → refetchInterval is the configured interval.
  *     - AutoRefreshToggle is hidden when pollingDisabled=true.
  *     - AutoRefreshToggle is visible when pollingDisabled=false.
+ *   - OwnTracks trail derivation from pointEvents (bu-ig72b.35):
+ *     - Sensitive events excluded from trailPoints.
+ *     - Only events with lat/lon in payload included.
+ *     - Points sorted by canonical_occurred_at ascending.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -18,6 +22,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router";
 
 import ChroniclesPage from "@/pages/ChroniclesPage";
+
+import type { ChroniclerPointEvent } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Control variables for mocks (overridden per-test as needed)
@@ -27,6 +33,10 @@ let _pollingDisabled = false;
 let _autoRefreshEnabled = true;
 let _autoRefreshInterval = 30_000;
 let _lastDefaultInterval: number | undefined;
+// Captured pointEvents returned by useChroniclesPointEvents (for trail tests)
+let _mockPointEvents: ChroniclerPointEvent[] = [];
+// Captured trailPoints passed to MapWidget (for trail derivation tests)
+let _capturedMapWidgetTrailPoints: Array<{ lng: number; lat: number }> | undefined = undefined;
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -40,7 +50,11 @@ vi.mock("@/hooks/use-chronicles", () => ({
     byDay: { data: [], isLoading: false, isError: false },
   }),
   useChroniclesEpisodes: () => ({ data: undefined, isLoading: false, isError: false }),
-  useChroniclesPointEvents: () => ({ data: undefined, isLoading: false, isError: false }),
+  useChroniclesPointEvents: () => ({
+    data: _mockPointEvents.length > 0 ? { data: _mockPointEvents } : undefined,
+    isLoading: false,
+    isError: false,
+  }),
 }));
 
 vi.mock("@/hooks/use-time-window", () => ({
@@ -83,7 +97,10 @@ vi.mock("@/components/chronicles/Scrubber", () => ({
   Scrubber: () => null,
 }));
 vi.mock("@/components/chronicles/MapWidget", () => ({
-  MapWidget: () => null,
+  MapWidget: (props: Record<string, unknown>) => {
+    _capturedMapWidgetTrailPoints = props.trailPoints as Array<{ lng: number; lat: number }> | undefined;
+    return null;
+  },
 }));
 vi.mock("@/components/chronicles/GanttSwimlane", () => ({
   GanttSwimlane: () => null,
@@ -113,6 +130,7 @@ import TimelinePage from "@/pages/TimelinePage";
 function renderChroniclesPage(): string {
   _autoRefreshToggleProps = null;
   _lastDefaultInterval = undefined;
+  _capturedMapWidgetTrailPoints = undefined;
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={["/chronicles"]}>
       <Routes>
@@ -229,5 +247,96 @@ describe("TimelinePage smoke", () => {
     const html = renderTimelinePage();
     // TimelinePage has an h1 ("Timeline") but it must not say "Chronicles"
     expect(html).not.toContain(">Chronicles<");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OwnTracks trail derivation — ChroniclesPage → MapWidget.trailPoints (bu-ig72b.35)
+// ---------------------------------------------------------------------------
+
+function makePointEvent(
+  id: string,
+  canonical_occurred_at: string,
+  overrides: Partial<ChroniclerPointEvent> = {},
+): ChroniclerPointEvent {
+  return {
+    id,
+    source_name: "owntracks",
+    source_ref: `ref:${id}`,
+    event_type: "location",
+    occurred_at: canonical_occurred_at,
+    precision: "exact",
+    title: null,
+    payload: { lat: 1.35, lon: 103.8 },
+    privacy: "normal",
+    retention_days: 30,
+    tombstone_at: null,
+    canonical_occurred_at,
+    canonical_title: null,
+    canonical_privacy: "normal",
+    corrected_at: null,
+    correction_note: null,
+    created_at: canonical_occurred_at,
+    updated_at: canonical_occurred_at,
+    ...overrides,
+  };
+}
+
+describe("ChroniclesPage OwnTracks trail derivation", () => {
+  it("passes empty trailPoints to MapWidget when there are no point events", () => {
+    _mockPointEvents = [];
+    renderChroniclesPage();
+    expect(_capturedMapWidgetTrailPoints).toEqual([]);
+  });
+
+  it("excludes events with canonical_privacy='sensitive' from trailPoints", () => {
+    _mockPointEvents = [
+      makePointEvent("ev-1", "2026-04-25T10:00:00Z", {
+        canonical_privacy: "sensitive",
+        payload: { lat: 1.35, lon: 103.8 },
+      }),
+      makePointEvent("ev-2", "2026-04-25T11:00:00Z", {
+        canonical_privacy: "normal",
+        payload: { lat: 48.86, lon: 2.35 },
+      }),
+    ];
+    renderChroniclesPage();
+    // Only the normal event should produce a trail point.
+    expect(_capturedMapWidgetTrailPoints).toHaveLength(1);
+    expect(_capturedMapWidgetTrailPoints?.[0]).toEqual({ lng: 2.35, lat: 48.86 });
+  });
+
+  it("excludes events without lat/lon in payload", () => {
+    _mockPointEvents = [
+      makePointEvent("ev-1", "2026-04-25T10:00:00Z", { payload: {} }),
+      makePointEvent("ev-2", "2026-04-25T11:00:00Z", { payload: { lat: 1.35, lon: 103.8 } }),
+    ];
+    renderChroniclesPage();
+    expect(_capturedMapWidgetTrailPoints).toHaveLength(1);
+    expect(_capturedMapWidgetTrailPoints?.[0]).toEqual({ lng: 103.8, lat: 1.35 });
+  });
+
+  it("sorts trailPoints by canonical_occurred_at ascending", () => {
+    _mockPointEvents = [
+      makePointEvent("ev-late", "2026-04-25T14:00:00Z", { payload: { lat: 3.0, lon: 3.0 } }),
+      makePointEvent("ev-early", "2026-04-25T09:00:00Z", { payload: { lat: 1.0, lon: 1.0 } }),
+      makePointEvent("ev-mid", "2026-04-25T11:00:00Z", { payload: { lat: 2.0, lon: 2.0 } }),
+    ];
+    renderChroniclesPage();
+    expect(_capturedMapWidgetTrailPoints).toHaveLength(3);
+    expect(_capturedMapWidgetTrailPoints?.[0]).toEqual({ lng: 1.0, lat: 1.0 });
+    expect(_capturedMapWidgetTrailPoints?.[1]).toEqual({ lng: 2.0, lat: 2.0 });
+    expect(_capturedMapWidgetTrailPoints?.[2]).toEqual({ lng: 3.0, lat: 3.0 });
+  });
+
+  it("accepts events with 'lng' key instead of 'lon' in payload", () => {
+    _mockPointEvents = [
+      makePointEvent("ev-1", "2026-04-25T10:00:00Z", {
+        payload: { lat: 51.5, lng: -0.12 },
+      }),
+    ];
+    renderChroniclesPage();
+    expect(_capturedMapWidgetTrailPoints).toHaveLength(1);
+    expect(_capturedMapWidgetTrailPoints?.[0]).toEqual({ lng: -0.12, lat: 51.5 });
   });
 });

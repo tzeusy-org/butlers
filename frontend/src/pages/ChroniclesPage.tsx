@@ -17,6 +17,11 @@
 //   - `scrubberMs`  — raw slider position
 //   - `snappedMs`   — snapped to nearest point event (drives Gantt cursor)
 //   - `playheadPoint` — {lng, lat} for the snapped point (drives map marker)
+//
+// OwnTracks trail (bu-ig72b.35):
+//   - `trailPoints` — derived from pointEvents; sorted by canonical_occurred_at;
+//     sensitive events excluded. Passed to MapWidget as a connected line layer.
+//     Empty when the sibling adapter (bu-ahs9z) has not yet landed.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useMemo, useState } from "react"
@@ -101,6 +106,34 @@ export default function ChroniclesPage() {
     refetchInterval,
   })
   const pointEvents = useMemo(() => pointEventsData?.data ?? [], [pointEventsData])
+
+  // OwnTracks trail (bu-ig72b.35): derive {lng, lat} pairs from point events.
+  //
+  // Filter: exclude events where canonical_privacy === 'sensitive' (masking
+  // policy per bu-ig72b.29) and events without lat/lon coordinates in payload.
+  // Sort:   ascending canonical_occurred_at so the line connects in time order.
+  // Tombstoned events are excluded by the hook default (include_tombstoned=false).
+  //
+  // This is intentionally empty until the OwnTracks projection adapter
+  // (bu-ahs9z) lands and starts emitting point events with lat/lon payloads.
+  const trailPoints = useMemo(() => {
+    return pointEvents
+      .filter((ev) => ev.canonical_privacy !== "sensitive")
+      .filter((ev) => {
+        const lat = ev.payload.lat
+        const lon = ev.payload.lon ?? ev.payload.lng
+        return typeof lat === "number" && typeof lon === "number"
+      })
+      .sort(
+        (a, b) =>
+          new Date(a.canonical_occurred_at).getTime() -
+          new Date(b.canonical_occurred_at).getTime(),
+      )
+      .map((ev) => ({
+        lng: (ev.payload.lon ?? ev.payload.lng) as number,
+        lat: ev.payload.lat as number,
+      }))
+  }, [pointEvents])
 
   // Playhead state (D12): lifted here and passed down to Gantt + MapWidget.
   // snappedMs drives the Gantt cursor line.
@@ -212,7 +245,7 @@ export default function ChroniclesPage() {
         {/* Map area */}
         <section aria-label="Map area" className="rounded-lg border bg-card p-6">
           <h2 className="text-sm font-medium text-muted-foreground mb-4">Map area</h2>
-          <MapWidget points={[]} playheadPoint={playheadPoint} />
+          <MapWidget points={[]} playheadPoint={playheadPoint} trailPoints={trailPoints} />
         </section>
       </MapPanContext.Provider>
 

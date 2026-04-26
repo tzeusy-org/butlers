@@ -8,16 +8,18 @@
 //   - Mount / tear-down a MapLibre map with an OSM tile source.
 //   - Show an EmptyState overlay when the `points` array is empty.
 //   - Accept optional GeoJSON points and fit the map to their bounds.
+//   - Render an OwnTracks trail as a connected line layer (bu-ig72b.35).
 //   - Attribution is rendered by MapLibre natively (OSM attribution required).
 // ---------------------------------------------------------------------------
 
-import maplibreGl, { type Map as MapLibreMap } from "maplibre-gl"
+import maplibreGl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css"
 import { MapPin } from "lucide-react"
 import { useEffect, useMemo, useRef } from "react"
 
 import { EmptyState } from "@/components/ui/empty-state"
 import { useRegisterMapPan } from "./map-pan-store"
+import { buildTrailGeoJSON } from "./trail-geojson"
 
 // ---------------------------------------------------------------------------
 // Playhead marker helpers
@@ -74,6 +76,13 @@ export interface MapWidgetInnerProps {
    * Pass null or undefined when no scrubber position is active.
    */
   playheadPoint?: { lng: number; lat: number } | null
+  /**
+   * OwnTracks trail points to render as a connected line layer (bu-ig72b.35).
+   * Points are already sorted by occurred_at and pre-filtered (sensitive
+   * events excluded). A LineString is rendered when ≥2 points are provided.
+   * Empty array or single point → empty FeatureCollection (no line drawn).
+   */
+  trailPoints?: Array<{ lng: number; lat: number }>
 }
 
 // ---------------------------------------------------------------------------
@@ -106,15 +115,26 @@ const OSM_STYLE: maplibreGl.StyleSpecification = {
 const DEFAULT_CENTER: [number, number] = [0, 0]
 const DEFAULT_ZOOM = 1
 
+// OwnTracks trail layer identifiers (bu-ig72b.35).
+const TRAIL_SOURCE_ID = "owntracks-trail"
+const TRAIL_LAYER_ID = "owntracks-trail-line"
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function MapWidgetInner({ points, height = "h-80", playheadPoint }: MapWidgetInnerProps) {
+export function MapWidgetInner({
+  points,
+  height = "h-80",
+  playheadPoint,
+  trailPoints = [],
+}: MapWidgetInnerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markersRef = useRef<maplibreGl.Marker[]>([])
   const playheadMarkerRef = useRef<maplibreGl.Marker | null>(null)
+  // Whether the trail source/layer have been added to the current map instance.
+  const trailReadyRef = useRef<boolean>(false)
 
   // Register flyTo with the pan store so Gantt episode clicks can pan the map.
   // useRegisterMapPan returns a no-op if there is no MapPanContext provider,
@@ -160,6 +180,7 @@ export function MapWidgetInner({ points, height = "h-80", playheadPoint }: MapWi
         marker.remove()
       }
       markersRef.current = []
+      trailReadyRef.current = false
       map.remove()
       mapRef.current = null
     }
@@ -233,6 +254,47 @@ export function MapWidgetInner({ points, height = "h-80", playheadPoint }: MapWi
         .addTo(map)
     }
   }, [playheadPoint])
+
+  // Sync the OwnTracks trail source/layer whenever `trailPoints` changes (bu-ig72b.35).
+  //
+  // The trail source ('owntracks-trail') and layer ('owntracks-trail-line') are
+  // added lazily on the first render after the map is ready. Subsequent updates
+  // call setData() on the existing source — cheaper than remove/re-add.
+  //
+  // A LineString requires ≥2 coordinate pairs; buildTrailGeoJSON returns an
+  // empty FeatureCollection for 0 or 1 points so the layer renders nothing.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    const geoJSON = buildTrailGeoJSON(trailPoints)
+
+    if (!trailReadyRef.current) {
+      // First time: add the GeoJSON source and line layer.
+      map.addSource(TRAIL_SOURCE_ID, {
+        type: "geojson",
+        data: geoJSON,
+      })
+      map.addLayer({
+        id: TRAIL_LAYER_ID,
+        type: "line",
+        source: TRAIL_SOURCE_ID,
+        layout: {
+          "line-join": "round",
+          "line-cap": "round",
+        },
+        paint: {
+          "line-color": "hsl(220 90% 56%)",
+          "line-width": 3,
+          "line-opacity": 0.85,
+        },
+      })
+      trailReadyRef.current = true
+    } else {
+      // Source already registered — update its data in-place.
+      ;(map.getSource(TRAIL_SOURCE_ID) as GeoJSONSource).setData(geoJSON)
+    }
+  }, [trailPoints])
 
   if (visiblePoints.length === 0) {
     return (
