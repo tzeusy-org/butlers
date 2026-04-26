@@ -40,7 +40,7 @@ _EPISODE_ID = UUID("00000000-0000-0000-0000-000000000001")
 _EPISODE_ID_STR = str(_EPISODE_ID)
 _CACHE_KEY = f"episode_explain:{_EPISODE_ID}"
 
-_T_WITHIN_24H = datetime.now(UTC) - timedelta(hours=2)   # live: always within rate-limit window
+_T_WITHIN_24H = datetime.now(UTC) - timedelta(hours=2)  # live: always within rate-limit window
 _T_OUTSIDE_24H = datetime.now(UTC) - timedelta(hours=25)  # live: always outside rate-limit window
 
 
