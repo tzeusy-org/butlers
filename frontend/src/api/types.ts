@@ -3422,3 +3422,14 @@ export interface ChroniclerDayCloseRefreshRequest {
   /** IANA timezone. Default "UTC". */
   tz?: string;
 }
+
+/** Query parameters for GET /api/chronicler/events. */
+export interface ChroniclerEventsParams {
+  source_name?: string;
+  event_type?: string;
+  since?: string;
+  until?: string;
+  include_tombstoned?: boolean;
+  offset?: number;
+  limit?: number;
+}

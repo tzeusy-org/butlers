@@ -32,7 +32,7 @@ let _lastDefaultInterval: number | undefined;
 // Mocks
 // ---------------------------------------------------------------------------
 
-// Mocks needed for SourceStateBadgeStrip, AggregateStackedBar, and StreakCallouts (uses TanStack Query)
+// Mocks needed for SourceStateBadgeStrip, AggregateStackedBar, StreakCallouts, and Scrubber
 vi.mock("@/hooks/use-chronicles", () => ({
   useChroniclesSourceState: () => ({ data: undefined, isLoading: false, isError: false }),
   useChroniclesAggregates: () => ({
@@ -40,6 +40,7 @@ vi.mock("@/hooks/use-chronicles", () => ({
     byDay: { data: [], isLoading: false, isError: false },
   }),
   useChroniclesEpisodes: () => ({ data: undefined, isLoading: false, isError: false }),
+  useChroniclesPointEvents: () => ({ data: undefined, isLoading: false, isError: false }),
 }));
 
 vi.mock("@/hooks/use-time-window", () => ({
@@ -77,6 +78,9 @@ vi.mock("@/components/ui/auto-refresh-toggle", () => ({
 
 vi.mock("@/components/chronicles/TimeWindowPicker", () => ({
   TimeWindowPicker: () => null,
+}));
+vi.mock("@/components/chronicles/Scrubber", () => ({
+  Scrubber: () => null,
 }));
 vi.mock("@/components/chronicles/MapWidget", () => ({
   MapWidget: () => null,

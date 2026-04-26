@@ -86,6 +86,11 @@ export interface GanttSwimlaneProps {
    * Wire this up to open the EpisodeDrawer.
    */
   onEpisodeClick?: (episodeId: string) => void
+  /**
+   * Scrubber cursor position in epoch ms. When set, a vertical cursor line
+   * is drawn in the SVG bar area (D12 — playhead binding).
+   */
+  cursorMs?: number | null
 }
 
 /**
@@ -97,7 +102,7 @@ export interface GanttSwimlaneProps {
  * - Restricted episodes are excluded at the server layer by default.
  * - Sensitive episodes rendered as masked bars (bu-D3 follow-up).
  */
-export function GanttSwimlane({ windowStart, windowEnd, refetchInterval, onEpisodeClick }: GanttSwimlaneProps) {
+export function GanttSwimlane({ windowStart, windowEnd, refetchInterval, onEpisodeClick, cursorMs }: GanttSwimlaneProps) {
   // Build query params scoped to the visible time window.
   // overlaps_start/overlaps_end returns episodes that overlap [windowStart, windowEnd].
   const params: ChroniclerEpisodesParams = {
@@ -125,6 +130,7 @@ export function GanttSwimlane({ windowStart, windowEnd, refetchInterval, onEpiso
         windowStart={windowStart}
         windowEnd={windowEnd}
         onEpisodeClick={onEpisodeClick}
+        cursorMs={cursorMs}
       />
     </Suspense>
   )

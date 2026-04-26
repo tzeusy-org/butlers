@@ -68,6 +68,12 @@ export interface GanttSwimlaneInnerProps {
   windowEnd: Date
   /** Called with the episode ID when the user explicitly clicks a bar. */
   onEpisodeClick?: (episodeId: string) => void
+  /**
+   * Optional playhead cursor position in epoch ms.
+   * When set, a vertical cursor line is rendered at the corresponding x
+   * position in the SVG bar area (D12 — scrubber drives Gantt cursor).
+   */
+  cursorMs?: number | null
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +384,7 @@ export function GanttSwimlaneInner({
   windowStart,
   windowEnd,
   onEpisodeClick,
+  cursorMs,
 }: GanttSwimlaneInnerProps) {
   const windowStartMs = windowStart.getTime()
   const windowEndMs = windowEnd.getTime()
@@ -518,6 +525,21 @@ export function GanttSwimlaneInner({
                   />
                 ))
               })}
+
+              {/* Scrubber cursor line (D12) */}
+              {cursorMs != null && cursorMs >= windowStartMs && cursorMs <= windowEndMs && (
+                <line
+                  x1={(cursorMs - windowStartMs) / windowDuration * SVG_WIDTH}
+                  y1={0}
+                  x2={(cursorMs - windowStartMs) / windowDuration * SVG_WIDTH}
+                  y2={totalSvgHeight - AXIS_HEIGHT}
+                  stroke="currentColor"
+                  strokeOpacity={0.7}
+                  strokeWidth={1.5}
+                  strokeDasharray="4 2"
+                  data-testid="gantt-cursor"
+                />
+              )}
 
               {/* Time axis */}
               {ticks.map((ms) => {

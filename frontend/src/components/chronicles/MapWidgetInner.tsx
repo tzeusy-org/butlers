@@ -19,6 +19,26 @@ import { useEffect, useMemo, useRef } from "react"
 import { EmptyState } from "@/components/ui/empty-state"
 
 // ---------------------------------------------------------------------------
+// Playhead marker helpers
+// ---------------------------------------------------------------------------
+
+/** Create a DOM element for the playhead marker (filled circle). */
+function createPlayheadEl(): HTMLElement {
+  const el = document.createElement("div")
+  el.setAttribute("data-testid", "map-playhead")
+  el.style.cssText = [
+    "width: 14px",
+    "height: 14px",
+    "border-radius: 50%",
+    "background: hsl(0 84% 60%)",  // destructive red — clearly distinguishable
+    "border: 2px solid white",
+    "box-shadow: 0 0 0 2px hsl(0 84% 60% / 40%)",
+    "pointer-events: none",
+  ].join(";")
+  return el
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -44,6 +64,15 @@ export interface MapWidgetInnerProps {
   points: MapPoint[]
   /** Height class for the map container. @default "h-80" */
   height?: string
+  /**
+   * The snapped playhead point (lng, lat) in epoch ms coordinates.
+   * When set, a distinct marker is placed at this position (D12 — map
+   * playhead follows scrubber). The nearest point in `points` matching
+   * this epoch ms is highlighted; if none match, no playhead is shown.
+   *
+   * Pass null or undefined when no scrubber position is active.
+   */
+  playheadPoint?: { lng: number; lat: number } | null
 }
 
 // ---------------------------------------------------------------------------
@@ -80,10 +109,11 @@ const DEFAULT_ZOOM = 1
 // Component
 // ---------------------------------------------------------------------------
 
-export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps) {
+export function MapWidgetInner({ points, height = "h-80", playheadPoint }: MapWidgetInnerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markersRef = useRef<maplibreGl.Marker[]>([])
+  const playheadMarkerRef = useRef<maplibreGl.Marker | null>(null)
 
   // Sensitive points are never plotted — filter them out before rendering.
   // Memoised to avoid recreating the array on every render (stable reference
@@ -116,7 +146,10 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
     mapRef.current = map
 
     return () => {
-      // Remove all markers before destroying the map instance.
+      // Remove playhead marker before destroying the map instance.
+      playheadMarkerRef.current?.remove()
+      playheadMarkerRef.current = null
+      // Remove all regular markers before destroying the map instance.
       for (const marker of markersRef.current) {
         marker.remove()
       }
@@ -160,6 +193,31 @@ export function MapWidgetInner({ points, height = "h-80" }: MapWidgetInnerProps)
 
     map.fitBounds(bounds, { padding: 48, maxZoom: 14 })
   }, [visiblePoints])
+
+  // Sync the playhead marker position whenever `playheadPoint` changes.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    if (!playheadPoint) {
+      // No active playhead — remove the marker if it exists.
+      playheadMarkerRef.current?.remove()
+      playheadMarkerRef.current = null
+      return
+    }
+
+    const { lng, lat } = playheadPoint
+
+    if (playheadMarkerRef.current) {
+      // Update position of existing marker (cheap — avoids DOM churn).
+      playheadMarkerRef.current.setLngLat([lng, lat])
+    } else {
+      // Create a new playhead marker.
+      playheadMarkerRef.current = new maplibreGl.Marker({ element: createPlayheadEl() })
+        .setLngLat([lng, lat])
+        .addTo(map)
+    }
+  }, [playheadPoint])
 
   if (visiblePoints.length === 0) {
     return (

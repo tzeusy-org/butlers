@@ -228,6 +228,7 @@ import type {
   ChroniclerDayCloseResponse,
   ChroniclerEpisode,
   ChroniclerEpisodesParams,
+  ChroniclerEventsParams,
   ChroniclerOverride,
   ChroniclerPointEvent,
   ChroniclerSourceStateRow,
@@ -3516,4 +3517,21 @@ export function postChroniclerDayCloseRefresh(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Fetch paginated Chronicler point events. Defaults: include_tombstoned=false. */
+export function getChroniclerEvents(
+  params?: ChroniclerEventsParams,
+): Promise<{ data: ChroniclerPointEvent[]; meta: { total: number; offset: number; limit: number; has_more: boolean } }> {
+  const sp = new URLSearchParams();
+  if (params?.source_name) sp.set("source_name", params.source_name);
+  if (params?.event_type) sp.set("event_type", params.event_type);
+  if (params?.since) sp.set("since", params.since);
+  if (params?.until) sp.set("until", params.until);
+  if (params?.include_tombstoned != null)
+    sp.set("include_tombstoned", String(params.include_tombstoned));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events");
 }

@@ -27,6 +27,7 @@ import {
   getChroniclerEpisodeCorrections,
   getChroniclerEpisodeEvents,
   getChroniclerEpisodes,
+  getChroniclerEvents,
   getChroniclerSourceState,
   postChroniclerDayCloseRefresh,
 } from "@/api/client.ts";
@@ -36,6 +37,7 @@ import type {
   ChroniclerDayCloseParams,
   ChroniclerDayCloseRefreshRequest,
   ChroniclerEpisodesParams,
+  ChroniclerEventsParams,
 } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -57,6 +59,8 @@ export const chroniclesKeys = {
   sourceState: () => [...chroniclesKeys.all, "source-state"] as const,
   dayClose: (params: ChroniclerDayCloseParams) =>
     [...chroniclesKeys.all, "day-close", params] as const,
+  pointEvents: (params?: ChroniclerEventsParams) =>
+    [...chroniclesKeys.all, "point-events", params] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -241,5 +245,27 @@ export function useChroniclerExplain() {
       // invalidate by partial key prefix.
       queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
     },
+  });
+}
+
+/**
+ * Fetch point events for the scrubber.
+ *
+ * Fetches up to 500 point events in a time window. Used by the Scrubber to
+ * snap the playhead to the nearest known event timestamp (D12).
+ *
+ * Privacy: sensitive point events (e.g. OwnTracks location) are included
+ * because their coordinates are needed for map rendering. The caller is
+ * responsible for privacy-appropriate display.
+ */
+export function useChroniclesPointEvents(
+  params?: ChroniclerEventsParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.pointEvents(params),
+    queryFn: () => getChroniclerEvents(params),
+    refetchInterval: options?.refetchInterval ?? 30_000,
+    enabled: options?.enabled !== false,
   });
 }

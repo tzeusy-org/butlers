@@ -1,9 +1,10 @@
 // ---------------------------------------------------------------------------
 // ChroniclesPage — Chronicles dashboard (bu-ig72b)
 //
-// Widget regions will be filled by follow-up issues:
-//   - Gantt area (bu-ig72b.5)
+// Widget regions:
+//   - Gantt area (bu-ig72b.5 / bu-ig72b.28)
 //   - Map area (bu-ig72b.14)
+//   - Scrubber (bu-ig72b.23) — single time-scrubber driving Gantt cursor and map playhead
 //   - Aggregations area (bu-ig72b.7, bu-ig72b.33)
 //
 // Time window state lives here and flows down to all three widget regions
@@ -11,6 +12,11 @@
 // Auto-refresh is gated by `pollingDisabled` from `useTimeWindow`:
 //   - Today / recent windows (pollingDisabled=false): 30s polling by default.
 //   - Older windows (pollingDisabled=true): no polling.
+//
+// Playhead state is lifted here (D12):
+//   - `scrubberMs`  — raw slider position
+//   - `snappedMs`   — snapped to nearest point event (drives Gantt cursor)
+//   - `playheadPoint` — {lng, lat} for the snapped point (drives map marker)
 // ---------------------------------------------------------------------------
 
 import { useCallback, useMemo, useState } from "react"
@@ -19,13 +25,15 @@ import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
 import { MapWidget } from "@/components/chronicles/MapWidget"
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
 import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer"
+import { Scrubber } from "@/components/chronicles/Scrubber"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
 import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar"
 import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart"
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts"
-import { useChroniclesAggregates } from "@/hooks/use-chronicles"
+import { useChroniclesAggregates, useChroniclesPointEvents } from "@/hooks/use-chronicles"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
+import type { ChroniclerEventsParams } from "@/api/types"
 
 // ---------------------------------------------------------------------------
 // Page
@@ -74,6 +82,66 @@ export default function ChroniclesPage() {
     [windowFrom, windowTo],
   )
 
+  // Point events for the scrubber (D12). Fetch up to 500 events per window.
+  // source_name is not filtered here — all point events in the window are
+  // eligible for scrubbing. OwnTracks events carry lat/lon in payload.
+  const pointEventsParams: ChroniclerEventsParams = useMemo(
+    () => ({
+      since: windowFrom,
+      until: windowTo,
+      limit: 500,
+    }),
+    [windowFrom, windowTo],
+  )
+
+  const { data: pointEventsData } = useChroniclesPointEvents(pointEventsParams, {
+    refetchInterval,
+  })
+  const pointEvents = useMemo(() => pointEventsData?.data ?? [], [pointEventsData])
+
+  // Playhead state (D12): lifted here and passed down to Gantt + MapWidget.
+  // snappedMs drives the Gantt cursor line.
+  // playheadPoint drives the map marker (derived from snapped point event payload).
+  const [snappedMs, setSnappedMs] = useState<number | null>(null)
+  const [playheadPoint, setPlayheadPoint] = useState<{ lng: number; lat: number } | null>(null)
+
+  const handleScrub = useCallback(
+    (_scrubberMs: number, newSnappedMs: number | null) => {
+      setSnappedMs(newSnappedMs)
+
+      // Resolve the snapped point event to extract {lng, lat} from its payload.
+      // Only events from the owntracks source carry lat/lon coordinates.
+      if (newSnappedMs === null) {
+        setPlayheadPoint(null)
+        return
+      }
+
+      const snappedEvent = pointEvents.find(
+        (ev) => new Date(ev.canonical_occurred_at).getTime() === newSnappedMs,
+      )
+      if (!snappedEvent) {
+        setPlayheadPoint(null)
+        return
+      }
+
+      // Never plot coordinates for sensitive events — consistent with MapWidgetInner's
+      // sensitive-point exclusion and the bu-ig72b.29 masking policy.
+      if (snappedEvent.canonical_privacy === "sensitive") {
+        setPlayheadPoint(null)
+        return
+      }
+
+      const lat = snappedEvent.payload.lat
+      const lon = snappedEvent.payload.lon ?? snappedEvent.payload.lng
+      if (typeof lat === "number" && typeof lon === "number") {
+        setPlayheadPoint({ lng: lon, lat })
+      } else {
+        setPlayheadPoint(null)
+      }
+    },
+    [pointEvents],
+  )
+
   const { byCategory, byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
     refetchInterval,
     enabled: true,
@@ -112,6 +180,18 @@ export default function ChroniclesPage() {
       {/* Time window picker */}
       <TimeWindowPicker window={timeWindow} />
 
+      {/* Scrubber (D12) — single playhead control for Gantt cursor and map marker */}
+      <section aria-label="Scrubber" className="rounded-lg border bg-card px-6 py-4">
+        {/* key resets scrubber state when the time window changes */}
+        <Scrubber
+          key={`${windowFrom}-${windowTo}`}
+          windowStart={timeWindow.from}
+          windowEnd={timeWindow.to}
+          pointEvents={pointEvents}
+          onScrub={handleScrub}
+        />
+      </section>
+
       {/* Gantt area */}
       <section aria-label="Gantt area" className="rounded-lg border bg-card p-6">
         <h2 className="text-sm font-medium text-muted-foreground mb-4">Gantt area</h2>
@@ -120,13 +200,14 @@ export default function ChroniclesPage() {
           windowEnd={timeWindow.to}
           refetchInterval={refetchInterval}
           onEpisodeClick={handleEpisodeClick}
+          cursorMs={snappedMs}
         />
       </section>
 
       {/* Map area */}
       <section aria-label="Map area" className="rounded-lg border bg-card p-6">
         <h2 className="text-sm font-medium text-muted-foreground mb-4">Map area</h2>
-        <MapWidget points={[]} />
+        <MapWidget points={[]} playheadPoint={playheadPoint} />
       </section>
 
       {/* Aggregations area */}

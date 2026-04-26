@@ -113,6 +113,8 @@ export type { MapWidgetInnerProps as MapWidgetProps }
  * - Shows a loading skeleton while the chunk is fetching.
  * - Shows an error fallback (with retry) if the lazy chunk or map render throws.
  * - Delegates empty-state rendering to MapWidgetInner.
+ * - Accepts an optional `playheadPoint` prop (D12 — scrubber drives map
+ *   playhead). The inner component handles marker creation and cleanup.
  */
 export function MapWidget(props: MapWidgetInnerProps) {
   return (
