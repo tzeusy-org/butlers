@@ -263,6 +263,34 @@ class TestSourceStateAPI:
         subsources = {cp["subsource"] for cp in checkpoints}
         assert subsources == {"schema_a", "schema_b"}
 
+    async def test_meals_source_row_returned(self):
+        """health.meals PLANNED source row is returned with correct compatibility."""
+        adapter_rows = [
+            _row(
+                {
+                    "source_name": "health.meals",
+                    "chronicler_compatibility": "planned",
+                    "read_surface": None,
+                    "boundary_semantics": "eating_event point events; one row per logged meal",
+                    "optional_schema": True,
+                    "active": False,
+                    "inactive_reason": None,
+                }
+            ),
+        ]
+        app, _ = _make_app(fetch_side_effect=[adapter_rows, []])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/chronicler/source-state")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 1
+        row = data[0]
+        assert row["source_name"] == "health.meals"
+        assert row["chronicler_compatibility"] == "planned"
+        assert row["optional_schema"] is True
+
     async def test_no_checkpoints_returns_null_subsource_checkpoints(self):
         """Source with no checkpoint rows → subsource_checkpoints is null."""
         adapter_rows = [
