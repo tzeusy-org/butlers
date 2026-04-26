@@ -256,6 +256,16 @@ ingest, or notify."
   read-side helpers (`chronicler_list_episodes`, `chronicler_get_episode`,
   `chronicler_submit_correction`). MCP tool surface is intentionally small
   because Chronicler's primary interaction surface is the dashboard API.
+  > **Resolved (dashboard surface):** The dashboard surface question is
+  > closed. The Chronicles page is implemented as the `/chronicles`
+  > frontend route (`ChroniclesPage.tsx`) backed by Chronicler-owned API
+  > endpoints (`GET /api/chronicler/aggregate/by-day`,
+  > `/aggregate/by-category`, `/source-state`, `/aggregate/day-close`).
+  > The full surface contract is defined in the `add-dashboard-chronicles`
+  > OpenSpec change
+  > (`openspec/changes/add-dashboard-chronicles/specs/dashboard-chronicles/spec.md`).
+  > The `/chronicles` route is distinct from the operational `/timeline`
+  > route (live cross-butler ops stream).
 - **Correction conflict resolution?** Later overrides win. Multi-party
   correction is not a v1 concern (single-user system).
 - **Episode merging?** Out of scope for v1. Overlap is allowed and not
