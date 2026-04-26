@@ -29,13 +29,12 @@ import {
   getChroniclerEpisodes,
   getChroniclerEvents,
   getChroniclerSourceState,
-  postChroniclerDayCloseRefresh,
+  postChroniclerEpisodeExplain,
 } from "@/api/client.ts";
 import type {
   ChroniclerAggregateByCategoryParams,
   ChroniclerAggregateByDayParams,
   ChroniclerDayCloseParams,
-  ChroniclerDayCloseRefreshRequest,
   ChroniclerEpisodesParams,
   ChroniclerEventsParams,
 } from "@/api/types.ts";
@@ -218,31 +217,32 @@ export function useChroniclerEpisodeCorrections(
 }
 
 /**
- * Mutation hook for the Tier-2 "Explain this episode" / day-close refresh.
+ * Mutation hook for the Tier-2 "Explain this episode" per-episode drilldown.
  *
- * This is the SINGLE Tier-2 LLM path exposed on the chronicles page per
- * RFC 0014 §D5. It must be:
- *   - Explicit-click triggered (never automatic).
- *   - Rate-limited by the backend (1 per 24 h per date).
+ * This calls POST /api/chronicler/episodes/{id}/explain, which assembles a
+ * token-bounded bundle (episode detail + linked events + correction history)
+ * and invokes the LLM. It is the proper per-episode Tier-2 path per RFC 0014 §D5.
+ *
+ * Constraints:
+ *   - Explicit-click triggered only (never automatic).
+ *   - Rate-limited by the backend (1 per 24 h per episode).
  *   - UI disabled while the rate-limit window is active.
+ *   - Sensitive/restricted episodes return 403 — the ExplainButton is hidden for those.
  *
  * Rate-limit detection: when the mutation fails with ApiError status 429
- * and code "day_close_rate_limited", the caller should disable the button
- * and surface the retry_after_seconds from the error details.
+ * and code "episode_explain_rate_limited", surface retry_after_seconds from the
+ * error details and disable the button.
  *
- * On success, invalidates the day-close query cache so any adjacent widget
- * picks up the fresh prose automatically.
+ * On success, invalidates the chronicles query cache so any adjacent widget
+ * picks up fresh data automatically.
  */
 export function useChroniclerExplain() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (body: ChroniclerDayCloseRefreshRequest) =>
-      postChroniclerDayCloseRefresh(body),
+    mutationFn: (episodeId: string) => postChroniclerEpisodeExplain(episodeId),
     onSuccess: () => {
-      // Invalidate day-close cache for this date so stale prose is refetched.
-      // We can't reconstruct the exact DayCloseParams key here, so we
-      // invalidate by partial key prefix.
+      // Invalidate all chronicles queries so any adjacent prose widget refreshes.
       queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
     },
   });

@@ -192,6 +192,14 @@ class DayCloseRefreshResponse(BaseModel):
     cache_built_at: datetime
 
 
+class EpisodeExplainResponse(BaseModel):
+    """Response body for a successful per-episode explain."""
+
+    episode_id: str
+    cache_key: str
+    cache_built_at: datetime
+
+
 __all__ = [
     "AggregateByDayRow",
     "CategoryBucket",
@@ -203,6 +211,7 @@ __all__ = [
     "DayCloseRefreshResponse",
     "DayCloseFreshResponse",
     "DayCloseStaleResponse",
+    "EpisodeExplainResponse",
     "SourceBreakdownEntry",
     "SourceStateRow",
     "SubsourceCheckpoint",

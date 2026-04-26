@@ -462,7 +462,8 @@ describe("EpisodeDrawerContent rate-limit notice", () => {
       <EpisodeDrawerContent episodeId="ep-test-id" />,
     )
     expect(html).toContain("explain-success")
-    expect(html).toContain("Day summary refreshed")
+    // Matches the success text in EpisodeDrawer
+    expect(html).toContain("Episode explanation refreshed")
   })
 })
 

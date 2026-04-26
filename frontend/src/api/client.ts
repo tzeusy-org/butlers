@@ -227,6 +227,7 @@ import type {
   ChroniclerDayCloseRefreshResponse,
   ChroniclerDayCloseResponse,
   ChroniclerEpisode,
+  ChroniclerEpisodeExplainResponse,
   ChroniclerEpisodesParams,
   ChroniclerEventsParams,
   ChroniclerOverride,
@@ -3516,6 +3517,24 @@ export function postChroniclerDayCloseRefresh(
   return apiFetch("/chronicler/aggregate/day-close/refresh", {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Trigger a per-episode Tier-2 LLM drilldown (rate-limited: once per 24 h per episode).
+ *
+ * Returns 403 when the episode is sensitive/restricted (excluded from LLM paths).
+ * Returns 429 with code "episode_explain_rate_limited" when called too soon after
+ * the last explain. The caller should check `error.status === 429` and disable
+ * the Explain button accordingly.
+ *
+ * Returns 503 when the in-process spawner is not wired (standalone/test mode).
+ */
+export function postChroniclerEpisodeExplain(
+  episodeId: string,
+): Promise<ChroniclerEpisodeExplainResponse> {
+  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/explain`, {
+    method: "POST",
   });
 }
 
