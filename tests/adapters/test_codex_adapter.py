@@ -21,6 +21,7 @@ import pytest
 
 from butlers.core.runtimes import CodexAdapter
 from butlers.core.runtimes.codex import (
+    _extract_structured_stdout_error,
     _extract_tool_call,
     _find_codex_binary,
     _has_mcp_tool_calls,
@@ -454,6 +455,32 @@ def test_select_error_detail_dedupes_repeated_error_and_turn_failed_messages():
     detail = _select_error_detail("", stdout, 1)
     assert detail == (
         "Invalid prompt: your prompt was flagged as potentially violating our usage policy."
+    )
+
+
+def test_extract_structured_stdout_error_prefers_terminal_failure_message():
+    """Structured turn.failed events should drive nonzero-exit diagnostics."""
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps({"type": "error", "message": "Reconnecting... 5/5"}),
+            json.dumps(
+                {
+                    "type": "turn.failed",
+                    "error": {"message": "unexpected status 401 Unauthorized: Missing bearer auth"},
+                }
+            ),
+        ]
+    )
+
+    assert (
+        _extract_structured_stdout_error(stdout)
+        == "unexpected status 401 Unauthorized: Missing bearer auth"
+    )
+    assert (
+        _select_error_detail("", stdout, 1)
+        == "unexpected status 401 Unauthorized: Missing bearer auth"
     )
 
 
@@ -965,6 +992,55 @@ async def test_nonzero_exit_with_structured_stdout_uses_error_message():
                 prompt="test",
                 system_prompt="",
                 mcp_servers={},
+                env={},
+            )
+
+
+async def test_nonzero_exit_uses_structured_stdout_failure_message():
+    """Structured stdout failures should raise a concise terminal error message."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 1
+        proc.pid = 42
+        proc.communicate = AsyncMock(
+            return_value=(
+                (
+                    json.dumps({"type": "thread.started", "thread_id": "thread-1"})
+                    + "\n"
+                    + json.dumps({"type": "turn.started"})
+                    + "\n"
+                    + json.dumps({"type": "error", "message": "Reconnecting... 5/5"})
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "type": "turn.failed",
+                            "error": {
+                                "message": (
+                                    "unexpected status 401 Unauthorized: Missing bearer auth"
+                                )
+                            },
+                        }
+                    )
+                ).encode(),
+                b"",
+            )
+        )
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "Codex CLI exited with code 1: "
+                "unexpected status 401 Unauthorized: Missing bearer auth"
+            ),
+        ):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers=_MCP_SERVERS,
                 env={},
             )
 
