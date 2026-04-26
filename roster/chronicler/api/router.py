@@ -909,6 +909,10 @@ async def aggregate_by_day(
     # Group by (day_str, category, source_name) and sum overlap seconds.
     # This avoids pushing category_for() logic into SQL and keeps it
     # in the Python layer where the category taxonomy lives.
+    #
+    # Complexity: O(N×k) where k = average episode span in days (typically << D).
+    # For each episode we compute which days it overlaps via date arithmetic and
+    # iterate only those days — avoiding the naive O(N×D) scan over all buckets.
 
     # day_cat_src[(day, category, source_name)] = {
     #   "total_seconds": float,
@@ -958,21 +962,45 @@ async def aggregate_by_day(
         # that falls within each day window.
         ep_end_resolved = ep_end if ep_end is not None else end_at
 
-        for day_str, (ds, de) in day_bounds.items():
+        # Compute the local-date range this episode overlaps, clipped to the
+        # query window.  ep_end_resolved is exclusive (like day_end), so we
+        # subtract 1 µs before converting to a local date to avoid counting a
+        # day that the episode only *touches* at its very start boundary.
+        ep_first_day = max(ep_start, start_at).astimezone(tzinfo).date()
+        ep_last_day = (
+            min(
+                ep_end_resolved - timedelta(microseconds=1),
+                end_at - timedelta(microseconds=1),
+            )
+            .astimezone(tzinfo)
+            .date()
+        )
+
+        # Clamp to the query window's day range (defensive — SQL WHERE should
+        # already guarantee overlap, but rounding/DST can produce edge cases).
+        ep_first_day = max(ep_first_day, first_day)
+        ep_last_day = min(ep_last_day, last_day)
+
+        ep_day = ep_first_day
+        while ep_day <= ep_last_day:
+            day_str = ep_day.isoformat()
+            ds, de = day_bounds[day_str]
+
             # Overlap = max(0, min(ep_end, de) - max(ep_start, ds))
             overlap_start = max(ep_start, ds)
             overlap_end = min(ep_end_resolved, de)
-            if overlap_end <= overlap_start:
-                continue
-            overlap_seconds = (overlap_end - overlap_start).total_seconds()
+            if overlap_end > overlap_start:
+                overlap_seconds = (overlap_end - overlap_start).total_seconds()
 
-            bucket_key = (day_str, ep_category, source_name)
-            bucket = day_cat_src[bucket_key]
-            bucket["total_seconds"] += overlap_seconds
-            bucket["episode_count"] += 1
-            bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
-            bucket["precision_values"].append(precision)
-            bucket["retention_days_values"].append(retention_days)
+                bucket_key = (day_str, ep_category, source_name)
+                bucket = day_cat_src[bucket_key]
+                bucket["total_seconds"] += overlap_seconds
+                bucket["episode_count"] += 1
+                bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
+                bucket["precision_values"].append(precision)
+                bucket["retention_days_values"].append(retention_days)
+
+            ep_day += timedelta(days=1)
 
     # ── Build final response rows ──────────────────────────────────────
     # First group day_cat_src by (day, category) to produce per-bucket source breakdowns.
