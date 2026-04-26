@@ -98,6 +98,12 @@ def _infer_mcp_transport_from_url(url: str) -> str | None:
     return None
 
 
+def _filtered_stderr_lines(stderr: str) -> list[str]:
+    """Return stderr lines with known benign Codex notices removed."""
+    stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return [line for line in stderr_lines if line not in _BENIGN_STDERR_LINES]
+
+
 def _prefer_ipv4_loopback(url: str) -> str:
     """Rewrite bare ``localhost`` URLs to IPv4 loopback for Codex MCP.
 
@@ -484,8 +490,7 @@ def _extract_stdout_json_detail(stdout: str) -> tuple[str | None, bool]:
 
 def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     """Prefer actionable Codex failure details over benign stderr noise."""
-    stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    filtered_stderr_lines = [line for line in stderr_lines if line not in _BENIGN_STDERR_LINES]
+    filtered_stderr_lines = _filtered_stderr_lines(stderr)
     if filtered_stderr_lines:
         return "\n".join(filtered_stderr_lines)
     stderr_clean = stderr.strip()
@@ -504,10 +509,10 @@ def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     return f"exit code {returncode}"
 
 
-def _parse_codex_output(
-    stdout: str, stderr: str, returncode: int
-) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
-    """Parse Codex CLI output into (result_text, tool_calls).
+def _parse_codex_output_payload(
+    stdout: str,
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None, bool]:
+    """Parse successful Codex stdout into (result_text, tool_calls, usage, completed).
 
     The Codex CLI output may include JSON-lines on stdout. We support
     both legacy event objects and current ``codex exec --json`` events.
@@ -525,24 +530,16 @@ def _parse_codex_output(
     ----------
     stdout:
         Raw stdout from the Codex process.
-    stderr:
-        Raw stderr from the Codex process.
-    returncode:
-        Exit code from the Codex process.
-
     Returns
     -------
-    tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
-        (result_text, tool_calls, usage)
+    tuple[str | None, list[dict[str, Any]], dict[str, Any] | None, bool]
+        (result_text, tool_calls, usage, completed)
     """
-    if returncode != 0:
-        error_detail = _select_error_detail(stderr, stdout, returncode)
-        logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
-        return (f"Error: {error_detail}", [], None)
 
     tool_calls: list[dict[str, Any]] = []
     text_parts: list[str] = []
     usage: dict[str, Any] | None = None
+    completed = False
 
     # Try to parse as JSON-lines (one JSON object per line)
     lines = stdout.strip().splitlines()
@@ -589,6 +586,7 @@ def _parse_codex_output(
 
         elif obj_type == "result":
             # Final result object
+            completed = True
             result_content = obj.get("result", obj.get("text", ""))
             if result_content:
                 text_parts.append(str(result_content))
@@ -616,6 +614,7 @@ def _parse_codex_output(
                 tool_calls.append(_extract_tool_call(item))
 
         elif obj_type in ("turn.completed", "response.completed"):
+            completed = True
             raw_usage = obj.get("usage")
             if not isinstance(raw_usage, dict):
                 response_obj = obj.get("response")
@@ -646,6 +645,39 @@ def _parse_codex_output(
         text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
 
     result_text = "\n".join(text_parts) if text_parts else None
+    return result_text, tool_calls, usage, completed
+
+
+def _parse_codex_output(
+    stdout: str, stderr: str, returncode: int
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """Parse Codex CLI output into (result_text, tool_calls)."""
+    if returncode != 0:
+        error_detail = _select_error_detail(stderr, stdout, returncode)
+        logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
+        return (f"Error: {error_detail}", [], None)
+    result_text, tool_calls, usage, _completed = _parse_codex_output_payload(stdout)
+    return result_text, tool_calls, usage
+
+
+def _recover_completed_nonzero_exit(
+    stdout: str,
+    stderr: str,
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None] | None:
+    """Recover a completed Codex response when the CLI exits non-zero.
+
+    Some Codex CLI builds can emit a full terminal JSON event stream and then
+    still return a non-zero process code with no actionable stderr. When that
+    happens, prefer the completed stdout payload over treating the session as a
+    wrapper failure.
+    """
+    if _filtered_stderr_lines(stderr):
+        return None
+    result_text, tool_calls, usage, completed = _parse_codex_output_payload(stdout)
+    if not completed:
+        return None
+    if result_text is None and not tool_calls:
+        return None
     return result_text, tool_calls, usage
 
 
@@ -1183,6 +1215,16 @@ class CodexAdapter(RuntimeAdapter):
             }
 
             if returncode != 0:
+                recovered = _recover_completed_nonzero_exit(stdout, stderr)
+                if recovered is not None:
+                    logger.warning(
+                        "Codex CLI exited with code %d after emitting a completed JSON "
+                        "response; using parsed stdout payload",
+                        returncode,
+                    )
+                    self._last_process_info["nonzero_exit_recovered"] = True
+                    self._last_process_info["result_source"] = "nonzero_exit_stdout"
+                    return recovered
                 error_detail = _select_error_detail(stderr, stdout, returncode)
                 error_detail = _augment_transport_error_detail(error_detail, mcp_servers)
                 logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)

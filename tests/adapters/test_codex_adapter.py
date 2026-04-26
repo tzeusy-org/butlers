@@ -496,6 +496,28 @@ def _make_text_only_stdout() -> bytes:
     ).encode()
 
 
+def _make_completed_stdout() -> bytes:
+    """Build a completed Codex JSON-lines response with usage metadata."""
+    return (
+        json.dumps({"type": "thread.started", "thread_id": "thread-123"})
+        + "\n"
+        + json.dumps({"type": "turn.started"})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "msg1",
+                    "type": "agent_message",
+                    "text": "Recovered answer",
+                },
+            }
+        )
+        + "\n"
+        + json.dumps({"type": "turn.completed", "usage": {"input_tokens": 12, "output_tokens": 34}})
+    ).encode()
+
+
 _MCP_SERVERS = {"switchboard": {"url": "http://localhost:41100/mcp"}}
 
 
@@ -770,6 +792,34 @@ async def test_retry_on_transient_remote_compaction_failure_exhausted():
     assert info["attempt_count"] == 3
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is False
+
+
+async def test_nonzero_exit_with_completed_json_response_recovers():
+    """Completed Codex JSON stdout should win over a bare non-zero process status."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 1
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(_make_completed_stdout(), b""))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "Recovered answer"
+    assert tool_calls == []
+    assert usage == {"input_tokens": 12, "output_tokens": 34}
+    info = adapter.last_process_info
+    assert info["exit_code"] == 1
+    assert info["nonzero_exit_recovered"] is True
+    assert info["result_source"] == "nonzero_exit_stdout"
 
 
 async def test_retry_provenance_result_source_retry():
