@@ -3453,6 +3453,7 @@ export function getChroniclerAggregateByDay(
   const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
   if (params.tz) sp.set("tz", params.tz);
   if (params.category) sp.set("category", params.category);
+  if (params.privacy_tier) sp.set("privacy_tier", params.privacy_tier);
   if (params.include_tombstoned != null)
     sp.set("include_tombstoned", String(params.include_tombstoned));
   return apiFetch(`/chronicler/aggregate/by-day?${sp.toString()}`);

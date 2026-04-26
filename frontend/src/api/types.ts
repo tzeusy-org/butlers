@@ -3274,6 +3274,7 @@ export interface ChroniclerAggregateByDayParams {
   end_at: string;
   tz?: string;
   category?: string;
+  privacy_tier?: string;
   include_tombstoned?: boolean;
 }
 
