@@ -137,10 +137,10 @@ describe("GoogleOAuthSection scope-set picker", () => {
     expect(html).toContain("force_consent=true");
   });
 
-  it("links account reauthorization to a consent URL that includes Google Health", () => {
+  it("links account reauthorization to a consent URL that includes every optional Google scope set", () => {
     stubAccounts([account({ granted_scopes: [...CALENDAR_SCOPES, ...DRIVE_SCOPES] })]);
     const html = renderToStaticMarkup(<GoogleOAuthSection />);
-    expect(html).toContain("scope_set=calendar%2Cdrive%2Chealth");
+    expect(html).toContain("scope_set=gmail%2Ccalendar%2Ccontacts%2Cdrive%2Chealth");
     expect(html).toContain("Re-authorize");
   });
 

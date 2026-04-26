@@ -250,7 +250,9 @@ const SCOPE_SETS: ReadonlyArray<ScopeSetDescriptor> = [
   },
 ];
 
-const ACCOUNT_REAUTHORIZE_SCOPE_SET = "calendar,drive,health";
+// Account-level reauthorization should preserve every optional Google
+// integration. The backend adds the "base" identity set implicitly.
+const ACCOUNT_REAUTHORIZE_SCOPE_SET = "gmail,calendar,contacts,drive,health";
 
 function isScopeSetGranted(
   granted: string[] | null | undefined,
