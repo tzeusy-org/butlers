@@ -1,18 +1,8 @@
-# Dashboard Chronicles
+# dashboard-chronicles Specification
 
 ## Purpose
-
-Defines the Chronicles page surface contract for the Butlers dashboard:
-a single retrospective view that overlays concurrent activity lanes
-(work, calendar, music, gaming, travel, sleep, meal, home) on a shared
-time scrubber, paired with a map widget for location replay and an
-aggregations panel for time-by-category breakdowns. The page consumes
-Chronicler-owned data exclusively (`/api/chronicler/*`) and is
-distinct from the operational `/timeline` route, which remains the
-live cross-butler ops stream.
-
-## ADDED Requirements
-
+TBD - created by archiving change add-dashboard-chronicles. Update Purpose after archive.
+## Requirements
 ### Requirement: Chronicles Frontend Route
 
 The dashboard SHALL expose a top-level route `/chronicles` rendered by
@@ -286,3 +276,4 @@ Backend handlers serving the page SHALL emit OTel spans for the new endpoints so
   `chronicler.aggregate.day_close`, or `chronicler.source_state`
 - **AND** the span SHALL record query latency and the resulting bucket
   count (or, for source-state and day-close, the row / cache state)
+

@@ -34,12 +34,10 @@ All data-bearing surfaces follow consistent state patterns:
 The application shell defines the outermost structural frame: the sidebar navigation, page header with breadcrumbs, command palette, keyboard shortcuts, theme system, loading/error/empty state patterns, auto-refresh architecture, and the full UI primitive library. All domain pages render inside this shell and inherit its design system, responsive behavior, and operational affordances.
 
 The technology stack is: React 18 with TypeScript, React Router v7 (browser router), TanStack Query v5 for server state, Tailwind CSS v4 with shadcn/ui components (backed by Radix UI primitives), Lucide icons, Sonner toast notifications, class-variance-authority for variant-driven styling, and Vite as the build tool.
-
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Application Entry Point and Provider Hierarchy
 
-The application boots via a React 18 StrictMode render. The provider hierarchy is: `StrictMode` > `QueryClientProvider` (TanStack Query) > `RouterProvider` (React Router). ReactQueryDevtools are included in development builds but start closed.
+The application SHALL boot via a React 18 StrictMode render. The provider hierarchy is: `StrictMode` > `QueryClientProvider` (TanStack Query) > `RouterProvider` (React Router). ReactQueryDevtools are included in development builds but start closed.
 
 #### Scenario: Application mounts successfully
 
@@ -58,7 +56,7 @@ The application boots via a React 18 StrictMode render. The provider hierarchy i
 
 ### Requirement: Root Layout Composition
 
-The root layout is a single route wrapper that composes the shell structure. All page routes render as children of this layout via React Router's `<Outlet />`.
+The root layout SHALL be a single route wrapper that composes the shell structure. All page routes render as children of this layout via React Router's `<Outlet />`.
 
 #### Scenario: Root layout renders all shell affordances
 
@@ -72,7 +70,7 @@ The root layout is a single route wrapper that composes the shell structure. All
 
 ### Requirement: Shell Layout Structure
 
-The shell implements a responsive sidebar + main content layout that fills the full viewport height. The sidebar and main area are arranged in a horizontal flex container.
+The shell SHALL implement a responsive sidebar + main content layout that fills the full viewport height. The sidebar and main area are arranged in a horizontal flex container.
 
 #### Scenario: Desktop layout (viewport >= md breakpoint)
 
@@ -99,7 +97,7 @@ The shell implements a responsive sidebar + main content layout that fills the f
 
 ### Requirement: Sidebar Navigation
 
-The sidebar provides the primary navigation for the entire dashboard. It consists of a brand header, a scrollable navigation list, a footer with spend summary, and a collapse toggle.
+The sidebar SHALL provide the primary navigation for the entire dashboard. It SHALL consist of a brand header, a scrollable navigation list, a footer with spend summary, and a collapse toggle.
 
 #### Scenario: Brand header
 
@@ -113,7 +111,7 @@ The sidebar provides the primary navigation for the entire dashboard. It consist
 - **WHEN** the sidebar renders
 - **THEN** navigation items are organized into three labelled sections displayed in order:
   1. **Main** — Overview (`/`, exact match), Butlers (`/butlers`), Sessions (`/sessions`), Ingestion (`/ingestion`), Approvals (`/approvals`), Memory (`/memory`), Secrets (`/secrets`), Settings (`/settings`)
-  2. **Dedicated Butlers** — Relationships group (Contacts `/contacts`, Groups `/groups`; butler-aware on `relationship`), Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`)
+  2. **Dedicated Butlers** — Relationships group (Contacts `/contacts`, Groups `/groups`; butler-aware on `relationship`), Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`), Chronicles (`/chronicles`; butler-aware on `chronicler`)
   3. **Telemetry** — Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Audit Log (`/audit-log`)
 - **AND** each section header is a clickable button containing an uppercase `text-[11px]` semibold label with `tracking-wider` and `text-muted-foreground/60` styling, plus a small chevron icon that rotates 90 degrees when expanded
 - **AND** clicking a section header toggles its expanded/collapsed state with `max-h` and `opacity` transitions over 200ms
@@ -122,53 +120,11 @@ The sidebar provides the primary navigation for the entire dashboard. It consist
 - **AND** when the sidebar is collapsed (icon-only mode), section headers are hidden and sections are visually separated by a thin horizontal `border-border` divider
 - **AND** sections with no visible items (all butler-filtered) are excluded from rendering
 - **AND** each item renders a first-letter icon placeholder (the first character of the label in a 24x24 rounded `bg-muted` container) and the label text
-
-#### Scenario: Active state highlighting
-
-- **WHEN** a navigation item's path matches the current URL
-- **THEN** the item receives `bg-accent text-accent-foreground` styling
-- **AND** for the Overview item (`/`), only exact path match triggers the active state (via the `end` prop)
-- **AND** for all other items, both exact match and prefix match (e.g., `/sessions/abc` activates `/sessions`) trigger the active state
-
-#### Scenario: Collapsible navigation groups
-
-- **WHEN** a group header (e.g., "Relationships") is clicked
-- **THEN** the group toggles between expanded and collapsed states
-- **AND** expansion animates via `max-h` and `opacity` transitions over 200ms
-- **AND** a chevron icon rotates 90 degrees when expanded
-- **WHEN** any child route within the group is the current active route
-- **THEN** the group auto-expands regardless of user toggle state
-- **WHEN** the sidebar is collapsed (icon-only mode)
-- **THEN** groups render as a single icon link pointing to the first child route
-
-#### Scenario: Butler-aware nav filtering
-
-- **WHEN** the sidebar renders and the butlers API returns the roster
-- **THEN** navigation items with a `butler` field are only shown if a butler with that name exists in the roster
-- **AND** the Relationships group is only visible when the "relationship" butler is in the roster
-- **WHEN** the butlers API is loading or returns an error
-- **THEN** all navigation items are shown (graceful degradation)
-
-#### Scenario: Sidebar collapse toggle
-
-- **WHEN** the user clicks the collapse toggle button at the bottom of the desktop sidebar
-- **THEN** the sidebar toggles between expanded (256px) and collapsed (64px) states
-- **AND** the toggle button shows a double-chevron-left icon that rotates 180 degrees when collapsed
-- **AND** the collapse state is managed in the Shell component's local state (not persisted across page loads)
-
-#### Scenario: Sidebar footer
-
-- **WHEN** the sidebar is expanded
-- **THEN** a footer section renders below the navigation with a "Today's spend" label
-- **AND** it fetches live cost data via the `useCostSummary("today")` hook (same data source as the dashboard overview's "Est. Cost Today" card)
-- **AND** while loading or when data is unavailable, the value displays "--"
-- **AND** when data is available, the value displays the formatted cost (e.g., "$26.27")
-- **WHEN** the sidebar is collapsed
-- **THEN** the footer content is hidden
+- **AND** the Chronicles entry's tooltip SHALL read "Retrospective lived-time reconstruction" so it is unambiguously distinct from the operational Timeline entry under Telemetry
 
 ### Requirement: Full Route Map
 
-The router defines all application routes as children of the root layout. All routes share the shell, header, error boundary, and sidebar.
+The router SHALL define all application routes as children of the root layout. All routes SHALL share the shell, header, error boundary, and sidebar.
 
 #### Scenario: Top-level routes
 
@@ -179,7 +135,8 @@ The router defines all application routes as children of the root layout. All ro
   - `/butlers/:name` -- Butler detail (parameterized)
   - `/sessions` -- Session list
   - `/sessions/:id` -- Session detail (parameterized)
-  - `/timeline` -- Unified timeline
+  - `/timeline` -- Unified timeline (operational cross-butler stream; sessions, notifications, errors)
+  - `/chronicles` -- Chronicles page (retrospective lived-time reconstruction over Chronicler episodes; distinct from `/timeline`)
   - `/notifications` -- Notifications center
   - `/issues` -- Issues center
   - `/audit-log` -- Audit log
@@ -194,32 +151,9 @@ The router defines all application routes as children of the root layout. All ro
   - `/settings` -- Local UI settings
   - `/secrets` -- Secrets management
 
-#### Scenario: Health sub-routes
-
-- **WHEN** the Health section is navigated to
-- **THEN** the following health sub-routes are available:
-  - `/health/measurements` -- Health measurements (sidebar entry point)
-  - `/health/medications` -- Medications
-  - `/health/conditions` -- Conditions
-  - `/health/symptoms` -- Symptoms
-  - `/health/meals` -- Meals
-  - `/health/research` -- Research
-
-#### Scenario: Ingestion routes with legacy redirects
-
-- **WHEN** the ingestion section is navigated to
-- **THEN** `/ingestion` renders the ingestion overview page with tabs including Connectors and Timeline
-- **AND** `/ingestion/connectors/:connectorType/:endpointIdentity` renders the connector detail page
-- **WHEN** a user visits the legacy `/connectors` path
-- **THEN** they are redirected to `/ingestion?tab=connectors` via `<Navigate replace />`
-- **WHEN** a user visits `/connectors/:connectorType/:endpointIdentity`
-- **THEN** they are redirected to `/ingestion/connectors/:connectorType/:endpointIdentity` with query params preserved
-- **WHEN** a user visits the legacy `/traces` or `/traces/:traceId` path
-- **THEN** they are redirected to `/ingestion?tab=timeline` via `<Navigate replace />`
-
 ### Requirement: Page Header with Breadcrumbs
 
-The page header renders inside the shell's header bar and provides breadcrumb navigation, a search trigger, and a theme toggle.
+The page header SHALL render inside the shell's header bar and provide breadcrumb navigation, a search trigger, and a theme toggle.
 
 #### Scenario: Auto-generated breadcrumbs
 
@@ -245,7 +179,7 @@ The page header renders inside the shell's header bar and provides breadcrumb na
 
 ### Requirement: Command Palette (Global Search)
 
-The command palette is a modal overlay providing cross-entity search with keyboard navigation, recent search history, and grouped results by category.
+The command palette SHALL be a modal overlay providing cross-entity search with keyboard navigation, recent search history, and grouped results by category.
 
 #### Scenario: Opening the command palette
 
@@ -301,7 +235,7 @@ The command palette is a modal overlay providing cross-entity search with keyboa
 
 ### Requirement: Keyboard Shortcuts System
 
-The application supports vim-inspired two-key navigation shortcuts and search shortcuts, registered globally via the `useKeyboardShortcuts` hook.
+The application SHALL support vim-inspired two-key navigation shortcuts and search shortcuts, registered globally via the `useKeyboardShortcuts` hook.
 
 #### Scenario: Search shortcuts
 
@@ -337,7 +271,7 @@ The application supports vim-inspired two-key navigation shortcuts and search sh
 
 ### Requirement: Dark Mode and Theme System
 
-The dashboard supports three theme modes (light, dark, system) using a CSS class-based dark mode strategy with localStorage persistence.
+The dashboard SHALL support three theme modes (light, dark, system) using a CSS class-based dark mode strategy with localStorage persistence.
 
 #### Scenario: Theme initialization
 
@@ -368,7 +302,7 @@ The dashboard supports three theme modes (light, dark, system) using a CSS class
 
 ### Requirement: CSS Design Token System
 
-The design system uses CSS custom properties (design tokens) defined in `:root` and overridden in `.dark`, using the OKLCH color space for perceptual uniformity. All tokens are mapped into Tailwind's color system via a `@theme inline` block.
+The design system SHALL use CSS custom properties (design tokens) defined in `:root` and overridden in `.dark`, using the OKLCH color space for perceptual uniformity. All tokens are mapped into Tailwind's color system via a `@theme inline` block.
 
 #### Scenario: Light mode color tokens
 
@@ -412,7 +346,7 @@ The design system uses CSS custom properties (design tokens) defined in `:root` 
 
 ### Requirement: UI Primitive Component Library
 
-The dashboard uses shadcn/ui as its component library, which generates local component files backed by Radix UI headless primitives and styled with Tailwind CSS via class-variance-authority (CVA).
+The dashboard SHALL use shadcn/ui as its component library, which generates local component files backed by Radix UI headless primitives and styled with Tailwind CSS via class-variance-authority (CVA).
 
 #### Scenario: Button component variants
 
@@ -498,7 +432,7 @@ The dashboard uses shadcn/ui as its component library, which generates local com
 
 ### Requirement: Skeleton Loading Components
 
-The dashboard provides a library of reusable skeleton loaders that match the layout of their real-data counterparts, ensuring perceived performance during data fetching.
+The dashboard SHALL provide a library of reusable skeleton loaders that match the layout of their real-data counterparts, ensuring perceived performance during data fetching.
 
 #### Scenario: Base skeleton primitive
 
@@ -531,7 +465,7 @@ The dashboard provides a library of reusable skeleton loaders that match the lay
 
 ### Requirement: Error Boundary
 
-A React class-based error boundary wraps all route content to catch and recover from rendering errors without crashing the entire application.
+A React class-based error boundary SHALL wrap all route content to catch and recover from rendering errors without crashing the entire application.
 
 #### Scenario: Error is caught during render
 
@@ -544,7 +478,7 @@ A React class-based error boundary wraps all route content to catch and recover 
 
 ### Requirement: Empty State Pattern
 
-A reusable `EmptyState` component provides consistent empty-data messaging across all pages.
+A reusable `EmptyState` component SHALL provide consistent empty-data messaging across all pages.
 
 #### Scenario: Empty state renders
 
@@ -557,7 +491,7 @@ A reusable `EmptyState` component provides consistent empty-data messaging acros
 
 ### Requirement: Toast Notification System
 
-The dashboard uses Sonner for toast notifications, providing feedback for mutations, errors, and informational messages.
+The dashboard SHALL use Sonner for toast notifications, providing feedback for mutations, errors, and informational messages.
 
 #### Scenario: Toast rendering
 
@@ -568,7 +502,7 @@ The dashboard uses Sonner for toast notifications, providing feedback for mutati
 
 ### Requirement: Auto-Refresh Architecture
 
-Pages with live data provide a user-controllable auto-refresh mechanism with configurable intervals, pause/resume, and localStorage persistence.
+Pages with live data SHALL provide a user-controllable auto-refresh mechanism with configurable intervals, pause/resume, and localStorage persistence.
 
 #### Scenario: Auto-refresh default state
 
@@ -600,7 +534,7 @@ Pages with live data provide a user-controllable auto-refresh mechanism with con
 
 ### Requirement: Settings Page
 
-The settings page provides local-only (browser-scoped) preferences for the dashboard operator.
+The settings page SHALL provide local-only (browser-scoped) preferences for the dashboard operator.
 
 #### Scenario: Appearance settings
 
@@ -618,7 +552,7 @@ The settings page provides local-only (browser-scoped) preferences for the dashb
 
 ### Requirement: Utility Infrastructure
 
-Shared utilities underpin component styling and settings persistence.
+Shared utilities SHALL underpin component styling and settings persistence.
 
 #### Scenario: Class name merging
 
@@ -637,3 +571,4 @@ Shared utilities underpin component styling and settings persistence.
 - **WHEN** `localStorage` read or write operations fail (e.g., in private browsing or quota exceeded)
 - **THEN** all settings functions silently catch errors and return fallback values
 - **AND** the application continues to function with default settings
+

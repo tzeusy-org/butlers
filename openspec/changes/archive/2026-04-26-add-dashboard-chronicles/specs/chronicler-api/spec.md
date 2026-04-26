@@ -5,7 +5,7 @@ read-only Requirements: aggregate endpoints and source-state visibility.
 All existing requirements (Temporal Reads, Response Provenance,
 Corrections, Operational Timeline Route Preserved) remain unchanged.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Chronicler Aggregations
 
