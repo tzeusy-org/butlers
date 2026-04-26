@@ -141,15 +141,7 @@ The Chronicler API change SHALL NOT repurpose the existing operational
   dashboard/API spec amendment before replacing or reusing the operational
   `/timeline` concept
 
-## Source References
 
-- Non-Negotiable Rule 1 (single-owner data sovereignty)
-- Non-Negotiable Rule 3 (MCP-only inter-butler communication)
-- Non-Negotiable Rule 4 (LLM reasoning is ephemeral)
-- RFC 0006 (Database schema isolation)
-- RFC 0007 (Dashboard and API Surface)
-- RFC 0010 (Cross-Butler Briefing Exception)
-- RFC 0014 (Chronicler Time Butler, Draft)
 ## Requirements
 ### Requirement: Chronicler Aggregations
 
@@ -391,3 +383,13 @@ The endpoints SHALL be:
   `retry_after_seconds` carried inside `details`
 - **AND** no Tier-2 invocation SHALL occur
 
+
+## Source References
+
+- Non-Negotiable Rule 1 (single-owner data sovereignty)
+- Non-Negotiable Rule 3 (MCP-only inter-butler communication)
+- Non-Negotiable Rule 4 (LLM reasoning is ephemeral)
+- RFC 0006 (Database schema isolation)
+- RFC 0007 (Dashboard and API Surface)
+- RFC 0010 (Cross-Butler Briefing Exception)
+- RFC 0014 (Chronicler Time Butler, Draft)

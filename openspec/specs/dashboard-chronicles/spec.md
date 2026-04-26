@@ -1,7 +1,12 @@
 # dashboard-chronicles Specification
 
 ## Purpose
-TBD - created by archiving change add-dashboard-chronicles. Update Purpose after archive.
+
+Defines the dashboard surface contract for the Chronicles page — the retrospective
+lived-time reconstruction UI backed by Chronicler-owned API endpoints. The page
+renders at `/chronicles` inside the standard dashboard shell and is distinct from
+the operational `/timeline` route (live cross-butler ops stream). This spec was
+promoted from the `add-dashboard-chronicles` OpenSpec change upon archive.
 ## Requirements
 ### Requirement: Chronicles Frontend Route
 

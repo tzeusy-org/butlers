@@ -261,9 +261,9 @@ ingest, or notify."
   > frontend route (`ChroniclesPage.tsx`) backed by Chronicler-owned API
   > endpoints (`GET /api/chronicler/aggregate/by-day`,
   > `/aggregate/by-category`, `/source-state`, `/aggregate/day-close`).
-  > The full surface contract is defined in the `add-dashboard-chronicles`
-  > OpenSpec change
-  > (`openspec/changes/add-dashboard-chronicles/specs/dashboard-chronicles/spec.md`).
+  > The full surface contract is defined in
+  > `openspec/specs/dashboard-chronicles/spec.md` (promoted from the
+  > archived `add-dashboard-chronicles` OpenSpec change).
   > The `/chronicles` route is distinct from the operational `/timeline`
   > route (live cross-butler ops stream).
 - **Correction conflict resolution?** Later overrides win. Multi-party
