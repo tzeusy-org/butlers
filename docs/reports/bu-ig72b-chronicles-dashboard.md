@@ -69,9 +69,17 @@ One data-integrity gap was also found:
   entry in `contracts.py::INITIAL_SOURCES`, so the Meals lane will never appear
   in the badge strip.
 
+One tooling gap was discovered during report generation:
+
+- **D6:** `openspec archive add-dashboard-chronicles` aborts because the
+  `dashboard-shell` delta's Sidebar Navigation requirement uses normative
+  "SHALL provide" language while the main spec uses indicative "provides" — the
+  archiver's section-match fails on this text divergence. Filed as bu-zfdzl;
+  fix is in progress via PR #1190 (open as of report date).
+
 Reconciliation verdict: **PASS-WITH-FOLLOWUPS**. The verdict explicitly clears
 this report bead (bu-ig72b.36) and marks `openspec archive add-dashboard-chronicles`
-as safe to run.
+as safe to run once D6 (bu-zfdzl / PR #1190) merges.
 
 ---
 
@@ -259,6 +267,7 @@ The following follow-ups were identified during the reconciliation pass (bu-ig72
 | D3 | Add manual refresh button for historical time windows on ChroniclesPage | P4 | `frontend/src/pages/ChroniclesPage.tsx` |
 | D4 | Extend day-close spec scenario to document provenance-ref staleness signals 6/7 | P3 | `openspec/changes/add-dashboard-chronicles/specs/chronicler-api/spec.md` |
 | D5 | Register `health.meals` source in contracts.py (currently mapping exists, registration absent) | P2 | `src/butlers/chronicler/contracts.py` |
+| D6 | Fix openspec archive: dashboard-shell delta SHALL/provides language mismatch | P2 | `openspec/changes/add-dashboard-chronicles/specs/dashboard-shell/spec.md` — bead bu-zfdzl, fix in PR #1190 (open) |
 
 See the reconciliation memo for full descriptions and file locations:
 `docs/reports/2026-04-26-add-dashboard-chronicles-reconciliation.md`
