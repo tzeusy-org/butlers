@@ -410,3 +410,115 @@ describe("GanttSwimlaneInner tooltip via Radix primitive", () => {
     expect(html).not.toContain("Private session")
   })
 })
+
+// ---------------------------------------------------------------------------
+// 9. Calendar location pan — click handler wire-up (bu-ig72b.24)
+//
+// Radix TooltipContent renders via a portal and is NOT present in static
+// server-side markup (same constraint as tooltip test block above).
+// The location-status annotations ("Click to pan map to location",
+// "no coordinates") live inside TooltipContent so they cannot be asserted
+// here; they are exercised by interactive / e2e tests.
+//
+// What we CAN assert here:
+//   - Calendar bars render when payload.location is provided.
+//   - The <g> element has cursor:pointer (onClick is wired).
+//   - Non-calendar episodes with location in payload still render normally.
+// ---------------------------------------------------------------------------
+
+describe("GanttSwimlaneInner calendar location pan click handler", () => {
+  it("renders a calendar bar when payload has a parseable lat,lng location", () => {
+    const ep = makeEpisode({
+      id: "ep-cal-coord",
+      source_name: "calendar",
+      canonical_title: "Team meeting",
+      canonical_privacy: "normal",
+      payload: { location: "1.3521,103.8198" },
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("gantt-bar-ep-cal-coord")
+    // Bar has cursor:pointer indicating clickability
+    expect(html).toContain('style="cursor:pointer"')
+  })
+
+  it("renders a calendar bar when payload has an unparseable location string", () => {
+    const ep = makeEpisode({
+      id: "ep-cal-addr",
+      source_name: "calendar",
+      canonical_title: "Off-site workshop",
+      canonical_privacy: "normal",
+      payload: { location: "1 Infinite Loop, Cupertino, CA" },
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("gantt-bar-ep-cal-addr")
+  })
+
+  it("renders a calendar bar normally when payload has no location field", () => {
+    const ep = makeEpisode({
+      id: "ep-cal-noloc",
+      source_name: "calendar",
+      canonical_title: "Meeting without location",
+      canonical_privacy: "normal",
+      payload: {},
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("gantt-bar-ep-cal-noloc")
+  })
+
+  it("renders a non-calendar bar normally even when payload has a location field", () => {
+    // Only calendar-category episodes trigger the pan logic; work episodes
+    // with a location in payload must still render without errors.
+    const ep = makeEpisode({
+      id: "ep-work-loc",
+      source_name: "work",
+      canonical_privacy: "normal",
+      payload: { location: "40.7128,-74.0060" },
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("gantt-bar-ep-work-loc")
+  })
+
+  it("renders a sensitive calendar bar using 'Private activity' label", () => {
+    // Sensitive bars must not leak any location data through aria-label or title.
+    const ep = makeEpisode({
+      id: "ep-cal-sens-loc",
+      source_name: "calendar",
+      canonical_privacy: "sensitive",
+      payload: { location: "1.3521,103.8198" },
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("gantt-bar-ep-cal-sens-loc")
+    expect(html).toContain("Private activity")
+    expect(html).not.toContain("1.3521")
+  })
+})
