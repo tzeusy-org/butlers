@@ -225,6 +225,48 @@ The endpoints SHALL be:
 - **AND** the response SHALL set `last_invalidating_event_at` to the
   override's `created_at`
 
+#### Scenario: Provenance-ref episode outside cached window
+
+- **WHEN** a client requests the day-close endpoint for a `(date, tz)`
+  where a cache entry exists AND an episode that was cited in
+  `provenance_refs` when the cache was built has `updated_at >
+  cache_built_at` (regardless of whether its current time range still
+  overlaps the cached window)
+- **THEN** the API SHOULD treat the cache as stale, respond with
+  `{stale: true, cache_built_at, last_invalidating_event_at}`, and SHALL
+  NOT return the cached prose
+- **AND** `last_invalidating_event_at` SHOULD be set to the episode's
+  `updated_at`
+
+> **Rationale (signal 6):** A cited episode may have been corrected to
+> move its canonical time range outside the cached window after the cache
+> was built. The window-scoped staleness check (signals 1–2) will miss
+> such a row because it is no longer within the window. Joining against
+> the stored `provenance_refs` set catches this drift. SHOULD (not SHALL)
+> because this is a best-effort signal: the implementation must have stored
+> `provenance_refs` for it to apply, and a cache entry with an empty
+> `provenance_refs` list cannot trigger this path.
+
+#### Scenario: Provenance-ref point event outside cached window
+
+- **WHEN** a client requests the day-close endpoint for a `(date, tz)`
+  where a cache entry exists AND a point event that was cited in
+  `provenance_refs` when the cache was built has `updated_at >
+  cache_built_at` (regardless of whether its current `canonical_occurred_at`
+  still falls within the cached window)
+- **THEN** the API SHOULD treat the cache as stale, respond with
+  `{stale: true, cache_built_at, last_invalidating_event_at}`, and SHALL
+  NOT return the cached prose
+- **AND** `last_invalidating_event_at` SHOULD be set to the point event's
+  `updated_at`
+
+> **Rationale (signal 7):** Parallel to signal 6 but for cited point
+> events. A point event's `canonical_occurred_at` may have been corrected
+> to fall outside the cached window, making the window-scoped signals 3–4
+> blind to it. Joining against `provenance_refs` closes this gap. Same
+> SHOULD framing applies: conditioned on `provenance_refs` being populated
+> in the cache entry.
+
 #### Scenario: User-clicked refresh re-invokes existing path
 
 - **WHEN** a client POSTs to `/api/chronicler/aggregate/day-close/refresh`
