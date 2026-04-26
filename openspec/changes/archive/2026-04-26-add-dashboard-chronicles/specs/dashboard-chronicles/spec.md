@@ -11,7 +11,7 @@ Chronicler-owned data exclusively (`/api/chronicler/*`) and is
 distinct from the operational `/timeline` route, which remains the
 live cross-butler ops stream.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Chronicles Frontend Route
 
