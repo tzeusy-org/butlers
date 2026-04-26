@@ -16,6 +16,7 @@ Covers:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -192,6 +193,11 @@ class TestOnStartup:
                 return_value=creds,
             ),
             patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(granted_scopes=[]),
+            ),
+            patch(
                 "butlers.google_credentials.resolve_google_account_entity",
                 new_callable=AsyncMock,
                 return_value=None,
@@ -225,6 +231,11 @@ class TestOnStartup:
                 "butlers.google_credentials.resolve_google_credentials",
                 new_callable=AsyncMock,
                 return_value=creds,
+            ),
+            patch(
+                "butlers.google_account_registry.get_google_account",
+                new_callable=AsyncMock,
+                return_value=SimpleNamespace(granted_scopes=all_scopes.split()),
             ),
             patch(
                 "butlers.google_credentials.resolve_google_account_entity",

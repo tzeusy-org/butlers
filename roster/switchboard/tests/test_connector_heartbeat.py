@@ -57,6 +57,23 @@ def test_parse_valid_heartbeat(valid_heartbeat_payload):
     assert envelope.counters.messages_ingested == 42
 
 
+def test_parse_google_health_heartbeat(valid_heartbeat_payload):
+    """Google Health connector heartbeats are valid connector liveness signals."""
+    valid_heartbeat_payload["connector"]["connector_type"] = "google_health"
+    valid_heartbeat_payload["connector"]["endpoint_identity"] = (
+        "google_health:user:owner@example.com"
+    )
+    valid_heartbeat_payload["status"]["state"] = "degraded"
+    valid_heartbeat_payload["status"]["error_message"] = "scope_missing"
+
+    envelope = parse_connector_heartbeat(valid_heartbeat_payload)
+
+    assert envelope.connector.connector_type == "google_health"
+    assert envelope.connector.endpoint_identity == "google_health:user:owner@example.com"
+    assert envelope.status.state == "degraded"
+    assert envelope.status.error_message == "scope_missing"
+
+
 def test_parse_heartbeat_missing_schema_version(valid_heartbeat_payload):
     """Test that missing schema_version raises ValueError."""
     del valid_heartbeat_payload["schema_version"]

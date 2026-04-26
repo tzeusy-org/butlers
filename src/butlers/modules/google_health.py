@@ -169,7 +169,7 @@ class GoogleHealthModule(Module):
                 resolve_google_credentials,
             )
 
-            creds = await resolve_google_credentials(
+            await resolve_google_credentials(
                 credential_store,
                 pool=pool,
                 caller="google_health",
@@ -202,8 +202,22 @@ class GoogleHealthModule(Module):
         except Exception as exc:  # noqa: BLE001
             logger.debug("GoogleHealthModule: could not resolve entity_id — %s", exc)
 
-        # Verify required Google Health scopes are granted.
-        granted = set((creds.scope or "").split())
+        # Verify required Google Health scopes against the account registry.
+        # `creds.scope` is the static app scope secret and can lag behind the
+        # account-specific OAuth grants stored in public.google_accounts.
+        try:
+            from butlers.google_account_registry import get_google_account  # noqa: PLC0415
+
+            account = await get_google_account(pool, account=None)
+            granted = set(account.granted_scopes or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "GoogleHealthModule: failed to verify Google Health account scopes — %s. "
+                "Tools will return errors when invoked.",
+                exc,
+            )
+            return
+
         missing = _HEALTH_SCOPES - granted
         if missing:
             logger.warning(

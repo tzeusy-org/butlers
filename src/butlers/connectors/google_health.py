@@ -90,7 +90,7 @@ import signal
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from threading import Thread
 from typing import TYPE_CHECKING, Any
 
@@ -107,6 +107,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthCredentialError,
     GoogleHealthError,
     GoogleHealthRateLimitError,
+    GoogleHealthSourcePreconditionError,
     exponential_backoff_delay,
 )
 from butlers.connectors.health_socket import make_health_socket
@@ -228,10 +229,15 @@ class ResourceBundle:
         keys in ``openspec/changes/google-health-connector/design.md`` §D5.
     endpoint_path:
         Relative path on ``health.googleapis.com/v4`` that is polled.
-        Exact path is confirmed at implementation time and recorded in
-        ``research-notes.md`` — the connector defaults to the
-        ``/users/me/dataTypes/<type>/<suffix>`` pattern suggested by the
-        Google Health migration guide.
+        Paths follow the public v4 discovery document's
+        ``users.dataTypes.dataPoints`` methods.
+    data_type:
+        Google Health data type id in kebab-case.
+    filter_field:
+        AIP-160 filter field used for GET/reconcile resources.
+    secondary_endpoint_path:
+        Optional second daily-rollup endpoint; currently used to merge
+        ``active-minutes`` into the activity envelope alongside ``steps``.
     poll_interval_key:
         Environment-variable suffix controlling cadence overrides.
     default_interval_s:
@@ -244,10 +250,14 @@ class ResourceBundle:
 
     resource: str
     endpoint_path: str
+    data_type: str
+    filter_field: str
     poll_interval_key: str
     default_interval_s: int
     category: str
     normalized_summary: str
+    request_method: str = "GET"
+    secondary_endpoint_path: str | None = None
 
 
 # Per-resource bundles. Endpoint paths follow the documented v4 structure
@@ -257,7 +267,9 @@ class ResourceBundle:
 RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ResourceBundle(
         resource="sleep",
-        endpoint_path="/users/me/dataTypes/sleep/sessions",
+        endpoint_path="/users/me/dataTypes/sleep/dataPoints:reconcile",
+        data_type="sleep",
+        filter_field="sleep.interval.end_time",
         poll_interval_key="GOOGLE_HEALTH_POLL_SLEEP_S",
         default_interval_s=_DEFAULT_POLL_INTERVALS["sleep"],
         category="sleep",
@@ -265,15 +277,21 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ),
     ResourceBundle(
         resource="activity",
-        endpoint_path="/users/me/dataTypes/activity/daily",
+        endpoint_path="/users/me/dataTypes/steps/dataPoints:dailyRollUp",
+        data_type="steps",
+        filter_field="steps.interval.start_time",
         poll_interval_key="GOOGLE_HEALTH_POLL_ACTIVITY_S",
         default_interval_s=_DEFAULT_POLL_INTERVALS["activity"],
         category="daily",
         normalized_summary="Steps: {value}",
+        request_method="POST",
+        secondary_endpoint_path="/users/me/dataTypes/active-minutes/dataPoints:dailyRollUp",
     ),
     ResourceBundle(
         resource="resting_hr",
-        endpoint_path="/users/me/dataTypes/heartRate/resting/daily",
+        endpoint_path="/users/me/dataTypes/daily-resting-heart-rate/dataPoints:reconcile",
+        data_type="daily-resting-heart-rate",
+        filter_field="daily_resting_heart_rate.date",
         poll_interval_key="GOOGLE_HEALTH_POLL_ACTIVITY_S",
         default_interval_s=_DEFAULT_POLL_INTERVALS["resting_hr"],
         category="daily",
@@ -281,7 +299,9 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ),
     ResourceBundle(
         resource="hrv",
-        endpoint_path="/users/me/dataTypes/heartRateVariability/daily",
+        endpoint_path="/users/me/dataTypes/daily-heart-rate-variability/dataPoints:reconcile",
+        data_type="daily-heart-rate-variability",
+        filter_field="daily_heart_rate_variability.date",
         poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
         default_interval_s=_DEFAULT_POLL_INTERVALS["hrv"],
         category="daily",
@@ -289,7 +309,9 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ),
     ResourceBundle(
         resource="spo2",
-        endpoint_path="/users/me/dataTypes/oxygenSaturation/daily",
+        endpoint_path="/users/me/dataTypes/daily-oxygen-saturation/dataPoints:reconcile",
+        data_type="daily-oxygen-saturation",
+        filter_field="daily_oxygen_saturation.date",
         poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
         default_interval_s=_DEFAULT_POLL_INTERVALS["spo2"],
         category="daily",
@@ -297,7 +319,9 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ),
     ResourceBundle(
         resource="breathing_rate",
-        endpoint_path="/users/me/dataTypes/respiratoryRate/daily",
+        endpoint_path="/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
+        data_type="daily-respiratory-rate",
+        filter_field="daily_respiratory_rate.date",
         poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
         default_interval_s=_DEFAULT_POLL_INTERVALS["breathing_rate"],
         category="daily",
@@ -305,7 +329,9 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ),
     ResourceBundle(
         resource="vo2_max",
-        endpoint_path="/users/me/dataTypes/vo2Max/daily",
+        endpoint_path="/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
+        data_type="daily-vo2-max",
+        filter_field="daily_vo2_max.date",
         poll_interval_key="GOOGLE_HEALTH_POLL_VO2_MAX_S",
         default_interval_s=_DEFAULT_POLL_INTERVALS["vo2_max"],
         category="daily",
@@ -654,6 +680,7 @@ class GoogleHealthConnector:
         self._auth_error: bool = False
         self._auth_error_message: str | None = None
         self._last_source_api_ok: bool | None = None
+        self._source_api_error_message: str | None = None
 
         # Shared infra (created after identity resolution)
         self._metrics = ConnectorMetrics(
@@ -1128,13 +1155,36 @@ class GoogleHealthConnector:
                     state.next_poll_monotonic = time.monotonic() + delay
                     next_due = min(next_due, state.next_poll_monotonic)
                     continue
+                except GoogleHealthSourcePreconditionError as exc:
+                    self._last_source_api_ok = False
+                    self._source_api_error_message = exc.reason.lower()
+                    logger.warning(
+                        "GoogleHealthConnector: source precondition failed "
+                        "resource=%s reason=%s redirect_uri=%s",
+                        state.bundle.resource,
+                        exc.reason,
+                        exc.redirect_uri,
+                    )
+                    google_health_polls_total.labels(
+                        endpoint_identity=self._endpoint_identity,
+                        resource=state.bundle.resource,
+                        outcome="error",
+                    ).inc()
+                    interval = self._config.poll_intervals.get(
+                        state.bundle.resource, state.bundle.default_interval_s
+                    )
+                    state.next_poll_monotonic = time.monotonic() + interval
+                    next_due = min(next_due, state.next_poll_monotonic)
+                    if self._heartbeat is not None:
+                        await self._heartbeat._send_heartbeat()
+                    continue
                 except Exception as exc:  # noqa: BLE001
                     self._last_source_api_ok = False
+                    self._source_api_error_message = "source_api_unreachable"
                     logger.warning(
                         "GoogleHealthConnector: poll error resource=%s (non-fatal): %s",
                         state.bundle.resource,
                         exc,
-                        exc_info=True,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=self._endpoint_identity,
@@ -1181,9 +1231,27 @@ class GoogleHealthConnector:
         bundle = state.bundle
 
         since, until = self._compute_window(state)
-        params = self._build_params(bundle, state, since, until)
-
-        data = await client.get_json(bundle.endpoint_path, params=params)
+        if bundle.request_method == "POST":
+            body = self._build_post_body(bundle, state, since, until)
+            data = await client.post_json(bundle.endpoint_path, json_body=body)
+            if bundle.secondary_endpoint_path:
+                secondary_data = await client.post_json(
+                    bundle.secondary_endpoint_path,
+                    json_body=body,
+                )
+                records = _build_activity_records(data, secondary_data)
+            else:
+                records = [
+                    _normalize_google_health_record(bundle, record)
+                    for record in _extract_records(data)
+                ]
+        else:
+            params = self._build_params(bundle, state, since, until)
+            data = await client.get_json(bundle.endpoint_path, params=params)
+            records = [
+                _normalize_google_health_record(bundle, record)
+                for record in _extract_records(data)
+            ]
 
         # Observe rate-limit headers per resource for metrics visibility.
         headers = client.last_rate_limit_headers
@@ -1197,7 +1265,6 @@ class GoogleHealthConnector:
             except ValueError:
                 pass
 
-        records = _extract_records(data)
         now = datetime.now(UTC)
         observed_at = now.isoformat()
         emitted = 0
@@ -1251,6 +1318,7 @@ class GoogleHealthConnector:
             outcome="success",
         ).inc()
         self._last_source_api_ok = True
+        self._source_api_error_message = None
 
     def _compute_window(self, state: ResourceState) -> tuple[datetime, datetime]:
         """Compute [since, until] for the next poll.
@@ -1277,18 +1345,41 @@ class GoogleHealthConnector:
     ) -> dict[str, Any]:
         """Build the Google Health query params for the resource.
 
-        The Google Health API uses ``startTime`` / ``endTime`` RFC3339
-        parameters on the canonical dataTypes surface (confirmed during
-        implementation reconciliation; see ``research-notes.md``). The
-        ``view=reconciled`` parameter opts into the Reconciled Stream where
-        supported, per D5.
+        Google Health v4 uses AIP-160 ``filter`` query expressions on
+        ``dataPoints:list`` / ``dataPoints:reconcile``.
         """
-        params: dict[str, Any] = {
-            "startTime": since.isoformat(),
-            "endTime": until.isoformat(),
-            "view": "reconciled",
+        if bundle.category == "sleep":
+            start = since.isoformat()
+            end = until.isoformat()
+        else:
+            start = since.date().isoformat()
+            end = until.date().isoformat()
+        return {
+            "filter": f'{bundle.filter_field} >= "{start}" AND {bundle.filter_field} < "{end}"',
+            "pageSize": 25 if bundle.category == "sleep" else 10000,
         }
-        return params
+
+    def _build_post_body(
+        self,
+        bundle: ResourceBundle,
+        state: ResourceState,
+        since: datetime,
+        until: datetime,
+    ) -> dict[str, Any]:
+        """Build a daily-rollup JSON body for POST resources."""
+        del bundle, state
+        # Google caps active-minutes rollups at 14 days; activity envelopes
+        # merge active-minutes with steps, so clamp that source to avoid a
+        # whole-poll 400 on first-run backfills.
+        since = max(since, until - timedelta(days=14))
+        return {
+            "range": {
+                "start": {"date": _date_message(since.date())},
+                "end": {"date": _date_message(until.date())},
+            },
+            "windowSizeDays": 1,
+            "pageSize": 10000,
+        }
 
     # ------------------------------------------------------------------
     # Submission
@@ -1422,7 +1513,7 @@ class GoogleHealthConnector:
         if self._scope_missing:
             return "degraded", "scope_missing"
         if self._last_source_api_ok is False:
-            return "degraded", "source_api_unreachable"
+            return "degraded", self._source_api_error_message or "source_api_unreachable"
         return "healthy", None
 
     # ------------------------------------------------------------------
@@ -1490,20 +1581,132 @@ class GoogleHealthConnector:
 # ---------------------------------------------------------------------------
 
 
+_DAILY_UNION_FIELDS: dict[str, tuple[str, str]] = {
+    "resting_hr": ("dailyRestingHeartRate", "beatsPerMinute"),
+    "hrv": ("dailyHeartRateVariability", "averageHeartRateVariabilityMilliseconds"),
+    "spo2": ("dailyOxygenSaturation", "averagePercentage"),
+    "breathing_rate": ("dailyRespiratoryRate", "breathsPerMinute"),
+    "vo2_max": ("dailyVo2Max", "vo2Max"),
+}
+
+
 def _extract_records(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract an iterable of record dicts from a Google Health response.
 
     Google Health API responses typically nest records under one of
-    ``sessions``, ``dataPoints``, or ``items`` depending on the endpoint.
+    ``sessions``, ``dataPoints``, ``rollupDataPoints``, or ``items`` depending on the endpoint.
     This helper returns the first list it finds (falling back to ``[]``).
     """
     if not isinstance(data, dict):
         return []
-    for key in ("sessions", "dataPoints", "items", "records"):
+    for key in ("sessions", "dataPoints", "rollupDataPoints", "items", "records"):
         value = data.get(key)
         if isinstance(value, list):
             return [v for v in value if isinstance(v, dict)]
     return []
+
+
+def _normalize_google_health_record(
+    bundle: ResourceBundle,
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize Google Health v4 union records to the wellness ingest raw contract."""
+    if bundle.category == "sleep":
+        return _normalize_sleep_record(record)
+    union = _DAILY_UNION_FIELDS.get(bundle.resource)
+    if union is None:
+        return dict(record)
+    union_key, value_key = union
+    payload = record.get(union_key)
+    if not isinstance(payload, dict):
+        return dict(record)
+
+    date_value = _format_date_value(payload.get("date"))
+    value = payload.get(value_key)
+    normalized = dict(payload)
+    if date_value:
+        normalized["date"] = date_value
+    if value is not None:
+        normalized["value"] = value
+    return normalized
+
+
+def _normalize_sleep_record(record: dict[str, Any]) -> dict[str, Any]:
+    sleep = record.get("sleep")
+    if not isinstance(sleep, dict):
+        return dict(record)
+
+    interval = sleep.get("interval") if isinstance(sleep.get("interval"), dict) else {}
+    summary = sleep.get("summary") if isinstance(sleep.get("summary"), dict) else {}
+
+    session_id = _data_point_id(record) or sleep.get("id") or interval.get("startTime")
+    start_time = interval.get("startTime")
+    end_time = interval.get("endTime")
+    minutes_period = _to_int(summary.get("minutesInSleepPeriod"))
+    minutes_asleep = _to_int(summary.get("minutesAsleep"))
+    duration_ms = 0
+    if minutes_period is not None:
+        duration_ms = minutes_period * 60_000
+    elif start_time and end_time:
+        duration_ms = _duration_ms(str(start_time), str(end_time))
+    elif minutes_asleep is not None:
+        duration_ms = minutes_asleep * 60_000
+
+    efficiency: int | None = None
+    if minutes_asleep is not None and minutes_period:
+        efficiency = round((minutes_asleep / minutes_period) * 100)
+
+    normalized: dict[str, Any] = dict(sleep)
+    if session_id:
+        normalized["session_id"] = str(session_id)
+    if start_time:
+        normalized["startTime"] = start_time
+    if end_time:
+        normalized["endTime"] = end_time
+    normalized["durationMillis"] = duration_ms
+    if efficiency is not None:
+        normalized["efficiency"] = efficiency
+
+    stages = _stage_summary(summary.get("stagesSummary"))
+    if stages:
+        normalized["stages"] = stages
+    return normalized
+
+
+def _build_activity_records(
+    steps_data: dict[str, Any],
+    active_minutes_data: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Merge steps and active-minutes daily rollups into activity records by date."""
+    by_date: dict[str, dict[str, Any]] = {}
+
+    for record in _extract_records(steps_data):
+        record_date = _rollup_record_date(record)
+        if not record_date:
+            continue
+        value = _to_int((record.get("steps") or {}).get("countSum"))
+        if value is None:
+            continue
+        by_date.setdefault(record_date, {"date": record_date})
+        by_date[record_date]["steps"] = value
+        by_date[record_date]["value"] = value
+
+    for record in _extract_records(active_minutes_data):
+        record_date = _rollup_record_date(record)
+        if not record_date:
+            continue
+        active = record.get("activeMinutes")
+        if not isinstance(active, dict):
+            continue
+        total = 0
+        for item in active.get("activeMinutesRollupByActivityLevel") or []:
+            if isinstance(item, dict):
+                total += _to_int(item.get("activeMinutes")) or 0
+        by_date.setdefault(record_date, {"date": record_date})
+        by_date[record_date]["activeMinutes"] = total
+        by_date[record_date]["active_minutes"] = total
+
+    return [by_date[key] for key in sorted(by_date)]
 
 
 def _record_identity(bundle: ResourceBundle, record: dict[str, Any]) -> str | None:
@@ -1531,6 +1734,85 @@ def _record_identity(bundle: ResourceBundle, record: dict[str, Any]) -> str | No
             return raw_str.split("T", 1)[0]
         return raw_str[:10]
     return None
+
+
+def _rollup_record_date(record: dict[str, Any]) -> str | None:
+    for key in ("civilStartTime", "startTime", "date"):
+        value = record.get(key)
+        formatted = _format_date_value(value)
+        if formatted:
+            return formatted
+    return None
+
+
+def _format_date_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value.split("T", 1)[0]
+    if isinstance(value, dict):
+        date_part = value.get("date") if "date" in value else value
+        if isinstance(date_part, dict):
+            year = date_part.get("year")
+            month = date_part.get("month")
+            day = date_part.get("day")
+            if year and month and day:
+                return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    return None
+
+
+def _date_message(value: date) -> dict[str, int]:
+    return {"year": value.year, "month": value.month, "day": value.day}
+
+
+def _data_point_id(record: dict[str, Any]) -> str | None:
+    name = record.get("name")
+    if not isinstance(name, str) or "/dataPoints/" not in name:
+        return None
+    return name.rsplit("/dataPoints/", 1)[-1] or None
+
+
+def _duration_ms(start: str, end: str) -> int:
+    try:
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    return max(0, int((end_dt - start_dt).total_seconds() * 1000))
+
+
+def _stage_summary(value: Any) -> dict[str, int]:
+    if not isinstance(value, list):
+        return {}
+    stages: dict[str, int] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        stage_type = item.get("type") or item.get("stage")
+        if not stage_type:
+            continue
+        minutes = _to_int(item.get("minutes"))
+        if minutes is None:
+            minutes = _duration_string_to_minutes(item.get("totalDuration"))
+        if minutes is not None:
+            stages[str(stage_type).lower()] = minutes
+    return stages
+
+
+def _duration_string_to_minutes(value: Any) -> int | None:
+    if not isinstance(value, str) or not value.endswith("s"):
+        return None
+    try:
+        return round(float(value[:-1]) / 60)
+    except ValueError:
+        return None
+
+
+def _to_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------

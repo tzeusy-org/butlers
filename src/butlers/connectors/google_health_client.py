@@ -114,6 +114,15 @@ class GoogleHealthRateLimitError(GoogleHealthError):
         self.retry_after = retry_after
 
 
+class GoogleHealthSourcePreconditionError(GoogleHealthError):
+    """Raised when Google Health rejects the source account state."""
+
+    def __init__(self, reason: str, message: str, redirect_uri: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.redirect_uri = redirect_uri
+
+
 def exponential_backoff_delay(attempt: int) -> float:
     """Compute the next exponential-backoff delay with jitter.
 
@@ -219,6 +228,27 @@ class GoogleHealthClient:
         httpx.HTTPStatusError
             On any other non-2xx status.
         """
+        return await self._request_json("GET", path, params=params)
+
+    async def post_json(
+        self,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Issue an authenticated POST with a JSON body and return JSON."""
+        return await self._request_json("POST", path, params=params, json_body=json_body)
+
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Issue an authenticated request and return the JSON body."""
         url = f"{self._base_url}/{path.lstrip('/')}"
 
         for attempt in range(1, 3):  # initial + one retry after token refresh
@@ -226,7 +256,13 @@ class GoogleHealthClient:
             headers = {"Authorization": f"Bearer {token}"}
 
             try:
-                response = await self._http.get(url, params=params or {}, headers=headers)
+                response = await self._http.request(
+                    method,
+                    url,
+                    params=params or {},
+                    json=json_body,
+                    headers=headers,
+                )
             except httpx.TransportError as exc:
                 raise GoogleHealthError(f"Google Health transport error for {path}: {exc}") from exc
 
@@ -254,6 +290,11 @@ class GoogleHealthClient:
             if response.status_code == 429:
                 retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                 raise GoogleHealthRateLimitError(retry_after)
+
+            if response.status_code == 400:
+                precondition = _parse_source_precondition(response)
+                if precondition is not None:
+                    raise precondition
 
             # Any other error is terminal for this request.
             response.raise_for_status()
@@ -307,12 +348,45 @@ def _parse_retry_after(raw: str | None) -> float | None:
         return None
 
 
+def _parse_source_precondition(
+    response: httpx.Response,
+) -> GoogleHealthSourcePreconditionError | None:
+    """Parse Google Health source-state precondition errors from a 400 response."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+    if error.get("status") != "FAILED_PRECONDITION":
+        return None
+
+    reason = "failed_precondition"
+    redirect_uri: str | None = None
+    for detail in error.get("details") or []:
+        if not isinstance(detail, dict):
+            continue
+        detail_reason = detail.get("reason")
+        if isinstance(detail_reason, str) and detail_reason:
+            reason = detail_reason
+        metadata = detail.get("metadata")
+        if isinstance(metadata, dict):
+            raw_redirect_uri = metadata.get("redirect_uri")
+            if isinstance(raw_redirect_uri, str):
+                redirect_uri = raw_redirect_uri
+
+    message = str(error.get("message") or "Google Health source precondition failed")
+    return GoogleHealthSourcePreconditionError(reason, message, redirect_uri)
+
+
 __all__ = [
     "GOOGLE_HEALTH_API_BASE",
     "GoogleHealthClient",
     "GoogleHealthCredentialError",
     "GoogleHealthError",
     "GoogleHealthRateLimitError",
+    "GoogleHealthSourcePreconditionError",
     "TokenFetcher",
     "exponential_backoff_delay",
 ]

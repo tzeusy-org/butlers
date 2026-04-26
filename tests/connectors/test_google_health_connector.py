@@ -33,10 +33,12 @@ from butlers.connectors.google_health import (
     RESOURCE_BUNDLES,
     GoogleHealthConnector,
     GoogleHealthConnectorConfig,
+    _build_activity_records,
     _cursor_endpoint_identity,
     _endpoint_identity_for_user,
     _extract_records,
     _format_sleep_duration_label,
+    _normalize_google_health_record,
     _record_identity,
     build_daily_summary_envelope,
     build_sleep_session_envelope,
@@ -45,6 +47,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthClient,
     GoogleHealthCredentialError,
     GoogleHealthRateLimitError,
+    GoogleHealthSourcePreconditionError,
     exponential_backoff_delay,
 )
 
@@ -71,6 +74,19 @@ def test_resource_bundles_include_required_types() -> None:
     resources = {b.resource for b in RESOURCE_BUNDLES}
     required = {"sleep", "activity", "resting_hr", "hrv", "spo2", "breathing_rate", "vo2_max"}
     assert required.issubset(resources)
+
+
+def test_resource_bundle_paths_match_google_health_v4_discovery() -> None:
+    paths = {b.resource: b.endpoint_path for b in RESOURCE_BUNDLES}
+    assert paths == {
+        "sleep": "/users/me/dataTypes/sleep/dataPoints:reconcile",
+        "activity": "/users/me/dataTypes/steps/dataPoints:dailyRollUp",
+        "resting_hr": "/users/me/dataTypes/daily-resting-heart-rate/dataPoints:reconcile",
+        "hrv": "/users/me/dataTypes/daily-heart-rate-variability/dataPoints:reconcile",
+        "spo2": "/users/me/dataTypes/daily-oxygen-saturation/dataPoints:reconcile",
+        "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
+        "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +208,110 @@ def test_extract_records_from_data_points_shape() -> None:
     assert len(_extract_records(data)) == 2
 
 
+def test_extract_records_from_rollup_data_points_shape() -> None:
+    data = {"rollupDataPoints": [{"steps": {"countSum": "1200"}}]}
+    assert len(_extract_records(data)) == 1
+
+
 def test_extract_records_returns_empty_when_no_known_list() -> None:
     assert _extract_records({"foo": "bar"}) == []
+
+
+def test_normalize_sleep_data_point_shape() -> None:
+    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "sleep")
+    record = _normalize_google_health_record(
+        bundle,
+        {
+            "name": "users/u/dataTypes/sleep/dataPoints/sleep-1",
+            "sleep": {
+                "interval": {
+                    "startTime": "2026-04-24T22:00:00Z",
+                    "endTime": "2026-04-25T06:30:00Z",
+                },
+                "summary": {
+                    "minutesAsleep": "450",
+                    "minutesInSleepPeriod": "510",
+                    "stagesSummary": [
+                        {"stage": "DEEP", "totalDuration": "5400s"},
+                        {"stage": "REM", "totalDuration": "7200s"},
+                    ],
+                },
+            },
+        },
+    )
+
+    assert record["session_id"] == "sleep-1"
+    assert record["durationMillis"] == 510 * 60_000
+    assert record["efficiency"] == 88
+    assert record["startTime"] == "2026-04-24T22:00:00Z"
+    assert record["stages"]["deep"] == 90
+    assert record["stages"]["rem"] == 120
+
+
+@pytest.mark.parametrize(
+    "resource,union_key,value_key,value",
+    [
+        ("resting_hr", "dailyRestingHeartRate", "beatsPerMinute", "58"),
+        ("hrv", "dailyHeartRateVariability", "averageHeartRateVariabilityMilliseconds", 42.5),
+        ("spo2", "dailyOxygenSaturation", "averagePercentage", 96.3),
+        ("breathing_rate", "dailyRespiratoryRate", "breathsPerMinute", 14.2),
+        ("vo2_max", "dailyVo2Max", "vo2Max", 41.7),
+    ],
+)
+def test_normalize_daily_data_point_shape(
+    resource: str,
+    union_key: str,
+    value_key: str,
+    value: object,
+) -> None:
+    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == resource)
+    record = _normalize_google_health_record(
+        bundle,
+        {
+            "name": f"users/u/dataTypes/{bundle.data_type}/dataPoints/p",
+            union_key: {"date": {"year": 2026, "month": 4, "day": 24}, value_key: value},
+        },
+    )
+
+    assert record["date"] == "2026-04-24"
+    assert record["value"] == value
+    assert record[value_key] == value
+
+
+def test_build_activity_records_merges_step_and_active_minute_rollups() -> None:
+    records = _build_activity_records(
+        {
+            "rollupDataPoints": [
+                {
+                    "civilStartTime": {"date": {"year": 2026, "month": 4, "day": 24}},
+                    "steps": {"countSum": "9341"},
+                }
+            ]
+        },
+        {
+            "rollupDataPoints": [
+                {
+                    "civilStartTime": {"date": {"year": 2026, "month": 4, "day": 24}},
+                    "activeMinutes": {
+                        "activeMinutesRollupByActivityLevel": [
+                            {"activityLevel": "LIGHT", "activeMinutes": "20"},
+                            {"activityLevel": "MODERATE", "activeMinutes": "35"},
+                        ]
+                    },
+                }
+            ]
+        },
+    )
+
+    assert records == [
+        {
+            "date": "2026-04-24",
+            "steps": 9341,
+            "value": 9341,
+            "activeMinutes": 55,
+            "active_minutes": 55,
+        }
+    ]
 
 
 def test_record_identity_for_sleep_uses_session_id() -> None:
@@ -295,6 +413,37 @@ async def test_client_429_without_retry_after_signals_backoff() -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_account_not_linked_raises_source_precondition() -> None:
+    responses = [
+        httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": 400,
+                    "message": "The account is not linked to Google Health.",
+                    "status": "FAILED_PRECONDITION",
+                    "details": [
+                        {
+                            "reason": "ACCOUNT_NOT_LINKED",
+                            "metadata": {"redirect_uri": "https://fitbit.google.com/auth/signup"},
+                        }
+                    ],
+                }
+            },
+        )
+    ]
+    transport = _StubTransport(responses)
+    http = httpx.AsyncClient(transport=transport, base_url="https://health.googleapis.com/v4")
+    fetcher = AsyncMock(return_value="token")
+    client = GoogleHealthClient(token_fetcher=fetcher, client=http)
+    with pytest.raises(GoogleHealthSourcePreconditionError) as excinfo:
+        await client.get_json("/users/me/dataTypes/sleep/dataPoints:reconcile")
+    assert excinfo.value.reason == "ACCOUNT_NOT_LINKED"
+    assert excinfo.value.redirect_uri == "https://fitbit.google.com/auth/signup"
+    await http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_client_captures_rate_limit_headers_from_response() -> None:
     responses = [
         httpx.Response(
@@ -371,6 +520,18 @@ def test_health_state_reports_healthy_when_all_green() -> None:
     state, err = connector._get_health_state()
     assert state == "healthy"
     assert err is None
+
+
+def test_health_state_reports_degraded_with_source_api_reason() -> None:
+    connector = _make_connector()
+    connector._account_missing = False
+    connector._scope_missing = False
+    connector._auth_error = False
+    connector._last_source_api_ok = False
+    connector._source_api_error_message = "account_not_linked"
+    state, err = connector._get_health_state()
+    assert state == "degraded"
+    assert err == "account_not_linked"
 
 
 def test_health_state_never_emits_broken_string() -> None:
@@ -531,3 +692,69 @@ async def test_poll_resource_emits_envelope_for_new_record(
     assert envelope["event"]["external_event_id"] == "google_health:sleep_session:sess-new"
     assert envelope["source"]["channel"] == "wellness"
     assert envelope["source"]["provider"] == "google_health"
+
+
+@pytest.mark.asyncio
+async def test_poll_activity_resource_uses_daily_rollup_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _make_connector()
+    connector._google_user_id = _OWNER_EMAIL
+    connector._endpoint_identity = _ENDPOINT
+    state = connector._resources["activity"]
+    state.backfill_done = False
+
+    fake_api: Any = type(
+        "Fake",
+        (),
+        {
+            "post_json": AsyncMock(
+                side_effect=[
+                    {
+                        "rollupDataPoints": [
+                            {
+                                "civilStartTime": {
+                                    "date": {"year": 2026, "month": 4, "day": 24}
+                                },
+                                "steps": {"countSum": "1234"},
+                            }
+                        ]
+                    },
+                    {
+                        "rollupDataPoints": [
+                            {
+                                "civilStartTime": {
+                                    "date": {"year": 2026, "month": 4, "day": 24}
+                                },
+                                "activeMinutes": {
+                                    "activeMinutesRollupByActivityLevel": [
+                                        {"activityLevel": "MODERATE", "activeMinutes": "12"}
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                ]
+            ),
+            "last_rate_limit_headers": {},
+        },
+    )()
+    monkeypatch.setattr(connector, "_ensure_api_client", lambda: fake_api)
+    monkeypatch.setattr(connector, "_save_cursor", AsyncMock())
+
+    submit_mock = AsyncMock()
+    monkeypatch.setattr(connector, "_submit_envelope", submit_mock)
+
+    await connector._poll_resource(state)
+
+    assert fake_api.post_json.await_count == 2
+    assert fake_api.post_json.await_args_list[0].args[0] == (
+        "/users/me/dataTypes/steps/dataPoints:dailyRollUp"
+    )
+    assert fake_api.post_json.await_args_list[1].args[0] == (
+        "/users/me/dataTypes/active-minutes/dataPoints:dailyRollUp"
+    )
+    envelope = submit_mock.await_args.args[0]
+    assert envelope["event"]["external_event_id"] == "google_health:activity:2026-04-24"
+    assert envelope["payload"]["raw"]["steps"] == 1234
+    assert envelope["payload"]["raw"]["activeMinutes"] == 12
