@@ -359,6 +359,105 @@ def _resolve_canonical_home(real_home: str | None) -> Path | None:
     return env_home or _pwd_home()
 
 
+def _extract_text_field(value: Any) -> str | None:
+    """Recursively extract a human-readable text field from JSON-like payloads."""
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if not isinstance(value, dict):
+        return None
+
+    for key in ("message", "detail", "text", "result", "error"):
+        if key not in value:
+            continue
+        extracted = _extract_text_field(value.get(key))
+        if extracted:
+            return extracted
+    return None
+
+
+def _extract_stdout_json_detail(stdout: str) -> tuple[str | None, bool]:
+    """Extract a useful detail from structured stdout on non-zero Codex exits.
+
+    Codex can emit JSON progress events on stdout even when it exits non-zero.
+    Returning that raw JSON blob as the exception message is noisy and obscures
+    the actual failure. Prefer explicit error payloads first, then any
+    assistant-authored terminal message, and otherwise report no detail so the
+    caller can fall back to the exit code alone.
+    """
+    explicit_errors: list[str] = []
+    assistant_texts: list[str] = []
+    result_texts: list[str] = []
+    non_json_lines: list[str] = []
+    parsed_any_json = False
+
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            non_json_lines.append(line)
+            continue
+
+        if not isinstance(obj, dict):
+            continue
+
+        parsed_any_json = True
+        obj_type = str(obj.get("type", ""))
+
+        if "error" in obj:
+            extracted = _extract_text_field(obj.get("error"))
+            if extracted:
+                explicit_errors.append(extracted)
+
+        if obj_type in {"error", "turn.failed", "response.failed", "thread.failed"}:
+            extracted = (
+                _extract_text_field(obj)
+                or _extract_text_field(obj.get("message"))
+                or _extract_text_field(obj.get("detail"))
+            )
+            if extracted:
+                explicit_errors.append(extracted)
+            continue
+
+        if obj_type in (
+            "item.completed",
+            "item.started",
+            "response.output_item.done",
+            "response.output_item.added",
+        ):
+            item = obj.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                extracted = _extract_text_field(item)
+                if extracted:
+                    assistant_texts.append(extracted)
+            continue
+
+        if obj_type == "message":
+            extracted = _extract_text_field(obj.get("content")) or _extract_text_field(obj)
+            if extracted:
+                assistant_texts.append(extracted)
+            continue
+
+        if obj_type == "result":
+            extracted = _extract_text_field(obj)
+            if extracted:
+                result_texts.append(extracted)
+            continue
+
+        extracted = _extract_text_field(obj.get("text"))
+        if extracted:
+            result_texts.append(extracted)
+
+    for bucket in (explicit_errors, non_json_lines, assistant_texts, result_texts):
+        if bucket:
+            return "\n".join(dict.fromkeys(bucket)), parsed_any_json
+    return None, parsed_any_json
+
+
 def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     """Prefer actionable Codex failure details over benign stderr noise."""
     stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
@@ -368,7 +467,14 @@ def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     stderr_clean = stderr.strip()
     if stderr_clean:
         return stderr_clean
+
+    stdout_detail, parsed_stdout_json = _extract_stdout_json_detail(stdout)
+    if stdout_detail:
+        return stdout_detail
+
     stdout_clean = stdout.strip()
+    if parsed_stdout_json and stdout_clean:
+        return f"exit code {returncode}"
     if stdout_clean:
         return stdout_clean
     return f"exit code {returncode}"
