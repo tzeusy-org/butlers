@@ -6,7 +6,7 @@
 //
 // Responsibilities:
 //   - Mount / tear-down a MapLibre map with an OSM tile source.
-//   - Show an EmptyState overlay when the `points` array is empty.
+//   - Show an EmptyState overlay when both `points` and `trailPoints` are empty.
 //   - Accept optional GeoJSON points and fit the map to their bounds.
 //   - Render an OwnTracks trail as a connected line layer (bu-ig72b.35).
 //   - Attribution is rendered by MapLibre natively (OSM attribution required).
@@ -149,11 +149,14 @@ export function MapWidgetInner({
     [points],
   )
 
-  // hasPoints determines whether the map container is rendered.  The map
-  // initialisation effect depends on this flag so that React re-runs the
-  // effect (and mounts a fresh map instance) whenever the component switches
-  // between the empty-state overlay and the real map container.
-  const hasPoints = visiblePoints.length > 0
+  // hasMapData determines whether the map canvas is rendered.  The map canvas
+  // mounts whenever there is any displayable data — either visible marker
+  // points or trail geometry.  The empty state is shown only when both are
+  // absent.  The map initialisation effect depends on this flag so that React
+  // re-runs the effect (and mounts a fresh map instance) whenever the component
+  // switches between the empty-state overlay and the real map container.
+  const hasTrailPoints = trailPoints.length > 0
+  const hasMapData = visiblePoints.length > 0 || hasTrailPoints
 
   // Initialise the map once the container is present; tear down on unmount or
   // when the component transitions back to the empty state.
@@ -184,16 +187,16 @@ export function MapWidgetInner({
       map.remove()
       mapRef.current = null
     }
-  }, [hasPoints])
+  }, [hasMapData])
 
   // Register a panTo implementation with the shared pan store.
-  // Re-runs whenever hasPoints changes (same dependency as the map init effect).
+  // Re-runs whenever hasMapData changes (same dependency as the map init effect).
   // The closure captures mapRef so it always calls the current map instance.
   useEffect(() => {
     registerMapPan((lat, lng) => {
       mapRef.current?.flyTo({ center: [lng, lat], zoom: 13 })
     })
-  }, [registerMapPan, hasPoints])
+  }, [registerMapPan, hasMapData])
 
   // Sync markers and fit bounds whenever points change.
   useEffect(() => {
@@ -296,7 +299,7 @@ export function MapWidgetInner({
     }
   }, [trailPoints])
 
-  if (visiblePoints.length === 0) {
+  if (!hasMapData) {
     return (
       <div
         className={`relative w-full ${height} flex items-center justify-center`}
