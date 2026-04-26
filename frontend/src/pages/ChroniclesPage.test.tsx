@@ -115,23 +115,16 @@ vi.mock("@/components/ui/auto-refresh-toggle", () => ({
   },
 }));
 
-// Capture the last props ManualRefreshButton received so tests can assert on them.
-let _manualRefreshButtonProps: Record<string, unknown> | null = null;
-vi.mock("@/components/chronicles/ManualRefreshButton", () => ({
-  ManualRefreshButton: (props: Record<string, unknown>) => {
-    _manualRefreshButtonProps = props;
-    return null;
-  },
-}));
-
 vi.mock("@/components/chronicles/TimeWindowPicker", () => ({
   TimeWindowPicker: () => null,
 }));
 
-// Track whether ManualRefreshButton was rendered (for bu-hzqr0 tests).
+// Unified ManualRefreshButton mock: captures props (bu-zlzxz) and tracks render (bu-hzqr0).
+let _manualRefreshButtonProps: Record<string, unknown> | null = null;
 let _manualRefreshButtonRendered = false;
 vi.mock("@/components/chronicles/ManualRefreshButton", () => ({
-  ManualRefreshButton: () => {
+  ManualRefreshButton: (props: Record<string, unknown>) => {
+    _manualRefreshButtonProps = props;
     _manualRefreshButtonRendered = true;
     return <span data-testid="manual-refresh-button-stub">Refresh</span>;
   },
@@ -282,22 +275,27 @@ describe("ChroniclesPage useAutoRefresh integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Manual refresh button — ChroniclesPage conditional rendering (bu-hzqr0)
+// Manual refresh button — ChroniclesPage rendering (bu-hzqr0 / bu-zlzxz)
+//
+// bu-hzqr0 originally gated the button on pollingDisabled. bu-zlzxz moved
+// it to the page header and removed the pollingDisabled gate so the button
+// is always visible alongside the AutoRefreshToggle (which is still gated).
 // ---------------------------------------------------------------------------
 
 describe("ChroniclesPage manual refresh button", () => {
   it("renders ManualRefreshButton when pollingDisabled=true (historical window)", () => {
     _pollingDisabled = true;
     const html = renderChroniclesPage();
-    // Either the stub text appears in HTML or the tracking flag was set.
     expect(_manualRefreshButtonRendered).toBe(true);
     expect(html).toContain("Refresh");
   });
 
-  it("does not render ManualRefreshButton when pollingDisabled=false (live window)", () => {
+  it("also renders ManualRefreshButton when pollingDisabled=false (live window)", () => {
     _pollingDisabled = false;
-    renderChroniclesPage();
-    expect(_manualRefreshButtonRendered).toBe(false);
+    const html = renderChroniclesPage();
+    // Button now always renders — no pollingDisabled gate (bu-zlzxz).
+    expect(_manualRefreshButtonRendered).toBe(true);
+    expect(html).toContain("Refresh");
   });
 });
 
