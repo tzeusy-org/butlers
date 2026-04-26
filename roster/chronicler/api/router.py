@@ -34,6 +34,7 @@ from butlers.api.models import (
 )
 from butlers.chronicler.aggregations import category_for
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
+from butlers.chronicler.storage import upsert_tier2_cache
 
 _models_path = Path(__file__).parent / "models.py"
 _spec = importlib.util.spec_from_file_location("chronicler_api_models", _models_path)
@@ -56,6 +57,7 @@ if _spec is not None and _spec.loader is not None:
     DayCloseStaleResponse = _models.DayCloseStaleResponse
     DayCloseRefreshRequest = _models.DayCloseRefreshRequest
     DayCloseRefreshResponse = _models.DayCloseRefreshResponse
+    EpisodeExplainResponse = _models.EpisodeExplainResponse
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -464,6 +466,315 @@ async def submit_episode_correction(
         body.submitted_by,
     )
     return _row_to_override(row)
+
+
+# ── POST /api/chronicler/episodes/{id}/explain ────────────────────────────
+
+_EPISODE_EXPLAIN_RATE_LIMIT_HOURS = 24
+
+# Token-budget guard: cap the bundle at ~4 000 chars (~1 000 tokens) so that
+# the LLM prompt stays well within context limits even on small models.
+_EPISODE_EXPLAIN_BUNDLE_CHAR_LIMIT = 4_000
+
+
+def _build_episode_bundle(
+    episode_row: Any,
+    event_rows: list[Any],
+    override_rows: list[Any],
+    *,
+    char_limit: int = _EPISODE_EXPLAIN_BUNDLE_CHAR_LIMIT,
+) -> str:
+    """Serialize an episode + linked events + corrections into a token-bounded prompt bundle.
+
+    The bundle is a compact JSON object.  If the serialised form exceeds
+    ``char_limit`` the events and corrections arrays are truncated (most-recent
+    first for corrections, chronological for events) until it fits.  The
+    episode detail is never truncated — only the supporting arrays.
+
+    Returns the serialised string.
+    """
+
+    def _ep_dict(r: Any) -> dict:
+        def _iso(v: Any) -> str | None:
+            return v.isoformat() if v is not None else None
+
+        return {
+            "id": str(r["id"]),
+            "source_name": r["source_name"],
+            "episode_type": r["episode_type"],
+            "canonical_start_at": _iso(r["canonical_start_at"]),
+            "canonical_end_at": _iso(r["canonical_end_at"]),
+            "canonical_title": r["canonical_title"],
+            "canonical_privacy": r["canonical_privacy"],
+            "precision": r["precision"],
+            "corrected_at": _iso(r["corrected_at"]),
+            "correction_note": r["correction_note"],
+        }
+
+    def _ev_dict(r: Any) -> dict:
+        def _iso(v: Any) -> str | None:
+            return v.isoformat() if v is not None else None
+
+        return {
+            "id": str(r["id"]),
+            "event_type": r["event_type"],
+            "canonical_occurred_at": _iso(r["canonical_occurred_at"]),
+            "canonical_title": r["canonical_title"],
+            "canonical_privacy": r["canonical_privacy"],
+            "source_name": r["source_name"],
+        }
+
+    def _ov_dict(r: Any) -> dict:
+        def _iso(v: Any) -> str | None:
+            return v.isoformat() if v is not None else None
+
+        return {
+            "id": str(r["id"]),
+            "corrected_start_at": _iso(r["corrected_start_at"]),
+            "corrected_end_at": _iso(r["corrected_end_at"]),
+            "corrected_title": r["corrected_title"],
+            "corrected_privacy": r["corrected_privacy"],
+            "note": r["note"],
+            "submitted_by": r["submitted_by"],
+            "created_at": _iso(r["created_at"]),
+        }
+
+    ep_dict = _ep_dict(episode_row)
+    ev_dicts = [_ev_dict(r) for r in event_rows]
+    ov_dicts = [_ov_dict(r) for r in override_rows]
+
+    # Binary search on the number of events + corrections included.
+    # Start with all rows; shrink from the end until it fits.
+    max_events = len(ev_dicts)
+    max_overrides = len(ov_dicts)
+
+    while True:
+        bundle = {
+            "episode": ep_dict,
+            "linked_events": ev_dicts[:max_events],
+            "correction_history": ov_dicts[:max_overrides],
+        }
+        serialised = json.dumps(bundle, default=str)
+        if len(serialised) <= char_limit:
+            return serialised
+        # Shrink: remove one override first (most-recent is already first), then events.
+        if max_overrides > 0:
+            max_overrides -= 1
+        elif max_events > 0:
+            max_events -= 1
+        else:
+            # Episode dict alone already exceeds the limit — return as-is.
+            return serialised
+
+
+@router.post(
+    "/episodes/{episode_id}/explain",
+    response_model=EpisodeExplainResponse,
+    status_code=200,
+)
+async def explain_episode(
+    episode_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+    dispatch_fn: DayCloseDispatchCallable | None = Depends(_get_day_close_dispatch_fn),
+) -> EpisodeExplainResponse:
+    """Invoke a Tier-2 LLM drilldown for a specific episode (rate-limited: 1 per 24 h per episode).
+
+    Assembles a token-bounded bundle from:
+    - Episode detail (corrected view)
+    - Linked point events
+    - Correction history
+
+    Returns 404 if the episode does not exist.
+    Returns 403 if the episode is sensitive (privacy = 'sensitive' or 'restricted').
+    Returns 429 with ``code=episode_explain_rate_limited`` and
+    ``details.retry_after_seconds`` if called within the 24 h window.
+    Returns 503 when no dispatch callable is wired.
+    """
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.episodes.explain") as span:
+        span.set_attribute("chronicler.episodes.explain.episode_id", str(episode_id))
+        return await _explain_episode_inner(episode_id, db, dispatch_fn, span=span)
+
+
+async def _explain_episode_inner(
+    episode_id: UUID,
+    db: DatabaseManager,
+    dispatch_fn: DayCloseDispatchCallable | None,
+    *,
+    span: Any,
+) -> EpisodeExplainResponse:
+    pool = _pool(db)
+    cache_key = f"episode_explain:{episode_id}"
+    now = datetime.now(UTC)
+
+    # ── Fetch episode (404 if not found) ──────────────────────────────────────
+    episode_row = await pool.fetchrow(
+        "SELECT * FROM v_episodes_corrected WHERE id = $1 AND tombstone_at IS NULL",
+        episode_id,
+    )
+    if episode_row is None:
+        span.set_attribute("chronicler.episodes.explain.outcome", "not_found")
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # ── Sensitive episode guard ───────────────────────────────────────────────
+    # Sensitive and restricted episodes are excluded from LLM drilldown to
+    # prevent private data from being processed by an external model.
+    canonical_privacy: str = episode_row["canonical_privacy"]
+    if canonical_privacy in ("sensitive", "restricted"):
+        span.set_attribute("chronicler.episodes.explain.outcome", "excluded")
+        return JSONResponse(
+            status_code=403,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="episode_explain_excluded",
+                    message=(
+                        f"Episode {episode_id} has privacy={canonical_privacy!r} "
+                        "and is excluded from LLM drilldown."
+                    ),
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    # ── Rate-limit check ──────────────────────────────────────────────────────
+    existing_row = await pool.fetchrow(
+        """
+        SELECT cache_built_at
+        FROM tier2_cache
+        WHERE cache_key = $1
+          AND superseded_at IS NULL
+        """,
+        cache_key,
+    )
+
+    if existing_row is not None:
+        cache_built_at: datetime = existing_row["cache_built_at"]
+        age = now - cache_built_at
+        if age < timedelta(hours=_EPISODE_EXPLAIN_RATE_LIMIT_HOURS):
+            remaining = timedelta(hours=_EPISODE_EXPLAIN_RATE_LIMIT_HOURS) - age
+            retry_after = int(remaining.total_seconds())
+            span.set_attribute("chronicler.episodes.explain.outcome", "rate_limited")
+            span.set_attribute("chronicler.episodes.explain.retry_after_seconds", retry_after)
+            return JSONResponse(
+                status_code=429,
+                content=ErrorResponse(
+                    error=ErrorDetail(
+                        code="episode_explain_rate_limited",
+                        message=(
+                            f"An explain for episode {episode_id} was performed recently. "
+                            f"Retry after {retry_after} seconds."
+                        ),
+                        butler="chronicler",
+                        details={"retry_after_seconds": retry_after},
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+    # ── Dispatch guard ────────────────────────────────────────────────────────
+    if dispatch_fn is None:
+        span.set_attribute("chronicler.episodes.explain.outcome", "dispatch_unavailable")
+        return JSONResponse(
+            status_code=503,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="dispatch_unavailable",
+                    message="Episode explain dispatch is not available in this deployment mode.",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    # ── Bundle construction (token-bounded) ───────────────────────────────────
+    event_rows = await pool.fetch(
+        """
+        SELECT v.*
+        FROM episode_event_links l
+        JOIN v_point_events_corrected v ON v.id = l.event_id
+        WHERE l.episode_id = $1
+        ORDER BY v.occurred_at ASC
+        """,
+        episode_id,
+    )
+
+    override_rows = await pool.fetch(
+        """
+        SELECT * FROM overrides
+        WHERE target_kind = 'episode' AND target_id = $1
+        ORDER BY created_at DESC
+        """,
+        episode_id,
+    )
+
+    bundle = _build_episode_bundle(episode_row, event_rows, override_rows)
+    span.set_attribute("chronicler.episodes.explain.bundle_chars", len(bundle))
+
+    prompt = (
+        f"You are the Chronicler butler. The user has requested a Tier-2 explanation "
+        f"for a specific episode. Below is a JSON bundle containing the episode detail, "
+        f"linked point events, and correction history. Provide a concise, factual "
+        f"explanation of what this episode represents, citing the source adapter and "
+        f"any corrections applied. Do not speculate. Respect privacy: if a field is "
+        f"absent or masked, do not invent content.\n\n"
+        f"Episode bundle:\n{bundle}"
+    )
+
+    # ── Dispatch ──────────────────────────────────────────────────────────────
+    result = await dispatch_fn(
+        prompt=prompt,
+        trigger_source=f"api:episode_explain:{episode_id}",
+    )
+
+    # ── Write result to tier2_cache ───────────────────────────────────────────
+    # Use the episode's canonical_start_at / canonical_end_at as the window.
+    # This allows the same staleness-detection machinery to work on this cache row.
+    ep_start = episode_row["canonical_start_at"]
+    ep_end = episode_row["canonical_end_at"] or now
+
+    # Extract output from the result.
+    if hasattr(result, "success") and result.success and getattr(result, "output", None):
+        prose = result.output.strip()
+    elif isinstance(result, dict) and result.get("success") and result.get("output"):
+        prose = result["output"].strip()
+    else:
+        prose = ""
+
+    if prose:
+        try:
+            await upsert_tier2_cache(
+                pool,
+                cache_key=cache_key,
+                start_at=ep_start,
+                end_at=ep_end,
+                prose=prose,
+                provenance_refs=[episode_row["source_ref"]],
+            )
+        except Exception:
+            logger.exception("explain_episode: failed to write tier2_cache[%s]", cache_key)
+
+    # ── Return response ───────────────────────────────────────────────────────
+    new_row = await pool.fetchrow(
+        "SELECT cache_built_at FROM tier2_cache WHERE cache_key = $1 AND superseded_at IS NULL",
+        cache_key,
+    )
+    if new_row is None:
+        span.set_attribute("chronicler.episodes.explain.outcome", "cache_write_failed")
+        return JSONResponse(
+            status_code=502,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="cache_write_failed",
+                    message="Episode explain dispatch completed but no cache row was written.",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    span.set_attribute("chronicler.episodes.explain.outcome", "dispatched")
+    return EpisodeExplainResponse(
+        episode_id=str(episode_id),
+        cache_key=cache_key,
+        cache_built_at=new_row["cache_built_at"],
+    )
 
 
 # ── GET /api/chronicler/source-state ─────────────────────────────────────

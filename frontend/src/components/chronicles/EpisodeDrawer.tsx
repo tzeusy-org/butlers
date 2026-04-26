@@ -22,7 +22,6 @@
 import { useState } from "react"
 import { Loader2, Sparkles } from "lucide-react"
 
-import type { ChroniclerEpisode } from "@/api/types"
 import { ApiError } from "@/api/client"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -72,11 +71,6 @@ function privacyBadgeVariant(
   return "outline"
 }
 
-// Extract date string (YYYY-MM-DD) for the day-close refresh endpoint.
-function episodeDateStr(episode: ChroniclerEpisode): string {
-  return episode.canonical_start_at.slice(0, 10)
-}
-
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -95,10 +89,10 @@ function FieldRow({ label, value }: { label: string; value: React.ReactNode }) {
 // ---------------------------------------------------------------------------
 
 interface ExplainButtonProps {
-  episode: ChroniclerEpisode
+  episodeId: string
 }
 
-function ExplainButton({ episode }: ExplainButtonProps) {
+function ExplainButton({ episodeId }: ExplainButtonProps) {
   // retryAfterSeconds: populated when the backend returns 429 with
   // details.retry_after_seconds. Surfaces feedback without a live countdown.
   const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(null)
@@ -110,9 +104,8 @@ function ExplainButton({ episode }: ExplainButtonProps) {
 
   function handleClick() {
     if (isRateLimited || isLoading) return
-    const date = episodeDateStr(episode)
     explain.mutate(
-      { date },
+      episodeId,
       {
         onError: (err) => {
           if (err instanceof ApiError && err.status === 429) {
@@ -124,7 +117,7 @@ function ExplainButton({ episode }: ExplainButtonProps) {
           }
         },
         onSuccess: () => {
-          // Clear any stale rate-limit state on successful refresh.
+          // Clear any stale rate-limit state on successful explain.
           setRetryAfterSeconds(null)
         },
       },
@@ -159,7 +152,7 @@ function ExplainButton({ episode }: ExplainButtonProps) {
       )}
       {explain.isSuccess && (
         <p className="text-xs text-emerald-600" data-testid="explain-success">
-          Day summary refreshed.
+          Episode explanation refreshed.
         </p>
       )}
     </div>
@@ -272,9 +265,9 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
           <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Analysis
           </h3>
-          <ExplainButton episode={ep} />
+          <ExplainButton episodeId={ep.id} />
           <p className="mt-1 text-xs text-muted-foreground">
-            Triggers a one-time day-close summary via the Chronicler. Rate-limited to once per 24h.
+            Triggers a per-episode LLM drilldown via the Chronicler. Rate-limited to once per 24h per episode.
           </p>
         </section>
       )}

@@ -3433,3 +3433,13 @@ export interface ChroniclerEventsParams {
   offset?: number;
   limit?: number;
 }
+
+/**
+ * Response from POST /api/chronicler/episodes/{id}/explain.
+ * Returned when the per-episode LLM drilldown succeeds and a cache row is written.
+ */
+export interface ChroniclerEpisodeExplainResponse {
+  episode_id: string;
+  cache_key: string;
+  cache_built_at: string;
+}
