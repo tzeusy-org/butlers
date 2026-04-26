@@ -40,9 +40,8 @@ _EPISODE_ID = UUID("00000000-0000-0000-0000-000000000001")
 _EPISODE_ID_STR = str(_EPISODE_ID)
 _CACHE_KEY = f"episode_explain:{_EPISODE_ID}"
 
-_T_NOW = datetime(2026, 4, 25, 12, 0, 0, tzinfo=UTC)
-_T_WITHIN_24H = _T_NOW - timedelta(hours=2)
-_T_OUTSIDE_24H = _T_NOW - timedelta(hours=25)
+_T_WITHIN_24H = datetime.now(UTC) - timedelta(hours=2)   # live: always within rate-limit window
+_T_OUTSIDE_24H = datetime.now(UTC) - timedelta(hours=25)  # live: always outside rate-limit window
 
 
 class _Row(dict):
@@ -67,28 +66,29 @@ def _make_episode_row(
     privacy: str = "normal",
     canonical_privacy: str = "normal",
 ) -> _Row:
+    _now = datetime.now(UTC)
     return _row(
         {
             "id": _EPISODE_ID,
             "source_name": "work",
             "source_ref": "ref-ep-1",
             "episode_type": "session",
-            "start_at": _T_NOW - timedelta(hours=2),
-            "end_at": _T_NOW - timedelta(hours=1),
+            "start_at": _now - timedelta(hours=2),
+            "end_at": _now - timedelta(hours=1),
             "precision": "minute",
             "title": "Deep work block",
             "payload": {},
             "privacy": privacy,
             "retention_days": None,
             "tombstone_at": None,
-            "canonical_start_at": _T_NOW - timedelta(hours=2),
-            "canonical_end_at": _T_NOW - timedelta(hours=1),
+            "canonical_start_at": _now - timedelta(hours=2),
+            "canonical_end_at": _now - timedelta(hours=1),
             "canonical_title": "Deep work block",
             "canonical_privacy": canonical_privacy,
             "corrected_at": None,
             "correction_note": None,
-            "created_at": _T_NOW - timedelta(days=1),
-            "updated_at": _T_NOW - timedelta(hours=1),
+            "created_at": _now - timedelta(days=1),
+            "updated_at": _now - timedelta(hours=1),
         }
     )
 
