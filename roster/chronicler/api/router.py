@@ -12,6 +12,7 @@ import importlib.util
 import json
 import logging
 import sys
+import time
 import zoneinfo
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
@@ -21,6 +22,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import (
@@ -532,23 +534,31 @@ async def list_source_state(
     Records are returned sorted by ``source_name ASC``.
     An empty ``source_adapter_state`` table returns ``{"data": [], "meta": {}}``.
     """
-    pool = _pool(db)
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.source_state") as span:
+        pool = _pool(db)
 
-    adapter_rows = await pool.fetch(
-        "SELECT source_name, chronicler_compatibility, read_surface, boundary_semantics,"
-        " optional_schema, active, inactive_reason"
-        " FROM source_adapter_state"
-        " ORDER BY source_name ASC"
-    )
+        t0 = time.perf_counter()
+        adapter_rows = await pool.fetch(
+            "SELECT source_name, chronicler_compatibility, read_surface, boundary_semantics,"
+            " optional_schema, active, inactive_reason"
+            " FROM source_adapter_state"
+            " ORDER BY source_name ASC"
+        )
 
-    checkpoint_rows = await pool.fetch(
-        "SELECT source_name, subsource, last_run_at, last_error"
-        " FROM projection_checkpoints"
-        " ORDER BY source_name ASC, subsource ASC"
-    )
+        checkpoint_rows = await pool.fetch(
+            "SELECT source_name, subsource, last_run_at, last_error"
+            " FROM projection_checkpoints"
+            " ORDER BY source_name ASC, subsource ASC"
+        )
+        query_latency_ms = (time.perf_counter() - t0) * 1000
 
-    data = _rows_to_source_state(adapter_rows, checkpoint_rows)
-    return ApiResponse[list[SourceStateRow]](data=data)
+        data = _rows_to_source_state(adapter_rows, checkpoint_rows)
+
+        span.set_attribute("chronicler.source_state.row_count", len(data))
+        span.set_attribute("chronicler.source_state.query_latency_ms", query_latency_ms)
+
+        return ApiResponse[list[SourceStateRow]](data=data)
 
 
 # ── Precision ordering ─────────────────────────────────────────────────────
@@ -641,145 +651,153 @@ async def aggregate_by_category(
     else:
         allowed_tiers = {"normal", "sensitive"}
 
-    pool = _pool(db)
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.aggregate.by_category") as span:
+        pool = _pool(db)
 
-    # ── Fetch raw episode rows from the corrected view ─────────────────
-    # Read from v_episodes_corrected using start_at/end_at/privacy so that
-    # user-submitted overrides are honoured.
-    clauses: list[str] = [
-        "start_at < $2",
-        "(end_at IS NULL OR end_at > $1)",
-    ]
-    args: list[Any] = [start_at, end_at]
+        # ── Fetch raw episode rows from the corrected view ─────────────────
+        # Read from v_episodes_corrected using start_at/end_at/privacy so that
+        # user-submitted overrides are honoured.
+        clauses: list[str] = [
+            "start_at < $2",
+            "(end_at IS NULL OR end_at > $1)",
+        ]
+        args: list[Any] = [start_at, end_at]
 
-    if not include_tombstoned:
-        clauses.append("tombstone_at IS NULL")
+        if not include_tombstoned:
+            clauses.append("tombstone_at IS NULL")
 
-    # Build privacy IN clause from allowed_tiers.
-    tier_placeholders = ", ".join(f"${len(args) + i + 1}" for i in range(len(allowed_tiers)))
-    for tier in sorted(allowed_tiers):
-        args.append(tier)
-    clauses.append(f"privacy IN ({tier_placeholders})")
+        # Build privacy IN clause from allowed_tiers.
+        tier_placeholders = ", ".join(f"${len(args) + i + 1}" for i in range(len(allowed_tiers)))
+        for tier in sorted(allowed_tiers):
+            args.append(tier)
+        clauses.append(f"privacy IN ({tier_placeholders})")
 
-    where = "WHERE " + " AND ".join(clauses)
+        where = "WHERE " + " AND ".join(clauses)
 
-    rows = await pool.fetch(
-        f"""
-        SELECT
-            source_name,
-            episode_type,
-            start_at,
-            end_at,
-            precision,
-            privacy,
-            retention_days,
-            tombstone_at
-        FROM v_episodes_corrected
-        {where}
-        """,
-        *args,
-    )
-
-    # ── Aggregate in Python ────────────────────────────────────────────
-    # group by (category, source_name) to build per-source breakdowns,
-    # then roll up to per-category buckets.
-    cat_src: dict[tuple[str, str], dict[str, Any]] = defaultdict(
-        lambda: {
-            "total_seconds": 0.0,
-            "episode_count": 0,
-            "tombstoned": False,
-            "precision_values": [],
-            "retention_days_values": [],
-        }
-    )
-
-    for row in rows:
-        ep_start: datetime = row["start_at"]
-        ep_end: datetime | None = row["end_at"]
-        source_name: str = row["source_name"]
-        episode_type: str = row["episode_type"]
-        precision: str = row["precision"]
-        retention_days: int | None = row["retention_days"]
-        is_tombstoned: bool = row["tombstone_at"] is not None
-
-        ep_category = category_for(source_name, episode_type)
-
-        if ep_category == "other":
-            logger.warning(
-                "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+        t0 = time.perf_counter()
+        rows = await pool.fetch(
+            f"""
+            SELECT
                 source_name,
                 episode_type,
-            )
+                start_at,
+                end_at,
+                precision,
+                privacy,
+                retention_days,
+                tombstone_at
+            FROM v_episodes_corrected
+            {where}
+            """,
+            *args,
+        )
+        query_latency_ms = (time.perf_counter() - t0) * 1000
+        span.set_attribute("chronicler.aggregate.query_latency_ms", query_latency_ms)
 
-        # Clip open episodes to query_end.
-        ep_end_resolved = ep_end if ep_end is not None else end_at
-
-        # Duration = LEAST(end_at, query_end) - GREATEST(start_at, query_start), clamped at 0.
-        overlap_start = max(ep_start, start_at)
-        overlap_end = min(ep_end_resolved, end_at)
-        if overlap_end <= overlap_start:
-            continue
-        overlap_seconds = (overlap_end - overlap_start).total_seconds()
-
-        bucket_key = (ep_category, source_name)
-        bucket = cat_src[bucket_key]
-        bucket["total_seconds"] += overlap_seconds
-        bucket["episode_count"] += 1
-        bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
-        bucket["precision_values"].append(precision)
-        bucket["retention_days_values"].append(retention_days)
-
-    # Roll up per-(category, source) to per-category buckets.
-    cat_buckets: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {
-            "total_seconds": 0.0,
-            "episode_count": 0,
-            "source_breakdown": [],
-            "precision_values": [],
-            "retention_days_values": [],
-        }
-    )
-
-    for (ep_category, source_name), src_data in cat_src.items():
-        bucket = cat_buckets[ep_category]
-        bucket["total_seconds"] += src_data["total_seconds"]
-        bucket["episode_count"] += src_data["episode_count"]
-        bucket["precision_values"].extend(src_data["precision_values"])
-        bucket["retention_days_values"].extend(src_data["retention_days_values"])
-        bucket["source_breakdown"].append(
-            SourceBreakdownEntry(
-                source_name=source_name,
-                total_seconds=src_data["total_seconds"],
-                episode_count=src_data["episode_count"],
-                tombstoned=src_data["tombstoned"],
-            )
+        # ── Aggregate in Python ────────────────────────────────────────────
+        # group by (category, source_name) to build per-source breakdowns,
+        # then roll up to per-category buckets.
+        cat_src: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+            lambda: {
+                "total_seconds": 0.0,
+                "episode_count": 0,
+                "tombstoned": False,
+                "precision_values": [],
+                "retention_days_values": [],
+            }
         )
 
-    # Build CategoryBucket list sorted by total_seconds DESC, category ASC.
-    result_buckets: list[CategoryBucket] = []
-    for ep_category, data in cat_buckets.items():
-        non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
-        result_buckets.append(
-            CategoryBucket(
-                category=ep_category,
-                total_seconds=data["total_seconds"],
-                episode_count=data["episode_count"],
-                source_breakdown=data["source_breakdown"],
-                precision=_least_precise(data["precision_values"]),
-                retention_floor_days=min(non_null_retentions) if non_null_retentions else None,
+        for row in rows:
+            ep_start: datetime = row["start_at"]
+            ep_end: datetime | None = row["end_at"]
+            source_name: str = row["source_name"]
+            episode_type: str = row["episode_type"]
+            precision: str = row["precision"]
+            retention_days: int | None = row["retention_days"]
+            is_tombstoned: bool = row["tombstone_at"] is not None
+
+            ep_category = category_for(source_name, episode_type)
+
+            if ep_category == "other":
+                logger.warning(
+                    "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+                    source_name,
+                    episode_type,
+                )
+                span.set_attribute("chronicler.aggregate.unmapped_source", source_name)
+
+            # Clip open episodes to query_end.
+            ep_end_resolved = ep_end if ep_end is not None else end_at
+
+            # Duration = LEAST(end_at, query_end) - GREATEST(start_at, query_start), clamped at 0.
+            overlap_start = max(ep_start, start_at)
+            overlap_end = min(ep_end_resolved, end_at)
+            if overlap_end <= overlap_start:
+                continue
+            overlap_seconds = (overlap_end - overlap_start).total_seconds()
+
+            bucket_key = (ep_category, source_name)
+            bucket = cat_src[bucket_key]
+            bucket["total_seconds"] += overlap_seconds
+            bucket["episode_count"] += 1
+            bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
+            bucket["precision_values"].append(precision)
+            bucket["retention_days_values"].append(retention_days)
+
+        # Roll up per-(category, source) to per-category buckets.
+        cat_buckets: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "total_seconds": 0.0,
+                "episode_count": 0,
+                "source_breakdown": [],
+                "precision_values": [],
+                "retention_days_values": [],
+            }
+        )
+
+        for (ep_category, source_name), src_data in cat_src.items():
+            bucket = cat_buckets[ep_category]
+            bucket["total_seconds"] += src_data["total_seconds"]
+            bucket["episode_count"] += src_data["episode_count"]
+            bucket["precision_values"].extend(src_data["precision_values"])
+            bucket["retention_days_values"].extend(src_data["retention_days_values"])
+            bucket["source_breakdown"].append(
+                SourceBreakdownEntry(
+                    source_name=source_name,
+                    total_seconds=src_data["total_seconds"],
+                    episode_count=src_data["episode_count"],
+                    tombstoned=src_data["tombstoned"],
+                )
+            )
+
+        # Build CategoryBucket list sorted by total_seconds DESC, category ASC.
+        result_buckets: list[CategoryBucket] = []
+        for ep_category, data in cat_buckets.items():
+            non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
+            result_buckets.append(
+                CategoryBucket(
+                    category=ep_category,
+                    total_seconds=data["total_seconds"],
+                    episode_count=data["episode_count"],
+                    source_breakdown=data["source_breakdown"],
+                    precision=_least_precise(data["precision_values"]),
+                    retention_floor_days=min(non_null_retentions) if non_null_retentions else None,
+                )
+            )
+
+        result_buckets.sort(key=lambda b: (-b.total_seconds, b.category))
+
+        span.set_attribute("chronicler.aggregate.bucket_count", len(result_buckets))
+
+        return ApiResponse[CategoryBuckets](
+            data=CategoryBuckets(
+                start_at=start_at,
+                end_at=end_at,
+                tz=tz,
+                buckets=result_buckets,
             )
         )
-
-    result_buckets.sort(key=lambda b: (-b.total_seconds, b.category))
-
-    return ApiResponse[CategoryBuckets](
-        data=CategoryBuckets(
-            start_at=start_at,
-            end_at=end_at,
-            tz=tz,
-            buckets=result_buckets,
-        )
-    )
 
 
 # ── GET /api/chronicler/aggregate/by-day ─────────────────────────────────
@@ -846,209 +864,218 @@ async def aggregate_by_day(
             ).model_dump(exclude_none=True),
         )
 
-    pool = _pool(db)
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.aggregate.by_day") as span:
+        pool = _pool(db)
 
-    # ── Fetch raw episode rows from the corrected view ─────────────────
-    # Only select relations from the chronicler schema (v_episodes_corrected).
-    # No LLM. No cross-schema references.
-    # Use the corrected start_at/end_at columns so user-submitted overrides
-    # are honoured in window filtering and duration arithmetic.
-    clauses: list[str] = [
-        "start_at < $2",
-        "(end_at IS NULL OR end_at > $1)",
-    ]
-    args: list[Any] = [start_at, end_at]
+        # ── Fetch raw episode rows from the corrected view ─────────────────
+        # Only select relations from the chronicler schema (v_episodes_corrected).
+        # No LLM. No cross-schema references.
+        # Use the corrected start_at/end_at columns so user-submitted overrides
+        # are honoured in window filtering and duration arithmetic.
+        clauses: list[str] = [
+            "start_at < $2",
+            "(end_at IS NULL OR end_at > $1)",
+        ]
+        args: list[Any] = [start_at, end_at]
 
-    if not include_tombstoned:
-        clauses.append("tombstone_at IS NULL")
+        if not include_tombstoned:
+            clauses.append("tombstone_at IS NULL")
 
-    # Exclude restricted episodes by default (use corrected privacy column).
-    clauses.append("privacy != 'restricted'")
+        # Exclude restricted episodes by default (use corrected privacy column).
+        clauses.append("privacy != 'restricted'")
 
-    where = "WHERE " + " AND ".join(clauses)
+        where = "WHERE " + " AND ".join(clauses)
 
-    rows = await pool.fetch(
-        f"""
-        SELECT
-            source_name,
-            episode_type,
-            start_at,
-            end_at,
-            precision,
-            privacy,
-            retention_days,
-            tombstone_at
-        FROM v_episodes_corrected
-        {where}
-        """,
-        *args,
-    )
-
-    # ── Enumerate calendar days in the requested timezone ──────────────
-    # Compute the first and last local calendar day that overlaps the window.
-    local_start = start_at.astimezone(tzinfo)
-    local_end = end_at.astimezone(tzinfo)
-
-    first_day = local_start.date()
-    last_day = (local_end - timedelta(microseconds=1)).astimezone(tzinfo).date()
-
-    # Build a mapping: day_str -> (day_start_utc, day_end_utc)
-    day_bounds: dict[str, tuple[datetime, datetime]] = {}
-    current_day = first_day
-    while current_day <= last_day:
-        ds = datetime(current_day.year, current_day.month, current_day.day, 0, 0, 0, tzinfo=tzinfo)
-        next_day = current_day + timedelta(days=1)
-        de = datetime(next_day.year, next_day.month, next_day.day, 0, 0, 0, tzinfo=tzinfo)
-        day_bounds[current_day.isoformat()] = (ds, de)
-        current_day = next_day
-
-    if not day_bounds:
-        return []
-
-    # ── Aggregate in Python ────────────────────────────────────────────
-    # Group by (day_str, category, source_name) and sum overlap seconds.
-    # This avoids pushing category_for() logic into SQL and keeps it
-    # in the Python layer where the category taxonomy lives.
-    #
-    # Complexity: O(N×k) where k = average episode span in days (typically << D).
-    # For each episode we compute which days it overlaps via date arithmetic and
-    # iterate only those days — avoiding the naive O(N×D) scan over all buckets.
-
-    # day_cat_src[(day, category, source_name)] = {
-    #   "total_seconds": float,
-    #   "episode_count": int,
-    #   "tombstoned": bool,
-    #   "precision_values": list[str],
-    #   "retention_days_values": list[int | None],
-    # }
-    day_cat_src: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
-        lambda: {
-            "total_seconds": 0.0,
-            "episode_count": 0,
-            "tombstoned": False,
-            "precision_values": [],
-            "retention_days_values": [],
-        }
-    )
-
-    for row in rows:
-        ep_start: datetime = row["start_at"]
-        ep_end: datetime | None = row["end_at"]
-        source_name: str = row["source_name"]
-        episode_type: str = row["episode_type"]
-        precision: str = row["precision"]
-        retention_days: int | None = row["retention_days"]
-        is_tombstoned: bool = row["tombstone_at"] is not None
-
-        ep_category = category_for(source_name, episode_type)
-        if category is not None and ep_category != category:
-            continue
-
-        if ep_category == "other":
-            logger.warning(
-                "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+        t0 = time.perf_counter()
+        rows = await pool.fetch(
+            f"""
+            SELECT
                 source_name,
                 episode_type,
-            )
+                start_at,
+                end_at,
+                precision,
+                privacy,
+                retention_days,
+                tombstone_at
+            FROM v_episodes_corrected
+            {where}
+            """,
+            *args,
+        )
+        query_latency_ms = (time.perf_counter() - t0) * 1000
+        span.set_attribute("chronicler.aggregate.query_latency_ms", query_latency_ms)
 
-        if is_tombstoned:
-            logger.warning(
-                "chronicler.aggregate.tombstoned_episode source=%s episode_type=%s",
-                source_name,
-                episode_type,
-            )
+        # ── Enumerate calendar days in the requested timezone ──────────────
+        # Compute the first and last local calendar day that overlaps the window.
+        local_start = start_at.astimezone(tzinfo)
+        local_end = end_at.astimezone(tzinfo)
 
-        # If end_at is NULL treat as open-ended — only count the portion
-        # that falls within each day window.
-        ep_end_resolved = ep_end if ep_end is not None else end_at
+        first_day = local_start.date()
+        last_day = (local_end - timedelta(microseconds=1)).astimezone(tzinfo).date()
 
-        # Compute the local-date range this episode overlaps, clipped to the
-        # query window.  ep_end_resolved is exclusive (like day_end), so we
-        # subtract 1 µs before converting to a local date to avoid counting a
-        # day that the episode only *touches* at its very start boundary.
-        ep_first_day = max(ep_start, start_at).astimezone(tzinfo).date()
-        ep_last_day = (
-            min(
-                ep_end_resolved - timedelta(microseconds=1),
-                end_at - timedelta(microseconds=1),
+        # Build a mapping: day_str -> (day_start_utc, day_end_utc)
+        day_bounds: dict[str, tuple[datetime, datetime]] = {}
+        current_day = first_day
+        while current_day <= last_day:
+            ds = datetime(
+                current_day.year, current_day.month, current_day.day, 0, 0, 0, tzinfo=tzinfo
             )
-            .astimezone(tzinfo)
-            .date()
+            next_day = current_day + timedelta(days=1)
+            de = datetime(next_day.year, next_day.month, next_day.day, 0, 0, 0, tzinfo=tzinfo)
+            day_bounds[current_day.isoformat()] = (ds, de)
+            current_day = next_day
+
+        if not day_bounds:
+            return []
+
+        # ── Aggregate in Python ────────────────────────────────────────────
+        # Group by (day_str, category, source_name) and sum overlap seconds.
+        # This avoids pushing category_for() logic into SQL and keeps it
+        # in the Python layer where the category taxonomy lives.
+        #
+        # Complexity: O(N×k) where k = average episode span in days (typically << D).
+        # For each episode we compute which days it overlaps via date arithmetic and
+        # iterate only those days — avoiding the naive O(N×D) scan over all buckets.
+
+        # day_cat_src[(day, category, source_name)] = {
+        #   "total_seconds": float,
+        #   "episode_count": int,
+        #   "tombstoned": bool,
+        #   "precision_values": list[str],
+        #   "retention_days_values": list[int | None],
+        # }
+        day_cat_src: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
+            lambda: {
+                "total_seconds": 0.0,
+                "episode_count": 0,
+                "tombstoned": False,
+                "precision_values": [],
+                "retention_days_values": [],
+            }
         )
 
-        # Clamp to the query window's day range (defensive — SQL WHERE should
-        # already guarantee overlap, but rounding/DST can produce edge cases).
-        ep_first_day = max(ep_first_day, first_day)
-        ep_last_day = min(ep_last_day, last_day)
+        for row in rows:
+            ep_start: datetime = row["start_at"]
+            ep_end: datetime | None = row["end_at"]
+            source_name: str = row["source_name"]
+            episode_type: str = row["episode_type"]
+            precision: str = row["precision"]
+            retention_days: int | None = row["retention_days"]
+            is_tombstoned: bool = row["tombstone_at"] is not None
 
-        ep_day = ep_first_day
-        while ep_day <= ep_last_day:
-            day_str = ep_day.isoformat()
+            ep_category = category_for(source_name, episode_type)
+            if category is not None and ep_category != category:
+                continue
+
+            if ep_category == "other":
+                logger.warning(
+                    "chronicler.aggregate.unmapped_source=%s episode_type=%s",
+                    source_name,
+                    episode_type,
+                )
+                span.set_attribute("chronicler.aggregate.unmapped_source", source_name)
+
+            if is_tombstoned:
+                logger.warning(
+                    "chronicler.aggregate.tombstoned_episode source=%s episode_type=%s",
+                    source_name,
+                    episode_type,
+                )
+
+            # If end_at is NULL treat as open-ended — only count the portion
+            # that falls within each day window.
+            ep_end_resolved = ep_end if ep_end is not None else end_at
+
+            # Compute the local-date range this episode overlaps, clipped to the
+            # query window.  ep_end_resolved is exclusive (like day_end), so we
+            # subtract 1 µs before converting to a local date to avoid counting a
+            # day that the episode only *touches* at its very start boundary.
+            ep_first_day = max(ep_start, start_at).astimezone(tzinfo).date()
+            ep_last_day = (
+                min(
+                    ep_end_resolved - timedelta(microseconds=1),
+                    end_at - timedelta(microseconds=1),
+                )
+                .astimezone(tzinfo)
+                .date()
+            )
+
+            # Clamp to the query window's day range (defensive — SQL WHERE should
+            # already guarantee overlap, but rounding/DST can produce edge cases).
+            ep_first_day = max(ep_first_day, first_day)
+            ep_last_day = min(ep_last_day, last_day)
+
+            ep_day = ep_first_day
+            while ep_day <= ep_last_day:
+                day_str = ep_day.isoformat()
+                ds, de = day_bounds[day_str]
+
+                # Overlap = max(0, min(ep_end, de) - max(ep_start, ds))
+                overlap_start = max(ep_start, ds)
+                overlap_end = min(ep_end_resolved, de)
+                if overlap_end > overlap_start:
+                    overlap_seconds = (overlap_end - overlap_start).total_seconds()
+
+                    bucket_key = (day_str, ep_category, source_name)
+                    bucket = day_cat_src[bucket_key]
+                    bucket["total_seconds"] += overlap_seconds
+                    bucket["episode_count"] += 1
+                    bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
+                    bucket["precision_values"].append(precision)
+                    bucket["retention_days_values"].append(retention_days)
+
+                ep_day += timedelta(days=1)
+
+        # ── Build final response rows ──────────────────────────────────────
+        # First group day_cat_src by (day, category) to produce per-bucket source breakdowns.
+        day_cat: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+            lambda: {
+                "total_seconds": 0.0,
+                "episode_count": 0,
+                "source_breakdown": [],
+                "precision_values": [],
+                "retention_days_values": [],
+            }
+        )
+
+        for (day_str, ep_category, source_name), src_data in day_cat_src.items():
+            bucket = day_cat[(day_str, ep_category)]
+            bucket["total_seconds"] += src_data["total_seconds"]
+            bucket["episode_count"] += src_data["episode_count"]
+            bucket["precision_values"].extend(src_data["precision_values"])
+            bucket["retention_days_values"].extend(src_data["retention_days_values"])
+            bucket["source_breakdown"].append(
+                SourceBreakdownEntry(
+                    source_name=source_name,
+                    total_seconds=src_data["total_seconds"],
+                    episode_count=src_data["episode_count"],
+                    tombstoned=src_data["tombstoned"],
+                )
+            )
+
+        result: list[AggregateByDayRow] = []
+        for (day_str, ep_category), data in sorted(day_cat.items()):
             ds, de = day_bounds[day_str]
-
-            # Overlap = max(0, min(ep_end, de) - max(ep_start, ds))
-            overlap_start = max(ep_start, ds)
-            overlap_end = min(ep_end_resolved, de)
-            if overlap_end > overlap_start:
-                overlap_seconds = (overlap_end - overlap_start).total_seconds()
-
-                bucket_key = (day_str, ep_category, source_name)
-                bucket = day_cat_src[bucket_key]
-                bucket["total_seconds"] += overlap_seconds
-                bucket["episode_count"] += 1
-                bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
-                bucket["precision_values"].append(precision)
-                bucket["retention_days_values"].append(retention_days)
-
-            ep_day += timedelta(days=1)
-
-    # ── Build final response rows ──────────────────────────────────────
-    # First group day_cat_src by (day, category) to produce per-bucket source breakdowns.
-    day_cat: dict[tuple[str, str], dict[str, Any]] = defaultdict(
-        lambda: {
-            "total_seconds": 0.0,
-            "episode_count": 0,
-            "source_breakdown": [],
-            "precision_values": [],
-            "retention_days_values": [],
-        }
-    )
-
-    for (day_str, ep_category, source_name), src_data in day_cat_src.items():
-        bucket = day_cat[(day_str, ep_category)]
-        bucket["total_seconds"] += src_data["total_seconds"]
-        bucket["episode_count"] += src_data["episode_count"]
-        bucket["precision_values"].extend(src_data["precision_values"])
-        bucket["retention_days_values"].extend(src_data["retention_days_values"])
-        bucket["source_breakdown"].append(
-            SourceBreakdownEntry(
-                source_name=source_name,
-                total_seconds=src_data["total_seconds"],
-                episode_count=src_data["episode_count"],
-                tombstoned=src_data["tombstoned"],
+            non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
+            result.append(
+                AggregateByDayRow(
+                    day=day_str,
+                    category=ep_category,
+                    total_seconds=data["total_seconds"],
+                    episode_count=data["episode_count"],
+                    day_start=ds,
+                    day_end=de,
+                    source_breakdown=data["source_breakdown"],
+                    precision=_least_precise(data["precision_values"]),
+                    retention_floor_days=min(non_null_retentions) if non_null_retentions else None,
+                )
             )
-        )
 
-    result: list[AggregateByDayRow] = []
-    for (day_str, ep_category), data in sorted(day_cat.items()):
-        ds, de = day_bounds[day_str]
-        non_null_retentions = [r for r in data["retention_days_values"] if r is not None]
-        result.append(
-            AggregateByDayRow(
-                day=day_str,
-                category=ep_category,
-                total_seconds=data["total_seconds"],
-                episode_count=data["episode_count"],
-                day_start=ds,
-                day_end=de,
-                source_breakdown=data["source_breakdown"],
-                precision=_least_precise(data["precision_values"]),
-                retention_floor_days=min(non_null_retentions) if non_null_retentions else None,
-            )
-        )
-
-    # Sort by (day ASC, category ASC) — already guaranteed by sorted() above.
-    return result
+        # Sort by (day ASC, category ASC) — already guaranteed by sorted() above.
+        span.set_attribute("chronicler.aggregate.bucket_count", len(result))
+        return result
 
 
 # ── GET /api/chronicler/aggregate/day-close ───────────────────────────────
@@ -1108,204 +1135,214 @@ async def get_day_close_cache(
             ).model_dump(exclude_none=True),
         )
 
-    pool = _pool(db)
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.aggregate.day_close") as span:
+        pool = _pool(db)
 
-    cache_key = f"day_close:{parsed_date.isoformat()}"
+        cache_key = f"day_close:{parsed_date.isoformat()}"
 
-    # ── Step 1: fetch the cache row ──────────────────────────────────────
-    cache_row = await pool.fetchrow(
-        """
-        SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs
-        FROM tier2_cache
-        WHERE cache_key = $1
-          AND superseded_at IS NULL
-        """,
-        cache_key,
-    )
-
-    if cache_row is None:
-        raise HTTPException(status_code=404, detail=f"No day-close cache entry for {parsed_date}")
-
-    start_at = cache_row["start_at"]
-    end_at = cache_row["end_at"]
-    cache_built_at = cache_row["cache_built_at"]
-
-    # ── Step 2: query staleness signals in the cached window ─────────────
-    # Nine signals:
-    #   episodes.tombstone_at  > cache_built_at  (window-scoped)
-    #   episodes.updated_at    > cache_built_at  (window-scoped)
-    #   point_events.tombstone_at > cache_built_at  (window-scoped)
-    #   point_events.updated_at   > cache_built_at  (window-scoped)
-    #   overrides.created_at   > cache_built_at  (for window-overlapping overrides)
-    #   episodes cited in provenance_refs but now outside the window (updated_at signal)
-    #   point_events cited in provenance_refs but now outside the window (updated_at signal)
-    #   overrides that move an episode INTO the window via corrected_start_at
-    #   overrides that move a point_event INTO the window via corrected_start_at
-    #
-    # Window condition for episodes / point_events (signals 1-4):
-    #   rows whose time span overlaps [start_at, end_at)
-    #   i.e. start_at_col < end_at AND (end_at_col IS NULL OR end_at_col > start_at)
-    #
-    # Signals 6-7 (provenance-ref staleness): an episode or point_event that was
-    # cited when the cache was built may have been updated to move its time range
-    # OUTSIDE the cached window.  The window filter above would then miss it.
-    # Fix: join against the source_ref values stored in tier2_cache.provenance_refs
-    # so updates to those specific rows trigger staleness regardless of their
-    # current window position.
-    #
-    # Signal 8 (corrected_start_at staleness): an override created after the cache
-    # was built that sets corrected_start_at within [start_at, end_at) pulls an
-    # episode that was originally OUTSIDE the cached window INTO scope.  Signals
-    # 1-5 miss this because they scope overrides via the episode's original
-    # start_at/end_at.  We detect it by checking corrected_start_at directly.
-    #
-    # For overrides we join back to the underlying episode/point_event to
-    # scope them to the same window.  We use a single UNION query to get
-    # the MAX timestamp in one round-trip.
-    staleness_row = await pool.fetchrow(
-        """
-        SELECT MAX(ts) AS last_invalidating_event_at
-        FROM (
-            -- episodes.tombstone_at
-            SELECT tombstone_at AS ts
-            FROM episodes
-            WHERE tombstone_at > $3
-              AND start_at < $2
-              AND (end_at IS NULL OR end_at > $1)
-
-            UNION ALL
-
-            -- episodes.updated_at
-            SELECT updated_at AS ts
-            FROM episodes
-            WHERE updated_at > $3
-              AND start_at < $2
-              AND (end_at IS NULL OR end_at > $1)
-
-            UNION ALL
-
-            -- point_events.tombstone_at
-            SELECT tombstone_at AS ts
-            FROM point_events
-            WHERE tombstone_at > $3
-              AND occurred_at >= $1
-              AND occurred_at < $2
-
-            UNION ALL
-
-            -- point_events.updated_at
-            SELECT updated_at AS ts
-            FROM point_events
-            WHERE updated_at > $3
-              AND occurred_at >= $1
-              AND occurred_at < $2
-
-            UNION ALL
-
-            -- overrides scoped via episode window
-            SELECT o.created_at AS ts
-            FROM overrides o
-            JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'
-            WHERE o.created_at > $3
-              AND e.start_at < $2
-              AND (e.end_at IS NULL OR e.end_at > $1)
-
-            UNION ALL
-
-            -- overrides scoped via point_event window
-            SELECT o.created_at AS ts
-            FROM overrides o
-            JOIN point_events p ON p.id = o.target_id AND o.target_kind = 'point_event'
-            WHERE o.created_at > $3
-              AND p.occurred_at >= $1
-              AND p.occurred_at < $2
-
-            UNION ALL
-
-            -- provenance-ref staleness: episodes cited by this cache entry
-            -- that were updated (possibly moving their window) after cache was built.
-            -- Catches updates that push the episode outside the cached window.
-            SELECT e.updated_at AS ts
-            FROM tier2_cache c
-            CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
-            JOIN episodes e ON e.source_ref = ref
-            WHERE c.cache_key = $4
-              AND c.superseded_at IS NULL
-              AND e.updated_at > $3
-
-            UNION ALL
-
-            -- provenance-ref staleness: point_events cited by this cache entry
-            -- that were updated (possibly moving their window) after cache was built.
-            SELECT p.updated_at AS ts
-            FROM tier2_cache c
-            CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
-            JOIN point_events p ON p.source_ref = ref
-            WHERE c.cache_key = $4
-              AND c.superseded_at IS NULL
-              AND p.updated_at > $3
-
-            UNION ALL
-
-            -- corrected_start_at staleness: an override that moves an episode INTO
-            -- the cached window by setting corrected_start_at within [start_at, end_at).
-            -- The episode's original start_at may lie outside the window, so signals
-            -- 1-5 would miss it.  We detect it via corrected_start_at directly.
-            SELECT o.created_at AS ts
-            FROM overrides o
-            JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'
-            WHERE o.created_at > $3
-              AND o.corrected_start_at >= $1
-              AND o.corrected_start_at < $2
-
-            UNION ALL
-
-            -- corrected_start_at staleness: an override that moves a point_event INTO
-            -- the cached window by setting corrected_start_at within [start_at, end_at).
-            -- The point_event's original occurred_at may lie outside the window, so
-            -- signals 1-5 would miss it.  Parallel to the episode branch above.
-            SELECT o.created_at AS ts
-            FROM overrides o
-            JOIN point_events pe ON pe.id = o.target_id AND o.target_kind = 'point_event'
-            WHERE o.created_at > $3
-              AND o.corrected_start_at >= $1
-              AND o.corrected_start_at < $2
-        ) invalidators
-        """,
-        start_at,
-        end_at,
-        cache_built_at,
-        cache_key,
-    )
-
-    last_invalidating_event_at = (
-        staleness_row["last_invalidating_event_at"] if staleness_row else None
-    )
-
-    if last_invalidating_event_at is not None:
-        return DayCloseStaleResponse(
-            stale=True,
-            cache_built_at=cache_built_at,
-            last_invalidating_event_at=last_invalidating_event_at,
+        # ── Step 1: fetch the cache row ──────────────────────────────────────
+        t0 = time.perf_counter()
+        cache_row = await pool.fetchrow(
+            """
+            SELECT cache_key, start_at, end_at, cache_built_at, prose, provenance_refs
+            FROM tier2_cache
+            WHERE cache_key = $1
+              AND superseded_at IS NULL
+            """,
+            cache_key,
         )
 
-    # Fresh path: return prose + provenance_refs
-    raw_refs = cache_row["provenance_refs"]
-    if isinstance(raw_refs, str):
-        try:
-            provenance_refs = json.loads(raw_refs)
-        except json.JSONDecodeError:
-            provenance_refs = []
-    elif isinstance(raw_refs, list):
-        provenance_refs = raw_refs
-    else:
-        provenance_refs = []
+        if cache_row is None:
+            span.set_attribute("chronicler.day_close.cache_state", "miss")
+            raise HTTPException(
+                status_code=404, detail=f"No day-close cache entry for {parsed_date}"
+            )
 
-    return DayCloseFreshResponse(
-        prose=cache_row["prose"],
-        provenance_refs=provenance_refs,
-        cache_built_at=cache_built_at,
-    )
+        start_at = cache_row["start_at"]
+        end_at = cache_row["end_at"]
+        cache_built_at = cache_row["cache_built_at"]
+
+        # ── Step 2: query staleness signals in the cached window ─────────────
+        # Nine signals:
+        #   episodes.tombstone_at  > cache_built_at  (window-scoped)
+        #   episodes.updated_at    > cache_built_at  (window-scoped)
+        #   point_events.tombstone_at > cache_built_at  (window-scoped)
+        #   point_events.updated_at   > cache_built_at  (window-scoped)
+        #   overrides.created_at   > cache_built_at  (for window-overlapping overrides)
+        #   episodes cited in provenance_refs but now outside the window (updated_at signal)
+        #   point_events cited in provenance_refs but now outside the window (updated_at signal)
+        #   overrides that move an episode INTO the window via corrected_start_at
+        #   overrides that move a point_event INTO the window via corrected_start_at
+        #
+        # Window condition for episodes / point_events (signals 1-4):
+        #   rows whose time span overlaps [start_at, end_at)
+        #   i.e. start_at_col < end_at AND (end_at_col IS NULL OR end_at_col > start_at)
+        #
+        # Signals 6-7 (provenance-ref staleness): an episode or point_event that was
+        # cited when the cache was built may have been updated to move its time range
+        # OUTSIDE the cached window.  The window filter above would then miss it.
+        # Fix: join against the source_ref values stored in tier2_cache.provenance_refs
+        # so updates to those specific rows trigger staleness regardless of their
+        # current window position.
+        #
+        # Signal 8 (corrected_start_at staleness): an override created after the cache
+        # was built that sets corrected_start_at within [start_at, end_at) pulls an
+        # episode that was originally OUTSIDE the cached window INTO scope.  Signals
+        # 1-5 miss this because they scope overrides via the episode's original
+        # start_at/end_at.  We detect it by checking corrected_start_at directly.
+        #
+        # For overrides we join back to the underlying episode/point_event to
+        # scope them to the same window.  We use a single UNION query to get
+        # the MAX timestamp in one round-trip.
+        staleness_row = await pool.fetchrow(
+            """
+            SELECT MAX(ts) AS last_invalidating_event_at
+            FROM (
+                -- episodes.tombstone_at
+                SELECT tombstone_at AS ts
+                FROM episodes
+                WHERE tombstone_at > $3
+                  AND start_at < $2
+                  AND (end_at IS NULL OR end_at > $1)
+
+                UNION ALL
+
+                -- episodes.updated_at
+                SELECT updated_at AS ts
+                FROM episodes
+                WHERE updated_at > $3
+                  AND start_at < $2
+                  AND (end_at IS NULL OR end_at > $1)
+
+                UNION ALL
+
+                -- point_events.tombstone_at
+                SELECT tombstone_at AS ts
+                FROM point_events
+                WHERE tombstone_at > $3
+                  AND occurred_at >= $1
+                  AND occurred_at < $2
+
+                UNION ALL
+
+                -- point_events.updated_at
+                SELECT updated_at AS ts
+                FROM point_events
+                WHERE updated_at > $3
+                  AND occurred_at >= $1
+                  AND occurred_at < $2
+
+                UNION ALL
+
+                -- overrides scoped via episode window
+                SELECT o.created_at AS ts
+                FROM overrides o
+                JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'
+                WHERE o.created_at > $3
+                  AND e.start_at < $2
+                  AND (e.end_at IS NULL OR e.end_at > $1)
+
+                UNION ALL
+
+                -- overrides scoped via point_event window
+                SELECT o.created_at AS ts
+                FROM overrides o
+                JOIN point_events p ON p.id = o.target_id AND o.target_kind = 'point_event'
+                WHERE o.created_at > $3
+                  AND p.occurred_at >= $1
+                  AND p.occurred_at < $2
+
+                UNION ALL
+
+                -- provenance-ref staleness: episodes cited by this cache entry
+                -- that were updated (possibly moving their window) after cache was built.
+                -- Catches updates that push the episode outside the cached window.
+                SELECT e.updated_at AS ts
+                FROM tier2_cache c
+                CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
+                JOIN episodes e ON e.source_ref = ref
+                WHERE c.cache_key = $4
+                  AND c.superseded_at IS NULL
+                  AND e.updated_at > $3
+
+                UNION ALL
+
+                -- provenance-ref staleness: point_events cited by this cache entry
+                -- that were updated (possibly moving their window) after cache was built.
+                SELECT p.updated_at AS ts
+                FROM tier2_cache c
+                CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
+                JOIN point_events p ON p.source_ref = ref
+                WHERE c.cache_key = $4
+                  AND c.superseded_at IS NULL
+                  AND p.updated_at > $3
+
+                UNION ALL
+
+                -- corrected_start_at staleness: an override that moves an episode INTO
+                -- the cached window by setting corrected_start_at within [start_at, end_at).
+                -- The episode's original start_at may lie outside the window, so signals
+                -- 1-5 would miss it.  We detect it via corrected_start_at directly.
+                SELECT o.created_at AS ts
+                FROM overrides o
+                JOIN episodes e ON e.id = o.target_id AND o.target_kind = 'episode'
+                WHERE o.created_at > $3
+                  AND o.corrected_start_at >= $1
+                  AND o.corrected_start_at < $2
+
+                UNION ALL
+
+                -- corrected_start_at staleness: an override that moves a point_event INTO
+                -- the cached window by setting corrected_start_at within [start_at, end_at).
+                -- The point_event's original occurred_at may lie outside the window, so
+                -- signals 1-5 would miss it.  Parallel to the episode branch above.
+                SELECT o.created_at AS ts
+                FROM overrides o
+                JOIN point_events pe ON pe.id = o.target_id AND o.target_kind = 'point_event'
+                WHERE o.created_at > $3
+                  AND o.corrected_start_at >= $1
+                  AND o.corrected_start_at < $2
+            ) invalidators
+            """,
+            start_at,
+            end_at,
+            cache_built_at,
+            cache_key,
+        )
+        query_latency_ms = (time.perf_counter() - t0) * 1000
+        span.set_attribute("chronicler.day_close.query_latency_ms", query_latency_ms)
+
+        last_invalidating_event_at = (
+            staleness_row["last_invalidating_event_at"] if staleness_row else None
+        )
+
+        if last_invalidating_event_at is not None:
+            span.set_attribute("chronicler.day_close.cache_state", "stale")
+            return DayCloseStaleResponse(
+                stale=True,
+                cache_built_at=cache_built_at,
+                last_invalidating_event_at=last_invalidating_event_at,
+            )
+
+        # Fresh path: return prose + provenance_refs
+        raw_refs = cache_row["provenance_refs"]
+        if isinstance(raw_refs, str):
+            try:
+                provenance_refs = json.loads(raw_refs)
+            except json.JSONDecodeError:
+                provenance_refs = []
+        elif isinstance(raw_refs, list):
+            provenance_refs = raw_refs
+        else:
+            provenance_refs = []
+
+        span.set_attribute("chronicler.day_close.cache_state", "fresh")
+        return DayCloseFreshResponse(
+            prose=cache_row["prose"],
+            provenance_refs=provenance_refs,
+            cache_built_at=cache_built_at,
+        )
 
 
 # ── POST /api/chronicler/aggregate/day-close/refresh ─────────────────────────
