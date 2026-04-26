@@ -44,7 +44,10 @@ from butlers.daemon import (
     ButlerDaemon,
     _McpSseDisconnectGuard,
 )
-from butlers.mcp_patches import apply_streamable_http_disconnect_patch
+from butlers.mcp_patches import (
+    apply_streamable_http_client_disconnect_patch,
+    apply_streamable_http_disconnect_patch,
+)
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
 
@@ -884,6 +887,77 @@ async def test_streamable_http_disconnect_patch_preserves_unrelated_errors(
     assert other_rec.exc_info is not None
 
 
+async def test_streamable_http_client_disconnect_patch_is_idempotent() -> None:
+    """Repeated calls MUST leave exactly one client-side filter instance attached."""
+    import mcp.client.streamable_http as streamable_http
+
+    from butlers.mcp_patches import _ClientSseParseDisconnectFilter
+
+    apply_streamable_http_client_disconnect_patch()
+    apply_streamable_http_client_disconnect_patch()
+    apply_streamable_http_client_disconnect_patch()
+
+    filters = [
+        f for f in streamable_http.logger.filters if isinstance(f, _ClientSseParseDisconnectFilter)
+    ]
+    assert len(filters) == 1
+
+
+async def test_streamable_http_client_disconnect_patch_downgrades_closed_resource_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Expected client-side teardown tracebacks MUST be downgraded to DEBUG."""
+    import mcp.client.streamable_http as streamable_http
+
+    apply_streamable_http_client_disconnect_patch()
+
+    logger = streamable_http.logger
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        try:
+            raise anyio.ClosedResourceError()
+        except anyio.ClosedResourceError:
+            logger.exception("Error parsing SSE message")
+
+    target = [rec for rec in caplog.records if rec.name == logger.name]
+    assert target, "expected at least one log record on the streamable_http client logger"
+    rec = target[-1]
+    assert rec.levelno == logging.DEBUG
+    assert rec.exc_info is None
+    assert rec.exc_text is None
+    assert rec.getMessage() == "Streamable HTTP SSE reader closed during client disconnect"
+    assert not any("Error parsing SSE message" in r.getMessage() for r in target)
+
+
+async def test_streamable_http_client_disconnect_patch_preserves_unrelated_errors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Actual parse/runtime failures on the client logger MUST surface normally."""
+    import mcp.client.streamable_http as streamable_http
+
+    apply_streamable_http_client_disconnect_patch()
+
+    logger = streamable_http.logger
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            logger.exception("Error parsing SSE message")
+
+        try:
+            raise anyio.ClosedResourceError()
+        except anyio.ClosedResourceError:
+            logger.exception("Different client message")
+
+    records = [rec for rec in caplog.records if rec.name == logger.name]
+    parse_rec = next(r for r in records if r.getMessage() == "Error parsing SSE message")
+    assert parse_rec.levelno == logging.ERROR
+    assert parse_rec.exc_info is not None
+
+    other_rec = next(r for r in records if r.getMessage() == "Different client message")
+    assert other_rec.levelno == logging.ERROR
+    assert other_rec.exc_info is not None
+
+
 # ---------------------------------------------------------------------------
 # Status tool
 # ---------------------------------------------------------------------------
@@ -1043,6 +1117,7 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
+    apply_patch_mock = MagicMock()
     with (
         patches["db_from_env"],
         patches["run_migrations"],
@@ -1056,10 +1131,15 @@ async def test_switchboard_client_lifecycle(butler_dir: Path) -> None:
         patches["shutil_which"],
         patches["start_mcp_server"],
         patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
+        patch(
+            "butlers.switchboard_wiring.apply_streamable_http_client_disconnect_patch",
+            apply_patch_mock,
+        ),
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
     assert daemon.switchboard_client is mock_client
+    apply_patch_mock.assert_called_once_with()
     await daemon.shutdown()
     assert daemon.switchboard_client is None
 
