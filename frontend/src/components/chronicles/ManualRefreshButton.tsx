@@ -36,6 +36,7 @@ export function ManualRefreshButton() {
       className="h-8 text-xs"
       onClick={() => void handleRefresh()}
       disabled={isRefreshing}
+      aria-busy={isRefreshing}
       aria-label="Refresh chronicles data"
     >
       <RefreshCw className={isRefreshing ? "animate-spin" : ""} />

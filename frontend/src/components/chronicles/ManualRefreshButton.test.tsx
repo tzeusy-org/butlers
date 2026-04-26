@@ -125,4 +125,31 @@ describe("ManualRefreshButton", () => {
     expect(btn.textContent).toContain("Refresh")
     expect(btn.disabled).toBe(false)
   })
+
+  it("sets aria-busy=true while refreshing and aria-busy=false after", async () => {
+    let resolveInvalidate!: () => void
+    const pending = new Promise<void>((resolve) => { resolveInvalidate = resolve })
+    mockInvalidateQueries.mockReturnValue(pending)
+
+    renderButton()
+    const btn = getButton()
+
+    // Before click — aria-busy should be absent or false.
+    expect(btn.getAttribute("aria-busy")).not.toBe("true")
+
+    act(() => {
+      btn.click()
+    })
+
+    // While in-flight — aria-busy must be true.
+    expect(btn.getAttribute("aria-busy")).toBe("true")
+
+    await act(async () => {
+      resolveInvalidate()
+      await pending
+    })
+
+    // After completion — aria-busy must be false.
+    expect(btn.getAttribute("aria-busy")).toBe("false")
+  })
 })
