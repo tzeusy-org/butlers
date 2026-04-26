@@ -210,10 +210,6 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
 
   if (!ep) return null
 
-  const displayTitle = isSensitive
-    ? "Private activity"
-    : (ep.canonical_title ?? ep.source_name)
-
   const duration = formatDuration(ep.canonical_start_at, ep.canonical_end_at)
 
   return (

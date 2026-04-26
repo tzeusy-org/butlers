@@ -20,7 +20,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  ApiError,
   getChroniclerAggregateByCategory,
   getChroniclerAggregateByDay,
   getChroniclerDayClose,
@@ -236,19 +235,11 @@ export function useChroniclerExplain() {
   return useMutation({
     mutationFn: (body: ChroniclerDayCloseRefreshRequest) =>
       postChroniclerDayCloseRefresh(body),
-    onSuccess: (_data, variables) => {
+    onSuccess: () => {
       // Invalidate day-close cache for this date so stale prose is refetched.
       // We can't reconstruct the exact DayCloseParams key here, so we
       // invalidate by partial key prefix.
       queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
-    },
-    onError: (_err) => {
-      // ApiError with status 429 means rate-limited. Caller inspects error.
-      // No special handling needed here; error is surfaced via mutation state.
-      const err = _err as ApiError;
-      if (err instanceof ApiError && err.status !== 429) {
-        // Unexpected error — let it surface normally.
-      }
     },
   });
 }
