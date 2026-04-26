@@ -34,6 +34,7 @@ import { useChroniclesAggregates, useChroniclesPointEvents } from "@/hooks/use-c
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 import type { ChroniclerEventsParams } from "@/api/types"
+import { MapPanContext, useMapPanContextValue } from "@/components/chronicles/map-pan-store"
 
 // ---------------------------------------------------------------------------
 // Page
@@ -42,6 +43,8 @@ import type { ChroniclerEventsParams } from "@/api/types"
 export default function ChroniclesPage() {
   const timeWindow = useTimeWindow()
   const autoRefreshControl = useAutoRefresh(30_000)
+  // Map pan store: Gantt episode clicks wire through this context to the MapWidget.
+  const mapPanValue = useMapPanContextValue()
 
   // Episode drawer state — holds the ID of the clicked episode, or null.
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null)
@@ -192,23 +195,26 @@ export default function ChroniclesPage() {
         />
       </section>
 
-      {/* Gantt area */}
-      <section aria-label="Gantt area" className="rounded-lg border bg-card p-6">
-        <h2 className="text-sm font-medium text-muted-foreground mb-4">Gantt area</h2>
-        <GanttSwimlane
-          windowStart={timeWindow.from}
-          windowEnd={timeWindow.to}
-          refetchInterval={refetchInterval}
-          onEpisodeClick={handleEpisodeClick}
-          cursorMs={snappedMs}
-        />
-      </section>
+      {/* Gantt + Map share the MapPanContext so calendar episode clicks can pan the map. */}
+      <MapPanContext.Provider value={mapPanValue}>
+        {/* Gantt area */}
+        <section aria-label="Gantt area" className="rounded-lg border bg-card p-6">
+          <h2 className="text-sm font-medium text-muted-foreground mb-4">Gantt area</h2>
+          <GanttSwimlane
+            windowStart={timeWindow.from}
+            windowEnd={timeWindow.to}
+            refetchInterval={refetchInterval}
+            onEpisodeClick={handleEpisodeClick}
+            cursorMs={snappedMs}
+          />
+        </section>
 
-      {/* Map area */}
-      <section aria-label="Map area" className="rounded-lg border bg-card p-6">
-        <h2 className="text-sm font-medium text-muted-foreground mb-4">Map area</h2>
-        <MapWidget points={[]} playheadPoint={playheadPoint} />
-      </section>
+        {/* Map area */}
+        <section aria-label="Map area" className="rounded-lg border bg-card p-6">
+          <h2 className="text-sm font-medium text-muted-foreground mb-4">Map area</h2>
+          <MapWidget points={[]} playheadPoint={playheadPoint} />
+        </section>
+      </MapPanContext.Provider>
 
       {/* Aggregations area */}
       <section aria-label="Aggregations area" className="rounded-lg border bg-card p-6">

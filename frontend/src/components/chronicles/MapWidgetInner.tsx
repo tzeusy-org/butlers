@@ -17,6 +17,7 @@ import { MapPin } from "lucide-react"
 import { useEffect, useMemo, useRef } from "react"
 
 import { EmptyState } from "@/components/ui/empty-state"
+import { useRegisterMapPan } from "./map-pan-store"
 
 // ---------------------------------------------------------------------------
 // Playhead marker helpers
@@ -115,6 +116,11 @@ export function MapWidgetInner({ points, height = "h-80", playheadPoint }: MapWi
   const markersRef = useRef<maplibreGl.Marker[]>([])
   const playheadMarkerRef = useRef<maplibreGl.Marker | null>(null)
 
+  // Register flyTo with the pan store so Gantt episode clicks can pan the map.
+  // useRegisterMapPan returns a no-op if there is no MapPanContext provider,
+  // which keeps MapWidgetInner usable in standalone / test contexts.
+  const registerMapPan = useRegisterMapPan()
+
   // Sensitive points are never plotted — filter them out before rendering.
   // Memoised to avoid recreating the array on every render (stable reference
   // prevents the marker-sync useEffect from firing spuriously).
@@ -158,6 +164,15 @@ export function MapWidgetInner({ points, height = "h-80", playheadPoint }: MapWi
       mapRef.current = null
     }
   }, [hasPoints])
+
+  // Register a panTo implementation with the shared pan store.
+  // Re-runs whenever hasPoints changes (same dependency as the map init effect).
+  // The closure captures mapRef so it always calls the current map instance.
+  useEffect(() => {
+    registerMapPan((lat, lng) => {
+      mapRef.current?.flyTo({ center: [lng, lat], zoom: 13 })
+    })
+  }, [registerMapPan, hasPoints])
 
   // Sync markers and fit bounds whenever points change.
   useEffect(() => {

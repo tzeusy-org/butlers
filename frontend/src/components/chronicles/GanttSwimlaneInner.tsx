@@ -16,6 +16,12 @@
 //
 // A hover tooltip (Radix UI primitive) surfaces: title, source, precision,
 // duration, and a drilldown link to /chronicles/episodes/{id}.
+//
+// Calendar episode location pan (bu-ig72b.24):
+//   Clicking a calendar-lane bar attempts to pan the map to the episode's
+//   location field (read from payload.location).  If the field parses as a
+//   "lat,lng" pair the map pans; otherwise the tooltip notes the location is
+//   unparseable.  No geocoding is performed.
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react"
@@ -29,6 +35,8 @@ import {
 } from "@/components/ui/tooltip"
 import type { Category } from "./lane-taxonomy"
 import { LANE_TAXONOMY } from "./lane-taxonomy"
+import { parseLatLng } from "./location-utils"
+import { useMapPanTo } from "./map-pan-store"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -234,11 +242,40 @@ interface EpisodeBarProps {
   patternId: string | null  // hatch pattern id if sensitive, else null
   windowEndMs: number
   onEpisodeClick?: (episodeId: string) => void
+  /** Category of the lane this bar belongs to — used to gate location panning. */
+  category: Category
 }
 
-function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndMs, onEpisodeClick }: EpisodeBarProps) {
+function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndMs, onEpisodeClick, category }: EpisodeBarProps) {
   const { episode, row, xPct, widthPct, isOpen } = positioned
   const isSensitive = episode.canonical_privacy === "sensitive"
+
+  // ---------------------------------------------------------------------------
+  // Location pan (calendar episodes only) — bu-ig72b.24
+  // ---------------------------------------------------------------------------
+  const panTo = useMapPanTo()
+
+  // Extract location from payload only for calendar-category episodes.
+  // payload is JSONB — location may be absent, null, or any type.
+  const rawLocation =
+    category === "calendar" && typeof episode.payload?.location === "string"
+      ? (episode.payload.location as string)
+      : null
+
+  const parsedCoords = rawLocation !== null ? parseLatLng(rawLocation) : null
+
+  // locationStatus is used to annotate the tooltip:
+  //   "pannable"     — location string parses as lat,lng; click pans the map
+  //   "unparseable"  — location string present but not parseable lat,lng
+  //   null           — no location field or not a calendar episode
+  const locationStatus: "pannable" | "unparseable" | null =
+    rawLocation === null ? null : parsedCoords !== null ? "pannable" : "unparseable"
+
+  function handleClick() {
+    if (!isSensitive && parsedCoords !== null) {
+      panTo(parsedCoords.lat, parsedCoords.lng)
+    }
+  }
 
   const x = xPct * svgWidth
   const w = Math.max(widthPct * svgWidth, 2) // minimum 2px so bars are visible
@@ -260,7 +297,12 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
     : new Date(rawEndMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
 
   function handleClick() {
+    // Open drilldown drawer for all episode types (bu-ig72b.31).
     onEpisodeClick?.(episode.id)
+    // Pan map to location for calendar episodes with parseable coordinates (bu-ig72b.24).
+    if (!isSensitive && parsedCoords !== null) {
+      panTo(parsedCoords.lat, parsedCoords.lng)
+    }
   }
 
   return (
@@ -338,6 +380,16 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
               {startLabel} – {endLabel}
             </p>
             {isOpen && <p className="opacity-70 italic">Episode ongoing</p>}
+            {locationStatus === "pannable" && (
+              <p className="text-emerald-600 mt-0.5" data-testid="gantt-location-pannable">
+                Click to pan map to location
+              </p>
+            )}
+            {locationStatus === "unparseable" && (
+              <p className="text-muted-foreground mt-0.5 italic" data-testid="gantt-location-unparseable">
+                Location: {rawLocation} (no coordinates)
+              </p>
+            )}
             <p className="pt-0.5">
               <a
                 href={`/chronicles/episodes/${episode.id}`}
@@ -522,6 +574,7 @@ export function GanttSwimlaneInner({
                     }
                     windowEndMs={windowEndMs}
                     onEpisodeClick={onEpisodeClick}
+                    category={lane.category}
                   />
                 ))
               })}
