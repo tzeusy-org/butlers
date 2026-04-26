@@ -293,3 +293,60 @@ describe("MapWidgetInner trailPoints prop", () => {
     expect(html).toContain("map-container")
   })
 })
+
+// ---------------------------------------------------------------------------
+// MapWidgetInner — trail-only render (bu-2xpqt)
+//
+// The original bug: when points=[] but trailPoints is non-empty, the map
+// canvas was never mounted because `if (visiblePoints.length === 0)` returned
+// the EmptyState before the canvas div was rendered, making the trail layer
+// unreachable.  Fix: gate on hasMapData = visiblePoints.length > 0 || hasTrailPoints.
+// ---------------------------------------------------------------------------
+
+describe("MapWidgetInner trail-only render (bu-2xpqt)", () => {
+  const trailOnlyPoints = [
+    { lng: 103.8, lat: 1.35 },
+    { lng: 103.81, lat: 1.36 },
+  ]
+
+  it("renders map container when points=[] but trailPoints is non-empty", () => {
+    const html = renderToStaticMarkup(
+      <MapWidgetInner points={[]} trailPoints={trailOnlyPoints} />,
+    )
+    expect(html).toContain("map-container")
+  })
+
+  it("does NOT render EmptyState when only trailPoints are provided", () => {
+    const html = renderToStaticMarkup(
+      <MapWidgetInner points={[]} trailPoints={trailOnlyPoints} />,
+    )
+    expect(html).not.toContain("No activity recorded for this window")
+  })
+
+  it("renders EmptyState when both points and trailPoints are empty", () => {
+    const html = renderToStaticMarkup(
+      <MapWidgetInner points={[]} trailPoints={[]} />,
+    )
+    expect(html).toContain("No activity recorded for this window")
+    expect(html).not.toContain("map-container")
+  })
+
+  it("renders EmptyState when all points are sensitive and trailPoints is empty", () => {
+    const sensitivePoint = { lng: 103.8, lat: 1.35, privacy_tier: "sensitive" as const }
+    const html = renderToStaticMarkup(
+      <MapWidgetInner points={[sensitivePoint]} trailPoints={[]} />,
+    )
+    expect(html).toContain("No activity recorded for this window")
+    expect(html).not.toContain("map-container")
+  })
+
+  it("renders map container when all points are sensitive but trailPoints is non-empty", () => {
+    const sensitivePoint = { lng: 103.8, lat: 1.35, privacy_tier: "sensitive" as const }
+    const html = renderToStaticMarkup(
+      <MapWidgetInner points={[sensitivePoint]} trailPoints={trailOnlyPoints} />,
+    )
+    // trailPoints exist — canvas must mount even though no visible marker points.
+    expect(html).toContain("map-container")
+    expect(html).not.toContain("No activity recorded for this window")
+  })
+})
