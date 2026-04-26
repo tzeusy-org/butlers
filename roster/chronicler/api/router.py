@@ -590,6 +590,19 @@ async def explain_episode(
     ``details.retry_after_seconds`` if called within the 24 h window.
     Returns 503 when no dispatch callable is wired.
     """
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.episodes.explain") as span:
+        span.set_attribute("chronicler.episodes.explain.episode_id", str(episode_id))
+        return await _explain_episode_inner(episode_id, db, dispatch_fn, span=span)
+
+
+async def _explain_episode_inner(
+    episode_id: UUID,
+    db: DatabaseManager,
+    dispatch_fn: DayCloseDispatchCallable | None,
+    *,
+    span: Any,
+) -> EpisodeExplainResponse:
     pool = _pool(db)
     cache_key = f"episode_explain:{episode_id}"
     now = datetime.now(UTC)
@@ -600,6 +613,7 @@ async def explain_episode(
         episode_id,
     )
     if episode_row is None:
+        span.set_attribute("chronicler.episodes.explain.outcome", "not_found")
         raise HTTPException(status_code=404, detail="Episode not found")
 
     # ── Sensitive episode guard ───────────────────────────────────────────────
@@ -607,6 +621,7 @@ async def explain_episode(
     # prevent private data from being processed by an external model.
     canonical_privacy: str = episode_row["canonical_privacy"]
     if canonical_privacy in ("sensitive", "restricted"):
+        span.set_attribute("chronicler.episodes.explain.outcome", "excluded")
         return JSONResponse(
             status_code=403,
             content=ErrorResponse(
@@ -638,6 +653,8 @@ async def explain_episode(
         if age < timedelta(hours=_EPISODE_EXPLAIN_RATE_LIMIT_HOURS):
             remaining = timedelta(hours=_EPISODE_EXPLAIN_RATE_LIMIT_HOURS) - age
             retry_after = int(remaining.total_seconds())
+            span.set_attribute("chronicler.episodes.explain.outcome", "rate_limited")
+            span.set_attribute("chronicler.episodes.explain.retry_after_seconds", retry_after)
             return JSONResponse(
                 status_code=429,
                 content=ErrorResponse(
@@ -655,6 +672,7 @@ async def explain_episode(
 
     # ── Dispatch guard ────────────────────────────────────────────────────────
     if dispatch_fn is None:
+        span.set_attribute("chronicler.episodes.explain.outcome", "dispatch_unavailable")
         return JSONResponse(
             status_code=503,
             content=ErrorResponse(
@@ -688,6 +706,7 @@ async def explain_episode(
     )
 
     bundle = _build_episode_bundle(episode_row, event_rows, override_rows)
+    span.set_attribute("chronicler.episodes.explain.bundle_chars", len(bundle))
 
     prompt = (
         f"You are the Chronicler butler. The user has requested a Tier-2 explanation "
@@ -738,6 +757,7 @@ async def explain_episode(
         cache_key,
     )
     if new_row is None:
+        span.set_attribute("chronicler.episodes.explain.outcome", "cache_write_failed")
         return JSONResponse(
             status_code=502,
             content=ErrorResponse(
@@ -749,6 +769,7 @@ async def explain_episode(
             ).model_dump(exclude_none=True),
         )
 
+    span.set_attribute("chronicler.episodes.explain.outcome", "dispatched")
     return EpisodeExplainResponse(
         episode_id=str(episode_id),
         cache_key=cache_key,
