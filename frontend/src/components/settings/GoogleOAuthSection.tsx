@@ -250,6 +250,8 @@ const SCOPE_SETS: ReadonlyArray<ScopeSetDescriptor> = [
   },
 ];
 
+const ACCOUNT_REAUTHORIZE_SCOPE_SET = "calendar,drive,health";
+
 function isScopeSetGranted(
   granted: string[] | null | undefined,
   required: readonly string[],
@@ -442,6 +444,7 @@ function GoogleAccountRow({ account }: { account: GoogleAccount }) {
   const reAuthUrl = getGoogleOAuthStartUrl({
     accountHint: account.email ?? undefined,
     forceConsent: true,
+    scopeSet: ACCOUNT_REAUTHORIZE_SCOPE_SET,
   });
 
   return (
