@@ -214,7 +214,7 @@ schedule, dispatch, or notify. Per RFC 0014.
 | **Point Events Store** | `chronicler` schema | Stores instantaneous evidence with source provenance, precision, privacy, retention, and tombstone support. Idempotent replay via `(source_name, source_ref)` key. | Maturing |
 | **Episodes Store** | `chronicler` schema | Stores span-shaped evidence. Overlapping episodes from different sources are preserved without merging. | Maturing |
 | **Correction Overlay** | `chronicler.overrides` | User corrections layer on top of canonical projections without mutating canonical rows. Later override wins. | Maturing |
-| **Chronicler API** | `roster/chronicler/api/` | Auto-discovered routes under `/api/chronicler/*`: events, episodes, episode detail, episode events, episode corrections. Distinct from the operational `/api/timeline` route. | Maturing |
+| **Chronicler API** | `roster/chronicler/api/` | Auto-discovered routes under `/api/chronicler/*`: events, episodes, episode detail, episode events, episode corrections, source-state, aggregate/by-category, aggregate/by-day, aggregate/day-close (GET), aggregate/day-close/refresh (POST). Distinct from the operational `/api/timeline` route. | Maturing |
 
 ---
 
@@ -263,6 +263,13 @@ These are auto-discovered at startup by `router_discovery.py` and mounted under
 Current auto-discovered route namespaces include `/api/chronicler/*` (retrospective
 time reads and corrections, see §4a) and the QA dashboard routes under `/api/qa/*`
 (patrol and investigation data, see §4b).
+
+### Frontend routes
+
+| Route | Component | Capability |
+|---|---|---|
+| `/chronicles` | `ChroniclesPage` | Retrospective time-reconstruction dashboard: Gantt swimlane, aggregate pie/stacked-bar charts, source-state badge strip, day-close prose, map widget, streak callouts. Backed by Chronicler API. |
+| `/qa` | QA dashboard | Patrol history, investigation pipeline (Kanban), known issues tracker, discovery source breakdown. Backed by `/api/qa/*`. |
 
 ---
 
