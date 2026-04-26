@@ -52,6 +52,8 @@ def test_chronicler_schedule_uses_jobs_for_projection(butler_toml: dict) -> None
     }
     assert "chronicler_project_sessions" in projection_jobs
     assert "chronicler_project_calendar" in projection_jobs
+    assert "chronicler_project_owntracks" in projection_jobs
+    assert "chronicler_project_steam" in projection_jobs
 
 
 def test_chronicler_roster_files_present() -> None:
