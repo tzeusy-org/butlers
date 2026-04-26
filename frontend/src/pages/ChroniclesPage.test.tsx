@@ -119,10 +119,12 @@ vi.mock("@/components/chronicles/TimeWindowPicker", () => ({
   TimeWindowPicker: () => null,
 }));
 
-// Track whether ManualRefreshButton was rendered (for bu-hzqr0 tests).
+// Unified ManualRefreshButton mock: captures props (bu-zlzxz) and tracks render (bu-hzqr0).
+let _manualRefreshButtonProps: Record<string, unknown> | null = null;
 let _manualRefreshButtonRendered = false;
 vi.mock("@/components/chronicles/ManualRefreshButton", () => ({
-  ManualRefreshButton: () => {
+  ManualRefreshButton: (props: Record<string, unknown>) => {
+    _manualRefreshButtonProps = props;
     _manualRefreshButtonRendered = true;
     return <span data-testid="manual-refresh-button-stub">Refresh</span>;
   },
@@ -166,6 +168,7 @@ import TimelinePage from "@/pages/TimelinePage";
 
 function renderChroniclesPage(): string {
   _autoRefreshToggleProps = null;
+  _manualRefreshButtonProps = null;
   _lastDefaultInterval = undefined;
   _capturedMapWidgetTrailPoints = undefined;
   _manualRefreshButtonRendered = false;
@@ -272,22 +275,27 @@ describe("ChroniclesPage useAutoRefresh integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Manual refresh button — ChroniclesPage conditional rendering (bu-hzqr0)
+// Manual refresh button — ChroniclesPage rendering (bu-hzqr0 / bu-zlzxz)
+//
+// bu-hzqr0 originally gated the button on pollingDisabled. bu-zlzxz moved
+// it to the page header and removed the pollingDisabled gate so the button
+// is always visible alongside the AutoRefreshToggle (which is still gated).
 // ---------------------------------------------------------------------------
 
 describe("ChroniclesPage manual refresh button", () => {
   it("renders ManualRefreshButton when pollingDisabled=true (historical window)", () => {
     _pollingDisabled = true;
     const html = renderChroniclesPage();
-    // Either the stub text appears in HTML or the tracking flag was set.
     expect(_manualRefreshButtonRendered).toBe(true);
     expect(html).toContain("Refresh");
   });
 
-  it("does not render ManualRefreshButton when pollingDisabled=false (live window)", () => {
+  it("also renders ManualRefreshButton when pollingDisabled=false (live window)", () => {
     _pollingDisabled = false;
-    renderChroniclesPage();
-    expect(_manualRefreshButtonRendered).toBe(false);
+    const html = renderChroniclesPage();
+    // Button now always renders — no pollingDisabled gate (bu-zlzxz).
+    expect(_manualRefreshButtonRendered).toBe(true);
+    expect(html).toContain("Refresh");
   });
 });
 
@@ -396,5 +404,40 @@ describe("ChroniclesPage OwnTracks trail derivation", () => {
     renderChroniclesPage();
     expect(_capturedMapWidgetTrailPoints).toHaveLength(1);
     expect(_capturedMapWidgetTrailPoints?.[0]).toEqual({ lng: -0.12, lat: 51.5 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ManualRefreshButton integration — ChroniclesPage threads timeWindow (bu-zlzxz)
+// ---------------------------------------------------------------------------
+
+describe("ChroniclesPage ManualRefreshButton integration", () => {
+  it("renders ManualRefreshButton always (independent of pollingDisabled)", () => {
+    _pollingDisabled = false;
+    renderChroniclesPage();
+    expect(_manualRefreshButtonProps).not.toBeNull();
+  });
+
+  it("renders ManualRefreshButton even when pollingDisabled=true", () => {
+    _pollingDisabled = true;
+    renderChroniclesPage();
+    expect(_manualRefreshButtonProps).not.toBeNull();
+  });
+
+  it("passes timeWindow.from and timeWindow.to as Date instances", () => {
+    _pollingDisabled = false;
+    renderChroniclesPage();
+    // The mock useTimeWindow returns fixed Date objects; verify they are threaded through.
+    const tw = _manualRefreshButtonProps?.timeWindow as { from: Date; to: Date } | undefined;
+    expect(tw).toBeDefined();
+    expect(tw?.from).toBeInstanceOf(Date);
+    expect(tw?.to).toBeInstanceOf(Date);
+  });
+
+  it("timeWindow.from matches the mock window start (2026-04-25T00:00:00Z)", () => {
+    _pollingDisabled = false;
+    renderChroniclesPage();
+    const tw = _manualRefreshButtonProps?.timeWindow as { from: Date; to: Date } | undefined;
+    expect(tw?.from.toISOString()).toBe(new Date("2026-04-25T00:00:00Z").toISOString());
   });
 });

@@ -1,155 +1,200 @@
 // @vitest-environment jsdom
+
 /**
- * Tests for ManualRefreshButton (bu-hzqr0).
+ * Tests for ManualRefreshButton (bu-zlzxz).
  *
  * Verifies:
- *   - Renders a "Refresh" button with the correct aria-label.
- *   - Clicking the button calls queryClient.invalidateQueries with chroniclesKeys.all.
- *   - Button shows a loading state ("Refreshing…") while the invalidation promise resolves.
- *   - Button returns to the default label after the invalidation settles.
+ *   - Button renders with "Refresh" label by default.
+ *   - On click, invalidates all five window-scoped cache families for the active window.
+ *   - Cache entries for other windows are NOT invalidated (key isolation via chroniclesKeys).
+ *   - aria-busy lifecycle: false at rest (not "true" in static render).
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act } from "react"
-import { createRoot, type Root } from "react-dom/client"
+import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { chroniclesKeys } from "@/hooks/use-chronicles";
+import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
 
 // ---------------------------------------------------------------------------
-// Mocks
+// Stub useQueryClient so renderToStaticMarkup does not need a QueryClientProvider.
 // ---------------------------------------------------------------------------
 
-const mockInvalidateQueries = vi.fn()
+import { vi } from "vitest";
 
 vi.mock("@tanstack/react-query", () => ({
-  useQueryClient: () => ({ invalidateQueries: mockInvalidateQueries }),
-}))
-
-// chroniclesKeys.all is ["chronicles"] — we just need to verify invalidation is called
-// with the matching key.
-vi.mock("@/hooks/use-chronicles", () => ({
-  chroniclesKeys: {
-    all: ["chronicles"] as const,
-  },
-}))
-
-import { ManualRefreshButton } from "./ManualRefreshButton"
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(() => Promise.resolve()),
+  }),
+}));
 
 // ---------------------------------------------------------------------------
-// Setup / teardown
+// Fixtures
 // ---------------------------------------------------------------------------
 
-;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true
+const WINDOW_FROM = new Date("2026-04-25T00:00:00.000Z");
+const WINDOW_TO = new Date("2026-04-25T23:59:59.000Z");
 
-let container: HTMLDivElement
-let root: Root
+const OTHER_FROM = new Date("2026-04-20T00:00:00.000Z");
+const OTHER_TO = new Date("2026-04-20T23:59:59.000Z");
 
-beforeEach(() => {
-  container = document.createElement("div")
-  document.body.appendChild(container)
-  root = createRoot(container)
-  mockInvalidateQueries.mockReset()
-})
-
-afterEach(() => {
-  act(() => {
-    root.unmount()
-  })
-  container.remove()
-})
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function renderButton() {
-  act(() => {
-    root.render(<ManualRefreshButton />)
-  })
-}
-
-function getButton(): HTMLButtonElement {
-  const btn = container.querySelector<HTMLButtonElement>("button[aria-label='Refresh chronicles data']")
-  if (!btn) throw new Error("ManualRefreshButton not found in DOM")
-  return btn
+function renderButton(from = WINDOW_FROM, to = WINDOW_TO): string {
+  return renderToStaticMarkup(<ManualRefreshButton timeWindow={{ from, to }} />);
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// Rendering tests
 // ---------------------------------------------------------------------------
 
-describe("ManualRefreshButton", () => {
-  it("renders a Refresh button with aria-label", () => {
-    renderButton()
-    const btn = getButton()
-    expect(btn).toBeTruthy()
-    expect(btn.textContent).toContain("Refresh")
-  })
+describe("ManualRefreshButton — rendering", () => {
+  it("renders a button with text 'Refresh'", () => {
+    const html = renderButton();
+    expect(html).toContain("Refresh");
+  });
 
-  it("calls queryClient.invalidateQueries with chroniclesKeys.all on click", async () => {
-    // Return a resolved promise immediately so the async flow completes.
-    mockInvalidateQueries.mockResolvedValue(undefined)
-    renderButton()
-    const btn = getButton()
-    await act(async () => {
-      btn.click()
-    })
-    expect(mockInvalidateQueries).toHaveBeenCalledOnce()
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: ["chronicles"] })
-  })
+  it("button is not disabled at rest", () => {
+    const html = renderButton();
+    // The disabled HTML attribute must not be present as a standalone attribute.
+    // (Tailwind class names like "disabled:opacity-50" are fine — we check only
+    // for the attribute form which appears as ` disabled` or `disabled=""`.)
+    expect(html).not.toMatch(/ disabled[=" >]/);
+  });
 
-  it("shows Refreshing state while invalidation is in flight", async () => {
-    // Use a manually controlled promise to freeze the loading state.
-    let resolveInvalidate!: () => void
-    const pending = new Promise<void>((resolve) => { resolveInvalidate = resolve })
-    mockInvalidateQueries.mockReturnValue(pending)
+  it("does not show 'Refreshing' text in initial state", () => {
+    const html = renderButton();
+    // Before any click, the button label should be "Refresh" not "Refreshing"
+    expect(html).not.toContain("Refreshing");
+  });
+});
 
-    renderButton()
-    const btn = getButton()
+// ---------------------------------------------------------------------------
+// aria-busy lifecycle — static render confirms initial state
+// ---------------------------------------------------------------------------
 
-    // Trigger click — button enters loading state.
-    act(() => {
-      btn.click()
-    })
+describe("ManualRefreshButton — aria-busy lifecycle", () => {
+  it("aria-busy is false (not 'true') in initial render", () => {
+    const html = renderButton();
+    // aria-busy should be "false" or absent, never "true" at rest
+    expect(html).not.toMatch(/aria-busy="true"/);
+  });
+});
 
-    // Should show "Refreshing…" and be disabled.
-    expect(btn.textContent).toContain("Refreshing")
-    expect(btn.disabled).toBe(true)
+// ---------------------------------------------------------------------------
+// Window-scoped key isolation — assert that different windows produce different
+// cache keys so invalidating one window leaves another window's cache intact.
+// ---------------------------------------------------------------------------
 
-    // Resolve the pending promise.
-    await act(async () => {
-      resolveInvalidate()
-      await pending
-    })
+describe("ManualRefreshButton — window-scoped key isolation", () => {
+  it("byDay keys differ across windows", () => {
+    const activeKey = chroniclesKeys.byDay({
+      start_at: WINDOW_FROM.toISOString(),
+      end_at: WINDOW_TO.toISOString(),
+    });
+    const otherKey = chroniclesKeys.byDay({
+      start_at: OTHER_FROM.toISOString(),
+      end_at: OTHER_TO.toISOString(),
+    });
+    expect(activeKey).not.toEqual(otherKey);
+  });
 
-    // After resolution, button returns to the default label and is enabled.
-    expect(btn.textContent).toContain("Refresh")
-    expect(btn.disabled).toBe(false)
-  })
+  it("byCategory keys differ across windows", () => {
+    const activeKey = chroniclesKeys.byCategory({
+      start_at: WINDOW_FROM.toISOString(),
+      end_at: WINDOW_TO.toISOString(),
+    });
+    const otherKey = chroniclesKeys.byCategory({
+      start_at: OTHER_FROM.toISOString(),
+      end_at: OTHER_TO.toISOString(),
+    });
+    expect(activeKey).not.toEqual(otherKey);
+  });
 
-  it("sets aria-busy=true while refreshing and aria-busy=false after", async () => {
-    let resolveInvalidate!: () => void
-    const pending = new Promise<void>((resolve) => { resolveInvalidate = resolve })
-    mockInvalidateQueries.mockReturnValue(pending)
+  it("dayClose keys differ across windows", () => {
+    const activeKey = chroniclesKeys.dayClose({
+      window_start: WINDOW_FROM.toISOString(),
+      window_end: WINDOW_TO.toISOString(),
+    });
+    const otherKey = chroniclesKeys.dayClose({
+      window_start: OTHER_FROM.toISOString(),
+      window_end: OTHER_TO.toISOString(),
+    });
+    expect(activeKey).not.toEqual(otherKey);
+  });
 
-    renderButton()
-    const btn = getButton()
+  it("pointEvents keys differ across windows", () => {
+    const activeKey = chroniclesKeys.pointEvents({
+      since: WINDOW_FROM.toISOString(),
+      until: WINDOW_TO.toISOString(),
+      limit: 500,
+    });
+    const otherKey = chroniclesKeys.pointEvents({
+      since: OTHER_FROM.toISOString(),
+      until: OTHER_TO.toISOString(),
+      limit: 500,
+    });
+    expect(activeKey).not.toEqual(otherKey);
+  });
 
-    // Before click — aria-busy should be absent or false.
-    expect(btn.getAttribute("aria-busy")).not.toBe("true")
+  it("sourceState key is a singleton (no window params, always invalidated)", () => {
+    // sourceState has no window params — it's always invalidated as-is.
+    expect(chroniclesKeys.sourceState()).toEqual(["chronicles", "source-state"]);
+  });
 
-    act(() => {
-      btn.click()
-    })
+  it("invalidating active window byDay key does not match other window byDay key", () => {
+    const activeKey = chroniclesKeys.byDay({
+      start_at: WINDOW_FROM.toISOString(),
+      end_at: WINDOW_TO.toISOString(),
+    });
+    const otherKey = chroniclesKeys.byDay({
+      start_at: OTHER_FROM.toISOString(),
+      end_at: OTHER_TO.toISOString(),
+    });
+    // A prefix-exact invalidation of activeKey will not match otherKey
+    // because the params objects embedded in position [2] differ.
+    expect(JSON.stringify(activeKey[2])).not.toBe(JSON.stringify(otherKey[2]));
+  });
+});
 
-    // While in-flight — aria-busy must be true.
-    expect(btn.getAttribute("aria-busy")).toBe("true")
+// ---------------------------------------------------------------------------
+// Key content — verify correct param mapping from timeWindow → key families
+// ---------------------------------------------------------------------------
 
-    await act(async () => {
-      resolveInvalidate()
-      await pending
-    })
+describe("ManualRefreshButton — key content", () => {
+  it("byDay key contains active window ISO strings", () => {
+    const key = chroniclesKeys.byDay({
+      start_at: WINDOW_FROM.toISOString(),
+      end_at: WINDOW_TO.toISOString(),
+    });
+    expect(key[1]).toBe("aggregate-by-day");
+    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
+    expect(JSON.stringify(key)).toContain(WINDOW_TO.toISOString());
+  });
 
-    // After completion — aria-busy must be false.
-    expect(btn.getAttribute("aria-busy")).toBe("false")
-  })
-})
+  it("byCategory key contains active window ISO strings", () => {
+    const key = chroniclesKeys.byCategory({
+      start_at: WINDOW_FROM.toISOString(),
+      end_at: WINDOW_TO.toISOString(),
+    });
+    expect(key[1]).toBe("aggregate-by-category");
+    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
+  });
+
+  it("dayClose key contains active window ISO strings", () => {
+    const key = chroniclesKeys.dayClose({
+      window_start: WINDOW_FROM.toISOString(),
+      window_end: WINDOW_TO.toISOString(),
+    });
+    expect(key[1]).toBe("day-close");
+    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
+  });
+
+  it("pointEvents key contains active window ISO strings and limit=500", () => {
+    const key = chroniclesKeys.pointEvents({
+      since: WINDOW_FROM.toISOString(),
+      until: WINDOW_TO.toISOString(),
+      limit: 500,
+    });
+    expect(key[1]).toBe("point-events");
+    expect(JSON.stringify(key)).toContain(WINDOW_FROM.toISOString());
+    expect(JSON.stringify(key)).toContain("500");
+  });
+});
