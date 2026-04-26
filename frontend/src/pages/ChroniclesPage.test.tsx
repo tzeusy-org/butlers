@@ -15,6 +15,14 @@
  *     - Sensitive events excluded from trailPoints.
  *     - Only events with lat/lon in payload included.
  *     - Points sorted by canonical_occurred_at ascending.
+ *
+ * Mock coverage note (bu-gu3xn):
+ *   EpisodeDrawer (bu-ig72b.31) is stubbed at the component level so its
+ *   internal hooks stay out of the page-level mock surface. The use-chronicles
+ *   mock nevertheless declares useChroniclerExplain and the episode-fetch hooks
+ *   so any future refactor that inlines them into ChroniclesPage cannot silently
+ *   introduce undefined-hook errors. EpisodeDrawer behaviour is tested
+ *   exhaustively in EpisodeDrawer.test.tsx.
  */
 
 import { describe, expect, it, vi } from "vitest";
@@ -42,7 +50,8 @@ let _capturedMapWidgetTrailPoints: Array<{ lng: number; lat: number }> | undefin
 // Mocks
 // ---------------------------------------------------------------------------
 
-// Mocks needed for SourceStateBadgeStrip, AggregateStackedBar, StreakCallouts, and Scrubber
+// Mocks needed for SourceStateBadgeStrip, AggregateStackedBar, StreakCallouts, Scrubber,
+// and EpisodeDrawer (EpisodeDrawer is rendered in ChroniclesPage but tested separately).
 vi.mock("@/hooks/use-chronicles", () => ({
   useChroniclesSourceState: () => ({ data: undefined, isLoading: false, isError: false }),
   useChroniclesAggregates: () => ({
@@ -55,6 +64,19 @@ vi.mock("@/hooks/use-chronicles", () => ({
     isLoading: false,
     isError: false,
   }),
+  // Episode-drawer hooks (bu-ig72b.31) — included here to prevent future drift
+  // when EpisodeDrawer's hook calls become visible to the page-level mock.
+  useChroniclerEpisode: () => ({ data: undefined, isLoading: false, error: null }),
+  useChroniclerEpisodeEvents: () => ({ data: undefined, isLoading: false, error: null }),
+  useChroniclerEpisodeCorrections: () => ({ data: undefined, isLoading: false, error: null }),
+  useChroniclerExplain: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isSuccess: false,
+    isError: false,
+    error: null,
+    reset: vi.fn(),
+  })),
 }));
 
 vi.mock("@/hooks/use-time-window", () => ({
@@ -107,6 +129,9 @@ vi.mock("@/components/chronicles/GanttSwimlane", () => ({
 }));
 vi.mock("@/components/chronicles/AggregatePieChart", () => ({
   AggregatePieChart: () => null,
+}));
+vi.mock("@/components/chronicles/EpisodeDrawer", () => ({
+  EpisodeDrawer: () => null,
 }));
 
 // Mocks needed for TimelinePage (regression guard)
