@@ -83,6 +83,25 @@ _FROM_JOIN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# SQL keywords that can appear immediately after FROM or JOIN but are never
+# relation names.  For example: "CROSS JOIN LATERAL <expr>" or "JOIN ONLY <table>".
+_SQL_NON_RELATION_KEYWORDS = frozenset(
+    {
+        "lateral",
+        "only",
+        "inner",
+        "outer",
+        "left",
+        "right",
+        "full",
+        "cross",
+        "natural",
+        "select",
+        "values",
+        "with",
+    }
+)
+
 
 def _extract_sql_string_literals(source: str) -> list[str]:
     """Return all string constants from *source* that start with a SQL verb keyword."""
@@ -104,6 +123,11 @@ def _categorize_relation(raw_token: str) -> tuple[str, str | None]:
     """
     token = raw_token.strip().lower()
     if not token:
+        return ("ok", None)
+
+    # Skip SQL keywords that are not relation names (e.g. LATERAL in
+    # "CROSS JOIN LATERAL <function>(...)").
+    if token in _SQL_NON_RELATION_KEYWORDS:
         return ("ok", None)
 
     if "." in token:

@@ -347,6 +347,24 @@ def _extract_sql_strings(source: str) -> list[str]:
     return sql_fragments
 
 
+_SQL_NON_RELATION_KEYWORDS = frozenset(
+    {
+        "lateral",
+        "only",
+        "inner",
+        "outer",
+        "left",
+        "right",
+        "full",
+        "cross",
+        "natural",
+        "select",
+        "values",
+        "with",
+    }
+)
+
+
 def _extract_relation_names(sql: str) -> list[str]:
     """Very lightweight extraction: words after FROM or JOIN keywords."""
     import re
@@ -355,6 +373,10 @@ def _extract_relation_names(sql: str) -> list[str]:
     tokens = re.findall(r"(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_.]*)", sql, re.IGNORECASE)
     relations = []
     for tok in tokens:
+        # Skip SQL keywords that are not relation names (e.g. LATERAL in
+        # "CROSS JOIN LATERAL <function>(...)").
+        if tok.lower() in _SQL_NON_RELATION_KEYWORDS:
+            continue
         # Strip schema prefix if present (e.g. chronicler.episodes → episodes)
         bare = tok.split(".")[-1].lower().strip()
         relations.append(bare)

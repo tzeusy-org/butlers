@@ -899,6 +899,29 @@ _FROM_JOIN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# SQL keywords that can appear immediately after FROM or JOIN but are never
+# relation names.  For example: "CROSS JOIN LATERAL <expr>" or "JOIN ONLY <table>".
+_SQL_NON_RELATION_KEYWORDS = frozenset(
+    {
+        # Lateral / set-returning function syntax
+        "lateral",
+        "only",
+        # Join type modifiers (shouldn't appear directly after FROM/JOIN but
+        # guard against malformed matches)
+        "inner",
+        "outer",
+        "left",
+        "right",
+        "full",
+        "cross",
+        "natural",
+        # Subquery / CTE keywords
+        "select",
+        "values",
+        "with",
+    }
+)
+
 
 # SQL-like strings must start with a SQL verb keyword (SELECT/INSERT/UPDATE/DELETE).
 # This excludes prose strings that happen to contain the word "from".
@@ -926,6 +949,10 @@ def test_sql_strings_only_reference_chronicler_relations():
     for sql in sql_literals:
         for match in _FROM_JOIN_RE.finditer(sql):
             relation = match.group(1).strip().lower()
+            # Skip SQL keywords that are not relation names (e.g. LATERAL in
+            # "CROSS JOIN LATERAL <function>(...)").
+            if relation in _SQL_NON_RELATION_KEYWORDS:
+                continue
             # Allow schema-qualified references IF the schema is 'chronicler'.
             if "." in relation:
                 schema, _, rel = relation.partition(".")
@@ -1006,3 +1033,84 @@ async def test_large_window_completes_quickly():
         f"aggregate/by-day with N={_N} episodes × D={_D} days took {elapsed:.2f} s "
         f"(budget: 3 s). Inner loop may have regressed to O(N×D)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for the SQL relation extractor helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_extractor(sql: str) -> list[str]:
+    """Helper: run the FROM/JOIN extractor against a single SQL string and return
+    the list of relation tokens that would be reported as violations (i.e. tokens
+    that are not in _SQL_NON_RELATION_KEYWORDS and not in _CHRONICLER_RELATIONS).
+    """
+    violations: list[str] = []
+    for match in _FROM_JOIN_RE.finditer(sql):
+        relation = match.group(1).strip().lower()
+        if relation in _SQL_NON_RELATION_KEYWORDS:
+            continue
+        if "." in relation:
+            schema, _, rel = relation.partition(".")
+            if schema != "chronicler":
+                violations.append(f"cross-schema: {relation}")
+                continue
+            relation = rel
+        if relation and relation not in _CHRONICLER_RELATIONS:
+            violations.append(relation)
+    return violations
+
+
+def test_extractor_lateral_keyword_not_flagged():
+    """LATERAL after CROSS JOIN must not be treated as a relation name."""
+    sql = """
+        SELECT e.updated_at AS ts
+        FROM tier2_cache c
+        CROSS JOIN LATERAL jsonb_array_elements_text(c.provenance_refs) AS ref
+        JOIN episodes e ON e.source_ref = ref
+        WHERE e.updated_at > $1
+    """
+    assert _run_extractor(sql) == []
+
+
+def test_extractor_lateral_after_join_not_flagged():
+    """LATERAL immediately after JOIN (without CROSS) must also be ignored."""
+    sql = """
+        SELECT x FROM some_table
+        JOIN LATERAL some_func($1) f ON true
+    """
+    # 'some_table' and 'some_func' are unknown, but LATERAL itself must not appear
+    violations = _run_extractor(sql)
+    assert "lateral" not in violations
+
+
+def test_extractor_known_relations_pass():
+    """All known chronicler relations referenced in a query must produce no violations."""
+    sql = """
+        SELECT *
+        FROM episodes e
+        JOIN point_events p ON p.episode_id = e.id
+        JOIN overrides o ON o.target_id = e.id
+        JOIN tier2_cache c ON c.cache_key = $1
+    """
+    assert _run_extractor(sql) == []
+
+
+def test_extractor_unknown_relation_flagged():
+    """A reference to a table outside the allowlist must be flagged."""
+    sql = "SELECT * FROM some_random_external_table"
+    violations = _run_extractor(sql)
+    assert "some_random_external_table" in violations
+
+
+def test_extractor_chronicler_schema_qualified_passes():
+    """A chronicler-schema-qualified reference must be allowed."""
+    sql = "SELECT * FROM chronicler.episodes"
+    assert _run_extractor(sql) == []
+
+
+def test_extractor_cross_schema_flagged():
+    """A reference to a different schema must be flagged."""
+    sql = "SELECT * FROM public.contacts"
+    violations = _run_extractor(sql)
+    assert any("cross-schema" in v for v in violations)
