@@ -422,6 +422,41 @@ def test_select_error_detail_does_not_dump_json_progress_without_text():
     assert detail == "exit code 7"
 
 
+def test_select_error_detail_dedupes_repeated_error_and_turn_failed_messages():
+    """``error`` then ``turn.failed`` repeating the same reason should report it once."""
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "abc"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps(
+                {
+                    "type": "error",
+                    "message": (
+                        "Invalid prompt: your prompt was flagged as potentially violating "
+                        "our usage policy."
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn.failed",
+                    "error": {
+                        "message": (
+                            "Invalid prompt: your prompt was flagged as potentially violating "
+                            "our usage policy."
+                        )
+                    },
+                }
+            ),
+        ]
+    )
+
+    detail = _select_error_detail("", stdout, 1)
+    assert detail == (
+        "Invalid prompt: your prompt was flagged as potentially violating our usage policy."
+    )
+
+
 def test_resolve_canonical_home_collapses_nested_codex_tmp_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -863,6 +898,75 @@ async def test_nonzero_exit_with_completed_json_response_recovers():
     assert info["exit_code"] == 1
     assert info["nonzero_exit_recovered"] is True
     assert info["result_source"] == "nonzero_exit_stdout"
+
+
+async def test_nonzero_exit_with_structured_stdout_uses_error_message():
+    """Structured stdout failures should surface their message, not raw JSON events."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 1
+        proc.pid = 42
+        proc.communicate = AsyncMock(
+            return_value=(
+                (
+                    json.dumps({"type": "thread.started", "thread_id": "abc"})
+                    + "\n"
+                    + json.dumps({"type": "turn.started"})
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "id": "item_0",
+                                "type": "agent_message",
+                                "text": "Checking first.",
+                            },
+                        }
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "type": "error",
+                            "message": (
+                                "Invalid prompt: your prompt was flagged as potentially "
+                                "violating our usage policy."
+                            ),
+                        }
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "type": "turn.failed",
+                            "error": {
+                                "message": (
+                                    "Invalid prompt: your prompt was flagged as potentially "
+                                    "violating our usage policy."
+                                )
+                            },
+                        }
+                    )
+                ).encode(),
+                b"",
+            )
+        )
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "Codex CLI exited with code 1: Invalid prompt: your prompt was flagged as "
+                "potentially violating our usage policy\\."
+            ),
+        ):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
 
 
 async def test_retry_provenance_result_source_retry():
