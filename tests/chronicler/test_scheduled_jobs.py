@@ -71,7 +71,7 @@ async def test_discover_chronicler_projection_schemas_filters_internal_names() -
 
 @pytest.mark.asyncio
 async def test_run_chronicler_project_sessions_job_runs_adapter() -> None:
-    pool, _ = _pool_with_schema_rows("chronicler", "general", "health")
+    pool = object()
     adapter_result = AdapterResult(
         source_name="core.sessions",
         rows_projected=4,
@@ -79,14 +79,25 @@ async def test_run_chronicler_project_sessions_job_runs_adapter() -> None:
         episodes_closed=3,
         point_events=8,
     )
+    seed_registry = AsyncMock()
+    configs = [
+        MagicMock(db_schema="chronicler", modules={}),
+        MagicMock(db_schema="general", modules={}),
+        MagicMock(db_schema="health", modules={}),
+    ]
 
-    with patch("butlers.chronicler.adapters.CoreSessionsAdapter") as adapter_cls:
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", seed_registry),
+        patch("butlers.chronicler.jobs.list_butlers", return_value=configs),
+        patch("butlers.chronicler.jobs.CoreSessionsAdapter") as adapter_cls,
+    ):
         adapter = MagicMock()
         adapter.run = AsyncMock(return_value=adapter_result)
         adapter_cls.return_value = adapter
 
         result = await _run_chronicler_project_sessions_job(pool, None)
 
+    seed_registry.assert_awaited_once_with(pool)
     adapter_cls.assert_called_once_with(butler_schemas=("chronicler", "general", "health"))
     adapter.run.assert_awaited_once_with(pool=pool, chronicler_pool=pool)
     assert result["source_name"] == "core.sessions"
@@ -96,20 +107,31 @@ async def test_run_chronicler_project_sessions_job_runs_adapter() -> None:
 
 @pytest.mark.asyncio
 async def test_run_chronicler_project_calendar_job_runs_adapter() -> None:
-    pool, _ = _pool_with_schema_rows("general", "relationship")
+    pool = object()
     adapter_result = AdapterResult(
         source_name="google_calendar.completed",
         rows_projected=2,
         episodes_closed=2,
     )
+    seed_registry = AsyncMock()
+    configs = [
+        MagicMock(db_schema="general", modules={"calendar": {}}),
+        MagicMock(db_schema="relationship", modules={"calendar": {"provider": "google"}}),
+        MagicMock(db_schema="health", modules={"contacts": {}}),
+    ]
 
-    with patch("butlers.chronicler.adapters.CalendarCompletedAdapter") as adapter_cls:
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", seed_registry),
+        patch("butlers.chronicler.jobs.list_butlers", return_value=configs),
+        patch("butlers.chronicler.jobs.CalendarCompletedAdapter") as adapter_cls,
+    ):
         adapter = MagicMock()
         adapter.run = AsyncMock(return_value=adapter_result)
         adapter_cls.return_value = adapter
 
         result = await _run_chronicler_project_calendar_job(pool, None)
 
+    seed_registry.assert_awaited_once_with(pool)
     adapter_cls.assert_called_once_with(butler_schemas=("general", "relationship"))
     adapter.run.assert_awaited_once_with(pool=pool, chronicler_pool=pool)
     assert result["source_name"] == "google_calendar.completed"
