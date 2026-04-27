@@ -406,6 +406,44 @@ def _extract_text_field(value: Any) -> str | None:
     return None
 
 
+def _extract_structured_stdout_error(stdout: str) -> str | None:
+    """Return the terminal failure message from JSON-line stdout, if present.
+
+    Walks lines in reverse and prefers a ``turn.failed`` event, since that is
+    Codex's explicit terminal error signal. Earlier transient ``error`` events
+    (e.g. ``"Reconnecting... 5/5"``) only win when no ``turn.failed`` exists.
+    Returning the terminal message keeps the surfaced exception focused on the
+    actual cause rather than retry chatter.
+    """
+    fallback_error: str | None = None
+    for raw_line in reversed(stdout.splitlines()):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+
+        obj_type = str(obj.get("type", ""))
+        if obj_type == "turn.failed":
+            error_obj = obj.get("error")
+            if isinstance(error_obj, dict):
+                message = error_obj.get("message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+            message = obj.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+        elif obj_type == "error" and fallback_error is None:
+            message = obj.get("message")
+            if isinstance(message, str) and message.strip():
+                fallback_error = message.strip()
+    return fallback_error
+
+
 def _extract_stdout_json_detail(stdout: str) -> tuple[str | None, bool]:
     """Extract a useful detail from structured stdout on non-zero Codex exits.
 
@@ -496,6 +534,10 @@ def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     stderr_clean = stderr.strip()
     if stderr_clean:
         return stderr_clean
+
+    structured_stdout_error = _extract_structured_stdout_error(stdout)
+    if structured_stdout_error:
+        return structured_stdout_error
 
     stdout_detail, parsed_stdout_json = _extract_stdout_json_detail(stdout)
     if stdout_detail:
