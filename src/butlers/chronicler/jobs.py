@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import logging
+from dataclasses import asdict
 from typing import Any
 
 import asyncpg
@@ -112,11 +112,7 @@ def _discover_calendar_schemas() -> tuple[str, ...]:
         return _DEFAULT_CALENDAR_SCHEMAS
 
     schemas = _dedupe_non_empty(
-        [
-            cfg.db_schema or ""
-            for cfg in configs
-            if isinstance(cfg.modules, dict) and "calendar" in cfg.modules
-        ]
+        [cfg.db_schema or "" for cfg in configs if "calendar" in cfg.modules]
     )
     return schemas or _DEFAULT_CALENDAR_SCHEMAS
 

@@ -25,9 +25,7 @@ def test_chronicler_jobs_registered_callable_and_resolve() -> None:
     assert not missing, f"Chronicler deterministic jobs not registered: {missing}"
 
     not_callable = [
-        job_name
-        for job_name in _CHRONICLER_JOBS
-        if not callable(chronicler_jobs[job_name])
+        job_name for job_name in _CHRONICLER_JOBS if not callable(chronicler_jobs[job_name])
     ]
     assert not not_callable, f"Chronicler handlers not callable: {not_callable}"
 
