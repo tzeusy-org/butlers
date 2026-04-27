@@ -62,7 +62,11 @@ class TestWarmupEndpoint:
 
     async def test_success_result_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Success: url, success=True, latency_ms set, tool_count matches tool list."""
-        from butlers.core.mcp_warmup import _warmup_endpoint
+        from butlers.core.mcp_warmup import (
+            _MCP_PROTOCOL_VERSION,
+            _build_mcp_headers,
+            _warmup_endpoint,
+        )
 
         monkeypatch.delenv("BUTLERS_MCP_WARMUP_DISABLED", raising=False)
 
@@ -92,6 +96,26 @@ class TestWarmupEndpoint:
         assert result["latency_ms"] >= 0
         assert result["tool_count"] == 2
         assert result["error"] is None
+
+        init_call = mock_client.post.await_args_list[0]
+        tools_call = mock_client.post.await_args_list[1]
+        assert init_call.kwargs["headers"] == _build_mcp_headers()
+        assert tools_call.kwargs["headers"] == _build_mcp_headers(session_id="sess-abc")
+        assert init_call.kwargs["headers"]["mcp-protocol-version"] == _MCP_PROTOCOL_VERSION
+
+    def test_build_mcp_headers_match_streamable_http_requirements(self) -> None:
+        """Warmup headers must match the streamable-HTTP negotiation that /mcp expects."""
+        from butlers.core.mcp_warmup import _build_mcp_headers
+
+        headers = _build_mcp_headers()
+        assert headers == {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "mcp-protocol-version": "2024-11-05",
+        }
+
+        session_headers = _build_mcp_headers(session_id="sess-123")
+        assert session_headers["mcp-session-id"] == "sess-123"
 
     async def test_failure_does_not_raise(self) -> None:
         """Endpoint failure returns success=False with error message; never raises."""

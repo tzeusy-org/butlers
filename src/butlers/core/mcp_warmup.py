@@ -45,6 +45,10 @@ _WARMUP_TIMEOUT_S = 10.0
 
 # MCP protocol version used in initialize requests.
 _MCP_PROTOCOL_VERSION = "2024-11-05"
+_MCP_SESSION_ID_HEADER = "mcp-session-id"
+_MCP_PROTOCOL_VERSION_HEADER = "mcp-protocol-version"
+_JSON_CONTENT_TYPE = "application/json"
+_STREAMABLE_HTTP_ACCEPT = f"{_JSON_CONTENT_TYPE}, text/event-stream"
 
 # Client info sent in initialize requests.
 _CLIENT_INFO = {"name": "butlers-warmup", "version": "1.0"}
@@ -54,6 +58,18 @@ def _is_disabled() -> bool:
     """Return True when the warmup kill-switch env var is set to a truthy value."""
     raw = os.environ.get(_KILL_SWITCH_ENV, "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _build_mcp_headers(*, session_id: str | None = None) -> dict[str, str]:
+    """Build streamable-HTTP MCP headers accepted by FastMCP's /mcp endpoint."""
+    headers = {
+        "Accept": _STREAMABLE_HTTP_ACCEPT,
+        "Content-Type": _JSON_CONTENT_TYPE,
+        _MCP_PROTOCOL_VERSION_HEADER: _MCP_PROTOCOL_VERSION,
+    }
+    if session_id:
+        headers[_MCP_SESSION_ID_HEADER] = session_id
+    return headers
 
 
 async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
@@ -91,11 +107,11 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
                     "clientInfo": _CLIENT_INFO,
                 },
             }
-            init_resp = await client.post(url, json=init_payload)
+            init_resp = await client.post(url, json=init_payload, headers=_build_mcp_headers())
             init_resp.raise_for_status()
 
             # Extract session token from initialize response headers (streamable HTTP).
-            session_token = init_resp.headers.get("mcp-session-id")
+            session_token = init_resp.headers.get(_MCP_SESSION_ID_HEADER)
 
             # MCP tools/list request.
             tools_payload = {
@@ -104,11 +120,11 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
                 "method": "tools/list",
                 "params": {},
             }
-            extra_headers = {}
-            if session_token:
-                extra_headers["mcp-session-id"] = session_token
-
-            tools_resp = await client.post(url, json=tools_payload, headers=extra_headers)
+            tools_resp = await client.post(
+                url,
+                json=tools_payload,
+                headers=_build_mcp_headers(session_id=session_token),
+            )
             tools_resp.raise_for_status()
 
             latency_ms = int((time.monotonic() - t0) * 1000)
