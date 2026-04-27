@@ -532,7 +532,7 @@ async def test_retry_on_mcp_connection_failure():
     assert call_count == 2, "Should have retried once"
     assert any(tc.get("name") == "route_to_butler" for tc in tool_calls)
     info = adapter.last_process_info
-    assert info["mcp_connection_failed"] is True
+    assert info["mcp_connection_failed"] is False
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is True
 

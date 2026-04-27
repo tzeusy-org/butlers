@@ -1123,7 +1123,7 @@ class CodexAdapter(RuntimeAdapter):
                     self._last_process_info["retry_attempted"] = True
                     self._last_process_info["attempt_count"] = subprocess_attempt_count
                     if retry_succeeded:
-                        self._last_process_info["mcp_connection_failed"] = True
+                        self._last_process_info["mcp_connection_failed"] = False
                         self._last_process_info["retry_succeeded"] = True
                         self._last_process_info["result_source"] = "retry"
                     elif accepted_retry_result:
