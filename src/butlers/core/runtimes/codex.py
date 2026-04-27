@@ -28,8 +28,9 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
+from butlers.core.mcp_urls import prefer_ipv4_loopback_url
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 logger = logging.getLogger(__name__)
@@ -115,25 +116,7 @@ def _prefer_ipv4_loopback(url: str) -> str:
     Restrict the rewrite to exact ``localhost`` hosts so remote endpoints and
     explicit IP literals preserve their original meaning.
     """
-    parsed = urlparse(url)
-    if (parsed.hostname or "").lower() != "localhost":
-        return url
-
-    netloc = parsed.netloc
-    if parsed.username is not None:
-        userinfo = parsed.username
-        if parsed.password is not None:
-            userinfo += f":{parsed.password}"
-        host_port = "127.0.0.1"
-        if parsed.port is not None:
-            host_port += f":{parsed.port}"
-        netloc = f"{userinfo}@{host_port}"
-    else:
-        netloc = "127.0.0.1"
-        if parsed.port is not None:
-            netloc += f":{parsed.port}"
-
-    return urlunparse(parsed._replace(netloc=netloc))
+    return prefer_ipv4_loopback_url(url)
 
 
 def _looks_like_transport_failure(error_detail: str) -> bool:

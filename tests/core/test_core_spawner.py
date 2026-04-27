@@ -679,7 +679,7 @@ class TestSpawnerInvocation:
 
         warmup_results = [
             {
-                "url": "http://localhost:9410/mcp",
+                "url": "http://127.0.0.1:9410/mcp",
                 "success": True,
                 "latency_ms": 5,
                 "tool_count": 3,
@@ -698,7 +698,7 @@ class TestSpawnerInvocation:
 
         assert first.success is True
         assert second.success is True
-        mock_warmup.assert_awaited_once_with("test-butler", ["http://localhost:9410/mcp"])
+        mock_warmup.assert_awaited_once_with("test-butler", ["http://127.0.0.1:9410/mcp"])
         assert len(adapter.calls) == 2
 
     async def test_pre_spawn_mcp_warmup_failure_does_not_block_session(
@@ -719,7 +719,7 @@ class TestSpawnerInvocation:
             result = await spawner.trigger("hello", "schedule:test")
 
         assert result.success is True
-        mock_warmup.assert_awaited_once_with("test-butler", ["http://localhost:9420/mcp"])
+        mock_warmup.assert_awaited_once_with("test-butler", ["http://127.0.0.1:9420/mcp"])
         assert len(adapter.calls) == 1
 
     async def test_terminal_codex_mcp_discovery_failure_marks_session_failed(

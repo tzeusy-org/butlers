@@ -45,7 +45,7 @@ class TestKillSwitch:
 
         with patch("butlers.core.mcp_warmup._warmup_endpoint", new_callable=AsyncMock) as mock_ep:
             mock_ep.return_value = {
-                "url": "http://localhost:9100/mcp",
+                "url": "http://127.0.0.1:9100/mcp",
                 "success": True,
                 "latency_ms": 12,
                 "tool_count": 5,
@@ -88,9 +88,9 @@ class TestWarmupEndpoint:
 
         with patch("butlers.core.mcp_warmup.httpx") as mock_httpx:
             mock_httpx.AsyncClient.return_value = mock_client
-            result = await _warmup_endpoint("http://localhost:9100/mcp", butler_name="test-butler")
+            result = await _warmup_endpoint("http://127.0.0.1:9100/mcp", butler_name="test-butler")
 
-        assert result["url"] == "http://localhost:9100/mcp"
+        assert result["url"] == "http://127.0.0.1:9100/mcp"
         assert result["success"] is True
         assert isinstance(result["latency_ms"], int)
         assert result["latency_ms"] >= 0
@@ -124,7 +124,7 @@ class TestWarmupEndpoint:
         with patch("butlers.core.mcp_warmup.httpx") as mock_httpx:
             mock_httpx.AsyncClient.side_effect = Exception("connection refused")
             # Must not raise
-            result = await _warmup_endpoint("http://localhost:9100/mcp", butler_name="test-butler")
+            result = await _warmup_endpoint("http://127.0.0.1:9100/mcp", butler_name="test-butler")
 
         assert result["success"] is False
         assert "connection refused" in result["error"]
@@ -153,7 +153,7 @@ class TestWarmupEndpoint:
 
         with patch("butlers.core.mcp_warmup.httpx") as mock_httpx:
             mock_httpx.AsyncClient.return_value = mock_client
-            result = await _warmup_endpoint("http://localhost:9100/mcp", butler_name="test-butler")
+            result = await _warmup_endpoint("http://127.0.0.1:9100/mcp", butler_name="test-butler")
 
         assert result["success"] is False
         assert result["error"] is not None
@@ -177,7 +177,7 @@ class TestWarmupMcpEndpoints:
         with patch("butlers.core.mcp_warmup._warmup_endpoint", side_effect=fake_warmup):
             results = await warmup_mcp_endpoints("my-butler", butler_port=8500)
 
-        assert "http://localhost:8500/mcp" in called_urls
+        assert "http://127.0.0.1:8500/mcp" in called_urls
         assert len(results) == 1
 
     async def test_extra_urls_appended(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -196,8 +196,8 @@ class TestWarmupMcpEndpoints:
         with patch("butlers.core.mcp_warmup._warmup_endpoint", side_effect=fake_warmup):
             results = await warmup_mcp_endpoints("my-butler", butler_port=8500, extra_urls=extra)
 
-        assert "http://localhost:8500/mcp" in called_urls
-        assert "http://localhost:41200/mcp" in called_urls
+        assert "http://127.0.0.1:8500/mcp" in called_urls
+        assert "http://127.0.0.1:41200/mcp" in called_urls
         assert len(results) == 2
 
     async def test_partial_failure_returns_all_results(
@@ -249,8 +249,27 @@ class TestWarmupMcpEndpoints:
         with patch("butlers.core.mcp_warmup._warmup_endpoint", side_effect=fake_warmup):
             results = await warmup_mcp_endpoints("solo", butler_port=9999)
 
-        assert called_urls == ["http://localhost:9999/mcp"]
+        assert called_urls == ["http://127.0.0.1:9999/mcp"]
         assert len(results) == 1
+
+    async def test_rewrites_localhost_urls_to_ipv4_loopback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Warmup canonicalizes localhost URLs so IPv4-only listeners can be primed."""
+        from butlers.core.mcp_warmup import warmup_mcp_urls
+
+        monkeypatch.delenv("BUTLERS_MCP_WARMUP_DISABLED", raising=False)
+
+        called_urls: list[str] = []
+
+        async def fake_warmup(url: str, *, butler_name: str) -> dict[str, Any]:
+            called_urls.append(url)
+            return {"url": url, "success": True, "latency_ms": 3, "tool_count": 1, "error": None}
+
+        with patch("butlers.core.mcp_warmup._warmup_endpoint", side_effect=fake_warmup):
+            await warmup_mcp_urls("my-butler", ["http://localhost:41101/mcp"])
+
+        assert called_urls == ["http://127.0.0.1:41101/mcp"]
 
 
 class TestWarmupMcpUrls:
