@@ -907,9 +907,7 @@ class CodexAdapter(RuntimeAdapter):
                             if self._last_process_info:
                                 self._last_process_info["retry_attempted"] = True
                                 self._last_process_info["retry_succeeded"] = False
-                                self._last_process_info["attempt_count"] = (
-                                    subprocess_attempt_count
-                                )
+                                self._last_process_info["attempt_count"] = subprocess_attempt_count
                             raise
                         continue
 
