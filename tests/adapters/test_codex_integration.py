@@ -35,7 +35,7 @@ pytestmark = [
     pytest.mark.skipif(not _codex_available, reason="codex binary not on PATH"),
 ]
 
-_CODEX_ARGS = ["exec", "--json", "--full-auto", "--skip-git-repo-check"]
+_CODEX_ARGS = ["exec", "--json", "--full-auto", "--skip-git-repo-check", "--ephemeral"]
 
 
 def _run_codex(prompt: str, timeout: int = 120) -> tuple[str, str, int]:

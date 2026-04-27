@@ -197,6 +197,7 @@ async def test_invoke_behaviors():
     with patch(_EXEC, return_value=mock_proc) as mock_sub:
         await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
     assert mock_sub.call_args[0][:2] == ("/usr/bin/codex", "exec")
+    assert "--ephemeral" in mock_sub.call_args[0]
     assert mock_sub.call_args[0][-1] == "-"
     assert mock_sub.call_args[1]["stdin"] is asyncio.subprocess.PIPE
     mock_proc.communicate.assert_awaited_once_with(b"test")

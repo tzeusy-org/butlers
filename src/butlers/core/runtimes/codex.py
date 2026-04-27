@@ -777,6 +777,10 @@ class CodexAdapter(RuntimeAdapter):
             "--json",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            # Butler runtime sessions are intentionally one-shot. Persisting
+            # Codex thread/session state across invocations is unnecessary and
+            # can push fresh runs onto stale remote-compaction paths.
+            "--ephemeral",
         ]
 
         if isinstance(model, str) and model.strip():
