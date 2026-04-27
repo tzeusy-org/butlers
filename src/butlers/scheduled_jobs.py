@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,17 @@ logger = logging.getLogger(__name__)
 type _DeterministicScheduleJobHandler = Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[Any]
 ]
+
+
+_CHRONICLER_INTERNAL_SCHEMAS = frozenset(
+    {
+        "connector",
+        "information_schema",
+        "pg_catalog",
+        "public",
+        "shared",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +162,68 @@ _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
     "memory_purge_superseded": _run_memory_purge_superseded_job,
 }
+
+
+# ---------------------------------------------------------------------------
+# Chronicler projection jobs
+# ---------------------------------------------------------------------------
+
+
+async def _discover_chronicler_projection_schemas(
+    pool: asyncpg.Pool,
+    *,
+    table_name: str,
+) -> tuple[str, ...]:
+    """Discover schema-qualified Chronicler read surfaces for one evidence table."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT table_schema
+            FROM information_schema.tables
+            WHERE table_name = $1
+              AND table_schema != ALL($2::text[])
+              AND table_schema NOT LIKE 'pg_%'
+            ORDER BY table_schema ASC
+            """,
+            table_name,
+            list(_CHRONICLER_INTERNAL_SCHEMAS),
+        )
+    return tuple(row["table_schema"] for row in rows)
+
+
+async def _run_chronicler_project_sessions_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's core.sessions projection adapter."""
+    del job_args
+    from butlers.chronicler.adapters import CoreSessionsAdapter
+
+    butler_schemas = await _discover_chronicler_projection_schemas(pool, table_name="sessions")
+    result = await CoreSessionsAdapter(butler_schemas=butler_schemas).run(
+        pool=pool,
+        chronicler_pool=pool,
+    )
+    return asdict(result)
+
+
+async def _run_chronicler_project_calendar_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's google_calendar.completed projection adapter."""
+    del job_args
+    from butlers.chronicler.adapters import CalendarCompletedAdapter
+
+    butler_schemas = await _discover_chronicler_projection_schemas(
+        pool,
+        table_name="calendar_event_instances",
+    )
+    result = await CalendarCompletedAdapter(butler_schemas=butler_schemas).run(
+        pool=pool,
+        chronicler_pool=pool,
+    )
+    return asdict(result)
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +526,10 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
         **_HOME_DETERMINISTIC_JOB_HANDLERS,
         "daily_briefing_contribution": _run_home_briefing_contribution_job,
+    },
+    "chronicler": {
+        "chronicler_project_sessions": _run_chronicler_project_sessions_job,
+        "chronicler_project_calendar": _run_chronicler_project_calendar_job,
     },
     "lifestyle": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
