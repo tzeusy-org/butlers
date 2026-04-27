@@ -49,6 +49,7 @@ _BENIGN_STDERR_LINES = frozenset(
         "Reading additional input from stdin...",
     }
 )
+_BENIGN_STDERR_PREFIXES = ("WARNING: proceeding, even though we could not update PATH:",)
 
 
 class MCPToolDiscoveryError(RuntimeError):
@@ -102,7 +103,12 @@ def _infer_mcp_transport_from_url(url: str) -> str | None:
 def _filtered_stderr_lines(stderr: str) -> list[str]:
     """Return stderr lines with known benign Codex notices removed."""
     stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    return [line for line in stderr_lines if line not in _BENIGN_STDERR_LINES]
+    return [
+        line
+        for line in stderr_lines
+        if line not in _BENIGN_STDERR_LINES
+        and not any(line.startswith(prefix) for prefix in _BENIGN_STDERR_PREFIXES)
+    ]
 
 
 def _prefer_ipv4_loopback(url: str) -> str:
@@ -518,17 +524,24 @@ def _extract_stdout_json_detail(stdout: str) -> tuple[str | None, bool]:
 
 
 def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
-    """Prefer actionable Codex failure details over benign stderr noise."""
+    """Prefer actionable Codex failure details over benign stderr noise.
+
+    A structured ``turn.failed`` (or terminal ``error``) event on stdout is the
+    most actionable signal Codex emits and should beat lifecycle / retry chatter
+    on stderr (e.g. the ``WARNING: proceeding...`` PATH notice or websocket
+    reconnect logs). Falls through to filtered stderr, then other stdout
+    extraction strategies, and finally the bare exit code.
+    """
+    structured_stdout_error = _extract_structured_stdout_error(stdout)
+    if structured_stdout_error:
+        return structured_stdout_error
+
     filtered_stderr_lines = _filtered_stderr_lines(stderr)
     if filtered_stderr_lines:
         return "\n".join(filtered_stderr_lines)
     stderr_clean = stderr.strip()
     if stderr_clean:
         return stderr_clean
-
-    structured_stdout_error = _extract_structured_stdout_error(stdout)
-    if structured_stdout_error:
-        return structured_stdout_error
 
     stdout_detail, parsed_stdout_json = _extract_stdout_json_detail(stdout)
     if stdout_detail:
