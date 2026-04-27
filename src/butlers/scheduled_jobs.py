@@ -595,15 +595,13 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     "chronicler": {
         "chronicler_project_sessions": _run_chronicler_project_sessions_job,
         "chronicler_project_calendar": _run_chronicler_project_calendar_job,
+        "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
+        "chronicler_project_steam": _run_chronicler_project_steam_job,
     },
     "home": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
         **_HOME_DETERMINISTIC_JOB_HANDLERS,
         "daily_briefing_contribution": _run_home_briefing_contribution_job,
-    },
-    "chronicler": {
-        "chronicler_project_sessions": _run_chronicler_project_sessions_job,
-        "chronicler_project_calendar": _run_chronicler_project_calendar_job,
     },
     "lifestyle": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
@@ -617,12 +615,6 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     "qa": {
         "qa_patrol": _run_qa_patrol_job,
         "qa_pr_status_check": _run_qa_pr_status_check_job,
-    },
-    "chronicler": {
-        "chronicler_project_sessions": _run_chronicler_project_sessions_job,
-        "chronicler_project_calendar": _run_chronicler_project_calendar_job,
-        "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
-        "chronicler_project_steam": _run_chronicler_project_steam_job,
     },
 }
 
