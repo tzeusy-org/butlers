@@ -532,9 +532,52 @@ async def test_retry_on_mcp_connection_failure():
     assert call_count == 2, "Should have retried once"
     assert any(tc.get("name") == "route_to_butler" for tc in tool_calls)
     info = adapter.last_process_info
-    assert info["mcp_connection_failed"] is True
+    assert info["mcp_connection_failed"] is False
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is True
+
+
+async def test_retry_stops_when_later_attempt_is_plain_text():
+    """A retry attempt that no longer looks like MCP failure must be accepted."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 100 + call_count
+        proc.communicate = AsyncMock(
+            return_value=(
+                _make_bash_only_stdout() if call_count == 1 else _make_text_only_stdout(),
+                b"",
+            )
+        )
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._MCP_RETRY_DELAYS", (0, 0)),
+    ):
+        result_text, tool_calls, _ = await adapter.invoke(
+            prompt="say hello directly",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    assert call_count == 2, "Retry loop should stop once the latest attempt is valid text output"
+    assert result_text is not None
+    assert "Here is a direct answer that does not need tools." in result_text
+    assert tool_calls == []
+    info = adapter.last_process_info
+    assert info["mcp_connection_failed"] is False
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is None
+    assert info["result_source"] == "retry"
+    assert info["attempt_count"] == 2
 
 
 async def test_retry_all_fail_raises_runtime_error():

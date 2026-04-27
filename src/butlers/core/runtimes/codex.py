@@ -1064,6 +1064,7 @@ class CodexAdapter(RuntimeAdapter):
                 first_info = dict(self._last_process_info) if self._last_process_info else None
                 attempt_count = 1
                 retry_succeeded = False
+                accepted_retry_result = False
 
                 for delay in _MCP_RETRY_DELAYS:
                     diag = (self._last_process_info or {}).get("stderr", "")
@@ -1092,6 +1093,18 @@ class CodexAdapter(RuntimeAdapter):
                         )
                         retry_succeeded = True
                         break
+                    if not _should_retry_mcp_discovery(
+                        mcp_servers=mcp_servers,
+                        tool_calls=retry_calls,
+                        process_info=self._last_process_info,
+                    ):
+                        logger.info(
+                            "MCP retry path stopped on attempt %d — latest result no longer "
+                            "looks like an MCP discovery failure",
+                            attempt_count,
+                        )
+                        accepted_retry_result = True
+                        break
 
                 # Snapshot the most-recent attempt's process info before we
                 # potentially rewrite ``self._last_process_info`` to first-attempt
@@ -1104,18 +1117,25 @@ class CodexAdapter(RuntimeAdapter):
 
                 # Record diagnostics for session monitoring
                 if self._last_process_info:
-                    if not retry_succeeded and first_info:
+                    if not retry_succeeded and not accepted_retry_result and first_info:
                         self._last_process_info.update(first_info)
 
-                    self._last_process_info["mcp_connection_failed"] = True
                     self._last_process_info["retry_attempted"] = True
-                    self._last_process_info["retry_succeeded"] = retry_succeeded
                     self._last_process_info["attempt_count"] = subprocess_attempt_count
-                    self._last_process_info["result_source"] = (
-                        "retry" if retry_succeeded else "first"
-                    )
+                    if retry_succeeded:
+                        self._last_process_info["mcp_connection_failed"] = False
+                        self._last_process_info["retry_succeeded"] = True
+                        self._last_process_info["result_source"] = "retry"
+                    elif accepted_retry_result:
+                        self._last_process_info["mcp_connection_failed"] = False
+                        self._last_process_info["retry_succeeded"] = None
+                        self._last_process_info["result_source"] = "retry"
+                    else:
+                        self._last_process_info["mcp_connection_failed"] = True
+                        self._last_process_info["retry_succeeded"] = False
+                        self._last_process_info["result_source"] = "first"
 
-                if not retry_succeeded:
+                if not retry_succeeded and not accepted_retry_result:
                     raise MCPToolDiscoveryError(
                         (
                             f"MCP tool discovery failed after {attempt_count} attempts. "
