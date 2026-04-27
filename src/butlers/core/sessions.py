@@ -32,6 +32,39 @@ def _strip_null_bytes(value: str | None) -> str | None:
     return value.replace("\x00", "")
 
 
+def _strip_untranslatable_chars(value: str | None) -> str | None:
+    """Remove characters PostgreSQL cannot round-trip through text/jsonb.
+
+    PostgreSQL rejects NUL code points and lone surrogate code points when
+    converting JSON escape sequences back to text. Runtime/tool payloads can
+    still contain those values in Python strings, so normalize them away before
+    inserting into TEXT/JSONB columns.
+    """
+    if value is None:
+        return None
+    if "\x00" not in value and not any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
+        return value
+    return "".join(ch for ch in value if ch != "\x00" and not 0xD800 <= ord(ch) <= 0xDFFF)
+
+
+def _sanitize_json_value(value: Any) -> Any:
+    """Recursively sanitize string leaves before JSON serialization."""
+    if isinstance(value, str):
+        return _strip_untranslatable_chars(value)
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            (
+                _strip_untranslatable_chars(key) if isinstance(key, str) else key
+            ): _sanitize_json_value(val)
+            for key, val in value.items()
+        }
+    return value
+
+
 # JSONB columns that need deserialization from string → Python object
 _JSONB_FIELDS = ("tool_calls", "cost")
 _SUMMARY_PERIODS = frozenset({"today", "7d", "30d"})
@@ -131,7 +164,7 @@ async def session_create(
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
         """,
-        _strip_null_bytes(prompt),
+        _strip_untranslatable_chars(prompt),
         trigger_source,
         trace_id,
         model,
@@ -178,9 +211,10 @@ async def session_complete(
     # PostgreSQL text columns reject NUL (\x00) characters.  LLM output
     # occasionally contains them (e.g. from binary-ish attachments or model
     # artefacts), so strip before writing.
-    safe_output = _strip_null_bytes(output)
-    safe_error = _strip_null_bytes(error)
-    safe_tool_calls = _strip_null_bytes(json.dumps(tool_calls))
+    safe_output = _strip_untranslatable_chars(output)
+    safe_error = _strip_untranslatable_chars(error)
+    safe_tool_calls = json.dumps(_sanitize_json_value(tool_calls))
+    safe_cost = json.dumps(_sanitize_json_value(cost)) if cost is not None else None
 
     row = await pool.fetchval(
         """
@@ -201,7 +235,7 @@ async def session_complete(
         safe_output,
         safe_tool_calls,
         duration_ms,
-        json.dumps(cost) if cost is not None else None,
+        safe_cost,
         success,
         safe_error,
         input_tokens,

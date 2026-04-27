@@ -166,6 +166,52 @@ async def test_session_complete_success_and_failure(pool):
         )
 
 
+async def test_session_fields_sanitize_untranslatable_unicode(pool):
+    """Bad Unicode in TEXT/JSONB payloads should be stripped before persistence."""
+    from butlers.core.sessions import session_complete, session_create, sessions_get
+
+    session_id = await session_create(
+        pool,
+        prompt="prompt\x00with\ud83dnoise",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
+    )
+    await session_complete(
+        pool,
+        session_id,
+        output="done\x00\ud83d",
+        tool_calls=[
+            {
+                "name": "tool\x00\ud83d",
+                "arguments": {
+                    "value": "bad\x00\ud83dtext",
+                    "items": ["ok", "\x00\ud83d"],
+                },
+            }
+        ],
+        duration_ms=42,
+        success=False,
+        error="boom\x00\ud83d",
+        cost={"raw": "cost\x00\ud83d"},
+    )
+
+    row = await sessions_get(pool, session_id)
+    assert row is not None
+    assert row["prompt"] == "promptwithnoise"
+    assert row["result"] == "done"
+    assert row["error"] == "boom"
+    assert row["tool_calls"] == [
+        {
+            "name": "tool",
+            "arguments": {
+                "value": "badtext",
+                "items": ["ok", ""],
+            },
+        }
+    ]
+    assert row["cost"] == {"raw": "cost"}
+
+
 # ---------------------------------------------------------------------------
 # sessions_list / sessions_summary
 # ---------------------------------------------------------------------------
