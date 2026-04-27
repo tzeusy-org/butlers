@@ -311,6 +311,41 @@ class TestIngestV1Basic:
         assert json.loads(row["request_context"])["source_sender_identity"] == "bob@example.com"
         assert "Test\nHello" in row["normalized_text"]
 
+    async def test_ingest_strips_postgres_invalid_unicode_before_jsonb_insert(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """Lone UTF-16 surrogates are removed before JSONB/text persistence."""
+        envelope = _make_telegram_envelope(
+            update_id="999002",
+            bot_id="test_\ud800bot",
+            sender_id="user_\udfffalice",
+            thread_id="thread_\ud80042",
+            text="Hello \ud800world",
+        )
+        envelope["payload"]["raw"] = {
+            "message": {
+                "text": "Hello \ud800world",
+                "meta\udfffkey": "value\ud800",
+            }
+        }
+
+        result = await ingest_v1(pool, envelope)
+
+        row = await pool.fetchrow(
+            "SELECT request_context, raw_payload, normalized_text FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+
+        request_context = json.loads(row["request_context"])
+        raw_payload = json.loads(row["raw_payload"])
+        assert request_context["source_endpoint_identity"] == "test_bot"
+        assert request_context["source_sender_identity"] == "user_alice"
+        assert request_context["source_thread_identity"] == "thread_42"
+        assert row["normalized_text"] == "Hello world"
+        assert raw_payload["payload"]["raw"]["message"]["text"] == "Hello world"
+        assert raw_payload["payload"]["raw"]["message"]["metakey"] == "value"
+
 
 class TestIngestV1Deduplication:
     """Test deduplication and idempotency behavior."""

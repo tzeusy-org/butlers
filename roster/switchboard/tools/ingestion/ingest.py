@@ -66,16 +66,28 @@ logger = logging.getLogger(__name__)
 
 
 def _strip_null_bytes(value: Any) -> Any:
-    """Recursively strip \\x00 from strings, dicts, and lists.
+    """Recursively strip PostgreSQL-invalid Unicode scalars from payloads.
 
-    PostgreSQL text/jsonb columns reject null bytes (\\u0000).  External
-    payloads (e.g. email bodies, webhook data) may contain them, so we
-    sanitize at the ingestion boundary.
+    PostgreSQL text/jsonb columns reject ``\\u0000`` and UTF-16 surrogate code
+    points. External payloads may contain these scalars in both values and keys,
+    so we sanitize them at the ingestion boundary before serializing to JSONB.
     """
+
+    def _sanitize_text(text: str) -> str:
+        return "".join(
+            ch
+            for ch in text
+            if ch != "\x00" and not 0xD800 <= ord(ch) <= 0xDFFF
+        )
+
     if isinstance(value, str):
-        return value.replace("\x00", "")
+        return _sanitize_text(value)
     if isinstance(value, dict):
-        return {k: _strip_null_bytes(v) for k, v in value.items()}
+        sanitized: dict[Any, Any] = {}
+        for key, inner_value in value.items():
+            sanitized_key = _sanitize_text(key) if isinstance(key, str) else key
+            sanitized[sanitized_key] = _strip_null_bytes(inner_value)
+        return sanitized
     if isinstance(value, (list, tuple)):
         return type(value)(_strip_null_bytes(v) for v in value)
     return value
