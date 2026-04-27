@@ -36,6 +36,8 @@ from typing import Any
 
 import httpx
 
+from butlers.core.mcp_urls import prefer_ipv4_loopback_url
+
 logger = logging.getLogger(__name__)
 
 _KILL_SWITCH_ENV = "BUTLERS_MCP_WARMUP_DISABLED"
@@ -94,6 +96,7 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
 
     try:
         t0 = time.monotonic()
+        request_url = prefer_ipv4_loopback_url(url)
 
         async with httpx.AsyncClient(timeout=_WARMUP_TIMEOUT_S) as client:
             # MCP initialize request (streamable-HTTP: single POST with JSON-RPC).
@@ -107,7 +110,11 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
                     "clientInfo": _CLIENT_INFO,
                 },
             }
-            init_resp = await client.post(url, json=init_payload, headers=_build_mcp_headers())
+            init_resp = await client.post(
+                request_url,
+                json=init_payload,
+                headers=_build_mcp_headers(),
+            )
             init_resp.raise_for_status()
 
             # Extract session token from initialize response headers (streamable HTTP).
@@ -121,7 +128,7 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
                 "params": {},
             }
             tools_resp = await client.post(
-                url,
+                request_url,
                 json=tools_payload,
                 headers=_build_mcp_headers(session_id=session_token),
             )
