@@ -451,6 +451,31 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
 
 
 # ---------------------------------------------------------------------------
+# Chronicler jobs
+# ---------------------------------------------------------------------------
+
+
+async def _run_chronicler_project_sessions_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the Chronicler core-session projection job."""
+    from butlers.jobs.chronicler import run_project_sessions
+
+    return await run_project_sessions(pool, job_args)
+
+
+async def _run_chronicler_project_calendar_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the Chronicler completed-calendar projection job."""
+    from butlers.jobs.chronicler import run_project_calendar
+
+    return await run_project_calendar(pool, job_args)
+
+
+# ---------------------------------------------------------------------------
 # QA butler jobs
 # ---------------------------------------------------------------------------
 
@@ -521,6 +546,10 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     "education": {
         "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
         "daily_briefing_contribution": _run_education_briefing_contribution_job,
+    },
+    "chronicler": {
+        "chronicler_project_sessions": _run_chronicler_project_sessions_job,
+        "chronicler_project_calendar": _run_chronicler_project_calendar_job,
     },
     "home": {
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
