@@ -56,6 +56,51 @@ def test_chronicler_schedule_uses_jobs_for_projection(butler_toml: dict) -> None
     assert "chronicler_project_steam" in projection_jobs
 
 
+def test_chronicler_project_job_returns_serializable_dict(monkeypatch) -> None:
+    """Projection-job wrappers must await the adapter and return a JSON-friendly dict.
+
+    Regression guard: a previous form ``return await adapter.run(...).__dict__``
+    awaited the coroutine's ``__dict__`` (a plain dict, not awaitable) and
+    crashed at runtime. This test exercises the wrapper end-to-end with a
+    fake adapter to ensure the wrapper actually awaits the result and converts
+    the ``datetime`` watermark to an ISO-8601 string.
+    """
+    import asyncio
+    from datetime import UTC, datetime
+
+    from butlers.chronicler import jobs as chronicler_jobs
+    from butlers.chronicler.adapters import AdapterResult
+
+    captured_kwargs: dict = {}
+    expected_watermark = datetime(2026, 4, 27, 12, 0, tzinfo=UTC)
+
+    class _FakeCoreSessionsAdapter:
+        def __init__(self, *args, **kwargs) -> None:
+            captured_kwargs["init"] = kwargs
+
+        async def run(self, *, pool, chronicler_pool):  # noqa: ARG002
+            return AdapterResult(
+                source_name="core_sessions",
+                rows_projected=3,
+                watermark=expected_watermark,
+            )
+
+    monkeypatch.setattr(chronicler_jobs, "CoreSessionsAdapter", _FakeCoreSessionsAdapter)
+    monkeypatch.setattr(
+        chronicler_jobs,
+        "_discover_session_schemas",
+        lambda: ("health",),
+    )
+
+    result = asyncio.run(chronicler_jobs.run_project_sessions(db_pool=None, job_args=None))  # type: ignore[arg-type]
+
+    assert isinstance(result, dict)
+    assert result["source_name"] == "core_sessions"
+    assert result["rows_projected"] == 3
+    assert result["watermark"] == expected_watermark.isoformat()
+    assert captured_kwargs["init"]["butler_schemas"] == ("health",)
+
+
 def test_chronicler_roster_files_present() -> None:
     assert (ROSTER_DIR / "MANIFESTO.md").is_file()
     assert (ROSTER_DIR / "AGENTS.md").is_file()
