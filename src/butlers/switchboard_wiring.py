@@ -29,6 +29,7 @@ from butlers.core.route_inbox import (
     route_inbox_recovery_sweep,
 )
 from butlers.core.telemetry import tag_butler_span
+from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
 from butlers.routing_guidance import (
     _build_route_runtime_context,
     _wrap_routed_message,
@@ -367,6 +368,7 @@ async def connect_switchboard(daemon: Any) -> None:
         return
 
     try:
+        apply_streamable_http_client_disconnect_patch()
         client = MCPClient(url, name=f"butler-{daemon.config.name}")
         await client.__aenter__()
         daemon.switchboard_client = client
