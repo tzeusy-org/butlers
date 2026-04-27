@@ -25,7 +25,9 @@ Semantics:
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
+from typing import Any
 
 import asyncpg
 
@@ -86,21 +88,109 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         # Project each row as a point event.
         latest_watermark = since
+        valid_rows: list[dict[str, Any]] = []
         for row in rows:
-            await self._project_point_event(chronicler_pool, row)
+            ts = row["ts"]
+            if isinstance(ts, datetime) and ts.tzinfo is not None:
+                if latest_watermark is None or ts > latest_watermark:
+                    latest_watermark = ts
+
+            normalized_row, warning = self._normalize_row(row)
+            if warning is not None:
+                logger.warning("%s", warning)
+                result.warnings.append(warning)
+            if normalized_row is None:
+                continue
+
+            valid_rows.append(normalized_row)
+            await self._project_point_event(chronicler_pool, normalized_row)
             result.rows_projected += 1
             result.point_events += 1
 
-            ts = row["ts"]
-            if ts is not None and (latest_watermark is None or ts > latest_watermark):
-                latest_watermark = ts
-
         # Build movement episodes from the sorted point sequence.
-        episodes_closed = await self._project_movement_episodes(chronicler_pool, rows)
+        episodes_closed = await self._project_movement_episodes(chronicler_pool, valid_rows)
         result.episodes_closed += episodes_closed
 
         result.watermark = latest_watermark
         return result
+
+    def _normalize_row(
+        self,
+        row: asyncpg.Record,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Return a sanitized row dict or a warning when the row is unusable.
+
+        The evidence table uses floating-point columns, so malformed upstream
+        writes can persist non-finite values (NaN/Inf). Those values are legal
+        in Postgres ``double precision`` but not in JSONB payloads, which would
+        otherwise crash projection and poison the checkpoint.
+        """
+        row_ref = self._row_reference(row)
+
+        ts = row["ts"]
+        if not isinstance(ts, datetime) or ts.tzinfo is None:
+            return None, f"Skipping malformed OwnTracks row {row_ref}: ts must be timezone-aware"
+
+        idempotency_key = row["idempotency_key"]
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return None, f"Skipping malformed OwnTracks row {row_ref}: idempotency_key missing"
+
+        endpoint_identity = row["endpoint_identity"]
+        if not isinstance(endpoint_identity, str) or not endpoint_identity.strip():
+            return None, f"Skipping malformed OwnTracks row {row_ref}: endpoint_identity missing"
+
+        lat = self._coerce_finite_float(row["lat"])
+        if lat is None:
+            return None, f"Skipping malformed OwnTracks row {row_ref}: lat must be finite"
+
+        lon = self._coerce_finite_float(row["lon"])
+        if lon is None:
+            return None, f"Skipping malformed OwnTracks row {row_ref}: lon must be finite"
+
+        accuracy = self._coerce_finite_float(row["accuracy"])
+        accuracy_warning: str | None = None
+        if row["accuracy"] is not None and accuracy is None:
+            accuracy_warning = (
+                f"OwnTracks row {row_ref} has non-finite accuracy; "
+                "omitting accuracy from projection"
+            )
+
+        normalized = {
+            "id": row["id"],
+            "idempotency_key": idempotency_key.strip(),
+            "ts": ts,
+            "lat": lat,
+            "lon": lon,
+            "accuracy": accuracy,
+            "trigger": row["trigger"],
+            "event": row["event"],
+            "endpoint_identity": endpoint_identity.strip(),
+            "raw_payload": row["raw_payload"],
+            "recorded_at": row["recorded_at"],
+        }
+        return normalized, accuracy_warning
+
+    @staticmethod
+    def _coerce_finite_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return numeric
+
+    @staticmethod
+    def _row_reference(row: asyncpg.Record) -> str:
+        idempotency_key = row["idempotency_key"]
+        if isinstance(idempotency_key, str) and idempotency_key.strip():
+            return idempotency_key.strip()
+        row_id = row["id"]
+        if row_id is not None:
+            return str(row_id)
+        return "<unknown>"
 
     async def _fetch_points(
         self,
@@ -161,7 +251,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     async def _project_point_event(
         self,
         chronicler_pool: asyncpg.Pool,
-        row: asyncpg.Record,
+        row: dict[str, Any],
     ) -> PointEvent:
         idempotency_key = row["idempotency_key"]
         source_ref = f"{_EVIDENCE_TABLE}:{idempotency_key}"
@@ -206,7 +296,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     async def _project_movement_episodes(
         self,
         chronicler_pool: asyncpg.Pool,
-        rows: list[asyncpg.Record],
+        rows: list[dict[str, Any]],
     ) -> int:
         """Collapse point sequences into movement episodes.
 
@@ -223,8 +313,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         episodes_upserted = 0
 
         # Each segment: list of rows in the same movement episode.
-        segments: list[list[asyncpg.Record]] = []
-        current: list[asyncpg.Record] = [rows[0]]
+        segments: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = [rows[0]]
 
         for row in rows[1:]:
             prev = current[-1]
