@@ -32,7 +32,9 @@ import anyio
 _WRITER_ERROR_MESSAGE = "Error in standalone SSE writer"
 _WRITER_DISCONNECT_DEBUG_MESSAGE = "Standalone SSE stream closed during client disconnect"
 _CLIENT_PARSE_ERROR_MESSAGE = "Error parsing SSE message"
-_CLIENT_PARSE_DISCONNECT_DEBUG_MESSAGE = "Streamable HTTP SSE reader closed during client disconnect"
+_CLIENT_PARSE_DISCONNECT_DEBUG_MESSAGE = (
+    "Streamable HTTP SSE reader closed during client disconnect"
+)
 _DISCONNECT_EXC_TYPES: tuple[type[BaseException], ...] = (
     anyio.ClosedResourceError,
     anyio.BrokenResourceError,

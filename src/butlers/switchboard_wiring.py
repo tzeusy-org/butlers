@@ -28,8 +28,8 @@ from butlers.core.route_inbox import (
     route_inbox_mark_processing,
     route_inbox_recovery_sweep,
 )
-from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
 from butlers.core.telemetry import tag_butler_span
+from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
 from butlers.routing_guidance import (
     _build_route_runtime_context,
     _wrap_routed_message,
