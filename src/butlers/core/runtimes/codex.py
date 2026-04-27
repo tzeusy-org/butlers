@@ -42,6 +42,7 @@ _SAFE_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # Each entry triggers one retry attempt with the given delay beforehand.
 # Exponential backoff: 2s, 5s → 3 total attempts (initial + 2 retries).
 _MCP_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
+_TRANSIENT_CLI_RETRY_DELAYS: tuple[float, ...] = (1.0, 3.0)
 _BENIGN_STDERR_LINES = frozenset(
     {
         "Reading additional input from stdin...",
@@ -164,6 +165,17 @@ def _looks_like_transport_failure(error_detail: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def _looks_like_transient_cli_failure(error_detail: str) -> bool:
+    """Return True when Codex stderr matches a known transient backend failure."""
+    lowered = error_detail.lower()
+    markers = (
+        "codex_core::compact_remote",
+        "compact_remote",
+        "remote compaction failed",
+    )
+    return any(marker in lowered for marker in markers)
+
+
 def _resolve_transport_details(
     server_cfg: dict[str, Any], url: str
 ) -> tuple[str | None, str | None]:
@@ -260,6 +272,18 @@ def _should_retry_mcp_discovery(
             stderr = str(raw_stderr)
 
     return _looks_like_transport_failure(stderr)
+
+
+def _should_retry_transient_cli_failure(process_info: dict[str, Any] | None) -> bool:
+    """Return whether the most recent non-zero Codex exit looks transient."""
+    if not isinstance(process_info, dict):
+        return False
+    if process_info.get("exit_code") in (None, 0):
+        return False
+
+    stderr = process_info.get("stderr", "")
+    stderr_text = stderr if isinstance(stderr, str) else str(stderr)
+    return _looks_like_transient_cli_failure(stderr_text)
 
 
 def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
@@ -838,8 +862,12 @@ class CodexAdapter(RuntimeAdapter):
         # Sanitise command for logging — drop the final prompt arg which can be huge
         cmd_for_log = " ".join(cmd[:-1]) + " --  ..."
 
-        try:
-            result_text, tool_calls, usage = await self._run_codex_subprocess(
+        subprocess_attempt_count = 0
+
+        async def _run_once() -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+            nonlocal subprocess_attempt_count
+            subprocess_attempt_count += 1
+            return await self._run_codex_subprocess(
                 cmd,
                 env,
                 cwd,
@@ -848,6 +876,61 @@ class CodexAdapter(RuntimeAdapter):
                 mcp_servers,
                 prompt_input,
             )
+
+        try:
+            try:
+                result_text, tool_calls, usage = await _run_once()
+            except RuntimeError as exc:
+                if not _should_retry_transient_cli_failure(self._last_process_info):
+                    raise
+
+                first_info = dict(self._last_process_info) if self._last_process_info else None
+                first_exc = exc
+                retry_succeeded = False
+
+                for delay in _TRANSIENT_CLI_RETRY_DELAYS:
+                    diag = (self._last_process_info or {}).get("stderr", "")
+                    diag_short = diag.strip()[:500] if diag else "(no stderr)"
+                    logger.warning(
+                        "Codex CLI hit transient remote-compaction failure — retrying "
+                        "after %.1fs (attempt %d/%d). stderr: %s",
+                        delay,
+                        subprocess_attempt_count + 1,
+                        1 + len(_TRANSIENT_CLI_RETRY_DELAYS),
+                        diag_short,
+                    )
+                    await asyncio.sleep(delay)
+                    try:
+                        result_text, tool_calls, usage = await _run_once()
+                    except RuntimeError:
+                        if not _should_retry_transient_cli_failure(self._last_process_info):
+                            if self._last_process_info:
+                                self._last_process_info["retry_attempted"] = True
+                                self._last_process_info["retry_succeeded"] = False
+                                self._last_process_info["attempt_count"] = (
+                                    subprocess_attempt_count
+                                )
+                            raise
+                        continue
+
+                    retry_succeeded = True
+                    break
+
+                if not retry_succeeded:
+                    if self._last_process_info and first_info:
+                        self._last_process_info.update(first_info)
+                        self._last_process_info["retry_attempted"] = True
+                        self._last_process_info["retry_succeeded"] = False
+                        self._last_process_info["attempt_count"] = subprocess_attempt_count
+                        self._last_process_info["result_source"] = "first"
+                    raise first_exc
+
+                if self._last_process_info:
+                    self._last_process_info["retry_attempted"] = True
+                    self._last_process_info["retry_succeeded"] = True
+                    self._last_process_info["attempt_count"] = subprocess_attempt_count
+                    self._last_process_info["result_source"] = "retry"
+
             # Record total spawn-to-completion latency for instrumentation.
             if self._last_process_info is not None:
                 spawn_latency_ms = int((time.monotonic() - _spawn_start) * 1000)
@@ -890,15 +973,7 @@ class CodexAdapter(RuntimeAdapter):
                     )
                     await asyncio.sleep(delay)
                     attempt_count += 1
-                    retry_text, retry_calls, retry_usage = await self._run_codex_subprocess(
-                        cmd,
-                        env,
-                        cwd,
-                        effective_timeout,
-                        cmd_for_log,
-                        mcp_servers,
-                        prompt_input,
-                    )
+                    retry_text, retry_calls, retry_usage = await _run_once()
                     # Preserve the most recent partial result so higher layers
                     # can reconcile parser output with daemon-side tool-call capture.
                     result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
@@ -927,7 +1002,7 @@ class CodexAdapter(RuntimeAdapter):
                     self._last_process_info["mcp_connection_failed"] = True
                     self._last_process_info["retry_attempted"] = True
                     self._last_process_info["retry_succeeded"] = retry_succeeded
-                    self._last_process_info["attempt_count"] = attempt_count
+                    self._last_process_info["attempt_count"] = subprocess_attempt_count
                     self._last_process_info["result_source"] = (
                         "retry" if retry_succeeded else "first"
                     )
@@ -948,7 +1023,7 @@ class CodexAdapter(RuntimeAdapter):
             else:
                 if self._last_process_info:
                     self._last_process_info["mcp_connection_failed"] = not mcp_servers
-                    self._last_process_info["attempt_count"] = 1
+                    self._last_process_info["attempt_count"] = subprocess_attempt_count
 
             return result_text, tool_calls, usage
         finally:

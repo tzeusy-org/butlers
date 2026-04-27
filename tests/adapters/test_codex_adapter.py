@@ -594,6 +594,94 @@ async def test_no_retry_on_nonzero_exit():
             )
 
 
+async def test_retry_on_transient_remote_compaction_failure():
+    """Transient Codex backend compaction failures should retry and recover."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 1 if call_count == 1 else 0
+        proc.pid = 100 + call_count
+        proc.communicate = AsyncMock(
+            return_value=(
+                b"" if call_count == 1 else b"ok",
+                (
+                    b"2026-04-27T00:09:42Z ERROR codex_core::compact_remote: "
+                    b"remote compaction failed turn_id=abc\n"
+                    if call_count == 1
+                    else b""
+                ),
+            )
+        )
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0,)),
+    ):
+        result_text, _, _ = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    assert call_count == 2
+    assert result_text == "ok"
+    info = adapter.last_process_info
+    assert info["result_source"] == "retry"
+    assert info["attempt_count"] == 2
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is True
+
+
+async def test_retry_on_transient_remote_compaction_failure_exhausted():
+    """Persistent remote-compaction failures should surface after bounded retries."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 1
+        proc.pid = 100 + call_count
+        proc.communicate = AsyncMock(
+            return_value=(
+                b"",
+                (
+                    b"2026-04-27T00:09:42Z ERROR codex_core::compact_remote: "
+                    b"remote compaction failed turn_id=abc\n"
+                ),
+            )
+        )
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0, 0)),
+    ):
+        with pytest.raises(RuntimeError, match="remote compaction failed"):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers=_MCP_SERVERS,
+                env={},
+            )
+
+    assert call_count == 3
+    info = adapter.last_process_info
+    assert info["result_source"] == "first"
+    assert info["attempt_count"] == 3
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is False
+
+
 async def test_retry_provenance_result_source_retry():
     """retry succeeded: result_source='retry', attempt_count=2."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
