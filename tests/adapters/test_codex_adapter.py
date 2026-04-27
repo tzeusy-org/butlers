@@ -220,6 +220,35 @@ async def test_invoke_behaviors():
         with pytest.raises(RuntimeError, match="Codex CLI exited with code 1: Error: rate limit"):
             await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
 
+    # Structured stdout on non-zero exit should surface text, not raw JSON lines
+    mock_proc.communicate = AsyncMock(
+        return_value=(
+            "\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+                    json.dumps({"type": "turn.started"}),
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {
+                                "id": "msg_1",
+                                "type": "agent_message",
+                                "text": "Authentication failed.",
+                            },
+                        }
+                    ),
+                ]
+            ).encode(),
+            b"",
+        )
+    )
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(
+            RuntimeError,
+            match="Codex CLI exited with code 1: Authentication failed\\.",
+        ):
+            await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
+
     # Benign stdin notice should not mask the real error
     mock_proc.communicate = AsyncMock(
         return_value=(b"", b"Reading additional input from stdin...\nError: rate limit")
@@ -331,6 +360,66 @@ def test_select_error_detail_filters_benign_stdin_notice():
         1,
     )
     assert detail == "Error: rate limit"
+
+
+def test_select_error_detail_prefers_stdout_json_error_payload():
+    """Structured stdout errors should surface their message instead of JSON lines."""
+    detail = _select_error_detail(
+        "",
+        "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {"message": "transport connection failed"},
+                    }
+                ),
+            ]
+        ),
+        7,
+    )
+    assert detail == "transport connection failed"
+
+
+def test_select_error_detail_uses_stdout_agent_message_fallback():
+    """When stdout has only progress events plus an assistant message, use the text."""
+    detail = _select_error_detail(
+        "",
+        "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+                json.dumps({"type": "turn.started"}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "msg_1",
+                            "type": "agent_message",
+                            "text": "Authentication failed.",
+                        },
+                    }
+                ),
+            ]
+        ),
+        7,
+    )
+    assert detail == "Authentication failed."
+
+
+def test_select_error_detail_does_not_dump_json_progress_without_text():
+    """JSON progress-only stdout should collapse to the exit code."""
+    detail = _select_error_detail(
+        "",
+        "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+                json.dumps({"type": "turn.started"}),
+            ]
+        ),
+        7,
+    )
+    assert detail == "exit code 7"
 
 
 def test_resolve_canonical_home_collapses_nested_codex_tmp_home(
