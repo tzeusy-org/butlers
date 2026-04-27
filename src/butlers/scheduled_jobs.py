@@ -516,6 +516,51 @@ async def _run_qa_pr_status_check_job(
 
 
 # ---------------------------------------------------------------------------
+# Chronicler jobs
+# ---------------------------------------------------------------------------
+
+
+async def _run_chronicler_project_sessions_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's cross-butler sessions projection job."""
+    from butlers.chronicler.jobs import run_project_sessions
+
+    return await run_project_sessions(pool, job_args)
+
+
+async def _run_chronicler_project_calendar_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's completed-calendar projection job."""
+    from butlers.chronicler.jobs import run_project_calendar
+
+    return await run_project_calendar(pool, job_args)
+
+
+async def _run_chronicler_project_owntracks_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's OwnTracks point projection job."""
+    from butlers.chronicler.jobs import run_project_owntracks
+
+    return await run_project_owntracks(pool, job_args)
+
+
+async def _run_chronicler_project_steam_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's Steam play-history projection job."""
+    from butlers.chronicler.jobs import run_project_steam
+
+    return await run_project_steam(pool, job_args)
+
+
+# ---------------------------------------------------------------------------
 # Consolidated registry
 # ---------------------------------------------------------------------------
 
@@ -572,6 +617,12 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
     "qa": {
         "qa_patrol": _run_qa_patrol_job,
         "qa_pr_status_check": _run_qa_pr_status_check_job,
+    },
+    "chronicler": {
+        "chronicler_project_sessions": _run_chronicler_project_sessions_job,
+        "chronicler_project_calendar": _run_chronicler_project_calendar_job,
+        "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
+        "chronicler_project_steam": _run_chronicler_project_steam_job,
     },
 }
 
