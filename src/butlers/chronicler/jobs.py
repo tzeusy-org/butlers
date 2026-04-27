@@ -87,6 +87,20 @@ def _dedupe_non_empty(values: list[str]) -> tuple[str, ...]:
     return tuple(ordered_unique)
 
 
+def _adapter_result_to_dict(result: Any) -> dict[str, Any]:
+    """Serialize an ``AdapterResult`` to a JSON-friendly job result dict.
+
+    ``AdapterResult.watermark`` is a ``datetime`` (asyncpg-decoded
+    ``TIMESTAMPTZ``); convert it to an ISO-8601 string so the result
+    survives JSONB persistence by the scheduler without bespoke encoders.
+    """
+    payload = asdict(result)
+    watermark = payload.get("watermark")
+    if watermark is not None:
+        payload["watermark"] = watermark.isoformat()
+    return payload
+
+
 def _discover_session_schemas() -> tuple[str, ...]:
     try:
         configs = list_butlers()
@@ -132,7 +146,7 @@ async def run_project_sessions(
         **options,
     )
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return asdict(result)
+    return _adapter_result_to_dict(result)
 
 
 async def run_project_calendar(
@@ -150,7 +164,7 @@ async def run_project_calendar(
         **options,
     )
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return asdict(result)
+    return _adapter_result_to_dict(result)
 
 
 async def run_project_owntracks(
@@ -165,7 +179,7 @@ async def run_project_owntracks(
     )
     adapter = OwnTracksPointAdapter(**options)
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return asdict(result)
+    return _adapter_result_to_dict(result)
 
 
 async def run_project_steam(
@@ -180,7 +194,7 @@ async def run_project_steam(
     )
     adapter = SteamPlayAdapter(**options)
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return asdict(result)
+    return _adapter_result_to_dict(result)
 
 
 __all__ = [
