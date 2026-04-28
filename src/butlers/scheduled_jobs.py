@@ -565,8 +565,9 @@ async def _run_chronicler_project_steam_job(
 # ---------------------------------------------------------------------------
 
 
-def _build_deterministic_schedule_job_registry(
-) -> dict[str, dict[str, _DeterministicScheduleJobHandler]]:
+def _build_deterministic_schedule_job_registry() -> dict[
+    str, dict[str, _DeterministicScheduleJobHandler]
+]:
     """Return a fresh deterministic job registry.
 
     The exported module-level registry remains mutable for tests, but dispatch
@@ -628,8 +629,9 @@ def _build_deterministic_schedule_job_registry(
     }
 
 
-def get_deterministic_schedule_job_registry(
-) -> dict[str, dict[str, _DeterministicScheduleJobHandler]]:
+def get_deterministic_schedule_job_registry() -> dict[
+    str, dict[str, _DeterministicScheduleJobHandler]
+]:
     """Return a fresh deterministic job registry snapshot."""
 
     return _build_deterministic_schedule_job_registry()
