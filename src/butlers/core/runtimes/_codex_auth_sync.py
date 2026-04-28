@@ -8,8 +8,9 @@ per-process cache.  On a mismatch it calls
 store stays in sync with whatever tokens the Codex CLI wrote after its
 last OAuth refresh.
 
-The check is cheap: only the first 4 KiB of the file is hashed, and
-``os.stat`` avoids a read when mtime is unchanged.
+The check is cheap: only the first 4 KiB of the file is hashed to
+produce a ``(mtime_ns, sha256_head)`` fingerprint that is compared
+against the per-process cache.
 
 **Usage**
 
