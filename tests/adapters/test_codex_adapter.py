@@ -580,6 +580,17 @@ def _make_completed_stdout() -> bytes:
     ).encode()
 
 
+def _make_failed_stdout_error(message: str) -> bytes:
+    """Build a structured stdout failure with a terminal ``turn.failed`` event."""
+    return (
+        json.dumps({"type": "thread.started", "thread_id": "thread-123"})
+        + "\n"
+        + json.dumps({"type": "turn.started"})
+        + "\n"
+        + json.dumps({"type": "turn.failed", "error": {"message": message}})
+    ).encode()
+
+
 _MCP_SERVERS = {"switchboard": {"url": "http://localhost:41100/mcp"}}
 
 
@@ -897,6 +908,52 @@ async def test_retry_on_transient_remote_compaction_failure_exhausted():
     assert info["attempt_count"] == 3
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is False
+
+
+async def test_retry_on_transient_remote_compaction_failure_from_stdout():
+    """Stdout-only terminal compaction failures should use the transient retry path."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 1 if call_count == 1 else 0
+        proc.pid = 100 + call_count
+        proc.communicate = AsyncMock(
+            return_value=(
+                (
+                    _make_failed_stdout_error(
+                        "codex_core::compact_remote: remote compaction failed turn_id=abc"
+                    )
+                    if call_count == 1
+                    else b"ok"
+                ),
+                b"",
+            )
+        )
+        return proc
+
+    with (
+        patch(_EXEC, side_effect=_mock_exec),
+        patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0,)),
+    ):
+        result_text, _, _ = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    assert call_count == 2
+    assert result_text == "ok"
+    info = adapter.last_process_info
+    assert info["result_source"] == "retry"
+    assert info["attempt_count"] == 2
+    assert info["retry_attempted"] is True
+    assert info["retry_succeeded"] is True
 
 
 async def test_nonzero_exit_with_completed_json_response_recovers():
