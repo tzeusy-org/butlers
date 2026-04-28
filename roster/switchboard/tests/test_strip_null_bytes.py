@@ -18,6 +18,13 @@ def test_strips_null_from_dict_values():
     assert result == {"key": "value", "nested": {"inner": "ab"}}
 
 
+def test_strips_invalid_unicode_from_dict_keys_and_values():
+    result = _strip_null_bytes(
+        {"bad\ud800key": "val\udfffue", "nested": {"in\ud800ner": "a\udfffb"}}
+    )
+    assert result == {"badkey": "value", "nested": {"inner": "ab"}}
+
+
 def test_strips_null_from_list():
     result = _strip_null_bytes(["a\x00b", "c\x00d"])
     assert result == ["ab", "cd"]
@@ -46,3 +53,8 @@ def test_empty_string():
 def test_unicode_null_escape():
     """Test the exact pattern PostgreSQL rejects: \\u0000."""
     assert _strip_null_bytes("before\u0000after") == "beforeafter"
+
+
+def test_lone_surrogates_removed_from_string():
+    """PostgreSQL jsonb also rejects lone UTF-16 surrogate escapes."""
+    assert _strip_null_bytes("before\ud800middle\udfffafter") == "beforemiddleafter"

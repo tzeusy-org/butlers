@@ -311,6 +311,46 @@ class TestIngestV1Basic:
         assert json.loads(row["request_context"])["source_sender_identity"] == "bob@example.com"
         assert "Test\nHello" in row["normalized_text"]
 
+    async def test_ingest_strips_postgres_invalid_unicode_before_jsonb_insert(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """Lone UTF-16 surrogates inside payload.raw are stripped before JSONB persistence.
+
+        Pydantic v2 rejects lone surrogates in typed `str` fields at envelope
+        validation, so the only path to PostgreSQL is the loosely-typed
+        ``payload.raw`` dict. This is the production failure mode the
+        ``_strip_null_bytes`` sanitizer guards against (PostgreSQL
+        ``UntranslatableCharacterError`` on JSONB insert).
+        """
+        envelope = _make_telegram_envelope(
+            update_id="999002",
+            bot_id="test_bot",
+            sender_id="user_alice",
+            thread_id="thread_42",
+            text="Hello world",
+        )
+        envelope["payload"]["raw"] = {
+            "message": {
+                "text": "Hello \ud800world",
+                "meta\udfffkey": "value\ud800",
+                "nested": {"in\ud800ner": "a\udfffb"},
+            }
+        }
+
+        result = await ingest_v1(pool, envelope)
+
+        row = await pool.fetchrow(
+            "SELECT request_context, raw_payload, normalized_text FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        assert row is not None
+
+        raw_payload = json.loads(row["raw_payload"])
+        message = raw_payload["payload"]["raw"]["message"]
+        assert message["text"] == "Hello world"
+        assert message["metakey"] == "value"
+        assert message["nested"] == {"inner": "ab"}
+
 
 class TestIngestV1Deduplication:
     """Test deduplication and idempotency behavior."""
