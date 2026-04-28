@@ -17,6 +17,9 @@ Semantics:
   second resolution.
 - Privacy class is ``sensitive`` — GPS tracks are personally identifying
   retrospective location data.
+- Watermark on ``ts`` only. ``connectors.owntracks_points.id`` is a UUID,
+  not an integer serial, so this adapter must not use the integer
+  ``watermark_id`` tuple-watermark path.
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
@@ -80,7 +83,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_points(pool, since, since_id)
+        rows = await self._fetch_points(pool, since)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -90,25 +93,16 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         if not rows:
             result.watermark = since
-            result.watermark_id = since_id
             return result
 
         # Project each row as a point event.
         latest_watermark = since
-        latest_watermark_id: int | None = since_id
         valid_rows: list[dict[str, Any]] = []
         for row in rows:
             ts = row["ts"]
             if isinstance(ts, datetime) and ts.tzinfo is not None:
                 if latest_watermark is None or ts > latest_watermark:
                     latest_watermark = ts
-                    latest_watermark_id = row["id"]
-                elif ts == latest_watermark:
-                    row_id = row["id"]
-                    if row_id is not None and (
-                        latest_watermark_id is None or row_id > latest_watermark_id
-                    ):
-                        latest_watermark_id = row_id
 
             normalized_row, warning = self._normalize_row(row)
             if warning is not None:
@@ -133,7 +127,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
-        result.watermark_id = latest_watermark_id
+        # Leave watermark_id unset: owntracks_points.id is UUID, while the
+        # checkpoint column stores integer tie-breakers for serial-id sources.
         return result
 
     def _normalize_row(
@@ -222,15 +217,15 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark.
 
-        When ``since`` and ``since_id`` are both provided, uses the tuple
-        comparison ``WHERE (ts, id) > ($1, $2)`` so rows sharing the same
-        timestamp as the previous batch boundary are not missed.  When only
-        ``since`` is provided (pre-migration checkpoint), falls back to the
-        single-column ``WHERE ts > $1`` form.
+        ``since_id`` is intentionally ignored. The evidence table primary key
+        is UUID, while ``projection_checkpoints.watermark_id`` is an integer
+        field for serial-id sources. Use single-column ``WHERE ts > $1`` so a
+        stale integer checkpoint cannot make Postgres compare UUIDs to ints.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
         """
+        del since_id
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -255,21 +250,6 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         ORDER BY ts ASC, id ASC
                         LIMIT $1
                         """,
-                        self.batch_limit,
-                    )
-                elif since_id is not None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, ts, lat, lon,
-                               accuracy, trigger, event, endpoint_identity,
-                               raw_payload, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE (ts, id) > ($1, $2)
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $3
-                        """,
-                        since,
-                        since_id,
                         self.batch_limit,
                     )
                 else:

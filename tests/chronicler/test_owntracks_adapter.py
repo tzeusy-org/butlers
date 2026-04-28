@@ -8,6 +8,7 @@ Covers:
 - Replay / idempotency (same source_ref on repeated runs).
 - Missing evidence surface graceful degradation.
 - Checkpoint advance / resume (watermark advances by ts).
+- UUID primary-key guard: since_id is ignored and watermark_id remains unset.
 - Source-scan guardrail: no LLM imports in adapters/owntracks.py.
 - Contracts registration: source upgraded from PLANNED to SUPPORTED.
 """
@@ -787,15 +788,14 @@ def test_owntracks_points_not_in_planned_names() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tuple-watermark: (ts, id) > ($1, $2) boundary precision
+# UUID primary-key checkpoint behavior
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
-    """When both ``since`` and ``since_id`` are provided, the query must use
-    the row-value comparison ``WHERE (ts, id) > ($1, $2)`` so that rows
-    sharing the same timestamp as the batch boundary are not missed.
+async def test_since_id_is_ignored_uuid_pk() -> None:
+    """OwnTracks rows use UUID primary keys, so integer ``since_id`` values
+    must not be used in tuple comparisons against ``id``.
     """
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
@@ -817,16 +817,14 @@ async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
     assert conn.fetch.await_count == 1
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "(ts, id) > ($1, $2)" in query
+    assert "ts > $1" in query
+    assert "(ts, id) > ($1, $2)" not in query
     assert call_args.args[1] == since
-    assert call_args.args[2] == since_id
 
 
 @pytest.mark.asyncio
 async def test_single_column_fallback_when_since_id_is_none() -> None:
-    """When ``since`` is given but ``since_id`` is None (pre-migration
-    checkpoint), the query must use the legacy ``WHERE ts > $1`` form.
-    """
+    """When ``since`` is given, the adapter uses ``WHERE ts > $1``."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -850,14 +848,10 @@ async def test_single_column_fallback_when_since_id_is_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_set_in_result() -> None:
-    """``AdapterResult.watermark_id`` must be set to the ``id`` of the
-    last-processed row so the base class can persist it as the new tuple
-    watermark.
-    """
+async def test_watermark_id_is_always_none_for_uuid_pk() -> None:
+    """The adapter never sets watermark_id because owntracks_points.id is UUID."""
     row = _make_row(ts=_NOW)
-    # Patch the row's id to a known integer value.
-    row["id"] = 99
+    row["id"] = "fd1822d6-b7a2-45b6-bcd8-bc18c73cb72d"
 
     adapter = OwnTracksPointAdapter()
     pool = _pool_returning(row)
@@ -872,20 +866,17 @@ async def test_watermark_id_set_in_result() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == _NOW
-    assert result.watermark_id == 99
+    assert result.watermark_id is None
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_tracks_max_id_at_same_timestamp() -> None:
-    """When multiple rows share the same timestamp, ``watermark_id`` must
-    track the maximum ``id`` seen at that timestamp (i.e. the last row in
-    the ORDER BY ts ASC, id ASC ordering).
-    """
+async def test_same_timestamp_uuid_rows_do_not_compare_ids_in_python() -> None:
+    """Rows with equal timestamps should not compare UUID ids to since_id."""
     t = _NOW
     rows = [
-        {**_make_row(ts=t, idempotency_key="k1"), "id": 10},
-        {**_make_row(ts=t, idempotency_key="k2"), "id": 20},
-        {**_make_row(ts=t, idempotency_key="k3"), "id": 30},
+        {**_make_row(ts=t, idempotency_key="k1"), "id": "fd1822d6-b7a2-45b6-bcd8-bc18c73cb72d"},
+        {**_make_row(ts=t, idempotency_key="k2"), "id": "982ff78c-7224-43f7-94a8-6d6ad2120c36"},
+        {**_make_row(ts=t, idempotency_key="k3"), "id": "d142af98-35d1-4857-8d00-691c1244d514"},
     ]
 
     adapter = OwnTracksPointAdapter()
@@ -901,23 +892,13 @@ async def test_watermark_id_tracks_max_id_at_same_timestamp() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == t
-    assert result.watermark_id == 30
+    assert result.watermark_id is None
+    assert result.rows_projected == 3
 
 
 @pytest.mark.asyncio
-async def test_boundary_rows_not_missed_with_tuple_watermark() -> None:
-    """Simulate the batch-boundary case where rows B and C share the same
-    timestamp as row A (the last row of the previous batch).
-
-    With single-column ``WHERE ts > $1``, rows B and C are EXCLUDED because
-    their ts equals the watermark.
-    With tuple ``WHERE (ts, id) > ($1, $2)``, rows B and C are INCLUDED if
-    their id is greater than the watermark id, even though ts is equal.
-
-    This test verifies that when ``since_id`` is provided, the query uses
-    the tuple path (by asserting the correct SQL is sent).  The actual
-    filtering is handled in Postgres; we assert the query string and params.
-    """
+async def test_stale_since_id_is_cleared_from_successful_result() -> None:
+    """A stale integer checkpoint must not be carried forward for OwnTracks."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -935,21 +916,20 @@ async def test_boundary_rows_not_missed_with_tuple_watermark() -> None:
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event"),
         patch("butlers.chronicler.adapters.owntracks.upsert_episode"),
     ):
-        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
+        result = await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
 
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    # The tuple comparison must be in the query.
-    assert "(ts, id) > ($1, $2)" in query
+    assert "ts > $1" in query
+    assert "(ts, id) > ($1, $2)" not in query
     assert call_args.args[1] == since
-    assert call_args.args[2] == since_id
+    assert result.watermark == since
+    assert result.watermark_id is None
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_preserved_when_no_rows() -> None:
-    """When no rows are returned, ``watermark_id`` must remain at the
-    ``since_id`` value so the checkpoint is not regressed.
-    """
+async def test_watermark_id_cleared_when_no_rows() -> None:
+    """When no rows are returned, stale ``since_id`` is not preserved."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -973,4 +953,4 @@ async def test_watermark_id_preserved_when_no_rows() -> None:
         )
 
     assert result.watermark == prior_watermark
-    assert result.watermark_id == prior_watermark_id
+    assert result.watermark_id is None
