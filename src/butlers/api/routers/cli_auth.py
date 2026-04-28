@@ -64,13 +64,45 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
 
 
 def _build_on_success(db_manager: Any):
-    """Build an on_success callback that persists the token to DB."""
+    """Build an on_success callback that persists the token to DB.
+
+    For the ``codex`` provider an additional pre-warm step runs after
+    ``persist_token`` completes.  The pre-warm calls ``codex login status``
+    under the cross-process refresh lock so the newly-issued token is written
+    to disk and all concurrent butler invocations within its TTL skip the
+    server-side refresh race.
+    """
     store = _make_credential_store(db_manager)
     if store is None:
         return None
 
     async def _on_success(provider: CLIAuthProviderDef) -> None:
         await persist_token(provider, store)
+
+        if provider.name == "codex":
+            # Warm the freshly-issued token under the cross-process lock so
+            # all butler daemons see a valid access_token on disk before any
+            # of them start spawning Codex CLI invocations.
+            try:
+                import shutil as _shutil
+
+                from butlers.core.runtimes.codex import (
+                    CodexAdapter,
+                    _resolve_canonical_home,
+                    run_codex_pre_warm,
+                )
+
+                codex_binary = _shutil.which("codex")
+                real_home = _resolve_canonical_home(None)
+                if codex_binary and real_home:
+                    codex_dir = real_home / ".codex"
+                    await run_codex_pre_warm(codex_dir, codex_binary)
+                    # Mark pre-warm done for this process so the first spawn
+                    # takes the fast path.
+                    prewarm_key = str(codex_dir)
+                    CodexAdapter._prewarm_done.add(prewarm_key)
+            except Exception:
+                logger.exception("CLI auth on_success: codex pre-warm failed (non-fatal)")
 
     return _on_success
 
