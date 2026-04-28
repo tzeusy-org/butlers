@@ -851,7 +851,9 @@ async def test_retry_on_transient_remote_compaction_failure(caplog):
 
     assert call_count == 2
     assert result_text == "ok"
-    assert any("hit transient remote-compaction failure" in rec.getMessage() for rec in caplog.records)
+    assert any(
+        "hit transient remote-compaction failure" in rec.getMessage() for rec in caplog.records
+    )
     assert not any(
         rec.levelno >= logging.ERROR and "remote compaction failed" in rec.getMessage()
         for rec in caplog.records
