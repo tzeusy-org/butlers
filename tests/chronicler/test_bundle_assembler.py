@@ -124,6 +124,30 @@ def test_sensitive_events_excluded_from_bundle() -> None:
     assert "owntracks.points:pt-1" in refs
 
 
+def test_sensitive_masking_works_with_enum_member() -> None:
+    """Sensitive masking works when canonical_privacy is a Privacy Enum member, not a string.
+
+    Rows coming from model objects (not via dataclasses.asdict) may carry Enum
+    members.  The assembler must mask them correctly regardless.
+    """
+    from butlers.chronicler.models import Privacy
+
+    # Build rows with actual Privacy Enum members, not plain strings.
+    sensitive_ep = _episode(source_ref="core.sessions:ep-s", privacy="normal")
+    sensitive_ep["canonical_privacy"] = Privacy.SENSITIVE
+    normal_ep = _episode(source_ref="core.sessions:ep-n", privacy="normal")
+    normal_ep["canonical_privacy"] = Privacy.NORMAL
+
+    bundle = assemble_day_close_bundle(
+        date_label="2026-04-25",
+        episodes=[sensitive_ep, normal_ep],
+        events=[],
+    )
+    refs = [e.get("source_ref") for e in bundle.bundle["episodes"]]
+    assert "core.sessions:ep-s" not in refs
+    assert "core.sessions:ep-n" in refs
+
+
 def test_all_sensitive_yields_empty_bundle() -> None:
     """All-sensitive input produces empty bundle without errors."""
     eps = [_episode(privacy="sensitive") for _ in range(5)]

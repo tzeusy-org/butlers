@@ -156,8 +156,10 @@ def _serialise_row(
 
     Keeps only the fields in *keep_fields* plus a stripped version of the
     ``payload`` dict (if present).  Converts ``datetime`` values to ISO-8601
-    strings so the result is JSON-serializable without a custom encoder.
+    strings and Enum members to their ``.value`` so the result is always
+    JSON-serializable without relying on a custom encoder.
     """
+    import enum
     from datetime import datetime
 
     result: dict[str, Any] = {}
@@ -166,6 +168,8 @@ def _serialise_row(
             val = row[key]
             if isinstance(val, datetime):
                 val = val.isoformat()
+            elif isinstance(val, enum.Enum):
+                val = val.value
             result[key] = val
 
     payload = row.get("payload")
@@ -231,9 +235,17 @@ def _make_rollup(source_name: str, items: list[dict[str, Any]], *, kind: str) ->
 
 
 def _is_sensitive(row: dict[str, Any]) -> bool:
-    """Return True when the row has canonical_privacy='sensitive'."""
+    """Return True when the row has canonical_privacy='sensitive'.
+
+    Accepts plain strings (most common — rows arrive via ``dataclasses.asdict``
+    which converts StrEnum members to their values) and bare Enum members (for
+    callers that pass model objects directly).
+    """
     privacy = row.get("canonical_privacy") or row.get("privacy")
-    return str(privacy).lower() == "sensitive"
+    if privacy is None:
+        return False
+    val = getattr(privacy, "value", privacy)
+    return str(val).lower() == "sensitive"
 
 
 def _serialise_items(
@@ -348,19 +360,23 @@ def assemble_day_close_bundle(
     }
 
     # --- Apply max_total_chars budget by trimming tails -----------------------
+    # Prefer keeping episodes; trim events first, then episodes.
+    # Use a single initial serialization to measure size, then subtract
+    # per-item sizes to avoid re-serializing the full bundle each iteration.
     if config.max_total_chars > 0:
         import json
 
-        while True:
-            serialized = json.dumps(bundle_payload, default=str)
-            if len(serialized) <= config.max_total_chars:
-                break
-            # Prefer keeping episodes; trim events first, then episodes.
+        serialized = json.dumps(bundle_payload, default=str)
+        current_len = len(serialized)
+        while current_len > config.max_total_chars:
             if bundle_payload["events"]:
-                bundle_payload["events"] = bundle_payload["events"][:-1]
+                removed = bundle_payload["events"].pop()
+                # Subtract the item + its JSON separator (`, ` or surrounding brackets).
+                current_len -= len(json.dumps(removed, default=str)) + 2
                 bundle_payload["events_truncated"] = True
             elif bundle_payload["episodes"]:
-                bundle_payload["episodes"] = bundle_payload["episodes"][:-1]
+                removed = bundle_payload["episodes"].pop()
+                current_len -= len(json.dumps(removed, default=str)) + 2
                 bundle_payload["episodes_truncated"] = True
             else:
                 break
