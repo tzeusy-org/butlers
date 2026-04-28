@@ -65,18 +65,19 @@ async def _apply_chronicler_schema(pool) -> None:
     """Run the Chronicler DDL against the provisioned pool.
 
     Keeps the integration lightweight: no Alembic bootstrap required.
-    Keep aligned with all chronicler migrations under
-    ``roster/chronicler/migrations/``. When adding a new migration that
-    alters the schema, update this function to match.
-
-    WARNING: This schema is manually duplicated from migrations. Ensure any
-    changes to migrations are reflected here and vice versa.
+    Must stay in sync with the full chronicler migration chain
+    (``roster/chronicler/migrations/``). The CI test
+    ``tests/chronicler/test_schema_drift.py`` automatically detects drift
+    between this inline DDL and the Alembic migration chain.
 
     Current migrations reflected here:
     - 001_chronicler_tables: base schema
     - 002_per_schema_watermarks: subsource column and composite PK on projection_checkpoints
     - 005_tuple_watermark: watermark_id column on projection_checkpoints
     - 006_checkpoint_carryover: carryover JSONB column on projection_checkpoints
+
+    Tables intentionally omitted (not needed by storage integration tests):
+    - ``tier2_cache`` (migration 004)
     """
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS source_adapter_state (
