@@ -19,6 +19,8 @@ FileNotFoundError.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import fcntl
 import json
@@ -411,10 +413,12 @@ def _resolve_canonical_home(real_home: str | None) -> Path | None:
 
 
 def _read_codex_token_expires_at(codex_dir: Path) -> float | None:
-    """Read the ``expires_at`` epoch seconds from ``~/.codex/auth.json``.
+    """Read the Codex access-token expiry from ``~/.codex/auth.json``.
 
     Returns the numeric expiry timestamp, or ``None`` when the file is absent,
-    unreadable, or does not contain a parseable ``expires_at`` field.  The raw
+    unreadable, or does not contain a parseable expiry.  Older auth files used
+    a top-level ``expires_at`` field; current Codex auth files store a JWT at
+    ``tokens.access_token`` whose payload contains the ``exp`` claim.  The raw
     file content is never logged to satisfy the security-and-secrets bar.
     """
     auth_path = codex_dir / "auth.json"
@@ -426,9 +430,27 @@ def _read_codex_token_expires_at(codex_dir: Path) -> float | None:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return None
-    val = data.get("expires_at") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+
+    val = data.get("expires_at")
     if isinstance(val, (int, float)):
         return float(val)
+
+    access_token = (data.get("tokens") or {}).get("access_token")
+    if not isinstance(access_token, str):
+        return None
+    parts = access_token.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+    except (binascii.Error, ValueError, json.JSONDecodeError):
+        return None
+    exp = payload.get("exp") if isinstance(payload, dict) else None
+    if isinstance(exp, (int, float)):
+        return float(exp)
     return None
 
 
