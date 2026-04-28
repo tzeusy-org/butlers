@@ -887,16 +887,19 @@ async def save_carryover(
     created (with ``carryover`` only) if it does not yet exist, but the
     normal ``upsert_checkpoint`` path is expected to create it first.
     """
-    await conn.execute(
-        """
-        INSERT INTO projection_checkpoints (source_name, subsource, carryover)
-        VALUES ($1, '', $2::jsonb)
-        ON CONFLICT (source_name, subsource) DO UPDATE
-        SET carryover = EXCLUDED.carryover
-        """,
-        source_name,
-        json.dumps(carryover),
-    )
+    try:
+        await conn.execute(
+            """
+            INSERT INTO projection_checkpoints (source_name, subsource, carryover)
+            VALUES ($1, '', $2::jsonb)
+            ON CONFLICT (source_name, subsource) DO UPDATE
+            SET carryover = EXCLUDED.carryover
+            """,
+            source_name,
+            json.dumps(carryover),
+        )
+    except asyncpg.PostgresError:
+        return
 
 
 __all__: Sequence[str] = (

@@ -165,6 +165,22 @@ async def test_get_carryover_returns_empty_on_db_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_save_carryover_ignores_missing_carryover_column() -> None:
+    import asyncpg
+
+    from butlers.chronicler.storage import save_carryover
+
+    conn = AsyncMock()
+    conn.execute = AsyncMock(
+        side_effect=asyncpg.exceptions.UndefinedColumnError("column carryover does not exist")
+    )
+
+    await save_carryover(conn, "owntracks.points", {"open": {"source_ref": "ref:1"}})
+
+    conn.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_get_carryover_parses_dict_from_string() -> None:
     import json
 
