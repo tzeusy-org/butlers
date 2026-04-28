@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -811,7 +812,7 @@ async def test_no_retry_on_nonzero_exit():
             )
 
 
-async def test_retry_on_transient_remote_compaction_failure():
+async def test_retry_on_transient_remote_compaction_failure(caplog):
     """Transient Codex backend compaction failures should retry and recover."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
@@ -836,19 +837,25 @@ async def test_retry_on_transient_remote_compaction_failure():
         )
         return proc
 
-    with (
-        patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0,)),
-    ):
-        result_text, _, _ = await adapter.invoke(
-            prompt="test",
-            system_prompt="",
-            mcp_servers=_MCP_SERVERS,
-            env={},
-        )
+    with caplog.at_level(logging.WARNING, logger="butlers.core.runtimes.codex"):
+        with (
+            patch(_EXEC, side_effect=_mock_exec),
+            patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0,)),
+        ):
+            result_text, _, _ = await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers=_MCP_SERVERS,
+                env={},
+            )
 
     assert call_count == 2
     assert result_text == "ok"
+    assert any("hit transient remote-compaction failure" in rec.getMessage() for rec in caplog.records)
+    assert not any(
+        rec.levelno >= logging.ERROR and "remote compaction failed" in rec.getMessage()
+        for rec in caplog.records
+    )
     info = adapter.last_process_info
     assert info["result_source"] == "retry"
     assert info["attempt_count"] == 2
@@ -856,7 +863,7 @@ async def test_retry_on_transient_remote_compaction_failure():
     assert info["retry_succeeded"] is True
 
 
-async def test_retry_on_transient_remote_compaction_failure_exhausted():
+async def test_retry_on_transient_remote_compaction_failure_exhausted(caplog):
     """Persistent remote-compaction failures should surface after bounded retries."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
@@ -879,19 +886,23 @@ async def test_retry_on_transient_remote_compaction_failure_exhausted():
         )
         return proc
 
-    with (
-        patch(_EXEC, side_effect=_mock_exec),
-        patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0, 0)),
-    ):
-        with pytest.raises(RuntimeError, match="remote compaction failed"):
-            await adapter.invoke(
-                prompt="test",
-                system_prompt="",
-                mcp_servers=_MCP_SERVERS,
-                env={},
-            )
+    with caplog.at_level(logging.WARNING, logger="butlers.core.runtimes.codex"):
+        with (
+            patch(_EXEC, side_effect=_mock_exec),
+            patch("butlers.core.runtimes.codex._TRANSIENT_CLI_RETRY_DELAYS", (0, 0)),
+        ):
+            with pytest.raises(RuntimeError, match="remote compaction failed"):
+                await adapter.invoke(
+                    prompt="test",
+                    system_prompt="",
+                    mcp_servers=_MCP_SERVERS,
+                    env={},
+                )
 
     assert call_count == 3
+    error_messages = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(error_messages) == 1
+    assert "persisted after 3 attempts" in error_messages[0]
     info = adapter.last_process_info
     assert info["result_source"] == "first"
     assert info["attempt_count"] == 3
