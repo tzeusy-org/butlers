@@ -472,12 +472,12 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
         yield
         return
 
-    loop = asyncio.get_event_loop()
     acquired = False
-    deadline = time.monotonic() + _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS
-    warned_contention = False
-
     try:
+        loop = asyncio.get_running_loop()
+        deadline = time.monotonic() + _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS
+        warned_contention = False
+
         while True:
             try:
                 await loop.run_in_executor(
@@ -485,7 +485,7 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
                 )
                 acquired = True
                 break
-            except OSError:
+            except BlockingIOError:
                 pass  # EAGAIN / EWOULDBLOCK — another process holds it
 
             remaining = deadline - time.monotonic()
