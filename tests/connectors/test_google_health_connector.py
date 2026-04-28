@@ -713,9 +713,7 @@ async def test_poll_activity_resource_uses_daily_rollup_post(
                     {
                         "rollupDataPoints": [
                             {
-                                "civilStartTime": {
-                                    "date": {"year": 2026, "month": 4, "day": 24}
-                                },
+                                "civilStartTime": {"date": {"year": 2026, "month": 4, "day": 24}},
                                 "steps": {"countSum": "1234"},
                             }
                         ]
@@ -723,9 +721,7 @@ async def test_poll_activity_resource_uses_daily_rollup_post(
                     {
                         "rollupDataPoints": [
                             {
-                                "civilStartTime": {
-                                    "date": {"year": 2026, "month": 4, "day": 24}
-                                },
+                                "civilStartTime": {"date": {"year": 2026, "month": 4, "day": 24}},
                                 "activeMinutes": {
                                     "activeMinutesRollupByActivityLevel": [
                                         {"activityLevel": "MODERATE", "activeMinutes": "12"}

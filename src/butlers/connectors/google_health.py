@@ -1249,8 +1249,7 @@ class GoogleHealthConnector:
             params = self._build_params(bundle, state, since, until)
             data = await client.get_json(bundle.endpoint_path, params=params)
             records = [
-                _normalize_google_health_record(bundle, record)
-                for record in _extract_records(data)
+                _normalize_google_health_record(bundle, record) for record in _extract_records(data)
             ]
 
         # Observe rate-limit headers per resource for metrics visibility.
