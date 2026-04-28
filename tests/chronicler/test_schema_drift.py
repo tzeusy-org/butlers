@@ -21,16 +21,15 @@ Mechanism
 2. Apply the full Alembic chronicler migration chain to a second fresh DB (DB-B).
 3. Query ``information_schema.columns`` for every BASE TABLE in the ``public``
    schema of each DB.
-4. For every table that is common to both DBs (the overlap), compare column
-   sets.
-5. Fail with a clear diff message if any column is present in one DB but not
+4. Report any table in DB-A that is absent from DB-B (unexpected gap).
+5. For every table that is common to both DBs, compare column sets.
+6. Fail with a clear diff message if any column is present in one DB but not
    the other.
 
 Note: the inline DDL deliberately omits ``tier2_cache`` (migration 004) and
-other tables it does not need for storage integration testing.  That is
-intentional — this test only checks the *shared* tables for column drift.
-Adding a table to the migration chain without also adding it to
-``_apply_chronicler_schema`` is NOT considered drift by this test.
+other tables it does not need for storage integration testing.  Tables present
+only in DB-B (the migration chain) are ignored — only the tables the inline
+DDL creates are checked.
 
 Requires Docker.  Marked ``integration`` and skip-guarded in ``roster/conftest.py``.
 """
@@ -41,7 +40,6 @@ import asyncio
 import shutil
 import uuid
 from collections import defaultdict
-from typing import Any
 
 import asyncpg
 import pytest
@@ -54,20 +52,6 @@ from butlers.testing.migration import create_migration_db
 # ---------------------------------------------------------------------------
 
 _CHRONICLER_MIGRATION_CHAIN = "chronicler"
-
-# Tables the inline DDL creates.  Any table in this set that is also present
-# in the migration DB will be column-compared.
-_INLINE_DDL_TABLES = frozenset(
-    {
-        "source_adapter_state",
-        "projection_checkpoints",
-        "point_events",
-        "episodes",
-        "episode_event_links",
-        "overrides",
-        "idempotency_keys",
-    }
-)
 
 docker_available = shutil.which("docker") is not None
 
@@ -109,13 +93,13 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
             subsource TEXT NOT NULL DEFAULT '',
             watermark TIMESTAMPTZ,
             watermark_id BIGINT,
+            carryover JSONB,
             last_run_at TIMESTAMPTZ,
             last_success_at TIMESTAMPTZ,
             last_error TEXT,
             rows_projected BIGINT NOT NULL DEFAULT 0,
             run_count BIGINT NOT NULL DEFAULT 0,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            carryover JSONB,
             PRIMARY KEY (source_name, subsource)
         )
     """)
@@ -246,7 +230,7 @@ def _get_table_columns(db_url: str) -> dict[str, frozenset[str]]:
 # ---------------------------------------------------------------------------
 
 
-def test_inline_ddl_matches_alembic_migration_chain(postgres_container: Any) -> None:
+def test_inline_ddl_matches_alembic_migration_chain(postgres_container: object) -> None:
     """Column sets for shared tables must match between inline DDL and migration chain.
 
     Creates two isolated databases:
@@ -267,16 +251,7 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: Any) -> 
     db_a_name = f"test_drift_inline_{uuid.uuid4().hex[:10]}"
     db_a_url = create_migration_db(postgres_container, db_a_name)
 
-    parsed = _parse_db_url(db_a_url)
-    asyncio.run(
-        _run_inline_ddl(
-            host=parsed["host"],
-            port=parsed["port"],
-            user=parsed["user"],
-            password=parsed["password"],
-            database=parsed["database"],
-        )
-    )
+    asyncio.run(_run_inline_ddl(db_a_url))
 
     # ── Provision DB-B: Alembic migration chain ───────────────────────────
     db_b_name = f"test_drift_migrated_{uuid.uuid4().hex[:10]}"
@@ -289,13 +264,23 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: Any) -> 
     inline_cols = _get_table_columns(db_a_url)
     migrated_cols = _get_table_columns(db_b_url)
 
-    # Compare only tables that the inline DDL is responsible for.
-    shared_tables = sorted(_INLINE_DDL_TABLES & migrated_cols.keys() & inline_cols.keys())
+    inline_names = set(inline_cols.keys())
+    migrated_names = set(migrated_cols.keys())
 
     drift_lines: list[str] = []
-    for table in shared_tables:
-        in_inline = inline_cols.get(table, frozenset())
-        in_migrated = migrated_cols.get(table, frozenset())
+
+    # Tables created by inline DDL but absent from the migration chain.
+    missing_from_migrations = sorted(inline_names - migrated_names)
+    if missing_from_migrations:
+        drift_lines.append(
+            "  Tables in inline DDL but absent from migration chain: "
+            + ", ".join(missing_from_migrations)
+        )
+
+    # Compare column sets for tables present in both DBs.
+    for table in sorted(inline_names & migrated_names):
+        in_inline = inline_cols[table]
+        in_migrated = migrated_cols[table]
 
         only_in_inline = sorted(in_inline - in_migrated)
         only_in_migrated = sorted(in_migrated - in_inline)
@@ -310,14 +295,6 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: Any) -> 
                 f"  {table}: column(s) in migration chain but NOT in inline DDL: "
                 + ", ".join(only_in_migrated)
             )
-
-    # Tables declared by inline DDL but not created by migrations (unexpected gap).
-    missing_from_migrations = sorted(_INLINE_DDL_TABLES - migrated_cols.keys())
-    if missing_from_migrations:
-        drift_lines.append(
-            "  Tables in _INLINE_DDL_TABLES but absent from migration chain: "
-            + ", ".join(missing_from_migrations)
-        )
 
     if drift_lines:
         raise AssertionError(
@@ -334,25 +311,9 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: Any) -> 
 # ---------------------------------------------------------------------------
 
 
-def _parse_db_url(db_url: str) -> dict[str, Any]:
-    """Extract connection parameters from a postgresql://... URL."""
-    from urllib.parse import urlparse
-
-    parsed = urlparse(db_url)
-    return {
-        "host": parsed.hostname or "localhost",
-        "port": parsed.port or 5432,
-        "user": parsed.username or "postgres",
-        "password": parsed.password or "postgres",
-        "database": parsed.path.lstrip("/"),
-    }
-
-
-async def _run_inline_ddl(*, host: str, port: int, user: str, password: str, database: str) -> None:
-    """Connect to the target DB and apply the inline chronicler DDL."""
-    conn = await asyncpg.connect(
-        host=host, port=port, user=user, password=password, database=database
-    )
+async def _run_inline_ddl(dsn: str) -> None:
+    """Connect to the target DB via DSN and apply the inline chronicler DDL."""
+    conn = await asyncpg.connect(dsn=dsn)
     try:
         await _apply_inline_ddl(conn)
     finally:
