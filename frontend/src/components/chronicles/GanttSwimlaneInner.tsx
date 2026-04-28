@@ -271,12 +271,6 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
   const locationStatus: "pannable" | "unparseable" | null =
     rawLocation === null ? null : parsedCoords !== null ? "pannable" : "unparseable"
 
-  function handleClick() {
-    if (!isSensitive && parsedCoords !== null) {
-      panTo(parsedCoords.lat, parsedCoords.lng)
-    }
-  }
-
   const x = xPct * svgWidth
   const w = Math.max(widthPct * svgWidth, 2) // minimum 2px so bars are visible
   const y = laneY + LANE_PADDING_TOP + row * (LANE_HEIGHT + LANE_GAP)

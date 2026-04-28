@@ -403,7 +403,7 @@ describe("StreakCallouts — loading state", () => {
       isLoading: true,
       isError: false,
       refetch: vi.fn(),
-    } as ReturnType<typeof useChroniclesEpisodes>)
+    } as unknown as ReturnType<typeof useChroniclesEpisodes>)
 
     const html = renderToStaticMarkup(<StreakCallouts />)
     expect(html).toContain("streak-skeleton")
@@ -415,7 +415,7 @@ describe("StreakCallouts — loading state", () => {
       isLoading: true,
       isError: false,
       refetch: vi.fn(),
-    } as ReturnType<typeof useChroniclesEpisodes>)
+    } as unknown as ReturnType<typeof useChroniclesEpisodes>)
 
     const html = renderToStaticMarkup(<StreakCallouts />)
     expect(html).toContain("Loading streaks")
@@ -427,7 +427,7 @@ describe("StreakCallouts — loading state", () => {
       isLoading: true,
       isError: false,
       refetch: vi.fn(),
-    } as ReturnType<typeof useChroniclesEpisodes>)
+    } as unknown as ReturnType<typeof useChroniclesEpisodes>)
 
     const html = renderToStaticMarkup(<StreakCallouts />)
     // With stale data present, no skeleton — we render or hide based on streaks
@@ -446,7 +446,7 @@ describe("StreakCallouts — error state", () => {
       isLoading: false,
       isError: true,
       refetch: vi.fn(),
-    } as ReturnType<typeof useChroniclesEpisodes>)
+    } as unknown as ReturnType<typeof useChroniclesEpisodes>)
 
     const html = renderToStaticMarkup(<StreakCallouts />)
     // Silently hides on error — streaks are supplementary
@@ -465,7 +465,7 @@ describe("StreakCallouts — empty state", () => {
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
-    } as ReturnType<typeof useChroniclesEpisodes>)
+    } as unknown as ReturnType<typeof useChroniclesEpisodes>)
 
     const html = renderToStaticMarkup(<StreakCallouts />)
     // No streaks above 30-min threshold → hidden

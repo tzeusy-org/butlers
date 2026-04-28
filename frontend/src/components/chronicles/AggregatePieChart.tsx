@@ -26,7 +26,7 @@ import {
   PieChart,
   ResponsiveContainer,
   Tooltip,
-  type TooltipProps,
+  type TooltipContentProps,
 } from "recharts"
 
 // ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ interface CustomTooltipPayload {
   payload: PieSliceDatum
 }
 
-function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
+function CustomTooltip({ active, payload }: TooltipContentProps<number, string>) {
   if (!active || !payload || payload.length === 0) return null
   const entry = payload[0] as CustomTooltipPayload
   const { name, value, payload: slice } = entry
@@ -207,7 +207,7 @@ export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: Aggr
             cy="50%"
             outerRadius={100}
             label={({ name, percent }) =>
-              `${name} ${(percent * 100).toFixed(0)}%`
+              `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
             }
             labelLine={false}
           >
@@ -215,7 +215,7 @@ export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: Aggr
               <Cell key={entry.category} fill={entry.hex} />
             ))}
           </Pie>
-          <Tooltip content={<CustomTooltip />} />
+          <Tooltip<number, string> content={(props) => <CustomTooltip {...props} />} />
         </PieChart>
       </ResponsiveContainer>
     </div>
