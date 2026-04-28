@@ -36,6 +36,8 @@ from typing import Any
 
 import httpx
 
+from butlers.core.mcp_urls import prefer_ipv4_loopback_url
+
 logger = logging.getLogger(__name__)
 
 _KILL_SWITCH_ENV = "BUTLERS_MCP_WARMUP_DISABLED"
@@ -173,7 +175,7 @@ async def warmup_mcp_endpoints(
 
     This is a convenience wrapper around :func:`warmup_mcp_urls`.
     """
-    own_url = f"http://localhost:{butler_port}/mcp"
+    own_url = prefer_ipv4_loopback_url(f"http://localhost:{butler_port}/mcp")
     return await warmup_mcp_urls(butler_name, [own_url, *(extra_urls or [])])
 
 
@@ -194,7 +196,11 @@ async def warmup_mcp_urls(
         return []
 
     all_urls = list(
-        dict.fromkeys(url.strip() for url in urls if isinstance(url, str) and url.strip())
+        dict.fromkeys(
+            prefer_ipv4_loopback_url(url.strip())
+            for url in urls
+            if isinstance(url, str) and url.strip()
+        )
     )
     if not all_urls:
         return []

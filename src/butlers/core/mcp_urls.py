@@ -37,6 +37,32 @@ def canonical_runtime_mcp_url(url: str) -> str:
     return urlunparse(parsed._replace(path=_STREAMABLE_HTTP_PATH))
 
 
+def prefer_ipv4_loopback_url(url: str) -> str:
+    """Rewrite bare ``localhost`` MCP URLs to IPv4 loopback.
+
+    Butler MCP servers currently bind IPv4 listeners. On hosts where
+    ``localhost`` resolves to ``::1`` first, clients can intermittently fail to
+    connect unless we canonicalize exact ``localhost`` hosts to ``127.0.0.1``.
+    Preserve explicit IP literals and remote hosts as-is.
+
+    Operate on the raw ``netloc`` so any percent-encoded userinfo (e.g. a
+    username containing ``@`` or ``:``) is preserved exactly, since
+    ``urlparse`` decodes ``parsed.username`` / ``parsed.password``.
+    """
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() != "localhost":
+        return url
+
+    # Split netloc into [userinfo@]host[:port] while preserving raw encoding.
+    userinfo, sep, host_port = parsed.netloc.rpartition("@")
+    _, port_sep, port = host_port.partition(":")
+
+    # Replace host with 127.0.0.1 while preserving raw userinfo and port.
+    netloc = f"{userinfo}{sep}127.0.0.1{port_sep}{port}"
+
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
 def runtime_mcp_transport_from_url(url: str) -> RuntimeMcpTransport:
     """Infer runtime MCP transport from endpoint URL path.
 

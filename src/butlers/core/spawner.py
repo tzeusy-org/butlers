@@ -49,7 +49,11 @@ from butlers.core.general_settings import (
     load_general_settings,
 )
 from butlers.core.logging import resolve_log_root
-from butlers.core.mcp_urls import canonical_runtime_mcp_url, runtime_mcp_url
+from butlers.core.mcp_urls import (
+    canonical_runtime_mcp_url,
+    prefer_ipv4_loopback_url,
+    runtime_mcp_url,
+)
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     Complexity,
@@ -1180,7 +1184,7 @@ class Spawner:
         """Return a canonical warmup URL without per-session query params."""
         if not isinstance(url, str) or not url.strip():
             return None
-        parsed = urlsplit(canonical_runtime_mcp_url(url.strip()))
+        parsed = urlsplit(prefer_ipv4_loopback_url(canonical_runtime_mcp_url(url.strip())))
         if not parsed.scheme or not parsed.netloc:
             return None
         return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", "", ""))
