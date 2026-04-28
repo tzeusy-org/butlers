@@ -35,6 +35,7 @@ class AdapterResult:
     skipped_reason: str | None = None
     error: str | None = None
     watermark: datetime | None = None
+    watermark_id: int | None = None
     episodes_opened: int = 0
     episodes_closed: int = 0
     point_events: int = 0
@@ -69,6 +70,7 @@ class ProjectionAdapter(abc.ABC):
         *,
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> AdapterResult:
         """Project new source rows since ``since`` into Chronicler.
 
@@ -81,8 +83,15 @@ class ProjectionAdapter(abc.ABC):
             Write pool scoped to the ``chronicler`` schema. Used for
             upserts, links, and checkpoints.
         since:
-            Watermark from the previous successful run, or None for
+            Timestamp watermark from the previous successful run, or None for
             the first run.
+        since_id:
+            Row ``id`` of the last-projected source row from the previous run.
+            When both ``since`` and ``since_id`` are provided, adapters SHOULD
+            use the tuple comparison ``WHERE (ts_col, id) > ($1, $2)`` to avoid
+            missing rows that share the same timestamp at a batch boundary.
+            When ``since_id`` is None (first run, or pre-migration checkpoint),
+            adapters fall back to the single-column ``WHERE ts_col > $1`` form.
         """
 
     async def run(
@@ -94,6 +103,7 @@ class ProjectionAdapter(abc.ABC):
         """Fetch checkpoint, call ``project``, record outcome."""
         checkpoint = await get_checkpoint(chronicler_pool, self.source_name)
         since = checkpoint.watermark if checkpoint is not None else None
+        since_id = checkpoint.watermark_id if checkpoint is not None else None
 
         # Sparse interpretation invariant: the projection path MUST NOT
         # invoke an LLM. Enforced by convention and by guardrail tests
@@ -105,6 +115,7 @@ class ProjectionAdapter(abc.ABC):
                 pool,
                 chronicler_pool=chronicler_pool,
                 since=since,
+                since_id=since_id,
             )
         except Exception as exc:  # pragma: no cover — exercised in tests
             logger.exception("Adapter %s failed", self.source_name)
@@ -130,6 +141,7 @@ class ProjectionAdapter(abc.ABC):
             chronicler_pool,
             self.source_name,
             watermark=result.watermark,
+            watermark_id=result.watermark_id,
             success=result.success,
             rows_projected=result.rows_projected,
             error=result.error,

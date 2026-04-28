@@ -78,6 +78,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
         *,
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> AdapterResult:
         """Project sessions from each butler schema using per-schema watermarks.
 

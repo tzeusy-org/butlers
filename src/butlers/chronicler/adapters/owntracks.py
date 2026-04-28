@@ -71,10 +71,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         *,
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_points(pool, since)
+        rows = await self._fetch_points(pool, since, since_id)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -84,16 +85,25 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         if not rows:
             result.watermark = since
+            result.watermark_id = since_id
             return result
 
         # Project each row as a point event.
         latest_watermark = since
+        latest_watermark_id: int | None = since_id
         valid_rows: list[dict[str, Any]] = []
         for row in rows:
             ts = row["ts"]
             if isinstance(ts, datetime) and ts.tzinfo is not None:
                 if latest_watermark is None or ts > latest_watermark:
                     latest_watermark = ts
+                    latest_watermark_id = row["id"]
+                elif ts == latest_watermark:
+                    row_id = row["id"]
+                    if row_id is not None and (
+                        latest_watermark_id is None or row_id > latest_watermark_id
+                    ):
+                        latest_watermark_id = row_id
 
             normalized_row, warning = self._normalize_row(row)
             if warning is not None:
@@ -112,6 +122,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         result.episodes_closed += episodes_closed
 
         result.watermark = latest_watermark
+        result.watermark_id = latest_watermark_id
         return result
 
     def _normalize_row(
@@ -196,8 +207,15 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark.
+
+        When ``since`` and ``since_id`` are both provided, uses the tuple
+        comparison ``WHERE (ts, id) > ($1, $2)`` so rows sharing the same
+        timestamp as the previous batch boundary are not missed.  When only
+        ``since`` is provided (pre-migration checkpoint), falls back to the
+        single-column ``WHERE ts > $1`` form.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
@@ -226,6 +244,21 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         ORDER BY ts ASC, id ASC
                         LIMIT $1
                         """,
+                        self.batch_limit,
+                    )
+                elif since_id is not None:
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT id, idempotency_key, ts, lat, lon,
+                               accuracy, trigger, event, endpoint_identity,
+                               raw_payload, recorded_at
+                        FROM {_EVIDENCE_TABLE}
+                        WHERE (ts, id) > ($1, $2)
+                        ORDER BY ts ASC, id ASC
+                        LIMIT $3
+                        """,
+                        since,
+                        since_id,
                         self.batch_limit,
                     )
                 else:

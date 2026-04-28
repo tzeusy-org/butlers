@@ -84,11 +84,19 @@ class ProjectionCheckpoint:
 
     ``subsource`` is ``None`` for global (adapter-level) checkpoints and a
     non-empty string (e.g. the butler schema name) for per-sub-source rows.
+
+    ``watermark_id`` is the row ``id`` of the last-projected row from the source
+    evidence table, forming a tuple watermark ``(watermark, watermark_id)`` that
+    eliminates the batch-boundary missed-row edge case when multiple rows share
+    the same timestamp.  It is ``None`` for checkpoints written before migration
+    ``chronicler_005``; adapters fall back to single-column ``>`` semantics in
+    that case.
     """
 
     source_name: str
     subsource: str | None = None
     watermark: datetime | None = None
+    watermark_id: int | None = None
     last_run_at: datetime | None = None
     last_success_at: datetime | None = None
     last_error: str | None = None

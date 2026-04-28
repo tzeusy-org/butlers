@@ -229,6 +229,7 @@ async def upsert_checkpoint(
     source_name: str,
     *,
     watermark: datetime | None = None,
+    watermark_id: int | None = None,
     success: bool,
     rows_projected: int = 0,
     error: str | None = None,
@@ -238,15 +239,22 @@ async def upsert_checkpoint(
     Operates on the **global** checkpoint row (``subsource = ''``).
     For per-schema checkpoints use :func:`upsert_checkpoint_subsource`.
 
-    On success: updates watermark, last_success_at, rows_projected, clears
-    last_error. On failure: records last_error and last_run_at but does
+    On success: updates watermark, watermark_id, last_success_at, rows_projected,
+    clears last_error. On failure: records last_error and last_run_at but does
     NOT advance the watermark.
+
+    ``watermark_id`` is the ``id`` of the last-projected source row, forming a
+    tuple watermark ``(watermark, watermark_id)`` that eliminates the
+    batch-boundary missed-row edge case when multiple rows share the same
+    timestamp.  It may be ``None`` for adapters that do not yet carry the id
+    through their result.
     """
     await _upsert_checkpoint_row(
         conn,
         source_name=source_name,
         subsource="",
         watermark=watermark,
+        watermark_id=watermark_id,
         success=success,
         rows_projected=rows_projected,
         error=error,
@@ -259,6 +267,7 @@ async def upsert_checkpoint_subsource(
     subsource: str,
     *,
     watermark: datetime | None = None,
+    watermark_id: int | None = None,
     success: bool,
     rows_projected: int = 0,
     error: str | None = None,
@@ -269,6 +278,9 @@ async def upsert_checkpoint_subsource(
     the adapter (e.g. a butler schema name for ``CoreSessionsAdapter``).
     Per-sub-source rows are keyed on ``(source_name, subsource)`` and
     tracked independently of the global checkpoint.
+
+    ``watermark_id`` is the ``id`` of the last-projected source row; see
+    :func:`upsert_checkpoint` for full semantics.
     """
     if not subsource:
         raise ValueError("subsource must be a non-empty string")
@@ -277,6 +289,7 @@ async def upsert_checkpoint_subsource(
         source_name=source_name,
         subsource=subsource,
         watermark=watermark,
+        watermark_id=watermark_id,
         success=success,
         rows_projected=rows_projected,
         error=error,
@@ -289,6 +302,7 @@ async def _upsert_checkpoint_row(
     source_name: str,
     subsource: str,
     watermark: datetime | None,
+    watermark_id: int | None,
     success: bool,
     rows_projected: int,
     error: str | None,
@@ -297,18 +311,23 @@ async def _upsert_checkpoint_row(
 
     After migration 002 the primary key is ``(source_name, subsource)``
     where ``subsource = ''`` denotes the global (adapter-level) row.
+    After migration 005, ``watermark_id`` tracks the source row ``id`` of
+    the last-projected row alongside the timestamp watermark, enabling
+    tuple-comparison ``WHERE (ts, id) > ($1, $2)`` in adapters.
     """
     now = _utcnow()
     if success:
         await conn.execute(
             """
             INSERT INTO projection_checkpoints (
-                source_name, subsource, watermark, last_run_at, last_success_at,
+                source_name, subsource, watermark, watermark_id,
+                last_run_at, last_success_at,
                 last_error, rows_projected, run_count, updated_at
             )
-            VALUES ($1, $2, $3, $4, $4, NULL, $5, 1, $4)
+            VALUES ($1, $2, $3, $6, $4, $4, NULL, $5, 1, $4)
             ON CONFLICT (source_name, subsource) DO UPDATE SET
                 watermark = COALESCE(EXCLUDED.watermark, projection_checkpoints.watermark),
+                watermark_id = COALESCE(EXCLUDED.watermark_id, projection_checkpoints.watermark_id),
                 last_run_at = EXCLUDED.last_run_at,
                 last_success_at = EXCLUDED.last_success_at,
                 last_error = NULL,
@@ -321,15 +340,17 @@ async def _upsert_checkpoint_row(
             watermark,
             now,
             rows_projected,
+            watermark_id,
         )
     else:
         await conn.execute(
             """
             INSERT INTO projection_checkpoints (
-                source_name, subsource, watermark, last_run_at, last_success_at,
+                source_name, subsource, watermark, watermark_id,
+                last_run_at, last_success_at,
                 last_error, rows_projected, run_count, updated_at
             )
-            VALUES ($1, $2, NULL, $3, NULL, $4, 0, 1, $3)
+            VALUES ($1, $2, NULL, NULL, $3, NULL, $4, 0, 1, $3)
             ON CONFLICT (source_name, subsource) DO UPDATE SET
                 last_run_at = EXCLUDED.last_run_at,
                 last_error = EXCLUDED.last_error,
@@ -345,10 +366,13 @@ async def _upsert_checkpoint_row(
 
 def _row_to_checkpoint(row: asyncpg.Record) -> ProjectionCheckpoint:
     raw_subsource = row["subsource"] if "subsource" in row.keys() else ""
+    keys = row.keys()
+    watermark_id: int | None = row["watermark_id"] if "watermark_id" in keys else None
     return ProjectionCheckpoint(
         source_name=row["source_name"],
         subsource=raw_subsource if raw_subsource else None,
         watermark=row["watermark"],
+        watermark_id=watermark_id,
         last_run_at=row["last_run_at"],
         last_success_at=row["last_success_at"],
         last_error=row["last_error"],
