@@ -24,11 +24,35 @@ from butlers.core.model_routing import Complexity
 from butlers.scheduled_jobs import (
     _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
     _resolve_deterministic_schedule_job_name,
+    get_deterministic_schedule_job_registry,
 )
 
 logger = logging.getLogger(__name__)
 
 _DEFERRED_NOTIFY_TIMEOUT_S = 30
+
+
+def _deterministic_jobs_for_butler(
+    butler_name: str,
+) -> dict[str, Callable[..., Coroutine[Any, Any, Any]]]:
+    """Return job handlers for ``butler_name``, healing a mutated registry."""
+
+    jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler_name)
+    if jobs:
+        return jobs
+
+    fresh_jobs = get_deterministic_schedule_job_registry().get(butler_name, {})
+    if fresh_jobs:
+        _DETERMINISTIC_SCHEDULE_JOB_REGISTRY[butler_name] = fresh_jobs
+        logger.warning(
+            "Recovered deterministic scheduler registry entry from source-of-truth "
+            "(butler=%s, job_count=%d)",
+            butler_name,
+            len(fresh_jobs),
+        )
+        return fresh_jobs
+
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +110,7 @@ async def dispatch_scheduled_task(
                 f"(butler={butler_name!r}, job_name={resolved_job_name!r})"
             )
 
-        jobs_for_butler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler_name, {})
+        jobs_for_butler = _deterministic_jobs_for_butler(butler_name)
         handler = jobs_for_butler.get(resolved_job_name)
         if handler is None:
             registered_jobs = ", ".join(sorted(jobs_for_butler)) or "<none>"

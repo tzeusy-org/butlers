@@ -565,58 +565,81 @@ async def _run_chronicler_project_steam_job(
 # ---------------------------------------------------------------------------
 
 
-_DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
-    "general": {
-        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "collect_briefing_contributions": _run_collect_briefing_contributions_job,
-    },
-    "health": {
-        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_health_briefing_contribution_job,
-        "insight_scan": _run_health_insight_scan_job,
-    },
-    "finance": {
-        "daily_briefing_contribution": _run_finance_briefing_contribution_job,
-    },
-    "relationship": {
-        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_relationship_briefing_contribution_job,
-        "insight_scan": _run_relationship_insight_scan_job,
-        "interaction_sync": _run_relationship_interaction_sync_job,
-    },
-    "travel": {
-        "daily_briefing_contribution": _run_travel_briefing_contribution_job,
-        "insight_scan": _run_travel_insight_scan_job,
-    },
-    "education": {
-        "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
-        "daily_briefing_contribution": _run_education_briefing_contribution_job,
-    },
-    "chronicler": {
-        "chronicler_project_sessions": _run_chronicler_project_sessions_job,
-        "chronicler_project_calendar": _run_chronicler_project_calendar_job,
-        "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
-        "chronicler_project_steam": _run_chronicler_project_steam_job,
-    },
-    "home": {
-        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        **_HOME_DETERMINISTIC_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_home_briefing_contribution_job,
-    },
-    "lifestyle": {
-        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-        "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
-    },
-    "switchboard": {
-        "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
-        "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
-        **_MEMORY_MAINTENANCE_JOB_HANDLERS,
-    },
-    "qa": {
-        "qa_patrol": _run_qa_patrol_job,
-        "qa_pr_status_check": _run_qa_pr_status_check_job,
-    },
-}
+def _build_deterministic_schedule_job_registry() -> dict[
+    str, dict[str, _DeterministicScheduleJobHandler]
+]:
+    """Return a fresh deterministic job registry.
+
+    The exported module-level registry remains mutable for tests, but dispatch
+    code can rebuild from this source-of-truth when a long-lived process has
+    accidentally lost entries through mutation.
+    """
+
+    return {
+        "general": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "collect_briefing_contributions": _run_collect_briefing_contributions_job,
+        },
+        "health": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "daily_briefing_contribution": _run_health_briefing_contribution_job,
+            "insight_scan": _run_health_insight_scan_job,
+        },
+        "finance": {
+            "daily_briefing_contribution": _run_finance_briefing_contribution_job,
+        },
+        "relationship": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "daily_briefing_contribution": _run_relationship_briefing_contribution_job,
+            "insight_scan": _run_relationship_insight_scan_job,
+            "interaction_sync": _run_relationship_interaction_sync_job,
+        },
+        "travel": {
+            "daily_briefing_contribution": _run_travel_briefing_contribution_job,
+            "insight_scan": _run_travel_insight_scan_job,
+        },
+        "education": {
+            "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
+            "daily_briefing_contribution": _run_education_briefing_contribution_job,
+        },
+        "chronicler": {
+            "chronicler_project_sessions": _run_chronicler_project_sessions_job,
+            "chronicler_project_calendar": _run_chronicler_project_calendar_job,
+            "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
+            "chronicler_project_steam": _run_chronicler_project_steam_job,
+        },
+        "home": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            **_HOME_DETERMINISTIC_JOB_HANDLERS,
+            "daily_briefing_contribution": _run_home_briefing_contribution_job,
+        },
+        "lifestyle": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "daily_briefing_contribution": _run_lifestyle_briefing_contribution_job,
+        },
+        "switchboard": {
+            "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
+            "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+        },
+        "qa": {
+            "qa_patrol": _run_qa_patrol_job,
+            "qa_pr_status_check": _run_qa_pr_status_check_job,
+        },
+    }
+
+
+def get_deterministic_schedule_job_registry() -> dict[
+    str, dict[str, _DeterministicScheduleJobHandler]
+]:
+    """Return a fresh deterministic job registry snapshot."""
+
+    return _build_deterministic_schedule_job_registry()
+
+
+_DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = (
+    _build_deterministic_schedule_job_registry()
+)
 
 
 def _resolve_deterministic_schedule_job_name(
