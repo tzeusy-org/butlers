@@ -485,6 +485,58 @@ async def test_sleep_spanning_midnight_utc() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Null valid_at: row must be skipped, not stored as sentinel epoch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_null_valid_at_row_is_skipped() -> None:
+    """A fact with null valid_at must be skipped; rows_projected must not be incremented."""
+    row = _make_row(valid_at=None)  # type: ignore[arg-type]
+    adapter = GoogleHealthSleepAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    # Row must not be counted or stored
+    assert result.rows_projected == 0
+    assert len(upserted) == 0, "upsert_episode must NOT be called for null valid_at rows"
+
+
+@pytest.mark.asyncio
+async def test_null_valid_at_does_not_store_sentinel_epoch() -> None:
+    """Null valid_at must not produce an episode with start_at=epoch (1970-01-01)."""
+    row = _make_row(valid_at=None)  # type: ignore[arg-type]
+    adapter = GoogleHealthSleepAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
+    ):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    for ep in upserted:
+        assert ep.start_at.year != 1970, "Sentinel epoch must not be stored for null valid_at"
+
+
+# ---------------------------------------------------------------------------
 # Graceful degradation: missing evidence surface
 # ---------------------------------------------------------------------------
 

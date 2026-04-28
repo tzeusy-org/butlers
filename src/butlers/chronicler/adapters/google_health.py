@@ -43,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 SOURCE_NAME = "google_health.measurements"
 EPISODE_TYPE_SLEEP = "sleep_episode"
-_HEALTH_SCHEMA = "health"
 _FACTS_TABLE = "health.facts"
 _PREDICATE = "sleep_session"
 DEFAULT_BATCH_LIMIT = 500
@@ -82,7 +81,9 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
 
         latest_watermark = since
         for row in rows:
-            await self._project_row(chronicler_pool, row)
+            episode = await self._project_row(chronicler_pool, row)
+            if episode is None:
+                continue
             result.rows_projected += 1
             result.episodes_closed += 1
 
@@ -163,7 +164,7 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
-    ) -> Episode:
+    ) -> Episode | None:
         idempotency_key: str | None = row["idempotency_key"]
         fact_id = str(row["id"])
 
@@ -177,15 +178,11 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
         # --- Derive episode boundaries -----------------------------------
         start_at: datetime | None = row["valid_at"]
         if start_at is None:
-            # valid_at is required for a meaningful sleep episode; skip row.
             logger.warning(
                 "google_health sleep adapter: fact %s has null valid_at; skipping",
                 fact_id,
             )
-            # Return a placeholder episode — the caller counts rows but won't
-            # store a meaningful episode.  Upsert with start_at=epoch so the
-            # episode can be corrected later if the fact is updated.
-            start_at = datetime(1970, 1, 1, tzinfo=UTC)
+            return None
 
         metadata: dict[str, Any] = dict(row["metadata"] or {})
         end_at = _derive_end_at(start_at, metadata)

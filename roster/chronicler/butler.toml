@@ -56,6 +56,12 @@ dispatch_mode = "job"
 job_name = "chronicler_project_home_assistant"
 
 [[butler.schedule]]
+name = "chronicler_project_google_health_sleep"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_google_health_sleep"
+
+[[butler.schedule]]
 name = "chronicler_day_close"
 cron = "5 1 * * *"
 dispatch_mode = "prompt"
