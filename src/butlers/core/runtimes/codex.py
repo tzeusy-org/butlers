@@ -287,9 +287,17 @@ def _should_retry_transient_cli_failure(process_info: dict[str, Any] | None) -> 
     if process_info.get("exit_code") in (None, 0):
         return False
 
-    stderr = process_info.get("stderr", "")
-    stderr_text = stderr if isinstance(stderr, str) else str(stderr)
-    return _looks_like_transient_cli_failure(stderr_text)
+    candidates: list[str] = []
+    for key in ("error_detail", "stderr"):
+        value = process_info.get(key, "")
+        if isinstance(value, str):
+            text = value
+        else:
+            text = str(value)
+        if text:
+            candidates.append(text)
+
+    return any(_looks_like_transient_cli_failure(text) for text in candidates)
 
 
 def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
@@ -1288,6 +1296,7 @@ class CodexAdapter(RuntimeAdapter):
                     self._last_process_info["result_source"] = "nonzero_exit_stdout"
                     return recovered
                 error_detail = _select_error_detail(stderr, stdout, returncode)
+                self._last_process_info["error_detail"] = error_detail
                 error_detail = _augment_transport_error_detail(error_detail, mcp_servers)
                 logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
