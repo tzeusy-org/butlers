@@ -50,8 +50,15 @@ dispatch_mode = "prompt"
 complexity = "high"
 prompt = """
 Run the Chronicler day-close interpretation for yesterday:
-- Fetch the bounded episode/event bundle for yesterday via chronicler_list_episodes / chronicler_list_events.
-- Produce a brief day-close summary that cites source refs.
-- Do NOT invoke per-event LLM calls — this is one single interpretation over the bundle.
-- If the bundle is empty, exit silently.
+1. Compute yesterday's date (the day before today UTC).
+2. Call `chronicler_day_close_bundle(date_label="<yesterday>")` to fetch a
+   pre-truncated, token-bounded bundle.  Do NOT call chronicler_list_episodes
+   or chronicler_list_events directly — the bundle tool enforces the hard cap
+   and sensitive-event masking.
+3. If the bundle contains no episodes and no events, exit silently.
+4. Produce a brief day-close summary (3-10 bullet points) that:
+   - Cites source_ref values from the bundle's citations list.
+   - Notes any roll-up entries (sources with rollup=true) by count.
+   - Does NOT echo or infer sensitive payloads.
+5. Send the summary via notify(channel="telegram", intent="send", message=<summary>).
 """
