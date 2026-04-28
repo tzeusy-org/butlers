@@ -74,11 +74,7 @@ def _strip_null_bytes(value: Any) -> Any:
     """
 
     def _sanitize_text(text: str) -> str:
-        return "".join(
-            ch
-            for ch in text
-            if ch != "\x00" and not 0xD800 <= ord(ch) <= 0xDFFF
-        )
+        return "".join(ch for ch in text if ch != "\x00" and not 0xD800 <= ord(ch) <= 0xDFFF)
 
     if isinstance(value, str):
         return _sanitize_text(value)

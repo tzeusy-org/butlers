@@ -314,18 +314,26 @@ class TestIngestV1Basic:
     async def test_ingest_strips_postgres_invalid_unicode_before_jsonb_insert(
         self, pool: asyncpg.Pool
     ) -> None:
-        """Lone UTF-16 surrogates are removed before JSONB/text persistence."""
+        """Lone UTF-16 surrogates inside payload.raw are stripped before JSONB persistence.
+
+        Pydantic v2 rejects lone surrogates in typed `str` fields at envelope
+        validation, so the only path to PostgreSQL is the loosely-typed
+        ``payload.raw`` dict. This is the production failure mode the
+        ``_strip_null_bytes`` sanitizer guards against (PostgreSQL
+        ``UntranslatableCharacterError`` on JSONB insert).
+        """
         envelope = _make_telegram_envelope(
             update_id="999002",
-            bot_id="test_\ud800bot",
-            sender_id="user_\udfffalice",
-            thread_id="thread_\ud80042",
-            text="Hello \ud800world",
+            bot_id="test_bot",
+            sender_id="user_alice",
+            thread_id="thread_42",
+            text="Hello world",
         )
         envelope["payload"]["raw"] = {
             "message": {
                 "text": "Hello \ud800world",
                 "meta\udfffkey": "value\ud800",
+                "nested": {"in\ud800ner": "a\udfffb"},
             }
         }
 
@@ -337,14 +345,11 @@ class TestIngestV1Basic:
         )
         assert row is not None
 
-        request_context = json.loads(row["request_context"])
         raw_payload = json.loads(row["raw_payload"])
-        assert request_context["source_endpoint_identity"] == "test_bot"
-        assert request_context["source_sender_identity"] == "user_alice"
-        assert request_context["source_thread_identity"] == "thread_42"
-        assert row["normalized_text"] == "Hello world"
-        assert raw_payload["payload"]["raw"]["message"]["text"] == "Hello world"
-        assert raw_payload["payload"]["raw"]["message"]["metakey"] == "value"
+        message = raw_payload["payload"]["raw"]["message"]
+        assert message["text"] == "Hello world"
+        assert message["metakey"] == "value"
+        assert message["nested"] == {"inner": "ab"}
 
 
 class TestIngestV1Deduplication:

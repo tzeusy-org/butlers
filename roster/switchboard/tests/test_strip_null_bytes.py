@@ -19,7 +19,9 @@ def test_strips_null_from_dict_values():
 
 
 def test_strips_invalid_unicode_from_dict_keys_and_values():
-    result = _strip_null_bytes({"bad\ud800key": "val\udfffue", "nested": {"in\ud800ner": "a\udfffb"}})
+    result = _strip_null_bytes(
+        {"bad\ud800key": "val\udfffue", "nested": {"in\ud800ner": "a\udfffb"}}
+    )
     assert result == {"badkey": "value", "nested": {"inner": "ab"}}
 
 
