@@ -314,6 +314,36 @@ async def test_point_event_omits_accuracy_from_payload_when_none() -> None:
     assert "accuracy" not in upserted_events[0].payload
 
 
+@pytest.mark.asyncio
+async def test_nonfinite_accuracy_is_omitted_without_failing_projection() -> None:
+    row = _make_row(accuracy=float("nan"))
+    adapter = OwnTracksPointAdapter()
+    upserted_events: list[PointEvent] = []
+
+    async def _fake_upsert_event(conn: object, event: PointEvent) -> PointEvent:
+        upserted_events.append(event)
+        return event
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_point_event",
+            side_effect=_fake_upsert_event,
+        ),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode") as mock_ep,
+    ):
+        mock_ep.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert result.point_events == 1
+    assert len(result.warnings) == 1
+    assert "accuracy" in result.warnings[0]
+    assert "accuracy" not in upserted_events[0].payload
+
+
 # ---------------------------------------------------------------------------
 # Source_ref / idempotency
 # ---------------------------------------------------------------------------
@@ -565,6 +595,29 @@ async def test_undefined_table_exception_returns_skipped_result() -> None:
     assert result.skipped is True
     assert result.rows_projected == 0
     assert result.watermark is None
+    mock_pe.assert_not_called()
+    mock_ep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_nonfinite_lat_skips_row_and_advances_watermark() -> None:
+    row = _make_row(lat=float("nan"), idempotency_key="bad-lat")
+    adapter = OwnTracksPointAdapter()
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode") as mock_ep,
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 0
+    assert result.point_events == 0
+    assert result.episodes_closed == 0
+    assert result.watermark == _NOW
+    assert len(result.warnings) == 1
+    assert "lat must be finite" in result.warnings[0]
     mock_pe.assert_not_called()
     mock_ep.assert_not_called()
 
