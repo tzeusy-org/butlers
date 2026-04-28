@@ -69,9 +69,14 @@ async def _apply_chronicler_schema(pool) -> None:
     ``roster/chronicler/migrations/``. When adding a new migration that
     alters the schema, update this function to match.
 
+    WARNING: This schema is manually duplicated from migrations. Ensure any
+    changes to migrations are reflected here and vice versa.
+
     Current migrations reflected here:
     - 001_chronicler_tables: base schema
+    - 002_per_schema_watermarks: subsource column and composite PK on projection_checkpoints
     - 005_tuple_watermark: watermark_id column on projection_checkpoints
+    - 006_checkpoint_carryover: carryover JSONB column on projection_checkpoints
     """
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS source_adapter_state (
@@ -96,6 +101,8 @@ async def _apply_chronicler_schema(pool) -> None:
     # watermark_id added in migration 005_tuple_watermark: stores the source-table
     # id of the last-projected row to form a tuple watermark (watermark, watermark_id)
     # that eliminates batch-boundary missed-row edge cases.
+    # carryover added in migration 006_checkpoint_carryover: nullable JSONB for
+    # open-episode state that adapters persist across batch boundaries.
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS projection_checkpoints (
             source_name TEXT NOT NULL REFERENCES source_adapter_state(source_name)
@@ -103,6 +110,7 @@ async def _apply_chronicler_schema(pool) -> None:
             subsource TEXT NOT NULL DEFAULT '',
             watermark TIMESTAMPTZ,
             watermark_id BIGINT,
+            carryover JSONB,
             last_run_at TIMESTAMPTZ,
             last_success_at TIMESTAMPTZ,
             last_error TEXT,
