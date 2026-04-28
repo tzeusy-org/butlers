@@ -6,7 +6,7 @@ Defines the backend API contract for Chronicler-owned retrospective time reads
 and owner corrections. This capability intentionally does not define dashboard
 UX or claim the existing operational `/timeline` route.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Chronicler Temporal Reads
 
@@ -141,8 +141,6 @@ The Chronicler API change SHALL NOT repurpose the existing operational
   dashboard/API spec amendment before replacing or reusing the operational
   `/timeline` concept
 
-
-## Requirements
 ### Requirement: Chronicler Aggregations
 
 The API SHALL expose Chronicler-owned read endpoints under
