@@ -11,6 +11,7 @@ import asyncpg
 from butlers.chronicler.adapters import (
     CalendarCompletedAdapter,
     CoreSessionsAdapter,
+    HomeAssistantHistoryAdapter,
     MealsAdapter,
     OwnTracksPointAdapter,
     SteamPlayAdapter,
@@ -225,10 +226,25 @@ async def run_project_meals(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_home_assistant(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project Home Assistant state-change history into Chronicler."""
+    options = _parse_job_args(
+        "chronicler_project_home_assistant",
+        job_args,
+        supported_fields=("batch_limit",),
+    )
+    adapter = HomeAssistantHistoryAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
     "run_project_calendar",
+    "run_project_home_assistant",
     "run_project_meals",
     "run_project_owntracks",
     "run_project_sessions",
