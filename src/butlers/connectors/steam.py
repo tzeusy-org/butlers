@@ -235,17 +235,16 @@ _PLAY_HISTORY_SCHEMA = "connectors"
 _PLAY_HISTORY_TABLE = "steam_play_history"
 
 # Upsert into connectors.steam_play_history using the post-core_011 schema.
-# Conflicts on (steam_account_id, app_id, date); updates cumulative playtime.
+# Conflicts on (steam_account_id, app_id, date); accumulates per-poll deltas
+# so multiple polls on the same day sum to the day's total playtime.
 _PLAY_HISTORY_UPSERT_SQL = f"""
 INSERT INTO {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}
     (steam_id, steam_account_id, app_id, app_name, date, playtime_minutes, recorded_at)
 VALUES ($1, $2, $3, $4, $5, $6, now())
 ON CONFLICT (steam_account_id, app_id, date)
 DO UPDATE SET
-    playtime_minutes = GREATEST(
-        {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}.playtime_minutes,
-        EXCLUDED.playtime_minutes
-    ),
+    playtime_minutes = {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}.playtime_minutes
+                       + EXCLUDED.playtime_minutes,
     app_name     = COALESCE(EXCLUDED.app_name,
                             {_PLAY_HISTORY_SCHEMA}.{_PLAY_HISTORY_TABLE}.app_name),
     recorded_at  = now()
@@ -1059,19 +1058,11 @@ class SteamAccountPoller:
             prev_entry = (prev_snapshot or {}).get(str(app_id), {})
             prev_playtime = prev_entry.get("playtime_2weeks", 0) if prev_entry else None
 
-            # First poll — establish baseline: record current playtime in
-            # play_history but do NOT emit an event (no delta reference yet).
+            # First poll — establish baseline only. Do NOT write to
+            # play_history (no delta reference yet; writing playtime_2weeks
+            # would inflate today's total by up to 14 days of prior play)
+            # and do NOT emit an event.
             if prev_snapshot is None:
-                if playtime_2weeks > 0:
-                    await _upsert_play_history(
-                        self._db_pool,
-                        steam_id=self._state.steam_id,
-                        steam_account_id=self._state.steam_account_id,
-                        app_id=app_id,
-                        app_name=game_name,
-                        play_date=poll_dt,
-                        playtime_minutes=playtime_2weeks,
-                    )
                 continue
 
             # Emit event if:
@@ -1099,7 +1090,10 @@ class SteamAccountPoller:
                 await self._maybe_submit(envelope, data_type="recently_played")
                 events_emitted += 1
 
-                # Persist detected play session in play_history.
+                # Persist detected play session in play_history. Write the
+                # per-poll delta (not the rolling 14-day total), so the row
+                # for this date reflects only minutes played since the prior
+                # poll. Same-day re-polls accumulate via the additive upsert.
                 await _upsert_play_history(
                     self._db_pool,
                     steam_id=self._state.steam_id,
@@ -1107,7 +1101,7 @@ class SteamAccountPoller:
                     app_id=app_id,
                     app_name=game_name,
                     play_date=poll_dt,
-                    playtime_minutes=playtime_2weeks,
+                    playtime_minutes=delta,
                 )
 
         # Update cursor
