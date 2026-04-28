@@ -33,7 +33,12 @@ import asyncpg
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
-from butlers.chronicler.storage import upsert_episode, upsert_point_event
+from butlers.chronicler.storage import (
+    get_carryover,
+    save_carryover,
+    upsert_episode,
+    upsert_point_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,8 +123,14 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             result.point_events += 1
 
         # Build movement episodes from the sorted point sequence.
-        episodes_closed = await self._project_movement_episodes(chronicler_pool, valid_rows)
-        result.episodes_closed += episodes_closed
+        # Load prior-batch carryover for cross-batch stitching.
+        if valid_rows:
+            prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+            episodes_closed, new_carryover = await self._project_movement_episodes(
+                chronicler_pool, valid_rows, prior_carryover
+            )
+            result.episodes_closed += episodes_closed
+            await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
         result.watermark_id = latest_watermark_id
@@ -330,24 +341,62 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         rows: list[dict[str, Any]],
-    ) -> int:
+        prior_carryover: dict,
+    ) -> tuple[int, dict]:
         """Collapse point sequences into movement episodes.
 
         Consecutive points with a gap <= ``movement_gap_minutes`` belong to
         the same episode.  A new episode starts when the gap exceeds the
         threshold or when the endpoint identity changes.
 
-        Returns the number of episodes upserted.
+        ``prior_carryover`` maps ``endpoint_identity`` → carryover dict from
+        the prior batch.  When the first point of a new batch is within
+        ``movement_gap_minutes`` of the last point of the prior batch's open
+        movement episode (same endpoint), the episode is extended rather than
+        starting a fresh fragmented one.
+
+        Returns ``(episodes_upserted, new_carryover)`` where ``new_carryover``
+        captures any open movement episode at the end of this batch.
         """
         if not rows:
-            return 0
+            return 0, {}
 
         gap = timedelta(minutes=self.movement_gap_minutes)
         episodes_upserted = 0
 
         # Each segment: list of rows in the same movement episode.
-        segments: list[list[dict[str, Any]]] = []
-        current: list[dict[str, Any]] = [rows[0]]
+        # Also tracks whether the segment continues a prior-batch open episode.
+        segments: list[dict] = []
+        first_row = rows[0]
+        endpoint = first_row["endpoint_identity"]
+
+        # Check if the first row continues a prior-batch open episode.
+        carry = prior_carryover.get(endpoint)
+        existing_source_ref: str | None = None
+        prior_start_at: datetime | None = None
+        prior_start_lat: float | None = None
+        prior_start_lon: float | None = None
+
+        if carry:
+            try:
+                prior_end_at = datetime.fromisoformat(carry["end_at"])
+                time_since_last = first_row["ts"] - prior_end_at
+                if time_since_last <= gap:
+                    # Continue the prior episode.
+                    existing_source_ref = carry["source_ref"]
+                    prior_start_at = datetime.fromisoformat(carry["start_at"])
+                    prior_start_lat = carry.get("start_lat")
+                    prior_start_lon = carry.get("start_lon")
+            except (KeyError, ValueError):
+                logger.warning(
+                    "Discarding malformed movement carryover for %s: %r", endpoint, carry
+                )
+
+        current: list[dict[str, Any]] = [first_row]
+        current_source_ref: str | None = existing_source_ref
+        current_prior_start_at: datetime | None = prior_start_at
+        current_prior_start_lat: float | None = prior_start_lat
+        current_prior_start_lon: float | None = prior_start_lon
 
         for row in rows[1:]:
             prev = current[-1]
@@ -356,30 +405,83 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             if same_identity and time_gap <= gap:
                 current.append(row)
             else:
-                segments.append(current)
+                segments.append(
+                    {
+                        "rows": current,
+                        "source_ref": current_source_ref,
+                        "prior_start_at": current_prior_start_at,
+                        "prior_start_lat": current_prior_start_lat,
+                        "prior_start_lon": current_prior_start_lon,
+                    }
+                )
                 current = [row]
-        segments.append(current)
+                current_source_ref = None
+                current_prior_start_at = None
+                current_prior_start_lat = None
+                current_prior_start_lon = None
+                # Check carryover for this new segment's endpoint too.
+                new_endpoint = row["endpoint_identity"]
+                new_carry = prior_carryover.get(new_endpoint)
+                if new_carry:
+                    try:
+                        new_prior_end_at = datetime.fromisoformat(new_carry["end_at"])
+                        gap_to_prior = row["ts"] - new_prior_end_at
+                        if gap_to_prior <= gap:
+                            current_source_ref = new_carry["source_ref"]
+                            current_prior_start_at = datetime.fromisoformat(new_carry["start_at"])
+                            current_prior_start_lat = new_carry.get("start_lat")
+                            current_prior_start_lon = new_carry.get("start_lon")
+                    except (KeyError, ValueError):
+                        logger.warning(
+                            "Discarding malformed movement carryover for %s: %r",
+                            new_endpoint,
+                            new_carry,
+                        )
+        segments.append(
+            {
+                "rows": current,
+                "source_ref": current_source_ref,
+                "prior_start_at": current_prior_start_at,
+                "prior_start_lat": current_prior_start_lat,
+                "prior_start_lon": current_prior_start_lon,
+            }
+        )
 
-        for segment in segments:
-            first = segment[0]
-            last = segment[-1]
-            start_at: datetime = first["ts"]
+        new_carryover: dict = {}
+
+        for seg in segments:
+            seg_rows: list[dict[str, Any]] = seg["rows"]
+            seg_source_ref: str | None = seg["source_ref"]
+            seg_prior_start_at: datetime | None = seg["prior_start_at"]
+            seg_prior_start_lat: float | None = seg["prior_start_lat"]
+            seg_prior_start_lon: float | None = seg["prior_start_lon"]
+
+            first = seg_rows[0]
+            last = seg_rows[-1]
+
+            # Effective start: use prior batch's start when extending.
+            effective_start_at: datetime = seg_prior_start_at if seg_prior_start_at else first["ts"]
             end_at: datetime = last["ts"]
             endpoint_identity: str = first["endpoint_identity"]
-            point_count = len(segment)
+            point_count = len(seg_rows)
 
-            # Source ref is keyed to (endpoint, start_ts) so it is stable
-            # even if the batch boundary shifts on replay.
-            start_tst = int(start_at.timestamp())
-            source_ref = f"{_EVIDENCE_TABLE}:movement:{endpoint_identity}:{start_tst}"
+            if seg_source_ref is None:
+                # New episode starting this batch.
+                start_tst = int(effective_start_at.timestamp())
+                seg_source_ref = f"{_EVIDENCE_TABLE}:movement:{endpoint_identity}:{start_tst}"
 
             title = f"Movement ({point_count} points)"
+
+            raw_start_lat = seg_prior_start_lat if seg_prior_start_lat is not None else first["lat"]
+            raw_start_lon = seg_prior_start_lon if seg_prior_start_lon is not None else first["lon"]
+            effective_start_lat = float(raw_start_lat)
+            effective_start_lon = float(raw_start_lon)
 
             payload: dict = {
                 "endpoint_identity": endpoint_identity,
                 "point_count": point_count,
-                "start_lat": float(first["lat"]),
-                "start_lon": float(first["lon"]),
+                "start_lat": effective_start_lat,
+                "start_lon": effective_start_lon,
                 "end_lat": float(last["lat"]),
                 "end_lon": float(last["lon"]),
             }
@@ -389,9 +491,9 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     conn,
                     Episode(
                         source_name=self.source_name,
-                        source_ref=source_ref,
+                        source_ref=seg_source_ref,
                         episode_type=EPISODE_TYPE_MOVEMENT,
-                        start_at=start_at,
+                        start_at=effective_start_at,
                         end_at=end_at,
                         precision=Precision.EXACT,
                         title=title,
@@ -401,7 +503,18 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 )
             episodes_upserted += 1
 
-        return episodes_upserted
+            # The last segment may be open (continues into the next batch).
+            # Record carryover for all segments; only the last one matters in
+            # practice, but we key by endpoint so multi-identity batches work.
+            new_carryover[endpoint_identity] = {
+                "source_ref": seg_source_ref,
+                "start_at": effective_start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "start_lat": effective_start_lat,
+                "start_lon": effective_start_lon,
+            }
+
+        return episodes_upserted, new_carryover
 
 
 __all__ = [
