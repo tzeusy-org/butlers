@@ -18,6 +18,12 @@ Semantics:
   where ``idempotency_key`` is the value written by the wellness-ingest
   pipeline (``google_health:sleep:{session_id}:session`` or the unqualified
   ``google_health:sleep:{session_id}``).  The key is stable across replays.
+- Cross-batch stitching: if the prior batch ended with an open sleep episode
+  (``end_at`` absent/None) and the first row in the new batch continues that
+  same session (matching session_id OR starting within
+  ``SLEEP_STITCH_GAP_MINUTES`` of the prior session's ``start_at``), the
+  prior ``source_ref`` is reused so the episode is extended in-place rather
+  than fragmented.
 - Watermark on ``created_at`` (monotonically increasing at fact-write time).
   Because ``facts.id`` is a UUID (not an integer serial), the adapter uses
   single-column ``WHERE created_at > $1`` semantics rather than the tuple
@@ -37,7 +43,7 @@ import asyncpg
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Precision, Privacy
-from butlers.chronicler.storage import upsert_episode
+from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,11 @@ _FACTS_TABLE = "health.facts"
 _PREDICATE = "sleep_session"
 DEFAULT_BATCH_LIMIT = 500
 
+# Maximum gap in minutes between the prior batch's open sleep episode start_at
+# and a new batch row's start_at for them to be considered the same session
+# when the session_id cannot be compared (e.g. idempotency key format differs).
+SLEEP_STITCH_GAP_MINUTES = 30
+
 
 class GoogleHealthSleepAdapter(ProjectionAdapter):
     """Project ``health.facts`` sleep-session rows into Chronicler.
@@ -55,11 +66,24 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
     The episode spans ``[valid_at, end_at)`` where ``end_at`` is derived from
     the fact's ``metadata.end_time`` (preferred) or
     ``valid_at + duration_ms / 1000`` (fallback).
+
+    Cross-batch stitching is applied automatically: if the previous batch
+    ended with an open sleep episode (no ``end_at``), the open episode's
+    ``source_ref`` is reused for matching rows in the next batch so that
+    the episode is extended in-place rather than producing a fragmented pair.
+    A row "matches" the carryover when it shares the same session_id OR
+    starts within ``SLEEP_STITCH_GAP_MINUTES`` of the prior session's start.
     """
 
-    def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
+    def __init__(
+        self,
+        *,
+        batch_limit: int = DEFAULT_BATCH_LIMIT,
+        sleep_stitch_gap_minutes: int = SLEEP_STITCH_GAP_MINUTES,
+    ) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
+        self.sleep_stitch_gap_minutes = sleep_stitch_gap_minutes
 
     async def project(
         self,
@@ -79,9 +103,15 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
             )
             return result
 
+        # Load prior-batch carryover state for cross-batch stitching.
+        prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+
         latest_watermark = since
+        last_open_episode: dict | None = None  # track the last open (no end_at) episode
+
         for row in rows:
-            episode = await self._project_row(chronicler_pool, row)
+            prior_source_ref = self._match_carryover(prior_carryover, row)
+            episode = await self._project_row(chronicler_pool, row, prior_source_ref)
             if episode is None:
                 continue
             result.rows_projected += 1
@@ -92,9 +122,80 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
                 if latest_watermark is None or candidate > latest_watermark:
                     latest_watermark = candidate
 
+            # Track whether the last valid episode is "open" (no end_at).
+            if episode.end_at is None:
+                last_open_episode = {
+                    "source_ref": episode.source_ref,
+                    "start_at": episode.start_at.isoformat(),
+                    "session_id": self._extract_session_id(row),
+                }
+            else:
+                last_open_episode = None
+
+        # Persist carryover only when there were valid rows (protects against
+        # an empty/malformed batch erasing prior state).
+        if result.rows_projected > 0:
+            new_carryover = (
+                {"open_episode": last_open_episode} if last_open_episode is not None else {}
+            )
+            await save_carryover(chronicler_pool, self.source_name, new_carryover)
+
         result.watermark = latest_watermark
         # watermark_id is left None: facts.id is UUID, not an integer serial.
         return result
+
+    def _match_carryover(
+        self,
+        prior_carryover: dict,
+        row: asyncpg.Record,
+    ) -> str | None:
+        """Return the prior episode's source_ref if this row continues it.
+
+        Matching criteria (either is sufficient):
+        1. Same session_id as the carryover open episode.
+        2. Row's start_at (valid_at) is within ``sleep_stitch_gap_minutes``
+           of the carryover episode's start_at (temporal proximity).
+
+        Returns ``None`` when there is no carryover, the carryover is
+        malformed, or the row does not match.
+        """
+        if not prior_carryover:
+            return None
+
+        open_ep = prior_carryover.get("open_episode")
+        if not open_ep:
+            return None
+
+        try:
+            prior_source_ref: str = open_ep["source_ref"]
+            prior_start_at = datetime.fromisoformat(open_ep["start_at"])
+            prior_session_id: str | None = open_ep.get("session_id")
+        except (KeyError, ValueError):
+            logger.warning(
+                "google_health sleep adapter: discarding malformed carryover: %r", open_ep
+            )
+            return None
+
+        # Check session_id match.
+        row_session_id = self._extract_session_id(row)
+        if prior_session_id and row_session_id and prior_session_id == row_session_id:
+            return prior_source_ref
+
+        # Check temporal proximity.
+        row_start_at: datetime | None = row["valid_at"]
+        if row_start_at is not None:
+            gap = abs((row_start_at - prior_start_at).total_seconds())
+            if gap <= self.sleep_stitch_gap_minutes * 60:
+                return prior_source_ref
+
+        return None
+
+    @staticmethod
+    def _extract_session_id(row: asyncpg.Record) -> str | None:
+        """Extract session_id from a fact row's metadata, or None if absent."""
+        metadata: dict = dict(row["metadata"] or {})
+        session_id = metadata.get("session_id")
+        return str(session_id) if session_id is not None else None
 
     async def _fetch_facts(
         self,
@@ -164,16 +265,20 @@ class GoogleHealthSleepAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         row: asyncpg.Record,
+        prior_source_ref: str | None = None,
     ) -> Episode | None:
         idempotency_key: str | None = row["idempotency_key"]
         fact_id = str(row["id"])
 
-        # Stable source_ref: prefer idempotency_key, fall back to fact UUID.
-        source_ref = (
-            f"{_FACTS_TABLE}:{_PREDICATE}:{idempotency_key}"
-            if idempotency_key
-            else f"{_FACTS_TABLE}:{_PREDICATE}:{fact_id}"
-        )
+        # Stable source_ref: if cross-batch stitching identified a prior open
+        # episode for this session, reuse it.  Otherwise prefer idempotency_key,
+        # fall back to fact UUID.
+        if prior_source_ref is not None:
+            source_ref = prior_source_ref
+        elif idempotency_key:
+            source_ref = f"{_FACTS_TABLE}:{_PREDICATE}:{idempotency_key}"
+        else:
+            source_ref = f"{_FACTS_TABLE}:{_PREDICATE}:{fact_id}"
 
         # --- Derive episode boundaries -----------------------------------
         start_at: datetime | None = row["valid_at"]
@@ -274,5 +379,6 @@ __all__ = [
     "DEFAULT_BATCH_LIMIT",
     "EPISODE_TYPE_SLEEP",
     "GoogleHealthSleepAdapter",
+    "SLEEP_STITCH_GAP_MINUTES",
     "SOURCE_NAME",
 ]
