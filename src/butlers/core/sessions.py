@@ -39,12 +39,19 @@ def _strip_untranslatable_chars(value: str | None) -> str | None:
     converting JSON escape sequences back to text. Runtime/tool payloads can
     still contain those values in Python strings, so normalize them away before
     inserting into TEXT/JSONB columns.
+
+    Uses the C-implemented ``encode``/``decode`` fast path for surrogate
+    stripping so large prompts and tool payloads do not pay a per-character
+    Python loop.
     """
     if value is None:
         return None
-    if "\x00" not in value and not any(0xD800 <= ord(ch) <= 0xDFFF for ch in value):
-        return value
-    return "".join(ch for ch in value if ch != "\x00" and not 0xD800 <= ord(ch) <= 0xDFFF)
+    res = value.replace("\x00", "")
+    try:
+        res.encode("utf-8")
+        return res
+    except UnicodeEncodeError:
+        return res.encode("utf-8", "ignore").decode("utf-8")
 
 
 def _sanitize_json_value(value: Any) -> Any:
