@@ -1096,6 +1096,12 @@ class CodexAdapter(RuntimeAdapter):
                         self._last_process_info["retry_succeeded"] = False
                         self._last_process_info["attempt_count"] = subprocess_attempt_count
                         self._last_process_info["result_source"] = "first"
+                    logger.error(
+                        "Codex CLI transient remote-compaction failure persisted after "
+                        "%d attempts: %s",
+                        subprocess_attempt_count,
+                        first_exc,
+                    )
                     raise first_exc
 
                 if self._last_process_info:
@@ -1281,7 +1287,12 @@ class CodexAdapter(RuntimeAdapter):
                 error_detail = _select_error_detail(stderr, stdout, returncode)
                 self._last_process_info["error_detail"] = error_detail
                 error_detail = _augment_transport_error_detail(error_detail, mcp_servers)
-                logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
+                log = (
+                    logger.warning
+                    if _looks_like_transient_cli_failure(error_detail)
+                    else logger.error
+                )
+                log("Codex CLI exited with code %d: %s", returncode, error_detail)
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
 
             return _parse_codex_output(stdout, stderr, returncode)
