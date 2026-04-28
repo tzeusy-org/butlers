@@ -317,6 +317,26 @@ async def test_recover_orphaned_sessions_closes_open_rows(pool):
     assert completed_row["error"] is None
 
 
+async def test_recover_orphaned_sessions_clamps_duration_for_very_old_rows(pool):
+    """30-day-old orphans must not overflow the INTEGER duration_ms column."""
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.core.sessions import recover_orphaned_sessions, session_create, sessions_get
+
+    sid = await session_create(
+        pool, prompt="ancient", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await pool.execute(
+        "UPDATE sessions SET started_at = $2 WHERE id = $1",
+        sid,
+        datetime.now(UTC) - timedelta(days=30),
+    )
+    n = await recover_orphaned_sessions(pool)
+    assert n == 1
+    row = await sessions_get(pool, sid)
+    assert row["duration_ms"] == 2147483647
+
+
 async def test_recover_orphaned_sessions_idempotent_and_no_open(pool):
     """Returns 0 when no open rows; second call after recovery also returns 0."""
     from butlers.core.sessions import (

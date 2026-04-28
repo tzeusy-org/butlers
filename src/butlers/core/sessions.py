@@ -289,9 +289,12 @@ async def recover_orphaned_sessions(pool: asyncpg.Pool) -> int:
                 error = COALESCE(error, 'orphaned: daemon restart'),
                 duration_ms = COALESCE(
                     duration_ms,
-                    GREATEST(
-                        0,
-                        (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint
+                    LEAST(
+                        GREATEST(
+                            (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint,
+                            0::bigint
+                        ),
+                        2147483647::bigint
                     )::integer
                 )
             WHERE completed_at IS NULL
