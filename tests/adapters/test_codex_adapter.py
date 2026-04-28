@@ -188,6 +188,9 @@ def test_parse_item_started_does_not_duplicate_tool_calls():
     assert tool_calls[0]["input"]["aggregated_output"] == "file.txt\n"
 
 
+_PREWARM = "butlers.core.runtimes.codex.run_codex_pre_warm"
+
+
 async def test_invoke_behaviors():
     """invoke() uses exec subcommand, injects HOME, raises on error, adds transport diagnostics."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
@@ -195,8 +198,8 @@ async def test_invoke_behaviors():
     mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
     mock_proc.returncode = 0
 
-    # exec subcommand
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+    # exec subcommand — patch pre-warm to prevent it from consuming a communicate() call
+    with patch(_EXEC, return_value=mock_proc) as mock_sub, patch(_PREWARM):
         await adapter.invoke(prompt="test", system_prompt="", mcp_servers={}, env={})
     assert mock_sub.call_args[0][:2] == ("/usr/bin/codex", "exec")
     assert "--ephemeral" in mock_sub.call_args[0]

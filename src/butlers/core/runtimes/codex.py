@@ -19,6 +19,8 @@ FileNotFoundError.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -38,6 +40,25 @@ logger = logging.getLogger(__name__)
 # Default timeout for Codex CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 _SAFE_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# Cross-process lock for serialising Codex CLI spawns during token refresh.
+# The lock file lives in ~/.codex/ so it is shared across all butler daemons
+# that mount the same home directory (container or host).
+_CODEX_REFRESH_LOCK_FILENAME = "butlers.refresh.lock"
+
+# Seconds before token expiry at which we consider a refresh imminent.
+# If the on-disk access_token expires within this window (or the expiry is
+# unknown), we take the slow path and hold the cross-process lock across the
+# entire Codex spawn so only one process refreshes at a time.
+_CODEX_TOKEN_EXPIRY_BUFFER_SECONDS = 60
+
+# Maximum time (seconds) to wait for the cross-process lock before giving up
+# and proceeding unlocked.  Avoids deadlocking the spawner when a sibling
+# process holds the lock unexpectedly long.
+_CODEX_REFRESH_LOCK_TIMEOUT_SECONDS = 30
+
+# Emit a structured warning when waiting for the lock takes longer than this.
+_CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS = 5
 
 # Retry delays (in seconds) when the Codex CLI fails to discover MCP tools.
 # Each entry triggers one retry attempt with the given delay beforehand.
@@ -384,6 +405,164 @@ def _resolve_canonical_home(real_home: str | None) -> Path | None:
     if env_home and env_home.parent.name == ".tmp" and env_home.parent.parent.name == ".codex":
         return _pwd_home() or env_home.parent.parent.parent
     return env_home or _pwd_home()
+
+
+def _read_codex_token_expires_at(codex_dir: Path) -> float | None:
+    """Read the ``expires_at`` epoch seconds from ``~/.codex/auth.json``.
+
+    Returns the numeric expiry timestamp, or ``None`` when the file is absent,
+    unreadable, or does not contain a parseable ``expires_at`` field.  The raw
+    file content is never logged to satisfy the security-and-secrets bar.
+    """
+    auth_path = codex_dir / "auth.json"
+    try:
+        raw = auth_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    val = data.get("expires_at") if isinstance(data, dict) else None
+    if isinstance(val, (int, float)):
+        return float(val)
+    return None
+
+
+def _token_needs_refresh(codex_dir: Path) -> bool:
+    """Return ``True`` when the on-disk Codex token is absent or near expiry.
+
+    "Near expiry" means the ``expires_at`` timestamp in ``auth.json`` is within
+    ``_CODEX_TOKEN_EXPIRY_BUFFER_SECONDS`` of the current wall-clock time.
+    Unknown expiry (missing file or field) is treated as needing refresh so the
+    first invocation after daemon boot always takes the serialised slow path.
+    """
+    expires_at = _read_codex_token_expires_at(codex_dir)
+    if expires_at is None:
+        return True
+    return time.time() >= expires_at - _CODEX_TOKEN_EXPIRY_BUFFER_SECONDS
+
+
+@contextlib.asynccontextmanager
+async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
+    """Async context manager that acquires a cross-process POSIX flock.
+
+    Tries ``fcntl.flock(LOCK_EX | LOCK_NB)`` in a thread pool executor so the
+    event loop is not blocked.  Retries for up to
+    ``_CODEX_REFRESH_LOCK_TIMEOUT_SECONDS`` seconds with 0.25s intervals.
+
+    If the lock cannot be acquired within the timeout the manager logs a
+    structured warning and yields anyway (the caller proceeds unlocked) so the
+    spawner is never deadlocked.
+
+    Usage::
+
+        async with _codex_refresh_lock(codex_dir):
+            await _run_codex_subprocess(...)
+    """
+    lock_path = codex_dir / _CODEX_REFRESH_LOCK_FILENAME
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    except OSError:
+        logger.warning(
+            "codex_refresh_lock: could not open lock file %s — proceeding unlocked",
+            lock_path,
+        )
+        yield
+        return
+
+    acquired = False
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = time.monotonic() + _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS
+        warned_contention = False
+
+        while True:
+            try:
+                await loop.run_in_executor(
+                    None, lambda: fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                )
+                acquired = True
+                break
+            except BlockingIOError:
+                pass  # EAGAIN / EWOULDBLOCK — another process holds it
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "codex_refresh_lock: lock held >%ds by another process — proceeding "
+                    "unlocked to avoid deadlock (lock_path=%s)",
+                    _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS,
+                    lock_path,
+                )
+                break
+
+            if not warned_contention and (
+                _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS - remaining
+                >= _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS
+            ):
+                warned_contention = True
+                logger.warning(
+                    "codex_refresh_lock: waiting >%ds for cross-process refresh lock — "
+                    "possible contention (lock_path=%s)",
+                    _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS,
+                    lock_path,
+                )
+
+            await asyncio.sleep(0.25)
+
+        yield
+
+    finally:
+        if acquired:
+            with contextlib.suppress(OSError):
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(lock_fd)
+
+
+async def run_codex_pre_warm(codex_dir: Path, codex_binary: str) -> None:
+    """Run ``codex login status`` under the cross-process refresh lock.
+
+    Forces a token refresh if the stored credentials are stale, so that all
+    subsequent Codex CLI invocations within the access-token TTL skip the
+    refresh entirely.  This should be called:
+
+    - On first ``CodexAdapter.invoke()`` per process (startup pre-warm).
+    - After a successful CLI auth flow for the ``codex`` provider.
+
+    The call is best-effort: any exception is logged and swallowed so the
+    caller's control flow is never disrupted.
+    """
+    try:
+        async with _codex_refresh_lock(codex_dir):
+            proc = await asyncio.create_subprocess_exec(
+                codex_binary,
+                "login",
+                "status",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, "HOME": str(codex_dir.parent)},
+            )
+            try:
+                _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
+                logger.warning("codex pre-warm: login status timed out after 30s")
+                return
+            if proc.returncode != 0:
+                stderr_snip = stderr_bytes.decode("utf-8", errors="replace").strip()[:200]
+                logger.warning(
+                    "codex pre-warm: login status exited %d — token may be invalid (stderr snip)",
+                    proc.returncode,
+                    extra={"codex_prewarm_stderr_len": len(stderr_snip)},
+                )
+            else:
+                logger.debug("codex pre-warm: login status OK")
+    except Exception:
+        logger.warning("codex pre-warm: unexpected error", exc_info=True)
 
 
 def _extract_text_field(value: Any) -> str | None:
@@ -1020,12 +1199,26 @@ class CodexAdapter(RuntimeAdapter):
     - Writing MCP config in Codex-compatible JSON format
     - Parsing CLI output into (result_text, tool_calls)
 
+    Cross-process refresh-token serialisation:
+        On the first ``invoke()`` per process and any time the on-disk
+        ``access_token`` is near expiry, the adapter acquires a POSIX flock on
+        ``~/.codex/butlers.refresh.lock`` before spawning the Codex CLI.  This
+        ensures only one butler daemon triggers an OAuth token refresh at a time,
+        eliminating ``refresh_token_reused`` errors during the first burst after
+        a daemon restart.
+
     Parameters
     ----------
     codex_binary:
         Path to the codex binary. If None, will be auto-detected on PATH
         at invocation time.
     """
+
+    # Process-wide flag: set to True after the first successful pre-warm so
+    # subsequent invocations on a fresh token skip the lock acquisition.
+    # Using a mutable class-level set so all instances in the same OS process
+    # share state without a global variable at module scope.
+    _prewarm_done: set[str] = set()  # keyed by canonical codex_dir path
 
     def __init__(self, codex_binary: str | None = None) -> None:
         self._codex_binary = codex_binary
@@ -1142,6 +1335,41 @@ class CodexAdapter(RuntimeAdapter):
         if runtime_args:
             cmd.extend(runtime_args)
 
+        # Resolve the canonical home directory early so we can check token
+        # expiry and run the pre-warm before creating the isolated tempdir.
+        real_home = _resolve_canonical_home(os.environ.get("HOME", ""))
+
+        # --- Cross-process refresh-token serialisation -----------------------
+        # When the on-disk auth.json exists but the access_token is near expiry
+        # (slow path), we must ensure only one butler process refreshes the token
+        # at a time.
+        #
+        # Strategy:
+        #   1. First invoke() per process with a stale token: run a cheap
+        #      ``codex login status`` pre-warm *under the lock* so that subsequent
+        #      fast-path invocations find a fresh token on disk and skip the lock.
+        #   2. Subsequent slow-path invocations (token still near expiry after
+        #      pre-warm): acquire the lock and hold it across the Codex spawn so
+        #      only one process triggers the server-side refresh at a time.
+        #   3. If auth.json does not exist yet (user not authenticated), skip
+        #      the slow path entirely — there is nothing to refresh.
+        real_codex_dir = real_home / ".codex" if real_home else None
+        # _auth_json_present: True only when the file exists; missing file →
+        # unauthenticated state, not a stale-token state.
+        _auth_json_present = real_codex_dir is not None and (real_codex_dir / "auth.json").exists()
+        _needs_refresh = _auth_json_present and _token_needs_refresh(real_codex_dir)
+        _prewarm_key = str(real_codex_dir) if real_codex_dir else ""
+
+        if _needs_refresh and _prewarm_key and _prewarm_key not in CodexAdapter._prewarm_done:
+            # First invoke() for this process on a token that looks stale:
+            # run a pre-warm to refresh the token before the actual spawn.
+            logger.debug("codex invoke: running startup pre-warm (prewarm_key=%s)", _prewarm_key)
+            await run_codex_pre_warm(real_codex_dir, binary)
+            CodexAdapter._prewarm_done.add(_prewarm_key)
+            # Re-evaluate — the pre-warm may have refreshed the token.
+            _needs_refresh = _auth_json_present and _token_needs_refresh(real_codex_dir)
+        # ---------------------------------------------------------------------
+
         # Write MCP config to a per-invocation config file under an isolated
         # HOME directory.  The Codex CLI reads MCP servers from
         # ``~/.codex/config.toml`` at startup — *before* ``-c`` overrides are
@@ -1151,7 +1379,6 @@ class CodexAdapter(RuntimeAdapter):
         # applied after the MCP client has already initialised with an empty
         # server list.  Writing a config file and pointing HOME at its parent
         # ensures the CLI discovers MCP servers during its earliest init phase.
-        real_home = _resolve_canonical_home(os.environ.get("HOME", ""))
         tmp_dir_obj = _create_isolated_home_tempdir(str(real_home) if real_home else None)
         tmp_dir = Path(tmp_dir_obj.name)
 
@@ -1210,9 +1437,28 @@ class CodexAdapter(RuntimeAdapter):
                 prompt_input,
             )
 
+        # Slow-path serialisation: when the token is near expiry (or unknown),
+        # hold the cross-process flock for the entire Codex spawn so only one
+        # butler process posts the refresh_token to OpenAI.  Fast-path spawns
+        # (token has ample lifetime) skip the lock entirely.
+        _slow_path = _needs_refresh and real_codex_dir is not None
+
+        async def _run_once_with_lock() -> tuple[
+            str | None, list[dict[str, Any]], dict[str, Any] | None
+        ]:
+            """Invoke Codex once, holding the cross-process lock on slow path."""
+            if _slow_path:
+                async with _codex_refresh_lock(real_codex_dir):  # type: ignore[arg-type]
+                    result = await _run_once()
+                # Token is now fresh; mark pre-warm done for this process.
+                if _prewarm_key:
+                    CodexAdapter._prewarm_done.add(_prewarm_key)
+                return result
+            return await _run_once()
+
         try:
             try:
-                result_text, tool_calls, usage = await _run_once()
+                result_text, tool_calls, usage = await _run_once_with_lock()
             except RuntimeError as exc:
                 if not _should_retry_transient_cli_failure(self._last_process_info):
                     raise
@@ -1234,7 +1480,7 @@ class CodexAdapter(RuntimeAdapter):
                     )
                     await asyncio.sleep(delay)
                     try:
-                        result_text, tool_calls, usage = await _run_once()
+                        result_text, tool_calls, usage = await _run_once_with_lock()
                     except RuntimeError:
                         if not _should_retry_transient_cli_failure(self._last_process_info):
                             if self._last_process_info:
@@ -1311,7 +1557,7 @@ class CodexAdapter(RuntimeAdapter):
                     )
                     await asyncio.sleep(delay)
                     attempt_count += 1
-                    retry_text, retry_calls, retry_usage = await _run_once()
+                    retry_text, retry_calls, retry_usage = await _run_once_with_lock()
                     # Preserve the most recent partial result so higher layers
                     # can reconcile parser output with daemon-side tool-call capture.
                     result_text, tool_calls, usage = retry_text, retry_calls, retry_usage
