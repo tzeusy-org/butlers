@@ -32,10 +32,21 @@ output_price_per_token = 0.00001    # $10.00 / 1M tokens
 input_price_per_token = 0.0000003   # $0.30 / 1M tokens (≤200K context)
 output_price_per_token = 0.0000025  # $2.50 / 1M tokens
 
-# OpenAI — sourced from https://developers.openai.com/api/docs/pricing/ (2026-03-08)
-# gpt-5.4 has two pricing tiers based on context length; entries below use the <272K tier.
+# OpenAI — sourced from https://developers.openai.com/api/docs/pricing/ (2026-04-28)
+# gpt-5.5 and gpt-5.4 have two pricing tiers based on context length; entries below use the <272K tier.
+# gpt-5.5 (>272K): $10.00/$45.00 per 1M tokens (cached input $1.00)
 # gpt-5.4 (>272K): $5.00/$22.50 per 1M tokens
 # gpt-5.4-pro (>272K): $60.00/$270.00 per 1M tokens
+# gpt-5.5-pro has no long-context tier.
+
+[models."gpt-5.5"]
+input_price_per_token = 0.000005    # $5.00 / 1M tokens (<272K context)
+cached_input_price_per_token = 0.0000005  # $0.50 / 1M tokens (<272K context)
+output_price_per_token = 0.00003    # $30.00 / 1M tokens (<272K context)
+
+[models."gpt-5.5-pro"]
+input_price_per_token = 0.00003     # $30.00 / 1M tokens
+output_price_per_token = 0.00018    # $180.00 / 1M tokens
 
 [models."gpt-5.4"]
 input_price_per_token = 0.0000025   # $2.50 / 1M tokens (<272K context)
