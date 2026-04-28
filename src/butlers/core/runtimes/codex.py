@@ -532,6 +532,17 @@ def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     reconnect logs). Falls through to filtered stderr, then other stdout
     extraction strategies, and finally the bare exit code.
     """
+    # Prefer per-event structured failure details: ``turn.failed`` events
+    # render with redacted unknown payloads and join multi-field errors
+    # (e.g. ``message`` + ``code``).
+    stdout_detail = _select_stdout_error_detail(stdout)
+    if stdout_detail:
+        return stdout_detail
+
+    # Defense-in-depth: ``_extract_structured_stdout_error`` covers the same
+    # turn.failed surface but via a reverse-walk; keep it as a backstop in
+    # case ``_select_stdout_error_detail`` returns ``None`` for an event
+    # shape its key list does not yet recognise.
     structured_stdout_error = _extract_structured_stdout_error(stdout)
     if structured_stdout_error:
         return structured_stdout_error
@@ -543,9 +554,12 @@ def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     if stderr_clean:
         return stderr_clean
 
-    stdout_detail, parsed_stdout_json = _extract_stdout_json_detail(stdout)
-    if stdout_detail:
-        return stdout_detail
+    # When no structured failure was extracted, surface assistant-message /
+    # result text via the broader extractor so non-failure stdout still
+    # produces an actionable headline instead of a bare ``exit code N``.
+    extra_detail, parsed_stdout_json = _extract_stdout_json_detail(stdout)
+    if extra_detail:
+        return extra_detail
 
     stdout_clean = stdout.strip()
     if parsed_stdout_json and stdout_clean:
@@ -553,6 +567,137 @@ def _select_error_detail(stderr: str, stdout: str, returncode: int) -> str:
     if stdout_clean:
         return stdout_clean
     return f"exit code {returncode}"
+
+
+def _select_stdout_error_detail(stdout: str) -> str | None:
+    """Return actionable stdout diagnostics while skipping routine JSON events.
+
+    Priority ordering is intentional: a structured failure event (e.g.
+    ``turn.failed``) is always more actionable than free-form plain text on
+    stdout, so structured error details win when present. Plain text only
+    surfaces if no structured failure event was extracted, and routine
+    progress JSON (``thread.started``, ``turn.started``, ``item.completed``)
+    is filtered out entirely so it cannot become the headline failure detail.
+
+    When a terminal ``*.failed`` event is present, only that event's detail
+    is surfaced — earlier transient ``error`` events (e.g. retry chatter)
+    are dropped so the headline reflects the actual cause.
+    """
+    plain_lines: list[str] = []
+    structured_lines: list[str] = []
+    terminal_failure_detail: str | None = None
+    saw_structured_json = False
+
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            plain_lines.append(line)
+            continue
+
+        if not isinstance(obj, dict):
+            plain_lines.append(line)
+            continue
+
+        saw_structured_json = True
+        detail = _extract_structured_error_detail(obj)
+        if not detail:
+            continue
+
+        structured_lines.append(detail)
+        obj_type = str(obj.get("type", "")).strip().lower()
+        if obj_type.endswith(".failed") or obj_type.endswith("_failed"):
+            # Walk forward — last terminal failure wins, matching the
+            # semantics of ``_extract_structured_stdout_error``.
+            terminal_failure_detail = detail
+
+    if terminal_failure_detail:
+        return terminal_failure_detail
+    if structured_lines:
+        return "\n".join(dict.fromkeys(structured_lines))
+    if plain_lines:
+        return "\n".join(dict.fromkeys(plain_lines))
+    if saw_structured_json:
+        return None
+
+    stdout_clean = stdout.strip()
+    return stdout_clean or None
+
+
+def _extract_structured_error_detail(obj: dict[str, Any]) -> str | None:
+    """Extract explicit failure details from a structured Codex event."""
+    candidates: list[str] = []
+    obj_type = str(obj.get("type", "")).strip().lower()
+    item = obj.get("item")
+
+    if obj_type == "error" or obj_type.endswith(".failed") or obj_type.endswith("_failed"):
+        candidates.extend(_structured_error_text_candidates(obj))
+
+    if isinstance(item, dict) and str(item.get("status", "")).strip().lower() == "failed":
+        candidates.extend(_structured_error_text_candidates(item))
+
+    unique_candidates = list(dict.fromkeys(candidate for candidate in candidates if candidate))
+    if unique_candidates:
+        return "\n".join(unique_candidates)
+    return None
+
+
+def _structured_error_text_candidates(obj: dict[str, Any]) -> list[str]:
+    """Collect human-readable error strings from a structured event payload."""
+    texts: list[str] = []
+    for key in ("error", "message", "detail", "details", "stderr", "aggregated_output"):
+        value = obj.get(key)
+        rendered = _render_structured_error_value(value)
+        if rendered:
+            texts.append(rendered)
+    return texts
+
+
+_UNRECOGNIZED_STRUCTURED_ERROR = "<unrecognized structured error payload>"
+
+
+def _render_structured_error_value(value: Any) -> str | None:
+    """Render nested structured error values as concise text.
+
+    Returns a categorical placeholder when a dict has no recognized error
+    key rather than dumping the full payload to the caller — exposing the
+    raw structure to upstream callers risks leaking internal shape and
+    creating noisy, fingerprintable error messages. The full payload is
+    logged at DEBUG level for diagnostics.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        preferred_parts: list[str] = []
+        for key in ("message", "detail", "details", "stderr", "error", "code"):
+            nested = _render_structured_error_value(value.get(key))
+            if nested:
+                preferred_parts.append(nested)
+        if preferred_parts:
+            return " | ".join(dict.fromkeys(preferred_parts))
+        try:
+            logger.debug(
+                "codex.adapter.structured_error.unrecognized payload=%s",
+                json.dumps(value, sort_keys=True),
+            )
+        except (TypeError, ValueError):
+            logger.debug("codex.adapter.structured_error.unrecognized payload=<unserializable>")
+        return _UNRECOGNIZED_STRUCTURED_ERROR
+    if isinstance(value, list):
+        parts = [_render_structured_error_value(item) for item in value]
+        filtered = [part for part in parts if part]
+        if filtered:
+            return " | ".join(dict.fromkeys(filtered))
+        return None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _parse_codex_output_payload(

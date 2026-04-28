@@ -529,6 +529,72 @@ def test_extract_structured_stdout_error_prefers_terminal_failure_message():
     )
 
 
+def test_select_error_detail_extracts_structured_stdout_failure_detail():
+    """Structured failure events on stdout should surface their message + code."""
+    stdout = json.dumps(
+        {
+            "type": "turn.failed",
+            "error": {"message": "Session aborted", "code": "session_aborted"},
+        }
+    )
+
+    detail = _select_error_detail("", stdout, 1)
+
+    assert detail == "Session aborted | session_aborted"
+
+
+def test_select_error_detail_prefers_structured_failure_over_plain_stdout():
+    """A structured failure event must beat unrelated plain text on stdout."""
+    stdout = "\n".join(
+        [
+            "Some routine plain banner line",
+            json.dumps(
+                {
+                    "type": "turn.failed",
+                    "error": {
+                        "message": "Quota exhausted",
+                        "code": "quota_exhausted",
+                    },
+                }
+            ),
+        ]
+    )
+
+    detail = _select_error_detail("", stdout, 1)
+
+    assert detail == "Quota exhausted | quota_exhausted"
+
+
+def test_select_error_detail_falls_back_to_plain_when_no_structured_failure():
+    """Plain stdout still wins when no structured failure event is present."""
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "thr_1"}),
+            "Boom: something bad happened",
+        ]
+    )
+
+    detail = _select_error_detail("", stdout, 1)
+
+    assert detail == "Boom: something bad happened"
+
+
+def test_select_error_detail_returns_categorical_placeholder_for_unrecognized_dict():
+    """Unrecognized dict shapes must not leak their internal structure to the caller."""
+    stdout = json.dumps(
+        {
+            "type": "turn.failed",
+            "error": {"unknown_field": "secret-internal-shape", "another": 7},
+        }
+    )
+
+    detail = _select_error_detail("", stdout, 1)
+
+    assert detail == "<unrecognized structured error payload>"
+    assert "secret-internal-shape" not in detail
+    assert "unknown_field" not in detail
+
+
 def test_resolve_canonical_home_collapses_nested_codex_tmp_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
