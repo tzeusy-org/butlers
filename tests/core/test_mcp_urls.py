@@ -61,3 +61,14 @@ def test_mcp_url_and_transport():
 
     # Falls back to URL inference
     assert resolve_runtime_mcp_transport({"url": "http://localhost:41103/sse"}) == "sse"
+
+
+def test_prefer_ipv4_loopback_url():
+    """Bare localhost loopback is rewritten; explicit addresses are preserved."""
+    assert prefer_ipv4_loopback_url("http://localhost:41103/mcp") == "http://127.0.0.1:41103/mcp"
+    assert (
+        prefer_ipv4_loopback_url("http://localhost:41103/mcp?runtime_session_id=sess-1")
+        == "http://127.0.0.1:41103/mcp?runtime_session_id=sess-1"
+    )
+    assert prefer_ipv4_loopback_url("http://127.0.0.1:41103/mcp") == "http://127.0.0.1:41103/mcp"
+    assert prefer_ipv4_loopback_url("http://[::1]:41103/mcp") == "http://[::1]:41103/mcp"

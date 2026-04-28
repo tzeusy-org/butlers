@@ -99,9 +99,38 @@ class TestWarmupEndpoint:
 
         init_call = mock_client.post.await_args_list[0]
         tools_call = mock_client.post.await_args_list[1]
+        assert init_call.args[0] == "http://127.0.0.1:9100/mcp"
+        assert tools_call.args[0] == "http://127.0.0.1:9100/mcp"
         assert init_call.kwargs["headers"] == _build_mcp_headers()
         assert tools_call.kwargs["headers"] == _build_mcp_headers(session_id="sess-abc")
         assert init_call.kwargs["headers"]["mcp-protocol-version"] == _MCP_PROTOCOL_VERSION
+
+    async def test_non_localhost_url_is_not_rewritten(self) -> None:
+        """Remote MCP endpoints keep their original host during warmup."""
+        from butlers.core.mcp_warmup import _warmup_endpoint
+
+        mock_response_init = AsyncMock()
+        mock_response_init.raise_for_status = lambda: None
+        mock_response_init.headers = {"mcp-session-id": "sess-abc"}
+
+        mock_response_tools = AsyncMock()
+        mock_response_tools.raise_for_status = lambda: None
+        mock_response_tools.headers = {}
+        mock_response_tools.json = lambda: {"result": {"tools": []}}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=[mock_response_init, mock_response_tools])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("butlers.core.mcp_warmup.httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            await _warmup_endpoint("https://example.com/mcp", butler_name="test-butler")
+
+        init_call = mock_client.post.await_args_list[0]
+        tools_call = mock_client.post.await_args_list[1]
+        assert init_call.args[0] == "https://example.com/mcp"
+        assert tools_call.args[0] == "https://example.com/mcp"
 
     def test_build_mcp_headers_match_streamable_http_requirements(self) -> None:
         """Warmup headers must match the streamable-HTTP negotiation that /mcp expects."""
