@@ -92,9 +92,12 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
     ),
     SourceAdapterState(
         source_name="home_assistant.history",
-        chronicler_compatibility=Compatibility.PLANNED,
+        chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.home_assistant_history",
-        boundary_semantics="state changes as point events; derived presence episodes",
+        boundary_semantics=(
+            "person.* state changes → presence_episode rollups; "
+            "contiguous home-state runs collapse into a single episode per entity"
+        ),
         optional_schema=True,
     ),
     # Meals — projection adapter landed in bu-qclzp (sibling epic bu-a512n).

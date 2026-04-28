@@ -570,6 +570,16 @@ async def _run_chronicler_project_meals_job(
     return await run_project_meals(pool, job_args)
 
 
+async def _run_chronicler_project_home_assistant_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's Home Assistant history projection job."""
+    from butlers.chronicler.jobs import run_project_home_assistant
+
+    return await run_project_home_assistant(pool, job_args)
+
+
 # ---------------------------------------------------------------------------
 # Consolidated registry
 # ---------------------------------------------------------------------------
@@ -618,6 +628,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,
             "chronicler_project_meals": _run_chronicler_project_meals_job,
+            "chronicler_project_home_assistant": _run_chronicler_project_home_assistant_job,
         },
         "home": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
