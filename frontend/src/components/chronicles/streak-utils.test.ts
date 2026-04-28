@@ -39,6 +39,7 @@ function makeEpisode(
     correction_note: null,
     created_at: startIso,
     updated_at: startIso,
+    category: sourceName,
   }
 }
 

@@ -58,27 +58,29 @@ function makeEpisode(overrides: Partial<ChroniclerEpisode> & { id: string }): Ch
     correction_note: null,
     created_at: "2026-04-25T00:00:00Z",
     updated_at: "2026-04-25T00:00:00Z",
+    category: "work",
     ...overrides,
   }
 }
 
 /**
- * Source/episode-type pairs recognised by `categoryForSource()`. Used to
- * override the default `core.sessions` / `work` fixture when a test needs
- * an episode in a different lane without touching the new `category` field.
+ * Source/episode-type pairs recognised by `categoryForSource()`, plus the
+ * matching `category` string that the backend would attach. Used to override
+ * the default `core.sessions` / `work` fixture when a test needs an episode
+ * in a different lane.
  */
 const CATEGORY_SOURCES: Record<
   string,
-  { source_name: string; episode_type: string }
+  { source_name: string; episode_type: string; category: string }
 > = {
-  work: { source_name: "core.sessions", episode_type: "work" },
-  calendar: { source_name: "google_calendar.completed", episode_type: "scheduled_block" },
-  music: { source_name: "spotify.session_summary", episode_type: "listening_episode" },
-  gaming: { source_name: "steam.play_history", episode_type: "play_episode" },
-  travel: { source_name: "owntracks.points", episode_type: "movement_episode" },
-  sleep: { source_name: "google_health.measurements", episode_type: "sleep_episode" },
-  meal: { source_name: "health.meals", episode_type: "eating_event" },
-  home: { source_name: "home_assistant.history", episode_type: "presence_episode" },
+  work: { source_name: "core.sessions", episode_type: "work", category: "work" },
+  calendar: { source_name: "google_calendar.completed", episode_type: "scheduled_block", category: "calendar" },
+  music: { source_name: "spotify.session_summary", episode_type: "listening_episode", category: "music" },
+  gaming: { source_name: "steam.play_history", episode_type: "play_episode", category: "gaming" },
+  travel: { source_name: "owntracks.points", episode_type: "movement_episode", category: "travel" },
+  sleep: { source_name: "google_health.measurements", episode_type: "sleep_episode", category: "sleep" },
+  meal: { source_name: "health.meals", episode_type: "eating_event", category: "meal" },
+  home: { source_name: "home_assistant.history", episode_type: "presence_episode", category: "home" },
 }
 
 // ---------------------------------------------------------------------------
@@ -617,7 +619,7 @@ describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
       id: "ep-unknown",
       source_name: "made.up",
       episode_type: "weird_thing",
-      // category intentionally omitted
+      category: "other",
     })
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner

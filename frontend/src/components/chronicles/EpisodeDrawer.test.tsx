@@ -106,6 +106,7 @@ function makeEpisode(overrides: Partial<ChroniclerEpisode> = {}): ChroniclerEpis
     correction_note: null,
     created_at: "2026-04-25T00:00:00Z",
     updated_at: "2026-04-25T00:00:00Z",
+    category: "work",
     ...overrides,
   }
 }
