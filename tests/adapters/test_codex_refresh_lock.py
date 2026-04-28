@@ -56,9 +56,7 @@ def _write_jwt_auth_json(codex_dir: Path, *, exp: float) -> None:
     codex_dir.mkdir(parents=True, exist_ok=True)
     header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
     payload = (
-        base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode("utf-8"))
-        .rstrip(b"=")
-        .decode()
+        base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode("utf-8")).rstrip(b"=").decode()
     )
     access_token = f"{header}.{payload}.sig"
     data = {"tokens": {"access_token": access_token}}

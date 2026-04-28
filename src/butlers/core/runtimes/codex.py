@@ -437,8 +437,12 @@ def _read_codex_token_expires_at(codex_dir: Path) -> float | None:
     if isinstance(val, (int, float)):
         return float(val)
 
-    access_token = (data.get("tokens") or {}).get("access_token")
-    if not isinstance(access_token, str):
+    tokens = data.get("tokens")
+    if isinstance(tokens, dict):
+        access_token = tokens.get("access_token")
+    else:
+        access_token = None
+    if not isinstance(access_token, str) or access_token == "":
         return None
     parts = access_token.split(".")
     if len(parts) < 2:
@@ -448,7 +452,9 @@ def _read_codex_token_expires_at(codex_dir: Path) -> float | None:
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
     except (binascii.Error, ValueError, json.JSONDecodeError):
         return None
-    exp = payload.get("exp") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp")
     if isinstance(exp, (int, float)):
         return float(exp)
     return None
