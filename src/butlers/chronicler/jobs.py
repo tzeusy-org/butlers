@@ -14,6 +14,7 @@ from butlers.chronicler.adapters import (
     OwnTracksPointAdapter,
     SteamPlayAdapter,
 )
+from butlers.chronicler.contracts import seed_source_registry
 from butlers.config import list_butlers
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ async def run_project_sessions(
         job_args,
         supported_fields=("batch_limit",),
     )
+    await seed_source_registry(db_pool)
     adapter = CoreSessionsAdapter(
         butler_schemas=_discover_session_schemas(),
         **options,
@@ -159,6 +161,7 @@ async def run_project_calendar(
         job_args,
         supported_fields=("batch_limit",),
     )
+    await seed_source_registry(db_pool)
     adapter = CalendarCompletedAdapter(
         butler_schemas=_discover_calendar_schemas(),
         **options,
@@ -177,6 +180,7 @@ async def run_project_owntracks(
         job_args,
         supported_fields=("batch_limit", "movement_gap_minutes"),
     )
+    await seed_source_registry(db_pool)
     adapter = OwnTracksPointAdapter(**options)
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
     return _adapter_result_to_dict(result)
@@ -192,6 +196,7 @@ async def run_project_steam(
         job_args,
         supported_fields=("batch_limit",),
     )
+    await seed_source_registry(db_pool)
     adapter = SteamPlayAdapter(**options)
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
     return _adapter_result_to_dict(result)
