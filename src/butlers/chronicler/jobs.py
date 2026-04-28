@@ -11,6 +11,7 @@ import asyncpg
 from butlers.chronicler.adapters import (
     CalendarCompletedAdapter,
     CoreSessionsAdapter,
+    MealsAdapter,
     OwnTracksPointAdapter,
     SteamPlayAdapter,
 )
@@ -210,10 +211,25 @@ async def run_project_steam(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_meals(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project health meals into Chronicler as eating_event point events."""
+    options = _parse_job_args(
+        "chronicler_project_meals",
+        job_args,
+        supported_fields=("batch_limit",),
+    )
+    adapter = MealsAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
     "run_project_calendar",
+    "run_project_meals",
     "run_project_owntracks",
     "run_project_sessions",
     "run_project_steam",

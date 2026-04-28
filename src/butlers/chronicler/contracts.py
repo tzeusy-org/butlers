@@ -97,13 +97,15 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         boundary_semantics="state changes as point events; derived presence episodes",
         optional_schema=True,
     ),
-    # Meals — aggregation mapping exists (health.meals → meal category); projection adapter
-    # sibling epic bu-a512n not yet landed, so PLANNED + optional_schema.
+    # Meals — projection adapter landed in bu-qclzp (sibling epic bu-a512n).
     SourceAdapterState(
         source_name="health.meals",
-        chronicler_compatibility=Compatibility.PLANNED,
-        read_surface=None,
-        boundary_semantics="eating_event point events; one row per logged meal",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="health.meals",
+        boundary_semantics=(
+            "eating_event point events; one row per logged meal; "
+            "eaten_at only (no end_at) — point events, not episodes"
+        ),
         optional_schema=True,
     ),
     # Explicitly not time-bearing.
