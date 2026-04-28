@@ -250,9 +250,13 @@ class TestComputeBaselines:
         """Category with 4+ weeks of data produces a weekly_velocity baseline."""
         from butlers.tools.finance.anomaly_detection import compute_baselines
 
-        # Insert 4 weeks of groceries spend within the 6-month window
-        # Use a Monday that's within the rolling 180-day window
-        base = datetime.now(UTC) - timedelta(days=100)
+        # Pin "now" to a fixed Monday so that DATE_TRUNC('week', ...) buckets
+        # the seeded transactions deterministically regardless of the calendar
+        # day the suite runs on.  base lands on a Monday inside the 180-day
+        # rolling window, so each (week, day) tuple maps cleanly to one ISO
+        # week without straddling the Sun→Mon boundary.
+        fixed_now = datetime(2026, 4, 27, 12, 0, tzinfo=UTC)  # Monday
+        base = fixed_now - timedelta(days=98)  # Monday, 14 weeks earlier
         for week in range(4):
             week_start = base + timedelta(weeks=week)
             for day in range(3):
@@ -264,7 +268,7 @@ class TestComputeBaselines:
                     posted_at=week_start + timedelta(days=day),
                 )
 
-        result = await compute_baselines(pool)
+        result = await compute_baselines(pool, now=fixed_now)
 
         cats = {b["category"]: b for b in result["category_baselines"]}
         assert "groceries" in cats
@@ -528,9 +532,11 @@ class TestAnomalyScan:
         """Spending in a category well above weekly baseline is flagged."""
         from butlers.tools.finance.anomaly_detection import anomaly_scan
 
-        # Build 4 weeks of baseline for "dining" with $50/week velocity
-        now = datetime.now(UTC)
-        base = now - timedelta(days=140)
+        # Pin "now" to a fixed Monday so DATE_TRUNC('week', ...) buckets the
+        # seeded baseline transactions and the recent anomalous week cleanly
+        # regardless of the calendar day the suite runs on.
+        now = datetime(2026, 4, 27, 12, 0, tzinfo=UTC)  # Monday
+        base = now - timedelta(days=140)  # Monday, 20 weeks earlier
         for week in range(4):
             for day in range(2):
                 await _insert_txn(
@@ -561,7 +567,7 @@ class TestAnomalyScan:
                 posted_at=now - timedelta(days=7) + timedelta(days=day),
             )
 
-        result = await anomaly_scan(pool, days_back=7, sensitivity="medium")
+        result = await anomaly_scan(pool, days_back=7, sensitivity="medium", now=now)
 
         vel_anomalies = [a for a in result["anomalies"] if a["type"] == "category_velocity_anomaly"]
         categories_flagged = {a["category"] for a in vel_anomalies}

@@ -121,6 +121,8 @@ async def _subscriptions_lookup(pool: asyncpg.Pool) -> set[str]:
 async def compute_baselines(
     pool: asyncpg.Pool,
     memory_pool: asyncpg.Pool | None = None,
+    *,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Compute per-merchant and per-category spending baselines.
 
@@ -149,6 +151,10 @@ async def compute_baselines(
         When provided, baselines are upserted as ``public.facts`` rows with
         ``predicate='spending_baseline'``.  When ``None``, persistence is
         skipped.
+    now:
+        Optional reference timestamp used as the upper bound of the rolling
+        window.  Defaults to ``datetime.now(UTC)``; tests inject a fixed
+        value to keep date-bucketed baselines deterministic.
 
     Returns
     -------
@@ -160,7 +166,8 @@ async def compute_baselines(
         ``status``: ``"ok"`` | ``"insufficient_data"``
         ``computed_at``: ISO timestamp
     """
-    now = datetime.now(UTC)
+    if now is None:
+        now = datetime.now(UTC)
     window_start = now - timedelta(days=_BASELINE_WINDOW_DAYS)
     deleted_filter = "AND deleted_at IS NULL" if await _has_deleted_at(pool) else ""
 
@@ -323,6 +330,8 @@ async def anomaly_scan(
     pool: asyncpg.Pool,
     days_back: int = 7,
     sensitivity: str = "medium",
+    *,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Scan recent transactions for anomalies against computed baselines.
 
@@ -348,6 +357,10 @@ async def anomaly_scan(
     sensitivity:
         ``"high"`` (flag more), ``"medium"`` (default), or ``"low"`` (flag less).
         Controls the stddev multiplier used for amount and velocity thresholds.
+    now:
+        Optional reference timestamp used as the upper bound of the scan
+        window.  Defaults to ``datetime.now(UTC)``; tests inject a fixed
+        value to keep date-bucketed scans deterministic.
 
     Returns
     -------
@@ -361,13 +374,14 @@ async def anomaly_scan(
         sensitivity = "medium"
     multiplier = _SENSITIVITY_MULTIPLIERS[sensitivity]
 
-    now = datetime.now(UTC)
+    if now is None:
+        now = datetime.now(UTC)
     scan_start = now - timedelta(days=days_back)
     window_start = now - timedelta(days=_BASELINE_WINDOW_DAYS)
     deleted_filter = "AND deleted_at IS NULL" if await _has_deleted_at(pool) else ""
 
     # Compute baselines (inline, no memory persistence here).
-    baseline_result = await compute_baselines(pool)
+    baseline_result = await compute_baselines(pool, now=now)
     if baseline_result["status"] == "insufficient_data":
         return {
             "anomalies": [],
