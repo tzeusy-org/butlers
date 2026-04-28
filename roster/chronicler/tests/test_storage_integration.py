@@ -62,11 +62,16 @@ pytestmark = [
 
 
 async def _apply_chronicler_schema(pool) -> None:
-    """Run the Chronicler v1 DDL against the provisioned pool.
+    """Run the Chronicler DDL against the provisioned pool.
 
     Keeps the integration lightweight: no Alembic bootstrap required.
-    Keep aligned with
-    ``roster/chronicler/migrations/001_chronicler_tables.py``.
+    Keep aligned with all chronicler migrations under
+    ``roster/chronicler/migrations/``. When adding a new migration that
+    alters the schema, update this function to match.
+
+    Current migrations reflected here:
+    - 001_chronicler_tables: base schema
+    - 005_tuple_watermark: watermark_id column on projection_checkpoints
     """
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS source_adapter_state (
@@ -88,12 +93,16 @@ async def _apply_chronicler_schema(pool) -> None:
     # projection_checkpoints: composite PK (source_name, subsource) so that
     # each sub-source (e.g. butler schema) can track its watermark independently.
     # subsource = '' is the global (adapter-level) sentinel row.
+    # watermark_id added in migration 005_tuple_watermark: stores the source-table
+    # id of the last-projected row to form a tuple watermark (watermark, watermark_id)
+    # that eliminates batch-boundary missed-row edge cases.
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS projection_checkpoints (
             source_name TEXT NOT NULL REFERENCES source_adapter_state(source_name)
                 ON DELETE CASCADE,
             subsource TEXT NOT NULL DEFAULT '',
             watermark TIMESTAMPTZ,
+            watermark_id BIGINT,
             last_run_at TIMESTAMPTZ,
             last_success_at TIMESTAMPTZ,
             last_error TEXT,
