@@ -276,7 +276,7 @@ class TestWarmupMcpUrls:
     """warmup_mcp_urls operates on explicit URL lists."""
 
     async def test_dedupes_explicit_urls(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Duplicate URLs are only warmed once."""
+        """Duplicate URLs are only warmed once after IPv4 loopback canonicalization."""
         from butlers.core.mcp_warmup import warmup_mcp_urls
 
         monkeypatch.delenv("BUTLERS_MCP_WARMUP_DISABLED", raising=False)
@@ -297,5 +297,7 @@ class TestWarmupMcpUrls:
                 ],
             )
 
-        assert called_urls == ["http://localhost:8500/mcp", "http://localhost:8600/mcp"]
+        # localhost URLs are canonicalized to 127.0.0.1 by prefer_ipv4_loopback_url
+        # before deduplication, so dedupe still collapses the duplicates.
+        assert called_urls == ["http://127.0.0.1:8500/mcp", "http://127.0.0.1:8600/mcp"]
         assert len(results) == 2
