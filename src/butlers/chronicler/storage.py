@@ -327,7 +327,10 @@ async def _upsert_checkpoint_row(
             VALUES ($1, $2, $3, $6, $4, $4, NULL, $5, 1, $4)
             ON CONFLICT (source_name, subsource) DO UPDATE SET
                 watermark = COALESCE(EXCLUDED.watermark, projection_checkpoints.watermark),
-                watermark_id = COALESCE(EXCLUDED.watermark_id, projection_checkpoints.watermark_id),
+                watermark_id = CASE
+                    WHEN EXCLUDED.watermark IS NOT NULL THEN EXCLUDED.watermark_id
+                    ELSE COALESCE(EXCLUDED.watermark_id, projection_checkpoints.watermark_id)
+                END,
                 last_run_at = EXCLUDED.last_run_at,
                 last_success_at = EXCLUDED.last_success_at,
                 last_error = NULL,
