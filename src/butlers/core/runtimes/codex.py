@@ -29,11 +29,14 @@ import re
 import shutil
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from butlers.core.mcp_urls import prefer_ipv4_loopback_url
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+
+if TYPE_CHECKING:
+    from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -1220,8 +1223,16 @@ class CodexAdapter(RuntimeAdapter):
     # share state without a global variable at module scope.
     _prewarm_done: set[str] = set()  # keyed by canonical codex_dir path
 
-    def __init__(self, codex_binary: str | None = None) -> None:
+    def __init__(
+        self,
+        codex_binary: str | None = None,
+        *,
+        credential_store: CredentialStore | None = None,
+        butler_name: str = "",
+    ) -> None:
         self._codex_binary = codex_binary
+        self._credential_store = credential_store
+        self._butler_name = butler_name
         self._last_process_info: dict[str, Any] | None = None
 
     @property
@@ -1236,7 +1247,11 @@ class CodexAdapter(RuntimeAdapter):
 
     def create_worker(self) -> RuntimeAdapter:
         """Create an independent adapter for a pooled spawner worker."""
-        return CodexAdapter(codex_binary=self._codex_binary)
+        return CodexAdapter(
+            codex_binary=self._codex_binary,
+            credential_store=self._credential_store,
+            butler_name=self._butler_name,
+        )
 
     @property
     def binary_name(self) -> str:
@@ -1422,6 +1437,10 @@ class CodexAdapter(RuntimeAdapter):
         # Sanitise command for logging — drop the final prompt arg which can be huge
         cmd_for_log = " ".join(cmd[:-1]) + " --  ..."
 
+        # Resolve the canonical auth.json path for rotation detection.
+        # This is the symlink *target* — the real file that the Codex CLI writes to.
+        auth_token_path: Path | None = (real_home / ".codex" / "auth.json") if real_home else None
+
         subprocess_attempt_count = 0
 
         async def _run_once() -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
@@ -1435,6 +1454,7 @@ class CodexAdapter(RuntimeAdapter):
                 cmd_for_log,
                 mcp_servers,
                 prompt_input,
+                token_path=auth_token_path,
             )
 
         # Slow-path serialisation: when the token is near expiry (or unknown),
@@ -1641,8 +1661,17 @@ class CodexAdapter(RuntimeAdapter):
         cmd_for_log: str,
         mcp_servers: dict[str, Any],
         prompt_input: str,
+        *,
+        token_path: Path | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
-        """Run the Codex CLI subprocess and parse its output."""
+        """Run the Codex CLI subprocess and parse its output.
+
+        When *token_path* is provided and the adapter was constructed with a
+        *credential_store*, a fire-and-forget task is scheduled after the
+        subprocess exits (success or non-zero) to detect auth.json rotation
+        and persist updated tokens to the credential store.  The task is not
+        scheduled on ``TimeoutError`` (process was killed mid-flight).
+        """
         proc = None
         try:
             # Feed the prompt through stdin using the "-" sentinel so Codex
@@ -1676,6 +1705,10 @@ class CodexAdapter(RuntimeAdapter):
                 "stderr": stderr,
                 "runtime_type": "codex",
             }
+
+            # Schedule auth sync regardless of exit code — the Codex CLI may
+            # rotate auth.json before a failure manifests.
+            self._schedule_auth_sync(token_path)
 
             if returncode != 0:
                 recovered = _recover_completed_nonzero_exit(stdout, stderr)
@@ -1714,6 +1747,26 @@ class CodexAdapter(RuntimeAdapter):
                 proc.kill()
                 await proc.wait()
             raise TimeoutError(f"Codex CLI timed out after {timeout} seconds") from None
+
+    def _schedule_auth_sync(self, token_path: Path | None) -> None:
+        """Fire-and-forget: schedule auth.json rotation detection and persist.
+
+        No-op when *token_path* is ``None`` or no credential store is wired.
+        Exceptions from the background task are logged with context; they never
+        propagate back to the caller.
+        """
+        if token_path is None or self._credential_store is None:
+            return
+
+        from butlers.core.runtimes._codex_auth_sync import check_and_persist_rotation
+
+        asyncio.create_task(
+            check_and_persist_rotation(
+                token_path,
+                self._credential_store,
+                butler_name=self._butler_name,
+            )
+        )
 
     @staticmethod
     def _write_mcp_config_toml(

@@ -218,6 +218,20 @@ async def run_startup(daemon: Any) -> None:
         restored = sum(1 for v in results.values() if v)
         if restored:
             logger.info("Restored %d CLI auth token(s) from DB", restored)
+
+        # Record the auth.json baseline for the codex provider so that the
+        # first post-startup invocation does not falsely detect a rotation.
+        # The baseline must be recorded *after* restore_tokens writes the file.
+        if results.get("codex"):
+            try:
+                from butlers.cli_auth.registry import PROVIDERS
+                from butlers.core.runtimes._codex_auth_sync import record_auth_baseline
+
+                codex_provider = PROVIDERS.get("codex")
+                if codex_provider is not None and codex_provider.token_path is not None:
+                    record_auth_baseline(codex_provider.token_path)
+            except Exception:
+                logger.debug("codex_auth_sync: baseline recording skipped", exc_info=True)
     except Exception:
         logger.debug("CLI auth token restoration skipped", exc_info=True)
 
@@ -267,9 +281,15 @@ async def run_startup(daemon: Any) -> None:
 
     # 10. Create Spawner with runtime adapter (verify binary on PATH)
     adapter_cls = get_adapter(DEFAULT_RUNTIME_TYPE)
-    # ClaudeCodeAdapter accepts butler_name/log_root for CC stderr capture
+    # ClaudeCodeAdapter accepts butler_name/log_root for CC stderr capture.
+    # CodexAdapter accepts credential_store/butler_name for auth.json rotation sync.
     if DEFAULT_RUNTIME_TYPE == "claude":
         runtime = adapter_cls(butler_name=daemon.config.name, log_root=log_root)
+    elif DEFAULT_RUNTIME_TYPE == "codex":
+        runtime = adapter_cls(
+            credential_store=credential_store,
+            butler_name=daemon.config.name,
+        )
     else:
         runtime = adapter_cls()
 
