@@ -85,7 +85,11 @@ def test_chronicler_project_job_returns_serializable_dict(monkeypatch) -> None:
                 watermark=expected_watermark,
             )
 
+    async def _noop_seed(_pool) -> None:
+        return None
+
     monkeypatch.setattr(chronicler_jobs, "CoreSessionsAdapter", _FakeCoreSessionsAdapter)
+    monkeypatch.setattr(chronicler_jobs, "seed_source_registry", _noop_seed)
     monkeypatch.setattr(
         chronicler_jobs,
         "_discover_session_schemas",
