@@ -32,10 +32,12 @@ def test_spotify_session_summary_is_supported() -> None:
     assert state.read_surface == "connectors.spotify_listening_sessions"
 
 
-def test_google_health_is_deferred() -> None:
+def test_google_health_is_supported() -> None:
+    """PR #1216 (bu-yhs2c) promoted google_health.measurements from DEFERRED → SUPPORTED."""
     state = find_source("google_health.measurements")
     assert state is not None
-    assert state.chronicler_compatibility == Compatibility.DEFERRED
+    assert state.chronicler_compatibility == Compatibility.SUPPORTED
+    assert state.read_surface == "health.facts (predicate=sleep_session)"
 
 
 def test_session_process_logs_marked_not_time_bearing() -> None:
