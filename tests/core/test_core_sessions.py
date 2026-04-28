@@ -261,6 +261,103 @@ async def test_sessions_list_and_summary(pool):
 
 
 # ---------------------------------------------------------------------------
+# Orphan recovery
+# ---------------------------------------------------------------------------
+
+
+async def test_recover_orphaned_sessions_closes_open_rows(pool):
+    """Open sessions are closed and marked failed; completed rows untouched."""
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.core.sessions import (
+        recover_orphaned_sessions,
+        session_complete,
+        session_create,
+        sessions_get,
+    )
+
+    # Two open sessions (one back-dated to verify duration_ms is populated).
+    open_recent = await session_create(
+        pool, prompt="recent open", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    open_old = await session_create(
+        pool, prompt="old open", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    backdated = datetime.now(UTC) - timedelta(days=3)
+    await pool.execute("UPDATE sessions SET started_at = $2 WHERE id = $1", open_old, backdated)
+
+    # One already-completed session — must not be touched.
+    completed = await session_create(
+        pool, prompt="done", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(
+        pool, completed, output="ok", tool_calls=[], duration_ms=42, success=True
+    )
+
+    n = await recover_orphaned_sessions(pool)
+    assert n == 2
+
+    recent_row = await sessions_get(pool, open_recent)
+    old_row = await sessions_get(pool, open_old)
+    completed_row = await sessions_get(pool, completed)
+
+    # Both orphans closed and marked failed.
+    for row in (recent_row, old_row):
+        assert row["completed_at"] is not None
+        assert row["success"] is False
+        assert row["error"] == "orphaned: daemon restart"
+        assert row["duration_ms"] is not None and row["duration_ms"] >= 0
+
+    # Old orphan got a non-trivial duration backfilled (~3 days).
+    assert old_row["duration_ms"] >= 2 * 24 * 3600 * 1000
+
+    # Completed session is untouched.
+    assert completed_row["success"] is True
+    assert completed_row["duration_ms"] == 42
+    assert completed_row["error"] is None
+
+
+async def test_recover_orphaned_sessions_idempotent_and_no_open(pool):
+    """Returns 0 when no open rows; second call after recovery also returns 0."""
+    from butlers.core.sessions import (
+        recover_orphaned_sessions,
+        session_complete,
+        session_create,
+    )
+
+    # Empty table → 0
+    assert await recover_orphaned_sessions(pool) == 0
+
+    # All-completed table → 0
+    sid = await session_create(
+        pool, prompt="x", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await session_complete(pool, sid, output="ok", tool_calls=[], duration_ms=1, success=True)
+    assert await recover_orphaned_sessions(pool) == 0
+
+    # One orphan → 1, then 0 on second pass
+    await session_create(pool, prompt="orphan", trigger_source="tick", request_id=str(uuid.uuid4()))
+    assert await recover_orphaned_sessions(pool) == 1
+    assert await recover_orphaned_sessions(pool) == 0
+
+
+async def test_recover_orphaned_sessions_preserves_existing_error(pool):
+    """If error is already set (e.g. budget overrun), do not overwrite it."""
+    from butlers.core.sessions import recover_orphaned_sessions, session_create, sessions_get
+
+    sid = await session_create(
+        pool, prompt="x", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
+    await pool.execute("UPDATE sessions SET error = 'budget overrun' WHERE id = $1", sid)
+    n = await recover_orphaned_sessions(pool)
+    assert n == 1
+    row = await sessions_get(pool, sid)
+    assert row["error"] == "budget overrun"
+    assert row["success"] is False
+    assert row["completed_at"] is not None
+
+
+# ---------------------------------------------------------------------------
 # Immutability contract
 # ---------------------------------------------------------------------------
 

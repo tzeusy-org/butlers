@@ -239,6 +239,23 @@ async def run_startup(daemon: Any) -> None:
     #     Ensures owner entity exists in public.entities.
     await _ensure_owner_entity(pool)
 
+    # 8e. Recover orphaned sessions from a previous daemon run.
+    #     Any sessions row with completed_at IS NULL at startup is necessarily
+    #     orphaned — this daemon is the sole writer and is just booting. Without
+    #     this sweep, chronicler projects orphans as open work episodes that
+    #     never close (visible as multi-day-old "in-progress" sessions on the
+    #     chronicles dashboard).  Best-effort: never blocks startup.
+    try:
+        from butlers.core.sessions import recover_orphaned_sessions
+
+        await recover_orphaned_sessions(pool)
+    except Exception:
+        logger.warning(
+            "recover_orphaned_sessions failed for butler=%s (best-effort, startup continues)",
+            daemon.config.name,
+            exc_info=True,
+        )
+
     # 9b. Resolve runtime config from DB (seed from toml on first boot).
     # Creates the RuntimeConfigAccessor and seeds the runtime_config table
     # if this is the first boot. The effective RuntimeConfig from DB is used

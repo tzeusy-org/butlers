@@ -260,6 +260,55 @@ async def session_complete(
     )
 
 
+async def recover_orphaned_sessions(pool: asyncpg.Pool) -> int:
+    """Close sessions left in-flight by a previous daemon process.
+
+    Called once on daemon startup, before the spawner accepts new triggers.
+    Each butler daemon is the sole writer to its own ``sessions`` table, so
+    any row with ``completed_at IS NULL`` at startup is by definition an
+    orphan: the previous daemon was killed (SIGKILL, OOM, container restart,
+    host reboot) before reaching the spawner's normal completion path.
+
+    Marks orphans as failed:
+      - ``completed_at = now()``
+      - ``success = false``
+      - ``error = 'orphaned: daemon restart'`` (preserved if already set)
+      - ``duration_ms`` filled from elapsed wall time if not already set
+
+    Without this sweep, orphan rows accumulate forever and the chronicler
+    sessions adapter projects each one as an open ``work`` episode that
+    never closes — surfacing as multi-day-old "in-progress" sessions on
+    the chronicles dashboard.
+    """
+    count: int = await pool.fetchval(
+        """
+        WITH recovered AS (
+            UPDATE sessions
+            SET completed_at = now(),
+                success = false,
+                error = COALESCE(error, 'orphaned: daemon restart'),
+                duration_ms = COALESCE(
+                    duration_ms,
+                    GREATEST(
+                        0,
+                        (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::bigint
+                    )::integer
+                )
+            WHERE completed_at IS NULL
+            RETURNING id
+        )
+        SELECT COUNT(*) FROM recovered
+        """
+    )
+    n = int(count or 0)
+    if n:
+        logger.warning(
+            "recover_orphaned_sessions: closed %d orphaned session(s) from prior daemon run",
+            n,
+        )
+    return n
+
+
 async def session_set_healing_fingerprint(
     pool: asyncpg.Pool,
     session_id: uuid.UUID,
