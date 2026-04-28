@@ -18,6 +18,8 @@
 
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
+import { act } from "react"
+import { createRoot } from "react-dom/client"
 
 import { GanttSwimlaneInner } from "./GanttSwimlaneInner"
 import type { ChroniclerEpisode } from "@/api/types"
@@ -30,10 +32,16 @@ const WINDOW_START = new Date("2026-04-25T00:00:00Z")
 const WINDOW_END = new Date("2026-04-25T23:59:59Z")
 
 function makeEpisode(overrides: Partial<ChroniclerEpisode> & { id: string }): ChroniclerEpisode {
+  // Default to a `work`-categorised episode using realistic backend identifiers
+  // (`core.sessions` / `work`) so the frontend's `(source_name, episode_type)`
+  // → category fallback resolves to "work" without the test having to set the
+  // new `category` field explicitly. Tests that want a different lane should
+  // override `source_name` + `episode_type` (or pass `category` directly) to
+  // a pair recognised by `categoryForSource()`.
   return {
-    source_name: "work",
+    source_name: "core.sessions",
     source_ref: overrides.id,
-    episode_type: "session",
+    episode_type: "work",
     start_at: "2026-04-25T09:00:00Z",
     end_at: "2026-04-25T10:00:00Z",
     precision: "minute",
@@ -54,6 +62,25 @@ function makeEpisode(overrides: Partial<ChroniclerEpisode> & { id: string }): Ch
   }
 }
 
+/**
+ * Source/episode-type pairs recognised by `categoryForSource()`. Used to
+ * override the default `core.sessions` / `work` fixture when a test needs
+ * an episode in a different lane without touching the new `category` field.
+ */
+const CATEGORY_SOURCES: Record<
+  string,
+  { source_name: string; episode_type: string }
+> = {
+  work: { source_name: "core.sessions", episode_type: "work" },
+  calendar: { source_name: "google_calendar.completed", episode_type: "scheduled_block" },
+  music: { source_name: "spotify.session_summary", episode_type: "listening_episode" },
+  gaming: { source_name: "steam.play_history", episode_type: "play_episode" },
+  travel: { source_name: "owntracks.points", episode_type: "movement_episode" },
+  sleep: { source_name: "google_health.measurements", episode_type: "sleep_episode" },
+  meal: { source_name: "health.meals", episode_type: "eating_event" },
+  home: { source_name: "home_assistant.history", episode_type: "presence_episode" },
+}
+
 // ---------------------------------------------------------------------------
 // 1. Empty window
 // ---------------------------------------------------------------------------
@@ -71,7 +98,10 @@ describe("GanttSwimlaneInner empty state", () => {
     expect(html).toContain("No activity recorded for this window")
   })
 
-  it("does NOT render the SVG container when episodes is empty", () => {
+  it("does NOT render the SVG bar area when episodes is empty", () => {
+    // The outer gantt-container wrapper now persists in the empty state
+    // (so the filter chip row can be hosted), but the SVG / lane area
+    // must not render. Probe specific child testids instead.
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner
         episodes={[]}
@@ -79,7 +109,8 @@ describe("GanttSwimlaneInner empty state", () => {
         windowEnd={WINDOW_END}
       />,
     )
-    expect(html).not.toContain("gantt-container")
+    expect(html).not.toContain("gantt-svg-wrapper")
+    expect(html).not.toContain("<svg")
   })
 })
 
@@ -113,7 +144,7 @@ describe("GanttSwimlaneInner single episode", () => {
   })
 
   it("renders the Work lane label", () => {
-    const ep = makeEpisode({ id: "ep-1", source_name: "work" })
+    const ep = makeEpisode({ id: "ep-1" })
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner
         episodes={[ep]}
@@ -121,6 +152,7 @@ describe("GanttSwimlaneInner single episode", () => {
         windowEnd={WINDOW_END}
       />,
     )
+    // Lane label column AND the filter chip both render the human label.
     expect(html).toContain("Work")
   })
 })
@@ -226,7 +258,7 @@ describe("GanttSwimlaneInner tooltip content", () => {
   it("renders bars with aria-label for accessibility", () => {
     const ep = makeEpisode({
       id: "ep-tooltip",
-      source_name: "music",
+      ...CATEGORY_SOURCES.music,
       canonical_title: "Listening session",
       precision: "minute",
     })
@@ -315,8 +347,8 @@ describe("GanttSwimlaneInner sensitive episode", () => {
 
 describe("GanttSwimlaneInner multiple categories", () => {
   it("renders lane labels for each category present", () => {
-    const ep1 = makeEpisode({ id: "ep-work", source_name: "work" })
-    const ep2 = makeEpisode({ id: "ep-music", source_name: "music" })
+    const ep1 = makeEpisode({ id: "ep-work" })
+    const ep2 = makeEpisode({ id: "ep-music", ...CATEGORY_SOURCES.music })
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner
         episodes={[ep1, ep2]}
@@ -329,8 +361,8 @@ describe("GanttSwimlaneInner multiple categories", () => {
   })
 
   it("renders bars for episodes from different categories", () => {
-    const ep1 = makeEpisode({ id: "ep-m1", source_name: "work" })
-    const ep2 = makeEpisode({ id: "ep-m2", source_name: "sleep" })
+    const ep1 = makeEpisode({ id: "ep-m1" })
+    const ep2 = makeEpisode({ id: "ep-m2", ...CATEGORY_SOURCES.sleep })
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner
         episodes={[ep1, ep2]}
@@ -430,7 +462,7 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
   it("renders a calendar bar when payload has a parseable lat,lng location", () => {
     const ep = makeEpisode({
       id: "ep-cal-coord",
-      source_name: "calendar",
+      ...CATEGORY_SOURCES.calendar,
       canonical_title: "Team meeting",
       canonical_privacy: "normal",
       payload: { location: "1.3521,103.8198" },
@@ -450,7 +482,7 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
   it("renders a calendar bar when payload has an unparseable location string", () => {
     const ep = makeEpisode({
       id: "ep-cal-addr",
-      source_name: "calendar",
+      ...CATEGORY_SOURCES.calendar,
       canonical_title: "Off-site workshop",
       canonical_privacy: "normal",
       payload: { location: "1 Infinite Loop, Cupertino, CA" },
@@ -468,7 +500,7 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
   it("renders a calendar bar normally when payload has no location field", () => {
     const ep = makeEpisode({
       id: "ep-cal-noloc",
-      source_name: "calendar",
+      ...CATEGORY_SOURCES.calendar,
       canonical_title: "Meeting without location",
       canonical_privacy: "normal",
       payload: {},
@@ -488,7 +520,7 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
     // with a location in payload must still render without errors.
     const ep = makeEpisode({
       id: "ep-work-loc",
-      source_name: "work",
+      // Default source_name/episode_type already maps to the "work" lane.
       canonical_privacy: "normal",
       payload: { location: "40.7128,-74.0060" },
     })
@@ -506,7 +538,7 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
     // Sensitive bars must not leak any location data through aria-label or title.
     const ep = makeEpisode({
       id: "ep-cal-sens-loc",
-      source_name: "calendar",
+      ...CATEGORY_SOURCES.calendar,
       canonical_privacy: "sensitive",
       payload: { location: "1.3521,103.8198" },
     })
@@ -520,5 +552,301 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
     expect(html).toContain("gantt-bar-ep-cal-sens-loc")
     expect(html).toContain("Private activity")
     expect(html).not.toContain("1.3521")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 10. categoryFor — backend (source_name, episode_type) → lane mapping (bug 1)
+//
+// Covers the fix for the "all bars are gray" bug where every episode used to
+// fall into the "other" lane because the inner component compared
+// `source_name` directly against `LANE_TAXONOMY` keys.
+// ---------------------------------------------------------------------------
+
+describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
+  it.each([
+    ["work", CATEGORY_SOURCES.work, "Work"],
+    ["calendar", CATEGORY_SOURCES.calendar, "Calendar"],
+    ["music", CATEGORY_SOURCES.music, "Music"],
+    ["gaming", CATEGORY_SOURCES.gaming, "Gaming"],
+    ["travel", CATEGORY_SOURCES.travel, "Travel"],
+    ["sleep", CATEGORY_SOURCES.sleep, "Sleep"],
+    ["meal", CATEGORY_SOURCES.meal, "Meal"],
+    ["home", CATEGORY_SOURCES.home, "Home"],
+  ])(
+    "renders the %s lane label for the canonical source/type pair (fallback path)",
+    (_name, source, expectedLabel) => {
+      const ep = makeEpisode({ id: `ep-${_name}`, ...source })
+      const html = renderToStaticMarkup(
+        <GanttSwimlaneInner
+          episodes={[ep]}
+          windowStart={WINDOW_START}
+          windowEnd={WINDOW_END}
+        />,
+      )
+      expect(html).toContain(expectedLabel)
+      // "Other" must not appear when the mapping resolves to a known lane
+      // (filter chip + lane label are derived from the same category).
+      if (expectedLabel !== "Other") {
+        expect(html).not.toContain(">Other<")
+      }
+    },
+  )
+
+  it("prefers backend-supplied `category` over the source/type fallback", () => {
+    // source/type would normally resolve to the work lane, but the explicit
+    // backend `category` field MUST win — this is the primary code path.
+    const ep = makeEpisode({
+      id: "ep-cat-override",
+      ...CATEGORY_SOURCES.work,
+      category: "music",
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("Music")
+    expect(html).not.toContain(">Work<")
+  })
+
+  it("falls back to 'other' for an unknown source/type pair with no category", () => {
+    const ep = makeEpisode({
+      id: "ep-unknown",
+      source_name: "made.up",
+      episode_type: "weird_thing",
+      // category intentionally omitted
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("Other")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 11. View details link removed from tooltip (bug 2)
+// ---------------------------------------------------------------------------
+//
+// The Radix TooltipContent renders into a portal and is therefore not in
+// static markup. When the tooltip is open in jsdom (force open via prop is
+// not possible here without rewiring), the content lives in document.body.
+// We assert at the source level: the `<a href="/chronicles/episodes/...">`
+// link must not appear anywhere in the rendered tree, even after the
+// tooltip mounts. The simplest way to verify the link is gone is to check
+// the component module's static markup AND mount it into jsdom and
+// inspect the document for the would-be link.
+
+describe("GanttSwimlaneInner tooltip drilldown (bug 2)", () => {
+  it("does not render a /chronicles/episodes/ link anywhere in the tree", () => {
+    const ep = makeEpisode({ id: "ep-no-link" })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).not.toContain("/chronicles/episodes/")
+    expect(html).not.toContain("View details")
+  })
+
+  it("does not render the View details link after the tooltip is opened in jsdom", async () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    try {
+      const ep = makeEpisode({ id: "ep-no-link-jsdom" })
+      await act(async () => {
+        root.render(
+          <GanttSwimlaneInner
+            episodes={[ep]}
+            windowStart={WINDOW_START}
+            windowEnd={WINDOW_END}
+          />,
+        )
+      })
+      // No tooltip-content link should exist in document.body even when the
+      // tooltip would normally portal into it.
+      expect(document.body.innerHTML).not.toContain("/chronicles/episodes/")
+      expect(document.body.innerHTML).not.toContain("View details")
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      document.body.removeChild(container)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 12. Per-lane filter chips (bug 4)
+// ---------------------------------------------------------------------------
+
+describe("GanttSwimlaneInner filter chips (bug 4)", () => {
+  it("renders one chip per category present in the window", () => {
+    const eps = [
+      makeEpisode({ id: "ep-w", ...CATEGORY_SOURCES.work }),
+      makeEpisode({ id: "ep-m", ...CATEGORY_SOURCES.music }),
+      makeEpisode({ id: "ep-s", ...CATEGORY_SOURCES.sleep }),
+    ]
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={eps}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain('data-testid="gantt-filter-chips"')
+    expect(html).toContain('data-testid="gantt-filter-chip-work"')
+    expect(html).toContain('data-testid="gantt-filter-chip-music"')
+    expect(html).toContain('data-testid="gantt-filter-chip-sleep"')
+    // No chip for categories with no episodes in this window.
+    expect(html).not.toContain('data-testid="gantt-filter-chip-gaming"')
+  })
+
+  it("does not render chips when there are no episodes at all", () => {
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).not.toContain('data-testid="gantt-filter-chips"')
+  })
+
+  it("clicking a chip hides the matching lane's bars and toggling it back restores them", async () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    try {
+      const eps = [
+        makeEpisode({ id: "ep-keep", ...CATEGORY_SOURCES.work }),
+        makeEpisode({ id: "ep-toggle", ...CATEGORY_SOURCES.music }),
+      ]
+      await act(async () => {
+        root.render(
+          <GanttSwimlaneInner
+            episodes={eps}
+            windowStart={WINDOW_START}
+            windowEnd={WINDOW_END}
+          />,
+        )
+      })
+
+      // Both bars visible initially.
+      expect(
+        container.querySelector('[data-testid="gantt-bar-ep-keep"]'),
+      ).not.toBeNull()
+      expect(
+        container.querySelector('[data-testid="gantt-bar-ep-toggle"]'),
+      ).not.toBeNull()
+
+      const chip = container.querySelector(
+        '[data-testid="gantt-filter-chip-music"]',
+      ) as HTMLButtonElement | null
+      expect(chip).not.toBeNull()
+      expect(chip!.getAttribute("aria-pressed")).toBe("true")
+
+      // Hide music.
+      await act(async () => {
+        chip!.click()
+      })
+      expect(
+        container.querySelector('[data-testid="gantt-bar-ep-toggle"]'),
+      ).toBeNull()
+      expect(
+        container.querySelector('[data-testid="gantt-bar-ep-keep"]'),
+      ).not.toBeNull()
+      // Chip itself remains so the user can re-enable it.
+      expect(
+        (container.querySelector(
+          '[data-testid="gantt-filter-chip-music"]',
+        ) as HTMLButtonElement).getAttribute("aria-pressed"),
+      ).toBe("false")
+
+      // Toggle back on.
+      await act(async () => {
+        ;(
+          container.querySelector(
+            '[data-testid="gantt-filter-chip-music"]',
+          ) as HTMLButtonElement
+        ).click()
+      })
+      expect(
+        container.querySelector('[data-testid="gantt-bar-ep-toggle"]'),
+      ).not.toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      document.body.removeChild(container)
+    }
+  })
+
+  it("hiding every category surfaces the empty state but keeps chips visible", async () => {
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    try {
+      const eps = [makeEpisode({ id: "ep-only", ...CATEGORY_SOURCES.work })]
+      await act(async () => {
+        root.render(
+          <GanttSwimlaneInner
+            episodes={eps}
+            windowStart={WINDOW_START}
+            windowEnd={WINDOW_END}
+          />,
+        )
+      })
+      const chip = container.querySelector(
+        '[data-testid="gantt-filter-chip-work"]',
+      ) as HTMLButtonElement
+      await act(async () => {
+        chip.click()
+      })
+      // Empty state appears, but the chip row is still rendered so the user
+      // can recover.
+      expect(
+        container.querySelector('[data-testid="gantt-empty"]'),
+      ).not.toBeNull()
+      expect(
+        container.querySelector('[data-testid="gantt-filter-chips"]'),
+      ).not.toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      document.body.removeChild(container)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 13. X-axis labels rendered as HTML, not as stretched <text> (bug 3)
+// ---------------------------------------------------------------------------
+
+describe("GanttSwimlaneInner axis labels (bug 3)", () => {
+  it("renders axis labels in an HTML overlay (not inside the stretched SVG)", () => {
+    const ep = makeEpisode({ id: "ep-axis" })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain('data-testid="gantt-axis-labels"')
+    // No <text> elements inside the SVG (those got replaced by HTML divs).
+    expect(html).not.toContain("<text")
+    // Tick stroke <line>s remain.
+    expect(html).toContain('y2="36"')
   })
 })

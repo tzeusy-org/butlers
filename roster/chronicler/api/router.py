@@ -143,6 +143,7 @@ def _row_to_episode(row: Any) -> ChroniclerEpisode:
         correction_note=row["correction_note"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        category=category_for(row["source_name"], row["episode_type"]),
     )
 
 

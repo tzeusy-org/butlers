@@ -126,6 +126,11 @@ class ChroniclerEpisode(BaseModel):
     correction_note: str | None = None
     created_at: datetime
     updated_at: datetime
+    category: str
+    """Stable lane category derived from (source_name, episode_type) by
+    ``chronicler.aggregations.category_for``. One of the values in
+    ``CATEGORIES`` (e.g. ``work``, ``calendar``, ``music``, ...) or
+    ``other`` when the source/type pair is unmapped."""
 
 
 class ChroniclerOverride(BaseModel):

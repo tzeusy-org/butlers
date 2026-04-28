@@ -4,7 +4,12 @@
 
 import { describe, expect, it } from "vitest"
 
-import { LANE_TAXONOMY, type Category, type LaneConfig } from "./lane-taxonomy"
+import {
+  LANE_TAXONOMY,
+  categoryForSource,
+  type Category,
+  type LaneConfig,
+} from "./lane-taxonomy"
 
 // All 9 stable category strings defined by the backend (aggregations.py).
 const EXPECTED_CATEGORIES: Category[] = [
@@ -62,5 +67,37 @@ describe("LANE_TAXONOMY", () => {
       expect(colour).toMatch(/^bg-/)
       expect(colour).not.toContain("#")
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// categoryForSource — fallback lookup mirroring backend `_CATEGORY_MAP`.
+// Bug 1: ensures (source_name, episode_type) maps to the right lane.
+// ---------------------------------------------------------------------------
+
+describe("categoryForSource", () => {
+  it.each<[string, string, Category]>([
+    ["core.sessions", "work", "work"],
+    ["google_calendar.completed", "scheduled_block", "calendar"],
+    ["spotify.session_summary", "listening_episode", "music"],
+    ["steam.play_history", "play_episode", "gaming"],
+    ["owntracks.points", "movement_episode", "travel"],
+    ["google_health.measurements", "sleep_episode", "sleep"],
+    ["health.meals", "eating_event", "meal"],
+    ["home_assistant.history", "presence_episode", "home"],
+  ])("maps (%s, %s) → %s", (source, type, expected) => {
+    expect(categoryForSource(source, type)).toBe(expected)
+  })
+
+  it("returns 'other' for an unknown source/type pair", () => {
+    expect(categoryForSource("totally.unknown", "mystery_event")).toBe("other")
+  })
+
+  it("returns 'other' when source matches but episode_type does not", () => {
+    expect(categoryForSource("core.sessions", "not-work")).toBe("other")
+  })
+
+  it("returns 'other' for the empty pair", () => {
+    expect(categoryForSource("", "")).toBe("other")
   })
 })

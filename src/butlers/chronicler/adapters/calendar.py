@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 import asyncpg
 
@@ -120,13 +121,17 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 if since is None:
                     rows = await conn.fetch(
                         f"""
-                        SELECT id, event_id, source_id, origin_instance_ref,
-                               starts_at, ends_at, status, timezone, metadata,
-                               updated_at
-                        FROM {quoted}.calendar_event_instances
-                        WHERE ends_at <= $1
-                          AND status != 'cancelled'
-                        ORDER BY ends_at ASC
+                        SELECT i.id, i.event_id, i.source_id, i.origin_instance_ref,
+                               i.starts_at, i.ends_at, i.status, i.timezone,
+                               i.metadata, i.updated_at,
+                               e.title AS event_title,
+                               e.description AS event_description,
+                               e.location AS event_location
+                        FROM {quoted}.calendar_event_instances AS i
+                        LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
+                        WHERE i.ends_at <= $1
+                          AND i.status != 'cancelled'
+                        ORDER BY i.ends_at ASC
                         LIMIT $2
                         """,
                         now,
@@ -135,14 +140,18 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 else:
                     rows = await conn.fetch(
                         f"""
-                        SELECT id, event_id, source_id, origin_instance_ref,
-                               starts_at, ends_at, status, timezone, metadata,
-                               updated_at
-                        FROM {quoted}.calendar_event_instances
-                        WHERE ends_at <= $1
-                          AND ends_at > $2
-                          AND status != 'cancelled'
-                        ORDER BY ends_at ASC
+                        SELECT i.id, i.event_id, i.source_id, i.origin_instance_ref,
+                               i.starts_at, i.ends_at, i.status, i.timezone,
+                               i.metadata, i.updated_at,
+                               e.title AS event_title,
+                               e.description AS event_description,
+                               e.location AS event_location
+                        FROM {quoted}.calendar_event_instances AS i
+                        LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
+                        WHERE i.ends_at <= $1
+                          AND i.ends_at > $2
+                          AND i.status != 'cancelled'
+                        ORDER BY i.ends_at ASC
                         LIMIT $3
                         """,
                         now,
@@ -169,6 +178,12 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         if isinstance(metadata, dict):
             title = metadata.get("summary") or metadata.get("title")
 
+        # Pull richer event-level context (joined from calendar_events).
+        # asyncpg.Record raises KeyError for missing keys, so use defensive access.
+        event_title = self._maybe(row, "event_title")
+        event_description = self._maybe(row, "event_description")
+        event_location = self._maybe(row, "event_location")
+
         payload = {
             "schema": schema,
             "instance_id": str(instance_id),
@@ -177,7 +192,18 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             "origin_instance_ref": row["origin_instance_ref"],
             "status": row["status"],
             "timezone": row["timezone"],
+            "title": event_title,
+            "description": event_description,
+            "location": event_location,
         }
+
+        resolved_title = (
+            title
+            or self._clean_text(event_title)
+            or self._clean_text(event_location)
+            or self._truncate(self._clean_text(event_description), 80)
+            or f"{schema}: calendar block"
+        )
 
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(
@@ -189,12 +215,37 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                     start_at=row["starts_at"],
                     end_at=row["ends_at"],
                     precision=Precision.EXACT,
-                    title=title or f"{schema}: calendar block",
+                    title=resolved_title,
                     payload=payload,
                     privacy=Privacy.NORMAL,
                 ),
             )
         return episode
+
+    @staticmethod
+    def _maybe(row: asyncpg.Record, key: str) -> Any:
+        """Return ``row[key]`` if the column is present, else ``None``."""
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return None
+
+    @staticmethod
+    def _clean_text(value: Any) -> str | None:
+        """Return a stripped non-empty string, or ``None``."""
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @staticmethod
+    def _truncate(value: str | None, max_len: int) -> str | None:
+        """Truncate ``value`` to ``max_len`` characters with an ellipsis."""
+        if value is None:
+            return None
+        if len(value) <= max_len:
+            return value
+        return value[: max(0, max_len - 1)].rstrip() + "…"
 
     @staticmethod
     def _quote_ident(name: str) -> str:

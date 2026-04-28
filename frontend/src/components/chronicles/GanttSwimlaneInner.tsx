@@ -15,7 +15,8 @@
 // masked (hatched) bars and show only "Private activity" in the tooltip.
 //
 // A hover tooltip (Radix UI primitive) surfaces: title, source, precision,
-// duration, and a drilldown link to /chronicles/episodes/{id}.
+// and duration. Drilldown is via clicking the bar (opens EpisodeDrawer);
+// no in-tooltip "View details" link is rendered.
 //
 // Calendar episode location pan (bu-ig72b.24):
 //   Clicking a calendar-lane bar attempts to pan the map to the episode's
@@ -24,9 +25,10 @@
 //   unparseable.  No geocoding is performed.
 // ---------------------------------------------------------------------------
 
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 
 import type { ChroniclerEpisode } from "@/api/types"
+import { Badge } from "@/components/ui/badge"
 import {
   Tooltip,
   TooltipContent,
@@ -34,7 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import type { Category } from "./lane-taxonomy"
-import { LANE_TAXONOMY } from "./lane-taxonomy"
+import { categoryForSource, LANE_TAXONOMY } from "./lane-taxonomy"
 import { parseLatLng } from "./location-utils"
 import { useMapPanTo } from "./map-pan-store"
 
@@ -88,10 +90,20 @@ export interface GanttSwimlaneInnerProps {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Derive the LANE_TAXONOMY category for an episode from source_name. */
+/**
+ * Derive the LANE_TAXONOMY category for an episode.
+ *
+ * Primary: read `episode.category` if present (set by the backend's
+ * `aggregations.category_for`). Fallback: derive locally from
+ * `(source_name, episode_type)` so the UI keeps working against API responses
+ * that pre-date the `category` field.
+ */
 function categoryFor(episode: ChroniclerEpisode): Category {
-  const name = episode.source_name as Category
-  return name in LANE_TAXONOMY ? name : "other"
+  const fromBackend = episode.category
+  if (fromBackend && fromBackend in LANE_TAXONOMY) {
+    return fromBackend as Category
+  }
+  return categoryForSource(episode.source_name, episode.episode_type)
 }
 
 /** Parse a UTC ISO string to ms. Returns NaN if falsy. */
@@ -384,14 +396,6 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
                 Location: {rawLocation} (no coordinates)
               </p>
             )}
-            <p className="pt-0.5">
-              <a
-                href={`/chronicles/episodes/${episode.id}`}
-                className="underline opacity-70 hover:opacity-100"
-              >
-                View details →
-              </a>
-            </p>
           </>
         )}
       </TooltipContent>
@@ -436,9 +440,45 @@ export function GanttSwimlaneInner({
   const windowEndMs = windowEnd.getTime()
   const windowDuration = windowEndMs - windowStartMs
 
+  // Categories that have at least one episode in the current window. Derived
+  // from the raw `episodes` prop (NOT from `lanes`) so the chip row stays
+  // stable while a user toggles filters on/off.
+  const availableCategories = useMemo<Category[]>(() => {
+    const seen = new Set<Category>()
+    for (const ep of episodes) {
+      seen.add(categoryFor(ep))
+    }
+    return [...seen].sort(
+      (a, b) => LANE_TAXONOMY[a].sortOrder - LANE_TAXONOMY[b].sortOrder,
+    )
+  }, [episodes])
+
+  // Visible-category filter (bug 4). Defaults to "all visible". Stored as a
+  // Set so per-chip toggle is O(1). Component-local — not URL-persisted.
+  const [hiddenCategories, setHiddenCategories] = useState<Set<Category>>(
+    () => new Set(),
+  )
+
+  function toggleCategory(category: Category) {
+    setHiddenCategories((prev) => {
+      const next = new Set(prev)
+      if (next.has(category)) {
+        next.delete(category)
+      } else {
+        next.add(category)
+      }
+      return next
+    })
+  }
+
+  const visibleEpisodes = useMemo(
+    () => episodes.filter((ep) => !hiddenCategories.has(categoryFor(ep))),
+    [episodes, hiddenCategories],
+  )
+
   const lanes = useMemo(
-    () => buildLanes(episodes, windowStartMs, windowEndMs),
-    [episodes, windowStartMs, windowEndMs],
+    () => buildLanes(visibleEpisodes, windowStartMs, windowEndMs),
+    [visibleEpisodes, windowStartMs, windowEndMs],
   )
 
   const ticks = useMemo(
@@ -446,14 +486,62 @@ export function GanttSwimlaneInner({
     [windowStartMs, windowEndMs],
   )
 
+  // Filter chip row — shown above the chart whenever there are episodes.
+  // Rendered even in the empty/all-hidden state so the user can re-enable
+  // categories they have just hidden.
+  const filterChipRow = availableCategories.length > 0 ? (
+    <div
+      className="flex flex-wrap items-center gap-1.5 mb-3"
+      data-testid="gantt-filter-chips"
+      role="group"
+      aria-label="Filter Gantt categories"
+    >
+      {availableCategories.map((category) => {
+        const visible = !hiddenCategories.has(category)
+        const colour = laneColour(category)
+        const label = LANE_TAXONOMY[category].label
+        return (
+          <Badge
+            key={category}
+            asChild
+            variant={visible ? "default" : "outline"}
+            data-testid={`gantt-filter-chip-${category}`}
+          >
+            <button
+              type="button"
+              aria-pressed={visible}
+              onClick={() => toggleCategory(category)}
+              className="cursor-pointer"
+              style={
+                visible
+                  ? { backgroundColor: colour, color: "white", borderColor: colour }
+                  : { color: colour, borderColor: colour }
+              }
+            >
+              <span
+                aria-hidden
+                className="inline-block w-2 h-2 rounded-full"
+                style={{ backgroundColor: colour }}
+              />
+              {label}
+            </button>
+          </Badge>
+        )
+      })}
+    </div>
+  ) : null
+
   // Empty state
   if (lanes.length === 0) {
     return (
-      <div
-        className="flex items-center justify-center rounded-md border border-dashed py-12 text-muted-foreground text-sm"
-        data-testid="gantt-empty"
-      >
-        No activity recorded for this window.
+      <div className="relative" data-testid="gantt-container">
+        {filterChipRow}
+        <div
+          className="flex items-center justify-center rounded-md border border-dashed py-12 text-muted-foreground text-sm"
+          data-testid="gantt-empty"
+        >
+          No activity recorded for this window.
+        </div>
       </div>
     )
   }
@@ -463,6 +551,7 @@ export function GanttSwimlaneInner({
   return (
     <TooltipProvider>
       <div className="relative" data-testid="gantt-container">
+        {filterChipRow}
         {/* Label column + SVG area side-by-side */}
         <div className="flex">
           {/* Label column */}
@@ -588,35 +677,64 @@ export function GanttSwimlaneInner({
                 />
               )}
 
-              {/* Time axis */}
+              {/* Time axis tick marks (strokes only).
+                  Tick LABELS are rendered as absolutely-positioned HTML divs
+                  below this SVG so they are not stretched by
+                  preserveAspectRatio="none" (bug 3 fix). */}
               {ticks.map((ms) => {
                 const xPct = (ms - windowStartMs) / windowDuration
                 const x = xPct * SVG_WIDTH
                 return (
-                  <g key={ms}>
-                    <line
-                      x1={x}
-                      y1={totalSvgHeight - AXIS_HEIGHT}
-                      x2={x}
-                      y2={totalSvgHeight - AXIS_HEIGHT + 4}
-                      stroke="currentColor"
-                      strokeOpacity={0.4}
-                      strokeWidth={1}
-                    />
-                    <text
-                      x={x}
-                      y={totalSvgHeight - 6}
-                      textAnchor="middle"
-                      fontSize={10}
-                      fill="currentColor"
-                      fillOpacity={0.5}
-                    >
-                      {formatTickLabel(ms, windowDuration)}
-                    </text>
-                  </g>
+                  <line
+                    key={ms}
+                    x1={x}
+                    y1={totalSvgHeight - AXIS_HEIGHT}
+                    x2={x}
+                    y2={totalSvgHeight - AXIS_HEIGHT + 4}
+                    stroke="currentColor"
+                    strokeOpacity={0.4}
+                    strokeWidth={1}
+                  />
                 )
               })}
             </svg>
+
+            {/* Time-axis labels — rendered as HTML so the text is NOT distorted
+                by the SVG's preserveAspectRatio="none" stretch (bug 3 fix).
+                Positioned absolutely over the bottom axis strip. The SVG
+                already reserves AXIS_HEIGHT px of empty space at the bottom
+                (no <text> elements there), so this overlay sits in that gap
+                without overlapping bars. */}
+            <div
+              className="pointer-events-none absolute left-0 right-0"
+              style={{ bottom: 0, height: AXIS_HEIGHT }}
+              data-testid="gantt-axis-labels"
+              aria-hidden
+            >
+              {ticks.map((ms, i) => {
+                const pct = ((ms - windowStartMs) / windowDuration) * 100
+                // Anchor first/last tick to the edges so labels don't clip.
+                const transform =
+                  i === 0
+                    ? "translateX(0)"
+                    : i === ticks.length - 1
+                    ? "translateX(-100%)"
+                    : "translateX(-50%)"
+                return (
+                  <span
+                    key={ms}
+                    className="absolute text-[10px] text-muted-foreground/70 whitespace-nowrap"
+                    style={{
+                      left: `${pct}%`,
+                      top: 6,
+                      transform,
+                    }}
+                  >
+                    {formatTickLabel(ms, windowDuration)}
+                  </span>
+                )
+              })}
+            </div>
           </div>
         </div>
       </div>

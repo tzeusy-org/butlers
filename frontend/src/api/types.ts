@@ -3334,6 +3334,13 @@ export interface ChroniclerEpisode {
   correction_note: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Stable category string derived from `(source_name, episode_type)` by the
+   * backend (`chronicler.aggregations.category_for`). Always emitted by the
+   * backend; one of the values in the lane taxonomy (e.g. `work`, `calendar`,
+   * `music`, ...) or `other` when the source/type pair is unmapped.
+   */
+  category: string;
 }
 
 /**

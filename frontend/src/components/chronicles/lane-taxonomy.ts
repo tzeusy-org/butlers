@@ -138,3 +138,39 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
     sortOrder: 8,
   },
 }
+
+// ---------------------------------------------------------------------------
+// (source_name, episode_type) → Category mapping
+//
+// Mirrors `_CATEGORY_MAP` in `src/butlers/chronicler/aggregations.py`. Used as
+// a frontend fallback when the backend has not yet attached a `category` field
+// to the episode response (bug 1 fix). The backend remains the source of truth
+// — keep this table in sync with `_CATEGORY_MAP` whenever new sources land.
+// ---------------------------------------------------------------------------
+
+const SOURCE_CATEGORY_MAP: Record<string, Category> = {
+  "core.sessions|work": "work",
+  "google_calendar.completed|scheduled_block": "calendar",
+  "spotify.session_summary|listening_episode": "music",
+  "steam.play_history|play_episode": "gaming",
+  "owntracks.points|movement_episode": "travel",
+  "google_health.measurements|sleep_episode": "sleep",
+  "health.meals|eating_event": "meal",
+  "home_assistant.history|presence_episode": "home",
+}
+
+/**
+ * Resolve the visual lane category for an episode given its
+ * `(source_name, episode_type)` pair. Returns `"other"` for any unknown pair.
+ *
+ * This intentionally accepts strings (not narrow union types) so it can be
+ * called against raw API payloads without type assertions. Callers should
+ * prefer `episode.category` when the backend supplies it; this helper is the
+ * fallback path for older responses where `category` is absent.
+ */
+export function categoryForSource(
+  sourceName: string,
+  episodeType: string,
+): Category {
+  return SOURCE_CATEGORY_MAP[`${sourceName}|${episodeType}`] ?? "other"
+}
