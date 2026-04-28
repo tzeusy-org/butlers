@@ -60,12 +60,16 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
-    # Deferred (Google Health).
+    # Google Health sleep-session projection — adapter landed in bu-yhs2c.
     SourceAdapterState(
         source_name="google_health.measurements",
-        chronicler_compatibility=Compatibility.DEFERRED,
-        read_surface=None,
-        boundary_semantics="deferred per RFC 0014",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="health.facts (predicate=sleep_session)",
+        boundary_semantics=(
+            "one sleep_episode per sleep_session fact; "
+            "(valid_at, end_time or valid_at+duration_ms) bound the episode; "
+            "precision=minute (wearable device clock)"
+        ),
         optional_schema=True,
     ),
     # Steam daily playtime aggregates — adapter landed in bu-x8trk.

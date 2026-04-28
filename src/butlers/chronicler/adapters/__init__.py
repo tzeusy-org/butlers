@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
+from butlers.chronicler.adapters.google_health import GoogleHealthSleepAdapter
 from butlers.chronicler.adapters.home_assistant import HomeAssistantHistoryAdapter
 from butlers.chronicler.adapters.meals import MealsAdapter
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
@@ -27,6 +28,7 @@ __all__ = [
     "AdapterResult",
     "CalendarCompletedAdapter",
     "CoreSessionsAdapter",
+    "GoogleHealthSleepAdapter",
     "HomeAssistantHistoryAdapter",
     "MealsAdapter",
     "OwnTracksPointAdapter",
