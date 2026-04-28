@@ -227,12 +227,45 @@ done
 
 # ── Ensure base image is current ───────────────────────────────────────
 # The base image (butlers-base) contains system deps, Node.js, LLM CLIs,
-# and uv. Rebuild it when Dockerfile.base changes so app rebuilds cannot
-# silently inherit a stale toolchain.
+# and uv. Rebuild it when Dockerfile.base changes — or when any LLM CLI
+# has a new release on npm — so app rebuilds cannot silently inherit a
+# stale toolchain. Without the CLI check, codex (and friends) would stay
+# pinned to whatever was current at the last base build, breaking newer
+# model IDs the runtime tries to use.
 if command -v sha256sum &>/dev/null; then
-  BASE_DOCKERFILE_SHA=$(sha256sum Dockerfile.base | awk '{print $1}')
+  _hasher() { sha256sum; }
 else
-  BASE_DOCKERFILE_SHA=$(shasum -a 256 Dockerfile.base | awk '{print $1}')
+  _hasher() { shasum -a 256; }
+fi
+
+DOCKERFILE_HASH=$(_hasher < Dockerfile.base | awk '{print $1}')
+
+# Query npm registry for the latest version of each CLI installed in
+# Dockerfile.base. Hashing these into the cache key forces a base rebuild
+# whenever any CLI publishes a new version, so `npm install -g <pkg>`
+# picks up the new version on next run.
+CLI_PKGS=(@anthropic-ai/claude-code @google/gemini-cli @openai/codex opencode-ai)
+CLI_VERSIONS=""
+CLI_QUERY_FAILED=false
+for pkg in "${CLI_PKGS[@]}"; do
+  ver=$(curl -fsSL --max-time 5 "https://registry.npmjs.org/${pkg}/latest" 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin).get('version',''))" 2>/dev/null) || ver=""
+  if [ -z "$ver" ]; then
+    CLI_QUERY_FAILED=true
+    break
+  fi
+  CLI_VERSIONS+="${pkg}@${ver};"
+done
+
+if [ "$CLI_QUERY_FAILED" = "false" ] && [ -n "$CLI_VERSIONS" ]; then
+  CLI_HASH=$(printf '%s' "$CLI_VERSIONS" | _hasher | awk '{print $1}')
+  BASE_DOCKERFILE_SHA="${DOCKERFILE_HASH}-${CLI_HASH:0:12}"
+  echo "LLM CLIs (latest on npm): ${CLI_VERSIONS%;}"
+else
+  # Registry unreachable — fall back to Dockerfile-only hash so the build
+  # still proceeds offline. Existing image will be reused if it exists.
+  BASE_DOCKERFILE_SHA="$DOCKERFILE_HASH"
+  echo "Note: could not query npm registry; skipping CLI freshness check."
 fi
 
 BASE_IMAGE_SHA=$(
