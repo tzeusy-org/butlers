@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -47,6 +48,18 @@ def _write_auth_json(codex_dir: Path, *, expires_at: float | None = None) -> Non
     data: dict = {}
     if expires_at is not None:
         data["expires_at"] = expires_at
+    (codex_dir / "auth.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _write_jwt_auth_json(codex_dir: Path, *, exp: float) -> None:
+    """Write a Codex-style auth.json with expiry inside tokens.access_token."""
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode("utf-8")).rstrip(b"=").decode()
+    )
+    access_token = f"{header}.{payload}.sig"
+    data = {"tokens": {"access_token": access_token}}
     (codex_dir / "auth.json").write_text(json.dumps(data), encoding="utf-8")
 
 
@@ -94,10 +107,27 @@ def test_read_expires_at_parses_numeric_value(tmp_path: Path) -> None:
     assert result == pytest.approx(9999999999.0)
 
 
+def test_read_expires_at_parses_codex_access_token_jwt(tmp_path: Path) -> None:
+    codex_dir = tmp_path / ".codex"
+    _write_jwt_auth_json(codex_dir, exp=9999999999.0)
+    result = _read_codex_token_expires_at(codex_dir)
+    assert result == pytest.approx(9999999999.0)
+
+
 def test_read_expires_at_returns_none_for_invalid_json(tmp_path: Path) -> None:
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()
     (codex_dir / "auth.json").write_text("not-json", encoding="utf-8")
+    assert _read_codex_token_expires_at(codex_dir) is None
+
+
+def test_read_expires_at_returns_none_for_unparseable_access_token(tmp_path: Path) -> None:
+    codex_dir = tmp_path / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "header.not-base64.eyJzaWciOiAidmFsdWUifQ"}}),
+        encoding="utf-8",
+    )
     assert _read_codex_token_expires_at(codex_dir) is None
 
 
@@ -128,6 +158,18 @@ def test_token_does_not_need_refresh_when_fresh(tmp_path: Path) -> None:
     codex_dir = tmp_path / ".codex"
     _fresh_auth_json(codex_dir)
     assert _token_needs_refresh(codex_dir) is False
+
+
+def test_token_does_not_need_refresh_when_access_token_jwt_is_fresh(tmp_path: Path) -> None:
+    codex_dir = tmp_path / ".codex"
+    _write_jwt_auth_json(codex_dir, exp=time.time() + 3600)
+    assert _token_needs_refresh(codex_dir) is False
+
+
+def test_token_needs_refresh_when_access_token_jwt_is_expired(tmp_path: Path) -> None:
+    codex_dir = tmp_path / ".codex"
+    _write_jwt_auth_json(codex_dir, exp=time.time() - 10)
+    assert _token_needs_refresh(codex_dir) is True
 
 
 # ---------------------------------------------------------------------------
