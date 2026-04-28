@@ -784,3 +784,193 @@ def test_owntracks_points_not_in_planned_names() -> None:
     from butlers.chronicler.contracts import planned_source_names
 
     assert "owntracks.points" not in planned_source_names()
+
+
+# ---------------------------------------------------------------------------
+# Tuple-watermark: (ts, id) > ($1, $2) boundary precision
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
+    """When both ``since`` and ``since_id`` are provided, the query must use
+    the row-value comparison ``WHERE (ts, id) > ($1, $2)`` so that rows
+    sharing the same timestamp as the batch boundary are not missed.
+    """
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    adapter = OwnTracksPointAdapter()
+    cp = _chronicler_pool()
+    since = _NOW - timedelta(hours=1)
+    since_id = 42
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event"),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode"),
+    ):
+        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
+
+    assert conn.fetch.await_count == 1
+    call_args = conn.fetch.call_args
+    query: str = call_args.args[0]
+    assert "(ts, id) > ($1, $2)" in query
+    assert call_args.args[1] == since
+    assert call_args.args[2] == since_id
+
+
+@pytest.mark.asyncio
+async def test_single_column_fallback_when_since_id_is_none() -> None:
+    """When ``since`` is given but ``since_id`` is None (pre-migration
+    checkpoint), the query must use the legacy ``WHERE ts > $1`` form.
+    """
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    adapter = OwnTracksPointAdapter()
+    cp = _chronicler_pool()
+    since = _NOW - timedelta(hours=1)
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event"),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode"),
+    ):
+        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=None)
+
+    call_args = conn.fetch.call_args
+    query: str = call_args.args[0]
+    assert "ts > $1" in query
+    assert "(ts, id) > ($1, $2)" not in query
+
+
+@pytest.mark.asyncio
+async def test_watermark_id_set_in_result() -> None:
+    """``AdapterResult.watermark_id`` must be set to the ``id`` of the
+    last-processed row so the base class can persist it as the new tuple
+    watermark.
+    """
+    row = _make_row(ts=_NOW)
+    # Patch the row's id to a known integer value.
+    row["id"] = 99
+
+    adapter = OwnTracksPointAdapter()
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode") as mock_ep,
+    ):
+        mock_pe.return_value = MagicMock()
+        mock_ep.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.watermark == _NOW
+    assert result.watermark_id == 99
+
+
+@pytest.mark.asyncio
+async def test_watermark_id_tracks_max_id_at_same_timestamp() -> None:
+    """When multiple rows share the same timestamp, ``watermark_id`` must
+    track the maximum ``id`` seen at that timestamp (i.e. the last row in
+    the ORDER BY ts ASC, id ASC ordering).
+    """
+    t = _NOW
+    rows = [
+        {**_make_row(ts=t, idempotency_key="k1"), "id": 10},
+        {**_make_row(ts=t, idempotency_key="k2"), "id": 20},
+        {**_make_row(ts=t, idempotency_key="k3"), "id": 30},
+    ]
+
+    adapter = OwnTracksPointAdapter()
+    pool = _pool_returning(*rows)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode") as mock_ep,
+    ):
+        mock_pe.return_value = MagicMock()
+        mock_ep.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.watermark == t
+    assert result.watermark_id == 30
+
+
+@pytest.mark.asyncio
+async def test_boundary_rows_not_missed_with_tuple_watermark() -> None:
+    """Simulate the batch-boundary case where rows B and C share the same
+    timestamp as row A (the last row of the previous batch).
+
+    With single-column ``WHERE ts > $1``, rows B and C are EXCLUDED because
+    their ts equals the watermark.
+    With tuple ``WHERE (ts, id) > ($1, $2)``, rows B and C are INCLUDED if
+    their id is greater than the watermark id, even though ts is equal.
+
+    This test verifies that when ``since_id`` is provided, the query uses
+    the tuple path (by asserting the correct SQL is sent).  The actual
+    filtering is handled in Postgres; we assert the query string and params.
+    """
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    adapter = OwnTracksPointAdapter()
+    cp = _chronicler_pool()
+
+    # Simulate previous batch ended at row id=10, timestamp _NOW.
+    since = _NOW
+    since_id = 10
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event"),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode"),
+    ):
+        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
+
+    call_args = conn.fetch.call_args
+    query: str = call_args.args[0]
+    # The tuple comparison must be in the query.
+    assert "(ts, id) > ($1, $2)" in query
+    assert call_args.args[1] == since
+    assert call_args.args[2] == since_id
+
+
+@pytest.mark.asyncio
+async def test_watermark_id_preserved_when_no_rows() -> None:
+    """When no rows are returned, ``watermark_id`` must remain at the
+    ``since_id`` value so the checkpoint is not regressed.
+    """
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+
+    adapter = OwnTracksPointAdapter()
+    cp = _chronicler_pool()
+    prior_watermark = _NOW - timedelta(days=1)
+    prior_watermark_id = 77
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event"),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode"),
+    ):
+        result = await adapter.project(
+            pool,
+            chronicler_pool=cp,
+            since=prior_watermark,
+            since_id=prior_watermark_id,
+        )
+
+    assert result.watermark == prior_watermark
+    assert result.watermark_id == prior_watermark_id

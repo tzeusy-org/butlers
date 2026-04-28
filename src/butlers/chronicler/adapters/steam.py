@@ -57,10 +57,11 @@ class SteamPlayAdapter(ProjectionAdapter):
         *,
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_rows(pool, since)
+        rows = await self._fetch_rows(pool, since, since_id)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -69,24 +70,41 @@ class SteamPlayAdapter(ProjectionAdapter):
             return result
 
         latest_watermark = since
+        latest_watermark_id: int | None = since_id
         for row in rows:
             await self._project_row(chronicler_pool, row)
             result.rows_projected += 1
             result.episodes_closed += 1
 
             candidate = row["recorded_at"]
-            if candidate is not None and (latest_watermark is None or candidate > latest_watermark):
-                latest_watermark = candidate
+            if candidate is not None:
+                if latest_watermark is None or candidate > latest_watermark:
+                    latest_watermark = candidate
+                    latest_watermark_id = row["id"]
+                elif candidate == latest_watermark:
+                    row_id = row["id"]
+                    if row_id is not None and (
+                        latest_watermark_id is None or row_id > latest_watermark_id
+                    ):
+                        latest_watermark_id = row_id
 
         result.watermark = latest_watermark
+        result.watermark_id = latest_watermark_id
         return result
 
     async def _fetch_rows(
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark.
+
+        When ``since`` and ``since_id`` are both provided, uses the tuple
+        comparison ``WHERE (recorded_at, id) > ($1, $2)`` so rows sharing
+        the same timestamp as the previous batch boundary are not missed.
+        When only ``since`` is provided (pre-migration checkpoint), falls
+        back to the single-column ``WHERE recorded_at > $1`` form.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
@@ -114,6 +132,20 @@ class SteamPlayAdapter(ProjectionAdapter):
                         ORDER BY recorded_at ASC, id ASC
                         LIMIT $1
                         """,
+                        self.batch_limit,
+                    )
+                elif since_id is not None:
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT id, steam_id, steam_account_id, app_id, app_name,
+                               date, playtime_minutes, recorded_at
+                        FROM {_EVIDENCE_TABLE}
+                        WHERE (recorded_at, id) > ($1, $2)
+                        ORDER BY recorded_at ASC, id ASC
+                        LIMIT $3
+                        """,
+                        since,
+                        since_id,
                         self.batch_limit,
                     )
                 else:

@@ -57,6 +57,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         *,
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
         latest_watermark = since

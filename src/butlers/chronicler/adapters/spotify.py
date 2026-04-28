@@ -56,10 +56,11 @@ class SpotifySessionAdapter(ProjectionAdapter):
         *,
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_sessions(pool, since)
+        rows = await self._fetch_sessions(pool, since, since_id)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -68,24 +69,41 @@ class SpotifySessionAdapter(ProjectionAdapter):
             return result
 
         latest_watermark = since
+        latest_watermark_id: int | None = since_id
         for row in rows:
             await self._project_row(chronicler_pool, row)
             result.rows_projected += 1
             result.episodes_closed += 1
 
             candidate = row["started_at"]
-            if candidate is not None and (latest_watermark is None or candidate > latest_watermark):
-                latest_watermark = candidate
+            if candidate is not None:
+                if latest_watermark is None or candidate > latest_watermark:
+                    latest_watermark = candidate
+                    latest_watermark_id = row["id"]
+                elif candidate == latest_watermark:
+                    row_id = row["id"]
+                    if row_id is not None and (
+                        latest_watermark_id is None or row_id > latest_watermark_id
+                    ):
+                        latest_watermark_id = row_id
 
         result.watermark = latest_watermark
+        result.watermark_id = latest_watermark_id
         return result
 
     async def _fetch_sessions(
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
+        since_id: int | None = None,
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark.
+
+        When ``since`` and ``since_id`` are both provided, uses the tuple
+        comparison ``WHERE (started_at, id) > ($1, $2)`` so rows sharing
+        the same timestamp as the previous batch boundary are not missed.
+        When only ``since`` is provided (pre-migration checkpoint), falls
+        back to the single-column ``WHERE started_at > $1`` form.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
@@ -115,6 +133,22 @@ class SpotifySessionAdapter(ProjectionAdapter):
                         ORDER BY started_at ASC, id ASC
                         LIMIT $1
                         """,
+                        self.batch_limit,
+                    )
+                elif since_id is not None:
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT id, idempotency_key, endpoint_identity,
+                               spotify_user_id, started_at, ended_at,
+                               duration_seconds, track_count, track_names,
+                               context_uri, context_name, recorded_at
+                        FROM {_EVIDENCE_TABLE}
+                        WHERE (started_at, id) > ($1, $2)
+                        ORDER BY started_at ASC, id ASC
+                        LIMIT $3
+                        """,
+                        since,
+                        since_id,
                         self.batch_limit,
                     )
                 else:
