@@ -64,6 +64,11 @@ class LoggingConfig:
     log_root: str | None = None
 
 
+_ALLOWED_SCHEDULE_COMPLEXITIES: frozenset[str] = frozenset(
+    {"trivial", "medium", "high", "extra_high", "discretion", "self_healing"}
+)
+
+
 @dataclass
 class ScheduleConfig:
     """A single scheduled task entry from [[butler.schedule]]."""
@@ -75,6 +80,7 @@ class ScheduleConfig:
     job_name: str | None = None
     job_args: dict[str, Any] | None = None
     max_token_budget: int | None = None
+    complexity: str | None = None
 
 
 @dataclass
@@ -439,6 +445,19 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             raise ConfigError(f"{entry_path}.max_token_budget must be a positive integer")
         max_token_budget = raw_budget
 
+    raw_complexity = entry.get("complexity")
+    complexity: str | None = None
+    if raw_complexity is not None:
+        if not isinstance(raw_complexity, str):
+            raise ConfigError(f"{entry_path}.complexity must be a string when set")
+        normalized_complexity = raw_complexity.strip().lower()
+        if normalized_complexity not in _ALLOWED_SCHEDULE_COMPLEXITIES:
+            raise ConfigError(
+                f"Invalid {entry_path}.complexity: {raw_complexity!r}. "
+                f"Expected one of {sorted(_ALLOWED_SCHEDULE_COMPLEXITIES)}."
+            )
+        complexity = normalized_complexity
+
     if dispatch_mode == ScheduleDispatchMode.PROMPT:
         if prompt is None or not prompt.strip():
             raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
@@ -452,6 +471,7 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
             prompt=prompt,
             dispatch_mode=dispatch_mode,
             max_token_budget=max_token_budget,
+            complexity=complexity,
         )
 
     if prompt is not None:
@@ -466,6 +486,7 @@ def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
         job_name=job_name.strip(),
         job_args=dict(job_args) if job_args is not None else None,
         max_token_budget=max_token_budget,
+        complexity=complexity,
     )
 
 
