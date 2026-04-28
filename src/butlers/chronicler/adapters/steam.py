@@ -16,6 +16,8 @@ Semantics:
   ``connectors.steam_play_history:{steam_id}:{app_id}:{date}``
   so replays are idempotent regardless of batch boundary shifts.
 - Watermark on ``recorded_at`` (monotonically written by the connector).
+  ``connectors.steam_play_history.id`` is UUID-backed, so this adapter does
+  not use the integer ``watermark_id`` tuple path.
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
@@ -70,7 +72,6 @@ class SteamPlayAdapter(ProjectionAdapter):
             return result
 
         latest_watermark = since
-        latest_watermark_id: int | None = since_id
         for row in rows:
             await self._project_row(chronicler_pool, row)
             result.rows_projected += 1
@@ -80,16 +81,12 @@ class SteamPlayAdapter(ProjectionAdapter):
             if candidate is not None:
                 if latest_watermark is None or candidate > latest_watermark:
                     latest_watermark = candidate
-                    latest_watermark_id = row["id"]
-                elif candidate == latest_watermark:
-                    row_id = row["id"]
-                    if row_id is not None and (
-                        latest_watermark_id is None or row_id > latest_watermark_id
-                    ):
-                        latest_watermark_id = row_id
 
         result.watermark = latest_watermark
-        result.watermark_id = latest_watermark_id
+        # ``projection_checkpoints.watermark_id`` is BIGINT, but the Steam
+        # evidence table primary key is UUID. Keep timestamp-only semantics for
+        # this adapter, matching other UUID-backed sources.
+        result.watermark_id = None
         return result
 
     async def _fetch_rows(
@@ -100,15 +97,14 @@ class SteamPlayAdapter(ProjectionAdapter):
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark.
 
-        When ``since`` and ``since_id`` are both provided, uses the tuple
-        comparison ``WHERE (recorded_at, id) > ($1, $2)`` so rows sharing
-        the same timestamp as the previous batch boundary are not missed.
-        When only ``since`` is provided (pre-migration checkpoint), falls
-        back to the single-column ``WHERE recorded_at > $1`` form.
+        Always uses single-column ``recorded_at`` semantics. The evidence
+        table's ``id`` column is a UUID, while the shared checkpoint
+        ``watermark_id`` column is BIGINT for integer-backed sources.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
         """
+        del since_id
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -126,36 +122,22 @@ class SteamPlayAdapter(ProjectionAdapter):
                 if since is None:
                     rows = await conn.fetch(
                         f"""
-                        SELECT id, steam_id, steam_account_id, app_id, app_name,
+                        SELECT steam_id, steam_account_id, app_id, app_name,
                                date, playtime_minutes, recorded_at
                         FROM {_EVIDENCE_TABLE}
-                        ORDER BY recorded_at ASC, id ASC
+                        ORDER BY recorded_at ASC, steam_id ASC, app_id ASC, date ASC
                         LIMIT $1
                         """,
-                        self.batch_limit,
-                    )
-                elif since_id is not None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, steam_id, steam_account_id, app_id, app_name,
-                               date, playtime_minutes, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE (recorded_at, id) > ($1, $2)
-                        ORDER BY recorded_at ASC, id ASC
-                        LIMIT $3
-                        """,
-                        since,
-                        since_id,
                         self.batch_limit,
                     )
                 else:
                     rows = await conn.fetch(
                         f"""
-                        SELECT id, steam_id, steam_account_id, app_id, app_name,
+                        SELECT steam_id, steam_account_id, app_id, app_name,
                                date, playtime_minutes, recorded_at
                         FROM {_EVIDENCE_TABLE}
                         WHERE recorded_at > $1
-                        ORDER BY recorded_at ASC, id ASC
+                        ORDER BY recorded_at ASC, steam_id ASC, app_id ASC, date ASC
                         LIMIT $2
                         """,
                         since,

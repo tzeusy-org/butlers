@@ -9,6 +9,7 @@ Covers:
 - Watermark advances to max recorded_at across batch.
 - Watermark preserved when no rows returned.
 - since filter passed through to query (recorded_at > $1).
+- UUID-backed source id does not populate integer checkpoint watermark_id.
 - No-LLM AST scan.
 - Contracts registration: steam.play_history SUPPORTED.
 """
@@ -474,8 +475,8 @@ async def test_since_filter_passed_to_query() -> None:
 
 
 @pytest.mark.asyncio
-async def test_order_by_includes_id_tiebreaker_without_since() -> None:
-    """ORDER BY clause must include id ASC as a tie-breaker when since=None.
+async def test_order_by_uses_natural_tiebreaker_without_since() -> None:
+    """ORDER BY clause must avoid UUID id while staying deterministic.
 
     Same recorded_at values in the evidence table have non-deterministic ordering
     without a secondary sort key, which can cause rows to be missed or duplicated
@@ -494,12 +495,12 @@ async def test_order_by_includes_id_tiebreaker_without_since() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
     query: str = conn.fetch.call_args.args[0]
-    assert "ORDER BY recorded_at ASC, id ASC" in query
+    assert "ORDER BY recorded_at ASC, steam_id ASC, app_id ASC, date ASC" in query
 
 
 @pytest.mark.asyncio
-async def test_order_by_includes_id_tiebreaker_with_since() -> None:
-    """ORDER BY clause must include id ASC as a tie-breaker when since is given."""
+async def test_order_by_uses_natural_tiebreaker_with_since() -> None:
+    """ORDER BY clause must avoid UUID id while staying deterministic."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -514,7 +515,7 @@ async def test_order_by_includes_id_tiebreaker_with_since() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=since)
 
     query: str = conn.fetch.call_args.args[0]
-    assert "ORDER BY recorded_at ASC, id ASC" in query
+    assert "ORDER BY recorded_at ASC, steam_id ASC, app_id ASC, date ASC" in query
 
 
 # ---------------------------------------------------------------------------
@@ -551,15 +552,14 @@ def test_steam_play_history_not_in_planned_names() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tuple-watermark: (recorded_at, id) > ($1, $2) boundary precision
+# UUID-backed watermark semantics
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
-    """When both ``since`` and ``since_id`` are provided, the query must use
-    the row-value comparison ``WHERE (recorded_at, id) > ($1, $2)`` so that
-    rows sharing the same recorded_at as the batch boundary are not missed.
+async def test_since_id_is_ignored_uuid_pk() -> None:
+    """The Steam evidence table uses UUID primary keys, so ``since_id`` must
+    not select the tuple ``(recorded_at, id)`` path backed by BIGINT checkpoints.
     """
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
@@ -575,42 +575,17 @@ async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
     with patch("butlers.chronicler.adapters.steam.upsert_episode"):
         await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
 
-    assert conn.fetch.await_count == 1
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "(recorded_at, id) > ($1, $2)" in query
-    assert call_args.args[1] == since
-    assert call_args.args[2] == since_id
-
-
-@pytest.mark.asyncio
-async def test_single_column_fallback_when_since_id_is_none() -> None:
-    """When ``since`` is given but ``since_id`` is None (pre-migration
-    checkpoint), the query must use the legacy ``WHERE recorded_at > $1`` form.
-    """
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SteamPlayAdapter()
-    cp = _chronicler_pool()
-    since = _NOW - timedelta(hours=1)
-
-    with patch("butlers.chronicler.adapters.steam.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=None)
-
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    assert "recorded_at > $1" in query
     assert "(recorded_at, id) > ($1, $2)" not in query
+    assert "recorded_at > $1" in query
+    assert call_args.args[1] == since
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_set_in_result() -> None:
-    """``AdapterResult.watermark_id`` must be the ``id`` of the last-projected row."""
-    row = {**_make_row(recorded_at=_NOW), "id": 77}
+async def test_watermark_id_is_always_none_for_uuid_pk() -> None:
+    """``watermark_id`` stays None because projection_checkpoints stores BIGINT ids."""
+    row = _make_row(recorded_at=_NOW)
 
     async def _fake_upsert(conn: object, episode: Episode) -> Episode:
         return episode
@@ -623,19 +598,42 @@ async def test_watermark_id_set_in_result() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == _NOW
-    assert result.watermark_id == 77
+    assert result.watermark_id is None
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_tracks_max_id_at_same_recorded_at() -> None:
-    """When multiple rows share the same ``recorded_at``, ``watermark_id``
-    must be the maximum ``id`` at that timestamp.
-    """
+async def test_run_persists_checkpoint_without_uuid_watermark_id() -> None:
+    """A successful run must not bind the UUID source id into BIGINT watermark_id."""
+    row = _make_row(recorded_at=_NOW)
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+    adapter = SteamPlayAdapter()
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        return episode
+
+    with (
+        patch("butlers.chronicler.adapters.steam.upsert_episode", side_effect=_fake_upsert),
+        patch("butlers.chronicler.adapters.base.get_checkpoint", AsyncMock(return_value=None)),
+        patch("butlers.chronicler.adapters.base.mark_source_active", AsyncMock()),
+        patch("butlers.chronicler.adapters.base.upsert_checkpoint", AsyncMock()) as checkpoint,
+    ):
+        result = await adapter.run(pool=pool, chronicler_pool=cp)
+
+    assert result.error is None
+    checkpoint.assert_awaited_once()
+    assert checkpoint.await_args.kwargs["watermark"] == _NOW
+    assert checkpoint.await_args.kwargs["watermark_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_watermark_id_not_populated_for_rows_sharing_recorded_at() -> None:
+    """Rows sharing a timestamp must not push UUID ids into BIGINT checkpoints."""
     t = _NOW
     rows = [
-        {**_make_row(recorded_at=t, play_date=date(2026, 4, 23)), "id": 5},
-        {**_make_row(recorded_at=t, play_date=date(2026, 4, 24)), "id": 15},
-        {**_make_row(recorded_at=t, play_date=date(2026, 4, 25)), "id": 25},
+        {**_make_row(recorded_at=t, play_date=date(2026, 4, 23)), "id": "uuid-1"},
+        {**_make_row(recorded_at=t, play_date=date(2026, 4, 24)), "id": "uuid-2"},
+        {**_make_row(recorded_at=t, play_date=date(2026, 4, 25)), "id": "uuid-3"},
     ]
 
     async def _fake_upsert(conn: object, episode: Episode) -> Episode:
@@ -649,14 +647,12 @@ async def test_watermark_id_tracks_max_id_at_same_recorded_at() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == t
-    assert result.watermark_id == 25
+    assert result.watermark_id is None
 
 
 @pytest.mark.asyncio
-async def test_boundary_rows_not_missed_with_tuple_watermark() -> None:
-    """The tuple query uses both since and since_id as parameters so
-    Postgres applies ``WHERE (recorded_at, id) > ($1, $2)``.
-    """
+async def test_initial_query_uses_deterministic_order_without_uuid_watermark_id() -> None:
+    """The initial batch keeps deterministic ordering without selecting UUID ids."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -665,22 +661,20 @@ async def test_boundary_rows_not_missed_with_tuple_watermark() -> None:
 
     adapter = SteamPlayAdapter()
     cp = _chronicler_pool()
-    since = _NOW
-    since_id = 50
 
     with patch("butlers.chronicler.adapters.steam.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
+        await adapter.project(pool, chronicler_pool=cp, since=None)
 
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "(recorded_at, id) > ($1, $2)" in query
-    assert call_args.args[1] == since
-    assert call_args.args[2] == since_id
+    assert "SELECT steam_id, steam_account_id" in query
+    assert "SELECT id," not in query
+    assert "ORDER BY recorded_at ASC, steam_id ASC, app_id ASC, date ASC" in query
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_preserved_when_no_rows() -> None:
-    """When no rows are returned, ``watermark_id`` stays at ``since_id``."""
+async def test_watermark_id_cleared_when_no_rows() -> None:
+    """Even when passed, ``since_id`` is ignored for the UUID-backed source."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -701,4 +695,4 @@ async def test_watermark_id_preserved_when_no_rows() -> None:
         )
 
     assert result.watermark == prior_watermark
-    assert result.watermark_id == prior_watermark_id
+    assert result.watermark_id is None
