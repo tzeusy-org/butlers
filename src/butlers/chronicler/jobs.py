@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
@@ -16,6 +16,9 @@ from butlers.chronicler.adapters import (
 )
 from butlers.chronicler.contracts import seed_source_registry
 from butlers.config import list_butlers
+
+if TYPE_CHECKING:
+    from butlers.chronicler.adapters import ProjectionAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,19 @@ def _adapter_result_to_dict(result: Any) -> dict[str, Any]:
     return payload
 
 
+async def _run_adapter(
+    *,
+    db_pool: asyncpg.Pool,
+    adapter: ProjectionAdapter,
+) -> dict[str, Any]:
+    """Seed Chronicler source contracts, run one adapter, and surface failures."""
+    await seed_source_registry(db_pool)
+    result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
+    if result.error is not None:
+        raise RuntimeError(f"{result.source_name} projection failed: {result.error}")
+    return _adapter_result_to_dict(result)
+
+
 def _discover_session_schemas() -> tuple[str, ...]:
     try:
         configs = list_butlers()
@@ -142,13 +158,11 @@ async def run_project_sessions(
         job_args,
         supported_fields=("batch_limit",),
     )
-    await seed_source_registry(db_pool)
     adapter = CoreSessionsAdapter(
         butler_schemas=_discover_session_schemas(),
         **options,
     )
-    result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return _adapter_result_to_dict(result)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
 async def run_project_calendar(
@@ -161,13 +175,11 @@ async def run_project_calendar(
         job_args,
         supported_fields=("batch_limit",),
     )
-    await seed_source_registry(db_pool)
     adapter = CalendarCompletedAdapter(
         butler_schemas=_discover_calendar_schemas(),
         **options,
     )
-    result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return _adapter_result_to_dict(result)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
 async def run_project_owntracks(
@@ -180,10 +192,8 @@ async def run_project_owntracks(
         job_args,
         supported_fields=("batch_limit", "movement_gap_minutes"),
     )
-    await seed_source_registry(db_pool)
     adapter = OwnTracksPointAdapter(**options)
-    result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return _adapter_result_to_dict(result)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
 async def run_project_steam(
@@ -196,10 +206,8 @@ async def run_project_steam(
         job_args,
         supported_fields=("batch_limit",),
     )
-    await seed_source_registry(db_pool)
     adapter = SteamPlayAdapter(**options)
-    result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
-    return _adapter_result_to_dict(result)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
 __all__ = [

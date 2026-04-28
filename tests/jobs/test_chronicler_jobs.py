@@ -120,6 +120,25 @@ async def test_project_calendar_falls_back_to_static_schema_set_when_none_have_c
     adapter_cls.assert_called_once_with(butler_schemas=_DEFAULT_CALENDAR_SCHEMAS)
 
 
+async def test_project_sessions_raises_when_adapter_reports_error() -> None:
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(source_name="core.sessions", error="fk violation")
+    seed_registry = AsyncMock()
+
+    with (
+        patch("butlers.chronicler.jobs.list_butlers", return_value=[]),
+        patch("butlers.chronicler.jobs.seed_source_registry", seed_registry),
+        patch("butlers.chronicler.jobs.CoreSessionsAdapter", return_value=adapter),
+    ):
+        from butlers.chronicler.jobs import run_project_sessions
+
+        with pytest.raises(RuntimeError, match="core.sessions projection failed: fk violation"):
+            await run_project_sessions(pool, None)
+
+    seed_registry.assert_awaited_once_with(pool)
+
+
 async def test_project_owntracks_rejects_unsupported_job_args() -> None:
     from butlers.chronicler.jobs import run_project_owntracks
 
