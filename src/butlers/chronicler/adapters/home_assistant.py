@@ -14,6 +14,10 @@ Semantics:
   If the last known state is ``home`` (no closing transition in the batch)
   the episode's ``end_at`` is set to the timestamp of the last row seen
   for that entity.
+- Cross-batch stitching: if the prior batch ended with an entity still in
+  ``home`` state, the open episode's ``source_ref`` is carried over and
+  reused in the next batch so that a continuous at-home span spanning a
+  batch boundary is recorded as a single episode rather than two.
 - Boundary precision is ``exact`` — HA event timestamps carry second
   resolution.
 - Privacy class is ``sensitive`` — home/away presence is personally
@@ -38,7 +42,7 @@ import asyncpg
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Precision, Privacy
-from butlers.chronicler.storage import upsert_episode
+from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +63,10 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
 
     Rows for ``person.*`` entities are collapsed into ``presence_episode``
     spans: one episode per contiguous run of ``home`` state per entity.
+
+    Cross-batch stitching is applied automatically: if the previous batch
+    ended with an entity still at home, the open episode's ``source_ref``
+    is reused to extend it rather than starting a new fragmented episode.
     """
 
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
@@ -109,9 +117,20 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         ]
 
         if presence_rows:
-            episodes_closed = await self._project_presence_episodes(chronicler_pool, presence_rows)
+            # Load prior-batch carryover state for cross-batch stitching.
+            prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+
+            episodes_closed, new_carryover = await self._project_presence_episodes(
+                chronicler_pool, presence_rows, prior_carryover
+            )
             result.rows_projected = len(presence_rows)
             result.episodes_closed += episodes_closed
+
+            await save_carryover(chronicler_pool, self.source_name, new_carryover)
+        else:
+            # No presence rows — preserve existing carryover unchanged.
+            # (Nothing was advanced; carryover remains valid for next batch.)
+            pass
 
         result.watermark = latest_watermark
         result.watermark_id = latest_watermark_id
@@ -193,7 +212,8 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         self,
         chronicler_pool: asyncpg.Pool,
         rows: list[Any],
-    ) -> int:
+        prior_carryover: dict,
+    ) -> tuple[int, dict]:
         """Collapse per-entity presence state changes into presence episodes.
 
         For each ``person.*`` entity, runs of consecutive ``home`` state
@@ -201,7 +221,13 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         spans from the first ``home`` row to the row immediately before the
         next non-``home`` row (or the last row if the entity is still home).
 
-        Returns the number of episodes upserted.
+        ``prior_carryover`` maps ``entity_id`` → carryover dict from the
+        prior batch.  When an entity's first row in this batch is ``home``
+        and there is an open episode in the carryover, the open episode is
+        extended rather than starting a new one.
+
+        Returns ``(episodes_upserted, new_carryover)`` where ``new_carryover``
+        captures any entities that are still home at the end of this batch.
         """
         # Group rows by entity_id preserving recorded_at order.
         by_entity: dict[str, list[Any]] = {}
@@ -210,32 +236,61 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
             by_entity.setdefault(entity_id, []).append(row)
 
         episodes_upserted = 0
+        new_carryover: dict = {}
+
         for entity_id, entity_rows in by_entity.items():
             # entity_rows are already in (recorded_at ASC, id ASC) order.
-            episodes_upserted += await self._rollup_entity_episodes(
-                chronicler_pool, entity_id, entity_rows
+            entity_carryover = prior_carryover.get(entity_id)
+            count, open_ep = await self._rollup_entity_episodes(
+                chronicler_pool, entity_id, entity_rows, entity_carryover
             )
+            episodes_upserted += count
+            if open_ep is not None:
+                new_carryover[entity_id] = open_ep
 
-        return episodes_upserted
+        return episodes_upserted, new_carryover
 
     async def _rollup_entity_episodes(
         self,
         chronicler_pool: asyncpg.Pool,
         entity_id: str,
         entity_rows: list[Any],
-    ) -> int:
+        carryover: dict | None,
+    ) -> tuple[int, dict | None]:
         """Rollup presence episodes for a single entity.
 
         Scans entity_rows and identifies contiguous spans where
         state == ``home``.  Each span becomes one ``presence_episode``.
 
-        Returns the number of episodes upserted.
+        If ``carryover`` is provided and the first row is ``home``, the
+        open episode from the prior batch is extended using the same
+        ``source_ref`` (cross-batch stitching).
+
+        Returns ``(episodes_upserted, open_episode_carryover)``.
+        ``open_episode_carryover`` is ``None`` when the entity is not at
+        home at the end of the batch, or a dict carrying the ``source_ref``
+        and timestamps of the still-open episode when it is.
         """
         episodes_upserted = 0
 
-        # Walk the rows and identify home-spans.
+        # Seed span state from carryover (prior open episode) if applicable.
         span_start: datetime | None = None
         span_end: datetime | None = None
+        span_source_ref: str | None = None  # set only when continuing a prior episode
+
+        if carryover:
+            try:
+                span_start_iso = carryover["start_at"]
+                span_source_ref = carryover["source_ref"]
+                # Parse ISO string back to datetime.
+                span_start = datetime.fromisoformat(span_start_iso)
+                span_end = datetime.fromisoformat(carryover["end_at"])
+            except (KeyError, ValueError):
+                # Corrupt carryover — discard and start fresh.
+                span_start = None
+                span_end = None
+                span_source_ref = None
+                logger.warning("Discarding malformed carryover for %s: %r", entity_id, carryover)
 
         for row in entity_rows:
             state = row["state"]
@@ -243,24 +298,36 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
 
             if state == _STATE_HOME:
                 if span_start is None:
+                    # New episode starting this batch — compute fresh source_ref.
                     span_start = ts
+                    span_source_ref = None
                 span_end = ts
             else:
                 if span_start is not None and span_end is not None:
                     # Close this span.
                     await self._upsert_presence_episode(
-                        chronicler_pool, entity_id, span_start, span_end
+                        chronicler_pool, entity_id, span_start, span_end, span_source_ref
                     )
                     episodes_upserted += 1
                     span_start = None
                     span_end = None
+                    span_source_ref = None
 
-        # If the entity is still home at the end of the batch, emit the open span.
+        # If the entity is still home at the end of the batch, emit the open span
+        # and record carryover for the next batch.
+        open_episode_carryover: dict | None = None
         if span_start is not None and span_end is not None:
-            await self._upsert_presence_episode(chronicler_pool, entity_id, span_start, span_end)
+            upserted = await self._upsert_presence_episode(
+                chronicler_pool, entity_id, span_start, span_end, span_source_ref
+            )
             episodes_upserted += 1
+            open_episode_carryover = {
+                "source_ref": upserted.source_ref,
+                "start_at": upserted.start_at.isoformat(),
+                "end_at": upserted.end_at.isoformat(),
+            }
 
-        return episodes_upserted
+        return episodes_upserted, open_episode_carryover
 
     async def _upsert_presence_episode(
         self,
@@ -268,9 +335,19 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         entity_id: str,
         start_at: datetime,
         end_at: datetime,
+        existing_source_ref: str | None = None,
     ) -> Episode:
-        start_tst = int(start_at.timestamp())
-        source_ref = f"{_EVIDENCE_TABLE}:presence:{entity_id}:{start_tst}"
+        """Upsert a presence episode.
+
+        If ``existing_source_ref`` is provided (cross-batch continuation),
+        it is used as-is so that the prior episode row is updated in place.
+        Otherwise a new ``source_ref`` is derived from ``(entity_id, start_tst)``.
+        """
+        if existing_source_ref is not None:
+            source_ref = existing_source_ref
+        else:
+            start_tst = int(start_at.timestamp())
+            source_ref = f"{_EVIDENCE_TABLE}:presence:{entity_id}:{start_tst}"
 
         # Derive a human-readable label from the entity_id.
         # e.g. "person.alice" → "Alice at home"

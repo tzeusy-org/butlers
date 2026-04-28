@@ -839,7 +839,68 @@ async def upsert_tier2_cache(
     )
 
 
+# ── Carryover (cross-batch open-episode state) ────────────────────────────
+
+
+async def get_carryover(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+) -> dict:
+    """Return the carryover JSONB blob for the global (subsource='') checkpoint.
+
+    Adapters persist open-episode state here so the next batch can continue
+    stitching across the boundary.  Returns ``{}`` when the column is NULL,
+    the row does not exist, or the DB predates migration ``chronicler_006``.
+    """
+    try:
+        raw = await conn.fetchval(
+            """
+            SELECT carryover
+            FROM projection_checkpoints
+            WHERE source_name = $1 AND subsource = ''
+            """,
+            source_name,
+        )
+    except asyncpg.PostgresError:
+        return {}
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+async def save_carryover(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    source_name: str,
+    carryover: dict,
+) -> None:
+    """Persist open-episode carryover state for the next batch run.
+
+    Writes to the global (``subsource = ''``) checkpoint row.  The row is
+    created (with ``carryover`` only) if it does not yet exist, but the
+    normal ``upsert_checkpoint`` path is expected to create it first.
+    """
+    await conn.execute(
+        """
+        INSERT INTO projection_checkpoints (source_name, subsource, carryover)
+        VALUES ($1, '', $2::jsonb)
+        ON CONFLICT (source_name, subsource) DO UPDATE
+        SET carryover = EXCLUDED.carryover
+        """,
+        source_name,
+        json.dumps(carryover),
+    )
+
+
 __all__: Sequence[str] = (
+    "get_carryover",
     "get_checkpoint",
     "get_checkpoint_subsource",
     "get_episode",
@@ -854,6 +915,7 @@ __all__: Sequence[str] = (
     "mark_source_active",
     "record_idempotency",
     "register_source",
+    "save_carryover",
     "upsert_checkpoint",
     "upsert_checkpoint_subsource",
     "upsert_episode",
