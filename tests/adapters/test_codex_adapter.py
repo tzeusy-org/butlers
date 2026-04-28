@@ -459,6 +459,50 @@ def test_select_error_detail_dedupes_repeated_error_and_turn_failed_messages():
     )
 
 
+def test_select_error_detail_prefers_turn_failed_message_over_stderr_noise():
+    """Structured turn.failed payload should beat stderr lifecycle/retry chatter.
+
+    Codex can emit benign ``WARNING: proceeding, even though we could not update
+    PATH:`` and websocket-level ``ERROR`` lines on stderr while still surfacing
+    the actionable cause as a ``turn.failed`` event on stdout. The headline
+    should come from the structured stdout event, not the stderr noise.
+    """
+    stdout = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "thread-123"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps(
+                {
+                    "type": "error",
+                    "message": "Reconnecting... 5/5 (unexpected status 401 Unauthorized)",
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn.failed",
+                    "error": {
+                        "message": (
+                            "unexpected status 401 Unauthorized: Missing bearer "
+                            "or basic authentication in header"
+                        )
+                    },
+                }
+            ),
+        ]
+    )
+    stderr = (
+        "WARNING: proceeding, even though we could not update PATH: helper binary setup skipped\n"
+        "2026-04-27T07:07:59Z ERROR codex_api::endpoint::responses_websocket: "
+        "failed to connect to websocket: HTTP error: 401 Unauthorized"
+    )
+
+    detail = _select_error_detail(stderr, stdout, 1)
+
+    assert detail == (
+        "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"
+    )
+
+
 def test_extract_structured_stdout_error_prefers_terminal_failure_message():
     """Structured turn.failed events should drive nonzero-exit diagnostics."""
     stdout = "\n".join(
