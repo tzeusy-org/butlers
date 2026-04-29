@@ -5,7 +5,8 @@ tool and the ``route.execute`` handler in messenger.  A single implementation
 ensures both gates enforce identical policy:
 
 1. Resolve contact by email address.
-2. Owner contact → auto-approve (no rule needed).
+2. Owner contact AND address is primary → auto-approve (no rule needed).
+   Non-primary owner addresses fall through to the rules/parking flow.
 3. Non-owner or unknown → check standing approval rules.
 4. Rule matches → approve, bump ``use_count``.
 5. No rule → park as ``pending_action`` for human review.
@@ -36,6 +37,39 @@ def _normalize_session_id(session_id: str | uuid.UUID | None) -> uuid.UUID | Non
     except (ValueError, TypeError, AttributeError):
         logger.warning("email guard: ignoring non-UUID session_id %r", session_id)
         return None
+
+
+async def _is_primary_email(pool: asyncpg.Pool, contact_id: uuid.UUID, email_address: str) -> bool:
+    """Return True if *email_address* is the primary email for *contact_id*.
+
+    Queries ``public.contact_info`` for the matching (type='email', value) row
+    and returns ``is_primary``.  Returns ``False`` on any DB error or if the
+    row does not exist.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT is_primary
+            FROM public.contact_info
+            WHERE contact_id = $1
+              AND type = 'email'
+              AND value = $2
+            """,
+            contact_id,
+            email_address,
+        )
+        if row is None:
+            return False
+        return bool(row["is_primary"])
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "email guard: could not determine is_primary for contact %s <%s>; "
+            "treating as non-primary (will fall through to rules/park flow)",
+            contact_id,
+            email_address,
+            exc_info=True,
+        )
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,9 +128,14 @@ async def check_email_recipient(
 
     contact = await resolve_contact_by_channel(pool, "email", email_target)
 
-    # Owner → always allowed
+    # Owner → allowed only when the targeted address is the owner's primary email.
+    # Non-primary owner addresses (e.g. work email) must go through the normal
+    # rules/parking flow so they appear in the approval queue.  This prevents
+    # personal content from silently bypassing approval when sent to a work address.
     if contact is not None and "owner" in contact.roles:
-        return EmailGuardDecision(allowed=True, reason="owner")
+        is_primary = await _is_primary_email(pool, contact.contact_id, email_target)
+        if is_primary:
+            return EmailGuardDecision(allowed=True, reason="owner")
 
     contact_desc = "known non-owner contact" if contact is not None else "unknown contact"
 
