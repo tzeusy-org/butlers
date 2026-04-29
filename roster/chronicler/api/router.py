@@ -63,6 +63,7 @@ if _spec is not None and _spec.loader is not None:
     DayCloseRefreshResponse = _models.DayCloseRefreshResponse
     EpisodeExplainResponse = _models.EpisodeExplainResponse
     OpsSessionRow = _models.OpsSessionRow
+    ProjectionHealthRow = _models.ProjectionHealthRow
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -982,6 +983,45 @@ async def list_ops_sessions(
         meta=PaginationMeta(total=len(rows), offset=0, limit=limit),
     )
 
+
+# ── GET /api/chronicler/projection-health ─────────────────────────────────
+
+
+@router.get("/projection-health", response_model=ApiResponse[list[ProjectionHealthRow]])
+async def projection_health(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ProjectionHealthRow]]:
+    """Return per-checkpoint projection health from ``projection_checkpoints``.
+
+    Exposes ``source_name``, ``subsource``, ``last_error``, ``last_run_at``,
+    ``rows_projected``, and ``watermark`` for every row in the table.  Sorted
+    by ``source_name ASC, subsource ASC``.
+
+    Useful for surfacing ingestion errors without requiring direct DB access.
+    An empty ``projection_checkpoints`` table returns ``{"data": [], "meta": {}}``.
+    """
+    pool = _pool(db)
+
+    rows = await pool.fetch(
+        "SELECT source_name, subsource, last_error, last_run_at,"
+        " rows_projected, watermark"
+        " FROM projection_checkpoints"
+        " ORDER BY source_name ASC, subsource ASC"
+    )
+
+    data = [
+        ProjectionHealthRow(
+            source_name=row["source_name"],
+            subsource=row["subsource"],
+            last_error=row["last_error"],
+            last_run_at=row["last_run_at"],
+            rows_projected=row["rows_projected"],
+            watermark=row["watermark"],
+        )
+        for row in rows
+    ]
+
+    return ApiResponse[list[ProjectionHealthRow]](data=data)
 
 # ── Precision ordering ─────────────────────────────────────────────────────
 

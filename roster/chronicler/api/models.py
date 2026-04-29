@@ -69,6 +69,21 @@ class SubsourceCheckpoint(BaseModel):
     last_error: str | None = None
 
 
+class ProjectionHealthRow(BaseModel):
+    """Projection health for a single (source_name, subsource) checkpoint row.
+
+    Exposed via GET /api/chronicler/projection-health to surface ingestion
+    errors and watermark state without requiring DB access.
+    """
+
+    source_name: str
+    subsource: str
+    last_error: str | None = None
+    last_run_at: datetime | None = None
+    rows_projected: int
+    watermark: datetime | None = None
+
+
 class SourceStateRow(BaseModel):
     """Runtime state for a single source adapter, joined with projection checkpoints."""
 
@@ -238,6 +253,7 @@ __all__ = [
     "DayCloseStaleResponse",
     "EpisodeExplainResponse",
     "OpsSessionRow",
+    "ProjectionHealthRow",
     "SourceBreakdownEntry",
     "SourceStateRow",
     "SubsourceCheckpoint",
