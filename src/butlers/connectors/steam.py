@@ -252,9 +252,11 @@ def _compute_play_delta(
         return None
 
     prev_entry = prev_snapshot.get(str(app_id), {})
-    # An empty dict means the game was not in the prior snapshot.
-    # Falsy check intentionally distinguishes missing-key ({}) from a real entry.
-    prev_playtime: int | None = prev_entry.get("playtime_2weeks", 0) if prev_entry else None
+    # Empty dict means the game was not in the prior snapshot — treat as new game.
+    if prev_entry:
+        prev_playtime: int | None = prev_entry.get("playtime_2weeks", 0)
+    else:
+        prev_playtime = None
 
     if prev_playtime is None:
         return None  # New game — establish baseline, never write cumulative
