@@ -264,6 +264,47 @@ class TestDashboardAuditMiddleware:
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
 
+    async def test_x_trace_id_header_present_and_matches_audit_row(self):
+        """X-Trace-Id response header is present and matches the trace_id in the audit row."""
+        import json as _json
+        import uuid as _uuid
+
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+
+            @app.patch("/api/test-trace-header")
+            async def _patch_endpoint():
+                return {"updated": True}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.patch("/api/test-trace-header", json={"key": "val"})
+
+        # Response must carry X-Trace-Id
+        assert "x-trace-id" in resp.headers, "X-Trace-Id header missing from response"
+        header_trace_id = resp.headers["x-trace-id"]
+
+        # The value must be a valid UUID
+        _uuid.UUID(header_trace_id)  # raises ValueError if not a UUID
+
+        # The same trace_id must appear in the audit INSERT call.
+        # emit_dashboard_audit stores trace_id inside the request_summary JSON blob
+        # (positional arg index 3 after the SQL string).
+        audit_calls = [
+            call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
+        ]
+        assert audit_calls, "No audit INSERT found"
+        call_args = audit_calls[-1][0]
+        # Index: 0=sql 1=butler 2=operation 3=summary_json 4=result 5=error 6=user_context
+        summary = _json.loads(call_args[3])
+        audit_trace_id = summary.get("trace_id")
+        assert audit_trace_id == header_trace_id, (
+            f"X-Trace-Id header ({header_trace_id!r}) does not match "
+            f"audit row trace_id ({audit_trace_id!r})"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Integration: audit READ endpoint not broken

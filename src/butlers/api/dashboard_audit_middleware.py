@@ -22,6 +22,10 @@ Design constraints
 - The butler name is inferred from the path prefix
   (``/api/{butler}/…`` → butler = ``{butler}``).  Paths that don't match that
   pattern fall back to ``"dashboard"``.
+- ``X-Trace-Id`` response header is set to the same ``trace_id`` that is stored
+  in the audit row, allowing clients to correlate a request failure with the
+  corresponding audit log entry.  The header is written BEFORE the audit emit so
+  it is present even when the DB write fails.
 """
 
 from __future__ import annotations
@@ -160,6 +164,11 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
         status_code = response.status_code
         result = "success" if status_code < 400 else "error"
+
+        # Expose the trace_id on the response so clients can correlate failures
+        # with audit log entries.  Set this BEFORE the audit write so the header
+        # is present even when the audit emit fails.
+        response.headers["X-Trace-Id"] = trace_id
 
         # Infer butler and collect path params for replay-ability.
         butler = _infer_butler(path)
