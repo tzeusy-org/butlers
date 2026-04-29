@@ -9,14 +9,16 @@ Covers:
 - UndefinedTableError graceful degradation.
 - Watermark advances across all rows (not just presence rows).
 - Watermark preserved when no rows returned.
-- since / since_id filter passed through to query.
+- since filter passed through to query (since_id intentionally ignored — UUID id).
 - No-LLM AST scan.
 - Contracts registration: home_assistant.history SUPPORTED.
+- Regression: UUID id rows never set watermark_id (avoids asyncpg DataError).
 """
 
 from __future__ import annotations
 
 import ast
+import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,6 +36,12 @@ from butlers.chronicler.models import Episode, Precision, Privacy
 _NOW = datetime(2026, 4, 25, 8, 0, 0, tzinfo=UTC)
 _PERSON = "person.alice"
 
+# Real UUID values matching the home_assistant_history table's UUID id column.
+_UUID_1 = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_UUID_2 = uuid.UUID("22222222-2222-2222-2222-222222222222")
+_UUID_3 = uuid.UUID("33333333-3333-3333-3333-333333333333")
+_UUID_4 = uuid.UUID("44444444-4444-4444-4444-444444444444")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +52,7 @@ def _make_row(
     entity_id: str = _PERSON,
     state: str = "home",
     recorded_at: datetime = _NOW,
-    row_id: int = 1,
+    row_id: uuid.UUID = _UUID_1,
     attributes: dict | None = None,
 ) -> dict:
     return {
@@ -237,9 +245,9 @@ async def test_away_home_away_produces_one_episode_for_home_span() -> None:
     t1 = _NOW + timedelta(hours=2)
     t2 = _NOW + timedelta(hours=5)
     rows = [
-        _make_row(state="away", recorded_at=t0, row_id=1),
-        _make_row(state="home", recorded_at=t1, row_id=2),
-        _make_row(state="away", recorded_at=t2, row_id=3),
+        _make_row(state="away", recorded_at=t0, row_id=_UUID_1),
+        _make_row(state="home", recorded_at=t1, row_id=_UUID_2),
+        _make_row(state="away", recorded_at=t2, row_id=_UUID_3),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
@@ -271,10 +279,10 @@ async def test_multiple_home_rows_collapse_into_one_episode() -> None:
     t2 = _NOW + timedelta(hours=3)
     t3 = _NOW + timedelta(hours=4)
     rows = [
-        _make_row(state="home", recorded_at=t0, row_id=1),
-        _make_row(state="home", recorded_at=t1, row_id=2),
-        _make_row(state="home", recorded_at=t2, row_id=3),
-        _make_row(state="away", recorded_at=t3, row_id=4),
+        _make_row(state="home", recorded_at=t0, row_id=_UUID_1),
+        _make_row(state="home", recorded_at=t1, row_id=_UUID_2),
+        _make_row(state="home", recorded_at=t2, row_id=_UUID_3),
+        _make_row(state="away", recorded_at=t3, row_id=_UUID_4),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
@@ -305,10 +313,10 @@ async def test_home_away_home_produces_two_episodes() -> None:
     t2 = _NOW + timedelta(hours=4)
     t3 = _NOW + timedelta(hours=6)
     rows = [
-        _make_row(state="home", recorded_at=t0, row_id=1),
-        _make_row(state="away", recorded_at=t1, row_id=2),
-        _make_row(state="home", recorded_at=t2, row_id=3),
-        _make_row(state="away", recorded_at=t3, row_id=4),
+        _make_row(state="home", recorded_at=t0, row_id=_UUID_1),
+        _make_row(state="away", recorded_at=t1, row_id=_UUID_2),
+        _make_row(state="home", recorded_at=t2, row_id=_UUID_3),
+        _make_row(state="away", recorded_at=t3, row_id=_UUID_4),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
@@ -338,8 +346,8 @@ async def test_open_home_span_at_end_of_batch_is_emitted() -> None:
     t0 = _NOW
     t1 = _NOW + timedelta(hours=2)
     rows = [
-        _make_row(state="away", recorded_at=t0, row_id=1),
-        _make_row(state="home", recorded_at=t1, row_id=2),
+        _make_row(state="away", recorded_at=t0, row_id=_UUID_1),
+        _make_row(state="home", recorded_at=t1, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
@@ -373,9 +381,9 @@ async def test_two_person_entities_produce_independent_episodes() -> None:
     t1 = _NOW + timedelta(hours=1)
     t2 = _NOW + timedelta(hours=3)
     rows = [
-        _make_row(entity_id="person.alice", state="home", recorded_at=t0, row_id=1),
-        _make_row(entity_id="person.bob", state="home", recorded_at=t1, row_id=2),
-        _make_row(entity_id="person.alice", state="away", recorded_at=t2, row_id=3),
+        _make_row(entity_id="person.alice", state="home", recorded_at=t0, row_id=_UUID_1),
+        _make_row(entity_id="person.bob", state="home", recorded_at=t1, row_id=_UUID_2),
+        _make_row(entity_id="person.alice", state="away", recorded_at=t2, row_id=_UUID_3),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
@@ -403,8 +411,8 @@ async def test_two_person_entities_produce_independent_episodes() -> None:
 async def test_non_person_entities_are_ignored() -> None:
     """Rows for non-person entities (e.g. light.*) produce no episodes."""
     rows = [
-        _make_row(entity_id="light.kitchen", state="on", recorded_at=_NOW, row_id=1),
-        _make_row(entity_id="sensor.temperature", state="22.5", recorded_at=_NOW, row_id=2),
+        _make_row(entity_id="light.kitchen", state="on", recorded_at=_NOW, row_id=_UUID_1),
+        _make_row(entity_id="sensor.temperature", state="22.5", recorded_at=_NOW, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
 
@@ -530,8 +538,8 @@ async def test_watermark_advances_to_max_recorded_at() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(hours=4)
     rows = [
-        _make_row(state="home", recorded_at=t1, row_id=1),
-        _make_row(entity_id="light.kitchen", state="on", recorded_at=t2, row_id=2),
+        _make_row(state="home", recorded_at=t1, row_id=_UUID_1),
+        _make_row(entity_id="light.kitchen", state="on", recorded_at=t2, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
 
@@ -570,9 +578,14 @@ async def test_watermark_preserved_when_no_rows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_set_in_result() -> None:
-    """watermark_id tracks the id of the latest-recorded_at row."""
-    row = {**_make_row(state="home", recorded_at=_NOW), "id": 42}
+async def test_watermark_id_never_set_for_uuid_rows() -> None:
+    """Regression: watermark_id is never set when rows have UUID ids.
+
+    home_assistant_history.id is a UUID column; projection_checkpoints.watermark_id
+    is BIGINT.  Binding a UUID to BIGINT raises asyncpg DataError at checkpoint-write
+    time.  The adapter must leave watermark_id as None so no DataError occurs.
+    """
+    row = _make_row(state="home", recorded_at=_NOW, row_id=_UUID_1)
     adapter = HomeAssistantHistoryAdapter()
 
     async def _fake_upsert(conn: object, episode: Episode) -> Episode:
@@ -587,12 +600,14 @@ async def test_watermark_id_set_in_result() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == _NOW
-    assert result.watermark_id == 42
+    # watermark_id must never be set to a UUID value — BIGINT checkpoint column
+    # cannot accept UUIDs and asyncpg would raise DataError on bind.
+    assert result.watermark_id is None
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_preserved_when_no_rows() -> None:
-    """When no rows are returned, watermark_id stays at since_id."""
+async def test_watermark_id_stays_none_when_no_rows() -> None:
+    """When no rows are returned, watermark_id stays None (never inherits since_id)."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -602,18 +617,17 @@ async def test_watermark_id_preserved_when_no_rows() -> None:
     adapter = HomeAssistantHistoryAdapter()
     cp = _chronicler_pool()
     prior_watermark = _NOW - timedelta(days=7)
-    prior_watermark_id = 5
 
     with patch("butlers.chronicler.adapters.home_assistant.upsert_episode"):
         result = await adapter.project(
             pool,
             chronicler_pool=cp,
             since=prior_watermark,
-            since_id=prior_watermark_id,
+            since_id=None,
         )
 
     assert result.watermark == prior_watermark
-    assert result.watermark_id == prior_watermark_id
+    assert result.watermark_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -644,8 +658,14 @@ async def test_since_filter_passed_to_query() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
-    """When both since and since_id are given, uses (recorded_at, id) > ($1, $2)."""
+async def test_since_id_is_ignored_uses_single_column_filter() -> None:
+    """since_id is intentionally ignored — adapter always uses WHERE recorded_at > $1.
+
+    home_assistant_history.id is a UUID column.  The tuple-comparison path
+    ``WHERE (recorded_at, id) > ($1, $2)`` would bind a UUID to the integer
+    watermark_id checkpoint value, raising asyncpg DataError.  The adapter
+    ignores since_id entirely and uses the single-column recorded_at watermark.
+    """
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -655,6 +675,8 @@ async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
     adapter = HomeAssistantHistoryAdapter()
     cp = _chronicler_pool()
     since = _NOW - timedelta(hours=1)
+    # Pass a non-None since_id to simulate a caller that provides one;
+    # the adapter must ignore it and never emit the tuple-comparison form.
     since_id = 17
 
     with patch("butlers.chronicler.adapters.home_assistant.upsert_episode"):
@@ -662,14 +684,13 @@ async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
 
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "(recorded_at, id) > ($1, $2)" in query
-    assert call_args.args[1] == since
-    assert call_args.args[2] == since_id
+    assert "recorded_at > $1" in query
+    assert "(recorded_at, id) > ($1, $2)" not in query
 
 
 @pytest.mark.asyncio
-async def test_single_column_fallback_when_since_id_is_none() -> None:
-    """When since is given but since_id is None, uses legacy WHERE recorded_at > $1 form."""
+async def test_single_column_filter_used_when_since_id_is_none() -> None:
+    """When since is given and since_id is None, uses WHERE recorded_at > $1."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -828,3 +849,77 @@ async def test_home_lane_taxonomy_path_source_name_and_episode_type() -> None:
         f"category_for({ep.source_name!r}, {ep.episode_type!r}) returned "
         f"{category_for(ep.source_name, ep.episode_type)!r}; expected 'home'"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: UUID id rows must not set watermark_id (asyncpg DataError guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_projection_with_uuid_id_rows_does_not_set_watermark_id() -> None:
+    """Regression test for bu-usgm4: feeding real UUID id rows through the full
+    projection path must not set result.watermark_id.
+
+    Background: home_assistant_history.id is a UUID column.  The old adapter
+    code stored row["id"] into result.watermark_id (typed int | None) and used
+    it in a tuple-comparison query.  When the runtime wrote the checkpoint,
+    asyncpg raised DataError trying to bind a UUID value to the BIGINT
+    watermark_id column.
+
+    This test feeds multi-row UUID batches (matching real connector output)
+    through the adapter and asserts:
+    1. The projection succeeds without error.
+    2. result.watermark_id is None (never set to a UUID).
+    3. result.watermark advances to the latest recorded_at.
+    4. Episodes are correctly projected.
+    """
+    t0 = _NOW
+    t1 = _NOW + timedelta(hours=1)
+    t2 = _NOW + timedelta(hours=3)
+
+    uuid_row_1 = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    uuid_row_2 = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    uuid_row_3 = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+
+    rows = [
+        _make_row(entity_id="person.alice", state="home", recorded_at=t0, row_id=uuid_row_1),
+        _make_row(entity_id="person.alice", state="home", recorded_at=t1, row_id=uuid_row_2),
+        _make_row(entity_id="person.alice", state="away", recorded_at=t2, row_id=uuid_row_3),
+    ]
+
+    adapter = HomeAssistantHistoryAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(*rows)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=_fake_upsert
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    # Projection must succeed.
+    assert result.error is None
+    assert not result.skipped
+    assert result.episodes_closed == 1
+
+    # Watermark must advance to t2 (latest recorded_at across all rows).
+    assert result.watermark == t2
+
+    # CRITICAL: watermark_id must NEVER be set to a UUID value.
+    # If it were, asyncpg would raise DataError when writing the checkpoint.
+    assert result.watermark_id is None, (
+        f"watermark_id must be None for UUID-keyed source, got {result.watermark_id!r}. "
+        "This would cause asyncpg DataError when binding UUID to BIGINT checkpoint column."
+    )
+
+    # Episode correctness: one presence episode from the home span.
+    assert len(upserted) == 1
+    ep = upserted[0]
+    assert ep.start_at == t0
+    assert ep.end_at == t1
