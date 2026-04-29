@@ -69,20 +69,6 @@ class TestCheckEmailRecipient:
         assert decision.reason == "owner"
         pool.execute.assert_not_awaited()
 
-    async def test_owner_auto_approves(self) -> None:
-        """Backwards-compat alias: owner to primary email still auto-approves."""
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"is_primary": True})
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_owner_contact()),
-        ):
-            decision = await check_email_recipient(pool, **_COMMON_KWARGS)
-
-        assert decision.allowed is True
-        assert decision.reason == "owner"
-        pool.execute.assert_not_awaited()
-
     async def test_owner_non_primary_email_parks(self) -> None:
         """Owner send to a non-primary email address is parked for approval.
 
