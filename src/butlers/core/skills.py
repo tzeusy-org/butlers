@@ -30,8 +30,15 @@ _DEFAULT_PROMPT_TEMPLATE = "You are the {butler_name} butler."
 # optionally followed by groups of hyphen + lowercase letters/digits
 _KEBAB_CASE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
-# Include directive: <!-- @include shared/NOTIFY.md -->
+# Include directives:
+# - HTML form, resolved relative to the roster directory:
+#   <!-- @include shared/NOTIFY.md -->
+# - Codex/Claude-style bare file references, resolved relative to the file
+#   that contains the directive:
+#   @AGENTS.md
+#   @../shared/AGENTS.md
 _INCLUDE_PATTERN = re.compile(r"^\s*<!--\s*@include\s+([\w/._-]+\.md)\s*-->\s*$")
+_BARE_INCLUDE_PATTERN = re.compile(r"^\s*@([\w/._-]+\.md)\s*$")
 
 
 # ---------------------------------------------------------------------------
@@ -39,32 +46,78 @@ _INCLUDE_PATTERN = re.compile(r"^\s*<!--\s*@include\s+([\w/._-]+\.md)\s*-->\s*$"
 # ---------------------------------------------------------------------------
 
 
-def _resolve_includes(content: str, roster_dir: Path) -> str:
-    """Replace ``<!-- @include path/to/file.md -->`` directives with file contents.
+def _is_relative_to(child: Path, parent: Path) -> bool:
+    """Return True when *child* resolves under *parent*."""
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
-    Paths are resolved relative to *roster_dir* (the parent of a butler's
-    config directory).  ``..`` segments are rejected (logged as a warning and
-    the directive is preserved as-is).  Includes are **not** recursive — any
-    directives inside included files are left untouched.
+
+def _resolve_includes(
+    content: str,
+    roster_dir: Path,
+    base_dir: Path | None = None,
+    _seen: set[Path] | None = None,
+) -> str:
+    """Replace supported include directives with file contents.
+
+    HTML ``@include`` paths are resolved relative to *roster_dir* for backward
+    compatibility. Bare ``@file.md`` paths are resolved relative to *base_dir*
+    (the butler config directory) so roster files can delegate ``CLAUDE.md`` to
+    ``AGENTS.md``. HTML includes remain non-recursive for backward
+    compatibility; bare includes recurse with cycle protection so existing
+    ``CLAUDE.md -> AGENTS.md -> ../shared/AGENTS.md`` chains expand fully.
     """
+    roster_root = roster_dir.resolve()
+    bare_base_dir = (base_dir or roster_dir).resolve()
+    seen = set(_seen or ())
     lines = content.split("\n")
     out: list[str] = []
     for line in lines:
         m = _INCLUDE_PATTERN.match(line)
+        if m is not None:
+            rel_path = m.group(1)
+            if ".." in rel_path.split("/"):
+                logger.warning("Include path contains '..', skipping: %s", rel_path)
+                out.append(line)
+                continue
+            target = roster_dir / rel_path
+            if not target.is_file():
+                logger.warning("Include file not found, preserving directive: %s", target)
+                out.append(line)
+                continue
+            included = target.read_text(encoding="utf-8").rstrip("\n")
+            out.append(included)
+            continue
+
+        m = _BARE_INCLUDE_PATTERN.match(line)
         if m is None:
             out.append(line)
             continue
+
         rel_path = m.group(1)
-        if ".." in rel_path.split("/"):
-            logger.warning("Include path contains '..', skipping: %s", rel_path)
+        target = (bare_base_dir / rel_path).resolve()
+        if not _is_relative_to(target, roster_root):
+            logger.warning("Bare include path escapes roster, skipping: %s", rel_path)
             out.append(line)
             continue
-        target = roster_dir / rel_path
+        if target in seen:
+            logger.warning("Bare include cycle detected, skipping: %s", target)
+            out.append(line)
+            continue
         if not target.is_file():
             logger.warning("Include file not found, preserving directive: %s", target)
             out.append(line)
             continue
         included = target.read_text(encoding="utf-8").rstrip("\n")
+        included = _resolve_includes(
+            included,
+            roster_dir,
+            base_dir=target.parent,
+            _seen={*seen, target},
+        )
         out.append(included)
     return "\n".join(out)
 
@@ -109,7 +162,7 @@ def read_system_prompt(config_dir: Path, butler_name: str) -> str:
         content = claude_md.read_text(encoding="utf-8").strip()
         if content:
             roster_dir = config_dir.parent
-            content = _resolve_includes(content, roster_dir)
+            content = _resolve_includes(content, roster_dir, base_dir=config_dir)
             return _append_shared_files(content, roster_dir)
     default = _DEFAULT_PROMPT_TEMPLATE.format(butler_name=butler_name)
     logger.debug("CLAUDE.md missing or empty in %s — using default prompt", config_dir)

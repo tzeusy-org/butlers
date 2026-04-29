@@ -80,6 +80,44 @@ def test_read_system_prompt_include_resolution(tmp_path: Path) -> None:
     assert "Inner content" not in result3
 
 
+def test_read_system_prompt_bare_include_resolution(tmp_path: Path) -> None:
+    """Bare @file.md references resolve relative to the butler config directory."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+
+    (config_dir / "AGENTS.md").write_text("# Agent instructions\nUse MCP tools.", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text("@AGENTS.md", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert "# Agent instructions" in result
+    assert "Use MCP tools." in result
+    assert "@AGENTS.md" not in result
+
+    (shared / "AGENTS.md").write_text("# Shared instructions", encoding="utf-8")
+    (config_dir / "AGENTS.md").write_text("@../shared/AGENTS.md\n# Agent instructions")
+    (config_dir / "CLAUDE.md").write_text("@AGENTS.md", encoding="utf-8")
+    result_nested = read_system_prompt(config_dir, "test")
+    assert "# Shared instructions" in result_nested
+    assert "@../shared/AGENTS.md" not in result_nested
+
+    (config_dir / "CLAUDE.md").write_text("@../shared/AGENTS.md", encoding="utf-8")
+    result2 = read_system_prompt(config_dir, "test")
+    assert result2 == "# Shared instructions"
+
+
+def test_read_system_prompt_bare_include_rejects_roster_escape(tmp_path: Path) -> None:
+    """Bare include references may move within roster but not outside it."""
+    config_dir = _setup_roster(tmp_path)
+    outside = tmp_path.parent / "outside.md"
+    outside.write_text("SECRET", encoding="utf-8")
+
+    directive = "@../../outside.md"
+    (config_dir / "CLAUDE.md").write_text(directive, encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert directive in result
+    assert "SECRET" not in result
+
+
 def test_read_system_prompt_multiple_includes_and_traversal(tmp_path: Path) -> None:
     """Multiple includes resolved; path traversal rejected."""
     config_dir = _setup_roster(tmp_path)
