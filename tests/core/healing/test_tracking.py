@@ -753,9 +753,11 @@ async def test_count_active_qa_only_integration(healing_pool: asyncpg.Pool) -> N
     fp_plain = uuid.uuid4().hex * 2
     await create_or_join_attempt(healing_pool, **_make_attempt_args(fingerprint=fp_plain))
 
-    # Create a QA attempt
+    # Create a QA patrol row first (FK constraint added by core_054 migration).
     fp_qa = uuid.uuid4().hex * 2
-    qa_patrol = uuid.uuid4()
+    qa_patrol = await healing_pool.fetchval(
+        "INSERT INTO public.qa_patrols DEFAULT VALUES RETURNING id"
+    )
     await create_or_join_attempt(
         healing_pool, **_make_attempt_args(fingerprint=fp_qa), qa_patrol_id=qa_patrol
     )
