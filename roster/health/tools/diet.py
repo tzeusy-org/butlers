@@ -60,10 +60,10 @@ async def _write_to_health_meals(
     logged as warnings but do not raise — the primary facts write already
     succeeded and must not be rolled back.
 
-    The ``id`` is passed in from the caller (generated before the facts write)
-    so that any retry or replay produces a stable row with a predictable UUID.
-    The ON CONFLICT clause is a safety net only; normal operation never
-    triggers it.
+    The ``meal_id`` is the ``fact_id`` returned by ``store_fact`` so both
+    storage surfaces share the same stable identifier.  On retry, ``store_fact``
+    returns the same ``fact_id`` for identical content, and the
+    ``ON CONFLICT (id) DO NOTHING`` clause makes this write a safe no-op.
     """
     nutrition_jsonb: Any = None
     if nutrition is not None:
@@ -196,11 +196,6 @@ async def meal_log(
     now = datetime.now(UTC)
     valid_at = eaten_at
 
-    # Generate meal_id here so both writes share a stable UUID.  The facts
-    # write uses it as the idempotency_key; the health.meals write uses it
-    # directly as the primary key so replays are safe (ON CONFLICT DO NOTHING).
-    meal_id = uuid.uuid4()
-
     metadata: dict[str, Any] = {
         "logged_at": now.isoformat(),
         "meal_items": [],
@@ -238,9 +233,12 @@ async def meal_log(
 
     # Dual-write: persist to health.meals so the Chronicler MealsAdapter can
     # project this meal into the Chronicles dashboard Meal lane.
+    # Use fact_id as meal_id so both surfaces share the same stable UUID.
+    # On retry, store_fact returns the same fact_id and ON CONFLICT DO NOTHING
+    # makes this write idempotent.
     await _write_to_health_meals(
         pool,
-        meal_id=meal_id,
+        meal_id=fact_id,
         type=type,
         description=description,
         nutrition=nutrition,

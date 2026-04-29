@@ -216,8 +216,8 @@ async def test_meal_log_passes_correct_kwargs_to_dual_write() -> None:
     assert kwargs["eaten_at"] == _EATEN_AT
     assert kwargs["nutrition"] == nutrition
     assert kwargs["notes"] == "Al dente"
-    # meal_id must be a UUID
-    assert isinstance(kwargs["meal_id"], uuid.UUID)
+    # meal_id must equal the fact_id returned by store_fact
+    assert kwargs["meal_id"] == fact_id
 
 
 async def test_meal_log_health_meals_failure_does_not_raise() -> None:
@@ -246,7 +246,12 @@ async def test_meal_log_health_meals_failure_does_not_raise() -> None:
 
 
 async def test_meal_log_stable_meal_id_passed_to_both_surfaces() -> None:
-    """meal_log must generate meal_id before both writes so they share the same UUID."""
+    """meal_log must use fact_id from store_fact as the meal_id for the health.meals write.
+
+    Both storage surfaces must share the same stable UUID so that ON CONFLICT DO NOTHING
+    provides real idempotency on retries: store_fact returns the same fact_id for
+    identical content, and health.meals deduplicates on the same id.
+    """
     pool = _make_pool()
     fact_id = uuid.uuid4()
     captured_meal_ids: list[uuid.UUID] = []
@@ -268,4 +273,7 @@ async def test_meal_log_stable_meal_id_passed_to_both_surfaces() -> None:
         await meal_log(pool, type="dinner", description="Pizza", eaten_at=_EATEN_AT)
 
     assert len(captured_meal_ids) == 1
-    assert isinstance(captured_meal_ids[0], uuid.UUID)
+    assert captured_meal_ids[0] == fact_id, (
+        "meal_id passed to _write_to_health_meals must equal fact_id from store_fact "
+        "so both surfaces share the same stable UUID for idempotent retries"
+    )
