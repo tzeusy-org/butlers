@@ -357,6 +357,11 @@ async def contact_info_update(
                 *params,
             )
 
+    if updated is None:
+        raise ValueError(
+            f"Contact info {contact_info_id} not found. "
+            "Use contact_info_list(contact_id=...) to list contact info entries."
+        )
     result = dict(updated)
     desc_parts = []
     if value is not None:
