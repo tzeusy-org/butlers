@@ -25,6 +25,14 @@ _VALID_PRIORITIES = frozenset({"high", "medium", "low"})
 _VALID_STATUSES = frozenset({"pending", "delivered", "expired", "cancelled"})
 
 
+def _is_missing_delivery_schema(exc: Exception) -> bool:
+    """Return True for optional delivery tables absent from an older schema."""
+    return isinstance(
+        exc,
+        (asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError),
+    )
+
+
 def validate_timezone(tz_name: str) -> str:
     """Validate and normalise a timezone name.
 
@@ -50,16 +58,21 @@ async def get_delivery_preferences(
 
     Returns a dict of preference fields, or None if no row exists.
     """
-    row = await pool.fetchrow(
-        """
-        SELECT id, butler_name, quiet_hours_start, quiet_hours_end, timezone,
-               batch_low_priority, batch_delivery_time, override_channels,
-               created_at, updated_at
-        FROM delivery_preferences
-        WHERE butler_name = $1
-        """,
-        butler_name,
-    )
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT id, butler_name, quiet_hours_start, quiet_hours_end, timezone,
+                   batch_low_priority, batch_delivery_time, override_channels,
+                   created_at, updated_at
+            FROM delivery_preferences
+            WHERE butler_name = $1
+            """,
+            butler_name,
+        )
+    except asyncpg.PostgresError as exc:
+        if _is_missing_delivery_schema(exc):
+            return None
+        raise
     if row is None:
         return None
     result = dict(row)

@@ -33,6 +33,8 @@ CORE_TABLES = {
     "calendar_event_instances",
     "calendar_sync_cursors",
     "calendar_action_log",
+    "delivery_preferences",
+    "deferred_notifications",
 }
 
 CHAIN_TABLES: dict[str, set[str]] = {

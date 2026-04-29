@@ -15,6 +15,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -54,6 +55,21 @@ class TestDeliveryUnit:
         assert not should_defer_notification(
             priority="medium", current_time=t_night, prefs=prefs_no_batch
         )
+
+    async def test_get_delivery_preferences_missing_table_returns_none(self):
+        """Older schema-scoped DBs may not have delivery tables yet."""
+        import asyncpg
+
+        from butlers.core.temporal.delivery_db import get_delivery_preferences
+
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            side_effect=asyncpg.exceptions.UndefinedTableError(
+                'relation "delivery_preferences" does not exist'
+            )
+        )
+
+        assert await get_delivery_preferences(pool, "chronicler") is None
 
 
 _DELIVERY_PREFERENCES_DDL = """

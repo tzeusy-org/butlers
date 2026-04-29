@@ -150,6 +150,8 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
         "calendar_event_instances",
         "calendar_sync_cursors",
         "calendar_action_log",
+        "delivery_preferences",
+        "deferred_notifications",
     ):
         assert table_exists(db_url, table), f"{table} should exist"
     assert not table_exists(db_url, "google_oauth_credentials")
@@ -164,6 +166,18 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
     expected_owner = _current_user(db_url)
     for schema in REQUIRED_SCHEMAS:
         assert _schema_owner(db_url, schema) == expected_owner
+
+
+def test_core_migrations_create_delivery_tables_in_target_schema(postgres_container):
+    """Schema-scoped core runs create notification delivery tables for new butlers."""
+    from butlers.migrations import run_migrations
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core", schema="chronicler"))
+
+    assert _table_exists_in_schema(db_url, "chronicler", "delivery_preferences")
+    assert _table_exists_in_schema(db_url, "chronicler", "deferred_notifications")
 
 
 def test_core_migration_repairs_relationship_read_access_to_switchboard_message_inbox(
