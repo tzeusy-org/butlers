@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Amended:** 2026-04-29 — added contact_info context tagging and context-aware notify() routing (bu-uv4b4)
 
 ## Summary
 
@@ -53,8 +54,11 @@ Per-channel identifiers linked to contacts.
 | `value` | TEXT | Channel-specific identifier (chat ID, email address, etc.) |
 | `is_primary` | BOOLEAN | Whether this is the primary contact method for the channel |
 | `secured` | BOOLEAN | Marks credential entries (e.g., API keys stored as contact info) |
+| `context` | VARCHAR (nullable) | Sphere tag: `"personal"`, `"work"`, `"other"`, or `NULL` (unclassified) |
 
 A `UNIQUE` constraint on `(type, value)` guarantees at most one contact per channel identifier.
+
+The `context` column tags each channel address as belonging to a sphere. `NULL` (unclassified) is treated as compatible with any message context. Operators set context via the dashboard. Work-domain auto-detection heuristics are deferred (not implemented automatically).
 
 #### public.entity_info
 
@@ -136,6 +140,44 @@ The owner entity is bootstrapped automatically on daemon startup. It carries the
 - **Routing priority** -- Owner messages receive preferential queue ordering in the email priority tier system (see RFC 0003).
 - **Credential anchoring** -- Owner entity_info entries store identity-bound credentials (e.g., Telegram user-client session, Google OAuth tokens).
 
+### Context-Aware Recipient Resolution
+
+`notify()` accepts an optional `msg_context` parameter (`"personal"`, `"work"`, or `"other"`).
+When provided, it influences both recipient selection and the approval gate.
+
+#### Recipient selection (contact_id path)
+
+When `contact_id` is given, `_resolve_contact_channel_identifier()` uses a context-priority
+`ORDER BY` to prefer entries whose `context` matches `msg_context`:
+
+1. Entries where `context = msg_context` — ordered by `is_primary DESC`.
+2. Entries where `context IS NULL` (unclassified) — ordered by `is_primary DESC`.
+3. Any remaining entry — ordered by `is_primary DESC, created_at ASC`.
+
+This ensures that a butler sending a personal message reaches the contact's personal address,
+even if the contact has both a personal and a work email in `contact_info`.
+
+When no `msg_context` is declared, the legacy behaviour (primary entry preferred) is preserved.
+
+#### Context mismatch approval gate
+
+After recipient resolution, the email guard (`check_email_recipient()`) checks whether the
+resolved address's `context` conflicts with the caller's `msg_context`.
+
+**Conflict definition:** both `msg_context` and `address_context` are non-NULL and differ.
+Unclassified (NULL) addresses are always compatible — they never trigger a park.
+
+**On conflict:** the delivery is parked as a `pending_action` for human review, regardless
+of whether a standing approval rule would otherwise permit it.  This prevents a "work"
+email from being sent when the butler declared `msg_context="personal"`.
+
+#### Default context inference
+
+Callers may omit `msg_context`. When omitted, no context filtering or mismatch check occurs
+and legacy behaviour is preserved.  Butler-level context defaults are not currently enforced
+in code; future work may map butler domains (e.g. `health`, `lifestyle` → `"personal"`)
+to a default context automatically.
+
 ### Usage Points
 
 Identity resolution is invoked at:
@@ -143,8 +185,8 @@ Identity resolution is invoked at:
 | Integration Point | Purpose |
 |-------------------|---------|
 | Switchboard ingestion (RFC 0003) | Resolve sender identity, build preamble for routed messages |
-| `notify()` tool | Resolve outbound recipient from `contact_id` to channel-specific address |
-| Approval gate | Role-based access control for sensitive tool calls |
+| `notify()` tool | Resolve outbound recipient from `contact_id` to channel-specific address; context-aware when `msg_context` is provided |
+| Approval gate (email guard) | Role-based access + context mismatch detection for outbound email delivery |
 | Memory module | Anchor facts and episodes to the correct entity for retrieval |
 
 ## Integration

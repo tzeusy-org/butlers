@@ -10,7 +10,7 @@ Covers tasks 7.1-7.4 from the contacts-identity-model spec:
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -196,8 +196,14 @@ async def _start_daemon_with_notify(
         return daemon, notify_fn
 
 
+@contextmanager
 def _known_contact_patch(email: str = "user@example.com") -> Any:
-    """Return a patch that makes resolve_contact_by_channel return a known contact."""
+    """Context manager that patches identity resolution to return a known owner contact.
+
+    Patches both ``resolve_contact_by_channel`` (returns owner contact) and
+    ``_is_primary_email`` (returns True) so the email guard auto-approves without
+    a real DB hit.
+    """
     contact = ResolvedContact(
         contact_id=uuid.UUID("00000000-0000-0000-0000-ffffffffffff"),
         name="Test Contact",
@@ -208,7 +214,14 @@ def _known_contact_patch(email: str = "user@example.com") -> Any:
     async def _mock_resolve(pool: Any, channel_type: str, channel_value: str) -> Any:
         return contact
 
-    return patch("butlers.identity.resolve_contact_by_channel", side_effect=_mock_resolve)
+    with (
+        patch("butlers.identity.resolve_contact_by_channel", side_effect=_mock_resolve),
+        patch(
+            "butlers.modules.approvals.email_guard._is_primary_email",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
+        yield
 
 
 def _make_mock_client(*, is_error: bool = False) -> Any:
@@ -282,7 +295,10 @@ class TestNotifyContactIdResolution:
         ):
             result = await notify_fn(channel="email", message="Test", contact_id=contact_id)
         assert result["status"] == "ok"
-        mock_resolver.assert_awaited_once_with(contact_id=contact_id, channel="email")
+        # msg_context defaults to None when not provided
+        mock_resolver.assert_awaited_once_with(
+            contact_id=contact_id, channel="email", msg_context=None
+        )
         delivery = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"][
             "delivery"
         ]

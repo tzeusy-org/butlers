@@ -808,13 +808,23 @@ class ButlerDaemon:
     }
 
     async def _resolve_contact_channel_identifier(
-        self, *, contact_id: uuid.UUID, channel: str
+        self, *, contact_id: uuid.UUID, channel: str, msg_context: str | None = None
     ) -> str | None:
         """Resolve the channel identifier for a specific contact_id and channel type.
 
         Queries ``public.contact_info`` for rows matching the given ``contact_id``
         and the delivery-appropriate type (e.g. ``telegram_chat_id`` for telegram),
-        preferring the primary entry (``is_primary=true``).
+        preferring entries whose ``context`` matches *msg_context* first, then
+        falling back to the primary entry within any context.
+
+        When *msg_context* is provided, the resolution order is:
+        1. Entries where ``context = msg_context``, ordered by ``is_primary DESC``.
+        2. Entries where ``context IS NULL`` (unclassified), ordered by ``is_primary DESC``.
+        3. Any remaining entry, ordered by ``is_primary DESC, created_at ASC``.
+
+        This ensures callers that declare a message context (e.g. ``"personal"``)
+        prefer contact addresses tagged for that sphere, while remaining backward
+        compatible when no context column exists or no context-filtered row is found.
 
         Returns the identifier value on success, ``None`` if:
         - No DB pool is available.
@@ -827,18 +837,44 @@ class ButlerDaemon:
             return None
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    SELECT ci.value
-                    FROM public.contact_info ci
-                    WHERE ci.contact_id = $1
-                      AND ci.type = $2
-                    ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
-                    LIMIT 1
-                    """,
-                    contact_id,
-                    info_type,
-                )
+                if msg_context is not None:
+                    # Context-aware resolution: prefer matching context, then unclassified,
+                    # then fall back to any entry.  The CASE expression in ORDER BY achieves
+                    # this with a single query that gracefully handles NULL context values
+                    # (from pre-migration rows or unclassified entries).
+                    row = await conn.fetchrow(
+                        """
+                        SELECT ci.value
+                        FROM public.contact_info ci
+                        WHERE ci.contact_id = $1
+                          AND ci.type = $2
+                        ORDER BY
+                            CASE
+                                WHEN ci.context = $3 THEN 0
+                                WHEN ci.context IS NULL THEN 1
+                                ELSE 2
+                            END ASC,
+                            ci.is_primary DESC NULLS LAST,
+                            ci.created_at ASC
+                        LIMIT 1
+                        """,
+                        contact_id,
+                        info_type,
+                        msg_context,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT ci.value
+                        FROM public.contact_info ci
+                        WHERE ci.contact_id = $1
+                          AND ci.type = $2
+                        ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
+                        LIMIT 1
+                        """,
+                        contact_id,
+                        info_type,
+                    )
                 if row is None:
                     return None
                 value = row["value"]

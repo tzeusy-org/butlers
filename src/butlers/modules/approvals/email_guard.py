@@ -7,9 +7,13 @@ ensures both gates enforce identical policy:
 1. Resolve contact by email address.
 2. Owner contact AND address is primary → auto-approve (no rule needed).
    Non-primary owner addresses fall through to the rules/parking flow.
-3. Non-owner or unknown → check standing approval rules.
-4. Rule matches → approve, bump ``use_count``.
-5. No rule → park as ``pending_action`` for human review.
+3. Context mismatch: if *msg_context* is provided and the contact_info row
+   carrying the resolved address is tagged with a conflicting context, park
+   for approval regardless of owner status.  (Owner primary addresses skip
+   this check — see step 2.)
+4. Non-owner or unknown → check standing approval rules.
+5. Rule matches → approve, bump ``use_count``.
+6. No rule → park as ``pending_action`` for human review.
 """
 
 from __future__ import annotations
@@ -72,6 +76,48 @@ async def _is_primary_email(pool: asyncpg.Pool, contact_id: uuid.UUID, email_add
         return False
 
 
+async def _get_email_context(pool: asyncpg.Pool, email_address: str) -> str | None:
+    """Return the ``context`` tag for *email_address* from ``public.contact_info``.
+
+    Queries by ``(type='email', value=email_address)`` — the UNIQUE constraint
+    guarantees at most one row.  Returns ``None`` when the row does not exist,
+    has no context tag, or on any DB error (missing column is treated as NULL).
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT context
+            FROM public.contact_info
+            WHERE type = 'email'
+              AND value = $1
+            """,
+            email_address,
+        )
+        if row is None:
+            return None
+        return row["context"]  # may be None for unclassified rows
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "email guard: could not fetch context for <%s>; treating as unclassified",
+            email_address,
+            exc_info=True,
+        )
+        return None
+
+
+def _context_conflicts(msg_context: str, address_context: str | None) -> bool:
+    """Return True if *address_context* conflicts with *msg_context*.
+
+    NULL/unclassified address context never conflicts — it is compatible with
+    any declared message context.  A conflict occurs only when both sides are
+    explicit and differ (e.g. ``msg_context="personal"`` vs
+    ``address_context="work"``).
+    """
+    if address_context is None:
+        return False
+    return msg_context != address_context
+
+
 @dataclass(frozen=True, slots=True)
 class EmailGuardDecision:
     """Result of an email recipient guard check."""
@@ -94,6 +140,7 @@ async def check_email_recipient(
     park_summary: str,
     session_id: str | uuid.UUID | None = None,
     expiry_hours: int = 72,
+    msg_context: str | None = None,
 ) -> EmailGuardDecision:
     """Check whether an outbound email to *email_target* is permitted.
 
@@ -118,6 +165,12 @@ async def check_email_recipient(
         Runtime session ID for traceability.
     expiry_hours:
         Hours until the parked action expires (default 72).
+    msg_context:
+        Optional message context sphere (``"personal"``, ``"work"``, or
+        ``"other"``).  When provided, a mismatch against the address's
+        ``contact_info.context`` tag causes the delivery to be parked for
+        approval (even if a standing rule exists).  Unclassified (NULL)
+        address context never conflicts.
 
     Returns
     -------
@@ -128,14 +181,66 @@ async def check_email_recipient(
 
     contact = await resolve_contact_by_channel(pool, "email", email_target)
 
-    # Owner → allowed only when the targeted address is the owner's primary email.
-    # Non-primary owner addresses (e.g. work email) must go through the normal
-    # rules/parking flow so they appear in the approval queue.  This prevents
-    # personal content from silently bypassing approval when sent to a work address.
+    # Owner primary address → always allowed (no further checks needed)
     if contact is not None and "owner" in contact.roles:
         is_primary = await _is_primary_email(pool, contact.contact_id, email_target)
         if is_primary:
             return EmailGuardDecision(allowed=True, reason="owner")
+
+    # Context mismatch check: park if the declared message context conflicts
+    # with the address's tagged context.  This applies to non-primary owner
+    # addresses and all non-owner contacts.  Unclassified (NULL) address context
+    # is always compatible — it never forces a park.
+    if msg_context is not None:
+        address_context = await _get_email_context(pool, email_target)
+        if _context_conflicts(msg_context, address_context):
+            contact_desc = "known non-owner contact" if contact is not None else "unknown contact"
+            action_id = uuid.uuid4()
+            now = datetime.now(UTC)
+            expires_at = now + timedelta(hours=expiry_hours)
+            normalized_session_id = _normalize_session_id(session_id)
+            mismatch_summary = (
+                f"{park_summary} [context mismatch: message context={msg_context!r}, "
+                f"address context={address_context!r}]"
+            )
+            try:
+                from butlers.modules.approvals.models import ActionStatus
+
+                await pool.execute(
+                    "INSERT INTO pending_actions "
+                    "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                    "requested_at, expires_at) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    action_id,
+                    park_tool_name,
+                    json.dumps(park_tool_args),
+                    mismatch_summary,
+                    normalized_session_id,
+                    ActionStatus.PENDING.value,
+                    now,
+                    expires_at,
+                )
+                logger.warning(
+                    "email guard: context mismatch — blocked delivery to %s %r "
+                    "(msg_context=%r, address_context=%r) — parked as pending_action %s",
+                    contact_desc,
+                    email_target,
+                    msg_context,
+                    address_context,
+                    action_id,
+                )
+            except Exception:
+                logger.warning(
+                    "email guard: failed to park context-mismatch pending_action for %r",
+                    email_target,
+                    exc_info=True,
+                )
+            return EmailGuardDecision(
+                allowed=False,
+                reason="parked",
+                action_id=action_id,
+                contact_desc=contact_desc,
+            )
 
     contact_desc = "known non-owner contact" if contact is not None else "unknown contact"
 

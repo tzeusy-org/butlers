@@ -36,6 +36,7 @@ class ContactInfoEntry(BaseModel):
     is_primary: bool = False
     secured: bool = False
     parent_id: UUID | None = None
+    context: str | None = None  # personal | work | other | None (unclassified)
 
 
 class ContactSummary(BaseModel):
@@ -124,6 +125,7 @@ class CreateContactInfoRequest(BaseModel):
     is_primary: bool = False
     secured: bool = False
     parent_id: UUID | None = None
+    context: str | None = None  # personal | work | other | None (unclassified)
 
 
 class PatchContactInfoRequest(BaseModel):
@@ -135,6 +137,7 @@ class PatchContactInfoRequest(BaseModel):
     type: str | None = None
     value: str | None = None
     is_primary: bool | None = None
+    context: str | None = None  # personal | work | other | None (unclassified)
 
 
 class CreateContactInfoResponse(BaseModel):
@@ -147,6 +150,7 @@ class CreateContactInfoResponse(BaseModel):
     is_primary: bool
     secured: bool
     parent_id: UUID | None = None
+    context: str | None = None  # personal | work | other | None (unclassified)
 
 
 class Group(BaseModel):
