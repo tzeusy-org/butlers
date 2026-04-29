@@ -37,12 +37,11 @@ def test_chronicler_is_not_staffer(butler_toml: dict) -> None:
     assert butler.get("type", "butler") == "butler"
 
 
-def test_chronicler_has_no_modules_configured(butler_toml: dict) -> None:
-    """Adapters are scheduled jobs, not modules. Chronicler's tool surface
-    is intentionally minimal and does not require the heavy Spotify/Steam/
-    Memory module stack."""
+def test_chronicler_configures_only_own_mcp_module(butler_toml: dict) -> None:
+    """Projection adapters are scheduled jobs, while the read/bundle tool
+    surface is provided by Chronicler's own MCP module."""
     modules = butler_toml.get("modules", {})
-    assert modules == {}
+    assert modules == {"chronicler": {}}
 
 
 def test_chronicler_schedule_uses_jobs_for_projection(butler_toml: dict) -> None:

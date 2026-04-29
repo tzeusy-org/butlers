@@ -16,6 +16,8 @@ schema = "chronicler"
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
 
+[modules.chronicler]
+
 # Projection adapters run as scheduled jobs, NOT as modules or connectors.
 # Chronicler does not own any connector and does not ingest external events.
 
