@@ -65,6 +65,8 @@ def test_build_config_file(tmp_path: Path):
     content = config_path.read_text()
     assert "[mcp_servers.my-butler]" in content and 'url = "http://127.0.0.1:9100/mcp"' in content
     assert 'transport = "streamable_http"' in content
+    assert "required = true" in content
+    assert "startup_timeout_sec = 30" in content
     # Transport URL inference
     assert _infer_mcp_transport_from_url("http://localhost:41100/mcp") == "streamable_http"
     assert _infer_mcp_transport_from_url("http://localhost:41100/sse") == "sse"
@@ -84,6 +86,26 @@ def test_build_config_file(tmp_path: Path):
         and "unsafe" not in content2
         and "9200" not in content2
     )
+
+
+def test_build_config_file_honors_mcp_timeout_overrides(tmp_path: Path):
+    """Generated Codex MCP config can override startup/tool timeouts per server."""
+    config_path = CodexAdapter().build_config_file(
+        mcp_servers={
+            "slow": {
+                "url": "http://localhost:9100/mcp",
+                "required": False,
+                "startup_timeout_sec": 45.5,
+                "tool_timeout_sec": 90,
+            }
+        },
+        tmp_dir=tmp_path,
+    )
+
+    content = config_path.read_text()
+    assert "required = false" in content
+    assert "startup_timeout_sec = 45.5" in content
+    assert "tool_timeout_sec = 90" in content
 
 
 def test_prefer_ipv4_loopback_rewrites_only_bare_localhost():

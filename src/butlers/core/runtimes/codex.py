@@ -70,6 +70,10 @@ _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS = 5
 # Exponential backoff: 2s, 5s → 3 total attempts (initial + 2 retries).
 _MCP_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
 _TRANSIENT_CLI_RETRY_DELAYS: tuple[float, ...] = (1.0, 3.0)
+# Codex defaults MCP startup/tool-list discovery to 10s. Butler MCP servers can
+# expose a large tool surface (calendar, contacts, memory, media modules), so
+# make the generated runtime config explicit and less brittle.
+_DEFAULT_MCP_STARTUP_TIMEOUT_SECONDS = 30.0
 _BENIGN_STDERR_LINES = frozenset(
     {
         "Reading additional input from stdin...",
@@ -214,6 +218,13 @@ def _resolve_transport_details(
 def _is_safe_mcp_server_name(server_name: str) -> bool:
     """Accept only server names that are safe TOML bare keys."""
     return bool(_SAFE_MCP_SERVER_NAME_RE.fullmatch(server_name))
+
+
+def _toml_number(value: Any) -> str | None:
+    """Render a positive TOML number from trusted numeric config values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return str(int(value)) if float(value).is_integer() else str(float(value))
 
 
 def _augment_transport_error_detail(error_detail: str, mcp_servers: dict[str, Any]) -> str:
@@ -1840,6 +1851,20 @@ class CodexAdapter(RuntimeAdapter):
                 normalized_transport is None and inferred_transport == "streamable_http"
             ):
                 toml_lines.append('transport = "streamable_http"')
+
+            required = server_cfg.get("required", True)
+            if isinstance(required, bool):
+                toml_lines.append(f"required = {str(required).lower()}")
+
+            startup_timeout = _toml_number(
+                server_cfg.get("startup_timeout_sec", _DEFAULT_MCP_STARTUP_TIMEOUT_SECONDS)
+            )
+            if startup_timeout is not None:
+                toml_lines.append(f"startup_timeout_sec = {startup_timeout}")
+
+            tool_timeout = _toml_number(server_cfg.get("tool_timeout_sec"))
+            if tool_timeout is not None:
+                toml_lines.append(f"tool_timeout_sec = {tool_timeout}")
             toml_lines.append("")
 
         if not toml_lines:
