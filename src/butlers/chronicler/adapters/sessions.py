@@ -58,6 +58,19 @@ EVENT_TYPE_SESSION_COMPLETED = "session_completed"
 # frequently enough that a small cap is fine.
 DEFAULT_BATCH_LIMIT = 500
 
+# Trigger sources that represent operational telemetry rather than user
+# activity.  Rows with these values are excluded at the SQL layer so the
+# per-schema watermark advances only over user-visible work.
+#
+# Exact matches: 'tick', 'qa', 'healing'
+# Prefix match:  'schedule:*'  (scheduler-fired background jobs)
+#
+# Rationale: heartbeat ticks, QA probes, healing sessions, and
+# scheduler-fired background jobs dominate raw session counts but carry no
+# "lived past time" signal for the Chronicler's mission.
+EXCLUDED_TRIGGER_SOURCES: frozenset[str] = frozenset({"tick", "qa", "healing"})
+EXCLUDED_TRIGGER_SOURCE_PREFIX: str = "schedule:"
+
 
 class CoreSessionsAdapter(ProjectionAdapter):
     """Project ``{schema}.sessions`` rows into Chronicler."""
@@ -176,16 +189,28 @@ class CoreSessionsAdapter(ProjectionAdapter):
                 if not exists:
                     return None, None
 
+                # Build the exclusion parameters.  We pass the exact-match
+                # set as a PostgreSQL array ($N) and the prefix as a LIKE
+                # pattern ($N+1) so the filter lives entirely at the SQL
+                # layer and the watermark advances only over included rows.
+                excluded_exact = list(EXCLUDED_TRIGGER_SOURCES)
+                excluded_prefix_pattern = EXCLUDED_TRIGGER_SOURCE_PREFIX + "%"
+
                 if since is None:
                     rows = await conn.fetch(
                         f"""
                         SELECT id, started_at, completed_at, trigger_source,
                                success, request_id, duration_ms, model
                         FROM {quoted}.sessions
+                        WHERE (trigger_source IS NULL
+                               OR (trigger_source != ALL($2::text[])
+                                   AND trigger_source NOT LIKE $3))
                         ORDER BY started_at ASC
                         LIMIT $1
                         """,
                         self.batch_limit,
+                        excluded_exact,
+                        excluded_prefix_pattern,
                     )
                 else:
                     # Use (started_at OR completed_at) > since to re-pick
@@ -195,13 +220,18 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         SELECT id, started_at, completed_at, trigger_source,
                                success, request_id, duration_ms, model
                         FROM {quoted}.sessions
-                        WHERE started_at > $1
-                           OR (completed_at IS NOT NULL AND completed_at > $1)
+                        WHERE (started_at > $1
+                               OR (completed_at IS NOT NULL AND completed_at > $1))
+                          AND (trigger_source IS NULL
+                               OR (trigger_source != ALL($3::text[])
+                                   AND trigger_source NOT LIKE $4))
                         ORDER BY started_at ASC
                         LIMIT $2
                         """,
                         since,
                         self.batch_limit,
+                        excluded_exact,
+                        excluded_prefix_pattern,
                     )
         except asyncpg.PostgresError:
             logger.exception("Failed reading sessions for schema %s", schema)
@@ -333,5 +363,7 @@ __all__ = [
     "EPISODE_TYPE_WORK",
     "EVENT_TYPE_SESSION_COMPLETED",
     "EVENT_TYPE_SESSION_STARTED",
+    "EXCLUDED_TRIGGER_SOURCE_PREFIX",
+    "EXCLUDED_TRIGGER_SOURCES",
     "SOURCE_NAME",
 ]
