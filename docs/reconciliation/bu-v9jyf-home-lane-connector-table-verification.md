@@ -120,13 +120,12 @@ The adapter is marked `optional_schema=True` in
 
 ## Root-Cause Analysis
 
-Three separate gaps compound to produce a permanently empty Home lane:
+Two gaps compound to produce a permanently empty Home lane:
 
 | Gap | Location | Status |
 |-----|----------|--------|
-| **No DDL migration** for `connectors.home_assistant_history` | `alembic/versions/core/` | Missing — never created |
-| **No connector write path** — HA events never written to the evidence table | `src/butlers/connectors/home_assistant.py` | Tasks 5–9 of HA openspec not implemented |
-| **Connector task list** (tasks 5–7) not yet filed as beads | `openspec/changes/archive/2026-03-28-connector-home-assistant/tasks.md` | Unimplemented |
+| **No DDL migration** for `connectors.home_assistant_history` | `alembic/versions/core/` | Missing — bead bu-zunbn filed; PR #1279 in review |
+| **No connector write path** — HA events never written to the evidence table | `src/butlers/connectors/home_assistant.py` | Tasks 5–9 of HA openspec not implemented; bead bu-uw6g5 filed |
 
 The Chronicler's Home lane adapter is correctly instrumented and will work as soon as both gaps
 are fixed. The adapter code is complete and correct (`HomeAssistantHistoryAdapter`).
@@ -135,9 +134,10 @@ are fixed. The adapter code is complete and correct (`HomeAssistantHistoryAdapte
 
 ## Required Follow-Up Work
 
-Two work items are needed to close this gap:
+Two work items are needed to close this gap. Both have been filed as beads and FU-1 is already
+in review.
 
-### FU-1: Add `connectors.home_assistant_history` migration (task analogue to `core_081`)
+### FU-1: Add `connectors.home_assistant_history` migration — bead bu-zunbn, PR #1279
 
 A new core Alembic migration (e.g. `core_084_home_assistant_history.py`) must:
 - `CREATE TABLE connectors.home_assistant_history (id, entity_id, state, attributes, recorded_at, ...)`
@@ -146,7 +146,7 @@ A new core Alembic migration (e.g. `core_084_home_assistant_history.py`) must:
 - Match the columns expected by `HomeAssistantHistoryAdapter._fetch_rows()`:
   `id`, `entity_id`, `state`, `attributes`, `recorded_at`
 
-### FU-2: Wire the HA connector write path (tasks 5–9 of openspec)
+### FU-2: Wire the HA connector write path — bead bu-uw6g5 (tasks 5–9 of openspec)
 
 The HA connector's `_null_dispatch` must be replaced with a real dispatcher that:
 - Runs the three-layer filter pipeline (already implemented in `HAFilterPipeline`)
