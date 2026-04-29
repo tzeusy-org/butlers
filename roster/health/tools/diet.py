@@ -1,4 +1,20 @@
-"""Diet and nutrition — meal logging and nutrition summaries backed by temporal facts."""
+"""Diet and nutrition — meal logging and nutrition summaries backed by temporal facts.
+
+Write path summary
+------------------
+``meal_log()`` dual-writes every meal to two surfaces:
+
+1. **``facts`` table** (memory module) — powers ``meal_history()``,
+   ``nutrition_summary()``, semantic search, and the weekly health summary.
+2. **``health.meals`` table** — powers the Chronicler ``MealsAdapter`` which
+   projects meals into ``chronicler.point_events`` (``eating_event``) so they
+   appear on the Chronicles dashboard Meal lane.
+
+Trigger: the user (or an agent) calls ``meal_log`` via MCP (Telegram, direct
+tool call, or an LLM session).  There is no external connector — meals are
+always entered manually.  The Chronicler picks up the ``health.meals`` row
+within one ``chronicler_project_meals`` tick (typically every 15 minutes).
+"""
 
 from __future__ import annotations
 
@@ -26,6 +42,64 @@ def _get_embedding_engine() -> Any:
 
         _embedding_engine = get_embedding_engine()
     return _embedding_engine
+
+
+async def _write_to_health_meals(
+    pool: asyncpg.Pool,
+    *,
+    meal_id: uuid.UUID,
+    type: str,
+    description: str,
+    nutrition: dict[str, Any] | None,
+    eaten_at: datetime,
+    notes: str | None,
+) -> None:
+    """Insert a row into ``health.meals`` so the Chronicler MealsAdapter can project it.
+
+    This is the second leg of the dual-write in ``meal_log()``.  Failures are
+    logged as warnings but do not raise — the primary facts write already
+    succeeded and must not be rolled back.
+
+    The ``meal_id`` is the ``fact_id`` returned by ``store_fact`` so both
+    storage surfaces share the same stable identifier.  On retry, ``store_fact``
+    returns the same ``fact_id`` for identical content, and the
+    ``ON CONFLICT (id) DO NOTHING`` clause makes this write a safe no-op.
+    """
+    nutrition_jsonb: Any = None
+    if nutrition is not None:
+        # Build the JSONB payload that health.meals.nutrition expects:
+        # { "calories": N, "macros": { "protein_g": N, "carbs_g": N, "fat_g": N } }
+        # This mirrors the shape already stored in facts.metadata.
+        nutrition_jsonb = {
+            "calories": nutrition.get("calories"),
+            "macros": {
+                "protein_g": nutrition.get("protein_g"),
+                "carbs_g": nutrition.get("carbs_g"),
+                "fat_g": nutrition.get("fat_g"),
+            },
+        }
+
+    try:
+        await pool.execute(
+            """
+            INSERT INTO health.meals (id, type, description, nutrition, eaten_at, notes)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            meal_id,
+            type,
+            description,
+            json.dumps(nutrition_jsonb) if nutrition_jsonb is not None else None,
+            eaten_at,
+            notes,
+        )
+    except asyncpg.PostgresError:
+        logger.warning(
+            "meal_log: failed to dual-write to health.meals for meal_id=%s; "
+            "Chronicler Meal lane will miss this entry until the row is replayed",
+            meal_id,
+            exc_info=True,
+        )
 
 
 async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
@@ -156,6 +230,21 @@ async def meal_log(
             metadata=metadata,
         )
     )["id"]
+
+    # Dual-write: persist to health.meals so the Chronicler MealsAdapter can
+    # project this meal into the Chronicles dashboard Meal lane.
+    # Use fact_id as meal_id so both surfaces share the same stable UUID.
+    # On retry, store_fact returns the same fact_id and ON CONFLICT DO NOTHING
+    # makes this write idempotent.
+    await _write_to_health_meals(
+        pool,
+        meal_id=fact_id,
+        type=type,
+        description=description,
+        nutrition=nutrition,
+        eaten_at=eaten_at,
+        notes=notes,
+    )
 
     if create_calendar_event_fn is not None and valid_at >= now:
         event_description = type.capitalize()

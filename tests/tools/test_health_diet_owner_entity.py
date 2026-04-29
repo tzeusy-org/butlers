@@ -45,6 +45,8 @@ class _AsyncCM:
 
 def _make_full_pool(fetchrow_result=None, fetchrow_side_effect=None) -> MagicMock:
     pool = _make_pool(fetchrow_result=fetchrow_result, fetchrow_side_effect=fetchrow_side_effect)
+    # pool.execute is called directly by _write_to_health_meals (dual-write to health.meals)
+    pool.execute = AsyncMock(return_value=None)
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=None)
     conn.fetchrow = AsyncMock(return_value=None)
