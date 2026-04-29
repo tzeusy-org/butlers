@@ -28,8 +28,6 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -45,32 +43,6 @@ OWNER_ENTITY_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
 PERSONAL_EMAIL = "tzehow@gmail.com"
 WORK_EMAIL = "owner@example.com"
-
-
-@dataclass
-class FakePool:
-    """Minimal asyncpg Pool stand-in that records executed statements."""
-
-    _fetchrow_map: dict[str, Any] = field(default_factory=dict)
-    executed: list[tuple[str, list]] = field(default_factory=list)
-    fetched: list[tuple[str, list]] = field(default_factory=list)
-
-    async def fetchrow(self, query: str, *args):  # noqa: ANN002
-        key = query.strip().split()[0:3]
-        key_str = " ".join(key)
-        result = self._fetchrow_map.get(key_str)
-        self.fetched.append((query, list(args)))
-        return result
-
-    async def execute(self, query: str, *args):  # noqa: ANN002
-        self.executed.append((query, list(args)))
-
-    async def fetch(self, query: str, *args):  # noqa: ANN002
-        return []
-
-    def set_fetchrow(self, keyword: str, value: Any) -> None:  # noqa: ANN002
-        """Register a fetchrow response keyed on a substring of the query."""
-        self._fetchrow_map[keyword] = value
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +109,9 @@ class TestAC3OwnerGate:
     async def test_contact_info_add_non_owner_writes_immediately(self) -> None:
         """Non-owner contact_info_add must write directly (no gate).
 
-        Uses a broad AsyncMock that returns appropriate values for each fetchrow
-        call: contact existence, owner check, INSERT RETURNING, and activity log
-        calls (entity resolve + embed lookup).
+        The non-owner path uses pool.acquire() as an async context manager
+        and conn.transaction() for atomicity.  This test wires those correctly
+        so the assertion exercises the actual code path.
         """
         from butlers.tools.relationship.contact_info import contact_info_add
 
@@ -156,18 +128,34 @@ class TestAC3OwnerGate:
             "created_at": None,
         }
 
-        side_effects = [
-            # 1. contact existence check → found
-            MagicMock(**{"__getitem__.return_value": non_owner_id}),
-            # 2. _is_owner_contact → None (not owner)
-            None,
-            # 3. INSERT RETURNING contact_info row
-            inserted_row,
-            # 4. resolve_contact_entity_id (entity lookup for activity log)
-            MagicMock(**{"__getitem__.return_value": uuid.uuid4()}),
-        ]
+        # Outer pool: handles fetchrow calls before acquire() (existence + owner check)
+        # and the _log_activity fetchrow call after the transaction.
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(side_effect=side_effects)
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                # 1. contact existence check → found
+                MagicMock(**{"__getitem__.return_value": non_owner_id}),
+                # 2. _is_owner_contact → None (not owner)
+                None,
+                # 3. resolve_contact_entity_id (entity lookup for activity log)
+                MagicMock(**{"__getitem__.return_value": uuid.uuid4()}),
+            ]
+        )
+
+        # conn is the connection obtained inside the async with pool.acquire() block
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=inserted_row)  # INSERT RETURNING
+        conn.transaction = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=False)
+            )
+        )
+
+        @asynccontextmanager
+        async def mock_acquire():
+            yield conn
+
+        pool.acquire = mock_acquire
 
         result = await contact_info_add(pool, non_owner_id, "email", "nonowner@example.com")
 
