@@ -5,6 +5,28 @@ to avoid duplicating the same boilerplate across migration test files.
 
 They are intentionally free of pytest fixtures so they can be imported from
 any test context, including roster-local test trees.
+
+Migrated DB Pattern
+-------------------
+Tests that need schema-accurate fixtures (without hand-rolled CREATE TABLE)
+should use :func:`create_migrated_test_db` to provision a real Alembic-migrated
+database::
+
+    # In a module-scoped pytest fixture:
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+    @pytest.fixture(scope="module")
+    def migrated_db(postgres_container):
+        db_url = create_migrated_test_db(
+            postgres_container,
+            migration_db_name(),
+            chains=["core", "memory", "relationship"],
+            schemas={"relationship": "relationship"},
+        )
+        return db_url  # yield if you need teardown
+
+Adding a migration column or table requires zero changes in tests — the next
+:func:`create_migrated_test_db` call picks it up automatically.
 """
 
 from __future__ import annotations
@@ -164,3 +186,71 @@ def get_column_info(db_url: str, table_name: str, column_name: str) -> dict | No
             "is_nullable": row[2],
         }
     return None
+
+
+# ---------------------------------------------------------------------------
+# Alembic-based test DB provisioning (preferred over hand-rolled CREATE TABLE)
+# ---------------------------------------------------------------------------
+
+
+def create_migrated_test_db(
+    postgres_container: object,
+    db_name: str,
+    chains: list[str],
+    schemas: dict[str, str] | None = None,
+) -> str:
+    """Create a fresh DB and run real Alembic migrations against it.
+
+    This is the preferred pattern for feature/integration tests that need a
+    schema-accurate database.  It replaces hand-rolled ``CREATE TABLE`` fixtures
+    that drift whenever a migration adds or renames a column.
+
+    Parameters
+    ----------
+    postgres_container:
+        A ``testcontainers.postgres.PostgresContainer`` instance.
+    db_name:
+        Unique database name.  Use :func:`migration_db_name` to generate one.
+    chains:
+        Migration chains to run in order (e.g. ``["core", "memory", "relationship"]``).
+        Each chain name must be recognized by :func:`butlers.migrations.run_migrations`.
+    schemas:
+        Optional mapping of chain name → target schema.  When a chain is not
+        listed here, migrations run without a ``SET search_path`` override, so
+        unqualified object names land in ``public`` (default PostgreSQL behaviour).
+
+        Example::
+
+            schemas={"relationship": "relationship"}
+
+    Returns
+    -------
+    str
+        A SQLAlchemy-compatible ``postgresql://`` URL for the migrated database.
+
+    Usage
+    -----
+    ::
+
+        @pytest.fixture(scope="module")
+        def migrated_db_url(postgres_container) -> str:
+            return create_migrated_test_db(
+                postgres_container,
+                migration_db_name(),
+                chains=["core", "memory", "relationship"],
+                schemas={"relationship": "relationship"},
+            )
+    """
+    # Local import avoids a circular import at module load time.
+    from butlers.migrations import run_migrations
+
+    if schemas is None:
+        schemas = {}
+
+    db_url = create_migration_db(postgres_container, db_name)
+
+    for chain in chains:
+        schema = schemas.get(chain)
+        asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
+
+    return db_url

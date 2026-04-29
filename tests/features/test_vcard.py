@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import shutil
 import sys
-import uuid
 from unittest.mock import MagicMock, patch
 
+import asyncpg
 import pytest
 import vobject
+
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -20,9 +22,35 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
+# Tables to truncate between tests (in dependency order — children first).
+# The relationship chain runs without a schema override, so all unqualified
+# tables land in "public" (same as the original hand-rolled DDL approach).
+# Cross-butler identity tables are also in "public" (created by core chain).
+#
+# Note: rel_007 renames "reminders" → "_reminders_backup"; that table is not
+# used by vcard tests so it is omitted from the list.
+_TRUNCATE_TABLES = [
+    # children first (FK → public.contacts)
+    "public.activity_feed",
+    "public.notes",
+    "public.important_dates",
+    "public.quick_facts",
+    "public.addresses",
+    "public.relationships",
+    "public.gifts",
+    "public.loans",
+    "public.group_members",
+    "public.contact_labels",
+    "public.interactions",
+    # memory / public children
+    "public.memory_links",
+    # facts (no FK parent, but seeded predicate_registry rows are kept)
+    "public.facts",
+    # public identity tables (contacts references entities)
+    "public.contact_info",
+    "public.contacts",
+    "public.entities",
+]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -61,227 +89,55 @@ def postgres_container():
         yield pg
 
 
-@pytest.fixture
-async def pool(postgres_container):
-    """Provision a fresh database with relationship tables and return a pool."""
-    from butlers.db import Database
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a database with real Alembic migrations applied (once per module).
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
+    Runs three chains in order:
+    - ``core``       — public.entities, public.contacts, public.contact_info, …
+    - ``memory``     — facts, predicate_registry, memory_links, … (public schema)
+    - ``relationship`` — relationship tables (no schema override; all land in public)
+
+    The ``relationship`` chain intentionally runs **without** a schema override so
+    that unqualified table names (contacts, activity_feed, etc.) land in ``public``,
+    matching the original hand-rolled DDL behaviour.  The rel_003 migration detects
+    that ``relationship.contacts`` does not exist and skips the consolidation step
+    (correct for this flat-schema test topology).
+
+    Adding a new migration (column, table, index) requires *no change* here —
+    the next test run picks it up automatically.
+    """
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory", "relationship"],
     )
-    await db.provision()
-    p = await db.connect()
 
-    # Create public.entities BEFORE contacts (contacts references public.entities)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name VARCHAR NOT NULL DEFAULT '',
-            name TEXT NOT NULL DEFAULT '',
-            entity_type VARCHAR NOT NULL DEFAULT 'other',
-            aliases TEXT[] NOT NULL DEFAULT '{}',
-            metadata JSONB DEFAULT '{}'::jsonb,
-            roles TEXT[] NOT NULL DEFAULT '{}',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
 
-    # Create relationship tables (mirrors Alembic relationship migration)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS contacts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT,
-            details JSONB DEFAULT '{}',
-            archived_at TIMESTAMPTZ,
-            first_name TEXT,
-            last_name TEXT,
-            nickname TEXT,
-            company TEXT,
-            job_title TEXT,
-            gender TEXT,
-            pronouns TEXT,
-            avatar_url TEXT,
-            entity_id UUID REFERENCES public.entities(id),
-            listed BOOLEAN DEFAULT true,
-            metadata JSONB DEFAULT '{}',
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS important_dates (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            label TEXT NOT NULL,
-            month INT NOT NULL,
-            day INT NOT NULL,
-            year INT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS notes (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            title TEXT,
-            body TEXT,
-            content TEXT,
-            emotion TEXT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS public.contact_info (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL,
-            type TEXT NOT NULL,
-            value TEXT NOT NULL,
-            label TEXT,
-            is_primary BOOLEAN DEFAULT false,
-            context VARCHAR CHECK (context IN ('personal', 'work', 'other')),
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS addresses (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            label TEXT NOT NULL DEFAULT 'Home',
-            line_1 TEXT NOT NULL,
-            line_2 TEXT,
-            city TEXT,
-            province TEXT,
-            postal_code TEXT,
-            country TEXT,
-            is_current BOOLEAN DEFAULT false,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS quick_facts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now(),
-            UNIQUE (contact_id, key)
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS activity_feed (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            action TEXT,
-            summary TEXT,
-            type TEXT NOT NULL,
-            description TEXT NOT NULL,
-            entity_type TEXT,
-            entity_id UUID,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_activity_feed_contact_created
-            ON activity_feed (contact_id, created_at)
-    """)
+@pytest.fixture
+async def pool(postgres_container, migrated_db_url: str):
+    """Return an asyncpg pool scoped to the migrated DB with clean tables.
 
-    # SPO facts infrastructure (needed by store_fact called from _log_activity / contact_create)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS predicate_registry (
-            name TEXT PRIMARY KEY,
-            expected_subject_type TEXT,
-            expected_object_type TEXT,
-            is_edge BOOLEAN NOT NULL DEFAULT false,
-            is_temporal BOOLEAN NOT NULL DEFAULT false,
-            description TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            status TEXT NOT NULL DEFAULT 'active',
-            superseded_by TEXT,
-            deprecated_at TIMESTAMPTZ,
-            search_vector TSVECTOR,
-            description_embedding TEXT,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            last_used_at TIMESTAMPTZ,
-            scope TEXT NOT NULL DEFAULT 'global',
-            aliases TEXT[] NOT NULL DEFAULT '{}',
-            inverse_of TEXT,
-            is_symmetric BOOLEAN NOT NULL DEFAULT false,
-            example_json JSONB
-        )
-    """)
-    await p.execute("""
-        INSERT INTO predicate_registry (name, is_temporal) VALUES
-            ('interaction', true),
-            ('life_event', true),
-            ('contact_note', true),
-            ('activity', true),
-            ('gift', false),
-            ('loan', false),
-            ('contact_task', false),
-            ('reminder', false)
-        ON CONFLICT (name) DO NOTHING
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS facts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            subject TEXT NOT NULL,
-            predicate TEXT NOT NULL,
-            content TEXT NOT NULL,
-            embedding TEXT,
-            search_vector TSVECTOR,
-            importance FLOAT NOT NULL DEFAULT 5.0,
-            confidence FLOAT NOT NULL DEFAULT 1.0,
-            decay_rate FLOAT NOT NULL DEFAULT 0.008,
-            permanence TEXT NOT NULL DEFAULT 'standard',
-            source_butler TEXT,
-            source_episode_id UUID,
-            supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-            validity TEXT NOT NULL DEFAULT 'active',
-            scope TEXT NOT NULL DEFAULT 'global',
-            reference_count INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            last_confirmed_at TIMESTAMPTZ,
-            tags JSONB DEFAULT '[]'::jsonb,
-            metadata JSONB DEFAULT '{}'::jsonb,
-            entity_id UUID REFERENCES public.entities(id),
-            object_entity_id UUID REFERENCES public.entities(id),
-            valid_at TIMESTAMPTZ DEFAULT NULL,
-            tenant_id TEXT NOT NULL DEFAULT 'owner',
-            request_id TEXT,
-            retention_class TEXT NOT NULL DEFAULT 'operational',
-            sensitivity TEXT NOT NULL DEFAULT 'normal',
-            idempotency_key TEXT,
-            observed_at TIMESTAMPTZ DEFAULT now(),
-            invalid_at TIMESTAMPTZ
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS memory_links (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            source_type TEXT NOT NULL,
-            source_id UUID NOT NULL,
-            target_type TEXT NOT NULL,
-            target_id UUID NOT NULL,
-            relation TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (source_type, source_id, target_type, target_id)
-        )
-    """)
+    The database schema is created once per module by ``migrated_db_url``.
+    This fixture truncates all data tables before each test so that tests
+    are independent without the overhead of re-running migrations.
+
+    All tables live in ``public`` (the relationship chain runs without a schema
+    override), so the default search_path is sufficient for unqualified names.
+    """
+    p = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+    )
+
+    # Truncate data tables in dependency order (children before parents).
+    # CASCADE handles any residual FK children automatically.
+    for table in _TRUNCATE_TABLES:
+        await p.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
 
     yield p
-    await db.close()
+    await p.close()
 
 
 async def test_export_single_contact_basic(pool):
