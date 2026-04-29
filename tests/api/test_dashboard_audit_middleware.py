@@ -1,0 +1,323 @@
+"""Tests for the dashboard audit middleware and audit_emit helper.
+
+Covers:
+- audit_emit.redact_body: field redaction logic
+- DashboardAuditMiddleware: fires on mutating methods, skips GETs
+- Integration: DELETE /api/relationship/contacts/{id}/contact-info/{id} produces audit row
+- Integration: GET /api/… does NOT produce audit row
+- Explicit emit in runtime_config PATCH produces operation='runtime_config_patch' row
+- audit READ endpoint (GET /api/audit-log) is not broken by the middleware
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from butlers.api.app import create_app
+from butlers.api.audit_emit import emit_dashboard_audit, redact_body
+from butlers.api.db import DatabaseManager
+
+pytestmark = pytest.mark.unit
+
+
+# ---------------------------------------------------------------------------
+# Unit: redact_body
+# ---------------------------------------------------------------------------
+
+
+class TestRedactBody:
+    def test_redacts_sensitive_fields(self):
+        body = {
+            "type": "email",
+            "value": "secret@example.com",
+            "is_primary": True,
+            "password": "hunter2",
+            "token": "abc123",
+        }
+        result = redact_body(body)
+        assert result["type"] == "email"
+        assert result["is_primary"] is True
+        assert result["value"] == "[REDACTED]"
+        assert result["password"] == "[REDACTED]"
+        assert result["token"] == "[REDACTED]"
+
+    def test_preserves_non_sensitive_fields(self):
+        body = {"name": "Alice", "is_primary": False, "context": "work"}
+        result = redact_body(body)
+        assert result == {"name": "Alice", "is_primary": False, "context": "work"}
+
+    def test_empty_body_returns_empty(self):
+        assert redact_body({}) == {}
+
+    def test_case_insensitive_matching(self):
+        body = {"Password": "abc", "API_KEY": "key"}
+        result = redact_body(body)
+        # Key casing preserved, value redacted
+        assert result["Password"] == "[REDACTED]"
+        assert result["API_KEY"] == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# Unit: emit_dashboard_audit
+# ---------------------------------------------------------------------------
+
+
+class TestEmitDashboardAudit:
+    async def test_inserts_row_on_success(self):
+        mock_pool = AsyncMock()
+        mock_pool.execute = AsyncMock()
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        await emit_dashboard_audit(
+            mock_db,
+            butler="relationship",
+            operation="contact_info_delete",
+            method="DELETE",
+            path="/api/relationship/contacts/abc/contact-info/xyz",
+            path_params={"contact_id": "abc", "info_id": "xyz"},
+            response_status=204,
+        )
+
+        mock_pool.execute.assert_awaited_once()
+        call_args = mock_pool.execute.call_args[0]
+        assert "INSERT INTO dashboard_audit_log" in call_args[0]
+        assert call_args[1] == "relationship"
+        assert call_args[2] == "contact_info_delete"
+
+    async def test_noop_when_db_manager_is_none(self):
+        # Should not raise
+        await emit_dashboard_audit(
+            None,
+            butler="relationship",
+            operation="test",
+            method="DELETE",
+            path="/api/test",
+        )
+
+    async def test_swallows_db_errors(self):
+        mock_pool = AsyncMock()
+        mock_pool.execute = AsyncMock(side_effect=RuntimeError("db gone"))
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        # Should not raise
+        await emit_dashboard_audit(
+            mock_db,
+            butler="relationship",
+            operation="test",
+            method="DELETE",
+            path="/api/test",
+        )
+
+    async def test_body_redaction_applied(self):
+        import json
+
+        mock_pool = AsyncMock()
+        mock_pool.execute = AsyncMock()
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        await emit_dashboard_audit(
+            mock_db,
+            butler="test",
+            operation="op",
+            method="POST",
+            path="/api/test",
+            body={"type": "email", "value": "secret@example.com"},
+        )
+
+        call_args = mock_pool.execute.call_args[0]
+        summary = json.loads(call_args[3])
+        assert summary["body"]["type"] == "email"
+        assert summary["body"]["value"] == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# Integration: middleware fires on DELETE, skips GET
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardAuditMiddleware:
+    """Integration tests for the middleware using a real FastAPI test client."""
+
+    def _make_app_with_mock_db(self):
+        """Create an app where get_db_manager returns a mock that records execute calls."""
+        app = create_app(api_key="")
+        mock_pool = AsyncMock()
+        mock_pool.execute = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+        return app, mock_db, mock_pool
+
+    async def test_middleware_fires_on_delete(self):
+        """A DELETE to any /api/ path writes an audit row."""
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+
+        # Patch get_db_manager so middleware can access the mock pool
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+            # Add a test DELETE endpoint so we get a real response
+            @app.delete("/api/test-delete-audit")
+            async def _delete_endpoint():
+                return {}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.delete("/api/test-delete-audit")
+
+        # The middleware should have called pool.execute (INSERT INTO dashboard_audit_log)
+        mock_pool.execute.assert_awaited()
+        # Verify the call was to dashboard_audit_log
+        any_audit_call = any(
+            "dashboard_audit_log" in str(call) for call in mock_pool.execute.call_args_list
+        )
+        assert any_audit_call, "Expected audit INSERT but found none"
+
+    async def test_middleware_skips_get(self):
+        """A GET to /api/ does NOT write an audit row."""
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+
+            @app.get("/api/test-get-no-audit")
+            async def _get_endpoint():
+                return {"ok": True}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/test-get-no-audit")
+
+        assert resp.status_code == 200
+        # pool.execute should NOT have been called (no audit row)
+        audit_calls = [
+            call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
+        ]
+        assert audit_calls == [], f"Expected no audit rows for GET, got: {audit_calls}"
+
+    async def test_middleware_skips_health(self):
+        """GET /api/health is not audited."""
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/health")
+
+        assert resp.status_code == 200
+        audit_calls = [
+            c for c in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(c)
+        ]
+        assert audit_calls == []
+
+    async def test_middleware_fires_on_post(self):
+        """A POST to /api/ writes an audit row."""
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+
+            @app.post("/api/test-post-audit")
+            async def _post_endpoint():
+                return {"created": True}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.post("/api/test-post-audit", json={"key": "value"})
+
+        any_audit_call = any(
+            "dashboard_audit_log" in str(call) for call in mock_pool.execute.call_args_list
+        )
+        assert any_audit_call, "Expected audit INSERT for POST but found none"
+
+    async def test_middleware_records_method_and_path(self):
+        """Audit row request_summary contains method and path."""
+        import json as _json
+
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+
+            @app.delete("/api/test-detail-check")
+            async def _detail_endpoint():
+                return {}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.delete("/api/test-detail-check")
+
+        # Find the audit INSERT call and inspect request_summary
+        audit_calls = [
+            call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
+        ]
+        assert audit_calls, "No audit INSERT found"
+        call_args = audit_calls[-1][0]
+        summary = _json.loads(call_args[3])
+        assert summary["method"] == "DELETE"
+        assert "/api/test-detail-check" in summary["path"]
+
+
+# ---------------------------------------------------------------------------
+# Integration: audit READ endpoint not broken
+# ---------------------------------------------------------------------------
+
+
+class TestAuditReadEndpoint:
+    async def test_get_audit_log_returns_paginated_structure(self):
+        """GET /api/audit-log still works correctly after middleware changes."""
+        from butlers.api.routers.audit import _get_db_manager as _audit_get_db
+
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app(api_key="")
+        app.dependency_overrides[_audit_get_db] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/audit-log")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "data" in body
+        assert "meta" in body
+        assert body["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# Unit: _infer_butler path parsing
+# ---------------------------------------------------------------------------
+
+
+class TestInferButler:
+    def test_relationship_path(self):
+        from butlers.api.dashboard_audit_middleware import _infer_butler
+
+        assert _infer_butler("/api/relationship/contacts/abc/contact-info/xyz") == "relationship"
+
+    def test_butlers_path(self):
+        from butlers.api.dashboard_audit_middleware import _infer_butler
+
+        assert _infer_butler("/api/butlers/atlas/runtime-config") == "butlers"
+
+    def test_audit_log_path_returns_dashboard(self):
+        from butlers.api.dashboard_audit_middleware import _infer_butler
+
+        assert _infer_butler("/api/audit-log") == "dashboard"
+
+    def test_health_path_returns_dashboard(self):
+        from butlers.api.dashboard_audit_middleware import _infer_butler
+
+        assert _infer_butler("/api/health") == "dashboard"

@@ -20,6 +20,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -1123,6 +1124,18 @@ async def reveal_contact_secret(
             ),
         )
 
+    # Explicit audit for credential reveal (GET — middleware skips GETs).
+    await emit_dashboard_audit(
+        db,
+        butler="relationship",
+        operation="contact_secret_reveal",
+        method="GET",
+        path=f"/api/relationship/contacts/{contact_id}/secrets/{info_id}",
+        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
+        body={"type": row["type"]},
+        response_status=200,
+    )
+
     return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}
 
 
@@ -1651,7 +1664,7 @@ async def create_contact_info(
             detail=f"A {request.type} entry with this value already exists.",
         )
 
-    return CreateContactInfoResponse(
+    result = CreateContactInfoResponse(
         id=row["id"],
         contact_id=row["contact_id"],
         type=row["type"],
@@ -1661,6 +1674,20 @@ async def create_contact_info(
         parent_id=row["parent_id"],
         context=row["context"],
     )
+
+    # Explicit audit — middleware also fires but this carries a richer operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="relationship",
+        operation="contact_info_create",
+        method="POST",
+        path=f"/api/relationship/contacts/{contact_id}/contact-info",
+        path_params={"contact_id": str(contact_id)},
+        body={"type": request.type, "is_primary": request.is_primary, "secured": request.secured},
+        response_status=201,
+    )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1686,6 +1713,17 @@ async def delete_contact_info(
         raise HTTPException(status_code=404, detail="Contact info entry not found")
 
     await pool.execute("DELETE FROM public.contact_info WHERE id = $1", info_id)
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="relationship",
+        operation="contact_info_delete",
+        method="DELETE",
+        path=f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
+        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
+        response_status=204,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1769,7 +1807,7 @@ async def patch_contact_info(
         " FROM public.contact_info WHERE id = $1",
         info_id,
     )
-    return ContactInfoEntry(
+    entry_result = ContactInfoEntry(
         id=updated["id"],
         type=updated["type"],
         value=updated["value"],
@@ -1778,6 +1816,26 @@ async def patch_contact_info(
         parent_id=updated["parent_id"],
         context=updated["context"],
     )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    audit_body: dict = {}
+    if request.type is not None:
+        audit_body["type"] = request.type
+    if request.is_primary is not None:
+        audit_body["is_primary"] = request.is_primary
+    # Note: request.value is intentionally excluded (may contain credential values)
+    await emit_dashboard_audit(
+        db,
+        butler="relationship",
+        operation="contact_info_patch",
+        method="PATCH",
+        path=f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
+        path_params={"contact_id": str(contact_id), "info_id": str(info_id)},
+        body=audit_body or None,
+        response_status=200,
+    )
+
+    return entry_result
 
 
 # ---------------------------------------------------------------------------

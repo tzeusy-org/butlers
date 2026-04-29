@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db_manager
 
@@ -193,7 +194,21 @@ async def patch_runtime_config(
             detail=f"No runtime_config row found for butler '{name}'",
         )
 
-    return PatchResponse(
+    response = PatchResponse(
         config=_row_to_response(row),
         restart_required=restart_required,
     )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler=name,
+        operation="runtime_config_patch",
+        method="PATCH",
+        path=f"/api/butlers/{name}/runtime-config",
+        path_params={"butler_name": name},
+        body=updates if updates else None,
+        response_status=200,
+    )
+
+    return response
