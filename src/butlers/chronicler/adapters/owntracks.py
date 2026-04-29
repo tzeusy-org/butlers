@@ -359,15 +359,20 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         if carry:
             try:
+                parsed_prior_start_at = datetime.fromisoformat(carry["start_at"])
                 prior_end_at = datetime.fromisoformat(carry["end_at"])
-                time_since_last = first_row["ts"] - prior_end_at
-                if time_since_last <= gap:
+                if self._carryover_continues(
+                    row_ts=first_row["ts"],
+                    prior_start_at=parsed_prior_start_at,
+                    prior_end_at=prior_end_at,
+                    gap=gap,
+                ):
                     # Continue the prior episode.
                     existing_source_ref = carry["source_ref"]
-                    prior_start_at = datetime.fromisoformat(carry["start_at"])
+                    prior_start_at = parsed_prior_start_at
                     prior_start_lat = carry.get("start_lat")
                     prior_start_lon = carry.get("start_lon")
-            except (KeyError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 logger.warning(
                     "Discarding malformed movement carryover for %s: %r", endpoint, carry
                 )
@@ -404,14 +409,19 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 new_carry = prior_carryover.get(new_endpoint)
                 if new_carry:
                     try:
+                        parsed_new_prior_start_at = datetime.fromisoformat(new_carry["start_at"])
                         new_prior_end_at = datetime.fromisoformat(new_carry["end_at"])
-                        gap_to_prior = row["ts"] - new_prior_end_at
-                        if gap_to_prior <= gap:
+                        if self._carryover_continues(
+                            row_ts=row["ts"],
+                            prior_start_at=parsed_new_prior_start_at,
+                            prior_end_at=new_prior_end_at,
+                            gap=gap,
+                        ):
                             current_source_ref = new_carry["source_ref"]
-                            current_prior_start_at = datetime.fromisoformat(new_carry["start_at"])
+                            current_prior_start_at = parsed_new_prior_start_at
                             current_prior_start_lat = new_carry.get("start_lat")
                             current_prior_start_lon = new_carry.get("start_lon")
-                    except (KeyError, ValueError):
+                    except (KeyError, TypeError, ValueError):
                         logger.warning(
                             "Discarding malformed movement carryover for %s: %r",
                             new_endpoint,
@@ -495,6 +505,21 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             }
 
         return episodes_upserted, new_carryover
+
+    @staticmethod
+    def _carryover_continues(
+        *,
+        row_ts: datetime,
+        prior_start_at: datetime,
+        prior_end_at: datetime,
+        gap: timedelta,
+    ) -> bool:
+        """Return True only when carryover is chronologically continuous."""
+        if prior_start_at > prior_end_at:
+            return False
+        if prior_end_at > row_ts:
+            return False
+        return (row_ts - prior_end_at) <= gap
 
 
 __all__ = [

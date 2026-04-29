@@ -647,6 +647,56 @@ async def test_ot_gap_beyond_threshold_between_batches_produces_two_episodes() -
 
 
 @pytest.mark.asyncio
+async def test_ot_future_carryover_is_discarded_for_replayed_older_batch() -> None:
+    """A retried older batch must not extend carryover from a newer point."""
+    row1_ts = _NOW
+    row2_ts = _NOW + timedelta(minutes=10)
+    future_ts = _NOW + timedelta(hours=4)
+    future_source_ref = (
+        f"connectors.owntracks_points:movement:{_ENDPOINT}:{int(future_ts.timestamp())}"
+    )
+    future_carryover = {
+        _ENDPOINT: {
+            "source_ref": future_source_ref,
+            "start_at": future_ts.isoformat(),
+            "end_at": future_ts.isoformat(),
+            "start_lat": 1.0,
+            "start_lon": 2.0,
+        }
+    }
+    rows = [
+        _make_ot_row(ts=row1_ts, idempotency_key="k1", row_id=1),
+        _make_ot_row(ts=row2_ts, idempotency_key="k2", row_id=2),
+    ]
+
+    adapter = OwnTracksPointAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(*rows)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_upsert_ep),
+        patch("butlers.chronicler.adapters.owntracks.get_carryover", return_value=future_carryover),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover"),
+    ):
+        mock_pe.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.episodes_closed == 1
+    assert len(upserted) == 1
+    assert upserted[0].source_ref != future_source_ref
+    assert upserted[0].start_at == row1_ts
+    assert upserted[0].end_at == row2_ts
+    assert upserted[0].end_at >= upserted[0].start_at
+
+
+@pytest.mark.asyncio
 async def test_ot_span_ends_within_batch_unchanged_behavior() -> None:
     """A movement sequence that starts and ends within a single batch still
     produces exactly one episode and the existing behavior is preserved."""
