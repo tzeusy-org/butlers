@@ -1093,6 +1093,11 @@ def test_clock_skew_threshold_hours() -> None:
     assert CLOCK_SKEW_THRESHOLD_HOURS == 4
 
 
+def test_negative_clock_skew_threshold_raises() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        OwnTracksPointAdapter(clock_skew_threshold_hours=-1)
+
+
 # ---------------------------------------------------------------------------
 # Upstream clock-skew clamping (bu-g3qyp)
 # ---------------------------------------------------------------------------

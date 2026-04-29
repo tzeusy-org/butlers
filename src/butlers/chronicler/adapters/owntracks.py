@@ -94,6 +94,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
         self.movement_gap_minutes = movement_gap_minutes
+        if clock_skew_threshold_hours < 0:
+            raise ValueError(
+                f"clock_skew_threshold_hours must be non-negative, got {clock_skew_threshold_hours}"
+            )
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
 
     async def project(
