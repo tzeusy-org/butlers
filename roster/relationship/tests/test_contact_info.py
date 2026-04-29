@@ -43,7 +43,23 @@ def patch_embedding_engine():
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with relationship + contact_info tables."""
     async with provisioned_postgres_pool() as p:
+        # Create public.entities first so contacts.entity_id FK resolves
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS public.entities (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                canonical_name VARCHAR NOT NULL DEFAULT '',
+                name TEXT NOT NULL DEFAULT '',
+                entity_type VARCHAR NOT NULL DEFAULT 'other',
+                aliases TEXT[] NOT NULL DEFAULT '{}',
+                metadata JSONB DEFAULT '{}'::jsonb,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+
         # Create base relationship tables (from 001 migration)
+        # entity_id column present so _is_owner_contact JOIN works
         await p.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -57,6 +73,7 @@ async def pool(provisioned_postgres_pool):
                 avatar_url TEXT,
                 listed BOOLEAN NOT NULL DEFAULT true,
                 metadata JSONB NOT NULL DEFAULT '{}',
+                entity_id UUID REFERENCES public.entities(id),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
@@ -80,20 +97,7 @@ async def pool(provisioned_postgres_pool):
                 ON activity_feed (contact_id, created_at)
         """)
 
-        # Create public.entities and public.contact_info
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        # Create public.contact_info
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.contact_info (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -113,6 +117,24 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE INDEX IF NOT EXISTS idx_shared_contact_info_contact_id
                 ON public.contact_info (contact_id)
+        """)
+
+        # pending_actions — used by the owner gate in contact_info_add/update
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS pending_actions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tool_name TEXT NOT NULL,
+                tool_args JSONB NOT NULL,
+                agent_summary TEXT,
+                session_id UUID,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                expires_at TIMESTAMPTZ,
+                decided_by TEXT,
+                decided_at TIMESTAMPTZ,
+                execution_result JSONB,
+                approval_rule_id UUID
+            )
         """)
 
         # Predicate registry — columns must match what store_fact() queries
@@ -756,3 +778,259 @@ async def test_contact_info_orphan_after_contact_delete(pool):
     assert len(rows) == 1, (
         "public.contact_info has no FK cascade; orphan rows persist after contact deletion"
     )
+
+
+# ------------------------------------------------------------------
+# Owner gate helpers
+# ------------------------------------------------------------------
+
+
+async def _make_owner_contact(pool):
+    """Create an owner entity + contact and return the contact row.
+
+    Inserts a public.entities row with roles=['owner'], then inserts a contacts
+    row referencing that entity.  This mirrors the real owner_bootstrap path.
+    """
+    entity_id = await pool.fetchval(
+        """
+        INSERT INTO public.entities (canonical_name, name, entity_type, roles)
+        VALUES ('Owner', 'Owner', 'person', ARRAY['owner'])
+        RETURNING id
+        """
+    )
+    contact_id = await pool.fetchval(
+        """
+        INSERT INTO contacts (first_name, listed, entity_id)
+        VALUES ('Owner', true, $1)
+        RETURNING id
+        """,
+        entity_id,
+    )
+    return {"id": contact_id, "entity_id": entity_id}
+
+
+# ------------------------------------------------------------------
+# contact_info_add — owner gate
+# ------------------------------------------------------------------
+
+
+async def test_contact_info_add_owner_gate_parks_action(pool):
+    """contact_info_add targeting the owner contact creates a pending_action instead of inserting.
+
+    Replays the 2026-04-21 incident shape: runtime LLM calls contact_info_add
+    with the owner's contact_id and a speculative work email address.
+    Expected: no row in public.contact_info; one pending_actions row with status='pending'.
+    """
+    from butlers.tools.relationship.contact_info import contact_info_add
+
+    owner = await _make_owner_contact(pool)
+
+    result = await contact_info_add(
+        pool,
+        owner["id"],
+        "email",
+        "owner@example.com",
+        is_primary=False,
+    )
+
+    # Returned dict signals pending approval, not a contact_info row
+    assert result["status"] == "pending_approval"
+    assert "action_id" in result
+    assert "approval" in result["message"].lower()
+
+    # No row written to public.contact_info
+    rows = await pool.fetch(
+        "SELECT * FROM public.contact_info WHERE contact_id = $1",
+        owner["id"],
+    )
+    assert rows == [], "Owner-targeted contact_info_add must not write to public.contact_info"
+
+    # pending_actions row created with correct shape
+    action_id = result["action_id"]
+    action = await pool.fetchrow(
+        "SELECT * FROM pending_actions WHERE id = $1::uuid",
+        action_id,
+    )
+    assert action is not None, "pending_actions row must exist"
+    assert action["tool_name"] == "contact_info_add"
+    assert action["status"] == "pending"
+    import json as _json
+
+    args = _json.loads(action["tool_args"])
+    assert args["value"] == "owner@example.com"
+    assert args["type"] == "email"
+    assert str(args["contact_id"]) == str(owner["id"])
+
+
+async def test_contact_info_add_non_owner_writes_immediately(pool):
+    """contact_info_add targeting a non-owner contact writes immediately (no gate)."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+
+    c = await contact_create(pool, "NonOwner")
+    result = await contact_info_add(pool, c["id"], "email", "nonowner@example.com")
+
+    # Returns a real contact_info row, not a pending dict
+    assert result.get("status") != "pending_approval"
+    assert result["type"] == "email"
+    assert result["value"] == "nonowner@example.com"
+
+    # Row exists in DB
+    rows = await pool.fetch(
+        "SELECT * FROM public.contact_info WHERE contact_id = $1",
+        c["id"],
+    )
+    assert len(rows) == 1
+
+
+async def test_contact_info_add_owner_gate_does_not_log_activity(pool):
+    """contact_info_add blocked for owner must not log an activity_feed entry."""
+    from butlers.tools.relationship.contact_info import contact_info_add
+
+    owner = await _make_owner_contact(pool)
+    await contact_info_add(pool, owner["id"], "email", "blocked@example.com")
+
+    feed_rows = await pool.fetch(
+        "SELECT * FROM activity_feed WHERE contact_id = $1",
+        owner["id"],
+    )
+    assert feed_rows == [], "No activity_feed entry expected when gate blocks the mutation"
+
+
+# ------------------------------------------------------------------
+# contact_info_update — new tool
+# ------------------------------------------------------------------
+
+
+async def test_contact_info_update_value(pool):
+    """contact_info_update can change the value of a non-owner entry."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    c = await contact_create(pool, "UpdateValue")
+    info = await contact_info_add(pool, c["id"], "email", "old@example.com")
+
+    updated = await contact_info_update(pool, info["id"], value="new@example.com")
+    assert updated["value"] == "new@example.com"
+    assert updated["type"] == "email"
+
+
+async def test_contact_info_update_label(pool):
+    """contact_info_update can change the label of a non-owner entry."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    c = await contact_create(pool, "UpdateLabel")
+    info = await contact_info_add(pool, c["id"], "phone", "+1-555-0001", label="Home")
+
+    updated = await contact_info_update(pool, info["id"], label="Mobile")
+    assert updated["label"] == "Mobile"
+
+
+async def test_contact_info_update_is_primary(pool):
+    """contact_info_update can promote an entry to primary and demotes the previous primary."""
+    from butlers.tools.relationship import contact_create, contact_info_add, contact_info_list
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    c = await contact_create(pool, "UpdatePrimary")
+    i1 = await contact_info_add(pool, c["id"], "email", "first@example.com", is_primary=True)
+    i2 = await contact_info_add(pool, c["id"], "email", "second@example.com", is_primary=False)
+
+    await contact_info_update(pool, i2["id"], is_primary=True)
+
+    emails = await contact_info_list(pool, c["id"], type="email")
+    primary = [e for e in emails if e["is_primary"]]
+    assert len(primary) == 1
+    assert primary[0]["id"] == i2["id"]
+
+    # First entry is no longer primary
+    first = next(e for e in emails if e["id"] == i1["id"])
+    assert first["is_primary"] is False
+
+
+async def test_contact_info_update_no_fields_raises(pool):
+    """contact_info_update raises ValueError when no fields are provided."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    c = await contact_create(pool, "UpdateNoFields")
+    info = await contact_info_add(pool, c["id"], "email", "noupdate@example.com")
+
+    with pytest.raises(ValueError, match="At least one"):
+        await contact_info_update(pool, info["id"])
+
+
+async def test_contact_info_update_nonexistent_raises(pool):
+    """contact_info_update raises ValueError for nonexistent entry."""
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    with pytest.raises(ValueError, match="not found"):
+        await contact_info_update(pool, uuid.uuid4(), value="x@example.com")
+
+
+async def test_contact_info_update_logs_activity(pool):
+    """contact_info_update logs an activity_feed entry on success."""
+    from butlers.tools.relationship import contact_create, contact_info_add, feed_get
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    c = await contact_create(pool, "UpdateActivity")
+    info = await contact_info_add(pool, c["id"], "email", "activity@example.com")
+
+    await contact_info_update(pool, info["id"], value="updated@example.com")
+
+    feed = await feed_get(pool, contact_id=c["id"])
+    actions = [f["action"] for f in feed]
+    assert "contact_info_updated" in actions
+
+
+async def test_contact_info_update_owner_gate_parks_action(pool):
+    """contact_info_update targeting the owner contact creates a pending_action."""
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    owner = await _make_owner_contact(pool)
+
+    # First, directly insert an entry bypassing the gate (simulates pre-existing row)
+    info_id = await pool.fetchval(
+        """
+        INSERT INTO public.contact_info (contact_id, type, value, is_primary)
+        VALUES ($1, 'email', 'old-owner@example.com', false)
+        RETURNING id
+        """,
+        owner["id"],
+    )
+
+    result = await contact_info_update(pool, info_id, value="new-owner@example.com")
+
+    # Returns pending_approval, not the updated row
+    assert result["status"] == "pending_approval"
+    assert "action_id" in result
+
+    # DB value unchanged
+    row = await pool.fetchrow("SELECT value FROM public.contact_info WHERE id = $1", info_id)
+    assert row["value"] == "old-owner@example.com"
+
+    # pending_actions row created
+    import json as _json
+
+    action = await pool.fetchrow(
+        "SELECT * FROM pending_actions WHERE id = $1::uuid",
+        result["action_id"],
+    )
+    assert action is not None
+    assert action["tool_name"] == "contact_info_update"
+    assert action["status"] == "pending"
+    args = _json.loads(action["tool_args"])
+    assert args["value"] == "new-owner@example.com"
+
+
+async def test_contact_info_update_non_owner_writes_immediately(pool):
+    """contact_info_update targeting a non-owner contact writes immediately."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    c = await contact_create(pool, "UpdateNonOwner")
+    info = await contact_info_add(pool, c["id"], "email", "nonowner-update@example.com")
+
+    result = await contact_info_update(pool, info["id"], value="updated-nonowner@example.com")
+
+    assert result.get("status") != "pending_approval"
+    assert result["value"] == "updated-nonowner@example.com"
