@@ -827,3 +827,54 @@ async def test_ot_corrupt_carryover_discarded_and_new_episode_started() -> None:
 
     assert result.episodes_closed == 1
     assert upserted[0].source_ref != "ref:x"
+
+
+@pytest.mark.asyncio
+async def test_ot_null_coordinate_carryover_is_continued_not_discarded() -> None:
+    """JSON null coordinates are equivalent to missing — carryover must continue.
+
+    Coordinates are optional for movement episodes; explicitly null lat/lon
+    should be treated like missing keys (not malformed) and the prior episode
+    should be stitched onto the new batch.
+    """
+    null_coord_carryover = {
+        _ENDPOINT: {
+            "source_ref": "ref:null-coords",
+            "start_at": _NOW.isoformat(),
+            "end_at": _NOW.isoformat(),
+            "start_lat": None,
+            "start_lon": None,
+        }
+    }
+
+    row = _make_ot_row(ts=_NOW + timedelta(minutes=5), idempotency_key="k1", row_id=1)
+    adapter = OwnTracksPointAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_upsert_ep),
+        patch(
+            "butlers.chronicler.adapters.owntracks.get_carryover",
+            return_value=null_coord_carryover,
+        ),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover"),
+    ):
+        mock_pe.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    # Prior episode is stitched, not discarded — null prior coords are treated
+    # as "not provided" (same as missing keys), so the carryover continues and
+    # the episode falls back to the first row's lat/lon for start_lat/lon.
+    assert result.episodes_closed == 1
+    assert upserted[0].source_ref == "ref:null-coords"
+    assert upserted[0].start_at == _NOW
+    assert upserted[0].payload["start_lat"] == row["lat"]
+    assert upserted[0].payload["start_lon"] == row["lon"]
