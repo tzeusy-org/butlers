@@ -130,7 +130,7 @@ a corresponding test case in `tests/chronicler/test_core_sessions_adapter.py`.
 
 **Ops verification post-deploy:** after one cron tick, run
 ```sql
-SELECT trigger_source, count(*)
+SELECT payload->>'trigger_source' AS trigger_source, count(*)
 FROM chronicler.episodes
 WHERE source_name = 'core.sessions'
   AND start_at > now() - interval '10 minutes'
