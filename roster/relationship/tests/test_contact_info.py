@@ -102,6 +102,7 @@ async def pool(provisioned_postgres_pool):
                 value TEXT NOT NULL,
                 label VARCHAR,
                 is_primary BOOLEAN DEFAULT false,
+                context VARCHAR CHECK (context IN ('personal', 'work', 'other')),
                 created_at TIMESTAMPTZ DEFAULT now()
             )
         """)
@@ -472,6 +473,123 @@ async def test_contact_search_by_info_multiple_contacts(pool):
     found_ids = {r["id"] for r in results}
     assert c1["id"] in found_ids
     assert c2["id"] in found_ids
+
+
+# ------------------------------------------------------------------
+# Work-domain heuristic (context auto-detection)
+# ------------------------------------------------------------------
+
+
+async def test_contact_info_add_work_domain_sets_context_work(pool, monkeypatch):
+    """Email at a known work domain gets context='work' automatically."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+
+    c = await contact_create(pool, "WorkPerson")
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
+    info = await contact_info_add(pool, c["id"], "email", "alice@example.com")
+
+    assert info["context"] == "work"
+
+
+async def test_contact_info_add_personal_domain_leaves_context_null(pool, monkeypatch):
+    """Email at a non-work domain leaves context as None."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+
+    c = await contact_create(pool, "PersonalPerson")
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
+    info = await contact_info_add(pool, c["id"], "email", "bob@gmail.com")
+
+    assert info["context"] is None
+
+
+async def test_contact_info_add_explicit_context_not_overridden(pool, monkeypatch):
+    """Explicit context='personal' on a work-domain email is respected."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+
+    c = await contact_create(pool, "ExplicitContext")
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
+    info = await contact_info_add(pool, c["id"], "email", "boss@example.com", context="personal")
+
+    assert info["context"] == "personal"
+
+
+async def test_contact_info_add_non_email_type_no_heuristic(pool, monkeypatch):
+    """Work-domain heuristic does not apply to non-email types."""
+    from butlers.tools.relationship import contact_create, contact_info_add
+
+    c = await contact_create(pool, "PhonePerson")
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
+    # Phone value happens to look like a domain — should not be classified
+    info = await contact_info_add(pool, c["id"], "phone", "+1-555-0200")
+
+    assert info["context"] is None
+
+
+async def test_contact_info_add_invalid_context_raises(pool):
+    """contact_info_add raises ValueError for an unrecognised context value."""
+    import pytest
+
+    from butlers.tools.relationship import contact_create, contact_info_add
+
+    c = await contact_create(pool, "InvalidContextPerson")
+    with pytest.raises(ValueError, match="Invalid context"):
+        await contact_info_add(pool, c["id"], "email", "x@example.com", context="bogus")
+
+
+# ------------------------------------------------------------------
+# classify_email_context (unit tests, no DB needed)
+# ------------------------------------------------------------------
+
+
+def test_classify_email_context_work_domain(monkeypatch):
+    """classify_email_context returns 'work' for known work domains."""
+    from butlers.tools.relationship.contact_info import classify_email_context
+
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com,acme.corp")
+    assert classify_email_context("alice@example.com") == "work"
+    assert classify_email_context("bob@acme.corp") == "work"
+
+
+def test_classify_email_context_personal_domain(monkeypatch):
+    """classify_email_context returns None for non-work domains."""
+    from butlers.tools.relationship.contact_info import classify_email_context
+
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
+    assert classify_email_context("alice@gmail.com") is None
+    assert classify_email_context("bob@example.com") is None
+
+
+def test_classify_email_context_case_insensitive(monkeypatch):
+    """classify_email_context is case-insensitive for the domain part."""
+    from butlers.tools.relationship.contact_info import classify_email_context
+
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
+    assert classify_email_context("Alice@example.com") == "work"
+
+
+def test_classify_email_context_no_at_sign(monkeypatch):
+    """classify_email_context returns None for malformed addresses."""
+    from butlers.tools.relationship.contact_info import classify_email_context
+
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "example.com")
+    assert classify_email_context("notanemail") is None
+
+
+def test_classify_email_context_default_list(monkeypatch):
+    """classify_email_context uses example.com when env var is unset."""
+    from butlers.tools.relationship.contact_info import classify_email_context
+
+    monkeypatch.delenv("BUTLERS_WORK_DOMAINS", raising=False)
+    assert classify_email_context("alice@example.com") == "work"
+    assert classify_email_context("alice@gmail.com") is None
+
+
+def test_classify_email_context_empty_env_disables_heuristic(monkeypatch):
+    """Setting BUTLERS_WORK_DOMAINS='' (empty string) disables the heuristic entirely."""
+    from butlers.tools.relationship.contact_info import classify_email_context
+
+    monkeypatch.setenv("BUTLERS_WORK_DOMAINS", "")
+    assert classify_email_context("alice@example.com") is None
 
 
 async def test_contact_search_by_info_case_insensitive(pool):

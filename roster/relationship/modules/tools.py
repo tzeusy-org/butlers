@@ -135,9 +135,17 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         value: str,
         label: str | None = None,
         is_primary: bool = False,
+        context: str | None = None,
     ) -> dict[str, Any]:
         """Add a piece of contact information (email, phone, etc.)
-        for a contact."""
+        for a contact.
+
+        When ``type='email'`` and ``context`` is omitted, the work-domain
+        heuristic runs automatically: if the email domain is in the
+        configured work-domain list the row is stored with
+        ``context='work'``.  Pass ``context='personal'`` explicitly to
+        suppress the heuristic for a known personal address.
+        """
         return await _ci.contact_info_add(
             module._get_pool(),
             contact_id,
@@ -145,6 +153,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             value,
             label=label,
             is_primary=is_primary,
+            context=context,
         )
 
     @_tool("contacts_extended")
