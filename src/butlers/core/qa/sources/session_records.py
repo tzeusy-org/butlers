@@ -62,6 +62,9 @@ _MAX_SUMMARY_LEN = 200
 #: Maximum number of session IDs collected per fingerprint for structured evidence.
 _MAX_EVIDENCE_SESSION_IDS = 5
 
+#: Synthetic session errors written by startup recovery rather than runtime failures.
+_NON_ACTIONABLE_SESSION_ERRORS = frozenset({"orphaned: daemon restart"})
+
 #: Health-check query — validates view accessibility before processing rows.
 _HEALTH_CHECK_SQL = f"SELECT 1 FROM {_VIEW_NAME} LIMIT 0"
 
@@ -221,6 +224,9 @@ class SessionRecordsSource:
         trigger_source: str | None = row["trigger_source"]
         raw_session_id = row["session_id"]
         session_id_str: str | None = str(raw_session_id) if raw_session_id is not None else None
+
+        if error_text in _NON_ACTIONABLE_SESSION_ERRORS:
+            return None
 
         # Use completed_at as timestamp; fall back to now
         ts = completed_at or now
