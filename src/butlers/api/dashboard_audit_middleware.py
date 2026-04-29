@@ -128,6 +128,7 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             logger.debug("DashboardAuditMiddleware: could not read request body", exc_info=True)
 
         # Parse body as JSON for redaction; fall back to raw string on parse error.
+        # Both dict and list bodies are handled; list items are recursively redacted.
         parsed_body: dict | None = None
         if raw_body:
             try:
@@ -136,8 +137,21 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
                     parsed_body = redact_body(parsed)
                     if body_truncated:
                         parsed_body["__body_truncated__"] = True
+                elif isinstance(parsed, list):
+                    redacted_list = [
+                        redact_body(item) if isinstance(item, dict) else item for item in parsed
+                    ]
+                    parsed_body = {"__list__": redacted_list}
+                    if body_truncated:
+                        parsed_body["__body_truncated__"] = True
+                else:
+                    parsed_body = {"__value__": parsed}
+                    if body_truncated:
+                        parsed_body["__body_truncated__"] = True
             except json.JSONDecodeError:
                 parsed_body = {"__raw__": raw_body.decode(errors="replace")}
+                if body_truncated:
+                    parsed_body["__body_truncated__"] = True
 
         # Trace ID: re-use one from scope if available, otherwise generate.
         trace_id: str | None = request.scope.get("trace_id") or str(uuid.uuid4())

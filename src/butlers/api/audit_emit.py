@@ -133,7 +133,7 @@ async def emit_dashboard_audit(
             "VALUES ($1, $2, $3, $4, $5, $6)",
             butler,
             operation,
-            json.dumps(request_summary),
+            json.dumps(request_summary, default=str),
             result,
             error,
             json.dumps({}),
