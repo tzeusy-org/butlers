@@ -168,8 +168,9 @@ def test_patch_empty_body():
     assert resp.status_code == 200
     data = resp.json()
     assert data["restart_required"] == []
-    # No UPDATE was executed
-    pool.execute.assert_not_called()
+    # No UPDATE was executed (only the audit INSERT may have been called)
+    update_calls = [call for call in pool.execute.call_args_list if "UPDATE" in str(call)]
+    assert update_calls == [], f"Unexpected UPDATE calls: {update_calls}"
 
 
 def test_patch_negative_concurrency():

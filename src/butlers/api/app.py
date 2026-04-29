@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
+from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
     get_db_manager,
@@ -191,6 +192,11 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Audit middleware: record every non-GET /api/ mutation to dashboard_audit_log.
+    # Registered after CORS so that CORS preflight (OPTIONS) is handled first
+    # and audit only fires on genuine mutating requests.
+    app.add_middleware(DashboardAuditMiddleware)
 
     # API-key authentication (opt-in via DASHBOARD_API_KEY env var).
     # Resolve the effective key here so ApiKeyMiddleware receives a definitive
