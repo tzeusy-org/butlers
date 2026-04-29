@@ -236,6 +236,19 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     )
                 ),
             ] = "medium",
+            msg_context: Annotated[
+                Literal["personal", "work", "other"] | None,
+                Field(
+                    description=(
+                        "Optional message context sphere. Allowed values: personal | work | other. "
+                        "When provided with contact_id, recipient resolution prefers "
+                        "contact_info entries tagged with matching context. "
+                        "When the resolved address context conflicts with msg_context, "
+                        "delivery is parked for approval. "
+                        "Defaults to None (no context preference)."
+                    )
+                ),
+            ] = None,
         ) -> dict:
             """Send a `notify.v1` envelope through Switchboard `deliver()`.
 
@@ -259,9 +272,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               Pass an object value, not a quoted placeholder string.
 
             Recipient resolution priority:
-            1. `contact_id` provided → look up channel identifier from public.contact_info
+            1. `contact_id` provided → look up channel identifier from public.contact_info,
+               preferring entries that match `msg_context` (if provided)
             2. `recipient` string provided → use as-is
             3. Neither → resolve owner entity's channel identifier (default)
+
+            Context mismatch: if `msg_context` is provided and the resolved address is
+            tagged with a conflicting context (e.g. sending a "personal" message to a
+            "work" email), delivery is parked for approval.
 
             Valid JSON example:
             {
@@ -453,13 +471,15 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 }
 
             # Resolution priority:
-            # (1) contact_id → query public.contact_info WHERE contact_id = X AND type = channel
+            # (1) contact_id → query public.contact_info WHERE contact_id = X AND type = channel,
+            #     preferring entries that match msg_context (if provided)
             # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
             # (3) neither → resolve owner entity's channel identifier (default path)
             if contact_id is not None:
                 contact_identifier = await daemon._resolve_contact_channel_identifier(
                     contact_id=contact_id,
                     channel=channel,
+                    msg_context=msg_context,
                 )
                 if contact_identifier is None:
                     # No matching contact_info entry — park as pending_action and notify owner
@@ -617,6 +637,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             f"{resolved_recipient!r}. Message: {message!r}"
                         ),
                         session_id=get_current_runtime_session_id(),
+                        msg_context=msg_context,
                     )
                     if not _decision.allowed:
                         return {

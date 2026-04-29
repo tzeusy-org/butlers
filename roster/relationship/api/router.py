@@ -488,7 +488,7 @@ async def list_pending_contacts(
 
         ci_rows = await pool.fetch(
             """
-            SELECT id, type, value, is_primary, secured, parent_id
+            SELECT id, type, value, is_primary, secured, parent_id, context
             FROM public.contact_info
             WHERE contact_id = $1
             ORDER BY is_primary DESC NULLS LAST, type, id
@@ -503,6 +503,7 @@ async def list_pending_contacts(
                 is_primary=bool(ci["is_primary"]),
                 secured=bool(ci["secured"]),
                 parent_id=ci["parent_id"],
+                context=ci["context"],
             )
             for ci in ci_rows
         ]
@@ -1008,7 +1009,7 @@ async def get_contact(
         ),
         pool.fetch(
             """
-            SELECT id, type, value, is_primary, secured, parent_id
+            SELECT id, type, value, is_primary, secured, parent_id, context
             FROM public.contact_info
             WHERE contact_id = $1
             ORDER BY is_primary DESC NULLS LAST, type, id
@@ -1043,6 +1044,7 @@ async def get_contact(
             is_primary=bool(ci["is_primary"]),
             secured=bool(ci["secured"]),
             parent_id=ci["parent_id"],
+            context=ci["context"],
         )
         for ci in ci_rows
     ]
@@ -1631,9 +1633,9 @@ async def create_contact_info(
         row = await pool.fetchrow(
             """
             INSERT INTO public.contact_info
-                (contact_id, type, value, is_primary, secured, parent_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, contact_id, type, value, is_primary, secured, parent_id
+                (contact_id, type, value, is_primary, secured, parent_id, context)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, contact_id, type, value, is_primary, secured, parent_id, context
             """,
             contact_id,
             request.type,
@@ -1641,6 +1643,7 @@ async def create_contact_info(
             request.is_primary,
             request.secured,
             request.parent_id,
+            request.context,
         )
     except asyncpg.UniqueViolationError:
         raise HTTPException(
@@ -1656,6 +1659,7 @@ async def create_contact_info(
         is_primary=row["is_primary"],
         secured=row["secured"],
         parent_id=row["parent_id"],
+        context=row["context"],
     )
 
 
@@ -1729,6 +1733,12 @@ async def patch_contact_info(
         args.append(request.is_primary)
         idx += 1
 
+    # context uses sentinel to distinguish "not provided" from "set to None"
+    if "context" in (request.model_fields_set or set()):
+        updates.append(f"context = ${idx}")
+        args.append(request.context)
+        idx += 1
+
     if updates:
         set_clause = ", ".join(updates)
         args.append(info_id)
@@ -1755,7 +1765,7 @@ async def patch_contact_info(
             )
 
     updated = await pool.fetchrow(
-        "SELECT id, type, value, is_primary, secured, parent_id"
+        "SELECT id, type, value, is_primary, secured, parent_id, context"
         " FROM public.contact_info WHERE id = $1",
         info_id,
     )
@@ -1766,6 +1776,7 @@ async def patch_contact_info(
         is_primary=updated["is_primary"],
         secured=updated["secured"],
         parent_id=updated["parent_id"],
+        context=updated["context"],
     )
 
 
