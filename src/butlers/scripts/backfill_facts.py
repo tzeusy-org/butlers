@@ -5,8 +5,7 @@ One phase per domain:
 
   - health:       measurements, symptoms, medication_doses, medications,
                   conditions, research
-  - relationship: quick_facts, interactions, life_events, notes, gifts,
-                  loans, tasks, reminders
+  - relationship: quick_facts, life_events, tasks, reminders
   - finance:      transactions, accounts, subscriptions, bills
   - home:         ha_entity_snapshot
 
@@ -142,21 +141,6 @@ async def _owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
     # Fallback: look directly in public.entities for owner role.
     row = await pool.fetchrow(
         "SELECT id FROM public.entities WHERE roles @> ARRAY['owner'] LIMIT 1"
-    )
-    return row["id"] if row else None
-
-
-async def _contact_entity_id(pool: asyncpg.Pool, contact_id: uuid.UUID) -> uuid.UUID | None:
-    """Resolve entity_id for a relationship contact."""
-    row = await pool.fetchrow(
-        """
-        SELECT e.id
-        FROM public.contacts c
-        JOIN public.entities e ON c.entity_id = e.id
-        WHERE c.id = $1
-        LIMIT 1
-        """,
-        contact_id,
     )
     return row["id"] if row else None
 
@@ -577,57 +561,6 @@ async def _backfill_rel_quick_facts(pool: asyncpg.Pool, stats: Stats, dry_run: b
             stats.errors += 1
 
 
-async def _backfill_rel_interactions(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
-    rows = await pool.fetch(
-        """
-        SELECT i.*, c.entity_id,
-               COALESCE(
-                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS contact_name
-        FROM interactions i
-        JOIN contacts c ON i.contact_id = c.id
-        ORDER BY i.occurred_at ASC
-        """
-    )
-    for row in rows:
-        stats.processed += 1
-        key = _backfill_key("interactions", row["id"])
-        if await _fact_exists(pool, key):
-            stats.skipped += 1
-            continue
-        entity_id = row.get("entity_id")
-        if entity_id and isinstance(entity_id, str):
-            entity_id = uuid.UUID(entity_id)
-        itype = row.get("type", "interaction")
-        content = f"{itype} with {row['contact_name']}"
-        if row.get("summary"):
-            content += f": {row['summary']}"
-        if row.get("direction"):
-            content += f" ({row['direction']})"
-        if row.get("duration_minutes"):
-            content += f", {row['duration_minutes']} min"
-        try:
-            await _insert_fact(
-                pool,
-                subject=row["contact_name"],
-                predicate="note",
-                content=content,
-                entity_id=entity_id,
-                valid_at=row.get("occurred_at"),
-                permanence="volatile",
-                source_butler="relationship",
-                backfill_key=key,
-                tags=["relationship", "interaction", itype],
-                dry_run=dry_run,
-            )
-            stats.inserted += 1
-        except Exception as exc:
-            logger.error("interactions row %s: %s", row["id"], exc)
-            stats.errors += 1
-
-
 async def _backfill_rel_life_events(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
     # Handle both legacy (type column) and current (life_event_type_id) schema.
     try:
@@ -733,175 +666,6 @@ async def _backfill_rel_life_events(pool: asyncpg.Pool, stats: Stats, dry_run: b
                 stats.errors += 1
 
 
-async def _backfill_rel_notes(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
-    rows = await pool.fetch(
-        """
-        SELECT n.*, c.entity_id,
-               COALESCE(
-                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS contact_name
-        FROM notes n
-        JOIN contacts c ON n.contact_id = c.id
-        ORDER BY n.created_at ASC
-        """
-    )
-    for row in rows:
-        stats.processed += 1
-        key = _backfill_key("notes", row["id"])
-        if await _fact_exists(pool, key):
-            stats.skipped += 1
-            continue
-        entity_id = row.get("entity_id")
-        if entity_id and isinstance(entity_id, str):
-            entity_id = uuid.UUID(entity_id)
-        note_text = row.get("body") or row.get("content") or ""
-        if row.get("title"):
-            note_text = f"{row['title']}: {note_text}"
-        try:
-            await _insert_fact(
-                pool,
-                subject=row["contact_name"],
-                predicate="note",
-                content=note_text,
-                entity_id=entity_id,
-                valid_at=row.get("created_at"),
-                permanence="standard",
-                source_butler="relationship",
-                backfill_key=key,
-                tags=["relationship", "note"],
-                dry_run=dry_run,
-            )
-            stats.inserted += 1
-        except Exception as exc:
-            logger.error("notes row %s: %s", row["id"], exc)
-            stats.errors += 1
-
-
-async def _backfill_rel_gifts(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
-    rows = await pool.fetch(
-        """
-        SELECT g.*, c.entity_id,
-               COALESCE(
-                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS contact_name
-        FROM gifts g
-        JOIN contacts c ON g.contact_id = c.id
-        ORDER BY g.created_at ASC
-        """
-    )
-    for row in rows:
-        stats.processed += 1
-        key = _backfill_key("gifts", row["id"])
-        if await _fact_exists(pool, key):
-            stats.skipped += 1
-            continue
-        entity_id = row.get("entity_id")
-        if entity_id and isinstance(entity_id, str):
-            entity_id = uuid.UUID(entity_id)
-        content = f"Gift idea for {row['contact_name']}: {row['description']}"
-        if row.get("occasion"):
-            content += f" (occasion: {row['occasion']})"
-        content += f" — status: {row['status']}"
-        try:
-            await _insert_fact(
-                pool,
-                subject=row["contact_name"],
-                predicate="note",
-                content=content,
-                entity_id=entity_id,
-                valid_at=row.get("created_at"),
-                permanence="volatile",
-                source_butler="relationship",
-                backfill_key=key,
-                tags=["relationship", "gift", row["status"]],
-                dry_run=dry_run,
-            )
-            stats.inserted += 1
-        except Exception as exc:
-            logger.error("gifts row %s: %s", row["id"], exc)
-            stats.errors += 1
-
-
-async def _backfill_rel_loans(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
-    # Schema may vary; use information_schema to check columns.
-    try:
-        cols = await pool.fetch(
-            "SELECT column_name FROM information_schema.columns WHERE table_name='loans'"
-        )
-        col_names = {r["column_name"] for r in cols}
-    except Exception:
-        col_names = set()
-
-    if not col_names:
-        return
-
-    rows = await pool.fetch("SELECT * FROM loans ORDER BY created_at ASC")
-    for row in rows:
-        stats.processed += 1
-        key = _backfill_key("loans", row["id"])
-        if await _fact_exists(pool, key):
-            stats.skipped += 1
-            continue
-
-        # Resolve contact entity — loans may have lender/borrower contact IDs.
-        contact_id = (
-            row.get("contact_id") or row.get("lender_contact_id") or row.get("borrower_contact_id")
-        )
-        entity_id: uuid.UUID | None = None
-        contact_name = "Unknown"
-        if contact_id:
-            entity_id = await _contact_entity_id(pool, contact_id)
-            name_row = await pool.fetchrow(
-                """
-                SELECT COALESCE(
-                    NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)), ''),
-                    nickname,
-                    'Unknown'
-                ) AS name
-                FROM contacts WHERE id = $1
-                """,
-                contact_id,
-            )
-            if name_row:
-                contact_name = name_row["name"]
-
-        # Build amount string
-        amount_str = ""
-        if "amount_cents" in col_names and row.get("amount_cents"):
-            amount_str = f"${row['amount_cents'] / 100:.2f}"
-        elif "amount" in col_names and row.get("amount"):
-            amount_str = str(row["amount"])
-
-        direction = row.get("direction", "")
-        desc = row.get("description") or "loan"
-        content = f"Loan ({direction}): {amount_str} — {desc} with {contact_name}"
-        status = row.get("status", "pending")
-        content += f", status: {status}"
-
-        try:
-            await _insert_fact(
-                pool,
-                subject=contact_name,
-                predicate="note",
-                content=content,
-                entity_id=entity_id,
-                valid_at=row.get("created_at"),
-                permanence="standard" if status in ("settled", "forgiven") else "stable",
-                source_butler="relationship",
-                backfill_key=key,
-                tags=["relationship", "loan", direction or "loan"],
-                dry_run=dry_run,
-            )
-            stats.inserted += 1
-        except Exception as exc:
-            logger.error("loans row %s: %s", row["id"], exc)
-            stats.errors += 1
-
-
 async def _backfill_rel_tasks(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
     rows = await pool.fetch(
         """
@@ -1004,11 +768,7 @@ async def backfill_relationship(pool: asyncpg.Pool, dry_run: bool = False) -> St
 
     for fn, label in [
         (_backfill_rel_quick_facts, "quick_facts"),
-        (_backfill_rel_interactions, "interactions"),
         (_backfill_rel_life_events, "life_events"),
-        (_backfill_rel_notes, "notes"),
-        (_backfill_rel_gifts, "gifts"),
-        (_backfill_rel_loans, "loans"),
         (_backfill_rel_tasks, "tasks"),
         (_backfill_rel_reminders, "reminders"),
     ]:
