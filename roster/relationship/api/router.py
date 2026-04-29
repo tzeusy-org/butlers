@@ -298,10 +298,14 @@ async def list_contacts(
             ),
             pool.fetch(
                 """
-                SELECT i.contact_id, max(i.occurred_at) AS last_at
-                FROM interactions i
-                WHERE i.contact_id = ANY($1)
-                GROUP BY i.contact_id
+                SELECT c.id AS contact_id, MAX(f.valid_at) AS last_at
+                FROM contacts c
+                JOIN facts f ON f.entity_id = c.entity_id
+                WHERE c.id = ANY($1)
+                  AND f.predicate LIKE 'interaction_%'
+                  AND f.validity = 'active'
+                  AND f.scope = 'relationship'
+                GROUP BY c.id
                 """,
                 contact_ids,
             ),
@@ -969,8 +973,11 @@ async def get_contact(
                 LIMIT 1
             ) AS phone,
             (
-                SELECT max(i.occurred_at) FROM interactions i
-                WHERE i.contact_id = c.id
+                SELECT MAX(f.valid_at) FROM facts f
+                WHERE f.entity_id = c.entity_id
+                  AND f.predicate LIKE 'interaction_%'
+                  AND f.validity = 'active'
+                  AND f.scope = 'relationship'
             ) AS last_interaction_at
         FROM contacts c
         LEFT JOIN public.entities e ON e.id = c.entity_id
