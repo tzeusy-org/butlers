@@ -15,6 +15,7 @@ from butlers.chronicler.adapters import (
     HomeAssistantHistoryAdapter,
     MealsAdapter,
     OwnTracksPointAdapter,
+    SpotifySessionAdapter,
     SteamPlayAdapter,
 )
 from butlers.chronicler.contracts import seed_source_registry
@@ -255,6 +256,20 @@ async def run_project_google_health_sleep(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_spotify(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project Spotify listening sessions into Chronicler listening episodes."""
+    options = _parse_job_args(
+        "chronicler_project_spotify",
+        job_args,
+        supported_fields=("batch_limit",),
+    )
+    adapter = SpotifySessionAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
@@ -264,5 +279,6 @@ __all__ = [
     "run_project_meals",
     "run_project_owntracks",
     "run_project_sessions",
+    "run_project_spotify",
     "run_project_steam",
 ]
