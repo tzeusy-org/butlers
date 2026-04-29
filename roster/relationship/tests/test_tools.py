@@ -1188,28 +1188,38 @@ async def test_loan_settle_not_found(pool):
 
 
 async def test_loan_list(pool):
-    """loan_list returns loans for a contact."""
+    """loan_list returns loans anchored to a contact.
+
+    With entity_id anchoring, each loan fact is keyed to the actor contact's
+    entity.  Loans from the same lender entity supersede each other (one active
+    loan per entity/scope/predicate).  Use separate lender contacts to verify
+    that loan_list returns loans from a given lender without cross-contact
+    interference.
+    """
     from butlers.tools.relationship import contact_create, loan_create, loan_list
 
-    lender = await contact_create(pool, "Loan-List-Lender")
+    lender_a = await contact_create(pool, "Loan-List-Lender-A")
+    lender_b = await contact_create(pool, "Loan-List-Lender-B")
     borrower = await contact_create(pool, "Loan-List-Borrower")
     await loan_create(
         pool,
-        lender_contact_id=lender["id"],
+        lender_contact_id=lender_a["id"],
         borrower_contact_id=borrower["id"],
         description="First",
         amount_cents=2500,
     )
     await loan_create(
         pool,
-        lender_contact_id=lender["id"],
+        lender_contact_id=lender_b["id"],
         borrower_contact_id=borrower["id"],
         description="Second",
         amount_cents=7500,
     )
 
-    loans = await loan_list(pool, lender["id"])
-    assert len(loans) == 2
+    loans_a = await loan_list(pool, lender_a["id"])
+    loans_b = await loan_list(pool, lender_b["id"])
+    assert len(loans_a) == 1
+    assert len(loans_b) == 1
 
 
 # ------------------------------------------------------------------
