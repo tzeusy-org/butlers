@@ -1357,7 +1357,37 @@ class MessagePipeline:
                             str(request_context.get("triage_rule_id", "")),
                         )
 
-                        # Build route envelope and dispatch directly
+                        # Build route envelope and dispatch directly.
+                        # For wellness channel: fetch the original ingest.v1 envelope
+                        # from message_inbox and embed it as input.context so the
+                        # target butler (Health) can call wellness_ingest_envelope(context)
+                        # without an LLM-side routing hop.
+                        _bypass_input_context: dict[str, Any] | None = None
+                        if source == "wellness" and message_inbox_id is not None:
+                            try:
+                                async with self._pool.acquire() as _bypass_conn:
+                                    _raw_row = await _bypass_conn.fetchrow(
+                                        "SELECT raw_payload FROM message_inbox WHERE id = $1",
+                                        message_inbox_id,
+                                    )
+                                if _raw_row is not None:
+                                    _raw_payload = _raw_row["raw_payload"]
+                                    if isinstance(_raw_payload, str):
+                                        _raw_payload = json.loads(_raw_payload)
+                                    if isinstance(_raw_payload, dict):
+                                        _bypass_input_context = _raw_payload
+                            except Exception:
+                                logger.warning(
+                                    "Policy bypass: failed to fetch raw_payload for wellness "
+                                    "envelope from message_inbox id=%s; routing without context",
+                                    message_inbox_id,
+                                    exc_info=True,
+                                )
+
+                        _bypass_input: dict[str, Any] = {"prompt": message_text}
+                        if _bypass_input_context is not None:
+                            _bypass_input["context"] = _bypass_input_context
+
                         bypass_envelope: dict[str, Any] = {
                             "schema_version": "route.v1",
                             "request_context": {
@@ -1377,7 +1407,7 @@ class MessagePipeline:
                                 ),
                                 "trace_context": {},
                             },
-                            "input": {"prompt": message_text},
+                            "input": _bypass_input,
                             "target": {
                                 "butler": _triage_target,
                                 "tool": "route.execute",
