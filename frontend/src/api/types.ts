@@ -3451,3 +3451,80 @@ export interface ChroniclerEpisodeExplainResponse {
   cache_key: string;
   cache_built_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Relationship butler: entity-level tab types
+// ---------------------------------------------------------------------------
+
+/** A note fact for a relationship entity (predicate='contact_note'). */
+export interface EntityNote {
+  id: string;
+  content: string;
+  emotion: string | null;
+  created_at: string | null;
+}
+
+/** An interaction fact for a relationship entity (predicate LIKE 'interaction_%'). */
+export interface EntityInteraction {
+  id: string;
+  /** Predicate suffix, e.g. 'meeting' from 'interaction_meeting'. */
+  type: string;
+  summary: string | null;
+  occurred_at: string | null;
+  direction: string | null;
+  group_size: string | null;
+}
+
+/** A gift fact for a relationship entity (predicate='gift'). */
+export interface EntityGift {
+  id: string;
+  description: string | null;
+  occasion: string | null;
+  status: string | null;
+  created_at: string | null;
+}
+
+/** A loan fact for a relationship entity (predicate='loan'). */
+export interface EntityLoan {
+  id: string;
+  description: string | null;
+  amount_cents: string | null;
+  currency: string | null;
+  direction: string | null;
+  settled: string | null;
+  settled_at: string | null;
+  created_at: string | null;
+}
+
+/** A single entry in a relationship entity's unified timeline. */
+export interface EntityTimelineItem {
+  kind: string;
+  id: string;
+  content: string | null;
+  valid_at: string | null;
+  predicate: string;
+  metadata: Record<string, unknown> | null;
+}
+
+/** A contact linked to an entity, for the entity detail page. */
+export interface LinkedContactSummary {
+  id: string;
+  full_name: string;
+  email: string | null;
+  phone: string | null;
+}
+
+/**
+ * Relationship-scoped entity detail from GET /api/relationship/entities/{id}.
+ * Separate from the memory-butler EntityDetail — this surface is activity-focused.
+ */
+export interface RelationshipEntityDetail {
+  id: string;
+  canonical_name: string;
+  entity_type: string;
+  aliases: string[];
+  roles: string[];
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
