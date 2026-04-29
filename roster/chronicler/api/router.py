@@ -1023,6 +1023,7 @@ async def projection_health(
 
     return ApiResponse[list[ProjectionHealthRow]](data=data)
 
+
 # ── Precision ordering ─────────────────────────────────────────────────────
 
 # Ordered least-precise → most-precise.  Lower index = less precise.
