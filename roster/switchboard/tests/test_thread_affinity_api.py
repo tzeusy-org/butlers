@@ -122,7 +122,11 @@ class TestUpdateThreadAffinitySettings:
         body = ThreadAffinitySettingsUpdate(enabled=False)
         result = await update_thread_affinity_settings(body=body, db=db)
         assert result.enabled is False
-        pool.execute.assert_called_once()
+        # Verify the settings UPDATE was executed (independent of audit middleware calls)
+        calls = [str(c.args[0]) for c in pool.execute.call_args_list]
+        assert any("thread_affinity_settings" in sql and "INSERT" in sql for sql in calls), (
+            "Expected INSERT INTO thread_affinity_settings to have been called"
+        )
 
     async def test_update_ttl_days(self) -> None:
         pool = _make_pool(fetchrow_return=_fake_settings_row(ttl_days=14))
@@ -223,7 +227,15 @@ class TestUpsertThreadAffinityOverride:
 
         assert result.thread_id == "thread-001"
         assert result.mode == "disabled"
-        assert pool.execute.call_count == 2  # INSERT (ensure singleton) + UPDATE
+        # Verify both the singleton-ensure INSERT and the override UPDATE were executed
+        # (independent of audit middleware calls)
+        calls = [str(c.args[0]) for c in pool.execute.call_args_list]
+        assert any("INSERT INTO thread_affinity_settings" in sql for sql in calls), (
+            "Expected singleton-ensure INSERT to have been called"
+        )
+        assert any("thread_overrides" in sql and "UPDATE" in sql for sql in calls), (
+            "Expected thread_overrides UPDATE to have been called"
+        )
 
     async def test_upsert_force_override(self) -> None:
         pool = _make_pool()
@@ -281,7 +293,12 @@ class TestDeleteThreadAffinityOverride:
 
         # Should not raise
         await delete_thread_affinity_override(thread_id="thread-001", db=db)
-        pool.execute.assert_called_once()
+        # Verify the override DELETE (UPDATE ... SET thread_overrides = thread_overrides - $1) was executed
+        # (independent of audit middleware calls)
+        calls = [str(c.args[0]) for c in pool.execute.call_args_list]
+        assert any("thread_overrides" in sql and "UPDATE" in sql for sql in calls), (
+            "Expected thread_overrides UPDATE to have been called"
+        )
 
     async def test_delete_raises_422_for_empty_thread_id(self) -> None:
         from fastapi import HTTPException
