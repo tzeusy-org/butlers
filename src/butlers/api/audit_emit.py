@@ -49,18 +49,23 @@ _REDACT_SENTINEL = "[REDACTED]"
 
 
 def redact_body(body: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of *body* with sensitive field values replaced.
+    """Return a deep copy of *body* with sensitive field values replaced.
 
-    Only top-level keys are redacted.  Nested structures (e.g. dicts inside
-    arrays) are replaced wholesale with ``"[REDACTED]"`` when the *parent*
-    key matches — nested keys are not individually inspected.
+    Redaction is applied recursively: nested dicts and lists-of-dicts are
+    walked so that sensitive keys at any depth are replaced with
+    ``"[REDACTED]"``.  Non-dict list elements (strings, ints, …) are left
+    unchanged.
 
-    This keeps the redaction logic simple and auditable.
+    Matching is case-insensitive against :data:`_REDACTED_FIELDS`.
     """
     result: dict[str, Any] = {}
     for key, val in body.items():
         if key.lower() in _REDACTED_FIELDS:
             result[key] = _REDACT_SENTINEL
+        elif isinstance(val, dict):
+            result[key] = redact_body(val)
+        elif isinstance(val, list):
+            result[key] = [redact_body(item) if isinstance(item, dict) else item for item in val]
         else:
             result[key] = val
     return result
