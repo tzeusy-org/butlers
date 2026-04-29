@@ -1188,7 +1188,11 @@ async def test_loan_settle_not_found(pool):
 
 
 async def test_loan_list(pool):
-    """loan_list returns loans for a contact."""
+    """loan_list returns all active loans for a contact.
+
+    Multiple loans from the same lender are stored as temporal facts and
+    coexist independently — both must be returned by loan_list.
+    """
     from butlers.tools.relationship import contact_create, loan_create, loan_list
 
     lender = await contact_create(pool, "Loan-List-Lender")

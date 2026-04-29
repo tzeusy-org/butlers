@@ -565,17 +565,29 @@ async def test_loan_settle_updates_fact(pool):
 
 
 async def test_loan_list_returns_loans(pool):
-    """loan_list reads loans from facts."""
+    """loan_list reads loans from facts.
+
+    Multiple loans from the same contact are stored as temporal facts and
+    coexist independently — both must be returned by loan_list.
+    """
     from butlers.tools.relationship.loans import loan_create, loan_list
 
     contact = await _make_contact(pool, "Victor")
     cid = contact["id"]
 
     await loan_create(
-        pool, contact_id=cid, amount=Decimal("20.00"), direction="lent", description="Lunch"
+        pool,
+        contact_id=cid,
+        amount=Decimal("20.00"),
+        direction="lent",
+        description="Lunch",
     )
     await loan_create(
-        pool, contact_id=cid, amount=Decimal("30.00"), direction="lent", description="Dinner"
+        pool,
+        contact_id=cid,
+        amount=Decimal("30.00"),
+        direction="lent",
+        description="Dinner",
     )
 
     loans = await loan_list(pool, cid)
