@@ -219,8 +219,8 @@ class TestHeartbeat:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             await client.post("/api/switchboard/heartbeat", json={"butler_name": "health"})
-        # Should have 2 execute calls: UPDATE + INSERT into eligibility_log
-        assert mock_pool.execute.call_count == 2
+        # 3 execute calls: UPDATE butler_registry + INSERT eligibility_log + INSERT dashboard_audit_log
+        assert mock_pool.execute.call_count == 3
         sql_calls = [c[0][0] for c in mock_pool.execute.call_args_list]
         assert any("butler_registry_eligibility_log" in s for s in sql_calls)
 
