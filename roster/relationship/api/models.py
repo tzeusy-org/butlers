@@ -422,3 +422,88 @@ class DunbarRankingResponse(BaseModel):
 
     entries: list[DunbarEntry]
     owner_entity_id: UUID | None = None
+
+
+# ---------------------------------------------------------------------------
+# Entity-level tab API models (entity-keyed, facts-based)
+# ---------------------------------------------------------------------------
+
+
+class EntityNote(BaseModel):
+    """A note fact for an entity (predicate='contact_note').
+
+    ``created_at`` is mapped from ``fact.valid_at``.
+    ``emotion`` is sparse — rendered as null when the metadata key is absent.
+    """
+
+    id: UUID
+    content: str
+    emotion: str | None = None
+    created_at: datetime | None = None
+
+
+class EntityInteraction(BaseModel):
+    """An interaction fact for an entity (predicate LIKE 'interaction_%').
+
+    ``type`` is the predicate suffix (e.g. 'meeting' from 'interaction_meeting').
+    ``direction`` and ``group_size`` are sparse and rendered as null when absent.
+    """
+
+    id: UUID
+    type: str
+    summary: str | None = None
+    occurred_at: datetime | None = None
+    direction: str | None = None
+    group_size: str | None = None
+
+
+class EntityGift(BaseModel):
+    """A gift fact for an entity (predicate='gift').
+
+    ``description`` maps to ``fact.content``.
+    ``occasion`` and ``status`` are sparse metadata fields.
+    ``created_at`` maps to ``fact.created_at``.
+    """
+
+    id: UUID
+    description: str | None = None
+    occasion: str | None = None
+    status: str | None = None
+    created_at: datetime | None = None
+
+
+class EntityLoan(BaseModel):
+    """A loan fact for an entity (predicate='loan').
+
+    ``description`` maps to ``fact.content``.
+    All other fields are sparse metadata rendered as null when absent.
+    ``amount_cents`` and ``currency`` are kept as strings (raw metadata).
+    """
+
+    id: UUID
+    description: str | None = None
+    amount_cents: str | None = None
+    currency: str | None = None
+    direction: str | None = None
+    settled: str | None = None
+    settled_at: str | None = None
+    created_at: datetime | None = None
+
+
+class EntityTimelineItem(BaseModel):
+    """A single entry in an entity's unified timeline.
+
+    ``kind`` identifies the predicate family:
+    ``note``, ``interaction``, ``gift``, ``loan``, ``life_event``,
+    ``dunbar_tier_override``.
+
+    ``metadata`` is the raw JSONB dict from the facts table.
+    Sparse fields are rendered as null — never omitted.
+    """
+
+    kind: str
+    id: UUID
+    content: str | None = None
+    valid_at: datetime | None = None
+    predicate: str
+    metadata: dict | None = None

@@ -77,6 +77,11 @@ if _models_path.exists():
         UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
         DunbarEntry = _models_module.DunbarEntry
         DunbarRankingResponse = _models_module.DunbarRankingResponse
+        EntityNote = _models_module.EntityNote
+        EntityInteraction = _models_module.EntityInteraction
+        EntityGift = _models_module.EntityGift
+        EntityLoan = _models_module.EntityLoan
+        EntityTimelineItem = _models_module.EntityTimelineItem
 
 logger = logging.getLogger(__name__)
 
@@ -2484,6 +2489,297 @@ async def reveal_entity_secret(
     )
 
     return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}
+
+
+# ---------------------------------------------------------------------------
+# Entity-level tab API helpers
+# ---------------------------------------------------------------------------
+
+_ENTITY_TAB_SCOPE = "relationship"
+_ENTITY_TAB_VALIDITY = "active"
+_ENTITY_TAB_DEFAULT_LIMIT = 50
+_ENTITY_TAB_MAX_LIMIT = 200
+
+_PREDICATE_KIND_MAP: dict[str, str] = {
+    "contact_note": "note",
+    "life_event": "life_event",
+    "gift": "gift",
+    "loan": "loan",
+    "dunbar_tier_override": "dunbar_tier_override",
+}
+
+
+def _interaction_type(predicate: str) -> str:
+    """Extract the interaction subtype from a predicate (e.g. 'interaction_meeting' → 'meeting')."""
+    if predicate.startswith("interaction_"):
+        return predicate[len("interaction_") :]
+    return predicate
+
+
+def _timeline_kind(predicate: str) -> str:
+    """Map a predicate to its timeline kind label."""
+    if predicate.startswith("interaction_"):
+        return "interaction"
+    return _PREDICATE_KIND_MAP.get(predicate, predicate)
+
+
+async def _assert_entity_exists(pool: object, entity_id: UUID) -> None:
+    """Raise HTTPException 404 if entity_id does not exist in public.entities."""
+    exists = await pool.fetchval(
+        "SELECT 1 FROM public.entities WHERE id = $1 LIMIT 1",
+        entity_id,
+    )
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/notes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}/notes", response_model=list[EntityNote])
+async def list_entity_notes(
+    entity_id: UUID,
+    limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntityNote]:
+    """List contact_note facts for an entity, ordered by valid_at DESC.
+
+    Returns 404 if the entity does not exist.
+    Scoped to validity='active' AND scope='relationship'.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, content, metadata, valid_at
+        FROM facts
+        WHERE entity_id = $1
+          AND predicate = 'contact_note'
+          AND validity = 'active'
+          AND scope = 'relationship'
+        ORDER BY valid_at DESC
+        OFFSET $2 LIMIT $3
+        """,
+        entity_id,
+        offset,
+        limit,
+    )
+    return [
+        EntityNote(
+            id=r["id"],
+            content=r["content"],
+            emotion=(r["metadata"] or {}).get("emotion"),
+            created_at=r["valid_at"],
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/interactions
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}/interactions", response_model=list[EntityInteraction])
+async def list_entity_interactions(
+    entity_id: UUID,
+    limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntityInteraction]:
+    """List interaction facts for an entity (all interaction_* subtypes), ordered by valid_at DESC.
+
+    Returns 404 if the entity does not exist.
+    Scoped to validity='active' AND scope='relationship'.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, predicate, content, metadata, valid_at
+        FROM facts
+        WHERE entity_id = $1
+          AND predicate LIKE 'interaction_%'
+          AND validity = 'active'
+          AND scope = 'relationship'
+        ORDER BY valid_at DESC
+        OFFSET $2 LIMIT $3
+        """,
+        entity_id,
+        offset,
+        limit,
+    )
+    return [
+        EntityInteraction(
+            id=r["id"],
+            type=_interaction_type(r["predicate"]),
+            summary=r["content"],
+            occurred_at=r["valid_at"],
+            direction=(r["metadata"] or {}).get("direction"),
+            group_size=(r["metadata"] or {}).get("group_size"),
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/gifts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}/gifts", response_model=list[EntityGift])
+async def list_entity_gifts(
+    entity_id: UUID,
+    limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntityGift]:
+    """List gift facts for an entity, ordered by created_at DESC.
+
+    Returns 404 if the entity does not exist.
+    Scoped to validity='active' AND scope='relationship'.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, content, metadata, created_at
+        FROM facts
+        WHERE entity_id = $1
+          AND predicate = 'gift'
+          AND validity = 'active'
+          AND scope = 'relationship'
+        ORDER BY created_at DESC
+        OFFSET $2 LIMIT $3
+        """,
+        entity_id,
+        offset,
+        limit,
+    )
+    return [
+        EntityGift(
+            id=r["id"],
+            description=r["content"],
+            occasion=(r["metadata"] or {}).get("occasion"),
+            status=(r["metadata"] or {}).get("status"),
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/loans
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}/loans", response_model=list[EntityLoan])
+async def list_entity_loans(
+    entity_id: UUID,
+    limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntityLoan]:
+    """List loan facts for an entity, ordered by created_at DESC.
+
+    Returns 404 if the entity does not exist.
+    Scoped to validity='active' AND scope='relationship'.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, content, metadata, created_at
+        FROM facts
+        WHERE entity_id = $1
+          AND predicate = 'loan'
+          AND validity = 'active'
+          AND scope = 'relationship'
+        ORDER BY created_at DESC
+        OFFSET $2 LIMIT $3
+        """,
+        entity_id,
+        offset,
+        limit,
+    )
+    return [
+        EntityLoan(
+            id=r["id"],
+            description=r["content"],
+            amount_cents=(r["metadata"] or {}).get("amount_cents"),
+            currency=(r["metadata"] or {}).get("currency"),
+            direction=(r["metadata"] or {}).get("direction"),
+            settled=(r["metadata"] or {}).get("settled"),
+            settled_at=(r["metadata"] or {}).get("settled_at"),
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/timeline
+# ---------------------------------------------------------------------------
+
+_TIMELINE_PREDICATES = ("contact_note", "life_event", "gift", "loan", "dunbar_tier_override")
+
+
+@router.get("/entities/{entity_id}/timeline", response_model=list[EntityTimelineItem])
+async def list_entity_timeline(
+    entity_id: UUID,
+    limit: int = Query(_ENTITY_TAB_DEFAULT_LIMIT, ge=1, le=_ENTITY_TAB_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntityTimelineItem]:
+    """Unified timeline for an entity across all six predicate families.
+
+    Includes: interaction_*, contact_note, life_event, gift, loan, dunbar_tier_override.
+    Excludes: legacy 'activity' facts.
+    Ordered by valid_at DESC NULLS LAST, created_at DESC.
+
+    Returns 404 if the entity does not exist.
+    Scoped to validity='active' AND scope='relationship'.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT id, predicate, content, metadata, valid_at, created_at
+        FROM facts
+        WHERE entity_id = $1
+          AND (
+              predicate = ANY($2::text[])
+              OR predicate LIKE 'interaction_%'
+          )
+          AND validity = 'active'
+          AND scope = 'relationship'
+        ORDER BY valid_at DESC NULLS LAST, created_at DESC
+        OFFSET $3 LIMIT $4
+        """,
+        entity_id,
+        list(_TIMELINE_PREDICATES),
+        offset,
+        limit,
+    )
+    return [
+        EntityTimelineItem(
+            kind=_timeline_kind(r["predicate"]),
+            id=r["id"],
+            content=r["content"],
+            valid_at=r["valid_at"],
+            predicate=r["predicate"],
+            metadata=dict(r["metadata"]) if r["metadata"] else None,
+        )
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
