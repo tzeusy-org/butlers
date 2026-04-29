@@ -4,7 +4,12 @@ Wraps gated tools at MCP registration time so that:
 1. When a gated tool is called, the call is serialized into a PendingAction.
 2. Target contact resolution: extract channel identifier from tool_args and
    resolve via ``resolve_contact_by_channel()``.  If the target has the
-   ``'owner'`` role, the action is auto-approved with no standing rule required.
+   ``'owner'`` role AND the targeted channel address is the primary entry for
+   that channel type in ``public.contact_info``, the action is auto-approved
+   with no standing rule required.  Non-primary owner addresses (e.g. a work
+   Telegram chat ID) fall through to the rules/parking flow.
+   ``contact_id`` dispatch is exempt from the primacy check — the system
+   already resolves to the primary address downstream.
 3. For non-owner targets, standing approval rules are checked — if a rule
    matches, the tool is auto-approved and executed immediately.
 4. If no rule matches (or the target is unresolvable), the PendingAction is
