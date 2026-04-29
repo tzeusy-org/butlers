@@ -1,13 +1,13 @@
 """CRM backfill pipeline for synced canonical contacts.
 
-Implements spec §7: upsert identity resolution, table mapping, conflict policy,
-and activity feed entries for contacts backfilled from the sync engine.
+Implements spec §7: upsert identity resolution, table mapping, and conflict policy
+for contacts backfilled from the sync engine.
 
 Three main classes:
 
 - ContactBackfillResolver  – identity matching pipeline (§7.1)
 - ContactBackfillWriter    – table mapping and upsert logic (§7.2, §7.3)
-- ContactBackfillEngine    – orchestrates resolver → writer → activity feed (§7.4)
+- ContactBackfillEngine    – orchestrates resolver → writer (§7.4)
 
 Wire as the apply_contact callback in ContactsSyncEngine construction during on_startup.
 Provenance tracked in contacts.metadata JSONB under 'sources.contacts.{provider}.{field}'.
@@ -27,12 +27,6 @@ import asyncpg
 from butlers.modules.contacts.sync import CanonicalContact
 
 logger = logging.getLogger(__name__)
-
-# Activity feed event types (§7.4)
-_ACTIVITY_CONTACT_SYNCED = "contact_synced"
-_ACTIVITY_CONTACT_SYNC_UPDATED = "contact_sync_updated"
-_ACTIVITY_CONTACT_SYNC_CONFLICT = "contact_sync_conflict"
-_ACTIVITY_CONTACT_SYNC_DELETED_SOURCE = "contact_sync_deleted_source"
 
 # Metadata namespace for provenance tracking
 _PROVENANCE_NS = "sources.contacts"
@@ -241,7 +235,7 @@ class ContactBackfillWriter:
         """Probe once which relationship-only tables exist in the current search_path."""
         if self._table_flags is not None:
             return
-        tables = ("addresses", "important_dates", "labels", "contact_labels", "activity_feed")
+        tables = ("addresses", "important_dates", "labels", "contact_labels")
         flags: dict[str, bool] = {}
         for tbl in tables:
             row = await self._pool.fetchrow("SELECT to_regclass($1) IS NOT NULL AS exists", tbl)
@@ -897,11 +891,6 @@ class ContactBackfillEngine:
             await self._writer.upsert_addresses(local_id, contact)
             await self._writer.upsert_important_dates(local_id, contact)
             await self._writer.upsert_labels(local_id, contact)
-            await self._log_activity(
-                local_id,
-                _ACTIVITY_CONTACT_SYNCED,
-                self._synced_description(contact, strategy="new"),
-            )
             logger.info(
                 "ContactBackfill: created new contact %s from %s/%s external_id=%s",
                 local_id,
@@ -924,22 +913,12 @@ class ContactBackfillEngine:
             updated = {f for f, r in field_results.items() if r == "updated"}
 
             if conflicting:
-                await self._log_activity(
-                    local_id,
-                    _ACTIVITY_CONTACT_SYNC_CONFLICT,
-                    self._conflict_description(contact, conflicting),
-                )
                 logger.info(
                     "ContactBackfill: conflict on contact %s fields=%s (local edits preserved)",
                     local_id,
                     sorted(conflicting),
                 )
             elif updated:
-                await self._log_activity(
-                    local_id,
-                    _ACTIVITY_CONTACT_SYNC_UPDATED,
-                    self._updated_description(contact, updated, strategy),
-                )
                 logger.info(
                     "ContactBackfill: updated contact %s fields=%s via strategy=%s",
                     local_id,
@@ -955,15 +934,6 @@ class ContactBackfillEngine:
         """Handle a source-deleted contact (tombstone)."""
         await self._writer.upsert_source_link(local_id, contact)
         if local_id is not None:
-            await self._log_activity(
-                local_id,
-                _ACTIVITY_CONTACT_SYNC_DELETED_SOURCE,
-                (
-                    f"Source {self._provider} marked contact as deleted "
-                    f"(external_id={contact.external_id}). "
-                    "CRM record preserved; source link marked deleted."
-                ),
-            )
             logger.info(
                 "ContactBackfill: source tombstone for contact %s external_id=%s",
                 local_id,
@@ -981,64 +951,6 @@ class ContactBackfillEngine:
             "skipped auto-merge; manual review required",
             contact.external_id,
             contact.display_name,
-        )
-
-    async def _log_activity(
-        self,
-        contact_id: uuid.UUID,
-        event_type: str,
-        description: str,
-    ) -> None:
-        """Insert an activity_feed entry for a sync event."""
-        try:
-            await self._pool.execute(
-                """
-                INSERT INTO activity_feed (contact_id, type, description)
-                VALUES ($1, $2, $3)
-                """,
-                contact_id,
-                event_type,
-                description,
-            )
-        except Exception as exc:
-            logger.warning(
-                "ContactBackfill: failed to log activity contact_id=%s type=%s: %s",
-                contact_id,
-                event_type,
-                exc,
-            )
-
-    def _synced_description(self, contact: CanonicalContact, strategy: str) -> str:
-        name = contact.display_name or contact.external_id
-        return (
-            f"Contact synced from {self._provider}/{self._account_id}: {name!r} "
-            f"(match_strategy={strategy}, external_id={contact.external_id})"
-        )
-
-    def _updated_description(
-        self,
-        contact: CanonicalContact,
-        updated_fields: set[str],
-        strategy: str,
-    ) -> str:
-        name = contact.display_name or contact.external_id
-        fields_str = ", ".join(sorted(updated_fields))
-        return (
-            f"Sync update from {self._provider}/{self._account_id}: {name!r} "
-            f"fields=[{fields_str}] (strategy={strategy}, external_id={contact.external_id})"
-        )
-
-    def _conflict_description(
-        self,
-        contact: CanonicalContact,
-        conflicting_fields: set[str],
-    ) -> str:
-        name = contact.display_name or contact.external_id
-        fields_str = ", ".join(sorted(conflicting_fields))
-        return (
-            f"Sync conflict from {self._provider}/{self._account_id}: {name!r} "
-            f"— local edits preserved for fields=[{fields_str}] "
-            f"(external_id={contact.external_id}). Manual review may be needed."
         )
 
 
