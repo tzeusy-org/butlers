@@ -146,7 +146,7 @@ describe("GanttSwimlaneInner single episode", () => {
     expect(html).toContain("gantt-bar-ep-1")
   })
 
-  it("renders the Work lane label", () => {
+  it("renders the Tasks lane label", () => {
     const ep = makeEpisode({ id: "ep-1" })
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner
@@ -156,7 +156,8 @@ describe("GanttSwimlaneInner single episode", () => {
       />,
     )
     // Lane label column AND the filter chip both render the human label.
-    expect(html).toContain("Work")
+    // The lane was renamed from "Work" to "Tasks" in bu-jomz2.
+    expect(html).toContain("Tasks")
   })
 })
 
@@ -351,7 +352,7 @@ describe("GanttSwimlaneInner sensitive episode", () => {
 
 describe("GanttSwimlaneInner multiple categories", () => {
   it("renders lane labels for each category present", () => {
-    const ep1 = makeEpisode({ id: "ep-work" })
+    const ep1 = makeEpisode({ id: "ep-tasks" })
     const ep2 = makeEpisode({ id: "ep-music", ...CATEGORY_SOURCES.music })
     const html = renderToStaticMarkup(
       <GanttSwimlaneInner
@@ -360,7 +361,8 @@ describe("GanttSwimlaneInner multiple categories", () => {
         windowEnd={WINDOW_END}
       />,
     )
-    expect(html).toContain("Work")
+    // The Work lane was renamed to Tasks in bu-jomz2.
+    expect(html).toContain("Tasks")
     expect(html).toContain("Music")
   })
 
@@ -568,18 +570,22 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
 // ---------------------------------------------------------------------------
 
 describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
+  // bu-p4vd3: all 10 LANE_TAXONOMY lanes are always rendered. The filter chip
+  // row is the best proxy for "this episode was categorised correctly" — a chip
+  // only appears for a category that has at least one episode. Lane labels
+  // ("Other", "Tasks", …) appear in the SVG regardless of episode count.
   it.each([
-    ["tasks", CATEGORY_SOURCES.tasks, "Tasks"],
-    ["calendar", CATEGORY_SOURCES.calendar, "Calendar"],
-    ["music", CATEGORY_SOURCES.music, "Music"],
-    ["gaming", CATEGORY_SOURCES.gaming, "Gaming"],
-    ["travel", CATEGORY_SOURCES.travel, "Travel"],
-    ["sleep", CATEGORY_SOURCES.sleep, "Sleep"],
-    ["meal", CATEGORY_SOURCES.meal, "Meal"],
-    ["home", CATEGORY_SOURCES.home, "Home"],
+    ["tasks", CATEGORY_SOURCES.tasks, "tasks"],
+    ["calendar", CATEGORY_SOURCES.calendar, "calendar"],
+    ["music", CATEGORY_SOURCES.music, "music"],
+    ["gaming", CATEGORY_SOURCES.gaming, "gaming"],
+    ["travel", CATEGORY_SOURCES.travel, "travel"],
+    ["sleep", CATEGORY_SOURCES.sleep, "sleep"],
+    ["meal", CATEGORY_SOURCES.meal, "meal"],
+    ["home", CATEGORY_SOURCES.home, "home"],
   ])(
-    "renders the %s lane label for the canonical source/type pair (fallback path)",
-    (_name, source, expectedLabel) => {
+    "renders a filter chip for the %s category when an episode maps to it (fallback path)",
+    (_name, source, expectedChipCategory) => {
       const ep = makeEpisode({ id: `ep-${_name}`, ...source })
       const html = renderToStaticMarkup(
         <GanttSwimlaneInner
@@ -588,11 +594,11 @@ describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
           windowEnd={WINDOW_END}
         />,
       )
-      expect(html).toContain(expectedLabel)
-      // "Other" must not appear when the mapping resolves to a known lane
-      // (filter chip + lane label are derived from the same category).
-      if (expectedLabel !== "Other") {
-        expect(html).not.toContain(">Other<")
+      // Filter chip exists only for categories with at least one episode.
+      expect(html).toContain(`gantt-filter-chip-${expectedChipCategory}`)
+      // Chip must not exist for "other" (episode is in a known lane).
+      if (expectedChipCategory !== "other") {
+        expect(html).not.toContain('gantt-filter-chip-other"')
       }
     },
   )
@@ -612,8 +618,9 @@ describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
         windowEnd={WINDOW_END}
       />,
     )
-    expect(html).toContain("Music")
-    expect(html).not.toContain(">Tasks<")
+    // Filter chip exists for music (episode landed there), not tasks.
+    expect(html).toContain("gantt-filter-chip-music")
+    expect(html).not.toContain("gantt-filter-chip-tasks")
   })
 
   it("falls back to 'other' for an unknown source/type pair with no category", () => {
@@ -630,7 +637,8 @@ describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
         windowEnd={WINDOW_END}
       />,
     )
-    expect(html).toContain("Other")
+    // Filter chip for "other" appears since the episode landed there.
+    expect(html).toContain("gantt-filter-chip-other")
   })
 })
 
@@ -732,7 +740,7 @@ describe("GanttSwimlaneInner filter chips (bug 4)", () => {
     const root = createRoot(container)
     try {
       const eps = [
-        makeEpisode({ id: "ep-keep", ...CATEGORY_SOURCES.work }),
+        makeEpisode({ id: "ep-keep", ...CATEGORY_SOURCES.tasks }),
         makeEpisode({ id: "ep-toggle", ...CATEGORY_SOURCES.music }),
       ]
       await act(async () => {
@@ -756,6 +764,7 @@ describe("GanttSwimlaneInner filter chips (bug 4)", () => {
       const chip = container.querySelector(
         '[data-testid="gantt-filter-chip-music"]',
       ) as HTMLButtonElement | null
+      // Filter chips only appear for categories that have episodes.
       expect(chip).not.toBeNull()
       expect(chip!.getAttribute("aria-pressed")).toBe("true")
 
@@ -795,12 +804,15 @@ describe("GanttSwimlaneInner filter chips (bug 4)", () => {
     }
   })
 
-  it("hiding every category surfaces the empty state but keeps chips visible", async () => {
+  it("hiding every category removes episode bars but keeps chips and empty-lane placeholders visible", async () => {
+    // bu-p4vd3: all-lanes rendering means hiding all categories shows empty-lane
+    // placeholders in the SVG rather than the global gantt-empty notice. The
+    // filter chip row stays so the user can re-enable categories.
     const container = document.createElement("div")
     document.body.appendChild(container)
     const root = createRoot(container)
     try {
-      const eps = [makeEpisode({ id: "ep-only", ...CATEGORY_SOURCES.work })]
+      const eps = [makeEpisode({ id: "ep-only", ...CATEGORY_SOURCES.tasks })]
       await act(async () => {
         root.render(
           <GanttSwimlaneInner
@@ -811,18 +823,27 @@ describe("GanttSwimlaneInner filter chips (bug 4)", () => {
         )
       })
       const chip = container.querySelector(
-        '[data-testid="gantt-filter-chip-work"]',
+        '[data-testid="gantt-filter-chip-tasks"]',
       ) as HTMLButtonElement
+      expect(chip).not.toBeNull()
       await act(async () => {
         chip.click()
       })
-      // Empty state appears, but the chip row is still rendered so the user
-      // can recover.
+      // Episode bar is gone after hiding.
       expect(
-        container.querySelector('[data-testid="gantt-empty"]'),
-      ).not.toBeNull()
+        container.querySelector('[data-testid="gantt-bar-ep-only"]'),
+      ).toBeNull()
+      // Chip row persists so the user can recover.
       expect(
         container.querySelector('[data-testid="gantt-filter-chips"]'),
+      ).not.toBeNull()
+      // SVG is still rendered (all-lanes mode) — no global gantt-empty.
+      expect(
+        container.querySelector('[data-testid="gantt-svg-wrapper"]'),
+      ).not.toBeNull()
+      // Empty-lane placeholder for the tasks lane should be visible.
+      expect(
+        container.querySelector('[data-testid="gantt-empty-lane-tasks"]'),
       ).not.toBeNull()
     } finally {
       await act(async () => {
@@ -848,9 +869,104 @@ describe("GanttSwimlaneInner axis labels (bug 3)", () => {
       />,
     )
     expect(html).toContain('data-testid="gantt-axis-labels"')
-    // No <text> elements inside the SVG (those got replaced by HTML divs).
-    expect(html).not.toContain("<text")
-    // Tick stroke <line>s remain.
-    expect(html).toContain('y2="36"')
+    // Time axis tick LABELS are rendered as HTML divs (bug 3 fix). SVG <text>
+    // elements are now present for empty-lane "No data this period" placeholders
+    // (bu-p4vd3), so we verify the HTML overlay is used for axis labels, not
+    // the absence of <text>. Axis tick stroke <line>s remain in the SVG.
+    expect(html).toContain("gantt-axis-labels")
+    // The SVG tick stroke <line>s use stroke-opacity="0.4" and stroke-width="1"
+    // (distinct from the grid lines at 0.08). We verify tick marks are present.
+    expect(html).toContain("gantt-svg-wrapper")
+    expect(html).toContain('stroke-opacity="0.4"')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 14. Render-all-lanes: every LANE_TAXONOMY entry rendered even with 0 episodes
+//     (bu-p4vd3 AC1 + AC2)
+// ---------------------------------------------------------------------------
+
+describe("GanttSwimlaneInner render-all-lanes (bu-p4vd3)", () => {
+  it("renders all 10 LANE_TAXONOMY lane labels when episodes are present", () => {
+    // Even with only a single tasks episode, all 10 lanes appear in the label column.
+    const ep = makeEpisode({ id: "ep-all-lanes", ...CATEGORY_SOURCES.tasks })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    // All lane labels should appear — even those with no episodes.
+    expect(html).toContain("Conversations")
+    expect(html).toContain("Tasks")
+    expect(html).toContain("Calendar")
+    expect(html).toContain("Music")
+    expect(html).toContain("Gaming")
+    expect(html).toContain("Travel")
+    expect(html).toContain("Sleep")
+    expect(html).toContain("Meal")
+    expect(html).toContain("Home")
+    expect(html).toContain("Other")
+  })
+
+  it("shows empty-lane placeholder for lanes with no data", () => {
+    // With only a tasks episode, all OTHER lanes have no data.
+    const ep = makeEpisode({ id: "ep-only-tasks", ...CATEGORY_SOURCES.tasks })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    // Empty-lane affordance exists for a lane with no data (e.g. gaming).
+    expect(html).toContain('gantt-empty-lane-gaming')
+    // But NOT for the lane that HAS data.
+    expect(html).not.toContain('gantt-empty-lane-tasks')
+    // Empty-lane text placeholder is rendered in the SVG.
+    expect(html).toContain("No data this period")
+  })
+
+  it("renders 0 empty-lane placeholders when all lanes have data", () => {
+    // Create one episode per category (all 10 categories have data).
+    // Use `category` as the last key in the spread so it wins over CATEGORY_SOURCES.
+    const eps = [
+      makeEpisode({ id: "ep-conv", ...CATEGORY_SOURCES.tasks, category: "conversations" }),
+      makeEpisode({ id: "ep-tasks", ...CATEGORY_SOURCES.tasks, category: "tasks" }),
+      makeEpisode({ id: "ep-cal", ...CATEGORY_SOURCES.calendar, category: "calendar" }),
+      makeEpisode({ id: "ep-mus", ...CATEGORY_SOURCES.music, category: "music" }),
+      makeEpisode({ id: "ep-gam", ...CATEGORY_SOURCES.gaming, category: "gaming" }),
+      makeEpisode({ id: "ep-trv", ...CATEGORY_SOURCES.travel, category: "travel" }),
+      makeEpisode({ id: "ep-slp", ...CATEGORY_SOURCES.sleep, category: "sleep" }),
+      makeEpisode({ id: "ep-mel", ...CATEGORY_SOURCES.meal, category: "meal" }),
+      makeEpisode({ id: "ep-hom", ...CATEGORY_SOURCES.home, category: "home" }),
+      makeEpisode({ id: "ep-oth", source_name: "made.up", episode_type: "x", category: "other" }),
+    ]
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={eps}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    // No empty-lane placeholders when every lane has at least one episode.
+    expect(html).not.toContain("gantt-empty-lane-")
+    // Text "No data this period" must not appear.
+    expect(html).not.toContain("No data this period")
+  })
+
+  it("muted label column: empty lane uses reduced-opacity style class", () => {
+    const ep = makeEpisode({ id: "ep-muted", ...CATEGORY_SOURCES.tasks })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    // Populated lane uses full-opacity class, empty lane uses reduced-opacity class.
+    expect(html).toContain("text-muted-foreground/40")
+    expect(html).toContain("text-muted-foreground\"")
   })
 })

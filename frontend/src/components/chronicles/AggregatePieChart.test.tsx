@@ -192,3 +192,52 @@ describe("AggregatePieChart — tooltip data contract", () => {
     expect(_lastPieData[1]._total).toBe(10800)
   })
 })
+
+// ---------------------------------------------------------------------------
+// All-categories legend (bu-p4vd3 AC1 + AC2)
+// ---------------------------------------------------------------------------
+
+describe("AggregatePieChart — all-categories legend (bu-p4vd3)", () => {
+  it("renders legend items for all LANE_TAXONOMY categories including empty ones", () => {
+    // Only tasks bucket present; all other 9 categories are absent.
+    const html = render([makeBucket("tasks", 3600)])
+    // Legend container is present.
+    expect(html).toContain("pie-all-categories-legend")
+    // Active category has its legend entry.
+    expect(html).toContain('pie-legend-tasks')
+    // Empty categories also have legend entries.
+    expect(html).toContain('pie-legend-music')
+    expect(html).toContain('pie-legend-gaming')
+    expect(html).toContain('pie-legend-home')
+  })
+
+  it("marks empty categories with the empty affordance data-testid", () => {
+    const html = render([makeBucket("tasks", 3600)])
+    // Gaming has no data → shows empty affordance.
+    expect(html).toContain('pie-legend-empty-gaming')
+    // Tasks has data → no empty affordance for it.
+    expect(html).not.toContain('pie-legend-empty-tasks')
+  })
+
+  it("renders legend in empty state with all 10 categories", () => {
+    // When buckets is empty, the EmptyState still renders the full legend.
+    const html = render([])
+    expect(html).toContain("pie-all-categories-legend")
+    // All LANE_TAXONOMY categories appear.
+    expect(html).toContain('pie-legend-conversations')
+    expect(html).toContain('pie-legend-tasks')
+    expect(html).toContain('pie-legend-other')
+    // All show the empty affordance dash.
+    expect(html).toContain('pie-legend-empty-conversations')
+    expect(html).toContain('pie-legend-empty-tasks')
+  })
+
+  it("does not show empty affordance for active categories", () => {
+    const html = render([makeBucket("sleep", 1800), makeBucket("music", 900)])
+    // Active categories: sleep, music — no empty affordance for them.
+    expect(html).not.toContain('pie-legend-empty-sleep')
+    expect(html).not.toContain('pie-legend-empty-music')
+    // Other categories are empty.
+    expect(html).toContain('pie-legend-empty-tasks')
+  })
+})

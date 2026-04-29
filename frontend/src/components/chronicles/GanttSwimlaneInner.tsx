@@ -44,6 +44,12 @@ import { useMapPanTo } from "./map-pan-store"
 // Constants
 // ---------------------------------------------------------------------------
 
+/** All LANE_TAXONOMY categories sorted by their display order. Computed once
+ * at module level so the reference is stable across renders. */
+const ALL_CATEGORIES: Category[] = (Object.keys(LANE_TAXONOMY) as Category[]).sort(
+  (a, b) => LANE_TAXONOMY[a].sortOrder - LANE_TAXONOMY[b].sortOrder,
+)
+
 const LANE_HEIGHT = 20          // px per row within a swimlane
 const LANE_GAP = 4              // px gap between stacked rows
 const LANE_PADDING_TOP = 6      // px above first bar in a lane
@@ -180,7 +186,8 @@ function assignRows(
 
 /**
  * Build per-lane layout from a flat list of episodes, sorted by LANE_TAXONOMY
- * sortOrder. Lanes with no episodes are omitted.
+ * sortOrder. Every LANE_TAXONOMY entry is included — lanes with no episodes
+ * show a muted empty-lane affordance (bu-p4vd3).
  */
 function buildLanes(
   episodes: ChroniclerEpisode[],
@@ -199,17 +206,12 @@ function buildLanes(
     arr.push(ep)
   }
 
-  if (grouped.size === 0) return []
-
-  // Sort categories by LANE_TAXONOMY sortOrder.
-  const sorted = [...grouped.entries()].sort(
-    ([a], [b]) => LANE_TAXONOMY[a].sortOrder - LANE_TAXONOMY[b].sortOrder,
-  )
-
+  // All categories in sortOrder — always include every LANE_TAXONOMY entry.
   const lanes: LaneLayout[] = []
   let yOffset = 0
 
-  for (const [category, catEpisodes] of sorted) {
+  for (const category of ALL_CATEGORIES) {
+    const catEpisodes = grouped.get(category) ?? []
     const positioned = assignRows(catEpisodes, windowStartMs, windowEndMs)
     const rowCount = positioned.length === 0 ? 1 : Math.max(...positioned.map((p) => p.row)) + 1
     const laneHeight =
@@ -225,21 +227,8 @@ function buildLanes(
   return lanes
 }
 
-/** Convert a Tailwind bg-* class to a rough hex/CSS colour for SVG fill. */
-const COLOUR_MAP: Record<string, string> = {
-  "bg-blue-600": "#2563eb",
-  "bg-indigo-500": "#6366f1",
-  "bg-purple-500": "#a855f7",
-  "bg-violet-600": "#7c3aed",
-  "bg-cyan-500": "#06b6d4",
-  "bg-slate-500": "#64748b",
-  "bg-amber-500": "#f59e0b",
-  "bg-emerald-600": "#059669",
-  "bg-slate-400": "#94a3b8",
-}
-
 function laneColour(category: Category): string {
-  return COLOUR_MAP[LANE_TAXONOMY[category].colour] ?? "#94a3b8"
+  return LANE_TAXONOMY[category].hex
 }
 
 // ---------------------------------------------------------------------------
@@ -531,8 +520,13 @@ export function GanttSwimlaneInner({
     </div>
   ) : null
 
-  // Empty state
-  if (lanes.length === 0) {
+  // hasAnyEpisodes tracks whether there is something to render (for the
+  // per-lane empty affordance logic). The all-lanes-empty case shows a
+  // compact top-level notice beneath the swimlane grid.
+  const hasAnyEpisodes = visibleEpisodes.length > 0
+
+  // When no episodes exist at all (no filters active), show the simple empty state.
+  if (!hasAnyEpisodes && hiddenCategories.size === 0 && episodes.length === 0) {
     return (
       <div className="relative" data-testid="gantt-container">
         {filterChipRow}
@@ -560,19 +554,28 @@ export function GanttSwimlaneInner({
             style={{ width: LABEL_WIDTH, paddingTop: 0 }}
             aria-hidden
           >
-            {lanes.map((lane) => (
-              <div
-                key={lane.category}
-                className="flex items-center text-xs font-medium text-muted-foreground pr-2"
-                style={{ height: lane.laneHeight }}
-              >
-                <span
-                  className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5 shrink-0"
-                  style={{ backgroundColor: laneColour(lane.category) }}
-                />
-                {LANE_TAXONOMY[lane.category].label}
-              </div>
-            ))}
+            {lanes.map((lane) => {
+              const isEmpty = lane.episodes.length === 0
+              return (
+                <div
+                  key={lane.category}
+                  className={[
+                    "flex items-center text-xs font-medium pr-2",
+                    isEmpty ? "text-muted-foreground/40" : "text-muted-foreground",
+                  ].join(" ")}
+                  style={{ height: lane.laneHeight }}
+                >
+                  <span
+                    className="inline-block w-2.5 h-2.5 rounded-sm mr-1.5 shrink-0"
+                    style={{
+                      backgroundColor: laneColour(lane.category),
+                      opacity: isEmpty ? 0.35 : 1,
+                    }}
+                  />
+                  {LANE_TAXONOMY[lane.category].label}
+                </div>
+              )
+            })}
             {/* Spacer for axis row */}
             <div style={{ height: AXIS_HEIGHT }} />
           </div>
@@ -635,6 +638,45 @@ export function GanttSwimlaneInner({
                     strokeOpacity={0.08}
                     strokeWidth={1}
                   />
+                )
+              })}
+
+              {/* Empty-lane placeholders — muted dotted rect + label for lanes
+                  with zero episodes in the current window (bu-p4vd3). */}
+              {lanes.map((lane) => {
+                if (lane.episodes.length > 0) return null
+                const y = lane.yOffset + LANE_PADDING_TOP
+                const h = LANE_HEIGHT
+                return (
+                  <g
+                    key={`empty-${lane.category}`}
+                    data-testid={`gantt-empty-lane-${lane.category}`}
+                    aria-label={`${LANE_TAXONOMY[lane.category].label}: no data this period`}
+                  >
+                    <rect
+                      x={4}
+                      y={y}
+                      width={SVG_WIDTH - 8}
+                      height={h}
+                      rx={BAR_RADIUS}
+                      ry={BAR_RADIUS}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeOpacity={0.15}
+                      strokeWidth={1}
+                      strokeDasharray="4 3"
+                    />
+                    <text
+                      x={SVG_WIDTH / 2}
+                      y={y + h / 2 + 4}
+                      textAnchor="middle"
+                      fontSize={10}
+                      fill="currentColor"
+                      fillOpacity={0.3}
+                    >
+                      No data this period
+                    </text>
+                  </g>
                 )
               })}
 
