@@ -122,6 +122,7 @@ def _coerce_payload(value: Any) -> dict[str, Any]:
 
 
 def _row_to_episode(row: Any) -> ChroniclerEpisode:
+    payload = _coerce_payload(row["payload"])
     return ChroniclerEpisode(
         id=str(row["id"]),
         source_name=row["source_name"],
@@ -131,7 +132,7 @@ def _row_to_episode(row: Any) -> ChroniclerEpisode:
         end_at=row["end_at"],
         precision=row["precision"],
         title=row["title"],
-        payload=_coerce_payload(row["payload"]),
+        payload=payload,
         privacy=row["privacy"],
         retention_days=row["retention_days"],
         tombstone_at=row["tombstone_at"],
@@ -146,7 +147,7 @@ def _row_to_episode(row: Any) -> ChroniclerEpisode:
         category=category_for(
             row["source_name"],
             row["episode_type"],
-            trigger_source=_coerce_payload(row["payload"]).get("trigger_source"),
+            trigger_source=payload.get("trigger_source"),
         ),
     )
 
