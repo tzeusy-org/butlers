@@ -23,6 +23,19 @@ Semantics:
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
+
+Clock-skew detection:
+- When ``abs(ts - recorded_at) > CLOCK_SKEW_THRESHOLD_HOURS``, the device
+  clock is implausible.  The adapter clamps ``ts`` to ``recorded_at``
+  (server ingestion time) for that row before episode projection.  This
+  prevents the skewed device timestamp from producing inverted episodes at
+  the source, making the swap-bounds guard in ``_project_movement_episodes``
+  a strictly redundant safety net for the residual cases it cannot reach
+  (cross-batch carryover inversions).  The original device ``ts`` is
+  preserved verbatim in the evidence table for forensic access.
+- Threshold default: 4 hours — wider than legitimate timezone confusion,
+  tighter than weeks-old buffered points.  Override via the
+  ``clock_skew_threshold_hours`` constructor argument.
 """
 
 from __future__ import annotations
@@ -54,6 +67,14 @@ DEFAULT_BATCH_LIMIT = 1000
 # Consecutive points separated by more than this threshold start a new episode.
 MOVEMENT_GAP_MINUTES = 30
 
+# Points whose device timestamp deviates from server ingestion time by more than
+# this threshold are treated as having an implausible device clock.  The adapter
+# clamps their ``ts`` to ``recorded_at`` (server ingestion time) so that episode
+# projection never sees a pathologically skewed timestamp.
+# 4 hours: wider than legitimate timezone confusion, tighter than weeks-old
+# buffered points.  Override via ``OwnTracksPointAdapter(clock_skew_threshold_hours=...)``.
+CLOCK_SKEW_THRESHOLD_HOURS = 4
+
 
 class OwnTracksPointAdapter(ProjectionAdapter):
     """Project ``connectors.owntracks_points`` rows into Chronicler.
@@ -68,10 +89,16 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         *,
         batch_limit: int = DEFAULT_BATCH_LIMIT,
         movement_gap_minutes: int = MOVEMENT_GAP_MINUTES,
+        clock_skew_threshold_hours: int = CLOCK_SKEW_THRESHOLD_HOURS,
     ) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
         self.movement_gap_minutes = movement_gap_minutes
+        if clock_skew_threshold_hours < 0:
+            raise ValueError(
+                f"clock_skew_threshold_hours must be non-negative, got {clock_skew_threshold_hours}"
+            )
+        self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
 
     async def project(
         self,
@@ -104,8 +131,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 if latest_watermark is None or ts > latest_watermark:
                     latest_watermark = ts
 
-            normalized_row, warning = self._normalize_row(row)
-            if warning is not None:
+            normalized_row, row_warnings = self._normalize_row(row)
+            for warning in row_warnings:
                 logger.warning("%s", warning)
                 result.warnings.append(warning)
             if normalized_row is None:
@@ -134,40 +161,69 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     def _normalize_row(
         self,
         row: asyncpg.Record,
-    ) -> tuple[dict[str, Any] | None, str | None]:
-        """Return a sanitized row dict or a warning when the row is unusable.
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        """Return a sanitized row dict (or None) and a list of warnings.
 
         The evidence table uses floating-point columns, so malformed upstream
         writes can persist non-finite values (NaN/Inf). Those values are legal
         in Postgres ``double precision`` but not in JSONB payloads, which would
         otherwise crash projection and poison the checkpoint.
+
+        Clock-skew detection: when ``abs(ts - recorded_at) > clock_skew_threshold``,
+        the device clock is considered implausible.  The row's ``ts`` is clamped
+        to ``recorded_at`` (server ingestion time) so episode projection never
+        sees a pathologically skewed timestamp.  The original device timestamp is
+        preserved verbatim in the evidence table for forensic access.
+
+        Returns:
+            (normalized_dict, warnings) — normalized_dict is None when the row
+            must be skipped entirely, otherwise a sanitized dict ready for
+            projection.  warnings is a (possibly empty) list of warning strings
+            for rows that were partially sanitized but still projected.
         """
         row_ref = self._row_reference(row)
+        warnings: list[str] = []
 
         ts = row["ts"]
         if not isinstance(ts, datetime) or ts.tzinfo is None:
-            return None, f"Skipping malformed OwnTracks row {row_ref}: ts must be timezone-aware"
+            return None, [f"Skipping malformed OwnTracks row {row_ref}: ts must be timezone-aware"]
+
+        # Clock-skew detection: clamp implausible device timestamps to server
+        # ingestion time (recorded_at) before episode projection.
+        recorded_at = row["recorded_at"]
+        if isinstance(recorded_at, datetime) and recorded_at.tzinfo is not None:
+            delta = ts - recorded_at
+            if abs(delta) > self.clock_skew_threshold:
+                skew_warning = (
+                    f"OwnTracks row {row_ref} has implausible device timestamp "
+                    f"(ts={ts.isoformat()}, recorded_at={recorded_at.isoformat()}, "
+                    f"delta={delta}); clamping ts to recorded_at for episode projection."
+                )
+                warnings.append(skew_warning)
+                ts = recorded_at
 
         idempotency_key = row["idempotency_key"]
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-            return None, f"Skipping malformed OwnTracks row {row_ref}: idempotency_key missing"
+            return None, [f"Skipping malformed OwnTracks row {row_ref}: idempotency_key missing"]
 
         endpoint_identity = row["endpoint_identity"]
         if not isinstance(endpoint_identity, str) or not endpoint_identity.strip():
-            return None, f"Skipping malformed OwnTracks row {row_ref}: endpoint_identity missing"
+            return (
+                None,
+                [f"Skipping malformed OwnTracks row {row_ref}: endpoint_identity missing"],
+            )
 
         lat = self._coerce_finite_float(row["lat"])
         if lat is None:
-            return None, f"Skipping malformed OwnTracks row {row_ref}: lat must be finite"
+            return None, [f"Skipping malformed OwnTracks row {row_ref}: lat must be finite"]
 
         lon = self._coerce_finite_float(row["lon"])
         if lon is None:
-            return None, f"Skipping malformed OwnTracks row {row_ref}: lon must be finite"
+            return None, [f"Skipping malformed OwnTracks row {row_ref}: lon must be finite"]
 
         accuracy = self._coerce_finite_float(row["accuracy"])
-        accuracy_warning: str | None = None
         if row["accuracy"] is not None and accuracy is None:
-            accuracy_warning = (
+            warnings.append(
                 f"OwnTracks row {row_ref} has non-finite accuracy; "
                 "omitting accuracy from projection"
             )
@@ -185,7 +241,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "raw_payload": row["raw_payload"],
             "recorded_at": row["recorded_at"],
         }
-        return normalized, accuracy_warning
+        return normalized, warnings
 
     @staticmethod
     def _coerce_finite_float(value: Any) -> float | None:
@@ -553,6 +609,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
 
 __all__ = [
+    "CLOCK_SKEW_THRESHOLD_HOURS",
     "DEFAULT_BATCH_LIMIT",
     "EPISODE_TYPE_MOVEMENT",
     "EVENT_TYPE_LOCATION",
