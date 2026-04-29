@@ -29,6 +29,11 @@ import {
   type TooltipContentProps,
 } from "recharts"
 
+// All categories sorted by sortOrder — used to render the complete legend.
+const ALL_CATEGORIES = (Object.keys(LANE_TAXONOMY) as Category[]).sort(
+  (a, b) => LANE_TAXONOMY[a].sortOrder - LANE_TAXONOMY[b].sortOrder,
+)
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -142,6 +147,73 @@ function PieChartErrorFallback({ onRetry }: { onRetry?: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// All-categories legend (bu-p4vd3)
+//
+// Renders every LANE_TAXONOMY entry as a legend row. Categories with data are
+// shown at full opacity with their total time; empty categories are shown at
+// reduced opacity with a "No data this period" affordance so it is clear
+// they are intentionally absent rather than missing from the render.
+// ---------------------------------------------------------------------------
+
+interface AllCategoriesLegendProps {
+  /** Set of category strings that have at least one bucket. */
+  activeCategories: Set<string>
+  /** Map of category → formatted time label for active entries. */
+  categoryLabels: Map<string, string>
+}
+
+function AllCategoriesLegend({ activeCategories, categoryLabels }: AllCategoriesLegendProps) {
+  return (
+    <div
+      className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs"
+      data-testid="pie-all-categories-legend"
+      aria-label="Category legend"
+    >
+      {ALL_CATEGORIES.map((category) => {
+        const lane = LANE_TAXONOMY[category]
+        const hasData = activeCategories.has(category)
+        const timeLabel = categoryLabels.get(category)
+        return (
+          <div
+            key={category}
+            className={[
+              "flex items-center gap-1",
+              hasData ? "text-foreground" : "text-muted-foreground/40",
+            ].join(" ")}
+            data-testid={`pie-legend-${category}`}
+            aria-label={
+              hasData
+                ? `${lane.label}: ${timeLabel}`
+                : `${lane.label}: no data this period`
+            }
+          >
+            <span
+              className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+              style={{
+                backgroundColor: lane.hex,
+                opacity: hasData ? 1 : 0.3,
+              }}
+            />
+            <span>{lane.label}</span>
+            {hasData && timeLabel && (
+              <span className="text-muted-foreground">{timeLabel}</span>
+            )}
+            {!hasData && (
+              <span
+                className="italic text-[10px]"
+                data-testid={`pie-legend-empty-${category}`}
+              >
+                —
+              </span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Empty state
 // ---------------------------------------------------------------------------
 
@@ -149,9 +221,13 @@ function EmptyState() {
   return (
     <div
       data-testid="pie-empty-state"
-      className="flex items-center justify-center h-48 text-sm text-muted-foreground italic"
+      className="flex flex-col items-center justify-center h-48 text-sm text-muted-foreground italic gap-4"
     >
-      No activity recorded for this window.
+      <span>No activity recorded for this window.</span>
+      <AllCategoriesLegend
+        activeCategories={new Set()}
+        categoryLabels={new Map()}
+      />
     </div>
   )
 }
@@ -195,29 +271,41 @@ export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: Aggr
   // closing over an external value.
   const data = toBuckets(buckets).map((d) => ({ ...d, _total: totalSeconds }))
 
+  // Build legend helpers: which categories are active, and their formatted labels.
+  const activeCategories = new Set(buckets.map((b) => b.category))
+  const categoryLabels = new Map(
+    buckets.map((b) => [b.category, formatDuration(b.total_seconds)]),
+  )
+
   return (
-    <div data-testid="pie-chart-container" className="w-full h-64">
-      <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
-          <Pie
-            data={data}
-            dataKey="value"
-            nameKey="name"
-            cx="50%"
-            cy="50%"
-            outerRadius={100}
-            label={({ name, percent }) =>
-              `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
-            }
-            labelLine={false}
-          >
-            {data.map((entry) => (
-              <Cell key={entry.category} fill={entry.hex} />
-            ))}
-          </Pie>
-          <Tooltip<number, string> content={(props) => <CustomTooltip {...props} />} />
-        </PieChart>
-      </ResponsiveContainer>
+    <div data-testid="pie-chart-container" className="w-full">
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="value"
+              nameKey="name"
+              cx="50%"
+              cy="50%"
+              outerRadius={100}
+              label={({ name, percent }) =>
+                `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
+              }
+              labelLine={false}
+            >
+              {data.map((entry) => (
+                <Cell key={entry.category} fill={entry.hex} />
+              ))}
+            </Pie>
+            <Tooltip<number, string> content={(props) => <CustomTooltip {...props} />} />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <AllCategoriesLegend
+        activeCategories={activeCategories}
+        categoryLabels={categoryLabels}
+      />
     </div>
   )
 }
