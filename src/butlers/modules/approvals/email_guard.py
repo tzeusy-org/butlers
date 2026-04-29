@@ -27,6 +27,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.modules.approvals._shared import is_primary_contact
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,39 +43,6 @@ def _normalize_session_id(session_id: str | uuid.UUID | None) -> uuid.UUID | Non
     except (ValueError, TypeError, AttributeError):
         logger.warning("email guard: ignoring non-UUID session_id %r", session_id)
         return None
-
-
-async def _is_primary_email(pool: asyncpg.Pool, contact_id: uuid.UUID, email_address: str) -> bool:
-    """Return True if *email_address* is the primary email for *contact_id*.
-
-    Queries ``public.contact_info`` for the matching (type='email', value) row
-    and returns ``is_primary``.  Returns ``False`` on any DB error or if the
-    row does not exist.
-    """
-    try:
-        row = await pool.fetchrow(
-            """
-            SELECT is_primary
-            FROM public.contact_info
-            WHERE contact_id = $1
-              AND type = 'email'
-              AND value = $2
-            """,
-            contact_id,
-            email_address,
-        )
-        if row is None:
-            return False
-        return bool(row["is_primary"])
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "email guard: could not determine is_primary for contact %s <%s>; "
-            "treating as non-primary (will fall through to rules/park flow)",
-            contact_id,
-            email_address,
-            exc_info=True,
-        )
-        return False
 
 
 async def _get_email_context(pool: asyncpg.Pool, email_address: str) -> str | None:
@@ -183,7 +152,7 @@ async def check_email_recipient(
 
     # Owner primary address → always allowed (no further checks needed)
     if contact is not None and "owner" in contact.roles:
-        is_primary = await _is_primary_email(pool, contact.contact_id, email_target)
+        is_primary = await is_primary_contact(pool, contact.contact_id, "email", email_target)
         if is_primary:
             return EmailGuardDecision(allowed=True, reason="owner")
 

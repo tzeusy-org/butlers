@@ -32,6 +32,7 @@ from typing import Any
 
 from butlers.config import ApprovalConfig, ApprovalRiskTier
 from butlers.identity import ResolvedContact, resolve_contact_by_channel
+from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
@@ -167,50 +168,6 @@ def _extract_channel_identity(
         return ("whatsapp_jid", chat_jid.strip())
 
     return None
-
-
-async def _is_primary_contact(
-    pool: Any,
-    contact_id: uuid.UUID,
-    channel_type: str,
-    channel_value: str,
-) -> bool:
-    """Return True if *channel_value* is the primary entry for *contact_id*/*channel_type*.
-
-    Queries ``public.contact_info`` for the matching ``(type, value)`` row and
-    returns ``is_primary``.  Returns ``False`` on any DB error or missing row so
-    that non-primary addresses fall through to the rules/parking flow.
-
-    Only meaningful for channel-based lookups (telegram, whatsapp, email via the
-    gate path, etc.).  ``contact_id`` dispatch has no specific channel value to
-    check and should be handled separately by the caller.
-    """
-    try:
-        row = await pool.fetchrow(
-            """
-            SELECT is_primary
-            FROM public.contact_info
-            WHERE contact_id = $1
-              AND type = $2
-              AND value = $3
-            """,
-            contact_id,
-            channel_type,
-            channel_value,
-        )
-        if row is None:
-            return False
-        return bool(row["is_primary"])
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "gate: could not determine is_primary for contact %s channel %s=%r; "
-            "treating as non-primary (will fall through to rules/park flow)",
-            contact_id,
-            channel_type,
-            channel_value,
-            exc_info=True,
-        )
-        return False
 
 
 async def _resolve_target_contact(
@@ -414,7 +371,7 @@ def _make_gate_wrapper(
             and identity[0] != "contact_id"
         ):
             channel_type, channel_value = identity
-            owner_is_primary = await _is_primary_contact(
+            owner_is_primary = await is_primary_contact(
                 pool, resolved_contact.contact_id, channel_type, channel_value
             )
         else:

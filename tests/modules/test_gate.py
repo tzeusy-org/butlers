@@ -15,7 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.modules.approvals.gate import _is_primary_contact, _make_gate_wrapper
+from butlers.modules.approvals._shared import is_primary_contact
+from butlers.modules.approvals.gate import _make_gate_wrapper
 
 pytestmark = pytest.mark.unit
 
@@ -106,41 +107,41 @@ async def _call_gate(
 
 
 # ---------------------------------------------------------------------------
-# _is_primary_contact unit tests
+# is_primary_contact unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestIsPrimaryContact:
-    """Unit tests for the _is_primary_contact helper."""
+    """Unit tests for the shared is_primary_contact helper."""
 
     async def test_returns_true_when_is_primary(self) -> None:
         contact_id = uuid.uuid4()
         pool = _make_pool(fetchrow_return={"is_primary": True})
-        result = await _is_primary_contact(pool, contact_id, "telegram", "12345")
+        result = await is_primary_contact(pool, contact_id, "telegram", "12345")
         assert result is True
 
     async def test_returns_false_when_not_primary(self) -> None:
         contact_id = uuid.uuid4()
         pool = _make_pool(fetchrow_return={"is_primary": False})
-        result = await _is_primary_contact(pool, contact_id, "telegram", "99999")
+        result = await is_primary_contact(pool, contact_id, "telegram", "99999")
         assert result is False
 
     async def test_returns_false_when_row_missing(self) -> None:
         contact_id = uuid.uuid4()
         pool = _make_pool(fetchrow_return=None)
-        result = await _is_primary_contact(pool, contact_id, "telegram", "no-such-id")
+        result = await is_primary_contact(pool, contact_id, "telegram", "no-such-id")
         assert result is False
 
     async def test_returns_false_on_db_error(self) -> None:
         contact_id = uuid.uuid4()
         pool = _make_pool(fetchrow_side_effect=Exception("connection lost"))
-        result = await _is_primary_contact(pool, contact_id, "whatsapp_jid", "+15555555")
+        result = await is_primary_contact(pool, contact_id, "whatsapp_jid", "+15555555")
         assert result is False
 
     async def test_queries_correct_columns(self) -> None:
         contact_id = uuid.uuid4()
         pool = _make_pool(fetchrow_return={"is_primary": True})
-        await _is_primary_contact(pool, contact_id, "telegram", "chat-99")
+        await is_primary_contact(pool, contact_id, "telegram", "chat-99")
         query, *args = pool.fetchrow.call_args.args
         assert "contact_info" in query
         assert "is_primary" in query

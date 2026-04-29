@@ -9,10 +9,10 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, patch
 
+from butlers.modules.approvals._shared import is_primary_contact
 from butlers.modules.approvals.email_guard import (
     _context_conflicts,
     _get_email_context,
-    _is_primary_email,
     check_email_recipient,
 )
 
@@ -72,30 +72,32 @@ class TestGetEmailContext:
 
 
 # ---------------------------------------------------------------------------
-# _is_primary_email unit tests
+# is_primary_contact unit tests (email channel)
 # ---------------------------------------------------------------------------
 
 
 class TestIsPrimaryEmail:
+    """Tests for email primacy via the shared is_primary_contact helper (email channel)."""
+
     async def test_true_when_is_primary_set(self) -> None:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value={"is_primary": True})
-        assert await _is_primary_email(pool, uuid.uuid4(), "owner@example.com") is True
+        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is True
 
     async def test_false_when_not_primary(self) -> None:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value={"is_primary": False})
-        assert await _is_primary_email(pool, uuid.uuid4(), "owner@example.com") is False
+        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is False
 
     async def test_false_when_row_missing(self) -> None:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(return_value=None)
-        assert await _is_primary_email(pool, uuid.uuid4(), "owner@example.com") is False
+        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is False
 
     async def test_false_on_db_error(self) -> None:
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(side_effect=Exception("column missing"))
-        assert await _is_primary_email(pool, uuid.uuid4(), "owner@example.com") is False
+        assert await is_primary_contact(pool, uuid.uuid4(), "email", "owner@example.com") is False
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +251,7 @@ class TestCheckEmailRecipientContextMismatch:
                 new=AsyncMock(return_value=owner),
             ),
             patch(
-                "butlers.modules.approvals.email_guard._is_primary_email",
+                "butlers.modules.approvals.email_guard.is_primary_contact",
                 new=AsyncMock(return_value=True),
             ),
             patch(
@@ -274,7 +276,7 @@ class TestCheckEmailRecipientContextMismatch:
                 new=AsyncMock(return_value=owner),
             ),
             patch(
-                "butlers.modules.approvals.email_guard._is_primary_email",
+                "butlers.modules.approvals.email_guard.is_primary_contact",
                 new=AsyncMock(return_value=False),
             ),
             patch(
