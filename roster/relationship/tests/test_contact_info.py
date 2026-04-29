@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1034,3 +1035,138 @@ async def test_contact_info_update_non_owner_writes_immediately(pool):
 
     assert result.get("status") != "pending_approval"
     assert result["value"] == "updated-nonowner@example.com"
+
+
+# ------------------------------------------------------------------
+# Transaction rollback tests
+# ------------------------------------------------------------------
+
+
+class _ConnProxy:
+    """Wraps a real asyncpg PoolConnectionProxy, intercepting fetchrow().
+
+    The first fetchrow() call raises the injected exception; subsequent calls
+    delegate to the real connection.  This lets us simulate a mid-transaction
+    failure (after the demote-primary execute ran) without needing to set
+    read-only attributes on the asyncpg PoolConnectionProxy object.
+    """
+
+    def __init__(self, conn, exc: Exception):
+        self._conn = conn
+        self._exc = exc
+        self._fetchrow_called = False
+
+    async def fetchrow(self, query, *args):
+        if not self._fetchrow_called:
+            self._fetchrow_called = True
+            raise self._exc
+        return await self._conn.fetchrow(query, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+class _PoolWithFailingConn:
+    """Thin pool wrapper that substitutes connections with _ConnProxy on acquire().
+
+    Everything else (fetchrow, fetch, execute, fetchval) delegates to the real
+    pool so pre-transaction reads (e.g. contact-exists lookups) work normally.
+    """
+
+    def __init__(self, real_pool, exc: Exception):
+        self._pool = real_pool
+        self._exc = exc
+
+    def acquire(self):
+        real_acquire = self._pool.acquire
+        exc = self._exc
+
+        @asynccontextmanager
+        async def _ctx():
+            async with real_acquire() as conn:
+                yield _ConnProxy(conn, exc)
+
+        return _ctx()
+
+    def __getattr__(self, name):
+        return getattr(self._pool, name)
+
+
+async def test_contact_info_add_rollback_on_insert_failure(pool):
+    """contact_info_add rolls back the demote-primary UPDATE when the INSERT fails.
+
+    Sets up a contact with an existing primary email, then injects a failure on the
+    INSERT RETURNING fetchrow so only the demote UPDATE ran before the error.  Asserts
+    that after the exception propagates the original primary row is still marked
+    is_primary=True — demonstrating that the transaction wraps both operations atomically.
+    """
+    from butlers.tools.relationship import contact_create, contact_info_add
+    from butlers.tools.relationship.contact_info import contact_info_add as _contact_info_add
+
+    c = await contact_create(pool, "TxnRollbackAdd")
+    existing = await contact_info_add(
+        pool, c["id"], "email", "original@example.com", is_primary=True
+    )
+
+    # Verify baseline: original row is primary.
+    row_before = await pool.fetchrow(
+        "SELECT is_primary FROM public.contact_info WHERE id = $1", existing["id"]
+    )
+    assert row_before["is_primary"] is True
+
+    failing_pool = _PoolWithFailingConn(pool, RuntimeError("simulated INSERT failure"))
+
+    with pytest.raises(RuntimeError, match="simulated INSERT failure"):
+        await _contact_info_add(
+            failing_pool,  # type: ignore[arg-type]
+            c["id"],
+            "email",
+            "new@example.com",
+            is_primary=True,
+        )
+
+    # The demote UPDATE must have been rolled back — original row still primary.
+    row_after = await pool.fetchrow(
+        "SELECT is_primary FROM public.contact_info WHERE id = $1", existing["id"]
+    )
+    assert row_after["is_primary"] is True, (
+        "Transaction rollback failed: demote UPDATE was not rolled back when INSERT raised"
+    )
+
+
+async def test_contact_info_update_rollback_on_update_failure(pool):
+    """contact_info_update rolls back the demote-primary UPDATE when the main UPDATE fails.
+
+    Sets up a contact with two emails — the first marked primary.  Injects a failure on
+    the main UPDATE RETURNING fetchrow after the demote-primary execute has already run.
+    Asserts that the original primary row is still marked is_primary=True.
+    """
+    from butlers.tools.relationship import contact_create, contact_info_add
+    from butlers.tools.relationship.contact_info import contact_info_update
+
+    c = await contact_create(pool, "TxnRollbackUpdate")
+    first = await contact_info_add(pool, c["id"], "email", "first@example.com", is_primary=True)
+    second = await contact_info_add(pool, c["id"], "email", "second@example.com", is_primary=False)
+
+    # Verify baseline.
+    row_before = await pool.fetchrow(
+        "SELECT is_primary FROM public.contact_info WHERE id = $1", first["id"]
+    )
+    assert row_before["is_primary"] is True
+
+    failing_pool = _PoolWithFailingConn(pool, RuntimeError("simulated UPDATE failure"))
+
+    with pytest.raises(RuntimeError, match="simulated UPDATE failure"):
+        await contact_info_update(
+            failing_pool,  # type: ignore[arg-type]
+            second["id"],
+            is_primary=True,
+        )
+
+    # Demote of first must have been rolled back — first row still primary.
+    row_after = await pool.fetchrow(
+        "SELECT is_primary FROM public.contact_info WHERE id = $1", first["id"]
+    )
+    assert row_after["is_primary"] is True, (
+        "Transaction rollback failed: demote UPDATE was not rolled back when main UPDATE raised"
+    )

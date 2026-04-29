@@ -219,32 +219,36 @@ async def contact_info_add(
             ),
         }
 
-    # Non-owner path — write immediately
+    # Non-owner path — write immediately, wrapped in a transaction so the
+    # demote-primary and insert are atomic.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # If marking as primary, unset any existing primary for this type
+            if is_primary:
+                await conn.execute(
+                    """
+                    UPDATE public.contact_info SET is_primary = false
+                    WHERE contact_id = $1 AND type = $2 AND is_primary = true
+                    """,
+                    contact_id,
+                    type,
+                )
 
-    # If marking as primary, unset any existing primary for this type
-    if is_primary:
-        await pool.execute(
-            """
-            UPDATE public.contact_info SET is_primary = false
-            WHERE contact_id = $1 AND type = $2 AND is_primary = true
-            """,
-            contact_id,
-            type,
-        )
+            row = await conn.fetchrow(
+                """
+                INSERT INTO public.contact_info
+                    (contact_id, type, value, label, is_primary, context)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING *
+                """,
+                contact_id,
+                type,
+                value,
+                label,
+                is_primary,
+                effective_context,
+            )
 
-    row = await pool.fetchrow(
-        """
-        INSERT INTO public.contact_info (contact_id, type, value, label, is_primary, context)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *
-        """,
-        contact_id,
-        type,
-        value,
-        label,
-        is_primary,
-        effective_context,
-    )
     result = dict(row)
     desc = f"Added {type}: {value}"
     if label:
@@ -316,7 +320,8 @@ async def contact_info_update(
             ),
         }
 
-    # Non-owner path — update immediately
+    # Non-owner path — update immediately, wrapped in a transaction so the
+    # demote-primary and update are atomic.
 
     # Build SET clause from provided fields
     updates: dict[str, Any] = {}
@@ -327,26 +332,36 @@ async def contact_info_update(
     if is_primary is not None:
         updates["is_primary"] = is_primary
 
-    # If marking as primary, unset any existing primary for this type on the same contact
-    if is_primary:
-        await pool.execute(
-            """
-            UPDATE public.contact_info SET is_primary = false
-            WHERE contact_id = $1 AND type = $2 AND is_primary = true AND id != $3
-            """,
-            contact_id,
-            row["type"],
-            contact_info_id,
+    # Capture row metadata before entering the transaction (already fetched above)
+    row_type = row["type"]
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # If marking as primary, unset any existing primary for this type on the same contact
+            if is_primary:
+                await conn.execute(
+                    """
+                    UPDATE public.contact_info SET is_primary = false
+                    WHERE contact_id = $1 AND type = $2 AND is_primary = true AND id != $3
+                    """,
+                    contact_id,
+                    row_type,
+                    contact_info_id,
+                )
+
+            # Build dynamic SET clause
+            set_parts = [f"{col} = ${i + 2}" for i, col in enumerate(updates)]
+            params: list[Any] = [contact_info_id, *updates.values()]
+            updated = await conn.fetchrow(
+                f"UPDATE public.contact_info SET {', '.join(set_parts)} WHERE id = $1 RETURNING *",  # noqa: S608
+                *params,
+            )
+
+    if updated is None:
+        raise ValueError(
+            f"Contact info {contact_info_id} not found. "
+            "Use contact_info_list(contact_id=...) to list contact info entries."
         )
-
-    # Build dynamic SET clause
-    set_parts = [f"{col} = ${i + 2}" for i, col in enumerate(updates)]
-    params: list[Any] = [contact_info_id, *updates.values()]
-    updated = await pool.fetchrow(
-        f"UPDATE public.contact_info SET {', '.join(set_parts)} WHERE id = $1 RETURNING *",  # noqa: S608
-        *params,
-    )
-
     result = dict(updated)
     desc_parts = []
     if value is not None:
@@ -355,7 +370,7 @@ async def contact_info_update(
         desc_parts.append(f"label → {label}")
     if is_primary is not None:
         desc_parts.append(f"is_primary → {is_primary}")
-    desc = f"Updated {row['type']}: {', '.join(desc_parts)}"
+    desc = f"Updated {row_type}: {', '.join(desc_parts)}"
     await _log_activity(pool, contact_id, "contact_info_updated", desc)
     return result
 
