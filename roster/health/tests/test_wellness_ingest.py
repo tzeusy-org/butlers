@@ -798,3 +798,69 @@ class TestSleepStageFanOut:
         }
         assert outcomes.get("sleep_session") == "success"
         assert outcomes.get("sleep_stage_summary") == "skipped_malformed_payload"
+
+
+# ---------------------------------------------------------------------------
+# 8. Sleep session metadata extraction edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSleepSessionMetadataEdgeCases:
+    """Unit tests for _extract_sleep_session_metadata edge cases."""
+
+    def test_minutes_asleep_zero_is_preserved(self) -> None:
+        """minutes_asleep=0 must be stored — 0 is a valid value, not absent."""
+        from butlers.tools.health.wellness_ingest import _extract_sleep_session_metadata
+
+        raw = {"durationMillis": 25200000, "minutesAsleep": 0}
+        meta = _extract_sleep_session_metadata(raw)
+
+        assert "minutes_asleep" in meta, "minutes_asleep=0 must not be silently dropped"
+        assert meta["minutes_asleep"] == 0
+
+    def test_minutes_awake_zero_is_preserved(self) -> None:
+        """minutes_awake=0 must be stored — 0 is a valid value, not absent."""
+        from butlers.tools.health.wellness_ingest import _extract_sleep_session_metadata
+
+        raw = {"durationMillis": 25200000, "minutesAwake": 0}
+        meta = _extract_sleep_session_metadata(raw)
+
+        assert "minutes_awake" in meta, "minutes_awake=0 must not be silently dropped"
+        assert meta["minutes_awake"] == 0
+
+    def test_minutes_asleep_fallback_to_snake_case(self) -> None:
+        """minutes_asleep falls back from minutesAsleep to minutes_asleep."""
+        from butlers.tools.health.wellness_ingest import _extract_sleep_session_metadata
+
+        raw = {"durationMillis": 25200000, "minutes_asleep": 45}
+        meta = _extract_sleep_session_metadata(raw)
+
+        assert meta.get("minutes_asleep") == 45
+
+    def test_session_id_blank_stored_as_none(self) -> None:
+        """A blank session_id must be normalised to None, not stored as an empty string."""
+        from butlers.tools.health.wellness_ingest import _extract_sleep_session_metadata
+
+        raw = {"durationMillis": 25200000, "session_id": ""}
+        meta = _extract_sleep_session_metadata(raw)
+
+        # Blank session_id must be None in metadata, not ""
+        assert meta.get("session_id") is None
+
+    def test_session_id_camel_case_fallback(self) -> None:
+        """session_id falls back to sessionId when snake_case field is absent."""
+        from butlers.tools.health.wellness_ingest import _extract_sleep_session_metadata
+
+        raw = {"durationMillis": 25200000, "sessionId": "gfit-abc"}
+        meta = _extract_sleep_session_metadata(raw)
+
+        assert meta.get("session_id") == "gfit-abc"
+
+    def test_session_id_absent_stored_as_none(self) -> None:
+        """When session_id is entirely absent, metadata contains session_id=None."""
+        from butlers.tools.health.wellness_ingest import _extract_sleep_session_metadata
+
+        raw = {"durationMillis": 25200000}
+        meta = _extract_sleep_session_metadata(raw)
+
+        assert meta.get("session_id") is None

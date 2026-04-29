@@ -86,7 +86,8 @@ def _extract_sleep_session_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     - ``end_time``: ISO-8601 end timestamp for the session (used by the
       Chronicler adapter to derive ``end_at`` on projected episodes)
     - ``session_id``: stable session identifier (used by the Chronicler
-      adapter for cross-batch stitching)
+      adapter for cross-batch stitching); falls back to ``sessionId``; stored
+      as None when absent or blank
     - ``minutes_asleep``: minutes of actual sleep when available
     - ``minutes_awake``: minutes awake during the session when available
     """
@@ -115,16 +116,23 @@ def _extract_sleep_session_metadata(raw: dict[str, Any]) -> dict[str, Any]:
         meta["end_time"] = str(end_time)
 
     # session_id: used by the Chronicler adapter for cross-batch stitching.
+    # Treat blank strings as absent so we never store an empty session_id.
     session_id = raw.get("session_id")
-    if session_id is not None:
-        meta["session_id"] = str(session_id)
+    if session_id in (None, ""):
+        session_id = raw.get("sessionId")
+    meta["session_id"] = str(session_id) if session_id not in (None, "") else None
 
     # minutes_asleep / minutes_awake: optional enrichment fields.
-    minutes_asleep = raw.get("minutesAsleep") or raw.get("minutes_asleep")
-    if minutes_asleep is not None:
+    # Use explicit None/"" checks — 0 is a valid value and must not be dropped.
+    minutes_asleep = raw.get("minutesAsleep")
+    if minutes_asleep in (None, ""):
+        minutes_asleep = raw.get("minutes_asleep")
+    if minutes_asleep not in (None, ""):
         meta["minutes_asleep"] = int(minutes_asleep)
-    minutes_awake = raw.get("minutesAwake") or raw.get("minutes_awake")
-    if minutes_awake is not None:
+    minutes_awake = raw.get("minutesAwake")
+    if minutes_awake in (None, ""):
+        minutes_awake = raw.get("minutes_awake")
+    if minutes_awake not in (None, ""):
         meta["minutes_awake"] = int(minutes_awake)
 
     return meta
