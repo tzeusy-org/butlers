@@ -98,61 +98,28 @@ class TestModuleABCAndConfig:
 docker_available = shutil.which("docker") is not None
 db_tests = pytest.mark.skipif(not docker_available, reason="Docker not available")
 
-
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
+from butlers.testing.migration import create_migrated_test_db, migration_db_name  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
-        yield pg
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core + mailbox migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "mailbox"],
+    )
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    """Provision a fresh database with mailbox tables and return a pool."""
-    from butlers.db import Database
+async def pool(migrated_db_url: str):
+    """Return an asyncpg pool with mailbox table cleared between tests."""
+    import asyncpg
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-    )
-    await db.provision()
-    p = await db.connect()
-
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS mailbox (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            sender TEXT NOT NULL,
-            sender_channel TEXT NOT NULL,
-            subject TEXT,
-            body TEXT NOT NULL,
-            priority INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'unread',
-            metadata JSONB NOT NULL DEFAULT '{}',
-            read_at TIMESTAMPTZ,
-            archived_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_status ON mailbox (status)")
-    await p.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_sender ON mailbox (sender)")
-    await p.execute(
-        "CREATE INDEX IF NOT EXISTS idx_mailbox_created_at ON mailbox (created_at DESC)"
-    )
-
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    await p.execute("TRUNCATE TABLE mailbox CASCADE")
     yield p
-    await db.close()
+    await p.close()
 
 
 @pytest.fixture

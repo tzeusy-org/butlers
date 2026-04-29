@@ -22,6 +22,7 @@ import pytest
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner, SpawnerResult
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # Skip integration tests if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -125,70 +126,25 @@ class TestSpawnerResultSessionId:
 # ---------------------------------------------------------------------------
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 # Use the session-scoped postgres_container from root conftest (not a local override)
 # so the event loop is shared across the whole session, avoiding asyncpg loop mismatch.
 
 
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+    )
+
+
 @pytest.fixture
-async def pool(postgres_container):
-    """Create a fresh database with the sessions table and return a pool.
-
-    WARNING: This fixture duplicates the 'sessions' table schema. If you update
-    the schema via migrations, you MUST update it here as well to prevent
-    schema drift in tests.
-    """
-    db_name = _unique_db_name()
-
-    admin_conn = await asyncpg.connect(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database="postgres",
-    )
-    try:
-        safe_name = db_name.replace('"', '""')
-        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
-    finally:
-        await admin_conn.close()
-
-    p = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=db_name,
-        min_size=1,
-        max_size=3,
-    )
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            prompt TEXT NOT NULL,
-            trigger_source TEXT NOT NULL,
-            result TEXT,
-            tool_calls JSONB NOT NULL DEFAULT '[]',
-            duration_ms INTEGER,
-            trace_id TEXT,
-            model TEXT,
-            cost JSONB,
-            success BOOLEAN,
-            error TEXT,
-            started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            completed_at TIMESTAMPTZ,
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            parent_session_id UUID REFERENCES sessions(id),
-            request_id TEXT,
-            ingestion_event_id UUID,
-            complexity TEXT DEFAULT 'medium',
-            resolution_source TEXT DEFAULT 'toml_fallback'
-        )
-    """)
+async def pool(migrated_db_url: str):
+    """Return an asyncpg pool with sessions table cleared between tests."""
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    await p.execute("TRUNCATE TABLE sessions CASCADE")
     yield p
     await p.close()
 

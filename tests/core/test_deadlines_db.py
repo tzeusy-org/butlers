@@ -16,6 +16,8 @@ from typing import Any
 import asyncpg
 import pytest
 
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
 docker_available = shutil.which("docker") is not None
 
 pytestmark = [
@@ -25,77 +27,21 @@ pytestmark = [
 ]
 
 
-_CREATE_SCHEDULED_TASKS_SQL = """
-    CREATE TABLE IF NOT EXISTS scheduled_tasks (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name TEXT UNIQUE NOT NULL,
-        cron TEXT NOT NULL,
-        prompt TEXT,
-        dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
-        job_name TEXT,
-        job_args JSONB,
-        complexity TEXT DEFAULT 'medium',
-        timezone TEXT NOT NULL DEFAULT 'UTC',
-        start_at TIMESTAMPTZ,
-        end_at TIMESTAMPTZ,
-        until_at TIMESTAMPTZ,
-        display_title TEXT,
-        calendar_event_id TEXT,
-        source TEXT NOT NULL DEFAULT 'db',
-        enabled BOOLEAN NOT NULL DEFAULT true,
-        next_run_at TIMESTAMPTZ,
-        last_run_at TIMESTAMPTZ,
-        last_result JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        task_type TEXT NOT NULL DEFAULT 'cron'
-            CHECK (task_type IN ('cron', 'deadline')),
-        target_date DATE,
-        lead_time_days INTEGER,
-        alert_thresholds JSONB,
-        deadline_status TEXT
-            CHECK (deadline_status IN (
-                'pending', 'alerted', 'escalated', 'completed', 'expired'
-            )),
-        fired_thresholds JSONB,
-        depends_on JSONB,
-        CONSTRAINT scheduled_tasks_dispatch_mode_check
-            CHECK (dispatch_mode IN ('prompt', 'job')),
-        CONSTRAINT scheduled_tasks_dispatch_payload_check
-            CHECK (
-                (dispatch_mode = 'prompt' AND prompt IS NOT NULL AND job_name IS NULL)
-                OR (dispatch_mode = 'job' AND job_name IS NOT NULL)
-            )
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
     )
-"""
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    """Fresh DB with scheduled_tasks + deadline columns."""
-    db_name = f"test_{uuid.uuid4().hex[:12]}"
-    admin_conn = await asyncpg.connect(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database="postgres",
-    )
-    try:
-        await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
-    finally:
-        await admin_conn.close()
-
-    p = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=db_name,
-        min_size=1,
-        max_size=3,
-    )
-    await p.execute(_CREATE_SCHEDULED_TASKS_SQL)
+async def pool(migrated_db_url: str):
+    """Return an asyncpg pool with scheduled_tasks cleared between tests."""
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    await p.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
     yield p
     await p.close()
 

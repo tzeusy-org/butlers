@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import uuid
 
+import asyncpg
 import pytest
+
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -16,35 +18,23 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+    )
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    from butlers.db import Database
-
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=5,
-    )
-    await db.provision()
-    p = await db.connect()
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS state (
-            key TEXT PRIMARY KEY,
-            value JSONB NOT NULL DEFAULT '{}',
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            version INTEGER NOT NULL DEFAULT 1
-        )
-    """)
+async def pool(migrated_db_url: str):
+    """Return an asyncpg pool with state table cleared between tests."""
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=5)
+    await p.execute("TRUNCATE TABLE state CASCADE")
     yield p
-    await db.close()
+    await p.close()
 
 
 # ---------------------------------------------------------------------------
