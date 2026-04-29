@@ -337,9 +337,23 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         Returns ``(episodes_upserted, new_carryover)`` where ``new_carryover``
         captures any open movement episode at the end of this batch.
+
+        Implementation note — clock-skew safety:
+        Device-reported ``ts`` values can arrive out of order due to clock skew
+        or buffered delivery.  To produce monotonically ordered bounds, the
+        buffer is re-sorted by ``recorded_at`` (server ingestion time) before
+        segmenting.  A defensive guard rejects any episode whose computed
+        ``end_at < effective_start_at`` by swapping the bounds, ensuring the
+        ``episodes_check`` DB constraint is never violated.
         """
         if not rows:
             return 0, {}
+
+        # Re-sort by server ingestion time so that device clock skew or
+        # buffered delivery never produces a negative-duration segment.
+        # ``recorded_at`` is set by the server on arrival and is
+        # monotonically non-decreasing within a single evidence table scan.
+        rows = sorted(rows, key=lambda r: r["recorded_at"])
 
         gap = timedelta(minutes=self.movement_gap_minutes)
         episodes_upserted = 0
@@ -454,6 +468,22 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             end_at: datetime = last["ts"]
             endpoint_identity: str = first["endpoint_identity"]
             point_count = len(seg_rows)
+
+            # Defensive guard: device clock skew can produce an inverted episode
+            # even after recorded_at sorting (e.g. when the prior-batch carryover
+            # start_at is later than the current batch's last ts).  Swapping the
+            # bounds is always safe here — the episode still covers the same time
+            # range and never violates the episodes_check constraint.
+            if end_at < effective_start_at:
+                logger.warning(
+                    "Inverted movement episode for %s (start_at=%s > end_at=%s); "
+                    "swapping bounds to satisfy episodes_check. "
+                    "Likely cause: device clock skew or out-of-order delivery.",
+                    endpoint_identity,
+                    effective_start_at.isoformat(),
+                    end_at.isoformat(),
+                )
+                effective_start_at, end_at = end_at, effective_start_at
 
             if seg_source_ref is None:
                 # New episode starting this batch.

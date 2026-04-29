@@ -954,3 +954,130 @@ async def test_watermark_id_cleared_when_no_rows() -> None:
 
     assert result.watermark == prior_watermark
     assert result.watermark_id is None
+
+
+# ---------------------------------------------------------------------------
+# Clock-skew / out-of-order episode safety (bu-cenng)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_out_of_order_ts_produces_no_inverted_episode() -> None:
+    """Out-of-order device timestamps must never produce an episode where
+    end_at < start_at.
+
+    Scenario: three points arrive with device timestamps in non-monotonic
+    order but server-side recorded_at in ascending order.  The reducer sorts
+    by recorded_at before segmenting, so the episode bounds are derived from
+    a stable ordering and the DB constraint is satisfied.
+    """
+    base = _NOW
+    # recorded_at is monotonically ascending (server ingestion order).
+    # ts (device time) is out of order — point B was recorded last but has
+    # the earliest device timestamp.
+    row_a = {
+        **_make_row(ts=base + timedelta(minutes=5), idempotency_key="oot-a"),
+        "recorded_at": base,
+    }
+    row_b = {
+        **_make_row(ts=base - timedelta(hours=3), idempotency_key="oot-b"),
+        "recorded_at": base + timedelta(seconds=1),
+    }
+    row_c = {
+        **_make_row(ts=base + timedelta(minutes=10), idempotency_key="oot-c"),
+        "recorded_at": base + timedelta(seconds=2),
+    }
+
+    adapter = OwnTracksPointAdapter()
+    upserted_episodes: list[Episode] = []
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted_episodes.append(episode)
+        return episode
+
+    pool = _pool_returning(row_a, row_b, row_c)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_episode",
+            side_effect=_fake_upsert_ep,
+        ),
+    ):
+        mock_pe.return_value = MagicMock()
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    for ep in upserted_episodes:
+        assert ep.end_at >= ep.start_at, (
+            f"Inverted episode: start_at={ep.start_at}, end_at={ep.end_at}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_skewed_clock_carryover_produces_no_inverted_episode() -> None:
+    """When a prior-batch carryover has end_at later than the current batch's
+    device timestamps (skewed clock), the reducer must not emit an episode
+    where end_at < start_at.
+
+    Scenario: the prior batch ended at 10:45 UTC for endpoint 'alice'.
+    The current batch contains a point with ts=07:04 UTC (device clock is
+    skewed backward by ~3 h 41 min).  The gap is negative, so the episode
+    is treated as continuing.  Without the fix the episode would be emitted
+    as start_at=10:45, end_at=07:04 — violating episodes_check.
+    """
+    # prior_end_ts simulates the prior batch ending at 10:45 UTC.
+    prior_end_ts = _NOW + timedelta(hours=0, minutes=45)  # 10:45 relative to _NOW
+    # skewed_ts simulates a device clock that is ~3h41m behind; the point
+    # appears *before* prior_end_ts in device time.
+    skewed_ts = _NOW - timedelta(hours=2, minutes=56)  # 07:04 relative to _NOW
+
+    # Ensure skewed_ts < prior_end_ts to reproduce the inversion condition.
+    assert skewed_ts < prior_end_ts
+
+    row = {
+        **_make_row(ts=skewed_ts, idempotency_key="skew-alice"),
+        "recorded_at": _NOW + timedelta(hours=1),  # recorded after prior batch
+    }
+
+    # Simulate prior-batch carryover: episode was open at prior_end_ts.
+    prior_carry = {
+        _ENDPOINT: {
+            "source_ref": "connectors.owntracks_points:movement:owntracks:alice:9999999999",
+            "start_at": (prior_end_ts - timedelta(minutes=5)).isoformat(),
+            "end_at": prior_end_ts.isoformat(),
+            "start_lat": 1.2345,
+            "start_lon": 103.8765,
+        }
+    }
+
+    adapter = OwnTracksPointAdapter()
+    upserted_episodes: list[Episode] = []
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted_episodes.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_episode",
+            side_effect=_fake_upsert_ep,
+        ),
+        patch(
+            "butlers.chronicler.adapters.owntracks.get_carryover",
+            return_value=prior_carry,
+        ),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover"),
+    ):
+        mock_pe.return_value = MagicMock()
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert len(upserted_episodes) >= 1
+    for ep in upserted_episodes:
+        assert ep.end_at >= ep.start_at, (
+            f"Inverted episode: start_at={ep.start_at.isoformat()}, end_at={ep.end_at.isoformat()}"
+        )
