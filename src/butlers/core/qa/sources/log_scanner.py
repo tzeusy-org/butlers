@@ -229,6 +229,14 @@ def _should_include_entry(entry: LogEntry) -> bool:
         and "MCP discovery failed after" in entry.event
     ):
         return False
+    # Codex refresh-lock contention can contain words like "deadlock" while
+    # describing the adapter's non-fatal fallback path. It is operational
+    # contention, not a crash sentinel.
+    if entry.logger == "butlers.core.runtimes.codex" and (
+        "codex_refresh_lock: lock held" in entry.event
+        or "codex_refresh_lock: waiting" in entry.event
+    ):
+        return False
 
     if entry.level in _ERROR_LEVELS:
         return True
