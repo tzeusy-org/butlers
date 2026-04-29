@@ -12,6 +12,7 @@ from butlers.tools.relationship.contacts import _parse_contact
 from butlers.tools.relationship.feed import _log_activity
 
 _CONTACT_INFO_TYPES = {"email", "phone", "telegram", "linkedin", "twitter", "website", "other"}
+_CONTACT_INFO_CONTEXTS = {"personal", "work", "other"}
 
 # Work-domain heuristic: email addresses at these domains are auto-tagged
 # context='work' when no explicit context is provided on insert.
@@ -28,9 +29,11 @@ def _get_work_domains() -> frozenset[str]:
 
     Reads BUTLERS_WORK_DOMAINS once per call; the env var is intentionally
     re-read each call so runtime changes are picked up without restart.
+    Setting BUTLERS_WORK_DOMAINS to an empty string disables the heuristic
+    (returns an empty set); unset falls back to _DEFAULT_WORK_DOMAINS.
     """
-    raw = os.environ.get("BUTLERS_WORK_DOMAINS", "")
-    if raw.strip():
+    raw = os.environ.get("BUTLERS_WORK_DOMAINS")
+    if raw is not None:
         return frozenset(d.strip().lower() for d in raw.split(",") if d.strip())
     return _DEFAULT_WORK_DOMAINS
 
@@ -90,6 +93,10 @@ async def contact_info_add(
     if type not in _CONTACT_INFO_TYPES:
         raise ValueError(
             f"Invalid contact info type '{type}'. Must be one of {sorted(_CONTACT_INFO_TYPES)}"
+        )
+    if context is not None and context not in _CONTACT_INFO_CONTEXTS:
+        raise ValueError(
+            f"Invalid context '{context}'. Must be one of {sorted(_CONTACT_INFO_CONTEXTS)}"
         )
 
     # Verify contact exists
