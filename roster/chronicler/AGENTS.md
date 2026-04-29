@@ -108,3 +108,32 @@ Silence is acceptable only for ingestion-triggered or scheduled-no-op
 paths (your adapters are background, not interactive).
 
 # Notes to self
+
+## CoreSessionsAdapter — excluded trigger_source values
+
+`CoreSessionsAdapter` (`src/butlers/chronicler/adapters/sessions.py`) filters
+out session rows that are operational telemetry rather than user activity.
+The exclusion is applied at the SQL layer (not post-fetch) so the per-schema
+watermark advances only over user-visible rows.
+
+Excluded (exact match): `tick`, `qa`, `healing`
+Excluded (prefix match): `schedule:*`
+
+Rationale: heartbeat ticks, QA probe sessions, healing sessions, and all
+scheduler-fired background jobs dominate raw session counts but carry no
+"lived past time" signal.  They should never appear in the Chronicles "Work"
+lane.
+
+To add a new excluded source, update `EXCLUDED_TRIGGER_SOURCES` (exact) or
+`EXCLUDED_TRIGGER_SOURCE_PREFIX` (prefix) in `adapters/sessions.py` and add
+a corresponding test case in `tests/chronicler/test_core_sessions_adapter.py`.
+
+**Ops verification post-deploy:** after one cron tick, run
+```sql
+SELECT payload->>'trigger_source' AS trigger_source, count(*)
+FROM chronicler.episodes
+WHERE source_name = 'core.sessions'
+  AND start_at > now() - interval '10 minutes'
+GROUP BY 1;
+```
+`tick`, `qa`, `healing`, and any `schedule:*` values must not appear.
