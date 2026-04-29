@@ -205,6 +205,26 @@ class EpisodeExplainResponse(BaseModel):
     cache_built_at: datetime
 
 
+class OpsSessionRow(BaseModel):
+    """One operational session row from GET /api/chronicler/ops/sessions.
+
+    Operational sessions are those whose ``trigger_source`` matches the
+    exclusion list in ``CoreSessionsAdapter`` (tick, qa, healing, schedule:*).
+    They are never projected into the ``episodes`` table, so this endpoint
+    is the only way to audit them via the Chronicler API.
+    """
+
+    butler: str
+    """Butler schema from which this session was read."""
+    session_id: str
+    trigger_source: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    success: bool | None = None
+    model: str | None = None
+
+
 __all__ = [
     "AggregateByDayRow",
     "CategoryBucket",
@@ -217,6 +237,7 @@ __all__ = [
     "DayCloseFreshResponse",
     "DayCloseStaleResponse",
     "EpisodeExplainResponse",
+    "OpsSessionRow",
     "SourceBreakdownEntry",
     "SourceStateRow",
     "SubsourceCheckpoint",

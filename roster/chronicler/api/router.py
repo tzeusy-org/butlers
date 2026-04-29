@@ -32,6 +32,10 @@ from butlers.api.models import (
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.chronicler.adapters.sessions import (
+    EXCLUDED_TRIGGER_SOURCE_PREFIX,
+    EXCLUDED_TRIGGER_SOURCES,
+)
 from butlers.chronicler.aggregations import category_for
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.storage import upsert_tier2_cache
@@ -58,6 +62,7 @@ if _spec is not None and _spec.loader is not None:
     DayCloseRefreshRequest = _models.DayCloseRefreshRequest
     DayCloseRefreshResponse = _models.DayCloseRefreshResponse
     EpisodeExplainResponse = _models.EpisodeExplainResponse
+    OpsSessionRow = _models.OpsSessionRow
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -876,6 +881,106 @@ async def list_source_state(
         span.set_attribute("chronicler.source_state.query_latency_ms", query_latency_ms)
 
         return ApiResponse[list[SourceStateRow]](data=data)
+
+
+# ── GET /api/chronicler/ops/sessions ──────────────────────────────────────
+#
+# Engineering escape hatch: query operational sessions that CoreSessionsAdapter
+# intentionally excludes from the user-facing episodes table.  Reads directly
+# from each butler's raw sessions table via fan_out, filtered to ONLY the
+# excluded trigger_source values (tick, qa, healing, schedule:*).
+#
+# This endpoint is intended for engineers diagnosing scheduler cadence,
+# switchboard tick rate, and QA canary health — NOT for user-facing UIs.
+# See roster/chronicler/AGENTS.md "Ops sessions escape hatch" for usage.
+
+
+@router.get("/ops/sessions", response_model=PaginatedResponse[OpsSessionRow])
+async def list_ops_sessions(
+    trigger_source: str | None = Query(
+        None,
+        description=(
+            "Filter to a specific operational trigger_source "
+            "(e.g. 'tick', 'qa', 'healing', 'schedule:chronicler_day_close'). "
+            "Returns all operational trigger sources when omitted."
+        ),
+    ),
+    since: datetime | None = Query(None, description="started_at >= since"),
+    until: datetime | None = Query(None, description="started_at < until"),
+    limit: int = Query(50, ge=1, le=500),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[OpsSessionRow]:
+    """Return operational sessions excluded from the user-facing Chronicles.
+
+    Operational sessions (trigger_source in tick, qa, healing, schedule:*) are
+    filtered out by ``CoreSessionsAdapter`` before projection so they never
+    appear in ``/api/chronicler/episodes``.  This endpoint reads the raw
+    sessions tables directly so engineers can audit scheduler cadence,
+    switchboard tick rate, and QA canary health without that data polluting
+    user-facing Chronicles views.
+
+    Results are sorted by ``started_at DESC`` across all butler schemas.
+    The ``butler`` field identifies the schema each row came from.
+
+    **This endpoint is for engineering/ops use only.  It is not intended for
+    user-facing dashboards.**
+    """
+    excluded_exact = list(EXCLUDED_TRIGGER_SOURCES)
+    excluded_prefix_pattern = EXCLUDED_TRIGGER_SOURCE_PREFIX + "%"
+
+    # Build the SQL filter: select rows that match the operational exclusion
+    # set (i.e. the inverse of what CoreSessionsAdapter admits).
+    # Optional further filter on a specific trigger_source value.
+    clauses: list[str] = ["(trigger_source = ANY($1::text[]) OR trigger_source LIKE $2)"]
+    args: list[Any] = [excluded_exact, excluded_prefix_pattern]
+
+    if trigger_source is not None:
+        args.append(trigger_source)
+        clauses.append(f"trigger_source = ${len(args)}")
+    if since is not None:
+        args.append(since)
+        clauses.append(f"started_at >= ${len(args)}")
+    if until is not None:
+        args.append(until)
+        clauses.append(f"started_at < ${len(args)}")
+
+    where = "WHERE " + " AND ".join(clauses)
+    args.append(limit)
+
+    sql = f"""
+        SELECT id, trigger_source, started_at, completed_at, duration_ms, success, model
+        FROM sessions
+        {where}
+        ORDER BY started_at DESC
+        LIMIT ${len(args)}
+    """
+
+    fan_results: dict[str, list[Any]] = await db.fan_out(sql, args=tuple(args))
+
+    rows: list[OpsSessionRow] = []
+    for butler_name, butler_rows in sorted(fan_results.items()):
+        for row in butler_rows:
+            rows.append(
+                OpsSessionRow(
+                    butler=butler_name,
+                    session_id=str(row["id"]),
+                    trigger_source=str(row["trigger_source"] or ""),
+                    started_at=row["started_at"],
+                    completed_at=row["completed_at"],
+                    duration_ms=row["duration_ms"],
+                    success=row["success"],
+                    model=row["model"],
+                )
+            )
+
+    # Sort merged results by started_at DESC and apply limit.
+    rows.sort(key=lambda r: r.started_at, reverse=True)
+    rows = rows[:limit]
+
+    return PaginatedResponse[OpsSessionRow](
+        data=rows,
+        meta=PaginationMeta(total=len(rows), offset=0, limit=limit),
+    )
 
 
 # ── Precision ordering ─────────────────────────────────────────────────────
