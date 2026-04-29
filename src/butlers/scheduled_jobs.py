@@ -590,6 +590,16 @@ async def _run_chronicler_project_google_health_sleep_job(
     return await run_project_google_health_sleep(pool, job_args)
 
 
+async def _run_chronicler_project_spotify_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's Spotify listening-session projection job."""
+    from butlers.chronicler.jobs import run_project_spotify
+
+    return await run_project_spotify(pool, job_args)
+
+
 # ---------------------------------------------------------------------------
 # Consolidated registry
 # ---------------------------------------------------------------------------
@@ -642,6 +652,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_google_health_sleep": (
                 _run_chronicler_project_google_health_sleep_job
             ),
+            "chronicler_project_spotify": _run_chronicler_project_spotify_job,
         },
         "home": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
