@@ -23,6 +23,7 @@ import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.owntracks import (  # noqa: E402
+    CLOCK_SKEW_THRESHOLD_HOURS,
     DEFAULT_BATCH_LIMIT,
     EPISODE_TYPE_MOVEMENT,
     EVENT_TYPE_LOCATION,
@@ -1080,4 +1081,109 @@ async def test_skewed_clock_carryover_produces_no_inverted_episode() -> None:
     for ep in upserted_episodes:
         assert ep.end_at >= ep.start_at, (
             f"Inverted episode: start_at={ep.start_at.isoformat()}, end_at={ep.end_at.isoformat()}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Clock-skew threshold constant
+# ---------------------------------------------------------------------------
+
+
+def test_clock_skew_threshold_hours() -> None:
+    assert CLOCK_SKEW_THRESHOLD_HOURS == 4
+
+
+# ---------------------------------------------------------------------------
+# Upstream clock-skew clamping (bu-g3qyp)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_implausible_device_ts_clamped_to_recorded_at_no_inversion() -> None:
+    """A point whose device timestamp deviates from recorded_at by more than the
+    threshold must be clamped to recorded_at BEFORE episode projection, preventing
+    an inverted episode without ever invoking the swap-bounds guard from bu-cenng.
+
+    Scenario: two points for the same endpoint.
+      - Point A: ts=08:00, recorded_at=12:05 (device clock 4h5m behind — skewed)
+      - Point B: ts=12:10, recorded_at=12:10 (device clock correct)
+
+    Without clamping, point A's ts=08:00 would be earlier than point B's ts=12:10,
+    but after re-sorting by recorded_at (12:05, 12:10) the episode becomes
+    start_at=08:00, end_at=12:10 — non-inverted, BUT the start_at is semantically
+    wrong (it belongs to a skewed device clock).  More critically, if a prior-batch
+    carryover had end_at=12:00, the carryover-start (12:00) would be set as
+    effective_start_at while end_at falls at 08:00 — an inversion.
+
+    With clamping, point A's ts is replaced by recorded_at=12:05, so both points
+    carry plausible server-side timestamps (12:05, 12:10) and the resulting episode
+    is correctly bounded without any swap needed.
+
+    This test verifies:
+    1. The adapter warns about the implausible device timestamp.
+    2. No episode is emitted with end_at < start_at.
+    3. The swap-bounds guard is NOT the mechanism that saves us: the episode bounds
+       are already valid before any swap would occur (we patch no swap mechanism).
+    """
+    server_time = _NOW + timedelta(hours=2)  # 12:00 UTC relative to _NOW baseline
+
+    # Point A: device clock is skewed by 4h + 5min backward
+    skewed_ts = server_time - timedelta(hours=4, minutes=5)  # 07:55
+    recorded_at_a = server_time + timedelta(minutes=5)  # 12:05 (server time)
+
+    # Point B: device clock is accurate
+    good_ts = server_time + timedelta(minutes=10)  # 12:10
+    recorded_at_b = good_ts  # server time matches device
+
+    row_a = {
+        **_make_row(ts=skewed_ts, idempotency_key="skew-clamp-a"),
+        "recorded_at": recorded_at_a,
+    }
+    row_b = {
+        **_make_row(ts=good_ts, idempotency_key="skew-clamp-b"),
+        "recorded_at": recorded_at_b,
+    }
+
+    # Confirm precondition: point A's device ts is > threshold from its recorded_at
+    assert abs(skewed_ts - recorded_at_a) > timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS)
+
+    adapter = OwnTracksPointAdapter()
+    upserted_episodes: list[Episode] = []
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted_episodes.append(episode)
+        return episode
+
+    pool = _pool_returning(row_a, row_b)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_episode",
+            side_effect=_fake_upsert_ep,
+        ),
+    ):
+        mock_pe.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    # The adapter must have warned about the skewed point
+    assert any("implausible" in w for w in result.warnings), (
+        f"Expected clamping warning in result.warnings, got: {result.warnings}"
+    )
+
+    # Every emitted episode must be non-inverted
+    assert len(upserted_episodes) >= 1
+    for ep in upserted_episodes:
+        assert ep.end_at >= ep.start_at, (
+            f"Inverted episode after clock-skew clamp: "
+            f"start_at={ep.start_at.isoformat()}, end_at={ep.end_at.isoformat()}"
+        )
+
+    # The clamped point A ts should be recorded_at_a (12:05), not skewed_ts (07:55).
+    # So the episode must start at or after recorded_at_a — NOT at the skewed device ts.
+    for ep in upserted_episodes:
+        assert ep.start_at >= recorded_at_a, (
+            f"Episode start_at {ep.start_at.isoformat()} predates clamped ts "
+            f"{recorded_at_a.isoformat()} — skewed timestamp leaked into projection"
         )
