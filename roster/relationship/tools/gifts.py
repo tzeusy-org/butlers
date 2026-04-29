@@ -151,13 +151,13 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     parts = row["subject"].split(":")
     contact_id_str = parts[1] if len(parts) >= 2 else None
     contact_id = uuid.UUID(contact_id_str) if contact_id_str else None
+    if not contact_id:
+        raise ValueError(f"Could not resolve contact_id from gift subject: {row['subject']}")
 
     embedding_engine = _get_embedding_engine()
     description = row["content"]
 
-    entity_id = (
-        await resolve_contact_entity_id(pool, contact_id) if contact_id is not None else None
-    )
+    entity_id = await resolve_contact_entity_id(pool, contact_id)
 
     now = datetime.now(UTC)
     new_metadata = dict(meta)
@@ -197,13 +197,12 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
         "created_at": now,
         "updated_at": now,
     }
-    if contact_id is not None:
-        await _log_activity(
-            pool,
-            contact_id,
-            "gift_status_updated",
-            f"Gift '{description}' status: {current_status} -> {status}",
-        )
+    await _log_activity(
+        pool,
+        contact_id,
+        "gift_status_updated",
+        f"Gift '{description}' status: {current_status} -> {status}",
+    )
     return result
 
 
