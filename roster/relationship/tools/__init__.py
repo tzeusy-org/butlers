@@ -14,6 +14,7 @@ from butlers.tools.relationship.contact_info import (
     contact_info_add,
     contact_info_list,
     contact_info_remove,
+    contact_info_update,
     contact_search_by_info,
 )
 from butlers.tools.relationship.contacts import (
@@ -149,6 +150,7 @@ __all__ = [
     "contact_info_add",
     "contact_info_list",
     "contact_info_remove",
+    "contact_info_update",
     "contact_resolve",
     "contact_search",
     "contact_search_by_info",

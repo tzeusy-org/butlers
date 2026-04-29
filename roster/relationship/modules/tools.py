@@ -165,6 +165,27 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         by type."""
         return await _ci.contact_info_list(module._get_pool(), contact_id, type=type)
 
+    @_tool("contacts")
+    async def contact_info_update(
+        contact_info_id: uuid.UUID,
+        value: str | None = None,
+        label: str | None = None,
+        is_primary: bool | None = None,
+    ) -> dict[str, Any]:
+        """Update fields on an existing contact info entry (value, label, is_primary).
+
+        Owner gate: mutations targeting the owner contact are queued as
+        pending_actions for human approval instead of writing immediately.
+        At least one field must be provided.
+        """
+        return await _ci.contact_info_update(
+            module._get_pool(),
+            contact_info_id,
+            value=value,
+            label=label,
+            is_primary=is_primary,
+        )
+
     @_tool("contacts_extended")
     async def contact_info_remove(
         contact_info_id: uuid.UUID,
