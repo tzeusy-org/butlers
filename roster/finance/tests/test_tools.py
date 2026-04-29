@@ -6,7 +6,10 @@ import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import asyncpg
 import pytest
+
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -16,75 +19,24 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core + finance migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "finance"],
+    )
+
+
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance tables and return a pool."""
-    async with provisioned_postgres_pool() as p:
-        # Create finance.accounts (required FK target)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                institution TEXT NOT NULL,
-                type        TEXT NOT NULL
-                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                name        TEXT,
-                last_four   CHAR(4),
-                currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # Create finance.subscriptions
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                service           TEXT NOT NULL,
-                amount            NUMERIC(14, 2) NOT NULL,
-                currency          CHAR(3) NOT NULL,
-                frequency         TEXT NOT NULL
-                                      CHECK (frequency IN (
-                                          'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                                      )),
-                next_renewal      DATE NOT NULL,
-                status            TEXT NOT NULL
-                                      CHECK (status IN ('active', 'cancelled', 'paused')),
-                auto_renew        BOOLEAN NOT NULL DEFAULT true,
-                payment_method    TEXT,
-                account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                source_message_id TEXT,
-                metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # Create finance.bills
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS bills (
-                id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                payee                  TEXT NOT NULL,
-                amount                 NUMERIC(14, 2) NOT NULL,
-                currency               CHAR(3) NOT NULL,
-                due_date               DATE NOT NULL,
-                frequency              TEXT NOT NULL
-                                           CHECK (frequency IN (
-                                               'one_time', 'weekly', 'monthly',
-                                               'quarterly', 'yearly', 'custom'
-                                           )),
-                status                 TEXT NOT NULL
-                                           CHECK (status IN ('pending', 'paid', 'overdue')),
-                payment_method         TEXT,
-                account_id             UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                source_message_id      TEXT,
-                statement_period_start DATE,
-                statement_period_end   DATE,
-                paid_at                TIMESTAMPTZ,
-                metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        yield p
+async def pool(migrated_db_url: str):
+    """Return an asyncpg pool with finance tables cleared between tests."""
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    # Truncate in FK-safe order (children first)
+    await p.execute("TRUNCATE TABLE bills, subscriptions, accounts CASCADE")
+    yield p
+    await p.close()
 
 
 # ---------------------------------------------------------------------------

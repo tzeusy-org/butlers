@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
+
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # All async tests in this file must share the session event loop so that the
 # asyncpg pool (created in the session-scoped fixture loop per
@@ -14,8 +18,11 @@ import pytest
 # loop.  Without this mark each test function gets a fresh function-scoped loop,
 # which causes "got Future attached to a different loop" / asyncpg
 # InterfaceError failures under pytest-xdist.
+docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
+    pytest.mark.integration,
+    pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
 
@@ -23,134 +30,23 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core + memory migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory"],
+    )
+
+
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with facts-based health tables and return a pool."""
-    async with provisioned_postgres_pool() as p:
-        # public.entities (owner entity resolution)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tenant_id TEXT NOT NULL DEFAULT '',
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID REFERENCES public.entities(id),
-                roles JSONB NOT NULL DEFAULT '[]'
-            )
-        """)
-
-        # Predicate registry — columns must match what store_fact() queries
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            INSERT INTO predicate_registry (name, is_temporal) VALUES
-                ('meal_breakfast', true),
-                ('meal_lunch', true),
-                ('meal_dinner', true),
-                ('meal_snack', true),
-                ('measurement_weight', true),
-                ('measurement_blood_pressure', true),
-                ('measurement_heart_rate', true),
-                ('measurement_blood_sugar', true),
-                ('measurement_temperature', true),
-                ('symptom', true),
-                ('took_dose', true),
-                ('medication', false),
-                ('condition', false),
-                ('research', false)
-            ON CONFLICT (name) DO NOTHING
-        """)
-
-        # Facts table (simplified — TEXT embedding avoids pgvector dependency in tests)
-        # valid_at is nullable: NULL = property fact, NOT NULL = temporal fact.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector TSVECTOR,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                entity_id UUID REFERENCES public.entities(id),
-                object_entity_id UUID REFERENCES public.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal'
-            )
-        """)
-
-        # memory_links table (used by store_fact for supersession links)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_type, source_id, target_type, target_id)
-            )
-        """)
-
-        # Indexes
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_predicate_valid_at
-                ON facts (predicate, valid_at)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
-                ON facts (subject, predicate)
-        """)
-
-        yield p
+async def pool(migrated_db_url: str):
+    """Return an asyncpg pool with fact tables cleared between tests."""
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    await p.execute("TRUNCATE TABLE public.memory_links, public.facts CASCADE")
+    yield p
+    await p.close()
 
 
 # ------------------------------------------------------------------

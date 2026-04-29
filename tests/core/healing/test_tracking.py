@@ -26,100 +26,35 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
 docker_available = shutil.which("docker") is not None
-
-_CREATE_HEALING_ATTEMPTS_TABLE = """
-CREATE TABLE IF NOT EXISTS public.healing_attempts (
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    fingerprint          TEXT NOT NULL,
-    butler_name          TEXT NOT NULL,
-    status               TEXT NOT NULL DEFAULT 'investigating',
-    severity             INTEGER NOT NULL,
-    exception_type       TEXT NOT NULL,
-    call_site            TEXT NOT NULL,
-    sanitized_msg        TEXT,
-    branch_name          TEXT,
-    worktree_path        TEXT,
-    pr_url               TEXT,
-    pr_number            INTEGER,
-    session_ids          UUID[] NOT NULL DEFAULT '{}',
-    healing_session_id   UUID,
-    qa_patrol_id         UUID,
-    current_phase        TEXT,
-    workflow_deadline_at TIMESTAMPTZ,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    closed_at            TIMESTAMPTZ,
-    error_detail         TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_healing_fingerprint
-    ON public.healing_attempts(fingerprint);
-CREATE INDEX IF NOT EXISTS idx_healing_status
-    ON public.healing_attempts(status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_healing_active_fingerprint
-    ON public.healing_attempts(fingerprint)
-    WHERE status IN ('investigating', 'pr_open');
-
-CREATE TABLE IF NOT EXISTS public.healing_attempt_sessions (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id      UUID NOT NULL REFERENCES public.healing_attempts(id) ON DELETE CASCADE,
-    phase           TEXT NOT NULL,
-    session_id      UUID NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'running',
-    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at    TIMESTAMPTZ,
-    error_detail    TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_has_attempt_id
-    ON public.healing_attempt_sessions(attempt_id);
-
-CREATE TABLE IF NOT EXISTS public.healing_dispatch_events (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    fingerprint TEXT NOT NULL,
-    butler_name TEXT NOT NULL,
-    decision    TEXT NOT NULL,
-    reason      TEXT,
-    attempt_id  UUID REFERENCES public.healing_attempts(id) ON DELETE SET NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_hde_fingerprint
-    ON public.healing_dispatch_events(fingerprint);
-"""
-
-
-def _unique_db_name() -> str:
-    return f"testdb_{uuid.uuid4().hex[:12]}"
 
 
 @pytest.fixture(scope="module")
-async def healing_pool(postgres_container):  # type: ignore[no-untyped-def]
-    """Fresh isolated database with public.healing_attempts."""
-    db_name = _unique_db_name()
-    admin_conn = await asyncpg.connect(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database="postgres",
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
     )
-    try:
-        safe_name = db_name.replace('"', '""')
-        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
-    finally:
-        await admin_conn.close()
 
-    pool = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=db_name,
-        min_size=1,
-        max_size=5,
-    )
+
+@pytest.fixture(scope="module")
+async def healing_pool(migrated_db_url: str):  # type: ignore[no-untyped-def]
+    """Asyncpg pool pointing at the core-migrated DB.
+
+    Healing tables (public.healing_attempts, public.healing_attempt_sessions,
+    public.healing_dispatch_events) are created by the core migration chain.
+    """
+    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=5)
     await pool.execute("SELECT 1")
-    await pool.execute(_CREATE_HEALING_ATTEMPTS_TABLE)
+    # Truncate data tables before the test module runs (shared DB).
+    await pool.execute(
+        "TRUNCATE TABLE public.healing_dispatch_events, "
+        "public.healing_attempt_sessions, public.healing_attempts CASCADE"
+    )
     yield pool
     await pool.close()
 
