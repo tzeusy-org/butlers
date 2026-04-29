@@ -330,38 +330,33 @@ async def test_loan_create_multi_currency(pool):
 # ------------------------------------------------------------------
 
 
-async def test_loan_list_entity_keyed_query(pool):
-    """loan_list returns loans after entity_id fix.
+async def test_loan_list_multiple_loans_same_lender(pool):
+    """loan_list returns all active loans for a lender, including multiple loans.
 
-    With entity_id anchoring, loans for the same contact entity in the same
-    scope use supersession key (entity_id, scope, predicate).  Two loans from
-    the same lender entity result in only the latest being active.  Loans from
-    distinct lenders are independent and each returns one active result.
+    With temporal fact storage, each loan coexists independently — two loans
+    from the same lender entity are both active and both returned by loan_list.
     """
-    lender_a = await _make_contact_with_entity(pool, "ListQuery-Lender-A")
-    lender_b = await _make_contact_with_entity(pool, "ListQuery-Lender-B")
+    lender = await _make_contact_with_entity(pool, "ListQuery-Lender")
     borrower = await _make_contact_with_entity(pool, "ListQuery-Borrower")
 
     from butlers.tools.relationship import loan_create, loan_list
 
     await loan_create(
         pool,
-        lender_contact_id=lender_a["id"],
+        lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="First loan",
         amount_cents=1000,
     )
     await loan_create(
         pool,
-        lender_contact_id=lender_b["id"],
+        lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Second loan",
         amount_cents=2000,
     )
 
-    loans_a = await loan_list(pool, lender_a["id"])
-    loans_b = await loan_list(pool, lender_b["id"])
-    assert len(loans_a) == 1
-    assert loans_a[0]["description"] == "First loan"
-    assert len(loans_b) == 1
-    assert loans_b[0]["description"] == "Second loan"
+    loans = await loan_list(pool, lender["id"])
+    assert len(loans) == 2, "Both loans must be active — temporal facts do not supersede each other"
+    descriptions = {loan["description"] for loan in loans}
+    assert descriptions == {"First loan", "Second loan"}

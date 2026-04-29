@@ -1,14 +1,18 @@
 """Loans — track money lent or borrowed backed by SPO facts.
 
-Each loan is a property fact in the facts table (supersession by subject key):
+Each loan is a temporal fact in the facts table (append-only coexistence):
   subject   = contact:{contact_id}:loan:{loan_uuid}
   predicate = 'loan'
   content   = description
   metadata  = {amount_cents, currency, direction, settled, settled_at,
                lender_contact_id, borrower_contact_id}
-  valid_at  = NULL (property fact — settle updates supersede)
+  valid_at  = created_at (temporal — each loan coexists independently)
   scope     = 'relationship'
   entity_id = contact's entity UUID (resolved via contacts.entity_id)
+
+Status transitions (loan_settle) supersede the previous snapshot via a direct
+UPDATE before inserting the new fact, bypassing store_fact's entity-keyed
+supersession which would collapse all loans for the same entity into one.
 
 The response shape is backward compatible with the legacy loans table.
 """
@@ -118,9 +122,10 @@ async def loan_create(
 
     embedding_engine = _get_embedding_engine()
 
-    # Unique loan subject per creation — loans don't supersede each other
+    # Unique loan subject per creation — distinct UUID ensures each loan is independent
     loan_uuid = uuid.uuid4()
     subject = f"contact:{actor_contact}:loan:{loan_uuid}" if actor_contact else f"loan:{loan_uuid}"
+    now = datetime.now(UTC)
 
     fact_metadata: dict[str, Any] = {
         "settled": False,
@@ -137,6 +142,8 @@ async def loan_create(
     if contact_id is not None:
         fact_metadata["contact_id"] = str(contact_id)
 
+    # Temporal fact (valid_at=now) so multiple loans for the same entity coexist
+    # independently without entity-keyed supersession collapsing them into one.
     fact_id = (
         await store_fact(
             pool,
@@ -147,12 +154,10 @@ async def loan_create(
             permanence="stable",
             scope="relationship",
             entity_id=contact_entity_id,
-            valid_at=None,  # property fact — settle updates will supersede
+            valid_at=now,
             metadata=fact_metadata,
         )
     )["id"]
-
-    now = datetime.now(UTC)
     result: dict[str, Any] = {
         "id": fact_id,
         "description": effective_description,
@@ -206,6 +211,16 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
 
     embedding_engine = _get_embedding_engine()
 
+    # Supersede the old fact directly before inserting the settled snapshot.
+    # We do NOT rely on store_fact's entity-keyed supersession because that would
+    # collapse all loans for the same entity+predicate into one row.
+    await pool.execute(
+        "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+        loan_id,
+        now,
+    )
+
+    # Insert the settled snapshot as a temporal fact (coexists independently).
     new_fact_id = (
         await store_fact(
             pool,
@@ -216,7 +231,7 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
             permanence="stable",
             scope="relationship",
             entity_id=row["entity_id"],
-            valid_at=None,  # property fact — supersedes previous
+            valid_at=now,
             metadata=new_metadata,
         )
     )["id"]
@@ -268,7 +283,7 @@ async def loan_list(
               AND predicate = 'loan'
               AND scope = 'relationship'
               AND validity = 'active'
-              AND valid_at IS NULL
+              AND valid_at IS NOT NULL
             ORDER BY created_at DESC
             """,
             f"contact:{contact_id}:loan:%",
@@ -281,7 +296,7 @@ async def loan_list(
             WHERE predicate = 'loan'
               AND scope = 'relationship'
               AND validity = 'active'
-              AND valid_at IS NULL
+              AND valid_at IS NOT NULL
             ORDER BY created_at DESC
             """
         )

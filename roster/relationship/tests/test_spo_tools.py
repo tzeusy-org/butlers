@@ -567,35 +567,31 @@ async def test_loan_settle_updates_fact(pool):
 async def test_loan_list_returns_loans(pool):
     """loan_list reads loans from facts.
 
-    With entity_id anchoring, each loan is keyed to the actor contact's entity
-    via (entity_id, scope, predicate).  Two loans for the same contact entity
-    in the same scope supersede each other.  Use separate contacts to verify
-    loan_list returns loans from each without cross-contact interference.
+    Multiple loans from the same contact are stored as temporal facts and
+    coexist independently — both must be returned by loan_list.
     """
     from butlers.tools.relationship.loans import loan_create, loan_list
 
-    contact_a = await _make_contact(pool, "VictorA")
-    contact_b = await _make_contact(pool, "VictorB")
+    contact = await _make_contact(pool, "Victor")
+    cid = contact["id"]
 
     await loan_create(
         pool,
-        contact_id=contact_a["id"],
+        contact_id=cid,
         amount=Decimal("20.00"),
         direction="lent",
         description="Lunch",
     )
     await loan_create(
         pool,
-        contact_id=contact_b["id"],
+        contact_id=cid,
         amount=Decimal("30.00"),
         direction="lent",
         description="Dinner",
     )
 
-    loans_a = await loan_list(pool, contact_a["id"])
-    loans_b = await loan_list(pool, contact_b["id"])
-    assert len(loans_a) == 1
-    assert len(loans_b) == 1
+    loans = await loan_list(pool, cid)
+    assert len(loans) == 2
 
 
 # ===========================================================================
