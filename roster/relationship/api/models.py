@@ -507,3 +507,12 @@ class EntityTimelineItem(BaseModel):
     valid_at: datetime | None = None
     predicate: str
     metadata: dict | None = None
+
+
+class LinkedContactSummary(BaseModel):
+    """A contact linked to an entity, for the entity detail page linked-contacts section."""
+
+    id: UUID
+    full_name: str
+    email: str | None = None
+    phone: str | None = None

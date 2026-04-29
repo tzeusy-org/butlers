@@ -1,17 +1,12 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { format, formatDistanceToNow } from "date-fns";
-import { Pencil, Plus, Trash2, Unlink, X, Check } from "lucide-react";
+import { format } from "date-fns";
+import { AlertTriangle, Pencil, Plus, Trash2, Unlink, X, Check } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
-  ActivityFeedItem,
   ContactDetail,
   ContactInfoEntry,
-  Gift,
-  Interaction,
-  Loan,
-  Note,
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,22 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  useContactFeed,
-  useContactGifts,
-  useContactInteractions,
-  useContactLoans,
-  useContactNotes,
   useCreateContactInfo,
   useDeleteContact,
   useDeleteContactInfo,
@@ -85,10 +65,6 @@ function formatDate(iso: string): string {
   return format(new Date(iso), "MMM d, yyyy");
 }
 
-function formatRelative(iso: string): string {
-  return formatDistanceToNow(new Date(iso), { addSuffix: true });
-}
-
 /** Return a Tailwind-friendly color class for a role badge. */
 function roleBadgeStyle(role: string): React.CSSProperties {
   switch (role.toLowerCase()) {
@@ -99,28 +75,6 @@ function roleBadgeStyle(role: string): React.CSSProperties {
     default:
       return { backgroundColor: "#0369a1", color: "#fff" }; // sky-700
   }
-}
-
-// ---------------------------------------------------------------------------
-// Loading skeleton for tab content
-// ---------------------------------------------------------------------------
-
-function TabSkeleton() {
-  return (
-    <div className="space-y-3 py-4">
-      {Array.from({ length: 3 }, (_, i) => (
-        <Skeleton key={i} className="h-12 w-full" />
-      ))}
-    </div>
-  );
-}
-
-function EmptyTab({ message }: { message: string }) {
-  return (
-    <div className="text-muted-foreground flex items-center justify-center py-12 text-sm">
-      {message}
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -833,205 +787,6 @@ function EditHeaderForm({ contact, onDone }: EditHeaderFormProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Notes tab
-// ---------------------------------------------------------------------------
-
-function NotesTab({ contactId }: { contactId: string }) {
-  const { data: notes, isLoading } = useContactNotes(contactId);
-
-  if (isLoading) return <TabSkeleton />;
-  if (!notes || notes.length === 0) return <EmptyTab message="No notes yet." />;
-
-  return (
-    <div className="space-y-3 py-4">
-      {notes.map((note: Note) => (
-        <Card key={note.id}>
-          <CardContent className="py-3">
-            <p className="text-sm whitespace-pre-wrap">{note.content}</p>
-            <p className="text-muted-foreground mt-2 text-xs">
-              {formatRelative(note.created_at)}
-            </p>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Interactions tab
-// ---------------------------------------------------------------------------
-
-function InteractionsTab({ contactId }: { contactId: string }) {
-  const { data: interactions, isLoading } = useContactInteractions(contactId);
-
-  if (isLoading) return <TabSkeleton />;
-  if (!interactions || interactions.length === 0)
-    return <EmptyTab message="No interactions recorded." />;
-
-  return (
-    <div className="space-y-3 py-4">
-      {interactions.map((item: Interaction) => (
-        <div
-          key={item.id}
-          className="flex items-start gap-3 border-l-2 border-border pl-4 py-2"
-        >
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="text-xs">
-                {item.type}
-              </Badge>
-              <span className="text-muted-foreground text-xs">
-                {formatDate(item.occurred_at)}
-              </span>
-            </div>
-            <p className="mt-1 text-sm font-medium">{item.summary}</p>
-            {item.details && (
-              <p className="text-muted-foreground mt-1 text-xs">{item.details}</p>
-            )}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Gifts tab
-// ---------------------------------------------------------------------------
-
-function GiftsTab({ contactId }: { contactId: string }) {
-  const { data: gifts, isLoading } = useContactGifts(contactId);
-
-  if (isLoading) return <TabSkeleton />;
-  if (!gifts || gifts.length === 0) return <EmptyTab message="No gifts recorded." />;
-
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Description</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Occasion</TableHead>
-          <TableHead>Date</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {gifts.map((gift: Gift) => (
-          <TableRow key={gift.id}>
-            <TableCell className="font-medium">{gift.description}</TableCell>
-            <TableCell>
-              <Badge variant="outline" className="text-xs capitalize">
-                {gift.status}
-              </Badge>
-            </TableCell>
-            <TableCell className="text-muted-foreground text-sm">
-              {gift.occasion ?? "\u2014"}
-            </TableCell>
-            <TableCell className="text-muted-foreground text-sm">
-              {formatDate(gift.created_at)}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Loans tab
-// ---------------------------------------------------------------------------
-
-function LoansTab({ contactId }: { contactId: string }) {
-  const { data: loans, isLoading } = useContactLoans(contactId);
-
-  if (isLoading) return <TabSkeleton />;
-  if (!loans || loans.length === 0) return <EmptyTab message="No loans recorded." />;
-
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Description</TableHead>
-          <TableHead>Direction</TableHead>
-          <TableHead>Amount</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead>Date</TableHead>
-          <TableHead>Settled</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {loans.map((loan: Loan) => (
-          <TableRow key={loan.id}>
-            <TableCell className="font-medium">{loan.description ?? "\u2014"}</TableCell>
-            <TableCell>
-              <Badge
-                variant={loan.direction === "lent" ? "default" : "outline"}
-                className="text-xs"
-              >
-                {loan.direction}
-              </Badge>
-            </TableCell>
-            <TableCell className="tabular-nums text-sm">
-              {loan.amount.toFixed(2)}
-            </TableCell>
-            <TableCell>
-              <Badge
-                variant={loan.settled ? "secondary" : "default"}
-                className="text-xs"
-              >
-                {loan.settled ? "settled" : "active"}
-              </Badge>
-            </TableCell>
-            <TableCell className="text-muted-foreground text-sm">
-              {formatDate(loan.created_at)}
-            </TableCell>
-            <TableCell className="text-muted-foreground text-sm">
-              {loan.settled_at ? formatDate(loan.settled_at) : "\u2014"}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Activity tab
-// ---------------------------------------------------------------------------
-
-function ActivityTab({ contactId }: { contactId: string }) {
-  const { data: feed, isLoading } = useContactFeed(contactId);
-
-  if (isLoading) return <TabSkeleton />;
-  if (!feed || feed.length === 0)
-    return <EmptyTab message="No activity yet." />;
-
-  return (
-    <div className="space-y-2 py-4">
-      {feed.map((item: ActivityFeedItem) => (
-        <div
-          key={item.id}
-          className="flex items-center gap-3 rounded-md border px-3 py-2"
-        >
-          <Badge variant="outline" className="text-xs shrink-0">
-            {item.action}
-          </Badge>
-          <span className="text-sm flex-1">
-            {Object.keys(item.details).length > 0
-              ? JSON.stringify(item.details)
-              : "No additional details"}
-          </span>
-          <span className="text-muted-foreground text-xs shrink-0">
-            {formatRelative(item.created_at)}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // ContactDetailView
 // ---------------------------------------------------------------------------
 
@@ -1147,16 +902,13 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
         <CardContent>
           <ContactInfoSection contact={contact} />
           <PreferredChannelRow contact={contact} />
-          {contact.entity_id && (
-            <div className="flex gap-2 items-center mt-2">
-              <span className="text-muted-foreground text-sm w-36 shrink-0">
-                Linked Entity
-              </span>
+          {contact.entity_id ? (
+            <div className="flex gap-2 items-center mt-3">
               <Link
-                to={`/entities/${contact.entity_id}`}
-                className="text-primary text-sm hover:underline"
+                to={`/butlers/relationship/entities/${contact.entity_id}`}
+                className="text-primary text-sm font-medium hover:underline"
               >
-                View entity
+                View entity activity →
               </Link>
               <Button
                 variant="ghost"
@@ -1168,6 +920,11 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
                 <Unlink className="mr-1 h-3 w-3" />
                 Unlink
               </Button>
+            </div>
+          ) : (
+            <div className="mt-3 flex items-center gap-2 rounded-md border border-yellow-300 bg-yellow-50 px-3 py-2 text-sm text-yellow-800 dark:border-yellow-700 dark:bg-yellow-950 dark:text-yellow-300">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>This contact is not linked to an entity. Activity history is unavailable.</span>
             </div>
           )}
           {addingInfo ? (
@@ -1190,32 +947,6 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
         </CardContent>
       </Card>
 
-      {/* Tabs for sub-resources */}
-      <Tabs defaultValue="notes">
-        <TabsList>
-          <TabsTrigger value="notes">Notes</TabsTrigger>
-          <TabsTrigger value="interactions">Interactions</TabsTrigger>
-          <TabsTrigger value="gifts">Gifts</TabsTrigger>
-          <TabsTrigger value="loans">Loans</TabsTrigger>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="notes">
-          <NotesTab contactId={contact.id} />
-        </TabsContent>
-        <TabsContent value="interactions">
-          <InteractionsTab contactId={contact.id} />
-        </TabsContent>
-        <TabsContent value="gifts">
-          <GiftsTab contactId={contact.id} />
-        </TabsContent>
-        <TabsContent value="loans">
-          <LoansTab contactId={contact.id} />
-        </TabsContent>
-        <TabsContent value="activity">
-          <ActivityTab contactId={contact.id} />
-        </TabsContent>
-      </Tabs>
     </div>
   );
 }

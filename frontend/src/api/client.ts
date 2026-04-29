@@ -233,6 +233,13 @@ import type {
   ChroniclerOverride,
   ChroniclerPointEvent,
   ChroniclerSourceStateRow,
+  EntityNote,
+  EntityInteraction,
+  EntityGift,
+  EntityLoan,
+  EntityTimelineItem,
+  LinkedContactSummary,
+  RelationshipEntityDetail,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1418,6 +1425,94 @@ export function revealEntitySecret(
   return apiFetch<EntityInfoEntry>(
     `/relationship/entities/${encodeURIComponent(entityId)}/secrets/${encodeURIComponent(infoId)}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Relationship butler: entity-level fetch and tab endpoints
+// ---------------------------------------------------------------------------
+
+/** Fetch a relationship entity by ID (relationship-scoped; includes aliases, roles, metadata). */
+export function getRelationshipEntity(entityId: string): Promise<RelationshipEntityDetail> {
+  return apiFetch<RelationshipEntityDetail>(
+    `/relationship/entities/${encodeURIComponent(entityId)}`,
+  );
+}
+
+/** Fetch all contacts linked to a relationship entity. */
+export function getEntityLinkedContacts(entityId: string): Promise<LinkedContactSummary[]> {
+  return apiFetch<LinkedContactSummary[]>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/linked-contacts`,
+  );
+}
+
+/** Fetch notes tab data for a relationship entity. */
+export function getEntityNotes(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityNote[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/notes?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/notes`;
+  return apiFetch<EntityNote[]>(path);
+}
+
+/** Fetch interactions tab data for a relationship entity. */
+export function getEntityInteractions(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityInteraction[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/interactions?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/interactions`;
+  return apiFetch<EntityInteraction[]>(path);
+}
+
+/** Fetch gifts tab data for a relationship entity. */
+export function getEntityGifts(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityGift[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/gifts?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/gifts`;
+  return apiFetch<EntityGift[]>(path);
+}
+
+/** Fetch loans tab data for a relationship entity. */
+export function getEntityLoans(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityLoan[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/loans?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/loans`;
+  return apiFetch<EntityLoan[]>(path);
+}
+
+/** Fetch unified timeline data for a relationship entity. */
+export function getEntityTimeline(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityTimelineItem[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/timeline?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/timeline`;
+  return apiFetch<EntityTimelineItem[]>(path);
 }
 
 /** Link a contact to an entity. */

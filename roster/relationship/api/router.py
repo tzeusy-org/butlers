@@ -82,6 +82,7 @@ if _models_path.exists():
         EntityGift = _models_module.EntityGift
         EntityLoan = _models_module.EntityLoan
         EntityTimelineItem = _models_module.EntityTimelineItem
+        LinkedContactSummary = _models_module.LinkedContactSummary
 
 logger = logging.getLogger(__name__)
 
@@ -2777,6 +2778,66 @@ async def list_entity_timeline(
             valid_at=r["valid_at"],
             predicate=r["predicate"],
             metadata=dict(r["metadata"]) if r["metadata"] else None,
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/linked-contacts
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}/linked-contacts", response_model=list[LinkedContactSummary])
+async def list_entity_linked_contacts(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[LinkedContactSummary]:
+    """List all contacts whose entity_id matches the given entity UUID.
+
+    Returns 404 if the entity does not exist.
+    Returns [] if no contacts are linked to the entity.
+    Each entry includes a primary email and phone for quick display.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            c.id,
+            c.full_name,
+            (
+                SELECT ci.value
+                FROM public.contact_info ci
+                WHERE ci.contact_id = c.id
+                  AND ci.type = 'email'
+                  AND ci.secured = false
+                ORDER BY ci.is_primary DESC, ci.id
+                LIMIT 1
+            ) AS email,
+            (
+                SELECT ci.value
+                FROM public.contact_info ci
+                WHERE ci.contact_id = c.id
+                  AND ci.type = 'phone'
+                  AND ci.secured = false
+                ORDER BY ci.is_primary DESC, ci.id
+                LIMIT 1
+            ) AS phone
+        FROM public.contacts c
+        WHERE c.entity_id = $1
+          AND c.archived_at IS NULL
+        ORDER BY c.full_name
+        """,
+        entity_id,
+    )
+    return [
+        LinkedContactSummary(
+            id=r["id"],
+            full_name=r["full_name"],
+            email=r["email"],
+            phone=r["phone"],
         )
         for r in rows
     ]

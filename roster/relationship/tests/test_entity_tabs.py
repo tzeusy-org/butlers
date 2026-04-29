@@ -590,3 +590,78 @@ class TestSparseMetadataNull:
 
         item = resp.json()[0]
         assert item["metadata"] is None
+
+
+# ---------------------------------------------------------------------------
+# LinkedContacts endpoint
+# ---------------------------------------------------------------------------
+
+
+def _make_contact_row(**kwargs) -> MagicMock:
+    """Build a MagicMock that behaves like an asyncpg Record for a contacts row."""
+    data = {
+        "id": uuid4(),
+        "full_name": "Alice Example",
+        "email": None,
+        "phone": None,
+        **kwargs,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+class TestEntityLinkedContacts:
+    """Tests for GET /api/relationship/entities/{id}/linked-contacts."""
+
+    async def test_returns_200_with_contacts(self):
+        rows = [
+            _make_contact_row(full_name="Alice Example", email="alice@example.com", phone=None),
+            _make_contact_row(full_name="Bob Builder", email=None, phone="+1-555-0100"),
+        ]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 2
+
+    async def test_linked_contact_fields_populated(self):
+        contact_id = uuid4()
+        rows = [
+            _make_contact_row(
+                id=contact_id,
+                full_name="Alice Example",
+                email="alice@example.com",
+                phone="+44-20-1234",
+            )
+        ]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        item = resp.json()[0]
+        assert item["full_name"] == "Alice Example"
+        assert item["email"] == "alice@example.com"
+        assert item["phone"] == "+44-20-1234"
+        assert "id" in item
+
+    async def test_returns_empty_list_when_no_contacts(self):
+        app, _ = _app_with_pool(fetch_rows=[])
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_null_email_and_phone_returned_as_null(self):
+        rows = [_make_contact_row(full_name="Charlie", email=None, phone=None)]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/linked-contacts")
+
+        item = resp.json()[0]
+        assert item["email"] is None
+        assert item["phone"] is None
+
+    async def test_returns_404_for_missing_entity(self):
+        app, _ = _app_with_pool(entity_exists=False)
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/linked-contacts")
+        assert resp.status_code == 404
