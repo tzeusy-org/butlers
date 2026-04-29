@@ -15,16 +15,14 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
 
 from butlers.core.model_routing import QuotaStatus, check_token_quota, record_token_usage
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -74,91 +72,58 @@ async def test_quota_unit_behaviors() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-@asynccontextmanager
-async def _make_pool(postgres_container: Any) -> AsyncIterator[asyncpg.Pool]:
-    db_name = _unique_db_name()
-
-    admin_conn = await asyncpg.connect(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database="postgres",
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
     )
-    try:
-        safe_name = db_name.replace('"', '""')
-        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
-    finally:
-        await admin_conn.close()
 
-    pool = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=db_name,
-        min_size=1,
-        max_size=3,
+
+@pytest.fixture
+async def pool(migrated_db_url: str) -> asyncpg.Pool:
+    """Return an asyncpg pool with quota tables cleared between tests.
+
+    Also ensures historical monthly partitions exist for the token_usage_ledger
+    (needed by tests that insert rows with recorded_at 30+ days in the past).
+    """
+    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    # Ensure partitions exist for the past 2 months so tests that insert
+    # historical rows (e.g. 31 days ago) don't fail with "no partition found".
+    await p.execute("""
+        DO $$
+        DECLARE
+            i           INT;
+            month_start TIMESTAMPTZ;
+            month_end   TIMESTAMPTZ;
+            part_name   TEXT;
+        BEGIN
+            FOR i IN 1 .. 2 LOOP
+                month_start := date_trunc('month', now() - (i || ' months')::interval);
+                month_end   := month_start + INTERVAL '1 month';
+                part_name   := format(
+                    'token_usage_ledger_%s',
+                    to_char(month_start, 'YYYYMM')
+                );
+                EXECUTE format(
+                    'CREATE TABLE IF NOT EXISTS public.%I '
+                    'PARTITION OF public.token_usage_ledger '
+                    'FOR VALUES FROM (%L) TO (%L)',
+                    part_name,
+                    month_start,
+                    month_end
+                );
+            END LOOP;
+        END
+        $$
+    """)
+    await p.execute(
+        "TRUNCATE public.token_usage_ledger, public.token_limits, public.model_catalog CASCADE"
     )
-    try:
-        await _create_schema(pool)
-        yield pool
-    finally:
-        await pool.close()
-
-
-async def _create_schema(pool: asyncpg.Pool) -> None:
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.model_catalog (
-            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            alias           TEXT NOT NULL,
-            runtime_type    TEXT NOT NULL DEFAULT 'claude',
-            model_id        TEXT NOT NULL DEFAULT 'test-model',
-            extra_args      JSONB NOT NULL DEFAULT '[]'::jsonb,
-            complexity_tier TEXT NOT NULL DEFAULT 'medium',
-            enabled         BOOLEAN NOT NULL DEFAULT true,
-            priority        INTEGER NOT NULL DEFAULT 0,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT uq_model_catalog_alias UNIQUE (alias)
-        )
-    """)
-
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.token_limits (
-            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            catalog_entry_id UUID NOT NULL UNIQUE
-                REFERENCES public.model_catalog(id) ON DELETE CASCADE,
-            limit_24h        BIGINT,
-            limit_30d        BIGINT,
-            reset_24h_at     TIMESTAMPTZ,
-            reset_30d_at     TIMESTAMPTZ,
-            created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.token_usage_ledger (
-            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            catalog_entry_id UUID NOT NULL
-                REFERENCES public.model_catalog(id) ON DELETE CASCADE,
-            butler_name      TEXT NOT NULL,
-            session_id       UUID,
-            input_tokens     INTEGER NOT NULL DEFAULT 0,
-            output_tokens    INTEGER NOT NULL DEFAULT 0,
-            recorded_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-
-    await pool.execute("""
-        CREATE INDEX IF NOT EXISTS idx_ledger_entry_time
-            ON public.token_usage_ledger (catalog_entry_id, recorded_at)
-    """)
+    yield p
+    await p.close()
 
 
 async def _insert_catalog_entry(
@@ -235,135 +200,130 @@ async def _insert_ledger_row(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_quota_no_limits_row_fast_path(postgres_container: Any) -> None:
+async def test_quota_no_limits_row_fast_path(pool: asyncpg.Pool) -> None:
     """No token_limits row → fast path, allowed=True, zero usage."""
-    async with _make_pool(postgres_container) as pool:
-        entry_id = await _insert_catalog_entry(pool, alias="no-limits-entry")
-        result = await check_token_quota(pool, entry_id)
-        assert result.allowed is True
-        assert result.usage_24h == 0 and result.limit_24h is None
-        assert result.usage_30d == 0 and result.limit_30d is None
+    entry_id = await _insert_catalog_entry(pool, alias="no-limits-entry")
+    result = await check_token_quota(pool, entry_id)
+    assert result.allowed is True
+    assert result.usage_24h == 0 and result.limit_24h is None
+    assert result.usage_30d == 0 and result.limit_30d is None
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_quota_within_limits_and_exceeded(postgres_container: Any) -> None:
+async def test_quota_within_limits_and_exceeded(pool: asyncpg.Pool) -> None:
     """Within both limits → allowed=True. Exceeding 24h or 30d → allowed=False."""
-    async with _make_pool(postgres_container) as pool:
-        # Within limits
-        eid = await _insert_catalog_entry(pool, alias="within-limits")
-        await _insert_limits(pool, catalog_entry_id=eid, limit_24h=1000, limit_30d=10000)
-        await _insert_ledger_row(pool, catalog_entry_id=eid, input_tokens=100, output_tokens=50)
-        r = await check_token_quota(pool, eid)
-        assert r.allowed is True and r.usage_24h == 150 and r.limit_24h == 1000
+    # Within limits
+    eid = await _insert_catalog_entry(pool, alias="within-limits")
+    await _insert_limits(pool, catalog_entry_id=eid, limit_24h=1000, limit_30d=10000)
+    await _insert_ledger_row(pool, catalog_entry_id=eid, input_tokens=100, output_tokens=50)
+    r = await check_token_quota(pool, eid)
+    assert r.allowed is True and r.usage_24h == 150 and r.limit_24h == 1000
 
-        # 24h exceeded
-        eid2 = await _insert_catalog_entry(pool, alias="24h-exceeded")
-        await _insert_limits(pool, catalog_entry_id=eid2, limit_24h=100, limit_30d=10000)
-        await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=60, output_tokens=50)
-        r2 = await check_token_quota(pool, eid2)
-        assert r2.allowed is False and r2.usage_24h == 110
+    # 24h exceeded
+    eid2 = await _insert_catalog_entry(pool, alias="24h-exceeded")
+    await _insert_limits(pool, catalog_entry_id=eid2, limit_24h=100, limit_30d=10000)
+    await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=60, output_tokens=50)
+    r2 = await check_token_quota(pool, eid2)
+    assert r2.allowed is False and r2.usage_24h == 110
 
-        # 30d exceeded (24h unlimited)
-        eid3 = await _insert_catalog_entry(pool, alias="30d-exceeded")
-        await _insert_limits(pool, catalog_entry_id=eid3, limit_24h=None, limit_30d=100)
-        await _insert_ledger_row(pool, catalog_entry_id=eid3, input_tokens=60, output_tokens=50)
-        r3 = await check_token_quota(pool, eid3)
-        assert r3.allowed is False and r3.usage_30d == 110 and r3.limit_24h is None
+    # 30d exceeded (24h unlimited)
+    eid3 = await _insert_catalog_entry(pool, alias="30d-exceeded")
+    await _insert_limits(pool, catalog_entry_id=eid3, limit_24h=None, limit_30d=100)
+    await _insert_ledger_row(pool, catalog_entry_id=eid3, input_tokens=60, output_tokens=50)
+    r3 = await check_token_quota(pool, eid3)
+    assert r3.allowed is False and r3.usage_30d == 110 and r3.limit_24h is None
 
-        # Exactly at limit is blocked
-        eid4 = await _insert_catalog_entry(pool, alias="exact-limit")
-        await _insert_limits(pool, catalog_entry_id=eid4, limit_24h=100)
-        await _insert_ledger_row(pool, catalog_entry_id=eid4, input_tokens=60, output_tokens=40)
-        r4 = await check_token_quota(pool, eid4)
-        assert r4.allowed is False and r4.usage_24h == 100
+    # Exactly at limit is blocked
+    eid4 = await _insert_catalog_entry(pool, alias="exact-limit")
+    await _insert_limits(pool, catalog_entry_id=eid4, limit_24h=100)
+    await _insert_ledger_row(pool, catalog_entry_id=eid4, input_tokens=60, output_tokens=40)
+    r4 = await check_token_quota(pool, eid4)
+    assert r4.allowed is False and r4.usage_24h == 100
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_quota_reset_and_window_exclusion(postgres_container: Any) -> None:
+async def test_quota_reset_and_window_exclusion(pool: asyncpg.Pool) -> None:
     """reset_at excludes old usage; usage older than 30d excluded from 30d window."""
-    async with _make_pool(postgres_container) as pool:
-        # reset_24h_at: old row excluded, recent row counted
-        eid = await _insert_catalog_entry(pool, alias="reset-24h")
-        reset_time = datetime.now(UTC) - timedelta(hours=1)
-        await _insert_limits(pool, catalog_entry_id=eid, limit_24h=100, reset_24h_at=reset_time)
-        await _insert_ledger_row(
-            pool,
-            catalog_entry_id=eid,
-            input_tokens=80,
-            recorded_at=datetime.now(UTC) - timedelta(hours=12),  # before reset
-        )
-        await _insert_ledger_row(pool, catalog_entry_id=eid, input_tokens=20)  # after reset
-        r = await check_token_quota(pool, eid)
-        assert r.usage_24h == 20 and r.allowed is True
+    # reset_24h_at: old row excluded, recent row counted
+    eid = await _insert_catalog_entry(pool, alias="reset-24h")
+    reset_time = datetime.now(UTC) - timedelta(hours=1)
+    await _insert_limits(pool, catalog_entry_id=eid, limit_24h=100, reset_24h_at=reset_time)
+    await _insert_ledger_row(
+        pool,
+        catalog_entry_id=eid,
+        input_tokens=80,
+        recorded_at=datetime.now(UTC) - timedelta(hours=12),  # before reset
+    )
+    await _insert_ledger_row(pool, catalog_entry_id=eid, input_tokens=20)  # after reset
+    r = await check_token_quota(pool, eid)
+    assert r.usage_24h == 20 and r.allowed is True
 
-        # Old usage outside 30d excluded
-        eid2 = await _insert_catalog_entry(pool, alias="old-30d")
-        await _insert_limits(pool, catalog_entry_id=eid2, limit_30d=500)
-        await _insert_ledger_row(
-            pool,
-            catalog_entry_id=eid2,
-            input_tokens=400,
-            recorded_at=datetime.now(UTC) - timedelta(days=31),
-        )
-        await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=50)
-        r2 = await check_token_quota(pool, eid2)
-        assert r2.usage_30d == 50 and r2.allowed is True
+    # Old usage outside 30d excluded
+    eid2 = await _insert_catalog_entry(pool, alias="old-30d")
+    await _insert_limits(pool, catalog_entry_id=eid2, limit_30d=500)
+    await _insert_ledger_row(
+        pool,
+        catalog_entry_id=eid2,
+        input_tokens=400,
+        recorded_at=datetime.now(UTC) - timedelta(days=31),
+    )
+    await _insert_ledger_row(pool, catalog_entry_id=eid2, input_tokens=50)
+    r2 = await check_token_quota(pool, eid2)
+    assert r2.usage_30d == 50 and r2.allowed is True
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_record_token_usage_and_reflected_in_quota(postgres_container: Any) -> None:
+async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> None:
     """record_token_usage inserts row with correct fields; NULL session_id accepted;
     subsequent quota check reflects recorded tokens."""
-    async with _make_pool(postgres_container) as pool:
-        entry_id = await _insert_catalog_entry(pool, alias="record-test")
-        session_id = uuid.uuid4()
+    entry_id = await _insert_catalog_entry(pool, alias="record-test")
+    session_id = uuid.uuid4()
 
-        await record_token_usage(
-            pool,
-            catalog_entry_id=entry_id,
-            butler_name="test-butler",
-            session_id=session_id,
-            input_tokens=123,
-            output_tokens=456,
-        )
+    await record_token_usage(
+        pool,
+        catalog_entry_id=entry_id,
+        butler_name="test-butler",
+        session_id=session_id,
+        input_tokens=123,
+        output_tokens=456,
+    )
 
-        row = await pool.fetchrow(
-            """
-            SELECT catalog_entry_id, butler_name, session_id, input_tokens, output_tokens
-            FROM public.token_usage_ledger WHERE catalog_entry_id = $1
-            """,
-            entry_id,
-        )
-        assert row is not None
-        assert row["butler_name"] == "test-butler"
-        assert row["session_id"] == session_id
-        assert row["input_tokens"] == 123 and row["output_tokens"] == 456
+    row = await pool.fetchrow(
+        """
+        SELECT catalog_entry_id, butler_name, session_id, input_tokens, output_tokens
+        FROM public.token_usage_ledger WHERE catalog_entry_id = $1
+        """,
+        entry_id,
+    )
+    assert row is not None
+    assert row["butler_name"] == "test-butler"
+    assert row["session_id"] == session_id
+    assert row["input_tokens"] == 123 and row["output_tokens"] == 456
 
-        # NULL session_id accepted
-        entry2_id = await _insert_catalog_entry(pool, alias="record-null-session")
-        await record_token_usage(
-            pool,
-            catalog_entry_id=entry2_id,
-            butler_name="__discretion__",
-            session_id=None,
-            input_tokens=10,
-            output_tokens=20,
-        )
-        row2 = await pool.fetchrow(
-            "SELECT session_id, butler_name FROM public.token_usage_ledger"
-            " WHERE catalog_entry_id = $1",
-            entry2_id,
-        )
-        assert row2 is not None and row2["session_id"] is None
+    # NULL session_id accepted
+    entry2_id = await _insert_catalog_entry(pool, alias="record-null-session")
+    await record_token_usage(
+        pool,
+        catalog_entry_id=entry2_id,
+        butler_name="__discretion__",
+        session_id=None,
+        input_tokens=10,
+        output_tokens=20,
+    )
+    row2 = await pool.fetchrow(
+        "SELECT session_id, butler_name FROM public.token_usage_ledger WHERE catalog_entry_id = $1",
+        entry2_id,
+    )
+    assert row2 is not None and row2["session_id"] is None
 
-        # Quota check reflects recorded usage
-        await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=1000, limit_30d=5000)
-        result = await check_token_quota(pool, entry_id)
-        assert result.usage_24h == 579  # 123 + 456
-        assert result.allowed is True
+    # Quota check reflects recorded usage
+    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=1000, limit_30d=5000)
+    result = await check_token_quota(pool, entry_id)
+    assert result.usage_24h == 579  # 123 + 456
+    assert result.allowed is True

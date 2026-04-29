@@ -17,7 +17,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
+
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [pytest.mark.unit]
 
@@ -72,39 +75,14 @@ class TestDeliveryUnit:
         assert await get_delivery_preferences(pool, "chronicler") is None
 
 
-_DELIVERY_PREFERENCES_DDL = """
-    CREATE TABLE IF NOT EXISTS delivery_preferences (
-        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        butler_name         TEXT NOT NULL UNIQUE,
-        quiet_hours_start   TIME NOT NULL DEFAULT '22:00',
-        quiet_hours_end     TIME NOT NULL DEFAULT '07:00',
-        timezone            TEXT NOT NULL DEFAULT 'UTC',
-        batch_low_priority  BOOLEAN NOT NULL DEFAULT true,
-        batch_delivery_time TIME NOT NULL DEFAULT '07:00',
-        override_channels   JSONB,
-        created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
     )
-"""
-
-_DEFERRED_NOTIFICATIONS_DDL = """
-    CREATE TABLE IF NOT EXISTS deferred_notifications (
-        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        butler_name  TEXT NOT NULL,
-        channel      TEXT NOT NULL,
-        message      TEXT NOT NULL,
-        priority     TEXT NOT NULL DEFAULT 'medium',
-        envelope     JSONB NOT NULL,
-        deferred_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-        deliver_at   TIMESTAMPTZ NOT NULL,
-        status       TEXT NOT NULL DEFAULT 'pending',
-        delivered_at TIMESTAMPTZ,
-        CONSTRAINT chk_deferred_notifications_status
-            CHECK (status IN ('pending', 'delivered', 'expired', 'cancelled')),
-        CONSTRAINT chk_deferred_notifications_priority
-            CHECK (priority IN ('high', 'medium', 'low'))
-    )
-"""
 
 
 @pytest.mark.integration
@@ -112,32 +90,10 @@ _DEFERRED_NOTIFICATIONS_DDL = """
 @pytest.mark.asyncio(loop_scope="session")
 class TestDeliveryPreferencesDB:
     @pytest.fixture
-    async def pool(self, postgres_container):
-        import asyncpg
-
-        db_name = f"test_{uuid.uuid4().hex[:12]}"
-        admin_conn = await asyncpg.connect(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database="postgres",
-        )
-        try:
-            await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
-        finally:
-            await admin_conn.close()
-        p = await asyncpg.create_pool(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database=db_name,
-            min_size=1,
-            max_size=3,
-        )
-        await p.execute(_DELIVERY_PREFERENCES_DDL)
-        await p.execute(_DEFERRED_NOTIFICATIONS_DDL)
+    async def pool(self, migrated_db_url: str):
+        """Return an asyncpg pool with delivery tables cleared between tests."""
+        p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+        await p.execute("TRUNCATE deferred_notifications, delivery_preferences CASCADE")
         yield p
         await p.close()
 

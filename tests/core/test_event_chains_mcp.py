@@ -11,7 +11,10 @@ import shutil
 import uuid
 from datetime import UTC, datetime
 
+import asyncpg
 import pytest
+
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [pytest.mark.unit]
 
@@ -66,29 +69,15 @@ def test_row_to_dict_normalization():
 # DB integration tests (require Docker)
 # ---------------------------------------------------------------------------
 
-_EVENT_CHAINS_DDL = """
-    CREATE TABLE IF NOT EXISTS event_chains (
-        id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-        name              TEXT        NOT NULL,
-        trigger_type      TEXT        NOT NULL,
-        trigger_reference TEXT,
-        actions           JSONB       NOT NULL,
-        status            TEXT        NOT NULL DEFAULT 'active',
-        butler_name       TEXT        NOT NULL,
-        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-        CONSTRAINT chk_event_chains_trigger_type
-            CHECK (trigger_type IN (
-                'calendar_event_end',
-                'deadline_passed',
-                'deadline_threshold'
-            )),
-        CONSTRAINT chk_event_chains_status
-            CHECK (status IN ('active', 'paused', 'fired', 'failed', 'disabled'))
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_event_chains_name_butler
-        ON event_chains (name, butler_name);
-"""
+
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+    )
 
 
 @pytest.mark.integration
@@ -98,32 +87,15 @@ class TestEventChainsDB:
     """Integration tests for event_chains_db CRUD functions."""
 
     @pytest.fixture
-    async def pool(self, postgres_container):
-        import asyncpg
-
-        db_name = f"test_{uuid.uuid4().hex[:12]}"
-        admin_conn = await asyncpg.connect(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database="postgres",
-        )
-        try:
-            await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
-        finally:
-            await admin_conn.close()
-
+    async def pool(self, migrated_db_url: str):
+        """Return an asyncpg pool with event_chains table cleared between tests."""
         p = await asyncpg.create_pool(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database=db_name,
+            migrated_db_url,
             min_size=1,
             max_size=3,
+            server_settings={"search_path": "general,public"},
         )
-        await p.execute(_EVENT_CHAINS_DDL)
+        await p.execute("TRUNCATE event_chains CASCADE")
         yield p
         await p.close()
 

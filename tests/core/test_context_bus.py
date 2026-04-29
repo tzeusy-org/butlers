@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 import shutil
-import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
+import asyncpg
 import pytest
 
 from butlers.context_bus import (
@@ -29,6 +29,7 @@ from butlers.context_bus import (
     is_user_in_context,
     set_context,
 )
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -125,50 +126,29 @@ async def test_set_context_validation():
         await set_context(MagicMock(), butler_name="finance", signal_type="exercising")
 
 
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Provision a DB with core migrations applied once per module."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+    )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 class TestContextBusIntegration:
     """Full round-trip tests via testcontainers PostgreSQL."""
 
-    @pytest.fixture(scope="class")
-    async def pool(self, postgres_container):
-        from butlers.db import Database
-
-        db = Database(
-            db_name=f"test_{uuid.uuid4().hex[:12]}",
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            min_pool_size=1,
-            max_pool_size=5,
-        )
-        await db.provision()
-        p = await db.connect()
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.user_context (
-                id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                signal_type   TEXT        NOT NULL,
-                value         TEXT,
-                set_by_butler TEXT        NOT NULL,
-                set_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                expires_at    TIMESTAMPTZ NOT NULL,
-                confidence    REAL        NOT NULL DEFAULT 1.0
-                                  CHECK (confidence BETWEEN 0.0 AND 1.0),
-                metadata      JSONB,
-                superseded_at TIMESTAMPTZ,
-                CONSTRAINT uq_user_context_signal_butler
-                    UNIQUE (signal_type, set_by_butler)
-            )
-        """)
+    @pytest.fixture
+    async def pool(self, migrated_db_url: str):
+        """Return an asyncpg pool with user_context table cleared between tests."""
+        p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=5)
+        await p.execute("TRUNCATE public.user_context CASCADE")
         yield p
-        await db.close()
-
-    @pytest.fixture(autouse=True)
-    async def truncate(self, pool):
-        await pool.execute("TRUNCATE public.user_context")
-        yield
+        await p.close()
 
     async def test_set_clear_get_context(self, pool):
         """set_context inserts/upserts/reactivates; clear_context butler-scoped; get_active_context
