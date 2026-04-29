@@ -22,6 +22,7 @@ from httpx import AsyncClient as HttpxAsyncClient
 from httpx import ConnectError as HttpxConnectError
 from httpx import TimeoutException as HttpxTimeoutException
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 
@@ -901,6 +902,17 @@ async def create_maintenance_item(
     if row is None:
         raise HTTPException(status_code=500, detail="Failed to create maintenance item")
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="maintenance_item_create",
+        method="POST",
+        path="/api/home/maintenance",
+        body={"name": body.name, "category": body.category},
+        response_status=201,
+    )
+
     return _row_to_maintenance_item(row).model_dump(mode="json")
 
 
@@ -944,6 +956,17 @@ async def complete_maintenance_item(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Maintenance item not found: {item_id}")
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="maintenance_item_complete",
+        method="POST",
+        path=f"/api/home/maintenance/{item_id}/complete",
+        path_params={"item_id": str(item_id)},
+        response_status=200,
+    )
+
     return _row_to_maintenance_item(row).model_dump(mode="json")
 
 
@@ -979,6 +1002,17 @@ async def delete_maintenance_item(
 
     if result is None:
         raise HTTPException(status_code=404, detail=f"Maintenance item not found: {item_id}")
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="maintenance_item_delete",
+        method="DELETE",
+        path=f"/api/home/maintenance/{item_id}",
+        path_params={"item_id": str(item_id)},
+        response_status=204,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1134,6 +1168,18 @@ async def update_thresholds(
 
     # Merge into current and return
     current.update(update_map)
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="threshold_settings_patch",
+        method="PATCH",
+        path="/api/home/settings/thresholds",
+        body={"updated_keys": list(update_map.keys())},
+        response_status=200,
+    )
+
     return current
 
 

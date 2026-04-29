@@ -15,6 +15,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.core.state import state_get, state_set
@@ -501,6 +502,19 @@ async def update_mind_map_status(
         raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
 
     m = await mind_map_get(pool, mind_map_id)
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="education",
+        operation="mind_map_status_update",
+        method="PUT",
+        path=f"/api/education/mind-maps/{mind_map_id}/status",
+        path_params={"mind_map_id": mind_map_id},
+        body={"status": body.status},
+        response_status=200,
+    )
+
     return _map_dict_to_response(m, include_dag=False)
 
 
@@ -547,6 +561,17 @@ async def submit_curriculum_request(
             "goal": body.goal,
             "requested_at": datetime.now(UTC).isoformat(),
         },
+    )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="education",
+        operation="curriculum_request_create",
+        method="POST",
+        path="/api/education/curriculum-requests",
+        body={"topic": topic},
+        response_status=202,
     )
 
     return CurriculumRequestResponse(status="pending", topic=topic)
