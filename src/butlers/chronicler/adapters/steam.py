@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from datetime import date as date_cls
 
 import asyncpg
 
@@ -78,14 +79,20 @@ class SteamPlayAdapter(ProjectionAdapter):
 
         latest_watermark = since
         for row in rows:
-            await self._project_row(chronicler_pool, row)
-            result.rows_projected += 1
-            result.episodes_closed += 1
-
             candidate = row["recorded_at"]
             if candidate is not None:
                 if latest_watermark is None or candidate > latest_watermark:
                     latest_watermark = candidate
+
+            skip_reason = self._row_skip_reason(row)
+            if skip_reason is not None:
+                result.warnings.append(skip_reason)
+                logger.warning("Skipping malformed %s row: %s", _EVIDENCE_TABLE, skip_reason)
+                continue
+
+            await self._project_row(chronicler_pool, row)
+            result.rows_projected += 1
+            result.episodes_closed += 1
 
         result.watermark = latest_watermark
         # ``projection_checkpoints.watermark_id`` is BIGINT, but the Steam
@@ -93,6 +100,28 @@ class SteamPlayAdapter(ProjectionAdapter):
         # this adapter, matching other UUID-backed sources.
         result.watermark_id = None
         return result
+
+    def _row_skip_reason(self, row: asyncpg.Record) -> str | None:
+        """Return a reason when a source row cannot produce a valid episode."""
+        steam_id = row["steam_id"]
+        app_id = row["app_id"]
+        row_date = row["date"]
+        playtime_minutes = row["playtime_minutes"]
+
+        source_ref = f"{_EVIDENCE_TABLE}:{steam_id}:{app_id}:{row_date}"
+        if steam_id is None:
+            return f"{source_ref} has NULL steam_id"
+        if app_id is None:
+            return f"{source_ref} has NULL app_id"
+        if not isinstance(row_date, date_cls):
+            return f"{source_ref} has invalid date"
+        if playtime_minutes is None:
+            return None
+        if not isinstance(playtime_minutes, int) or isinstance(playtime_minutes, bool):
+            return f"{source_ref} has non-integer playtime_minutes"
+        if playtime_minutes < 0:
+            return f"{source_ref} has negative playtime_minutes"
+        return None
 
     async def _fetch_rows(
         self,

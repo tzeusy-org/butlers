@@ -308,6 +308,27 @@ async def test_episode_clamps_to_day_when_playtime_exceeds_anchor_offset() -> No
 
 
 @pytest.mark.asyncio
+async def test_negative_playtime_row_is_skipped_and_watermarked() -> None:
+    row = _make_row(playtime_minutes=-15, recorded_at=_NOW)
+    adapter = SteamPlayAdapter()
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.steam.upsert_episode") as mock_upsert:
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.error is None
+    assert result.rows_projected == 0
+    assert result.episodes_closed == 0
+    assert result.watermark == _NOW
+    assert result.warnings == [
+        f"connectors.steam_play_history:{_STEAM_ID}:{_APP_ID}:{_DATE} "
+        "has negative playtime_minutes"
+    ]
+    mock_upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_episode_title_falls_back_when_no_app_name() -> None:
     row = _make_row(app_id=440, app_name=None)
     adapter = SteamPlayAdapter()
