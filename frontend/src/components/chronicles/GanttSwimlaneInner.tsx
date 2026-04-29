@@ -44,6 +44,12 @@ import { useMapPanTo } from "./map-pan-store"
 // Constants
 // ---------------------------------------------------------------------------
 
+/** All LANE_TAXONOMY categories sorted by their display order. Computed once
+ * at module level so the reference is stable across renders. */
+const ALL_CATEGORIES: Category[] = (Object.keys(LANE_TAXONOMY) as Category[]).sort(
+  (a, b) => LANE_TAXONOMY[a].sortOrder - LANE_TAXONOMY[b].sortOrder,
+)
+
 const LANE_HEIGHT = 20          // px per row within a swimlane
 const LANE_GAP = 4              // px gap between stacked rows
 const LANE_PADDING_TOP = 6      // px above first bar in a lane
@@ -201,14 +207,10 @@ function buildLanes(
   }
 
   // All categories in sortOrder — always include every LANE_TAXONOMY entry.
-  const allCategories = (Object.keys(LANE_TAXONOMY) as Category[]).sort(
-    (a, b) => LANE_TAXONOMY[a].sortOrder - LANE_TAXONOMY[b].sortOrder,
-  )
-
   const lanes: LaneLayout[] = []
   let yOffset = 0
 
-  for (const category of allCategories) {
+  for (const category of ALL_CATEGORIES) {
     const catEpisodes = grouped.get(category) ?? []
     const positioned = assignRows(catEpisodes, windowStartMs, windowEndMs)
     const rowCount = positioned.length === 0 ? 1 : Math.max(...positioned.map((p) => p.row)) + 1
@@ -225,22 +227,8 @@ function buildLanes(
   return lanes
 }
 
-/** Convert a Tailwind bg-* class to a rough hex/CSS colour for SVG fill. */
-const COLOUR_MAP: Record<string, string> = {
-  "bg-blue-600": "#2563eb",
-  "bg-sky-500": "#0ea5e9",
-  "bg-indigo-500": "#6366f1",
-  "bg-purple-500": "#a855f7",
-  "bg-violet-600": "#7c3aed",
-  "bg-cyan-500": "#06b6d4",
-  "bg-slate-500": "#64748b",
-  "bg-amber-500": "#f59e0b",
-  "bg-emerald-600": "#059669",
-  "bg-slate-400": "#94a3b8",
-}
-
 function laneColour(category: Category): string {
-  return COLOUR_MAP[LANE_TAXONOMY[category].colour] ?? "#94a3b8"
+  return LANE_TAXONOMY[category].hex
 }
 
 // ---------------------------------------------------------------------------

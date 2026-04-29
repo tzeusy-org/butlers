@@ -25,23 +25,12 @@ import { pivotByDay } from "./aggregate-stacked-bar-utils"
 import type { ChroniclerAggregateByDayRow } from "@/api/types"
 
 // ---------------------------------------------------------------------------
-// Category colour map — CSS colour strings for recharts
-//
-// Tailwind utility classes cannot be passed to recharts fill/stroke; map each
-// category to a concrete colour value. Values are chosen to match the Tailwind
-// palette shades used in LANE_TAXONOMY's `colour` field.
+// Category colour lookup — delegates to LANE_TAXONOMY.hex so colours stay in
+// sync with the rest of the Chronicles UI without a separate mapping table.
 // ---------------------------------------------------------------------------
 
-const CATEGORY_COLOURS: Record<Category, string> = {
-  work: "#2563eb",     // blue-600
-  calendar: "#6366f1", // indigo-500
-  music: "#a855f7",    // purple-500
-  gaming: "#7c3aed",   // violet-600
-  travel: "#06b6d4",   // cyan-500
-  sleep: "#64748b",    // slate-500
-  meal: "#f59e0b",     // amber-500
-  home: "#059669",     // emerald-600
-  other: "#94a3b8",    // slate-400
+function categoryColour(category: Category): string {
+  return LANE_TAXONOMY[category].hex
 }
 
 // ---------------------------------------------------------------------------
@@ -243,11 +232,11 @@ export function AggregateStackedBar({ data, isLoading, isError, onRetry }: Aggre
             key={cat}
             dataKey={cat}
             stackId="day"
-            fill={CATEGORY_COLOURS[cat]}
+            fill={categoryColour(cat)}
             isAnimationActive={false}
           >
             {pivoted.map((_, i) => (
-              <Cell key={i} fill={CATEGORY_COLOURS[cat]} />
+              <Cell key={i} fill={categoryColour(cat)} />
             ))}
           </Bar>
         ))}
