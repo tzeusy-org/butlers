@@ -59,6 +59,55 @@ class TestRedactBody:
         assert result["Password"] == "[REDACTED]"
         assert result["API_KEY"] == "[REDACTED]"
 
+    def test_nested_dict_redacts_inner_sensitive_key(self):
+        body = {"credentials": {"password": "x", "username": "alice"}}
+        result = redact_body(body)
+        # "credentials" is itself sensitive — the whole value is redacted
+        assert result["credentials"] == "[REDACTED]"
+
+    def test_nested_dict_under_non_sensitive_key(self):
+        body = {"metadata": {"password": "x", "label": "prod"}}
+        result = redact_body(body)
+        assert result["metadata"]["password"] == "[REDACTED]"
+        assert result["metadata"]["label"] == "prod"
+
+    def test_list_of_dicts_redacts_sensitive_keys(self):
+        body = {"items": [{"token": "x"}, {"label": "ok"}]}
+        result = redact_body(body)
+        assert result["items"][0]["token"] == "[REDACTED]"
+        assert result["items"][1]["label"] == "ok"
+
+    def test_list_with_non_dict_elements_unchanged(self):
+        body = {"tags": ["alpha", "beta"], "name": "test"}
+        result = redact_body(body)
+        assert result["tags"] == ["alpha", "beta"]
+        assert result["name"] == "test"
+
+    def test_deeply_nested_three_levels(self):
+        body = {"level1": {"level2": {"token": "deep-secret", "safe": "keep"}}}
+        result = redact_body(body)
+        assert result["level1"]["level2"]["token"] == "[REDACTED]"
+        assert result["level1"]["level2"]["safe"] == "keep"
+
+    def test_deeply_nested_in_list(self):
+        body = {
+            "requests": [
+                {"auth": {"api_key": "sk-abc", "user": "bob"}},
+                {"auth": {"api_key": "sk-xyz", "user": "carol"}},
+            ]
+        }
+        result = redact_body(body)
+        assert result["requests"][0]["auth"]["api_key"] == "[REDACTED]"
+        assert result["requests"][0]["auth"]["user"] == "bob"
+        assert result["requests"][1]["auth"]["api_key"] == "[REDACTED]"
+        assert result["requests"][1]["auth"]["user"] == "carol"
+
+    def test_original_dict_not_mutated(self):
+        body = {"metadata": {"password": "secret", "label": "prod"}}
+        original_inner = body["metadata"].copy()
+        redact_body(body)
+        assert body["metadata"] == original_inner
+
 
 # ---------------------------------------------------------------------------
 # Unit: emit_dashboard_audit
