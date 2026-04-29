@@ -62,7 +62,7 @@ _CODEX_TOKEN_EXPIRY_BUFFER_SECONDS = 60
 # process holds the lock unexpectedly long.
 _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS = 30
 
-# Emit a structured warning when waiting for the lock takes longer than this.
+# Emit a structured info message when waiting for the lock takes longer than this.
 _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS = 5
 
 # Retry delays (in seconds) when the Codex CLI fails to discover MCP tools.
@@ -483,8 +483,10 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
     ``_CODEX_REFRESH_LOCK_TIMEOUT_SECONDS`` seconds with 0.25s intervals.
 
     If the lock cannot be acquired within the timeout the manager logs a
-    structured warning and yields anyway (the caller proceeds unlocked) so the
-    spawner is never deadlocked.
+    structured info message and yields anyway (the caller proceeds unlocked) so
+    the spawner is never deadlocked. This is a designed fallback rather than a
+    runtime failure; warning/error level logs are reserved for cases where the
+    lock file cannot be opened or the pre-warm command itself fails.
 
     Usage::
 
@@ -521,7 +523,7 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.warning(
+                logger.info(
                     "codex_refresh_lock: lock held >%ds by another process — proceeding "
                     "unlocked to avoid deadlock (lock_path=%s)",
                     _CODEX_REFRESH_LOCK_TIMEOUT_SECONDS,
@@ -534,7 +536,7 @@ async def _codex_refresh_lock(codex_dir: Path):  # type: ignore[return]
                 >= _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS
             ):
                 warned_contention = True
-                logger.warning(
+                logger.info(
                     "codex_refresh_lock: waiting >%ds for cross-process refresh lock — "
                     "possible contention (lock_path=%s)",
                     _CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS,

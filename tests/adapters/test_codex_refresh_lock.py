@@ -16,6 +16,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -192,9 +193,9 @@ async def test_refresh_lock_acquires_and_releases(tmp_path: Path) -> None:
     assert lock_path.exists()
 
 
-async def test_refresh_lock_timeout_proceeds_unlocked(tmp_path: Path) -> None:
+async def test_refresh_lock_timeout_proceeds_unlocked(tmp_path: Path, caplog) -> None:
     """When the lock cannot be acquired within the timeout, the manager yields
-    anyway (never deadlocks the caller) and logs a warning."""
+    anyway (never deadlocks the caller)."""
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()
     lock_path = codex_dir / "butlers.refresh.lock"
@@ -207,6 +208,7 @@ async def test_refresh_lock_timeout_proceeds_unlocked(tmp_path: Path) -> None:
 
     try:
         entered = False
+        caplog.set_level(logging.INFO, logger="butlers.core.runtimes.codex")
         with (
             patch("butlers.core.runtimes.codex._CODEX_REFRESH_LOCK_TIMEOUT_SECONDS", 0.5),
             patch("butlers.core.runtimes.codex._CODEX_REFRESH_LOCK_CONTENTION_WARN_SECONDS", 0.1),
@@ -214,6 +216,14 @@ async def test_refresh_lock_timeout_proceeds_unlocked(tmp_path: Path) -> None:
             async with _codex_refresh_lock(codex_dir):
                 entered = True  # should still enter, just without the lock
         assert entered, "Lock timeout should yield (not raise)"
+        assert "proceeding unlocked to avoid deadlock" in caplog.text
+        assert not [
+            record
+            for record in caplog.records
+            if record.name == "butlers.core.runtimes.codex"
+            and record.levelno >= logging.WARNING
+            and "codex_refresh_lock" in record.getMessage()
+        ]
     finally:
         fcntl.flock(other_fd, fcntl.LOCK_UN)
         os.close(other_fd)
