@@ -768,3 +768,63 @@ async def test_episode_title_derived_from_entity_id() -> None:
     # "alice_smith" → "Alice Smith at home"
     assert "Alice Smith" in upserted[0].title
     assert "home" in upserted[0].title.lower()
+
+
+# ---------------------------------------------------------------------------
+# Home lane taxonomy path (bu-ykm2a)
+#
+# Explicit assertion that mock connector rows produce source_name and
+# episode_type values matching the taxonomy contract for the "home" lane.
+# Uses string literals (not constants) so that a rename of the constants
+# without updating the taxonomy contract fails loudly here.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_home_lane_taxonomy_path_source_name_and_episode_type() -> None:
+    """Mock connector rows produce source_name='home_assistant.history'
+    and episode_type='presence_episode', which is the (source_name, episode_type)
+    pair the frontend SOURCE_CATEGORY_MAP and backend _CATEGORY_MAP both map to
+    the 'home' lane category.
+
+    This test pins the full adapter → taxonomy contract so that any rename of
+    the emitted pair immediately fails CI, forcing a matching taxonomy update.
+    """
+    row = _make_row(entity_id="person.alice", state="home", recorded_at=_NOW)
+    adapter = HomeAssistantHistoryAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=_fake_upsert
+    ):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert len(upserted) == 1, "Expected exactly one presence episode from one home row"
+    ep = upserted[0]
+
+    # Use string literals — not SOURCE_NAME / EPISODE_TYPE_PRESENCE constants —
+    # so that renaming the constants without updating the taxonomy fails here.
+    assert ep.source_name == "home_assistant.history", (
+        f"source_name mismatch: got {ep.source_name!r}; "
+        "taxonomy expects 'home_assistant.history' for the Home lane"
+    )
+    assert ep.episode_type == "presence_episode", (
+        f"episode_type mismatch: got {ep.episode_type!r}; "
+        "taxonomy expects 'presence_episode' for the Home lane"
+    )
+
+    # Confirm the (source_name, episode_type) pair maps to 'home' via the backend
+    # aggregation function — this is the category the frontend Gantt lane uses.
+    from butlers.chronicler.aggregations import category_for
+
+    assert category_for(ep.source_name, ep.episode_type) == "home", (
+        f"category_for({ep.source_name!r}, {ep.episode_type!r}) returned "
+        f"{category_for(ep.source_name, ep.episode_type)!r}; expected 'home'"
+    )
