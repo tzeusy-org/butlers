@@ -148,6 +148,7 @@ async def pool(postgres_container):
             value TEXT NOT NULL,
             label TEXT,
             is_primary BOOLEAN DEFAULT false,
+            context VARCHAR CHECK (context IN ('personal', 'work', 'other')),
             created_at TIMESTAMPTZ DEFAULT now()
         )
     """)
