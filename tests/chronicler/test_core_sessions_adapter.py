@@ -6,6 +6,7 @@ Covers:
 - SQL filter is present in the WHERE clause for since=None and since-set branches.
 - Only non-excluded trigger_source rows are projected (route, trigger, None).
 - tick, qa, healing, schedule:foo rows are excluded at the SQL layer.
+- deadline:* rows are NOT excluded (decision: bu-ve8ne — user-proxied work).
 - Watermark advances correctly across filtered rows (watermark math uses only
   included rows returned by the query, not the raw unfiltered table).
 """
@@ -127,6 +128,22 @@ def test_excluded_trigger_sources_is_frozenset() -> None:
 
 def test_excluded_trigger_source_prefix_is_schedule() -> None:
     assert EXCLUDED_TRIGGER_SOURCE_PREFIX == "schedule:"
+
+
+def test_deadline_prefix_not_excluded() -> None:
+    """deadline:* sessions are user-proxied work and must NOT be excluded.
+
+    Decision: bu-ve8ne. Deadline tasks are fired when the butler agent runs
+    to handle a user-established deadline threshold. Unlike schedule:* (pure
+    butler housekeeping), deadline:* sessions represent meaningful "lived past
+    time" and belong in the Tasks lane.
+
+    If this test fails, re-read roster/chronicler/AGENTS.md before changing it.
+    The exclusion must be intentional and documented.
+    """
+    assert "deadline:" not in EXCLUDED_TRIGGER_SOURCES
+    assert not EXCLUDED_TRIGGER_SOURCE_PREFIX.startswith("deadline")
+    assert EXCLUDED_TRIGGER_SOURCE_PREFIX != "deadline:"
 
 
 # ---------------------------------------------------------------------------
@@ -399,3 +416,59 @@ async def test_watermark_advances_over_included_rows_only() -> None:
 @pytest.mark.asyncio
 async def test_source_name_constant() -> None:
     assert SOURCE_NAME == "core.sessions"
+
+
+# ---------------------------------------------------------------------------
+# deadline:* rows are included (not excluded) — bu-ve8ne regression
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deadline_rows_are_projected() -> None:
+    """deadline:<task-name> sessions must be projected into the Tasks lane.
+
+    The SQL filter must NOT exclude them. This test simulates the DB returning
+    a deadline:* row (which it would do if the filter correctly omits deadline:
+    from the exclusion set) and verifies that the adapter projects it.
+
+    See roster/chronicler/AGENTS.md for the decision rationale (bu-ve8ne).
+    """
+    t_base = _NOW
+    deadline_row = _make_row(
+        session_id=99,
+        started_at=t_base,
+        completed_at=t_base + timedelta(minutes=2),
+        trigger_source="deadline:passport-renewal",
+    )
+
+    pool = _pool_returning(deadline_row)
+    cp = _chronicler_pool()
+    adapter = _adapter("mybutler")
+
+    projected_source_refs: list[str] = []
+
+    async def _fake_upsert_episode(conn: object, episode: Episode) -> Episode:
+        projected_source_refs.append(episode.source_ref)
+        return Episode(**{**episode.__dict__, "id": uuid.uuid4()})
+
+    async def _fake_upsert_point_event(conn: object, event: PointEvent) -> PointEvent:
+        return PointEvent(**{**event.__dict__, "id": uuid.uuid4()})
+
+    with (
+        patch("butlers.chronicler.adapters.sessions.get_checkpoint_subsource", return_value=None),
+        patch("butlers.chronicler.adapters.sessions.upsert_checkpoint_subsource"),
+        patch(
+            "butlers.chronicler.adapters.sessions.upsert_episode",
+            side_effect=_fake_upsert_episode,
+        ),
+        patch(
+            "butlers.chronicler.adapters.sessions.upsert_point_event",
+            side_effect=_fake_upsert_point_event,
+        ),
+        patch("butlers.chronicler.adapters.sessions.link_event_to_episode"),
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert len(projected_source_refs) == 1
+    assert "mybutler.sessions:99" in projected_source_refs[0]
