@@ -137,3 +137,58 @@ WHERE source_name = 'core.sessions'
 GROUP BY 1;
 ```
 `tick`, `qa`, `healing`, and any `schedule:*` values must not appear.
+
+## Ops sessions escape hatch
+
+Operational sessions are **never projected** into `chronicler.episodes`.
+Engineers who need to audit scheduler cadence, switchboard tick rate, or QA
+canary health can use the dedicated ops endpoint, which reads the raw sessions
+tables directly via `fan_out`.
+
+**Endpoint:** `GET /api/chronicler/ops/sessions`
+
+**Purpose:** Returns only the sessions whose `trigger_source` matches the
+exclusion set (`tick`, `qa`, `healing`, `schedule:*`). These are invisible to
+the user-facing `/api/chronicler/episodes` endpoint by design.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `trigger_source` | string (optional) | Filter to a specific ops source (e.g. `tick`, `schedule:chronicler_day_close`) |
+| `since` | ISO datetime (optional) | `started_at >= since` |
+| `until` | ISO datetime (optional) | `started_at < until` |
+| `limit` | int 1–500 (default 50) | Max rows returned |
+
+**Example — last 50 tick sessions across all butlers:**
+```bash
+curl 'http://localhost:8000/api/chronicler/ops/sessions?trigger_source=tick&limit=50'
+```
+
+**Example — all schedule:* sessions in the last hour:**
+```bash
+curl "http://localhost:8000/api/chronicler/ops/sessions?since=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+**Response shape:**
+```json
+{
+  "data": [
+    {
+      "butler": "chronicler",
+      "session_id": "...",
+      "trigger_source": "tick",
+      "started_at": "2026-04-29T10:00:00Z",
+      "completed_at": "2026-04-29T10:00:01Z",
+      "duration_ms": 1234,
+      "success": true,
+      "model": "claude-sonnet-4-6"
+    }
+  ],
+  "meta": {"total": 1, "offset": 0, "limit": 50}
+}
+```
+
+**Invariant:** data from this endpoint will NEVER appear in
+`/api/chronicler/episodes`. The separation is enforced at the adapter layer
+(`CoreSessionsAdapter`) and tested in `tests/chronicler/test_ops_sessions_api.py`.

@@ -641,6 +641,8 @@ _KNOWN_CHRONICLER_RELATIONS = frozenset(
         "tier2_cache",
         # Core butler tables present in every butler schema:
         "scheduled_tasks",
+        # Per-butler table accessed via fan_out (ops escape hatch, not chronicler pool):
+        "sessions",
     }
 )
 

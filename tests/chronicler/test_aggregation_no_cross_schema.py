@@ -62,6 +62,12 @@ _CHRONICLER_RELATIONS: frozenset[str] = frozenset(
         "tier2_cache",
         # ── Core butler tables (every butler schema) ──────────────────────
         "scheduled_tasks",
+        # ── Per-butler tables accessed via fan_out (not via chronicler pool) ─
+        # GET /api/chronicler/ops/sessions uses db.fan_out() to query each
+        # butler's sessions table through its own schema-scoped pool.  This
+        # does NOT violate D17 — fan_out never runs SQL through the chronicler
+        # pool; it runs through each butler's own connection pool.
+        "sessions",
     }
 )
 
@@ -215,8 +221,9 @@ def test_chronicler_relations_list_matches_migrations() -> None:
         migration_source += mig_file.read_text()
 
     # Core tables like scheduled_tasks are not created by chronicler migrations —
-    # they are part of the core butler schema. Exclude them from this check.
-    _CORE_BUTLER_TABLES = frozenset({"scheduled_tasks"})
+    # they are part of the core butler schema or accessed via fan_out.
+    # Exclude them from this migration-presence check.
+    _CORE_BUTLER_TABLES = frozenset({"scheduled_tasks", "sessions"})
 
     stale: list[str] = []
     for relation in sorted(_CHRONICLER_RELATIONS - _CORE_BUTLER_TABLES):
