@@ -45,6 +45,7 @@ def _make_episode_row(
     *,
     source_name: str = "core.sessions",
     episode_type: str = "work",
+    trigger_source: str | None = None,
     start_at: datetime,
     end_at: datetime | None = None,
     precision: str = "exact",
@@ -55,6 +56,7 @@ def _make_episode_row(
     return {
         "source_name": source_name,
         "episode_type": episode_type,
+        "trigger_source": trigger_source,
         "start_at": start_at,
         "end_at": end_at,
         "precision": precision,
@@ -232,7 +234,8 @@ async def test_single_episode_one_day():
     assert len(data) == 1
     row = data[0]
     assert row["day"] == "2024-03-15"
-    assert row["category"] == "work"
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    assert row["category"] == "tasks"
     assert row["total_seconds"] == pytest.approx(7200.0)
     assert row["episode_count"] == 1
     assert row["precision"] == "exact"
@@ -307,7 +310,8 @@ async def test_multiple_categories_separate_rows():
     assert resp.status_code == 200
     data = resp.json()
     categories = {r["category"] for r in data}
-    assert "work" in categories
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    assert "tasks" in categories
     assert "music" in categories
 
 
@@ -338,12 +342,13 @@ async def test_category_filter_excludes_other_categories():
             params={
                 "start_at": "2024-03-15T00:00:00Z",
                 "end_at": "2024-03-16T00:00:00Z",
-                "category": "work",
+                "category": "tasks",
             },
         )
     assert resp.status_code == 200
     data = resp.json()
-    assert all(r["category"] == "work" for r in data)
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    assert all(r["category"] == "tasks" for r in data)
 
 
 # ---------------------------------------------------------------------------
@@ -764,7 +769,8 @@ async def test_dst_spring_forward_23h_day():
     row = data[0]
 
     assert row["day"] == "2024-03-10"
-    assert row["category"] == "work"
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    assert row["category"] == "tasks"
     # 23 hours = 82800 seconds
     assert row["total_seconds"] == pytest.approx(82800.0), (
         f"Expected 82800 s (23 h) for spring-forward day, got {row['total_seconds']}"
@@ -818,7 +824,8 @@ async def test_dst_fall_back_25h_day():
     row = data[0]
 
     assert row["day"] == "2024-11-03"
-    assert row["category"] == "work"
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    assert row["category"] == "tasks"
     # 25 hours = 90000 seconds
     assert row["total_seconds"] == pytest.approx(90000.0), (
         f"Expected 90000 s (25 h) for fall-back day, got {row['total_seconds']}"
@@ -874,9 +881,10 @@ async def test_dst_spring_forward_episode_before_and_after_transition():
     data = resp.json()
     days = {r["day"] for r in data}
     assert days == {"2024-03-10"}, f"Expected only 2024-03-10, got {days}"
-    work_row = next(r for r in data if r["category"] == "work")
-    assert work_row["episode_count"] == 2
-    assert work_row["total_seconds"] == pytest.approx(7200.0)  # 2h total
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    tasks_row = next(r for r in data if r["category"] == "tasks")
+    assert tasks_row["episode_count"] == 2
+    assert tasks_row["total_seconds"] == pytest.approx(7200.0)  # 2h total
 
 
 @pytest.mark.unit
@@ -910,10 +918,11 @@ async def test_dst_fall_back_episode_in_repeated_hour():
         )
     assert resp.status_code == 200
     data = resp.json()
-    work_rows = [r for r in data if r["category"] == "work"]
-    assert len(work_rows) == 1
-    assert work_rows[0]["day"] == "2024-11-03"
-    assert work_rows[0]["total_seconds"] == pytest.approx(3600.0)  # 1 hour
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    tasks_rows = [r for r in data if r["category"] == "tasks"]
+    assert len(tasks_rows) == 1
+    assert tasks_rows[0]["day"] == "2024-11-03"
+    assert tasks_rows[0]["total_seconds"] == pytest.approx(3600.0)  # 1 hour
 
 
 # ---------------------------------------------------------------------------

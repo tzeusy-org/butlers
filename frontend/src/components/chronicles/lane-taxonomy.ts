@@ -1,23 +1,28 @@
 // ---------------------------------------------------------------------------
-// Chronicles Lane Taxonomy — bu-ig72b.5
+// Chronicles Lane Taxonomy — bu-ig72b.5 / bu-jomz2
 //
 // Source of truth for the visual presentation of each chronicle category.
 // Backend (aggregations.py) owns the category string definitions; this file
 // maps those strings to display labels, colours, icons, and sort order.
 //
 // Backend never returns colours, labels, or icons — those live here only.
+//
+// core.sessions episodes are split into two lanes by trigger_source:
+//   "conversations" — trigger_source='route'  (user→butler interactions)
+//   "tasks"         — all other trigger_source values  (scheduled/daemon work)
 // ---------------------------------------------------------------------------
 
 import type { LucideIcon } from "lucide-react"
 import {
-  Briefcase,
   Calendar,
   CircleQuestionMark,
   Gamepad2,
   House,
+  MessageCircle,
   Moon,
   Plane,
   Music,
+  Terminal,
   Utensils,
 } from "lucide-react"
 
@@ -27,7 +32,8 @@ import {
 
 /** All stable category strings emitted by the chronicler backend. */
 export type Category =
-  | "work"
+  | "conversations"
+  | "tasks"
   | "calendar"
   | "music"
   | "gaming"
@@ -69,73 +75,81 @@ export interface LaneConfig {
 /**
  * Maps each stable category string → visual presentation config.
  *
- * Ordering rationale: work first (most frequently populated), then calendar,
- * then recreational (music, gaming, travel), then biological (sleep, meal),
- * then home, then catch-all other last.
+ * Ordering rationale: conversations first (most frequent user-visible lane),
+ * then tasks (scheduled/daemon work), then calendar, then recreational
+ * (music, gaming, travel), then biological (sleep, meal), then home,
+ * then catch-all other last.
  */
 export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
-  work: {
-    label: "Work",
+  conversations: {
+    label: "Conversations",
     colour: "bg-blue-600",
     hex: "#2563eb",
-    icon: Briefcase,
+    icon: MessageCircle,
     sortOrder: 0,
+  },
+  tasks: {
+    label: "Tasks",
+    colour: "bg-sky-500",
+    hex: "#0ea5e9",
+    icon: Terminal,
+    sortOrder: 1,
   },
   calendar: {
     label: "Calendar",
     colour: "bg-indigo-500",
     hex: "#6366f1",
     icon: Calendar,
-    sortOrder: 1,
+    sortOrder: 2,
   },
   music: {
     label: "Music",
     colour: "bg-purple-500",
     hex: "#a855f7",
     icon: Music,
-    sortOrder: 2,
+    sortOrder: 3,
   },
   gaming: {
     label: "Gaming",
     colour: "bg-violet-600",
     hex: "#7c3aed",
     icon: Gamepad2,
-    sortOrder: 3,
+    sortOrder: 4,
   },
   travel: {
     label: "Travel",
     colour: "bg-cyan-500",
     hex: "#06b6d4",
     icon: Plane,
-    sortOrder: 4,
+    sortOrder: 5,
   },
   sleep: {
     label: "Sleep",
     colour: "bg-slate-500",
     hex: "#64748b",
     icon: Moon,
-    sortOrder: 5,
+    sortOrder: 6,
   },
   meal: {
     label: "Meal",
     colour: "bg-amber-500",
     hex: "#f59e0b",
     icon: Utensils,
-    sortOrder: 6,
+    sortOrder: 7,
   },
   home: {
     label: "Home",
     colour: "bg-emerald-600",
     hex: "#059669",
     icon: House,
-    sortOrder: 7,
+    sortOrder: 8,
   },
   other: {
     label: "Other",
     colour: "bg-slate-400",
     hex: "#94a3b8",
     icon: CircleQuestionMark,
-    sortOrder: 8,
+    sortOrder: 9,
   },
 }
 
@@ -146,10 +160,15 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
 // a frontend fallback when the backend has not yet attached a `category` field
 // to the episode response (bug 1 fix). The backend remains the source of truth
 // — keep this table in sync with `_CATEGORY_MAP` whenever new sources land.
+//
+// For core.sessions episodes the backend dispatches by trigger_source;
+// this fallback table cannot resolve that, so it maps to "tasks" (the default
+// for unknown / NULL trigger_source). Callers should prefer the backend-supplied
+// `category` field for core.sessions episodes whenever available.
 // ---------------------------------------------------------------------------
 
 const SOURCE_CATEGORY_MAP: Record<string, Category> = {
-  "core.sessions|work": "work",
+  "core.sessions|work": "tasks",
   "google_calendar.completed|scheduled_block": "calendar",
   "spotify.session_summary|listening_episode": "music",
   "steam.play_history|play_episode": "gaming",

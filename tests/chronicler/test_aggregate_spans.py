@@ -133,6 +133,7 @@ def _make_episode_row(
     *,
     source_name: str = "core.sessions",
     episode_type: str = "work",
+    trigger_source: str | None = None,
     start_at: datetime = _T0,
     end_at: datetime | None = None,
     precision: str = "exact",
@@ -145,6 +146,7 @@ def _make_episode_row(
     return {
         "source_name": source_name,
         "episode_type": episode_type,
+        "trigger_source": trigger_source,
         "start_at": start_at,
         "end_at": end_at,
         "precision": precision,

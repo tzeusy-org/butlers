@@ -116,17 +116,17 @@ describe("AggregatePieChart — empty state", () => {
 
 describe("AggregatePieChart — data rendering", () => {
   it("renders the pie chart container when buckets are non-empty", () => {
-    const html = render([makeBucket("work", 3600)])
+    const html = render([makeBucket("tasks",3600)])
     expect(html).toContain("pie-chart-container")
   })
 
   it("does NOT render the empty state when buckets are non-empty", () => {
-    const html = render([makeBucket("work", 3600)])
+    const html = render([makeBucket("tasks",3600)])
     expect(html).not.toContain("pie-empty-state")
   })
 
   it("renders a recharts PieChart element", () => {
-    const html = render([makeBucket("work", 3600), makeBucket("sleep", 1800)])
+    const html = render([makeBucket("tasks",3600), makeBucket("sleep", 1800)])
     expect(html).toContain("recharts-pie-chart")
   })
 })
@@ -140,7 +140,7 @@ describe("AggregatePieChart — slice ordering", () => {
     // API returns buckets sorted by total_seconds DESC; the component must
     // NOT reorder them.
     const buckets = [
-      makeBucket("work", 7200),
+      makeBucket("tasks",7200),
       makeBucket("sleep", 3600),
       makeBucket("meal", 1800),
     ]
@@ -153,8 +153,8 @@ describe("AggregatePieChart — slice ordering", () => {
   })
 
   it("maps category label from LANE_TAXONOMY", () => {
-    render([makeBucket("work", 3600)])
-    expect(_lastPieData[0].name).toBe(LANE_TAXONOMY.work.label)
+    render([makeBucket("tasks",3600)])
+    expect(_lastPieData[0].name).toBe(LANE_TAXONOMY.tasks.label)
   })
 })
 
@@ -164,8 +164,8 @@ describe("AggregatePieChart — slice ordering", () => {
 
 describe("AggregatePieChart — colour binding", () => {
   it("pie data carries hex colour from LANE_TAXONOMY", () => {
-    render([makeBucket("work", 3600)])
-    expect(_lastPieData[0].hex).toBe(LANE_TAXONOMY.work.hex)
+    render([makeBucket("tasks",3600)])
+    expect(_lastPieData[0].hex).toBe(LANE_TAXONOMY.tasks.hex)
   })
 
   it("falls back to 'other' taxonomy entry for unknown category", () => {
@@ -186,7 +186,7 @@ describe("AggregatePieChart — tooltip data contract", () => {
   })
 
   it("pie data carries _total for percentage calculation", () => {
-    render([makeBucket("work", 7200), makeBucket("sleep", 3600)])
+    render([makeBucket("tasks",7200), makeBucket("sleep", 3600)])
     // _total is the sum of all buckets (7200 + 3600 = 10800)
     expect(_lastPieData[0]._total).toBe(10800)
     expect(_lastPieData[1]._total).toBe(10800)

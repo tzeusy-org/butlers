@@ -32,10 +32,10 @@ const WINDOW_START = new Date("2026-04-25T00:00:00Z")
 const WINDOW_END = new Date("2026-04-25T23:59:59Z")
 
 function makeEpisode(overrides: Partial<ChroniclerEpisode> & { id: string }): ChroniclerEpisode {
-  // Default to a `work`-categorised episode using realistic backend identifiers
+  // Default to a `tasks`-categorised episode using realistic backend identifiers
   // (`core.sessions` / `work`) so the frontend's `(source_name, episode_type)`
-  // → category fallback resolves to "work" without the test having to set the
-  // new `category` field explicitly. Tests that want a different lane should
+  // → category fallback resolves to "tasks" (the default lane for sessions
+  // without an explicit trigger_source). Tests that want a different lane should
   // override `source_name` + `episode_type` (or pass `category` directly) to
   // a pair recognised by `categoryForSource()`.
   return {
@@ -58,7 +58,7 @@ function makeEpisode(overrides: Partial<ChroniclerEpisode> & { id: string }): Ch
     correction_note: null,
     created_at: "2026-04-25T00:00:00Z",
     updated_at: "2026-04-25T00:00:00Z",
-    category: "work",
+    category: "tasks",
     ...overrides,
   }
 }
@@ -73,7 +73,8 @@ const CATEGORY_SOURCES: Record<
   string,
   { source_name: string; episode_type: string; category: string }
 > = {
-  work: { source_name: "core.sessions", episode_type: "work", category: "work" },
+  // core.sessions episodes without trigger_source → "tasks" (fallback default)
+  tasks: { source_name: "core.sessions", episode_type: "work", category: "tasks" },
   calendar: { source_name: "google_calendar.completed", episode_type: "scheduled_block", category: "calendar" },
   music: { source_name: "spotify.session_summary", episode_type: "listening_episode", category: "music" },
   gaming: { source_name: "steam.play_history", episode_type: "play_episode", category: "gaming" },
@@ -306,8 +307,9 @@ describe("GanttSwimlaneInner sensitive episode", () => {
     )
     // A <pattern> element must be present for the hatch fill (keyed per category).
     expect(html).toContain("<pattern")
-    // Pattern is keyed by category (source_name), not episode id.
-    expect(html).toContain("hatch-work")
+    // Pattern is keyed by category, not episode id.
+    // Default episode is core.sessions without trigger_source → "tasks"
+    expect(html).toContain("hatch-tasks")
   })
 
   it("renders the bar element for a sensitive episode", () => {
@@ -518,11 +520,11 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
   })
 
   it("renders a non-calendar bar normally even when payload has a location field", () => {
-    // Only calendar-category episodes trigger the pan logic; work episodes
+    // Only calendar-category episodes trigger the pan logic; tasks episodes
     // with a location in payload must still render without errors.
     const ep = makeEpisode({
       id: "ep-work-loc",
-      // Default source_name/episode_type already maps to the "work" lane.
+      // Default source_name/episode_type already maps to the "tasks" lane.
       canonical_privacy: "normal",
       payload: { location: "40.7128,-74.0060" },
     })
@@ -567,7 +569,7 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
 
 describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
   it.each([
-    ["work", CATEGORY_SOURCES.work, "Work"],
+    ["tasks", CATEGORY_SOURCES.tasks, "Tasks"],
     ["calendar", CATEGORY_SOURCES.calendar, "Calendar"],
     ["music", CATEGORY_SOURCES.music, "Music"],
     ["gaming", CATEGORY_SOURCES.gaming, "Gaming"],
@@ -596,11 +598,11 @@ describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
   )
 
   it("prefers backend-supplied `category` over the source/type fallback", () => {
-    // source/type would normally resolve to the work lane, but the explicit
+    // source/type would normally resolve to the tasks lane, but the explicit
     // backend `category` field MUST win — this is the primary code path.
     const ep = makeEpisode({
       id: "ep-cat-override",
-      ...CATEGORY_SOURCES.work,
+      ...CATEGORY_SOURCES.tasks,
       category: "music",
     })
     const html = renderToStaticMarkup(
@@ -611,7 +613,7 @@ describe("GanttSwimlaneInner categoryFor mapping (bug 1)", () => {
       />,
     )
     expect(html).toContain("Music")
-    expect(html).not.toContain(">Work<")
+    expect(html).not.toContain(">Tasks<")
   })
 
   it("falls back to 'other' for an unknown source/type pair with no category", () => {
@@ -694,7 +696,7 @@ describe("GanttSwimlaneInner tooltip drilldown (bug 2)", () => {
 describe("GanttSwimlaneInner filter chips (bug 4)", () => {
   it("renders one chip per category present in the window", () => {
     const eps = [
-      makeEpisode({ id: "ep-w", ...CATEGORY_SOURCES.work }),
+      makeEpisode({ id: "ep-t", ...CATEGORY_SOURCES.tasks }),
       makeEpisode({ id: "ep-m", ...CATEGORY_SOURCES.music }),
       makeEpisode({ id: "ep-s", ...CATEGORY_SOURCES.sleep }),
     ]
@@ -706,7 +708,7 @@ describe("GanttSwimlaneInner filter chips (bug 4)", () => {
       />,
     )
     expect(html).toContain('data-testid="gantt-filter-chips"')
-    expect(html).toContain('data-testid="gantt-filter-chip-work"')
+    expect(html).toContain('data-testid="gantt-filter-chip-tasks"')
     expect(html).toContain('data-testid="gantt-filter-chip-music"')
     expect(html).toContain('data-testid="gantt-filter-chip-sleep"')
     // No chip for categories with no episodes in this window.

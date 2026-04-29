@@ -22,27 +22,39 @@ from butlers.chronicler.models import Compatibility
 # ── Mapping fixture: all active SUPPORTED source/episode_type pairs ────────
 
 # The D1 table from design.md — expected (source_name, episode_type, category).
-# This is the normative source of truth for the unit tests.
-_D1_PAIRS: list[tuple[str, str, str]] = [
-    ("core.sessions", "work", "work"),
-    ("google_calendar.completed", "scheduled_block", "calendar"),
-    ("spotify.session_summary", "listening_episode", "music"),
-    ("steam.play_history", "play_episode", "gaming"),
-    ("owntracks.points", "movement_episode", "travel"),
-    ("google_health.measurements", "sleep_episode", "sleep"),
-    ("health.meals", "eating_event", "meal"),
-    ("home_assistant.history", "presence_episode", "home"),
+# core.sessions is listed twice: once for each trigger_source branch.
+# The trigger_source column is carried through as the fourth element;
+# None means "no trigger_source provided" (default → 'tasks').
+_D1_PAIRS: list[tuple[str, str, str | None, str]] = [
+    ("core.sessions", "work", "route", "conversations"),
+    ("core.sessions", "work", "trigger", "tasks"),
+    ("core.sessions", "work", "external", "tasks"),
+    ("core.sessions", "work", "dashboard", "tasks"),
+    ("core.sessions", "work", None, "tasks"),
+    ("google_calendar.completed", "scheduled_block", None, "calendar"),
+    ("spotify.session_summary", "listening_episode", None, "music"),
+    ("steam.play_history", "play_episode", None, "gaming"),
+    ("owntracks.points", "movement_episode", None, "travel"),
+    ("google_health.measurements", "sleep_episode", None, "sleep"),
+    ("health.meals", "eating_event", None, "meal"),
+    ("home_assistant.history", "presence_episode", None, "home"),
 ]
 
 
-@pytest.mark.parametrize("source_name,episode_type,expected", _D1_PAIRS)
-def test_category_for_known_pairs(source_name: str, episode_type: str, expected: str) -> None:
+@pytest.mark.parametrize("source_name,episode_type,trigger_source,expected", _D1_PAIRS)
+def test_category_for_known_pairs(
+    source_name: str, episode_type: str, trigger_source: str | None, expected: str
+) -> None:
     """Every D1 mapping must return a non-'other' category."""
-    result = category_for(source_name, episode_type)
+    result = category_for(source_name, episode_type, trigger_source=trigger_source)
     assert result == expected, (
-        f"category_for({source_name!r}, {episode_type!r}) → {result!r}; expected {expected!r}"
+        f"category_for({source_name!r}, {episode_type!r}, trigger_source={trigger_source!r}) "
+        f"→ {result!r}; expected {expected!r}"
     )
-    assert result != "other", f"Mapping for ({source_name!r}, {episode_type!r}) must not be 'other'"
+    assert result != "other", (
+        f"Mapping for ({source_name!r}, {episode_type!r}, trigger_source={trigger_source!r}) "
+        "must not be 'other'"
+    )
 
 
 def test_category_for_unknown_pair_returns_other() -> None:
@@ -54,11 +66,11 @@ def test_category_for_unknown_pair_returns_other() -> None:
 
 def test_category_for_result_is_always_in_taxonomy() -> None:
     """category_for() must always return a value from the stable taxonomy."""
-    for source_name, episode_type, _ in _D1_PAIRS:
-        result = category_for(source_name, episode_type)
+    for source_name, episode_type, trigger_source, _ in _D1_PAIRS:
+        result = category_for(source_name, episode_type, trigger_source=trigger_source)
         assert result in CATEGORIES, (
-            f"category_for({source_name!r}, {episode_type!r}) returned "
-            f"{result!r} which is not in CATEGORIES"
+            f"category_for({source_name!r}, {episode_type!r}, trigger_source={trigger_source!r}) "
+            f"returned {result!r} which is not in CATEGORIES"
         )
     # Unknown pair
     assert category_for("x", "y") in CATEGORIES

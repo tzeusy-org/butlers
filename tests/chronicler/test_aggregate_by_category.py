@@ -40,6 +40,7 @@ def _make_episode_row(
     *,
     source_name: str = "core.sessions",
     episode_type: str = "work",
+    trigger_source: str | None = None,
     start_at: datetime,
     end_at: datetime | None = None,
     precision: str = "exact",
@@ -50,6 +51,7 @@ def _make_episode_row(
     return {
         "source_name": source_name,
         "episode_type": episode_type,
+        "trigger_source": trigger_source,
         "start_at": start_at,
         "end_at": end_at,
         "precision": precision,
@@ -229,7 +231,8 @@ async def test_single_episode_one_category():
     buckets = data["buckets"]
     assert len(buckets) == 1
     bucket = buckets[0]
-    assert bucket["category"] == "work"
+    # trigger_source=None → "tasks" (the default lane for sessions without a trigger_source)
+    assert bucket["category"] == "tasks"
     assert bucket["total_seconds"] == pytest.approx(7200.0)
     assert bucket["episode_count"] == 1
     assert bucket["precision"] == "exact"
@@ -271,14 +274,15 @@ async def test_multiple_categories_produce_separate_buckets():
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
     categories = {b["category"] for b in buckets}
-    assert "work" in categories
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    assert "tasks" in categories
     assert "music" in categories
 
 
 @pytest.mark.unit
 async def test_multiple_sources_same_category_roll_up():
     """Two sources mapping to the same category sum into one bucket with two breakdown entries."""
-    # Both "core.sessions/work" and a hypothetical second work source → category "work".
+    # Both episodes from core.sessions with no trigger_source → category "tasks".
     # Use two episodes from core.sessions (same source) to keep the fixture simple.
     day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
     rows = [
@@ -308,12 +312,13 @@ async def test_multiple_sources_same_category_roll_up():
         )
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
-    work_bucket = next(b for b in buckets if b["category"] == "work")
-    assert work_bucket["total_seconds"] == pytest.approx(7200.0)
-    assert work_bucket["episode_count"] == 2
-    assert len(work_bucket["source_breakdown"]) == 1  # same source_name collapsed
-    assert work_bucket["source_breakdown"][0]["total_seconds"] == pytest.approx(7200.0)
-    assert work_bucket["source_breakdown"][0]["episode_count"] == 2
+    # trigger_source=None → "tasks" (default lane for sessions without trigger_source)
+    tasks_bucket = next(b for b in buckets if b["category"] == "tasks")
+    assert tasks_bucket["total_seconds"] == pytest.approx(7200.0)
+    assert tasks_bucket["episode_count"] == 2
+    assert len(tasks_bucket["source_breakdown"]) == 1  # same source_name collapsed
+    assert tasks_bucket["source_breakdown"][0]["total_seconds"] == pytest.approx(7200.0)
+    assert tasks_bucket["source_breakdown"][0]["episode_count"] == 2
 
 
 @pytest.mark.unit
@@ -660,8 +665,9 @@ async def test_buckets_sorted_by_total_seconds_desc_then_category_asc():
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
     assert len(buckets) == 3
-    # Descending by total_seconds: work(3h) > gaming(2h) > music(1h)
-    assert buckets[0]["category"] == "work"
+    # Descending by total_seconds: tasks(3h) > gaming(2h) > music(1h)
+    # (core.sessions with trigger_source=None → "tasks")
+    assert buckets[0]["category"] == "tasks"
     assert buckets[1]["category"] == "gaming"
     assert buckets[2]["category"] == "music"
 
@@ -698,7 +704,8 @@ async def test_equal_seconds_breaks_tie_by_category_asc():
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
     categories = [b["category"] for b in buckets]
-    # Both are 1h; alphabetically music < work
+    # Both are 1h; alphabetically music < tasks (m < t)
+    # (core.sessions with trigger_source=None → "tasks")
     assert categories == sorted(categories)
 
 

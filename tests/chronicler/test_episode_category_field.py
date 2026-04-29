@@ -99,7 +99,8 @@ def _build_app(rows: list[_Row]):
 @pytest.mark.parametrize(
     ("source_name", "episode_type", "expected_category"),
     [
-        ("core.sessions", "work", "work"),
+        # core.sessions: payload has no trigger_source → category_for defaults to 'tasks'
+        ("core.sessions", "work", "tasks"),
         ("google_calendar.completed", "scheduled_block", "calendar"),
         ("spotify.session_summary", "listening_episode", "music"),
         ("steam.play_history", "play_episode", "gaming"),
