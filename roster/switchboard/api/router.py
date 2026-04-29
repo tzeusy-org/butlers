@@ -28,6 +28,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.config import load_config
@@ -568,6 +569,21 @@ async def receive_heartbeat(
         new_state,
     )
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="butler_heartbeat",
+        method="POST",
+        path="/api/switchboard/heartbeat",
+        body={
+            "butler_name": body.butler_name,
+            "previous_state": current_state,
+            "new_state": new_state,
+        },
+        response_status=200,
+    )
+
     return HeartbeatResponse(status="ok", eligibility_state=new_state)
 
 
@@ -659,6 +675,18 @@ async def set_butler_eligibility(
         name,
         previous_state,
         body.eligibility_state,
+    )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="butler_eligibility_set",
+        method="POST",
+        path=f"/api/switchboard/registry/{name}/eligibility",
+        path_params={"name": name},
+        body={"previous_state": previous_state, "new_state": body.eligibility_state},
+        response_status=200,
     )
 
     return ApiResponse[SetEligibilityResponse](
@@ -1030,6 +1058,18 @@ async def delete_connector(
         )
 
     logger.info("Deregistered connector: %s/%s", connector_type, endpoint_identity)
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="connector_delete",
+        method="DELETE",
+        path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}",
+        path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
+        response_status=200,
+    )
+
     return ApiResponse[dict](data={"deleted": f"{connector_type}/{endpoint_identity}"})
 
 
@@ -1098,6 +1138,18 @@ async def update_connector_cursor(
         endpoint_identity,
         body.cursor,
     )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="connector_cursor_patch",
+        method="PATCH",
+        path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}/cursor",
+        path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
+        response_status=200,
+    )
+
     return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
 
 
@@ -1160,6 +1212,19 @@ async def update_connector_settings(
         connector_type,
         endpoint_identity,
     )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="connector_settings_patch",
+        method="PATCH",
+        path=f"/api/switchboard/connectors/{connector_type}/{endpoint_identity}/settings",
+        path_params={"connector_type": connector_type, "endpoint_identity": endpoint_identity},
+        body={"setting_keys": list(body.settings.keys())},
+        response_status=200,
+    )
+
     return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(row_dict))
 
 
@@ -1875,6 +1940,21 @@ async def create_backfill_job(
     if row is None:
         raise HTTPException(status_code=503, detail="No row returned after insert")
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="backfill_job_create",
+        method="POST",
+        path="/api/switchboard/backfill",
+        body={
+            "connector_type": body.connector_type,
+            "endpoint_identity": body.endpoint_identity,
+            "job_id": job_id,
+        },
+        response_status=201,
+    )
+
     return ApiResponse[BackfillJobEntry](data=_row_to_backfill_entry(row))
 
 
@@ -1963,6 +2043,17 @@ async def pause_backfill_job(
         logger.exception("Failed to pause backfill job %s", job_id)
         raise HTTPException(status_code=503, detail="Failed to pause backfill job")
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="backfill_job_pause",
+        method="PATCH",
+        path=f"/api/switchboard/backfill/{job_id}/pause",
+        path_params={"job_id": job_id},
+        response_status=200,
+    )
+
     return ApiResponse[BackfillLifecycleResponse](
         data=BackfillLifecycleResponse(job_id=job_id, status="paused")
     )
@@ -2020,6 +2111,17 @@ async def cancel_backfill_job(
         logger.exception("Failed to cancel backfill job %s", job_id)
         raise HTTPException(status_code=503, detail="Failed to cancel backfill job")
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="backfill_job_cancel",
+        method="PATCH",
+        path=f"/api/switchboard/backfill/{job_id}/cancel",
+        path_params={"job_id": job_id},
+        response_status=200,
+    )
+
     return ApiResponse[BackfillLifecycleResponse](
         data=BackfillLifecycleResponse(job_id=job_id, status="cancelled")
     )
@@ -2072,6 +2174,17 @@ async def resume_backfill_job(
     except Exception:
         logger.exception("Failed to resume backfill job %s", job_id)
         raise HTTPException(status_code=503, detail="Failed to resume backfill job")
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="backfill_job_resume",
+        method="PATCH",
+        path=f"/api/switchboard/backfill/{job_id}/resume",
+        path_params={"job_id": job_id},
+        response_status=200,
+    )
 
     return ApiResponse[BackfillLifecycleResponse](
         data=BackfillLifecycleResponse(job_id=job_id, status="pending")
@@ -2187,6 +2300,21 @@ async def update_thread_affinity_settings(
         *args,
     )
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="thread_affinity_settings_patch",
+        method="PATCH",
+        path="/api/switchboard/thread-affinity/settings",
+        body={
+            k: v
+            for k, v in {"enabled": body.enabled, "ttl_days": body.ttl_days}.items()
+            if v is not None
+        },
+        response_status=200,
+    )
+
     # Return updated row
     return await get_thread_affinity_settings(db=db)
 
@@ -2255,6 +2383,18 @@ async def upsert_thread_affinity_override(
         body.mode,
     )
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="thread_affinity_override_upsert",
+        method="PUT",
+        path=f"/api/switchboard/thread-affinity/overrides/{thread_id}",
+        path_params={"thread_id": clean_thread_id},
+        body={"mode": body.mode},
+        response_status=200,
+    )
+
     return ThreadOverrideEntry(thread_id=clean_thread_id, mode=body.mode)
 
 
@@ -2285,6 +2425,17 @@ async def delete_thread_affinity_override(
         WHERE id = 1
         """,
         clean_thread_id,
+    )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="thread_affinity_override_delete",
+        method="DELETE",
+        path=f"/api/switchboard/thread-affinity/overrides/{thread_id}",
+        path_params={"thread_id": clean_thread_id},
+        response_status=204,
     )
 
 
@@ -2378,6 +2529,17 @@ async def create_routing_instruction(
         body.enabled,
     )
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="routing_instruction_create",
+        method="POST",
+        path="/api/switchboard/routing-instructions",
+        body={"priority": body.priority, "enabled": body.enabled},
+        response_status=201,
+    )
+
     return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
 
 
@@ -2463,6 +2625,18 @@ async def update_routing_instruction(
             detail=f"Routing instruction '{instruction_id}' not found",
         )
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="routing_instruction_patch",
+        method="PATCH",
+        path=f"/api/switchboard/routing-instructions/{instruction_id}",
+        path_params={"instruction_id": instruction_id},
+        body={k: v for k, v in updates.items() if k != "instruction"},
+        response_status=200,
+    )
+
     return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
 
 
@@ -2504,6 +2678,17 @@ async def delete_routing_instruction(
             status_code=404,
             detail=f"Routing instruction '{instruction_id}' not found",
         )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="routing_instruction_delete",
+        method="DELETE",
+        path=f"/api/switchboard/routing-instructions/{instruction_id}",
+        path_params={"instruction_id": instruction_id},
+        response_status=204,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2679,6 +2864,22 @@ async def create_ingestion_rule(
 
     _invalidate_ingestion_cache()
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="ingestion_rule_create",
+        method="POST",
+        path="/api/switchboard/ingestion-rules",
+        body={
+            "scope": body.scope,
+            "rule_type": body.rule_type,
+            "action": body.action,
+            "enabled": body.enabled,
+        },
+        response_status=201,
+    )
+
     return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(row))
 
 
@@ -2833,6 +3034,19 @@ async def update_ingestion_rule(
 
     _invalidate_ingestion_cache()
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    audit_body = {k: v for k, v in updates.items() if k not in ("condition",)}
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="ingestion_rule_patch",
+        method="PATCH",
+        path=f"/api/switchboard/ingestion-rules/{rule_id}",
+        path_params={"rule_id": rule_id},
+        body=audit_body or None,
+        response_status=200,
+    )
+
     return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(row))
 
 
@@ -2873,6 +3087,17 @@ async def delete_ingestion_rule(
         raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
 
     _invalidate_ingestion_cache()
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="ingestion_rule_delete",
+        method="DELETE",
+        path=f"/api/switchboard/ingestion-rules/{rule_id}",
+        path_params={"rule_id": rule_id},
+        response_status=204,
+    )
 
 
 # ---------------------------------------------------------------------------

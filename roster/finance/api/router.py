@@ -15,6 +15,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 
@@ -609,6 +610,21 @@ async def bulk_ingest_transactions(
         for e in result.get("error_details", [])
     ]
 
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="finance",
+        operation="transaction_bulk_ingest",
+        method="POST",
+        path="/api/finance/transactions/bulk",
+        body={
+            "account_id": str(request.account_id) if request.account_id else None,
+            "source": request.source,
+            "count": len(request.transactions),
+        },
+        response_status=200,
+    )
+
     return BulkTransactionResponse(
         total=result["total"],
         imported=result["imported"],
@@ -730,6 +746,17 @@ async def bulk_update_transactions(
         )
         for r in result["results"]
     ]
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="finance",
+        operation="transaction_bulk_update",
+        method="PATCH",
+        path="/api/finance/transactions/bulk-metadata",
+        body={"op_count": len(ops_raw)},
+        response_status=200,
+    )
 
     return BulkUpdateResponseModel(
         updated_total=result["updated_total"],

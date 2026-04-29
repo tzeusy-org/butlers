@@ -24,6 +24,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
+from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
 from butlers.api.models import (
     ApiResponse,
@@ -477,6 +478,19 @@ async def submit_episode_correction(
         body.note,
         body.submitted_by,
     )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="episode_correction_create",
+        method="POST",
+        path=f"/api/chronicler/episodes/{episode_id}/corrections",
+        path_params={"episode_id": str(episode_id)},
+        body={"corrected_privacy": body.corrected_privacy, "submitted_by": body.submitted_by},
+        response_status=201,
+    )
+
     return _row_to_override(row)
 
 
@@ -782,6 +796,18 @@ async def _explain_episode_inner(
         )
 
     span.set_attribute("chronicler.episodes.explain.outcome", "dispatched")
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="episode_explain_invoke",
+        method="POST",
+        path=f"/api/chronicler/episodes/{episode_id}/explain",
+        path_params={"episode_id": str(episode_id)},
+        response_status=200,
+    )
+
     return EpisodeExplainResponse(
         episode_id=str(episode_id),
         cache_key=cache_key,
@@ -1970,6 +1996,17 @@ async def refresh_day_close(
                 )
             ).model_dump(exclude_none=True),
         )
+
+    # Explicit audit — middleware also fires; this carries the semantic operation label.
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="day_close_refresh_invoke",
+        method="POST",
+        path="/api/chronicler/aggregate/day-close/refresh",
+        body={"date": body.date.isoformat(), "tz": body.tz},
+        response_status=200,
+    )
 
     return DayCloseRefreshResponse(
         cache_key=cache_key,
