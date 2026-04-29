@@ -36,3 +36,20 @@ The Health Butler is here to help you understand yourself. It's not a replacemen
 You don't have to log everything at once. Start with what matters most to you—maybe it's your weight, your medications, or your mood. As you build the habit, you'll see the value compound.
 
 Over time, the Health Butler becomes an extension of your memory. It remembers so you can focus on living.
+
+---
+
+## Meal Write Path (Technical Reference)
+
+**Who writes:** The user (or an agent acting on their behalf) calls the `meal_log` MCP tool via an interactive channel (Telegram, direct MCP call, or an in-session tool call). There is no external connector — meals are always entered manually.
+
+**Trigger:** Explicit user action (e.g. "Log my lunch — pasta with tomato sauce" → Telegram → Health Butler session → `meal_log` tool call).
+
+**Dual-write contract:** Every `meal_log` call writes to two storage surfaces:
+
+1. **`facts` table** (memory module, `health` scope) — powers `meal_history`, `nutrition_summary`, semantic search, and the weekly health summary. The fact predicate is `meal_{type}` (e.g. `meal_lunch`).
+2. **`health.meals` table** — the Chronicler evidence surface. The `MealsAdapter` reads this table on every `chronicler_project_meals` tick and projects each row into `chronicler.point_events` as an `eating_event`. This powers the Meal lane on the Chronicles dashboard.
+
+**Latency:** Meals appear on the Chronicles dashboard within one `chronicler_project_meals` tick (configured frequency; typically ≤ 15 minutes after logging).
+
+**Failure semantics:** If the `health.meals` dual-write fails (e.g. migration not yet applied), the meal is still persisted in `facts` and a warning is logged. The Chronicles Meal lane will be missing that entry until it is replayed or the table is available.
