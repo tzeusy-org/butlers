@@ -1,7 +1,8 @@
 """Home Assistant connector — WebSocket-first with REST polling fallback.
 
-STATUS: PARTIAL (tasks 3 + 8 — WebSocket client core, health, heartbeat, metrics)
-===================================================================================
+STATUS: COMPLETE (tasks 3, 5–9 — WebSocket client core, filter pipeline, envelope
+construction, checkpoint, history persistence, health, heartbeat, metrics)
+==================================================================================
 
 This module implements:
 - Task 3 (WebSocket client core): HAWebSocketClient with auth handshake, event
@@ -27,7 +28,9 @@ Environment variables:
 - CONNECTOR_HEALTH_PORT (default: 40087)
 - HA_BASE_URL: HA instance base URL (overrides entity_info)
 - HA_ACCESS_TOKEN: HA long-lived access token (overrides entity_info)
-- HA_DOMAIN_ALLOWLIST: comma-separated domain allowlist
+- HA_DOMAIN_ALLOWLIST: comma-separated domain allowlist (default does NOT include
+  ``person``; add ``person`` to capture presence/location data into
+  ``connectors.home_assistant_history``)
 - HA_POLL_INTERVAL_S (default: 60): REST fallback poll interval
 - HA_CHECKPOINT_OVERLAP_S (default: 30): checkpoint resume safety margin
 - HA_WS_PING_INTERVAL_S (default: 30): WebSocket keepalive ping interval
@@ -1289,6 +1292,65 @@ class HAConnector:
 
 
 # ---------------------------------------------------------------------------
+# Evidence table persistence — connectors.home_assistant_history (task 8)
+# ---------------------------------------------------------------------------
+
+_HA_HISTORY_TABLE = "connectors.home_assistant_history"
+
+
+async def persist_ha_history(
+    pool: Any,
+    *,
+    entity_id: str,
+    state: str | None,
+    attributes: dict[str, Any] | None,
+    recorded_at: Any,
+) -> bool:
+    """Insert one row into ``connectors.home_assistant_history``.
+
+    Idempotency: the table has no unique constraint on (entity_id, recorded_at)
+    by design — each HA event produces a distinct row because ``recorded_at``
+    carries millisecond precision from ``time_fired``.  Duplicate suppression
+    happens via the Switchboard's idempotency key before this function is
+    called.
+
+    Errors are caught and logged; a write failure does NOT abort the ingest
+    submission path.  Returns ``True`` when the row was inserted, ``False``
+    on error.
+
+    Args:
+        pool: asyncpg connection pool (``connector_writer`` role).
+        entity_id: HA entity ID (e.g. ``"person.tzeusy"``).
+        state: New state value after the transition (may be ``None``).
+        attributes: JSONB snapshot of HA event attributes (may be ``None``).
+        recorded_at: Timezone-aware datetime for the ``recorded_at`` column.
+    """
+    import json as _json
+
+    attrs_json: str | None = _json.dumps(attributes) if attributes is not None else None
+
+    try:
+        await pool.execute(
+            f"""
+            INSERT INTO {_HA_HISTORY_TABLE} (entity_id, state, attributes, recorded_at)
+            VALUES ($1, $2, $3::jsonb, $4)
+            """,
+            entity_id,
+            state,
+            attrs_json,
+            recorded_at,
+        )
+        return True
+    except Exception:
+        logger.warning(
+            "ha-connector: failed to persist history row for entity_id=%s (non-fatal)",
+            entity_id,
+            exc_info=True,
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Process entrypoint
 # ---------------------------------------------------------------------------
 
@@ -1299,7 +1361,24 @@ async def _main() -> None:
     Loads configuration, resolves credentials, initializes the connector,
     and runs the main event loop.
     """
+    import asyncpg
+
+    from butlers.connectors.home_assistant_checkpoint import (
+        HACheckpoint,
+        load_ha_checkpoint,
+        save_ha_checkpoint,
+    )
+    from butlers.connectors.home_assistant_envelope import (
+        build_automation_triggered_envelope,
+        build_state_changed_envelope,
+        build_state_changed_normalized_text,
+        parse_time_fired,
+    )
+    from butlers.connectors.home_assistant_filter import HAFilterPersistence
+    from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
     from butlers.core.logging import configure_logging
+    from butlers.credential_store import resolve_owner_entity_info, shared_db_name_from_env
+    from butlers.db import db_params_from_env
 
     configure_logging()
     logger.info("Home Assistant connector starting")
@@ -1307,39 +1386,46 @@ async def _main() -> None:
     config = HAConnectorConfig.from_env()
     connector = HAConnector(config=config)
 
-    # Resolve HA credentials: env override → entity_info (authoritative source)
+    # ------------------------------------------------------------------
+    # Open persistent DB pool (credential resolution + pipeline use)
+    # ------------------------------------------------------------------
+
+    db_params = db_params_from_env()
+    db_pool: asyncpg.Pool | None = None
+    try:
+        db_pool = await asyncpg.create_pool(
+            host=db_params["host"],
+            port=db_params["port"],
+            user=db_params["user"],
+            password=db_params["password"],
+            database=shared_db_name_from_env(),
+            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+            min_size=1,
+            max_size=4,
+            command_timeout=10,
+            setup=connector_setup_role,
+        )
+    except Exception:
+        logger.warning(
+            "HAConnector: could not open DB pool; pipeline will run without DB",
+            exc_info=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Resolve HA credentials: env override → entity_info
+    # ------------------------------------------------------------------
+
     ha_base_url = os.environ.get("HA_BASE_URL", "").strip()
     ha_access_token = os.environ.get("HA_ACCESS_TOKEN", "").strip()
 
-    if not ha_base_url or not ha_access_token:
+    if (not ha_base_url or not ha_access_token) and db_pool is not None:
         try:
-            import asyncpg
-
-            from butlers.credential_store import resolve_owner_entity_info, shared_db_name_from_env
-            from butlers.db import db_params_from_env
-
-            db_params = db_params_from_env()
-            pool: asyncpg.Pool = await asyncpg.create_pool(
-                host=db_params["host"],
-                port=db_params["port"],
-                user=db_params["user"],
-                password=db_params["password"],
-                database=shared_db_name_from_env(),
-                ssl=db_params.get("ssl"),  # type: ignore[arg-type]
-                min_size=1,
-                max_size=2,
-                command_timeout=5,
-                setup=connector_setup_role,
-            )
-            try:
-                if not ha_base_url:
-                    ha_base_url = await resolve_owner_entity_info(pool, "home_assistant_url") or ""
-                if not ha_access_token:
-                    ha_access_token = (
-                        await resolve_owner_entity_info(pool, "home_assistant_token") or ""
-                    )
-            finally:
-                await pool.close()
+            if not ha_base_url:
+                ha_base_url = await resolve_owner_entity_info(db_pool, "home_assistant_url") or ""
+            if not ha_access_token:
+                ha_access_token = (
+                    await resolve_owner_entity_info(db_pool, "home_assistant_token") or ""
+                )
         except Exception:
             logger.error("HAConnector: failed to load credentials from entity_info", exc_info=True)
 
@@ -1370,28 +1456,274 @@ async def _main() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Tasks 3.1–3.6: Wire up the WebSocket client
+    # Tasks 5–9: Build filter pipeline, checkpoint, and filter persistence
     # ------------------------------------------------------------------
 
-    async def _null_dispatch(event_type: str, event: dict[str, Any]) -> None:
-        """No-op event dispatch placeholder.
+    endpoint_identity = connector._endpoint_identity
 
-        In a full implementation (tasks 5–6), this would route events through
-        the three-layer filter pipeline and construct ingest.v1 envelopes.
-        Tasks 5–7 (REST fallback, filtering, envelope construction, checkpoint)
-        remain pending; this stub ensures the connector loop and health state
-        are exercised in the meantime.
-        """
-        logger.debug(
-            "HAConnector: event received (type=%r, not yet dispatched to pipeline)",
-            event_type,
+    pipeline = HAFilterPipeline(
+        config=HAFilterPipelineConfig(domain_allowlist=config.domain_allowlist),
+        evaluator=None,  # discretion evaluator not wired (always passes via weight bypass)
+        metrics=connector._ha_metrics,
+    )
+
+    # Load checkpoint (fail-open: empty checkpoint on any error)
+    checkpoint: HACheckpoint
+    resume_ts = None
+    if db_pool is not None:
+        checkpoint, resume_ts = await load_ha_checkpoint(
+            db_pool,
+            endpoint_identity=endpoint_identity,
+            overlap_seconds=config.checkpoint_overlap_s,
         )
-        connector.on_event_received(passed_all_filters=False)
+    else:
+        checkpoint = HACheckpoint.empty()
+
+    # Filter persistence (for recording dropped events)
+    async def _submit_envelope_for_replay(envelope: dict[str, Any]) -> None:
+        await connector._mcp_client.call_tool("ingest", envelope)
+
+    ha_filter_persistence = HAFilterPersistence(
+        endpoint_identity=endpoint_identity,
+        db_pool=db_pool,
+        submit_fn=_submit_envelope_for_replay,
+    )
+
+    # Tracked entity count for metrics
+    _tracked_entities: set[str] = set()
+
+    # ------------------------------------------------------------------
+    # Tasks 3.1–3.6 + 5–9: Real event dispatch
+    # ------------------------------------------------------------------
+
+    async def _dispatch(event_type: str, event: dict[str, Any]) -> None:
+        """Route a HA event through the filter pipeline and persist.
+
+        Only ``state_changed`` and ``automation_triggered`` events are
+        processed.  ``call_service`` events are counted but not forwarded.
+        """
+        nonlocal checkpoint
+
+        if event_type == "call_service":
+            # call_service events are not persisted; count as not-forwarded.
+            connector.on_event_received(passed_all_filters=False)
+            return
+
+        if event_type not in ("state_changed", "automation_triggered"):
+            logger.debug("ha-connector: unhandled event_type=%r, skipping", event_type)
+            connector.on_event_received(passed_all_filters=False)
+            return
+
+        # Extract common fields
+        event_data: dict[str, Any] = event.get("data", {})
+        time_fired: str = event.get("time_fired", "")
+        entity_id: str = event_data.get("entity_id", "")
+
+        if not entity_id:
+            logger.debug("ha-connector: event missing entity_id, skipping")
+            connector.on_event_received(passed_all_filters=False)
+            return
+
+        if not time_fired:
+            logger.debug("ha-connector: event missing time_fired for entity_id=%s", entity_id)
+            connector.on_event_received(passed_all_filters=False)
+            return
+
+        # Parse time_fired for checkpoint dedup
+        try:
+            event_ts = parse_time_fired(time_fired)
+        except Exception:
+            logger.warning(
+                "ha-connector: unparseable time_fired=%r for entity_id=%s",
+                time_fired,
+                entity_id,
+            )
+            connector.on_event_received(passed_all_filters=False)
+            return
+
+        # Checkpoint dedup: skip events we've already processed
+        from butlers.connectors.home_assistant_checkpoint import is_duplicate_event
+
+        if is_duplicate_event(resume_ts, event_ts):
+            logger.debug(
+                "ha-connector: duplicate event entity_id=%s time_fired=%s, skipping",
+                entity_id,
+                time_fired,
+            )
+            connector.on_event_received(passed_all_filters=False)
+            return
+
+        # Track entity for metrics
+        domain = entity_id.split(".")[0] if "." in entity_id else entity_id
+        _tracked_entities.add(entity_id)
+        connector.on_entities_tracked_update(len(_tracked_entities))
+
+        if event_type == "automation_triggered":
+            # Automation events: extract friendly name and forward directly
+            new_state_data: dict[str, Any] = event_data.get("new_state") or {}
+            attrs: dict[str, Any] = new_state_data.get("attributes") or {}
+            friendly_name: str | None = attrs.get("friendly_name") or None
+
+            envelope = build_automation_triggered_envelope(
+                endpoint_identity=endpoint_identity,
+                entity_id=entity_id,
+                time_fired=time_fired,
+                ha_event=event,
+                friendly_name=friendly_name,
+                domain=domain,
+            )
+            try:
+                ingest_start = time.monotonic()
+                await connector._mcp_client.call_tool("ingest", envelope)
+                connector._ha_metrics and connector._ha_metrics.observe_event_latency(
+                    time.monotonic() - ingest_start
+                )
+            except Exception:
+                logger.warning(
+                    "ha-connector: failed to submit automation_triggered envelope",
+                    exc_info=True,
+                )
+                connector.on_event_received(passed_all_filters=False)
+                return
+
+            connector.on_event_received(passed_all_filters=True)
+            if db_pool is not None:
+                await save_ha_checkpoint(
+                    db_pool, endpoint_identity, event_ts, entity_id, "websocket"
+                )
+            return
+
+        # state_changed: extract old/new state and run filter pipeline
+        old_state_data: dict[str, Any] = event_data.get("old_state") or {}
+        new_state_data: dict[str, Any] = event_data.get("new_state") or {}
+        old_state_str: str | None = old_state_data.get("state") or None
+        new_state_str: str | None = new_state_data.get("state") or None
+        new_attrs: dict[str, Any] = new_state_data.get("attributes") or {}
+        device_class: str | None = new_attrs.get("device_class") or None
+        friendly_name: str | None = new_attrs.get("friendly_name") or None
+        unit_of_measurement: str | None = new_attrs.get("unit_of_measurement") or None
+
+        time_fired_ts = event_ts.timestamp()
+
+        # Build normalized_text for discretion (and envelope)
+        normalized_text = build_state_changed_normalized_text(
+            entity_id=entity_id,
+            friendly_name=friendly_name,
+            old_state=old_state_str,
+            new_state=new_state_str,
+            unit_of_measurement=unit_of_measurement,
+        )
+
+        # Run three-layer filter pipeline
+        from butlers.connectors.home_assistant_pipeline import PipelineResult
+
+        result: PipelineResult = await pipeline.run(
+            entity_id=entity_id,
+            domain=domain,
+            device_class=device_class,
+            old_state_str=old_state_str,
+            new_state_str=new_state_str,
+            normalized_text=normalized_text,
+            ha_event=event,
+            time_fired_ts=time_fired_ts,
+        )
+
+        if result.verdict == "filtered":
+            connector.on_event_received(passed_all_filters=False)
+            # Record to filter persistence based on stage
+            if result.stage == "domain_filter":
+                ha_filter_persistence.record_domain_excluded(
+                    entity_id=entity_id,
+                    domain=domain,
+                    ha_event=event,
+                    time_fired=time_fired,
+                    friendly_name=friendly_name,
+                    old_state=old_state_data or None,
+                    new_state=new_state_data or None,
+                )
+            elif result.stage == "significance_filter":
+                # Extract delta from filter_reason: "insignificant_delta:<cls>:<delta>"
+                parts = result.filter_reason.split(":", 2)
+                try:
+                    delta_val = float(parts[2]) if len(parts) >= 3 else 0.0
+                except ValueError:
+                    delta_val = 0.0
+                ha_filter_persistence.record_insignificant_delta(
+                    entity_id=entity_id,
+                    device_class=device_class or domain,
+                    delta=delta_val,
+                    ha_event=event,
+                    time_fired=time_fired,
+                    friendly_name=friendly_name,
+                    old_state=old_state_data or None,
+                    new_state=new_state_data or None,
+                )
+            elif result.stage == "discretion":
+                ha_filter_persistence.record_discretion_ignore(
+                    entity_id=entity_id,
+                    ha_event=event,
+                    time_fired=time_fired,
+                    friendly_name=friendly_name,
+                    old_state=old_state_data or None,
+                    new_state=new_state_data or None,
+                    domain=domain,
+                    device_class=device_class,
+                )
+            await ha_filter_persistence.flush()
+            return
+
+        # Event passed all filters — build envelope and submit to Switchboard
+        connector.on_event_received(passed_all_filters=True)
+
+        envelope = build_state_changed_envelope(
+            endpoint_identity=endpoint_identity,
+            entity_id=entity_id,
+            time_fired=time_fired,
+            ha_event=event,
+            friendly_name=friendly_name,
+            old_state=old_state_data or None,
+            new_state=new_state_data or None,
+            domain=domain,
+            device_class=device_class,
+            unit_of_measurement=unit_of_measurement,
+            discretion_reason=result.discretion_reason or None,
+        )
+
+        try:
+            ingest_start = time.monotonic()
+            await connector._mcp_client.call_tool("ingest", envelope)
+            if connector._ha_metrics is not None:
+                connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
+        except Exception:
+            logger.warning(
+                "ha-connector: failed to submit state_changed envelope for entity_id=%s",
+                entity_id,
+                exc_info=True,
+            )
+            return
+
+        # Persist person.* state-change events to the history evidence table
+        if domain == "person" and db_pool is not None:
+            await persist_ha_history(
+                db_pool,
+                entity_id=entity_id,
+                state=new_state_str,
+                attributes=new_attrs or None,
+                recorded_at=event_ts,
+            )
+
+        # Update checkpoint after successful Switchboard submission
+        if db_pool is not None:
+            await save_ha_checkpoint(db_pool, endpoint_identity, event_ts, entity_id, "websocket")
+
+        # Flush filtered event buffer and drain replay queue
+        await ha_filter_persistence.flush()
+        await ha_filter_persistence.drain_replay()
 
     ws_client = HAWebSocketClient(
         ha_base_url=ha_base_url,
         ha_access_token=ha_access_token,
-        dispatch=_null_dispatch,
+        dispatch=_dispatch,
         ping_interval_s=config.ws_ping_interval_s,
         pong_timeout_s=config.ws_pong_timeout_s,
         reconnect_initial_s=_DEFAULT_WS_RECONNECT_INITIAL_S,
@@ -1429,6 +1761,9 @@ async def _main() -> None:
     except (asyncio.CancelledError, Exception):
         pass
     await connector.stop_heartbeat()
+
+    if db_pool is not None:
+        await db_pool.close()
 
 
 if __name__ == "__main__":
