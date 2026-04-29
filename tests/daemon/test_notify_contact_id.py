@@ -64,11 +64,17 @@ def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
 
 def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
     """Return an async side_effect for pool.fetchrow that returns runtime_config rows
-    for runtime_config queries and None for all other queries."""
+    for runtime_config queries, is_primary=True for contact_info is_primary lookups,
+    and None for all other queries."""
 
     async def _fetchrow(query: str, *args, **kwargs):
         if "runtime_config" in query:
             return _make_runtime_config_row(butler_name)
+        # _is_primary_email queries public.contact_info for is_primary.
+        # Default to True so owner auto-approve continues to work in tests that
+        # use _known_contact_patch without explicitly overriding fetchrow.
+        if "contact_info" in query and "is_primary" in query:
+            return {"is_primary": True}
         return None
 
     return _fetchrow

@@ -54,8 +54,11 @@ _COMMON_KWARGS = {
 
 
 class TestCheckEmailRecipient:
-    async def test_owner_auto_approves(self) -> None:
+    async def test_owner_primary_email_auto_approves(self) -> None:
+        """Owner send to primary email address is auto-approved."""
         pool = AsyncMock()
+        # is_primary=True for the targeted address
+        pool.fetchrow = AsyncMock(return_value={"is_primary": True})
         with patch(
             "butlers.identity.resolve_contact_by_channel",
             new=AsyncMock(return_value=_owner_contact()),
@@ -65,6 +68,54 @@ class TestCheckEmailRecipient:
         assert decision.allowed is True
         assert decision.reason == "owner"
         pool.execute.assert_not_awaited()
+
+    async def test_owner_auto_approves(self) -> None:
+        """Backwards-compat alias: owner to primary email still auto-approves."""
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value={"is_primary": True})
+        with patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=_owner_contact()),
+        ):
+            decision = await check_email_recipient(pool, **_COMMON_KWARGS)
+
+        assert decision.allowed is True
+        assert decision.reason == "owner"
+        pool.execute.assert_not_awaited()
+
+    async def test_owner_non_primary_email_parks(self) -> None:
+        """Owner send to a non-primary email address is parked for approval.
+
+        This is the regression test for bu-jwby9: an owner with both a personal
+        (primary) and a work (non-primary) email must NOT auto-approve sends to
+        the work address.  The non-primary address must go through the normal
+        standing-rules / parking flow.
+        """
+        owner = _owner_contact()
+        pool = AsyncMock()
+        # Targeted address is NOT the primary one
+        pool.fetchrow = AsyncMock(return_value={"is_primary": False})
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=owner),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            decision = await check_email_recipient(pool, **_COMMON_KWARGS)
+
+        assert decision.allowed is False
+        assert decision.reason == "parked"
+        assert decision.action_id is not None
+        # contact_desc reflects owner is still recognised as a known contact
+        assert decision.contact_desc == "known non-owner contact"
+        # pending_action INSERT must have been called
+        pool.execute.assert_awaited_once()
+        insert_call = pool.execute.call_args
+        assert "pending_actions" in insert_call.args[0]
 
     async def test_non_owner_with_rule_approves(self) -> None:
         pool = AsyncMock()
