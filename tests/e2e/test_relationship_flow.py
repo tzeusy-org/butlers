@@ -131,11 +131,14 @@ async def test_note_logging_via_spawner(
     assert result is not None, "Spawner should return result"
     assert isinstance(result, dict), "Spawner result should be dict"
 
-    # Query notes table for the logged note
+    # Query facts table for the logged note (notes are stored as SPO facts after rel_010)
     note_row = await relationship_pool.fetchrow(
         """
-        SELECT * FROM notes
-        WHERE contact_id = $1
+        SELECT subject, content, valid_at, created_at FROM facts
+        WHERE subject = 'contact:' || $1
+          AND predicate = 'contact_note'
+          AND validity = 'active'
+          AND scope = 'relationship'
         ORDER BY created_at DESC
         LIMIT 1
         """,
@@ -145,16 +148,19 @@ async def test_note_logging_via_spawner(
     # Validate note was created
     assert note_row is not None, "Note should be logged in database"
 
-    # Check note content (handle both 'content' and 'body' column names for compatibility)
+    # Check note content
     note_dict = dict(note_row)
-    note_text = note_dict.get("body") or note_dict.get("content") or ""
-    assert len(note_text) > 0, "Note should have non-empty content/body"
+    note_text = note_dict.get("content") or ""
+    assert len(note_text) > 0, "Note should have non-empty content"
     assert "hiking" in note_text.lower() or "coffee" in note_text.lower(), (
         f"Note should contain expected content. Got: {note_text}"
     )
 
-    # Verify contact_id matches
-    assert note_dict["contact_id"] == contact_id, "Note should be linked to correct contact"
+    # Verify note is linked to the correct contact via the fact subject
+    expected_subject = f"contact:{contact_id}"
+    assert note_dict["subject"] == expected_subject, (
+        f"Note subject should be '{expected_subject}'. Got: {note_dict['subject']}"
+    )
 
 
 # ---------------------------------------------------------------------------
