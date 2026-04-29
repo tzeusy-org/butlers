@@ -189,9 +189,17 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             return None, [f"Skipping malformed OwnTracks row {row_ref}: ts must be timezone-aware"]
 
         # Clock-skew detection: clamp implausible device timestamps to server
-        # ingestion time (recorded_at) before episode projection.
+        # ingestion time (recorded_at) before episode projection.  Older or
+        # manually repaired evidence rows may have a malformed recorded_at;
+        # keep projection moving by falling back to the already-validated ts.
         recorded_at = row["recorded_at"]
-        if isinstance(recorded_at, datetime) and recorded_at.tzinfo is not None:
+        if not isinstance(recorded_at, datetime) or recorded_at.tzinfo is None:
+            warnings.append(
+                f"OwnTracks row {row_ref} has malformed recorded_at; "
+                "using ts for projection ordering"
+            )
+            recorded_at = ts
+        else:
             delta = ts - recorded_at
             if abs(delta) > self.clock_skew_threshold:
                 skew_warning = (
@@ -239,7 +247,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "event": row["event"],
             "endpoint_identity": endpoint_identity.strip(),
             "raw_payload": row["raw_payload"],
-            "recorded_at": row["recorded_at"],
+            "recorded_at": recorded_at,
         }
         return normalized, warnings
 
@@ -421,31 +429,23 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         endpoint = first_row["endpoint_identity"]
 
         # Check if the first row continues a prior-batch open episode.
-        carry = prior_carryover.get(endpoint)
+        carry = self._continuing_carryover(
+            prior_carryover.get(endpoint),
+            endpoint=endpoint,
+            row_ts=first_row["ts"],
+            gap=gap,
+        )
         existing_source_ref: str | None = None
         prior_start_at: datetime | None = None
         prior_start_lat: float | None = None
         prior_start_lon: float | None = None
-
-        if carry:
-            try:
-                parsed_prior_start_at = datetime.fromisoformat(carry["start_at"])
-                prior_end_at = datetime.fromisoformat(carry["end_at"])
-                if self._carryover_continues(
-                    row_ts=first_row["ts"],
-                    prior_start_at=parsed_prior_start_at,
-                    prior_end_at=prior_end_at,
-                    gap=gap,
-                ):
-                    # Continue the prior episode.
-                    existing_source_ref = carry["source_ref"]
-                    prior_start_at = parsed_prior_start_at
-                    prior_start_lat = carry.get("start_lat")
-                    prior_start_lon = carry.get("start_lon")
-            except (KeyError, TypeError, ValueError):
-                logger.warning(
-                    "Discarding malformed movement carryover for %s: %r", endpoint, carry
-                )
+        if carry is not None:
+            (
+                existing_source_ref,
+                prior_start_at,
+                prior_start_lat,
+                prior_start_lon,
+            ) = carry
 
         current: list[dict[str, Any]] = [first_row]
         current_source_ref: str | None = existing_source_ref
@@ -476,27 +476,19 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 current_prior_start_lon = None
                 # Check carryover for this new segment's endpoint too.
                 new_endpoint = row["endpoint_identity"]
-                new_carry = prior_carryover.get(new_endpoint)
-                if new_carry:
-                    try:
-                        parsed_new_prior_start_at = datetime.fromisoformat(new_carry["start_at"])
-                        new_prior_end_at = datetime.fromisoformat(new_carry["end_at"])
-                        if self._carryover_continues(
-                            row_ts=row["ts"],
-                            prior_start_at=parsed_new_prior_start_at,
-                            prior_end_at=new_prior_end_at,
-                            gap=gap,
-                        ):
-                            current_source_ref = new_carry["source_ref"]
-                            current_prior_start_at = parsed_new_prior_start_at
-                            current_prior_start_lat = new_carry.get("start_lat")
-                            current_prior_start_lon = new_carry.get("start_lon")
-                    except (KeyError, TypeError, ValueError):
-                        logger.warning(
-                            "Discarding malformed movement carryover for %s: %r",
-                            new_endpoint,
-                            new_carry,
-                        )
+                new_carry = self._continuing_carryover(
+                    prior_carryover.get(new_endpoint),
+                    endpoint=new_endpoint,
+                    row_ts=row["ts"],
+                    gap=gap,
+                )
+                if new_carry is not None:
+                    (
+                        current_source_ref,
+                        current_prior_start_at,
+                        current_prior_start_lat,
+                        current_prior_start_lon,
+                    ) = new_carry
         segments.append(
             {
                 "rows": current,
@@ -591,6 +583,73 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             }
 
         return episodes_upserted, new_carryover
+
+    def _continuing_carryover(
+        self,
+        carry: Any,
+        *,
+        endpoint: str,
+        row_ts: datetime,
+        gap: timedelta,
+    ) -> tuple[str, datetime, float | None, float | None] | None:
+        """Return normalized prior-episode state when it continues ``row_ts``.
+
+        Carryover is persisted JSON and may survive code/schema changes. Treat
+        malformed optional coordinate fields as absent, and discard malformed
+        required fields instead of letting stale state poison every projection
+        run.
+        """
+        if not carry:
+            return None
+        if not isinstance(carry, dict):
+            logger.warning("Discarding malformed movement carryover for %s: %r", endpoint, carry)
+            return None
+
+        try:
+            source_ref = carry["source_ref"]
+            prior_start_at = datetime.fromisoformat(carry["start_at"])
+            prior_end_at = datetime.fromisoformat(carry["end_at"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Discarding malformed movement carryover for %s: %r", endpoint, carry)
+            return None
+
+        if not isinstance(source_ref, str) or not source_ref.strip():
+            logger.warning("Discarding malformed movement carryover for %s: %r", endpoint, carry)
+            return None
+        if prior_start_at.tzinfo is None or prior_end_at.tzinfo is None:
+            logger.warning("Discarding naive movement carryover for %s: %r", endpoint, carry)
+            return None
+
+        if not self._carryover_continues(
+            row_ts=row_ts,
+            prior_start_at=prior_start_at,
+            prior_end_at=prior_end_at,
+            gap=gap,
+        ):
+            return None
+
+        start_lat = self._coerce_optional_carryover_float(carry, "start_lat", endpoint)
+        start_lon = self._coerce_optional_carryover_float(carry, "start_lon", endpoint)
+        return source_ref.strip(), prior_start_at, start_lat, start_lon
+
+    def _coerce_optional_carryover_float(
+        self,
+        carry: dict[str, Any],
+        key: str,
+        endpoint: str,
+    ) -> float | None:
+        value = carry.get(key)
+        if value is None:
+            return None
+        numeric = self._coerce_finite_float(value)
+        if numeric is None:
+            logger.warning(
+                "Ignoring malformed movement carryover %s for %s: %r",
+                key,
+                endpoint,
+                value,
+            )
+        return numeric
 
     @staticmethod
     def _carryover_continues(

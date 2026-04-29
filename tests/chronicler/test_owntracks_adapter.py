@@ -1192,3 +1192,87 @@ async def test_implausible_device_ts_clamped_to_recorded_at_no_inversion() -> No
             f"Episode start_at {ep.start_at.isoformat()} predates clamped ts "
             f"{recorded_at_a.isoformat()} — skewed timestamp leaked into projection"
         )
+
+
+@pytest.mark.asyncio
+async def test_malformed_recorded_at_falls_back_to_ts_without_failing() -> None:
+    """Malformed recorded_at values should not poison movement rollup sorting."""
+    t1 = _NOW
+    t2 = _NOW + timedelta(minutes=5)
+    rows = [
+        {**_make_row(ts=t1, idempotency_key="bad-recorded-at"), "recorded_at": None},
+        _make_row(ts=t2, idempotency_key="good-recorded-at"),
+    ]
+
+    adapter = OwnTracksPointAdapter()
+    upserted_episodes: list[Episode] = []
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted_episodes.append(episode)
+        return episode
+
+    pool = _pool_returning(*rows)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_episode",
+            side_effect=_fake_upsert_ep,
+        ),
+    ):
+        mock_pe.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 2
+    assert any("malformed recorded_at" in warning for warning in result.warnings)
+    assert upserted_episodes
+    assert all(ep.end_at >= ep.start_at for ep in upserted_episodes)
+
+
+@pytest.mark.asyncio
+async def test_malformed_carryover_coordinates_do_not_fail_projection() -> None:
+    """Malformed optional carryover coordinates should be ignored, not fatal."""
+    prior_start = _NOW
+    prior_end = _NOW + timedelta(minutes=5)
+    row = _make_row(ts=_NOW + timedelta(minutes=10), idempotency_key="carryover-point")
+
+    prior_carry = {
+        _ENDPOINT: {
+            "source_ref": "connectors.owntracks_points:movement:owntracks:alice:123",
+            "start_at": prior_start.isoformat(),
+            "end_at": prior_end.isoformat(),
+            "start_lat": "not-a-float",
+            "start_lon": "also-not-a-float",
+        }
+    }
+
+    adapter = OwnTracksPointAdapter()
+    upserted_episodes: list[Episode] = []
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted_episodes.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_pe,
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_episode",
+            side_effect=_fake_upsert_ep,
+        ),
+        patch("butlers.chronicler.adapters.owntracks.get_carryover", return_value=prior_carry),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover"),
+    ):
+        mock_pe.return_value = MagicMock()
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert len(upserted_episodes) == 1
+    episode = upserted_episodes[0]
+    assert episode.source_ref == prior_carry[_ENDPOINT]["source_ref"]
+    assert episode.start_at == prior_start
+    assert episode.payload["start_lat"] == row["lat"]
+    assert episode.payload["start_lon"] == row["lon"]
