@@ -124,6 +124,37 @@ scheduler-fired background jobs dominate raw session counts but carry no
 "lived past time" signal.  They should never appear in the Chronicles "Work"
 lane.
 
+### `deadline:*` trigger_source — decision and rationale (bu-ve8ne)
+
+**Decision: `deadline:*` sessions are INCLUDED (not excluded) in the Tasks lane.**
+
+`deadline:<task-name>` sessions are fired by the scheduler when a deadline
+threshold date is crossed (e.g., "passport expires in 30 days"). Although the
+dispatch is butler-initiated (same mechanical origin as `schedule:*`), the
+distinction is semantic:
+
+- `schedule:*` sessions are **pure butler-internal housekeeping** (cron health
+  checks, day-close bundles, connector polling, etc.). They carry no user-intent
+  signal.
+- `deadline:*` sessions are **user-proxied work**: the user established the
+  deadline via `deadline_create`; the butler agent session executes meaningful
+  notification logic on their behalf. These events represent real-world deadlines
+  the user cares about and are meaningful "lived past time" entries.
+
+The original bu-x096m design note called this "mixed user-set vs butler-set,
+needs a marker." After investigation, the conclusion is that **no marker is
+needed**: every `deadline:*` dispatch corresponds to a user-intent deadline task
+running to completion. The full `deadline:*` namespace belongs in Tasks.
+
+The frontend `lane-taxonomy.ts` already correctly maps `deadline:*` to the
+"tasks" lane (all non-`route` trigger_source values), so no frontend change
+is needed either.
+
+If a future need arises to distinguish butler-internal deadline housekeeping
+from user-visible deadline alerts, introduce a `deadline:internal:*` prefix
+for the housekeeping variant and exclude that prefix. Do not exclude the
+bare `deadline:*` namespace.
+
 To add a new excluded source, update `EXCLUDED_TRIGGER_SOURCES` (exact) or
 `EXCLUDED_TRIGGER_SOURCE_PREFIX` (prefix) in `adapters/sessions.py` and add
 a corresponding test case in `tests/chronicler/test_core_sessions_adapter.py`.
@@ -137,6 +168,7 @@ WHERE source_name = 'core.sessions'
 GROUP BY 1;
 ```
 `tick`, `qa`, `healing`, and any `schedule:*` values must not appear.
+`deadline:*` values MAY appear and are expected in the Tasks lane.
 
 ## Ops sessions escape hatch
 
