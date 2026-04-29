@@ -51,7 +51,8 @@ import type { ChroniclerSourceStateRow } from "@/api/types"
 
 function makeRow(overrides: Partial<ChroniclerSourceStateRow>): ChroniclerSourceStateRow {
   return {
-    source_name: "work",
+    // "tasks" is the canonical lane for core.sessions after the bu-jomz2 rename.
+    source_name: "tasks",
     chronicler_compatibility: "supported",
     read_surface: null,
     boundary_semantics: null,
@@ -184,22 +185,59 @@ describe("SourceStateBadgeStrip — empty data", () => {
 
 describe("SourceStateBadgeStrip — active source", () => {
   it("renders a badge for a supported+active source", () => {
-    mockRows([makeRow({ source_name: "work", active: true })])
+    // Use "tasks" — the "work" category was renamed to "tasks"/"conversations" in bu-jomz2.
+    mockRows([makeRow({ source_name: "tasks", active: true })])
     const html = render()
-    expect(html).toContain("Work")
+    expect(html).toContain("Tasks")
     expect(html).toContain("source-state-badge-strip")
   })
 
   it("active badge has aria-label containing 'active'", () => {
-    mockRows([makeRow({ source_name: "work", active: true })])
+    mockRows([makeRow({ source_name: "tasks", active: true })])
     const html = render()
     expect(html).toContain("active")
   })
 
   it("active badge does NOT carry the yellow colour class", () => {
-    mockRows([makeRow({ source_name: "work", active: true })])
+    mockRows([makeRow({ source_name: "tasks", active: true })])
     const html = render()
     expect(html).not.toContain("bg-yellow-500")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Active source with last_error — bu-p4vd3 AC3
+// ---------------------------------------------------------------------------
+
+describe("SourceStateBadgeStrip — active source with last_error (bu-p4vd3)", () => {
+  it("wraps a tooltip trigger when active source has last_error", () => {
+    mockRows([
+      makeRow({ source_name: "tasks", active: true, last_error: "HTTP 503 upstream" }),
+    ])
+    const html = render()
+    // Tooltip trigger is present for the error case.
+    expect(html).toContain("tooltip-trigger")
+  })
+
+  it("active-error badge carries data-testid with source name", () => {
+    mockRows([
+      makeRow({ source_name: "music", active: true, last_error: "Auth token expired" }),
+    ])
+    const html = render()
+    expect(html).toContain("source-badge-active-error-music")
+  })
+
+  it("active badge without error does NOT carry the error data-testid", () => {
+    mockRows([makeRow({ source_name: "tasks", active: true, last_error: null })])
+    const html = render()
+    expect(html).not.toContain("source-badge-active-error-tasks")
+  })
+
+  it("active badge without error does NOT wrap a tooltip trigger", () => {
+    mockRows([makeRow({ source_name: "tasks", active: true, last_error: null })])
+    const html = render()
+    // No tooltip-trigger for a clean active badge.
+    expect(html).not.toContain("tooltip-trigger")
   })
 })
 
@@ -297,12 +335,13 @@ describe("SourceStateBadgeStrip — deferred source (hidden by default)", () => 
 
 describe("SourceStateBadgeStrip — not_time_bearing source", () => {
   it("not_time_bearing source never appears in output even with other visible rows", () => {
+    // Use "tasks" — "work" was renamed in bu-jomz2.
     mockRows([
-      makeRow({ source_name: "work", active: true }),
+      makeRow({ source_name: "tasks", active: true }),
       makeRow({ source_name: "meal", chronicler_compatibility: "not_time_bearing" }),
     ])
     const html = render()
-    expect(html).toContain("Work")
+    expect(html).toContain("Tasks")
     expect(html).not.toContain("Meal")
   })
 })

@@ -60,6 +60,34 @@ function ActiveBadge({ row }: SourceBadgeProps) {
   const label = lane?.label ?? row.source_name
   const Icon = lane?.icon ?? null
 
+  // An active source may still carry a last_error from a recent failed run
+  // (e.g. a transient subsource error that did not flip the adapter inactive).
+  // Surface it as a non-intrusive tooltip so ingestion bugs are visible without
+  // requiring DB access (bu-p4vd3 AC3).
+  if (row.last_error) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge
+            className={[
+              lane ? `${lane.colour} text-white border-transparent` : "",
+              "cursor-help",
+            ].join(" ")}
+            aria-label={`${label}: active with recent error`}
+            data-testid={`source-badge-active-error-${row.source_name}`}
+          >
+            {Icon && <Icon aria-hidden />}
+            {label}
+            <span className="sr-only"> — has recent error</span>
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs whitespace-pre-line text-left">
+          {`Last error: ${row.last_error}`}
+        </TooltipContent>
+      </Tooltip>
+    )
+  }
+
   return (
     <Badge
       className={lane ? `${lane.colour} text-white border-transparent` : undefined}
