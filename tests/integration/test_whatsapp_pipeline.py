@@ -248,9 +248,20 @@ class _GateTestPool:
         self.approval_events: list[dict[str, Any]] = []
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
-        if "public.contact_info" in query and len(args) >= 2:
-            key = (str(args[0]), str(args[1]))
-            return self._contacts.get(key)
+        if "public.contact_info" in query:
+            # _is_primary_contact query: WHERE contact_id=$1 AND type=$2 AND value=$3
+            if "is_primary" in query and len(args) == 3:
+                channel_type = str(args[1])
+                channel_value = str(args[2])
+                contact = self._contacts.get((channel_type, channel_value))
+                if contact is None:
+                    return None
+                # Any explicitly registered contact is treated as primary in this mock.
+                return {"is_primary": True}
+            # Channel-resolution query: WHERE type=$1 AND value=$2
+            if len(args) >= 2:
+                key = (str(args[0]), str(args[1]))
+                return self._contacts.get(key)
         if "pending_actions" in query and args:
             row = self.pending_actions.get(args[0])
             return dict(row) if row else None

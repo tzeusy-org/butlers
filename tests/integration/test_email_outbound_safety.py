@@ -124,16 +124,29 @@ class _MockPool:
             row = self.pending_actions.get(action_id)
             return dict(row) if row else None
 
-        if "public.contact_info" in query and args and len(args) >= 2:
-            contact = self._contact_info.get((str(args[0]), str(args[1])))
-            if contact is None:
-                return None
-            return {
-                "contact_id": contact.contact_id,
-                "name": contact.name,
-                "roles": contact.roles,
-                "entity_id": contact.entity_id,
-            }
+        if "public.contact_info" in query and args:
+            # _is_primary_contact query: SELECT is_primary WHERE contact_id=$1 AND type=$2 AND value=$3
+            if "is_primary" in query and len(args) == 3:
+                channel_type = str(args[1])
+                channel_value = str(args[2])
+                contact = self._contact_info.get((channel_type, channel_value))
+                if contact is None:
+                    return None
+                # The entry is considered primary when it was explicitly registered
+                # in this mock (there is only one row per channel in these tests).
+                return {"is_primary": True}
+
+            # Channel-resolution query: SELECT contact_id, name... WHERE type=$1 AND value=$2
+            if len(args) >= 2:
+                contact = self._contact_info.get((str(args[0]), str(args[1])))
+                if contact is None:
+                    return None
+                return {
+                    "contact_id": contact.contact_id,
+                    "name": contact.name,
+                    "roles": contact.roles,
+                    "entity_id": contact.entity_id,
+                }
         if "public.contacts" in query and "WHERE id" in query and args:
             try:
                 cid = uuid.UUID(str(args[0]))

@@ -4,7 +4,12 @@ Wraps gated tools at MCP registration time so that:
 1. When a gated tool is called, the call is serialized into a PendingAction.
 2. Target contact resolution: extract channel identifier from tool_args and
    resolve via ``resolve_contact_by_channel()``.  If the target has the
-   ``'owner'`` role, the action is auto-approved with no standing rule required.
+   ``'owner'`` role AND the targeted channel address is the primary entry for
+   that channel type in ``public.contact_info``, the action is auto-approved
+   with no standing rule required.  Non-primary owner addresses (e.g. a work
+   Telegram chat ID) fall through to the rules/parking flow.
+   ``contact_id`` dispatch is exempt from the primacy check — the system
+   already resolves to the primary address downstream.
 3. For non-owner targets, standing approval rules are checked — if a rule
    matches, the tool is auto-approved and executed immediately.
 4. If no rule matches (or the target is unresolvable), the PendingAction is
@@ -162,6 +167,50 @@ def _extract_channel_identity(
         return ("whatsapp_jid", chat_jid.strip())
 
     return None
+
+
+async def _is_primary_contact(
+    pool: Any,
+    contact_id: uuid.UUID,
+    channel_type: str,
+    channel_value: str,
+) -> bool:
+    """Return True if *channel_value* is the primary entry for *contact_id*/*channel_type*.
+
+    Queries ``public.contact_info`` for the matching ``(type, value)`` row and
+    returns ``is_primary``.  Returns ``False`` on any DB error or missing row so
+    that non-primary addresses fall through to the rules/parking flow.
+
+    Only meaningful for channel-based lookups (telegram, whatsapp, email via the
+    gate path, etc.).  ``contact_id`` dispatch has no specific channel value to
+    check and should be handled separately by the caller.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT is_primary
+            FROM public.contact_info
+            WHERE contact_id = $1
+              AND type = $2
+              AND value = $3
+            """,
+            contact_id,
+            channel_type,
+            channel_value,
+        )
+        if row is None:
+            return False
+        return bool(row["is_primary"])
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "gate: could not determine is_primary for contact %s channel %s=%r; "
+            "treating as non-primary (will fall through to rules/park flow)",
+            contact_id,
+            channel_type,
+            channel_value,
+            exc_info=True,
+        )
+        return False
 
 
 async def _resolve_target_contact(
@@ -325,8 +374,14 @@ def _make_gate_wrapper(
 
     1. Resolves the target contact from tool_args using channel identity
        extraction and ``resolve_contact_by_channel()``.
-    2. If the target has the ``'owner'`` role: auto-approve immediately
-       (no standing rule required).
+    2. If the target has the ``'owner'`` role AND the targeted channel address
+       is the primary entry for that channel type in ``public.contact_info``:
+       auto-approve immediately (no standing rule required).
+       Non-primary owner addresses (e.g. a work Telegram chat ID alongside the
+       personal one) fall through to the rules/parking flow so they appear in
+       the approval queue.
+       ``contact_id`` dispatch is exempt from the primacy check because no
+       specific address is targeted — the system already resolves to primary.
     3. If the target is a known non-owner contact: check standing rules;
        auto-approve if a rule matches, otherwise pend.
     4. If the target is unresolvable: require approval (conservative default).
@@ -344,8 +399,31 @@ def _make_gate_wrapper(
         # --- Role-based target resolution ---
         resolved_contact = await _resolve_target_contact(pool, tool_args)
 
-        if resolved_contact is not None and "owner" in resolved_contact.roles:
-            # Owner-targeted: auto-approve without any standing rule
+        # Determine whether this is a channel-based or contact_id-based dispatch.
+        # For channel-based dispatches (telegram, whatsapp, etc.) the owner bypass
+        # requires that the targeted address is the *primary* entry for that channel
+        # type.  Non-primary addresses (e.g. a work Telegram chat ID) must go
+        # through the normal rules/parking flow.
+        # contact_id dispatch has no specific address to check — skip primacy gate.
+        owner_is_primary: bool
+        identity = _extract_channel_identity(tool_args)
+        if (
+            resolved_contact is not None
+            and "owner" in resolved_contact.roles
+            and identity is not None
+            and identity[0] != "contact_id"
+        ):
+            channel_type, channel_value = identity
+            owner_is_primary = await _is_primary_contact(
+                pool, resolved_contact.contact_id, channel_type, channel_value
+            )
+        else:
+            # contact_id dispatch or unresolvable: treat as primary (no specific
+            # address to gate against; contact_id resolution already prefers primary).
+            owner_is_primary = True
+
+        if resolved_contact is not None and "owner" in resolved_contact.roles and owner_is_primary:
+            # Owner-targeted primary channel: auto-approve without any standing rule
             await pool.execute(
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "
