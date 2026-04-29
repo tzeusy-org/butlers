@@ -616,7 +616,9 @@ class TestEntityLinkedContacts:
 
     async def test_returns_200_with_contacts(self):
         rows = [
-            _make_linked_contact_row(full_name="Alice Example", email="alice@example.com", phone=None),
+            _make_linked_contact_row(
+                full_name="Alice Example", email="alice@example.com", phone=None
+            ),
             _make_linked_contact_row(full_name="Bob Builder", email=None, phone="+1-555-0100"),
         ]
         app, _ = _app_with_pool(fetch_rows=rows)
