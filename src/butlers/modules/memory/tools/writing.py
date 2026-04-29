@@ -139,6 +139,7 @@ async def memory_store_fact(
     permanence: str = "standard",
     scope: str = "global",
     tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
     entity_id: str | None = None,
     object_entity_id: str | None = None,
     valid_at: str | None = None,
@@ -168,6 +169,12 @@ async def memory_store_fact(
     provided, the fact is stored as a *temporal fact* and always coexists with
     other active facts — temporal facts never supersede each other or property
     facts.
+
+    Accepts an optional ``metadata`` dict that is stored verbatim as JSONB in
+    the ``facts.metadata`` column.  Callers should include domain-specific
+    fields that downstream projectors (e.g. the Chronicler adapters) need to
+    derive structured output — for example ``end_time``, ``duration_ms``,
+    ``session_id`` for sleep facts.
 
     Accepts an optional ``request_context`` dict with 'tenant_id' and 'request_id'
     for multi-tenant isolation and request trace correlation.
@@ -206,6 +213,7 @@ async def memory_store_fact(
         permanence=permanence,
         scope=scope,
         tags=tags,
+        metadata=metadata,
         entity_id=parsed_entity_id,
         object_entity_id=parsed_object_entity_id,
         valid_at=parsed_valid_at,

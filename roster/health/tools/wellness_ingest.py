@@ -78,6 +78,17 @@ def _extract_sleep_session_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     Requires at least a nonzero durationMillis (or duration_ms) field to be
     considered well-formed. Returns an empty dict when the duration is absent
     or zero, signalling that the record is malformed and should be skipped.
+
+    Fields stored:
+    - ``duration_ms``: session duration in milliseconds (required, non-zero)
+    - ``efficiency``: sleep efficiency percentage when available
+    - ``stages``: stage breakdown dict when available
+    - ``end_time``: ISO-8601 end timestamp for the session (used by the
+      Chronicler adapter to derive ``end_at`` on projected episodes)
+    - ``session_id``: stable session identifier (used by the Chronicler
+      adapter for cross-batch stitching)
+    - ``minutes_asleep``: minutes of actual sleep when available
+    - ``minutes_awake``: minutes awake during the session when available
     """
     duration_ms = int(raw.get("durationMillis") or raw.get("duration_ms") or 0)
     if duration_ms == 0:
@@ -96,6 +107,26 @@ def _extract_sleep_session_metadata(raw: dict[str, Any]) -> dict[str, Any]:
         meta["efficiency"] = efficiency
     if stages:
         meta["stages"] = stages
+
+    # end_time: the Chronicler adapter reads metadata.end_time to derive end_at.
+    # The connector normalises the Google Health endTime field to "endTime" in raw.
+    end_time = raw.get("endTime") or raw.get("end_time")
+    if end_time is not None:
+        meta["end_time"] = str(end_time)
+
+    # session_id: used by the Chronicler adapter for cross-batch stitching.
+    session_id = raw.get("session_id")
+    if session_id is not None:
+        meta["session_id"] = str(session_id)
+
+    # minutes_asleep / minutes_awake: optional enrichment fields.
+    minutes_asleep = raw.get("minutesAsleep") or raw.get("minutes_asleep")
+    if minutes_asleep is not None:
+        meta["minutes_asleep"] = int(minutes_asleep)
+    minutes_awake = raw.get("minutesAwake") or raw.get("minutes_awake")
+    if minutes_awake is not None:
+        meta["minutes_awake"] = int(minutes_awake)
+
     return meta
 
 
@@ -393,6 +424,7 @@ async def translate_wellness_envelope(
                 scope="health",
                 permanence="standard",
                 valid_at=valid_at,
+                metadata=metadata if metadata else None,
                 entity_id=owner_entity_id_str,
                 idempotency_key=ikey,
                 retention_class="operational",
