@@ -1057,7 +1057,6 @@ CREATE TABLE IF NOT EXISTS switchboard.message_inbox (
 )
 """
 
-# We also need facts and activity_feed for interaction_log
 # Full facts schema for interaction sync tests — includes object_entity_id
 # which store_fact() requires (not present in the legacy CREATE_FACTS_SQL above).
 CREATE_FACTS_FULL_SQL = """

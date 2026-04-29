@@ -6,7 +6,7 @@ One phase per domain:
   - health:       measurements, symptoms, medication_doses, medications,
                   conditions, research
   - relationship: quick_facts, interactions, life_events, notes, gifts,
-                  loans, tasks, reminders, activity_feed
+                  loans, tasks, reminders
   - finance:      transactions, accounts, subscriptions, bills
   - home:         ha_entity_snapshot
 
@@ -999,51 +999,6 @@ async def _backfill_rel_reminders(pool: asyncpg.Pool, stats: Stats, dry_run: boo
             stats.errors += 1
 
 
-async def _backfill_rel_activity_feed(pool: asyncpg.Pool, stats: Stats, dry_run: bool) -> None:
-    rows = await pool.fetch(
-        """
-        SELECT a.*, c.entity_id,
-               COALESCE(
-                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
-                   c.nickname,
-                   'Unknown'
-               ) AS contact_name
-        FROM activity_feed a
-        JOIN contacts c ON a.contact_id = c.id
-        ORDER BY a.created_at ASC
-        """
-    )
-    for row in rows:
-        stats.processed += 1
-        key = _backfill_key("activity_feed", row["id"])
-        if await _fact_exists(pool, key):
-            stats.skipped += 1
-            continue
-        entity_id = row.get("entity_id")
-        if entity_id and isinstance(entity_id, str):
-            entity_id = uuid.UUID(entity_id)
-        event_type = row.get("event_type", "event")
-        content = f"Activity ({event_type}) for {row['contact_name']}: {row.get('summary', '')}"
-        try:
-            await _insert_fact(
-                pool,
-                subject=row["contact_name"],
-                predicate="note",
-                content=content,
-                entity_id=entity_id,
-                valid_at=row.get("created_at"),
-                permanence="volatile",
-                source_butler="relationship",
-                backfill_key=key,
-                tags=["relationship", "activity", event_type],
-                dry_run=dry_run,
-            )
-            stats.inserted += 1
-        except Exception as exc:
-            logger.error("activity_feed row %s: %s", row["id"], exc)
-            stats.errors += 1
-
-
 async def backfill_relationship(pool: asyncpg.Pool, dry_run: bool = False) -> Stats:
     stats = Stats()
 
@@ -1056,7 +1011,6 @@ async def backfill_relationship(pool: asyncpg.Pool, dry_run: bool = False) -> St
         (_backfill_rel_loans, "loans"),
         (_backfill_rel_tasks, "tasks"),
         (_backfill_rel_reminders, "reminders"),
-        (_backfill_rel_activity_feed, "activity_feed"),
     ]:
         logger.info("Backfilling relationship.%s…", label)
         try:

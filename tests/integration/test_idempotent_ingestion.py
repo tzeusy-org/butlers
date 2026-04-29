@@ -120,21 +120,7 @@ async def pool(postgres_container):
         CREATE INDEX IF NOT EXISTS idx_life_events_contact_occurred
             ON life_events (contact_id, occurred_at)
     """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS activity_feed (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            type TEXT NOT NULL,
-            description TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_activity_feed_contact_created
-            ON activity_feed (contact_id, created_at)
-    """)
-
-    # SPO facts infrastructure (needed by store_fact called from _log_activity)
+    # SPO facts infrastructure (needed by store_fact)
     await p.execute("""
         CREATE TABLE IF NOT EXISTS public.entities (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

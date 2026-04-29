@@ -10,7 +10,6 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship._schema import table_columns
-from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
 
@@ -286,17 +285,7 @@ async def contact_create(
         """,
         *values,
     )
-    result = _parse_contact(row)
-
-    await _log_activity(
-        pool,
-        result["id"],
-        "contact_created",
-        f"Created contact '{result['name']}'",
-        entity_type="contact",
-        entity_id=result["id"],
-    )
-    return result
+    return _parse_contact(row)
 
 
 async def contact_update(
@@ -406,14 +395,6 @@ async def contact_update(
                 nickname=result.get("nickname"),
             )
 
-    await _log_activity(
-        pool,
-        contact_id,
-        "contact_updated",
-        f"Updated contact '{result['name']}'",
-        entity_type="contact",
-        entity_id=contact_id,
-    )
     return result
 
 
@@ -542,16 +523,7 @@ async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str
             f"Contact {contact_id} not found. "
             "Use contact_search(query=<name>) to find the correct contact ID."
         )
-    result = _parse_contact(row)
-    await _log_activity(
-        pool,
-        contact_id,
-        "contact_archived",
-        f"Archived contact '{result['name']}'",
-        entity_type="contact",
-        entity_id=contact_id,
-    )
-    return result
+    return _parse_contact(row)
 
 
 async def contact_merge(
@@ -612,7 +584,6 @@ async def contact_merge(
         ("tasks", "contact_id"),
         ("life_events", "contact_id"),
         ("stay_in_touch", "contact_id"),
-        ("activity_feed", "contact_id"),
     ]
 
     async with pool.acquire() as conn:
@@ -672,14 +643,4 @@ async def contact_merge(
 
     # Fetch the updated target
     updated_row = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", target_id)
-    result = _parse_contact(updated_row)
-
-    await _log_activity(
-        pool,
-        target_id,
-        "contact_merged",
-        f"Merged contact {source_id} into '{result['name']}'",
-        entity_type="contact",
-        entity_id=target_id,
-    )
-    return result
+    return _parse_contact(updated_row)

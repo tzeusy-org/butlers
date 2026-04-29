@@ -23,7 +23,6 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
-from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
 
@@ -210,9 +209,6 @@ async def life_event_log(
             metadata=fact_metadata,
         )
     )["id"]
-
-    activity_summary = f"Life event: {type_name} - {effective_summary}"
-    await _log_activity(pool, contact_id, "life_event_logged", activity_summary)
 
     return {
         "id": fact_id,

@@ -14,8 +14,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship.feed import _log_activity
-
 logger = logging.getLogger(__name__)
 
 
@@ -133,9 +131,7 @@ async def fact_set(
     pool: asyncpg.Pool, contact_id: uuid.UUID, key: str, value: str
 ) -> dict[str, Any]:
     """Set a quick fact for a contact (UPSERT via SPO facts table)."""
-    result = await _fact_set_spo(pool, contact_id, key, value)
-    await _log_activity(pool, contact_id, "fact_set", f"Set fact '{key}' = '{value}'")
-    return result
+    return await _fact_set_spo(pool, contact_id, key, value)
 
 
 async def fact_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[dict[str, Any]]:

@@ -24,7 +24,6 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
-from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
 
@@ -124,15 +123,6 @@ async def note_create(
         "created_at": now,
     }
 
-    snippet = note_text[:50] + "..." if len(note_text) > 50 else note_text
-    await _log_activity(
-        pool,
-        contact_id,
-        "note_created",
-        f"Added note: '{snippet}'",
-        entity_type="note",
-        entity_id=fact_id,
-    )
     return result
 
 

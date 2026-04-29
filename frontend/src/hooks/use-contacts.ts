@@ -14,11 +14,6 @@ import {
   deleteContact,
   deleteContactInfo,
   getContact,
-  getContactFeed,
-  getContactGifts,
-  getContactInteractions,
-  getContactLoans,
-  getContactNotes,
   getContacts,
   getEntitySuggestions,
   getGroups,
@@ -56,51 +51,6 @@ export function useContact(contactId: string | undefined) {
   return useQuery({
     queryKey: ["contact", contactId],
     queryFn: () => getContact(contactId!),
-    enabled: !!contactId,
-  });
-}
-
-/** Fetch notes for a contact. */
-export function useContactNotes(contactId: string | undefined) {
-  return useQuery({
-    queryKey: ["contact-notes", contactId],
-    queryFn: () => getContactNotes(contactId!),
-    enabled: !!contactId,
-  });
-}
-
-/** Fetch interactions for a contact. */
-export function useContactInteractions(contactId: string | undefined) {
-  return useQuery({
-    queryKey: ["contact-interactions", contactId],
-    queryFn: () => getContactInteractions(contactId!),
-    enabled: !!contactId,
-  });
-}
-
-/** Fetch gifts for a contact. */
-export function useContactGifts(contactId: string | undefined) {
-  return useQuery({
-    queryKey: ["contact-gifts", contactId],
-    queryFn: () => getContactGifts(contactId!),
-    enabled: !!contactId,
-  });
-}
-
-/** Fetch loans for a contact. */
-export function useContactLoans(contactId: string | undefined) {
-  return useQuery({
-    queryKey: ["contact-loans", contactId],
-    queryFn: () => getContactLoans(contactId!),
-    enabled: !!contactId,
-  });
-}
-
-/** Fetch the activity feed for a contact. */
-export function useContactFeed(contactId: string | undefined) {
-  return useQuery({
-    queryKey: ["contact-feed", contactId],
-    queryFn: () => getContactFeed(contactId!),
     enabled: !!contactId,
   });
 }

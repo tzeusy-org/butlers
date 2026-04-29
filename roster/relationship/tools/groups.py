@@ -9,7 +9,6 @@ import asyncpg
 
 from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.contacts import _parse_contact
-from butlers.tools.relationship.feed import _log_activity
 
 
 async def group_create(pool: asyncpg.Pool, name: str, type: str | None = None) -> dict[str, Any]:
@@ -50,7 +49,6 @@ async def group_add_member(
             group_id,
             contact_id,
         )
-    await _log_activity(pool, contact_id, "group_joined", f"Joined group {group_id}")
     return {"group_id": group_id, "contact_id": contact_id, "role": role}
 
 

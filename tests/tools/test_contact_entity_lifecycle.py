@@ -29,10 +29,7 @@ def _load_module(name: str, path: Path):
 
 _schema_mod = MagicMock()
 _schema_mod.table_columns = AsyncMock()
-_feed_mod = MagicMock()
-_feed_mod._log_activity = AsyncMock()
 sys.modules["butlers.tools.relationship._schema"] = _schema_mod
-sys.modules["butlers.tools.relationship.feed"] = _feed_mod
 
 _contacts_mod = _load_module("contacts_test_mod", _CONTACTS_PATH)
 _entities_mod = _load_module("entities_test_mod", _ENTITIES_PATH)
@@ -115,7 +112,6 @@ async def test_contact_create_and_update_entity_sync():
 
     with (
         patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
-        patch.object(_contacts_mod, "_log_activity", AsyncMock()),
         patch.object(
             _contacts_mod, "_ensure_entity", AsyncMock(return_value=str(ENTITY_UUID))
         ) as mock_ensure,
@@ -128,7 +124,6 @@ async def test_contact_create_and_update_entity_sync():
     pool2 = AsyncMock()
     with (
         patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
-        patch.object(_contacts_mod, "_log_activity", AsyncMock()),
         patch.object(
             _contacts_mod, "_ensure_entity", AsyncMock(side_effect=RuntimeError("failed"))
         ),
@@ -146,7 +141,6 @@ async def test_contact_create_and_update_entity_sync():
         )
         with (
             patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
-            patch.object(_contacts_mod, "_log_activity", AsyncMock()),
             patch.object(_contacts_mod, "_sync_entity_update", AsyncMock()) as mock_sync,
         ):
             await contact_update(pool3, CONTACT_UUID, first_name="Alicia")
@@ -180,7 +174,6 @@ async def test_contact_merge_and_entity_merge_validation():
     memory_pool = AsyncMock()
     with (
         patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
-        patch.object(_contacts_mod, "_log_activity", AsyncMock()),
         patch(
             "butlers.modules.memory.tools.entities.entity_merge",
             AsyncMock(return_value={"entity_id": str(ENTITY_UUID2)}),

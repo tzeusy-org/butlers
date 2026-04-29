@@ -51,10 +51,6 @@ from butlers.tools.relationship.facts import (
     fact_list,
     fact_set,
 )
-from butlers.tools.relationship.feed import (
-    _log_activity,
-    feed_get,
-)
 from butlers.tools.relationship.gifts import (
     _GIFT_STATUS_ORDER,
     gift_add,
@@ -132,7 +128,6 @@ __all__ = [
     "TIER_WEIGHTS",
     "VALID_TIERS",
     "_GIFT_STATUS_ORDER",
-    "_log_activity",
     "_parse_contact",
     "address_add",
     "address_list",
@@ -163,7 +158,6 @@ __all__ = [
     "dunbar_tier_set",
     "fact_list",
     "fact_set",
-    "feed_get",
     "get_contact_dunbar",
     "get_tier_ranking",
     "gift_add",

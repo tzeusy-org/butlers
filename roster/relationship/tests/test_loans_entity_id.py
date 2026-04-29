@@ -139,17 +139,6 @@ async def pool(provisioned_postgres_pool):
                 UNIQUE (source_type, source_id, target_type, target_id)
             )
         """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS activity_feed (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                action TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                entity_type TEXT,
-                entity_id UUID,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
         yield p
 
 

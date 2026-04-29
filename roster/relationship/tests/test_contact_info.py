@@ -82,22 +82,6 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
         """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS activity_feed (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                action TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                entity_type TEXT,
-                entity_id UUID,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_activity_feed_contact_created
-                ON activity_feed (contact_id, created_at)
-        """)
-
         # Create public.contact_info
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.contact_info (
@@ -706,49 +690,6 @@ async def test_multiple_types_per_contact(pool):
 
 
 # ------------------------------------------------------------------
-# Activity feed integration
-# ------------------------------------------------------------------
-
-
-async def test_contact_info_add_logs_activity(pool):
-    """contact_info_add logs an activity feed entry."""
-    from butlers.tools.relationship import contact_create, contact_info_add, feed_get
-
-    c = await contact_create(pool, "FeedAdd")
-    await contact_info_add(pool, c["id"], "email", "feed@example.com", label="Work")
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    actions = [f["action"] for f in feed]
-    assert "contact_info_added" in actions
-
-    info_entries = [f for f in feed if f["action"] == "contact_info_added"]
-    assert len(info_entries) == 1
-    assert "email" in info_entries[0]["summary"]
-    assert "feed@example.com" in info_entries[0]["summary"]
-    assert "Work" in info_entries[0]["summary"]
-
-
-async def test_contact_info_remove_logs_activity(pool):
-    """contact_info_remove logs an activity feed entry."""
-    from butlers.tools.relationship import (
-        contact_create,
-        contact_info_add,
-        contact_info_remove,
-        feed_get,
-    )
-
-    c = await contact_create(pool, "FeedRemove")
-    info = await contact_info_add(pool, c["id"], "phone", "+1-555-0500")
-    await contact_info_remove(pool, info["id"])
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    actions = [f["action"] for f in feed]
-    assert "contact_info_removed" in actions
-
-    remove_entries = [f for f in feed if f["action"] == "contact_info_removed"]
-    assert len(remove_entries) == 1
-    assert "phone" in remove_entries[0]["summary"]
-    assert "+1-555-0500" in remove_entries[0]["summary"]
 
 
 # ------------------------------------------------------------------
@@ -883,20 +824,6 @@ async def test_contact_info_add_non_owner_writes_immediately(pool):
     assert len(rows) == 1
 
 
-async def test_contact_info_add_owner_gate_does_not_log_activity(pool):
-    """contact_info_add blocked for owner must not log an activity_feed entry."""
-    from butlers.tools.relationship.contact_info import contact_info_add
-
-    owner = await _make_owner_contact(pool)
-    await contact_info_add(pool, owner["id"], "email", "blocked@example.com")
-
-    feed_rows = await pool.fetch(
-        "SELECT * FROM activity_feed WHERE contact_id = $1",
-        owner["id"],
-    )
-    assert feed_rows == [], "No activity_feed entry expected when gate blocks the mutation"
-
-
 # ------------------------------------------------------------------
 # contact_info_update — new tool
 # ------------------------------------------------------------------
@@ -966,21 +893,6 @@ async def test_contact_info_update_nonexistent_raises(pool):
 
     with pytest.raises(ValueError, match="not found"):
         await contact_info_update(pool, uuid.uuid4(), value="x@example.com")
-
-
-async def test_contact_info_update_logs_activity(pool):
-    """contact_info_update logs an activity_feed entry on success."""
-    from butlers.tools.relationship import contact_create, contact_info_add, feed_get
-    from butlers.tools.relationship.contact_info import contact_info_update
-
-    c = await contact_create(pool, "UpdateActivity")
-    info = await contact_info_add(pool, c["id"], "email", "activity@example.com")
-
-    await contact_info_update(pool, info["id"], value="updated@example.com")
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    actions = [f["action"] for f in feed]
-    assert "contact_info_updated" in actions
 
 
 async def test_contact_info_update_owner_gate_parks_action(pool):

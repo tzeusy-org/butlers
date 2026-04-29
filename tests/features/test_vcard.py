@@ -31,17 +31,13 @@ pytestmark = [
 # used by vcard tests so it is omitted from the list.
 _TRUNCATE_TABLES = [
     # children first (FK → public.contacts)
-    "public.activity_feed",
-    "public.notes",
+    # activity_feed, notes, gifts, loans, interactions dropped by rel_009
     "public.important_dates",
     "public.quick_facts",
     "public.addresses",
     "public.relationships",
-    "public.gifts",
-    "public.loans",
     "public.group_members",
     "public.contact_labels",
-    "public.interactions",
     # memory / public children
     "public.memory_links",
     # facts (no FK parent, but seeded predicate_registry rows are kept)
@@ -99,7 +95,7 @@ def migrated_db_url(postgres_container) -> str:
     - ``relationship`` — relationship tables (no schema override; all land in public)
 
     The ``relationship`` chain intentionally runs **without** a schema override so
-    that unqualified table names (contacts, activity_feed, etc.) land in ``public``,
+    that unqualified table names (contacts, quick_facts, etc.) land in ``public``,
     matching the original hand-rolled DDL behaviour.  The rel_003 migration detects
     that ``relationship.contacts`` does not exist and skips the consolidation step
     (correct for this flat-schema test topology).

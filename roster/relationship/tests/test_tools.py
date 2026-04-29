@@ -190,22 +190,6 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS activity_feed (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                action TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                entity_type TEXT,
-                entity_id UUID,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_activity_feed_contact_created
-                ON activity_feed (contact_id, created_at)
-        """)
-
-        await p.execute("""
             CREATE TABLE IF NOT EXISTS addresses (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -999,35 +983,6 @@ async def test_interaction_list_no_filters_returns_all(pool):
     assert len(all_results) == 2
 
 
-async def test_interaction_feed_includes_direction(pool):
-    """Activity feed entry includes direction when present."""
-    from butlers.tools.relationship import contact_create, feed_get, interaction_log
-
-    c = await contact_create(pool, "Inter-FeedDir")
-    await interaction_log(pool, c["id"], "call", direction="outgoing")
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    interaction_entries = [f for f in feed if f["action"] == "interaction_logged"]
-    assert len(interaction_entries) >= 1
-    assert "(outgoing)" in interaction_entries[0]["summary"]
-
-
-async def test_interaction_feed_no_direction(pool):
-    """Activity feed entry omits direction when not present."""
-    from butlers.tools.relationship import contact_create, feed_get, interaction_log
-
-    c = await contact_create(pool, "Inter-FeedNoDir")
-    await interaction_log(pool, c["id"], "email")
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    interaction_entries = [f for f in feed if f["action"] == "interaction_logged"]
-    assert len(interaction_entries) >= 1
-    # Should not contain parenthetical direction
-    assert "(incoming)" not in interaction_entries[0]["summary"]
-    assert "(outgoing)" not in interaction_entries[0]["summary"]
-    assert "(mutual)" not in interaction_entries[0]["summary"]
-
-
 # ------------------------------------------------------------------
 # Gifts (pipeline validation)
 # ------------------------------------------------------------------
@@ -1374,64 +1329,6 @@ async def test_fact_list(pool):
 
 
 # ------------------------------------------------------------------
-# Activity feed
-# ------------------------------------------------------------------
-
-
-async def test_activity_feed_auto_populated(pool):
-    """Mutating tools automatically populate the activity feed."""
-    from butlers.tools.relationship import contact_create, feed_get, note_create
-
-    c = await contact_create(pool, "Feed-Person")
-    await note_create(pool, c["id"], "Test note for feed")
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    actions = [f["action"] for f in feed]
-    assert "contact_created" in actions
-    assert "note_created" in actions
-
-
-async def test_activity_feed_filter_by_contact(pool):
-    """feed_get filters by contact_id."""
-    from butlers.tools.relationship import contact_create, feed_get, note_create
-
-    c1 = await contact_create(pool, "Feed-A")
-    c2 = await contact_create(pool, "Feed-B")
-    await note_create(pool, c1["id"], "Note for A")
-    await note_create(pool, c2["id"], "Note for B")
-
-    feed_a = await feed_get(pool, contact_id=c1["id"])
-    feed_b = await feed_get(pool, contact_id=c2["id"])
-
-    # All entries in feed_a should be for c1
-    assert all(f["contact_id"] == c1["id"] for f in feed_a)
-    assert all(f["contact_id"] == c2["id"] for f in feed_b)
-
-
-async def test_activity_feed_global(pool):
-    """feed_get without contact_id returns all entries."""
-    from butlers.tools.relationship import contact_create, feed_get
-
-    await contact_create(pool, "Feed-Global")
-
-    feed = await feed_get(pool)
-    assert isinstance(feed, list)
-    assert len(feed) > 0
-
-
-async def test_activity_feed_limit(pool):
-    """feed_get respects the limit parameter."""
-    from butlers.tools.relationship import contact_create, feed_get, note_create
-
-    c = await contact_create(pool, "Feed-Limit")
-    for i in range(5):
-        await note_create(pool, c["id"], f"Note {i}")
-
-    feed = await feed_get(pool, contact_id=c["id"], limit=3)
-    assert len(feed) <= 3
-
-
-# ------------------------------------------------------------------
 # Addresses
 # ------------------------------------------------------------------
 
@@ -1652,59 +1549,6 @@ async def test_address_multiple_per_contact(pool):
     assert labels == {"Home", "Work", "Other"}
 
 
-async def test_address_activity_feed_add(pool):
-    """address_add logs to the activity feed."""
-    from butlers.tools.relationship import address_add, contact_create, feed_get
-
-    c = await contact_create(pool, "Address-FeedAdd")
-    await address_add(pool, c["id"], line_1="Feed St", city="FeedCity", country="US")
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    actions = [f["action"] for f in feed]
-    assert "address_added" in actions
-    addr_entry = next(f for f in feed if f["action"] == "address_added")
-    assert "Feed St" in addr_entry["summary"]
-    assert "FeedCity" in addr_entry["summary"]
-
-
-async def test_address_activity_feed_update(pool):
-    """address_update logs to the activity feed."""
-    from butlers.tools.relationship import (
-        address_add,
-        address_update,
-        contact_create,
-        feed_get,
-    )
-
-    c = await contact_create(pool, "Address-FeedUpdate")
-    addr = await address_add(pool, c["id"], line_1="Before St")
-    await address_update(pool, addr["id"], line_1="After St")
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    actions = [f["action"] for f in feed]
-    assert "address_updated" in actions
-
-
-async def test_address_activity_feed_remove(pool):
-    """address_remove logs to the activity feed."""
-    from butlers.tools.relationship import (
-        address_add,
-        address_remove,
-        contact_create,
-        feed_get,
-    )
-
-    c = await contact_create(pool, "Address-FeedRemove")
-    addr = await address_add(pool, c["id"], line_1="Gone St", label="Work")
-    await address_remove(pool, addr["id"])
-
-    feed = await feed_get(pool, contact_id=c["id"])
-    actions = [f["action"] for f in feed]
-    assert "address_removed" in actions
-    remove_entry = next(f for f in feed if f["action"] == "address_removed")
-    assert "Work" in remove_entry["summary"]
-
-
 async def test_address_cascade_on_contact_delete(pool):
     """Addresses are deleted when the parent contact is deleted."""
     from butlers.tools.relationship import address_add, contact_create
@@ -1902,25 +1746,6 @@ async def test_life_event_list_ordering(pool):
     assert str(events[0]["happened_at"]) == "2026-01-01"
     assert str(events[1]["happened_at"]) == "2025-06-15"
     assert str(events[2]["happened_at"]) == "2024-01-01"
-
-
-async def test_life_event_activity_feed_integration(pool):
-    """Test that life events are logged to activity feed."""
-    from butlers.tools.relationship import contact_create, feed_get, life_event_log
-
-    alice = await contact_create(pool, "Alice")
-    await life_event_log(pool, alice["id"], "graduated", "Graduated from MIT")
-
-    feed = await feed_get(pool, contact_id=alice["id"])
-
-    # Should have two activities: contact_created and life_event_logged
-    assert len(feed) >= 2
-
-    # Find the life event activity
-    life_event_activity = next((a for a in feed if a["action"] == "life_event_logged"), None)
-    assert life_event_activity is not None
-    assert "graduated" in life_event_activity["summary"]
-    assert "Graduated from MIT" in life_event_activity["summary"]
 
 
 async def test_life_event_all_seeded_types(pool):
@@ -2183,18 +2008,6 @@ async def test_task_create_no_description(pool):
     assert result["completed"] is False
 
 
-async def test_task_create_feed_entry(pool):
-    """task_create logs an activity feed entry."""
-    from butlers.tools.relationship import contact_create, feed_get, task_create
-
-    c = await contact_create(pool, "Task Feed Contact")
-    await task_create(pool, c["id"], "Send report")
-    feed = await feed_get(pool, c["id"])
-    task_entries = [e for e in feed if e["action"] == "task_created"]
-    assert len(task_entries) >= 1
-    assert "Send report" in task_entries[0]["summary"]
-
-
 async def test_task_list_by_contact(pool):
     """task_list filters tasks by contact_id."""
     from butlers.tools.relationship import contact_create, task_create, task_list
@@ -2287,20 +2100,6 @@ async def test_task_complete(pool):
     assert isinstance(completed["completed_at"], datetime)
 
 
-async def test_task_complete_feed_entry(pool):
-    """task_complete logs an activity feed entry."""
-    from butlers.tools.relationship import contact_create, feed_get, task_complete, task_create
-
-    c = await contact_create(pool, "Task Complete Feed Contact")
-    t = await task_create(pool, c["id"], "Review PR")
-    await task_complete(pool, t["id"])
-
-    feed = await feed_get(pool, c["id"])
-    complete_entries = [e for e in feed if e["action"] == "task_completed"]
-    assert len(complete_entries) >= 1
-    assert "Review PR" in complete_entries[0]["summary"]
-
-
 async def test_task_complete_not_found(pool):
     """task_complete raises ValueError for non-existent task."""
     from butlers.tools.relationship import task_complete
@@ -2320,20 +2119,6 @@ async def test_task_delete(pool):
 
     tasks = await task_list(pool, contact_id=c["id"], include_completed=True)
     assert not any(task["title"] == "Deletable task" for task in tasks)
-
-
-async def test_task_delete_feed_entry(pool):
-    """task_delete logs an activity feed entry."""
-    from butlers.tools.relationship import contact_create, feed_get, task_create, task_delete
-
-    c = await contact_create(pool, "Task Delete Feed Contact")
-    t = await task_create(pool, c["id"], "Task to delete")
-    await task_delete(pool, t["id"])
-
-    feed = await feed_get(pool, c["id"])
-    delete_entries = [e for e in feed if e["action"] == "task_deleted"]
-    assert len(delete_entries) >= 1
-    assert "Task to delete" in delete_entries[0]["summary"]
 
 
 async def test_task_delete_not_found(pool):

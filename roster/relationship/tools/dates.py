@@ -8,8 +8,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship.feed import _log_activity
-
 
 async def date_add(
     pool: asyncpg.Pool,
@@ -46,11 +44,7 @@ async def date_add(
         day,
         year,
     )
-    result = dict(row)
-    await _log_activity(
-        pool, contact_id, "date_added", f"Added important date '{label}' ({month}/{day})"
-    )
-    return result
+    return dict(row)
 
 
 async def date_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[dict[str, Any]]:

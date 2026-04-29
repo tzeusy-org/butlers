@@ -61,15 +61,6 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS activity_feed (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                type TEXT NOT NULL,
-                description TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
             CREATE TABLE IF NOT EXISTS relationship_types (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 "group" VARCHAR NOT NULL,
@@ -279,7 +270,6 @@ async def test_typed_relationship_auto_reverse(pool, two_contacts):
 async def test_relationship_add_validations_and_compat(pool, two_contacts):
     """Invalid type_id raises; notes preserved; freetext backward compat; remove works."""
     from butlers.tools.relationship import (
-        feed_get,
         relationship_add,
         relationship_list,
         relationship_remove,
@@ -307,14 +297,9 @@ async def test_relationship_add_validations_and_compat(pool, two_contacts):
     r2 = await relationship_add(pool, alice["id"], bob["id"], type="neighbor")
     assert r2["type"] == "custom"
 
-    # Remove cleans both directions and activity feed logged
+    # Remove cleans both directions
     spouse_type = next(t for t in grouped["Love"] if t["forward_label"] == "spouse")
     await relationship_add(pool, alice["id"], bob["id"], type_id=spouse_type["id"])
-    alice_feed = await feed_get(pool, alice["id"])
-    assert any(
-        "spouse" in e["description"] for e in alice_feed if e["type"] == "relationship_added"
-    )
-
     await relationship_remove(pool, alice["id"], bob["id"])
     assert not any(r["related_name"] == "Bob" for r in await relationship_list(pool, alice["id"]))
     assert not any(r["related_name"] == "Alice" for r in await relationship_list(pool, bob["id"]))

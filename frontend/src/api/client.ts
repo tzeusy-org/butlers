@@ -19,7 +19,6 @@ import type {
   AutonomySuggestionParams,
   ExpireStaleActionsResponse,
   RuleConstraintSuggestion,
-  ActivityFeedItem,
   ApiResponse,
   AuditEntry,
   AuditLogParams,
@@ -43,16 +42,12 @@ import type {
   CostSummary,
   DailyCost,
   ErrorResponse,
-  Gift,
   Group,
   GroupListResponse,
   GroupParams,
   HealthResponse,
-  Interaction,
   Issue,
   Label,
-  Loan,
-  Note,
   NotificationParams,
   NotificationStats,
   NotificationSummary,
@@ -814,41 +809,6 @@ export function triggerContactsSync(
 export function getContact(contactId: string): Promise<ContactDetail> {
   return apiFetch<ContactDetail>(
     `/relationship/contacts/${encodeURIComponent(contactId)}`,
-  );
-}
-
-/** Fetch notes for a contact. */
-export function getContactNotes(contactId: string): Promise<Note[]> {
-  return apiFetch<Note[]>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/notes`,
-  );
-}
-
-/** Fetch interactions for a contact. */
-export function getContactInteractions(contactId: string): Promise<Interaction[]> {
-  return apiFetch<Interaction[]>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/interactions`,
-  );
-}
-
-/** Fetch gifts for a contact. */
-export function getContactGifts(contactId: string): Promise<Gift[]> {
-  return apiFetch<Gift[]>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/gifts`,
-  );
-}
-
-/** Fetch loans for a contact. */
-export function getContactLoans(contactId: string): Promise<Loan[]> {
-  return apiFetch<Loan[]>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/loans`,
-  );
-}
-
-/** Fetch activity feed for a contact. */
-export function getContactFeed(contactId: string): Promise<ActivityFeedItem[]> {
-  return apiFetch<ActivityFeedItem[]>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/feed`,
   );
 }
 

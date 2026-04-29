@@ -30,7 +30,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.relationship import dates as _dates
     from butlers.tools.relationship import dunbar as _dunbar
     from butlers.tools.relationship import facts as _facts
-    from butlers.tools.relationship import feed as _feed
     from butlers.tools.relationship import gifts as _gifts
     from butlers.tools.relationship import groups as _groups
     from butlers.tools.relationship import interactions as _inter
@@ -371,24 +370,6 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     ) -> list[dict[str, Any]]:
         """List all quick facts for a contact."""
         return await _facts.fact_list(module._get_pool(), contact_id)
-
-    # =================================================================
-    # Feed tools (group: interactions)
-    # =================================================================
-
-    @_tool("interactions")
-    async def feed_get(
-        contact_id: uuid.UUID | None = None,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
-        """Get activity feed entries, optionally filtered by contact."""
-        return await _feed.feed_get(
-            module._get_pool(),
-            contact_id=contact_id,
-            limit=limit,
-            offset=offset,
-        )
 
     # =================================================================
     # Gift tools (group: social)

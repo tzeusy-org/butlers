@@ -57,22 +57,18 @@ CHAIN_TABLES: dict[str, set[str]] = {
     },
     "relationship": {
         "_reminders_backup",
-        "activity_feed",
         "addresses",
         "contact_info",
         "contact_labels",
         # contacts moved to shared schema by core_007 migration
-        "gifts",
+        # gifts, interactions, loans, notes, activity_feed dropped by rel_009
         "group_members",
         "groups",
         "important_dates",
-        "interactions",
         "labels",
         "life_event_categories",
         "life_event_types",
         "life_events",
-        "loans",
-        "notes",
         "quick_facts",
         "relationship_types",
         "relationships",

@@ -28,7 +28,6 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
-from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +115,6 @@ async def gift_add(
         "created_at": now,
         "updated_at": now,
     }
-    await _log_activity(pool, contact_id, "gift_added", f"Added gift idea: '{description}'")
     return result
 
 
@@ -188,7 +186,7 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
         )
     )["id"]
 
-    result: dict[str, Any] = {
+    return {
         "id": new_fact_id,
         "contact_id": contact_id,
         "description": description,
@@ -197,13 +195,6 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
         "created_at": now,
         "updated_at": now,
     }
-    await _log_activity(
-        pool,
-        contact_id,
-        "gift_status_updated",
-        f"Gift '{description}' status: {current_status} -> {status}",
-    )
-    return result
 
 
 async def gift_list(

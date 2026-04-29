@@ -12,7 +12,6 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship.contacts import _parse_contact
-from butlers.tools.relationship.feed import _log_activity
 
 _CONTACT_INFO_TYPES = {"email", "phone", "telegram", "linkedin", "twitter", "website", "other"}
 _CONTACT_INFO_CONTEXTS = {"personal", "work", "other"}
@@ -249,12 +248,7 @@ async def contact_info_add(
                 effective_context,
             )
 
-    result = dict(row)
-    desc = f"Added {type}: {value}"
-    if label:
-        desc += f" ({label})"
-    await _log_activity(pool, contact_id, "contact_info_added", desc)
-    return result
+    return dict(row)
 
 
 async def contact_info_update(
@@ -362,17 +356,7 @@ async def contact_info_update(
             f"Contact info {contact_info_id} not found. "
             "Use contact_info_list(contact_id=...) to list contact info entries."
         )
-    result = dict(updated)
-    desc_parts = []
-    if value is not None:
-        desc_parts.append(f"value → {value}")
-    if label is not None:
-        desc_parts.append(f"label → {label}")
-    if is_primary is not None:
-        desc_parts.append(f"is_primary → {is_primary}")
-    desc = f"Updated {row_type}: {', '.join(desc_parts)}"
-    await _log_activity(pool, contact_id, "contact_info_updated", desc)
-    return result
+    return dict(updated)
 
 
 async def contact_info_list(
@@ -419,12 +403,6 @@ async def contact_info_remove(
         )
 
     await pool.execute("DELETE FROM public.contact_info WHERE id = $1", contact_info_id)
-    await _log_activity(
-        pool,
-        row["contact_id"],
-        "contact_info_removed",
-        f"Removed {row['type']}: {row['value']}",
-    )
 
 
 async def contact_search_by_info(

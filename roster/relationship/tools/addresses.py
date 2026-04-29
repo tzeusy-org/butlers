@@ -7,8 +7,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship.feed import _log_activity
-
 
 async def address_add(
     pool: asyncpg.Pool,
@@ -54,15 +52,7 @@ async def address_add(
         country,
         is_current,
     )
-    result = dict(row)
-    parts = [line_1]
-    if city:
-        parts.append(city)
-    if country:
-        parts.append(country)
-    location = ", ".join(parts)
-    await _log_activity(pool, contact_id, "address_added", f"Added {label} address: {location}")
-    return result
+    return dict(row)
 
 
 async def address_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[dict[str, Any]]:
@@ -131,9 +121,7 @@ async def address_update(
         country,
         is_current,
     )
-    result = dict(row)
-    await _log_activity(pool, contact_id, "address_updated", f"Updated {label} address")
-    return result
+    return dict(row)
 
 
 async def address_remove(pool: asyncpg.Pool, address_id: uuid.UUID) -> None:
@@ -144,6 +132,3 @@ async def address_remove(pool: asyncpg.Pool, address_id: uuid.UUID) -> None:
     )
     if row is None:
         raise ValueError(f"Address {address_id} not found")
-    await _log_activity(
-        pool, row["contact_id"], "address_removed", f"Removed {row['label']} address"
-    )

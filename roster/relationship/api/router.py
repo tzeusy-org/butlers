@@ -41,18 +41,13 @@ if _models_path.exists():
         spec.loader.exec_module(_models_module)
 
         # Import models from the loaded module
-        ActivityFeedItem = _models_module.ActivityFeedItem
         ContactDetail = _models_module.ContactDetail
         ContactListResponse = _models_module.ContactListResponse
         ContactSummary = _models_module.ContactSummary
         ContactsSyncTriggerResponse = _models_module.ContactsSyncTriggerResponse
-        Gift = _models_module.Gift
         Group = _models_module.Group
         GroupListResponse = _models_module.GroupListResponse
-        Interaction = _models_module.Interaction
         Label = _models_module.Label
-        Loan = _models_module.Loan
-        Note = _models_module.Note
         UpcomingDate = _models_module.UpcomingDate
         ContactInfoEntry = _models_module.ContactInfoEntry
         ContactMergeRequest = _models_module.ContactMergeRequest
@@ -1849,177 +1844,6 @@ async def patch_contact_info(
     )
 
     return entry_result
-
-
-# ---------------------------------------------------------------------------
-# GET /contacts/{contact_id}/notes
-# ---------------------------------------------------------------------------
-
-
-@router.get("/contacts/{contact_id}/notes", response_model=list[Note])
-async def list_contact_notes(
-    contact_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> list[Note]:
-    """List notes for a contact, newest first."""
-    pool = _pool(db)
-    rows = await pool.fetch(
-        """
-        SELECT id, contact_id, content, created_at
-        FROM notes
-        WHERE contact_id = $1
-        ORDER BY created_at DESC
-        """,
-        contact_id,
-    )
-    return [
-        Note(
-            id=r["id"],
-            contact_id=r["contact_id"],
-            content=r["content"],
-            created_at=r["created_at"],
-        )
-        for r in rows
-    ]
-
-
-# ---------------------------------------------------------------------------
-# GET /contacts/{contact_id}/interactions
-# ---------------------------------------------------------------------------
-
-
-@router.get("/contacts/{contact_id}/interactions", response_model=list[Interaction])
-async def list_contact_interactions(
-    contact_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> list[Interaction]:
-    """List interactions for a contact, newest first."""
-    pool = _pool(db)
-    rows = await pool.fetch(
-        """
-        SELECT id, contact_id, type, summary, occurred_at, created_at
-        FROM interactions
-        WHERE contact_id = $1
-        ORDER BY created_at DESC
-        """,
-        contact_id,
-    )
-    return [
-        Interaction(
-            id=r["id"],
-            contact_id=r["contact_id"],
-            type=r["type"],
-            summary=r["summary"],
-            occurred_at=r["occurred_at"],
-            created_at=r["created_at"],
-        )
-        for r in rows
-    ]
-
-
-# ---------------------------------------------------------------------------
-# GET /contacts/{contact_id}/gifts
-# ---------------------------------------------------------------------------
-
-
-@router.get("/contacts/{contact_id}/gifts", response_model=list[Gift])
-async def list_contact_gifts(
-    contact_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> list[Gift]:
-    """List gifts for a contact, newest first."""
-    pool = _pool(db)
-    rows = await pool.fetch(
-        """
-        SELECT id, contact_id, description, occasion, status, created_at, updated_at
-        FROM gifts
-        WHERE contact_id = $1
-        ORDER BY created_at DESC
-        """,
-        contact_id,
-    )
-    return [
-        Gift(
-            id=r["id"],
-            contact_id=r["contact_id"],
-            description=r["description"],
-            occasion=r["occasion"],
-            status=r["status"],
-            created_at=r["created_at"],
-            updated_at=r["updated_at"],
-        )
-        for r in rows
-    ]
-
-
-# ---------------------------------------------------------------------------
-# GET /contacts/{contact_id}/loans
-# ---------------------------------------------------------------------------
-
-
-@router.get("/contacts/{contact_id}/loans", response_model=list[Loan])
-async def list_contact_loans(
-    contact_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> list[Loan]:
-    """List loans for a contact, newest first."""
-    pool = _pool(db)
-    rows = await pool.fetch(
-        """
-        SELECT id, contact_id, amount, direction, description,
-               settled, created_at, settled_at
-        FROM loans
-        WHERE contact_id = $1
-        ORDER BY created_at DESC
-        """,
-        contact_id,
-    )
-    return [
-        Loan(
-            id=r["id"],
-            contact_id=r["contact_id"],
-            amount=float(r["amount"]),
-            direction=r["direction"],
-            description=r["description"],
-            settled=r["settled"],
-            created_at=r["created_at"],
-            settled_at=r["settled_at"],
-        )
-        for r in rows
-    ]
-
-
-# ---------------------------------------------------------------------------
-# GET /contacts/{contact_id}/feed — activity feed
-# ---------------------------------------------------------------------------
-
-
-@router.get("/contacts/{contact_id}/feed", response_model=list[ActivityFeedItem])
-async def list_contact_feed(
-    contact_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> list[ActivityFeedItem]:
-    """Activity feed for a contact, newest first."""
-    pool = _pool(db)
-    rows = await pool.fetch(
-        """
-        SELECT id, contact_id, type, description, created_at
-        FROM activity_feed
-        WHERE contact_id = $1
-        ORDER BY created_at DESC
-        """,
-        contact_id,
-    )
-    return [
-        ActivityFeedItem(
-            id=r["id"],
-            contact_id=r["contact_id"],
-            action=r["type"],
-            details={"description": r["description"]} if r["description"] else {},
-            created_at=r["created_at"],
-        )
-        for r in rows
-    ]
 
 
 # ---------------------------------------------------------------------------

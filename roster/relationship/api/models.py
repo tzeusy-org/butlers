@@ -165,52 +165,6 @@ class Group(BaseModel):
     updated_at: datetime
 
 
-class Note(BaseModel):
-    """A freeform note attached to a contact."""
-
-    id: UUID
-    contact_id: UUID
-    content: str
-    created_at: datetime
-
-
-class Interaction(BaseModel):
-    """A recorded interaction with a contact."""
-
-    id: UUID
-    contact_id: UUID
-    type: str  # email, call, meeting, message, etc.
-    summary: str
-    details: str | None = None
-    occurred_at: datetime
-    created_at: datetime
-
-
-class Gift(BaseModel):
-    """A gift given to or received from a contact."""
-
-    id: UUID
-    contact_id: UUID
-    description: str
-    occasion: str | None = None
-    status: str = "idea"  # idea, purchased, wrapped, given, thanked
-    created_at: datetime
-    updated_at: datetime
-
-
-class Loan(BaseModel):
-    """A loan (money or item) between the user and a contact."""
-
-    id: UUID
-    contact_id: UUID
-    amount: float
-    direction: str  # "lent" or "borrowed"
-    description: str | None = None
-    settled: bool = False
-    created_at: datetime
-    settled_at: datetime | None = None
-
-
 class UpcomingDate(BaseModel):
     """Upcoming important date (birthday, anniversary, etc.)."""
 
@@ -233,16 +187,6 @@ class GroupListResponse(BaseModel):
 
     groups: list[Group]
     total: int
-
-
-class ActivityFeedItem(BaseModel):
-    """A single entry in a contact's activity feed."""
-
-    id: UUID
-    contact_id: UUID
-    action: str
-    details: dict = Field(default_factory=dict)
-    created_at: datetime
 
 
 class ContactsSyncTriggerResponse(BaseModel):

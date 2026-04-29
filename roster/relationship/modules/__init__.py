@@ -28,7 +28,7 @@ class RelationshipModuleConfig(ToolGroupMixin, BaseModel):
                address_add, address_list, address_update, address_remove,
                contact_info_add, contact_info_list, contact_info_remove,
                contact_search_by_info, contact_export_vcard, contact_import_vcard
-    interactions : interaction_log, interaction_list, feed_get, fact_set, fact_list
+    interactions : interaction_log, interaction_list, fact_set, fact_list
     relationships : relationship_add, relationship_list, relationship_remove,
                     relationship_type_get, relationship_types_list,
                     life_event_types_list, life_event_log, life_event_list

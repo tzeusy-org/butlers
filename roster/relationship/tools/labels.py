@@ -8,7 +8,6 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship.contacts import _parse_contact
-from butlers.tools.relationship.feed import _log_activity
 
 
 async def label_create(pool: asyncpg.Pool, name: str, color: str | None = None) -> dict[str, Any]:
@@ -30,7 +29,6 @@ async def label_assign(
         label_id,
         contact_id,
     )
-    await _log_activity(pool, contact_id, "label_assigned", f"Assigned label {label_id}")
     return {"label_id": label_id, "contact_id": contact_id}
 
 

@@ -22,8 +22,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship.feed import _log_activity
-
 logger = logging.getLogger(__name__)
 
 _embedding_engine: Any = None
@@ -118,7 +116,6 @@ async def task_create(
         "completed_at": None,
         "created_at": now,
     }
-    await _log_activity(pool, contact_id, "task_created", f"Created task: '{title}'")
     return result
 
 
@@ -249,10 +246,6 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
         "created_at": now,
         "updated_at": now,
     }
-    if contact_id is not None:
-        await _log_activity(
-            pool, contact_id, "task_completed", f"Completed task: '{row['content']}'"
-        )
     return result
 
 
@@ -269,7 +262,3 @@ async def task_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
         "UPDATE facts SET validity = 'retracted' WHERE id = $1",
         task_id,
     )
-
-    contact_id = _extract_contact_id(row["subject"])
-    if contact_id is not None:
-        await _log_activity(pool, contact_id, "task_deleted", f"Deleted task: '{row['content']}'")

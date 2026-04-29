@@ -128,8 +128,7 @@ class TestAC3OwnerGate:
             "created_at": None,
         }
 
-        # Outer pool: handles fetchrow calls before acquire() (existence + owner check)
-        # and the _log_activity fetchrow call after the transaction.
+        # Outer pool: handles fetchrow calls before acquire() (existence + owner check).
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(
             side_effect=[
@@ -137,8 +136,6 @@ class TestAC3OwnerGate:
                 MagicMock(**{"__getitem__.return_value": non_owner_id}),
                 # 2. _is_owner_contact → None (not owner)
                 None,
-                # 3. resolve_contact_entity_id (entity lookup for activity log)
-                MagicMock(**{"__getitem__.return_value": uuid.uuid4()}),
             ]
         )
 

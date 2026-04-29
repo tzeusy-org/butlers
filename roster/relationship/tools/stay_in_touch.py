@@ -8,7 +8,6 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.relationship.contacts import _parse_contact
-from butlers.tools.relationship.feed import _log_activity
 
 
 async def stay_in_touch_set(
@@ -31,19 +30,7 @@ async def stay_in_touch_set(
     )
     if row is None:
         raise ValueError(f"Contact {contact_id} not found")
-    result = _parse_contact(row)
-    if frequency_days is not None:
-        await _log_activity(
-            pool,
-            contact_id,
-            "stay_in_touch_set",
-            f"Set stay-in-touch cadence to {frequency_days} days",
-        )
-    else:
-        await _log_activity(
-            pool, contact_id, "stay_in_touch_cleared", "Cleared stay-in-touch cadence"
-        )
-    return result
+    return _parse_contact(row)
 
 
 async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
