@@ -228,6 +228,44 @@ class AccountPollerState:
 
 
 # ---------------------------------------------------------------------------
+# Play history delta computation (pure, testable)
+# ---------------------------------------------------------------------------
+
+
+def _compute_play_delta(
+    app_id: int,
+    playtime_2weeks: int,
+    prev_snapshot: dict[str, Any] | None,
+) -> int | None:
+    """Return the minutes to write to play_history for one game, or None to skip.
+
+    Rules:
+    - ``prev_snapshot is None`` → first ever poll; skip (no baseline yet).
+    - Game not in ``prev_snapshot`` → new game appeared; skip (establish baseline,
+      avoid writing up to 14 days of prior cumulative play as a single delta).
+    - ``playtime_2weeks <= prev_playtime`` → no new play; skip.
+    - Otherwise → return ``playtime_2weeks - prev_playtime`` (positive delta only).
+
+    Returns ``None`` when the game should be skipped; a positive integer otherwise.
+    """
+    if prev_snapshot is None:
+        return None
+
+    prev_entry = prev_snapshot.get(str(app_id), {})
+    # Empty dict means the game was not in the prior snapshot — treat as new game.
+    if prev_entry:
+        prev_playtime: int | None = prev_entry.get("playtime_2weeks", 0)
+    else:
+        prev_playtime = None
+
+    if prev_playtime is None:
+        return None  # New game — establish baseline, never write cumulative
+
+    delta = playtime_2weeks - prev_playtime
+    return delta if delta > 0 else None
+
+
+# ---------------------------------------------------------------------------
 # Play history persistence
 # ---------------------------------------------------------------------------
 
@@ -1054,55 +1092,40 @@ class SteamAccountPoller:
             app_id = game["appid"]
             game_name = game.get("name", f"App {app_id}")
             playtime_2weeks = game.get("playtime_2weeks", 0)
-            # Use str key to match current_state and DB-restored snapshots.
-            prev_entry = (prev_snapshot or {}).get(str(app_id), {})
-            prev_playtime = prev_entry.get("playtime_2weeks", 0) if prev_entry else None
 
-            # First poll — establish baseline only. Do NOT write to
-            # play_history (no delta reference yet; writing playtime_2weeks
-            # would inflate today's total by up to 14 days of prior play)
-            # and do NOT emit an event.
-            if prev_snapshot is None:
+            # _compute_play_delta encapsulates all baseline-skip and delta rules.
+            # Returns None when the game should be skipped (first poll, new game,
+            # or no new play); returns a positive integer delta otherwise.
+            delta = _compute_play_delta(app_id, playtime_2weeks, prev_snapshot)
+            if delta is None:
                 continue
 
-            # Emit event if:
-            # - New game in recently played (not in prev)
-            # - Playtime increased
-            if prev_playtime is None or playtime_2weeks > prev_playtime:
-                delta = (
-                    (playtime_2weeks - prev_playtime)
-                    if prev_playtime is not None
-                    else playtime_2weeks
-                )
-                if delta <= 0:
-                    continue
+            envelope = build_play_session_envelope(
+                steam_id=self._state.steam_id,
+                endpoint_identity=self._state.endpoint_identity,
+                app_id=app_id,
+                game_name=game_name,
+                playtime_2weeks=playtime_2weeks,
+                playtime_delta=delta,
+                poll_ts=poll_ts,
+                raw=game,
+            )
+            await self._maybe_submit(envelope, data_type="recently_played")
+            events_emitted += 1
 
-                envelope = build_play_session_envelope(
-                    steam_id=self._state.steam_id,
-                    endpoint_identity=self._state.endpoint_identity,
-                    app_id=app_id,
-                    game_name=game_name,
-                    playtime_2weeks=playtime_2weeks,
-                    playtime_delta=delta,
-                    poll_ts=poll_ts,
-                    raw=game,
-                )
-                await self._maybe_submit(envelope, data_type="recently_played")
-                events_emitted += 1
-
-                # Persist detected play session in play_history. Write the
-                # per-poll delta (not the rolling 14-day total), so the row
-                # for this date reflects only minutes played since the prior
-                # poll. Same-day re-polls accumulate via the additive upsert.
-                await _upsert_play_history(
-                    self._db_pool,
-                    steam_id=self._state.steam_id,
-                    steam_account_id=self._state.steam_account_id,
-                    app_id=app_id,
-                    app_name=game_name,
-                    play_date=poll_dt,
-                    playtime_minutes=delta,
-                )
+            # Persist detected play session in play_history. Write the
+            # per-poll delta (not the rolling 14-day total), so the row
+            # for this date reflects only minutes played since the prior
+            # poll. Same-day re-polls accumulate via the additive upsert.
+            await _upsert_play_history(
+                self._db_pool,
+                steam_id=self._state.steam_id,
+                steam_account_id=self._state.steam_account_id,
+                app_id=app_id,
+                app_name=game_name,
+                play_date=poll_dt,
+                playtime_minutes=delta,
+            )
 
         # Update cursor
         new_cursor = SteamCursor(
