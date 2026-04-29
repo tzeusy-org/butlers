@@ -12,15 +12,31 @@ from __future__ import annotations
 
 # Stable category strings. The frontend LANE_TAXONOMY maps these to
 # display labels, colours, and icons. The backend never emits colours.
+#
+# core.sessions episodes are split into two lanes by trigger_source:
+#   "conversations" — trigger_source='route'  (user→butler interactions)
+#   "tasks"         — trigger_source IN {'trigger','external','dashboard'}
+#                     or any other / NULL value (scheduled & daemon-fired work)
 CATEGORIES: frozenset[str] = frozenset(
-    {"work", "calendar", "music", "gaming", "travel", "sleep", "meal", "home", "other"}
+    {
+        "conversations",
+        "tasks",
+        "calendar",
+        "music",
+        "gaming",
+        "travel",
+        "sleep",
+        "meal",
+        "home",
+        "other",
+    }
 )
 
 # Static mapping: (source_name, episode_type) → category.
 # Mirrors the SUPPORTED source declarations in contracts.py.
-# Anything not in this table → "other".
+# core.sessions is handled separately in category_for() via trigger_source.
+# Anything not in this table and not handled by trigger_source → "other".
 _CATEGORY_MAP: dict[tuple[str, str], str] = {
-    ("core.sessions", "work"): "work",
     ("google_calendar.completed", "scheduled_block"): "calendar",
     ("spotify.session_summary", "listening_episode"): "music",
     ("steam.play_history", "play_episode"): "gaming",
@@ -30,14 +46,35 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     ("home_assistant.history", "presence_episode"): "home",
 }
 
+# trigger_source values that represent user→butler conversations.
+# Everything else (including None) is classified as "tasks".
+_CONVERSATION_TRIGGER_SOURCES: frozenset[str] = frozenset({"route"})
 
-def category_for(source_name: str, episode_type: str) -> str:
-    """Return the stable category string for a (source_name, episode_type) pair.
+
+def category_for(
+    source_name: str,
+    episode_type: str,
+    *,
+    trigger_source: str | None = None,
+) -> str:
+    """Return the stable category string for an episode.
+
+    For ``core.sessions`` work episodes the category is resolved from
+    ``trigger_source``:
+    - ``'route'`` → ``'conversations'``  (user→butler interactions)
+    - any other value or ``None`` → ``'tasks'``  (scheduled / daemon work)
+
+    For all other sources the ``(source_name, episode_type)`` pair is looked up
+    in the static ``_CATEGORY_MAP``.
 
     Returns one of the values in ``CATEGORIES``. Unknown pairs → ``"other"``.
 
     Pure deterministic function: no I/O, no LLM, no side effects.
     """
+    if source_name == "core.sessions" and episode_type == "work":
+        if trigger_source in _CONVERSATION_TRIGGER_SOURCES:
+            return "conversations"
+        return "tasks"
     return _CATEGORY_MAP.get((source_name, episode_type), "other")
 
 

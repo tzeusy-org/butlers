@@ -143,7 +143,11 @@ def _row_to_episode(row: Any) -> ChroniclerEpisode:
         correction_note=row["correction_note"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        category=category_for(row["source_name"], row["episode_type"]),
+        category=category_for(
+            row["source_name"],
+            row["episode_type"],
+            trigger_source=_coerce_payload(row["payload"]).get("trigger_source"),
+        ),
     )
 
 
@@ -998,7 +1002,8 @@ async def aggregate_by_category(
                 precision,
                 privacy,
                 retention_days,
-                tombstone_at
+                tombstone_at,
+                payload->>'trigger_source' AS trigger_source
             FROM v_episodes_corrected
             {where}
             """,
@@ -1028,8 +1033,9 @@ async def aggregate_by_category(
             precision: str = row["precision"]
             retention_days: int | None = row["retention_days"]
             is_tombstoned: bool = row["tombstone_at"] is not None
+            row_trigger_source: str | None = row["trigger_source"]
 
-            ep_category = category_for(source_name, episode_type)
+            ep_category = category_for(source_name, episode_type, trigger_source=row_trigger_source)
 
             if ep_category == "other":
                 logger.warning(
@@ -1226,7 +1232,8 @@ async def aggregate_by_day(
                 precision,
                 privacy,
                 retention_days,
-                tombstone_at
+                tombstone_at,
+                payload->>'trigger_source' AS trigger_source
             FROM v_episodes_corrected
             {where}
             """,
@@ -1292,8 +1299,9 @@ async def aggregate_by_day(
             precision: str = row["precision"]
             retention_days: int | None = row["retention_days"]
             is_tombstoned: bool = row["tombstone_at"] is not None
+            row_trigger_source: str | None = row["trigger_source"]
 
-            ep_category = category_for(source_name, episode_type)
+            ep_category = category_for(source_name, episode_type, trigger_source=row_trigger_source)
             if category is not None and ep_category != category:
                 continue
 

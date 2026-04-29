@@ -11,9 +11,12 @@ import {
   type LaneConfig,
 } from "./lane-taxonomy"
 
-// All 9 stable category strings defined by the backend (aggregations.py).
+// All 10 stable category strings defined by the backend (aggregations.py).
+// core.sessions episodes are split into "conversations" and "tasks" based on
+// trigger_source; the old "work" lane has been replaced by these two lanes.
 const EXPECTED_CATEGORIES: Category[] = [
-  "work",
+  "conversations",
+  "tasks",
   "calendar",
   "music",
   "gaming",
@@ -25,7 +28,7 @@ const EXPECTED_CATEGORIES: Category[] = [
 ]
 
 describe("LANE_TAXONOMY", () => {
-  it("contains exactly the 9 expected categories", () => {
+  it("contains exactly the 10 expected categories", () => {
     const keys = Object.keys(LANE_TAXONOMY).sort()
     expect(keys).toEqual([...EXPECTED_CATEGORIES].sort())
   })
@@ -77,7 +80,8 @@ describe("LANE_TAXONOMY", () => {
 
 describe("categoryForSource", () => {
   it.each<[string, string, Category]>([
-    ["core.sessions", "work", "work"],
+    // core.sessions: fallback path cannot resolve trigger_source, defaults to "tasks"
+    ["core.sessions", "work", "tasks"],
     ["google_calendar.completed", "scheduled_block", "calendar"],
     ["spotify.session_summary", "listening_episode", "music"],
     ["steam.play_history", "play_episode", "gaming"],
