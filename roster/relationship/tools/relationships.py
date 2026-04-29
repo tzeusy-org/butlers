@@ -127,105 +127,36 @@ async def relationship_add(
 
     The reverse row automatically gets the correct reverse_label.
     """
-    # Check if relationship_types table exists (for backward compat)
-    has_types_table = await pool.fetchval(
+    rt = await _resolve_relationship_type(pool, type_id=type_id, type_label=type)
+    forward_label = rt["forward_label"]
+    reverse_label = rt["reverse_label"]
+    rt_id = rt["id"]
+
+    row_a = await pool.fetchrow(
         """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_name = 'relationship_types'
-        )
-        """
+        INSERT INTO relationships
+            (contact_a, contact_b, type, relationship_type_id, notes)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+        """,
+        contact_a,
+        contact_b,
+        forward_label,
+        rt_id,
+        notes,
     )
-
-    if has_types_table:
-        rt = await _resolve_relationship_type(pool, type_id=type_id, type_label=type)
-        forward_label = rt["forward_label"]
-        reverse_label = rt["reverse_label"]
-        rt_id = rt["id"]
-
-        # Check if relationships table has relationship_type_id column
-        has_type_id_col = await pool.fetchval(
-            """
-            SELECT EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'relationships' AND column_name = 'relationship_type_id'
-            )
-            """
-        )
-
-        if has_type_id_col:
-            row_a = await pool.fetchrow(
-                """
-                INSERT INTO relationships
-                    (contact_a, contact_b, type, relationship_type_id, notes)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING *
-                """,
-                contact_a,
-                contact_b,
-                forward_label,
-                rt_id,
-                notes,
-            )
-            await pool.execute(
-                """
-                INSERT INTO relationships
-                    (contact_a, contact_b, type, relationship_type_id, notes)
-                VALUES ($1, $2, $3, $4, $5)
-                """,
-                contact_b,
-                contact_a,
-                reverse_label,
-                rt_id,
-                notes,
-            )
-        else:
-            row_a = await pool.fetchrow(
-                """
-                INSERT INTO relationships (contact_a, contact_b, type, notes)
-                VALUES ($1, $2, $3, $4)
-                RETURNING *
-                """,
-                contact_a,
-                contact_b,
-                forward_label,
-                notes,
-            )
-            await pool.execute(
-                """
-                INSERT INTO relationships (contact_a, contact_b, type, notes)
-                VALUES ($1, $2, $3, $4)
-                """,
-                contact_b,
-                contact_a,
-                reverse_label,
-                notes,
-            )
-    else:
-        # Legacy path: no relationship_types table, use freetext type directly
-        if type is None:
-            raise ValueError("type is required when relationship_types table is not available")
-        row_a = await pool.fetchrow(
-            """
-            INSERT INTO relationships (contact_a, contact_b, type, notes)
-            VALUES ($1, $2, $3, $4)
-            RETURNING *
-            """,
-            contact_a,
-            contact_b,
-            type,
-            notes,
-        )
-        await pool.execute(
-            """
-            INSERT INTO relationships (contact_a, contact_b, type, notes)
-            VALUES ($1, $2, $3, $4)
-            """,
-            contact_b,
-            contact_a,
-            type,
-            notes,
-        )
+    await pool.execute(
+        """
+        INSERT INTO relationships
+            (contact_a, contact_b, type, relationship_type_id, notes)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        contact_b,
+        contact_a,
+        reverse_label,
+        rt_id,
+        notes,
+    )
 
     result = dict(row_a)
     label = result.get("type", type or "unknown")
