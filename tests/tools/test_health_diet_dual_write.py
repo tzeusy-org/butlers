@@ -221,8 +221,15 @@ async def test_meal_log_passes_correct_kwargs_to_dual_write() -> None:
 
 
 async def test_meal_log_health_meals_failure_does_not_raise() -> None:
-    """If _write_to_health_meals raises, meal_log must still succeed."""
-    pool = _make_pool()
+    """meal_log must succeed even when the inner health.meals INSERT fails.
+
+    The swallowing happens *inside* ``_write_to_health_meals`` (it catches
+    ``asyncpg.PostgresError`` and logs a warning).  This test exercises that
+    production path by injecting the failure at the ``pool.execute`` level so
+    that ``_write_to_health_meals`` runs for real, catches the error, and
+    ``meal_log`` returns successfully.
+    """
+    pool = _make_pool(execute_side_effect=asyncpg.exceptions.PostgresError("disk full"))
     fact_id = uuid.uuid4()
 
     with (
@@ -231,18 +238,14 @@ async def test_meal_log_health_meals_failure_does_not_raise() -> None:
             new=AsyncMock(return_value={"id": fact_id, "supersedes_id": None}),
         ),
         patch("butlers.tools.health.diet._get_embedding_engine", return_value=MagicMock()),
-        patch(
-            "butlers.tools.health.diet._write_to_health_meals",
-            new=AsyncMock(side_effect=asyncpg.exceptions.PostgresError("disk full")),
-        ),
     ):
-        # meal_log itself should propagate the error from _write_to_health_meals
-        # only if it's not caught inside _write_to_health_meals.
-        # Since _write_to_health_meals swallows the error internally, this passes.
-        # But here we're patching at the meal_log call site, so the side_effect
-        # will bubble up. Test that the function-level wrapper also handles it.
-        with pytest.raises(asyncpg.exceptions.PostgresError):
-            await meal_log(pool, type="snack", description="Apple", eaten_at=_EATEN_AT)
+        # _write_to_health_meals runs for real; pool.execute raises PostgresError,
+        # which is caught and swallowed inside _write_to_health_meals.
+        # meal_log must return successfully — no exception should propagate.
+        result = await meal_log(pool, type="snack", description="Apple", eaten_at=_EATEN_AT)
+
+    assert result["id"] == str(fact_id)
+    assert result["type"] == "snack"
 
 
 async def test_meal_log_stable_meal_id_passed_to_both_surfaces() -> None:
