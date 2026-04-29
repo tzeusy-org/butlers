@@ -2471,6 +2471,18 @@ async def reveal_entity_secret(
             ),
         )
 
+    # Explicit audit for credential reveal (GET — middleware skips GETs).
+    await emit_dashboard_audit(
+        db,
+        butler="relationship",
+        operation="reveal_entity_secret",
+        method="GET",
+        path=f"/api/relationship/entities/{entity_id}/secrets/{info_id}",
+        path_params={"entity_id": str(entity_id), "info_id": str(info_id)},
+        body={"type": row["type"]},
+        response_status=200,
+    )
+
     return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}
 
 
