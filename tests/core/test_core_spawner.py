@@ -757,7 +757,7 @@ class TestSpawnerInvocation:
                         + "\n"
                         + json.dumps({"type": "result", "result": "MCP tools called: none."})
                     ).encode(),
-                    b"",
+                    b"MCP connection failed: connection refused",
                 )
             )
             return proc

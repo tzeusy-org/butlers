@@ -728,6 +728,7 @@ def _make_failed_stdout_error(message: str) -> bytes:
 
 
 _MCP_SERVERS = {"switchboard": {"url": "http://localhost:41100/mcp"}}
+_MCP_DISCOVERY_STDERR = b"MCP connection failed: connection refused"
 
 
 async def test_retry_on_mcp_connection_failure():
@@ -742,9 +743,11 @@ async def test_retry_on_mcp_connection_failure():
         proc = AsyncMock()
         proc.returncode = 0
         proc.pid = 100 + call_count
-        # First call: bash only (MCP failure). Second call: MCP tools present.
+        # First call: bash only plus MCP stderr marker. Second call: MCP tools present.
         if call_count == 1:
-            proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+            proc.communicate = AsyncMock(
+                return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR)
+            )
         else:
             proc.communicate = AsyncMock(return_value=(_make_mcp_stdout(), b""))
         return proc
@@ -783,7 +786,7 @@ async def test_retry_stops_when_later_attempt_is_plain_text():
         proc.communicate = AsyncMock(
             return_value=(
                 _make_bash_only_stdout() if call_count == 1 else _make_text_only_stdout(),
-                b"",
+                _MCP_DISCOVERY_STDERR if call_count == 1 else b"",
             )
         )
         return proc
@@ -823,7 +826,9 @@ async def test_retry_all_fail_raises_runtime_error():
         proc = AsyncMock()
         proc.returncode = 0
         proc.pid = 42
-        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+        proc.communicate = AsyncMock(
+            return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR)
+        )
         return proc
 
     with (
@@ -844,6 +849,37 @@ async def test_retry_all_fail_raises_runtime_error():
     assert info["retry_attempted"] is True
     assert info["retry_succeeded"] is False
     assert info["attempt_count"] == 3
+
+
+async def test_no_retry_when_mcp_servers_present_but_response_is_bash_only():
+    """A completed bash-only turn is valid unless Codex reports MCP transport failure."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    call_count = 0
+
+    async def _mock_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 42
+        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        result_text, tool_calls, _ = await adapter.invoke(
+            prompt="inspect local context",
+            system_prompt="",
+            mcp_servers=_MCP_SERVERS,
+            env={},
+        )
+
+    assert call_count == 1, "Bash-only output without MCP stderr must not be retried"
+    assert result_text is not None
+    assert all(tc.get("name") == "command_execution" for tc in tool_calls)
+    info = adapter.last_process_info
+    assert info["mcp_connection_failed"] is False
+    assert info["attempt_count"] == 1
 
 
 async def test_no_retry_without_mcp_servers():
@@ -1265,7 +1301,7 @@ async def test_retry_provenance_result_source_retry():
         proc.communicate = AsyncMock(
             return_value=(
                 _make_bash_only_stdout() if call_count == 1 else _make_mcp_stdout(),
-                b"",
+                _MCP_DISCOVERY_STDERR if call_count == 1 else b"",
             )
         )
         return proc
@@ -1296,7 +1332,9 @@ async def test_retry_provenance_result_source_first():
         proc = AsyncMock()
         proc.returncode = 0
         proc.pid = 42
-        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), b""))
+        proc.communicate = AsyncMock(
+            return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR)
+        )
         return proc
 
     with (
