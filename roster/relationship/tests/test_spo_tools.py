@@ -723,3 +723,88 @@ async def test_life_event_log_invalid_type_raises(pool):
 
     with pytest.raises(ValueError, match="Unknown life event type"):
         await life_event_log(pool, cid, "alien_abduction", summary="Weird")
+
+
+# ===========================================================================
+# Gifts — entity_id contract tests (bu-x7fdu.1)
+# ===========================================================================
+
+
+async def test_gift_add_stores_entity_id(pool):
+    """gift_add resolves contact entity_id and stores it on the fact row."""
+    from butlers.tools.relationship.gifts import gift_add
+
+    contact = await _make_contact(pool, "Iris")
+    cid = contact["id"]
+
+    gift = await gift_add(pool, cid, "notebook")
+    fact_row = await pool.fetchrow(
+        "SELECT entity_id FROM facts WHERE id = $1",
+        gift["id"],
+    )
+    assert fact_row is not None
+    assert fact_row["entity_id"] is not None, "entity_id must be set on the fact (not None)"
+
+    # The stored entity_id must match the one on the contact
+    contact_entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
+    assert fact_row["entity_id"] == contact_entity_id
+
+
+async def test_gift_update_status_preserves_entity_id(pool):
+    """gift_update_status passes entity_id so the superseding fact also carries it."""
+    from butlers.tools.relationship.gifts import gift_add, gift_update_status
+
+    contact = await _make_contact(pool, "James")
+    cid = contact["id"]
+
+    gift = await gift_add(pool, cid, "candle")
+    updated = await gift_update_status(pool, gift["id"], "purchased")
+
+    fact_row = await pool.fetchrow(
+        "SELECT entity_id FROM facts WHERE id = $1",
+        updated["id"],
+    )
+    assert fact_row is not None
+    assert fact_row["entity_id"] is not None, "superseding fact must carry entity_id"
+
+    contact_entity_id = await pool.fetchval("SELECT entity_id FROM contacts WHERE id = $1", cid)
+    assert fact_row["entity_id"] == contact_entity_id
+
+
+async def test_gift_list_returns_only_active_facts(pool):
+    """gift_list returns only validity='active' facts, not superseded ones."""
+    from butlers.tools.relationship.gifts import gift_add, gift_list, gift_update_status
+
+    contact = await _make_contact(pool, "Kate")
+    cid = contact["id"]
+
+    gift = await gift_add(pool, cid, "perfume")
+    # Advance status — old fact becomes superseded
+    await gift_update_status(pool, gift["id"], "purchased")
+
+    gifts = await gift_list(pool, cid)
+    # Only the active (purchased) fact should be visible
+    assert len(gifts) == 1
+    assert gifts[0]["status"] == "purchased"
+
+    # Confirm superseded row exists but is not returned
+    total = await pool.fetchval(
+        "SELECT COUNT(*) FROM facts WHERE subject LIKE $1 AND predicate = 'gift'",
+        f"contact:{cid}:gift:%",
+    )
+    assert total == 2  # original + superseding
+
+
+async def test_gift_add_no_entity_raises_value_error(pool):
+    """gift_add raises ValueError when the contact has no linked entity."""
+    from butlers.tools.relationship.gifts import gift_add
+
+    # Create a contact without entity_id
+    row = await pool.fetchrow(
+        "INSERT INTO contacts (first_name) VALUES ($1) RETURNING id",
+        "Orphan",
+    )
+    cid = row["id"]
+
+    with pytest.raises(ValueError, match="no linked entity_id"):
+        await gift_add(pool, cid, "mystery gift")

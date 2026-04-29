@@ -1,13 +1,17 @@
 """Gifts — track gift ideas through the pipeline backed by SPO facts.
 
-Each gift is a property fact in the facts table (supersession by subject key):
+Each gift is a temporal fact in the facts table (append-only coexistence):
   subject   = contact:{contact_id}:gift:{description_slug}
   predicate = 'gift'
   content   = description
   metadata  = {occasion, status}
-  valid_at  = NULL (property fact — status updates supersede)
+  valid_at  = created_at (temporal — each status snapshot coexists independently)
   scope     = 'relationship'
   entity_id = contact's entity UUID (resolved via contacts.entity_id)
+
+Status transitions supersede the previous snapshot via a direct UPDATE before
+inserting the new fact (bypassing store_fact's entity-keyed supersession, which
+would collapse all gifts for the same entity into one).
 
 The response shape is backward compatible with the legacy gifts table.
 """
@@ -23,6 +27,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 from butlers.tools.relationship.feed import _log_activity
 
 logger = logging.getLogger(__name__)
@@ -76,13 +81,17 @@ async def gift_add(
     now = datetime.now(UTC)
     embedding_engine = _get_embedding_engine()
 
-    # Subject encodes contact + gift slug for independent per-gift supersession
+    # Subject encodes contact + gift slug so each distinct gift is independent.
     subject = f"contact:{contact_id}:gift:{_slug(description)}"
+
+    entity_id = await resolve_contact_entity_id(pool, contact_id)
 
     fact_metadata: dict[str, Any] = {"status": "idea"}
     if occasion is not None:
         fact_metadata["occasion"] = occasion
 
+    # Temporal fact (valid_at=now) so multiple gifts for the same entity coexist
+    # independently without entity-keyed supersession collapsing them into one.
     fact_id = (
         await store_fact(
             pool,
@@ -92,8 +101,8 @@ async def gift_add(
             embedding_engine=embedding_engine,
             permanence="stable",
             scope="relationship",
-            entity_id=None,  # None so supersession uses subject key (per-gift)
-            valid_at=None,  # property fact — supersedes previous for same subject
+            entity_id=entity_id,
+            valid_at=now,
             metadata=fact_metadata,
         )
     )["id"]
@@ -142,13 +151,28 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     parts = row["subject"].split(":")
     contact_id_str = parts[1] if len(parts) >= 2 else None
     contact_id = uuid.UUID(contact_id_str) if contact_id_str else None
+    if not contact_id:
+        raise ValueError(f"Could not resolve contact_id from gift subject: {row['subject']}")
 
     embedding_engine = _get_embedding_engine()
     description = row["content"]
 
+    entity_id = await resolve_contact_entity_id(pool, contact_id)
+
+    now = datetime.now(UTC)
     new_metadata = dict(meta)
     new_metadata["status"] = status
 
+    # Supersede the old fact directly before inserting the new snapshot.
+    # We do NOT rely on store_fact's entity-keyed supersession because that would
+    # collapse all gifts for the same entity+predicate into one row.
+    await pool.execute(
+        "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+        gift_id,
+        now,
+    )
+
+    # Insert the new status snapshot as a temporal fact.
     new_fact_id = (
         await store_fact(
             pool,
@@ -158,13 +182,12 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
             embedding_engine=embedding_engine,
             permanence="stable",
             scope="relationship",
-            entity_id=None,  # None so supersession uses subject key (per-gift)
-            valid_at=None,  # property fact — supersedes previous
+            entity_id=entity_id,
+            valid_at=now,
             metadata=new_metadata,
         )
     )["id"]
 
-    now = datetime.now(UTC)
     result: dict[str, Any] = {
         "id": new_fact_id,
         "contact_id": contact_id,
@@ -174,13 +197,12 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
         "created_at": now,
         "updated_at": now,
     }
-    if contact_id is not None:
-        await _log_activity(
-            pool,
-            contact_id,
-            "gift_status_updated",
-            f"Gift '{description}' status: {current_status} -> {status}",
-        )
+    await _log_activity(
+        pool,
+        contact_id,
+        "gift_status_updated",
+        f"Gift '{description}' status: {current_status} -> {status}",
+    )
     return result
 
 
@@ -193,7 +215,6 @@ async def gift_list(
         "predicate = 'gift'",
         "scope = 'relationship'",
         "validity = 'active'",
-        "valid_at IS NULL",
     ]
     params: list[Any] = [f"contact:{contact_id}:gift:%"]
     idx = 2
