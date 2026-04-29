@@ -663,7 +663,5 @@ class TestEntityLinkedContacts:
 
     async def test_returns_404_for_missing_entity(self):
         app, _ = _app_with_pool(entity_exists=False)
-        resp = await _get(
-            app, f"/api/relationship/entities/{_MISSING_ENT_ID}/linked-contacts"
-        )
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/linked-contacts")
         assert resp.status_code == 404
