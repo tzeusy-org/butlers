@@ -970,3 +970,63 @@ describe("GanttSwimlaneInner render-all-lanes (bu-p4vd3)", () => {
     expect(html).toContain("text-muted-foreground\"")
   })
 })
+
+// ---------------------------------------------------------------------------
+// 15. Privacy contract — sensitive vs normal vs restricted in Gantt lane
+//     (bu-6c5i6 privacy contract)
+//
+// normal:     bar renders normally; no hatch pattern applied to bar fill
+// sensitive:  bar renders in lane; hatched pattern; aria-label = "Private
+//             activity"; tooltip data-testid gantt-tooltip-sensitive-label
+//             present with category + duration (not the real title)
+// restricted: hidden at server layer — never reaches the component
+// ---------------------------------------------------------------------------
+
+describe("GanttSwimlaneInner privacy contract (bu-6c5i6)", () => {
+  it("normal: renders bar with episode title in aria-label (not masked)", () => {
+    const ep = makeEpisode({
+      id: "ep-normal-privacy",
+      canonical_privacy: "normal",
+      canonical_title: "Deep work session",
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    expect(html).toContain("gantt-bar-ep-normal-privacy")
+    // Normal episodes expose the title in aria-label (not masked)
+    expect(html).toContain("Deep work session")
+    // No hatch pattern for the bar fill
+    expect(html).not.toContain('fill="url(#hatch-')
+  })
+
+  it("sensitive: bar renders in lane with hatched fill and 'Private activity' aria-label", () => {
+    const ep = makeEpisode({
+      id: "ep-sensitive-privacy",
+      canonical_privacy: "sensitive",
+      canonical_title: "Location trace",
+      ...CATEGORY_SOURCES.travel,
+    })
+    const html = renderToStaticMarkup(
+      <GanttSwimlaneInner
+        episodes={[ep]}
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+      />,
+    )
+    // Bar must be present in the Travel lane
+    expect(html).toContain("gantt-bar-ep-sensitive-privacy")
+    // Title must NOT leak via aria-label
+    expect(html).not.toContain("Location trace")
+    // Generic aria-label used
+    expect(html).toContain("Private activity")
+    // Hatch pattern applied to the bar fill
+    expect(html).toContain('fill="url(#hatch-travel)"')
+    // Note: Radix TooltipContent renders via portal and is not present in
+    // static markup. Tooltip content (duration + category label for sensitive)
+    // is exercised by interactive / e2e tests.
+  })
+})

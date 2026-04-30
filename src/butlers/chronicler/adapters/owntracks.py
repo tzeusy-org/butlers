@@ -15,8 +15,12 @@ Chronicler output layers:
 Semantics:
 - Boundary precision is ``exact`` — OwnTracks device timestamps carry
   second resolution.
-- Privacy class is ``sensitive`` — GPS tracks are personally identifying
-  retrospective location data.
+- Privacy class is ``sensitive`` — GPS coordinates are personally identifying
+  retrospective location data.  The ``sensitive`` class masks only the
+  payload-level coordinate fields in the frontend; the envelope
+  (start_at, end_at, category, duration) remains visible in the Travel lane
+  as "Travel: N min".  This is distinct from ``restricted``, which hides
+  the episode entirely (see bu-6c5i6 privacy contract).
 - Watermark on ``ts`` only. ``connectors.owntracks_points.id`` is a UUID,
   not an integer serial, so this adapter must not use the integer
   ``watermark_id`` tuple-watermark path.

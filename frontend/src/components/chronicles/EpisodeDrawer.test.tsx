@@ -368,24 +368,36 @@ describe("EpisodeDrawerContent corrections list", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 10. Content: sensitive episode — title masked, Explain button hidden
+// 10. Content: sensitive episode — envelope visible, payload masked
+//
+// Privacy contract (bu-6c5i6):
+//   - sensitive: envelope (start, end, duration) always visible; payload
+//     (title, source) masked.
+//   - restricted: hidden at server layer, never rendered.
 // ---------------------------------------------------------------------------
 
 describe("EpisodeDrawerContent sensitive episode", () => {
-  it("masks the title and hides the Explain button for sensitive episodes", () => {
+  it("shows envelope (start, end, duration) but masks title for sensitive episodes", () => {
     reset()
     _episodeData = makeEpisode({
       canonical_privacy: "sensitive",
       canonical_title: "Secret project Alpha",
+      canonical_start_at: "2026-04-25T09:00:00Z",
+      canonical_end_at: "2026-04-25T10:00:00Z",
     })
     _eventsData = []
     _correctionsData = []
     const html = renderToStaticMarkup(
       <EpisodeDrawerContent episodeId="ep-test-id" />,
     )
-    // Title must not be shown
+    // Title must not be shown — payload-level field
     expect(html).not.toContain("Secret project Alpha")
-    expect(html).toContain("Private activity")
+    // Sensitive payload notice must appear
+    expect(html).toContain("sensitive-payload-notice")
+    // Envelope fields MUST be visible: start, end, duration
+    expect(html).toContain("Start")
+    expect(html).toContain("End")
+    expect(html).toContain("Duration")
     // Explain button must NOT be present for sensitive episodes
     expect(html).not.toContain("explain-button")
   })
@@ -532,5 +544,72 @@ describe("GanttSwimlaneInner onEpisodeClick optional", () => {
         />,
       ),
     ).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 16. Privacy contract — three levels: normal, sensitive, restricted
+//     (bu-6c5i6 privacy contract)
+//
+// normal:     full render (title, source, duration all visible)
+// sensitive:  envelope visible (start, end, duration); payload masked
+// restricted: hidden at server layer — never reaches the component
+//
+// We cover normal + sensitive below (restricted never surfaces as a rendered
+// episode; it is filtered server-side before the API response is built).
+// ---------------------------------------------------------------------------
+
+describe("EpisodeDrawerContent privacy contract (bu-6c5i6)", () => {
+  it("normal: shows full detail (title, source, start, end, duration)", () => {
+    reset()
+    _episodeData = makeEpisode({
+      canonical_privacy: "normal",
+      canonical_title: "Morning run",
+      canonical_start_at: "2026-04-25T07:00:00Z",
+      canonical_end_at: "2026-04-25T07:45:00Z",
+    })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(
+      <EpisodeDrawerContent episodeId="ep-test-id" />,
+    )
+    // Envelope: start, end, duration always visible
+    expect(html).toContain("Start")
+    expect(html).toContain("End")
+    expect(html).toContain("Duration")
+    // Payload: title and source visible for normal
+    expect(html).toContain("Morning run")
+    expect(html).toContain("Source")
+    // Explain button available
+    expect(html).toContain("explain-button")
+    // No sensitive notice
+    expect(html).not.toContain("sensitive-payload-notice")
+  })
+
+  it("sensitive: envelope visible, payload (title/source) masked, Explain hidden", () => {
+    reset()
+    _episodeData = makeEpisode({
+      canonical_privacy: "sensitive",
+      canonical_title: "Private journey",
+      canonical_start_at: "2026-04-25T09:00:00Z",
+      canonical_end_at: "2026-04-25T10:30:00Z",
+    })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(
+      <EpisodeDrawerContent episodeId="ep-test-id" />,
+    )
+    // Envelope: always visible
+    expect(html).toContain("Start")
+    expect(html).toContain("End")
+    expect(html).toContain("Duration")
+    // Payload: title MUST NOT appear
+    expect(html).not.toContain("Private journey")
+    // Source field hidden for sensitive
+    expect(html).not.toContain("Source")
+    // Sensitive notice shown
+    expect(html).toContain("sensitive-payload-notice")
+    // Explain button hidden for sensitive
+    expect(html).not.toContain("explain-button")
   })
 })

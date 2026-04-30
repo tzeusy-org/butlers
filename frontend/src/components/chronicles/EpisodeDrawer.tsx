@@ -16,7 +16,10 @@
 // Constraints:
 //   - Does NOT auto-trigger on hover, scroll, or scrub
 //   - Mounts/unmounts cleanly via Sheet (Radix Dialog primitive)
-//   - Sensitive episodes: title is masked in the drawer header
+//   - Sensitive episodes: envelope (start, end, duration) is always visible;
+//     only payload-level identifying fields (title, source) are masked.
+//   - Restricted episodes: hidden at the server layer, never shown here.
+//   - See bu-6c5i6 privacy contract in roster/chronicler/AGENTS.md.
 // ---------------------------------------------------------------------------
 
 import { useState } from "react"
@@ -216,22 +219,22 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
             )}
           </div>
 
+          {/* Envelope fields — always visible for normal and sensitive episodes.
+              Only restricted episodes hide the envelope (never reach here). */}
+          <FieldRow label="Start" value={formatDateTime(ep.canonical_start_at)} />
+          <FieldRow
+            label="End"
+            value={ep.canonical_end_at ? formatDateTime(ep.canonical_end_at) : "ongoing"}
+          />
+          <FieldRow label="Duration" value={duration} />
+
+          {/* Payload-level fields — masked for sensitive episodes. */}
           {!isSensitive && (
             <>
+              <FieldRow label="Source" value={ep.source_name} />
               {ep.canonical_title && (
-                <p
-                  className="text-base font-semibold leading-snug"
-                  data-testid="episode-primary-title"
-                >
-                  {ep.canonical_title}
-                </p>
+                <FieldRow label="Title" value={ep.canonical_title} />
               )}
-              <FieldRow label="Start" value={formatDateTime(ep.canonical_start_at)} />
-              <FieldRow
-                label="End"
-                value={ep.canonical_end_at ? formatDateTime(ep.canonical_end_at) : "ongoing"}
-              />
-              <FieldRow label="Duration" value={duration} />
               {ep.corrected_at && (
                 <FieldRow
                   label="Corrected"
@@ -251,12 +254,9 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
           )}
 
           {isSensitive && (
-            <>
-              <p className="text-sm font-medium">Private activity</p>
-              <p className="text-sm text-muted-foreground">
-                Content hidden for sensitive episodes.
-              </p>
-            </>
+            <p className="text-sm text-muted-foreground" data-testid="sensitive-payload-notice">
+              Payload content hidden for sensitive episodes.
+            </p>
           )}
         </div>
       </section>

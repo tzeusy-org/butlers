@@ -219,7 +219,7 @@ async def test_episode_fields_from_row() -> None:
     assert ep.start_at == _NOW
     assert ep.end_at == _NOW + timedelta(minutes=45)
     assert ep.precision == Precision.EXACT
-    assert ep.privacy == Privacy.SENSITIVE
+    assert ep.privacy == Privacy.NORMAL
     assert "Deep Focus" in ep.title
     assert ep.payload["endpoint_identity"] == _ENDPOINT
     assert ep.payload["spotify_user_id"] == _SPOTIFY_USER_ID

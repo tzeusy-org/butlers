@@ -9,8 +9,11 @@ Semantics:
   as boundaries.
 - Boundary precision is ``exact`` — the connector derives timestamps
   from Spotify API responses, which carry millisecond resolution.
-- Privacy class is ``sensitive`` — listening history is retrospective
-  personal data.
+- Privacy class is ``normal`` — track names and session duration are not
+  personally sensitive.  The blanket ``sensitive`` default caused the Music
+  lane to render as opaque placeholders on the dashboard (bu-6c5i6).
+  Per-row sensitive overrides remain possible via the Chronicler override
+  mechanism if individual sessions need to be masked.
 - Source ref format: ``connectors.spotify_listening_sessions:{idempotency_key}``
   matching the evidence table's unique key so replays are idempotent.
 - Deferred fine-grained track projection: per-track events are OUT OF
@@ -213,7 +216,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
                     precision=Precision.EXACT,
                     title=title,
                     payload=payload,
-                    privacy=Privacy.SENSITIVE,
+                    privacy=Privacy.NORMAL,
                 ),
             )
         return episode
