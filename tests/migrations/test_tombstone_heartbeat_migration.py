@@ -147,115 +147,141 @@ class TestExclusionConstantsImport:
         assert mod.EXCLUDED_TRIGGER_SOURCE_PREFIX == "schedule:"
 
 
+def _collect_upgrade_calls() -> list[str]:
+    """Run upgrade() with op mocked; return SQL strings passed to op.execute.
+
+    Loaded once and shared across TestUpgradeSQLShape tests — eliminates
+    repeated module loads and import-time races under pytest-xdist.
+    """
+    mod = _load_migration()
+    calls_collected: list[str] = []
+
+    mock_op = MagicMock()
+    mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
+    # _log_candidate_counts uses op.get_bind() — mock it to return a
+    # minimal connection-like object so it doesn't fail the unit test.
+    mock_bind = MagicMock()
+    mock_bind.execute.return_value.fetchall.return_value = []
+    mock_op.get_bind.return_value = mock_bind
+
+    with patch.object(mod, "op", mock_op):
+        mod.upgrade()
+
+    return calls_collected
+
+
+def _collect_downgrade_calls() -> list[str]:
+    """Run downgrade() with op mocked; return SQL strings passed to op.execute.
+
+    Loaded once and shared across TestDowngradeSQLShape tests — eliminates
+    repeated module loads and import-time races under pytest-xdist.
+    """
+    mod = _load_migration()
+    calls_collected: list[str] = []
+    mock_op = MagicMock()
+    mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
+    with patch.object(mod, "op", mock_op):
+        mod.downgrade()
+    return calls_collected
+
+
+@pytest.fixture(scope="module")
+def upgrade_sqls() -> list[str]:
+    """Collected SQL statements from upgrade() — module-scoped, one load per worker."""
+    return _collect_upgrade_calls()
+
+
+@pytest.fixture(scope="module")
+def downgrade_sqls() -> list[str]:
+    """Collected SQL statements from downgrade() — module-scoped, one load per worker."""
+    return _collect_downgrade_calls()
+
+
 class TestUpgradeSQLShape:
     """Verify the SQL emitted by upgrade() matches the spec."""
 
-    def _collect_execute_calls(self) -> list[str]:
-        """Run upgrade() with op mocked; return SQL strings passed to op.execute."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-        # _log_candidate_counts uses op.get_bind() — mock it to return a
-        # minimal connection-like object so it doesn't fail the unit test.
-        mock_bind = MagicMock()
-        mock_bind.execute.return_value.fetchall.return_value = []
-        mock_op.get_bind.return_value = mock_bind
-
-        with patch.object(mod, "op", mock_op):
-            mod.upgrade()
-
-        return calls_collected
-
-    def test_add_tombstone_reason_to_episodes(self) -> None:
+    def test_add_tombstone_reason_to_episodes(self, upgrade_sqls: list[str]) -> None:
         """upgrade() adds tombstone_reason column to episodes table."""
-        sqls = self._collect_execute_calls()
         add_col_stmts = [
-            s for s in sqls if "episodes" in s and "tombstone_reason" in s and "ADD COLUMN" in s
+            s
+            for s in upgrade_sqls
+            if "episodes" in s and "tombstone_reason" in s and "ADD COLUMN" in s
         ]
         assert add_col_stmts, "No ADD COLUMN tombstone_reason for episodes found in upgrade SQL"
 
-    def test_add_tombstone_reason_to_point_events(self) -> None:
+    def test_add_tombstone_reason_to_point_events(self, upgrade_sqls: list[str]) -> None:
         """upgrade() adds tombstone_reason column to point_events table."""
-        sqls = self._collect_execute_calls()
         add_col_stmts = [
-            s for s in sqls if "point_events" in s and "tombstone_reason" in s and "ADD COLUMN" in s
+            s
+            for s in upgrade_sqls
+            if "point_events" in s and "tombstone_reason" in s and "ADD COLUMN" in s
         ]
         assert add_col_stmts, "No ADD COLUMN tombstone_reason for point_events found in upgrade SQL"
 
-    def test_add_column_is_idempotent(self) -> None:
+    def test_add_column_is_idempotent(self, upgrade_sqls: list[str]) -> None:
         """ADD COLUMN statements use IF NOT EXISTS for idempotency."""
-        sqls = self._collect_execute_calls()
-        add_col_stmts = [s for s in sqls if "ADD COLUMN" in s and "tombstone_reason" in s]
+        add_col_stmts = [s for s in upgrade_sqls if "ADD COLUMN" in s and "tombstone_reason" in s]
         for stmt in add_col_stmts:
             assert "IF NOT EXISTS" in stmt, f"ADD COLUMN missing IF NOT EXISTS guard:\n{stmt}"
 
-    def test_update_targets_episodes_table(self) -> None:
+    def test_update_targets_episodes_table(self, upgrade_sqls: list[str]) -> None:
         """upgrade() emits an UPDATE against the episodes table."""
-        sqls = self._collect_execute_calls()
         update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
+            s for s in upgrade_sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
         ]
         assert update_stmts, "No UPDATE episodes statement found in upgrade SQL"
 
-    def test_update_sets_tombstone_at(self) -> None:
+    def test_update_sets_tombstone_at(self, upgrade_sqls: list[str]) -> None:
         """The UPDATE sets tombstone_at = now()."""
-        sqls = self._collect_execute_calls()
         update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
+            s for s in upgrade_sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
         ]
         assert update_stmts, "No UPDATE episodes statement"
         assert "tombstone_at" in update_stmts[0], "UPDATE missing tombstone_at"
         assert "now()" in update_stmts[0], "UPDATE missing now() for tombstone_at"
 
-    def test_update_sets_tombstone_reason(self) -> None:
+    def test_update_sets_tombstone_reason(self, upgrade_sqls: list[str]) -> None:
         """The UPDATE sets tombstone_reason with the expected string."""
-        sqls = self._collect_execute_calls()
         update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
+            s for s in upgrade_sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
         ]
         assert update_stmts, "No UPDATE episodes statement"
         assert "tombstone_reason" in update_stmts[0], "UPDATE missing tombstone_reason"
         assert "bu-noocq" in update_stmts[0], "tombstone_reason missing bu-noocq issue ref"
         assert "bu-6t63s" in update_stmts[0], "tombstone_reason missing bu-6t63s issue ref"
 
-    def test_update_scoped_to_core_sessions_source(self) -> None:
+    def test_update_scoped_to_core_sessions_source(self, upgrade_sqls: list[str]) -> None:
         """The UPDATE's WHERE clause is scoped to source_name='core.sessions'."""
-        sqls = self._collect_execute_calls()
         update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
+            s for s in upgrade_sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
         ]
         assert update_stmts, "No UPDATE episodes statement"
         assert "core.sessions" in update_stmts[0], "UPDATE missing source_name='core.sessions'"
 
-    def test_update_excludes_already_tombstoned_rows(self) -> None:
+    def test_update_excludes_already_tombstoned_rows(self, upgrade_sqls: list[str]) -> None:
         """The WHERE clause includes tombstone_at IS NULL for idempotency."""
-        sqls = self._collect_execute_calls()
         update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
+            s for s in upgrade_sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
         ]
         assert update_stmts, "No UPDATE episodes statement"
         assert "tombstone_at IS NULL" in update_stmts[0], (
             "UPDATE missing tombstone_at IS NULL guard (idempotency)"
         )
 
-    def test_update_filters_exact_trigger_sources(self) -> None:
+    def test_update_filters_exact_trigger_sources(self, upgrade_sqls: list[str]) -> None:
         """The WHERE clause includes exact-match filter for known excluded sources."""
-        sqls = self._collect_execute_calls()
         update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
+            s for s in upgrade_sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
         ]
         assert update_stmts, "No UPDATE episodes statement"
         stmt = update_stmts[0]
         for src in ("tick", "qa", "healing"):
             assert src in stmt, f"Expected {src!r} in UPDATE WHERE clause"
 
-    def test_update_filters_schedule_prefix(self) -> None:
+    def test_update_filters_schedule_prefix(self, upgrade_sqls: list[str]) -> None:
         """The WHERE clause includes a LIKE filter for 'schedule:%'."""
-        sqls = self._collect_execute_calls()
         update_stmts = [
-            s for s in sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
+            s for s in upgrade_sqls if s.strip().upper().startswith("UPDATE") and "episodes" in s
         ]
         assert update_stmts, "No UPDATE episodes statement"
         assert "schedule:" in update_stmts[0], "UPDATE WHERE clause missing schedule: prefix"
@@ -265,45 +291,35 @@ class TestUpgradeSQLShape:
 class TestDowngradeSQLShape:
     """Verify the SQL emitted by downgrade() correctly reverses the schema change."""
 
-    def _collect_execute_calls(self) -> list[str]:
-        """Run downgrade() with op mocked; return SQL strings."""
-        mod = _load_migration()
-        calls_collected: list[str] = []
-        mock_op = MagicMock()
-        mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
-        with patch.object(mod, "op", mock_op):
-            mod.downgrade()
-        return calls_collected
-
-    def test_drops_tombstone_reason_from_episodes(self) -> None:
+    def test_drops_tombstone_reason_from_episodes(self, downgrade_sqls: list[str]) -> None:
         """downgrade() drops tombstone_reason column from episodes."""
-        sqls = self._collect_execute_calls()
         drop_stmts = [
-            s for s in sqls if "episodes" in s and "tombstone_reason" in s and "DROP COLUMN" in s
+            s
+            for s in downgrade_sqls
+            if "episodes" in s and "tombstone_reason" in s and "DROP COLUMN" in s
         ]
         assert drop_stmts, "No DROP COLUMN tombstone_reason from episodes in downgrade SQL"
 
-    def test_drops_tombstone_reason_from_point_events(self) -> None:
+    def test_drops_tombstone_reason_from_point_events(self, downgrade_sqls: list[str]) -> None:
         """downgrade() drops tombstone_reason column from point_events."""
-        sqls = self._collect_execute_calls()
         drop_stmts = [
             s
-            for s in sqls
+            for s in downgrade_sqls
             if "point_events" in s and "tombstone_reason" in s and "DROP COLUMN" in s
         ]
         assert drop_stmts, "No DROP COLUMN tombstone_reason from point_events in downgrade SQL"
 
-    def test_drop_column_uses_if_exists(self) -> None:
+    def test_drop_column_uses_if_exists(self, downgrade_sqls: list[str]) -> None:
         """DROP COLUMN statements use IF EXISTS for safety."""
-        sqls = self._collect_execute_calls()
-        drop_col_stmts = [s for s in sqls if "DROP COLUMN" in s and "tombstone_reason" in s]
+        drop_col_stmts = [
+            s for s in downgrade_sqls if "DROP COLUMN" in s and "tombstone_reason" in s
+        ]
         for stmt in drop_col_stmts:
             assert "IF EXISTS" in stmt, f"DROP COLUMN missing IF EXISTS guard:\n{stmt}"
 
-    def test_downgrade_does_not_emit_update(self) -> None:
+    def test_downgrade_does_not_emit_update(self, downgrade_sqls: list[str]) -> None:
         """downgrade() must NOT emit any UPDATE statement (tombstones are not reversed)."""
-        sqls = self._collect_execute_calls()
-        update_stmts = [s for s in sqls if s.strip().upper().startswith("UPDATE")]
+        update_stmts = [s for s in downgrade_sqls if s.strip().upper().startswith("UPDATE")]
         assert not update_stmts, (
             f"downgrade() must not reverse tombstones, but found UPDATE:\n{update_stmts}"
         )
