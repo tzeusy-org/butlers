@@ -638,17 +638,28 @@ async def run_relationship_briefing_contribution(
             due_count += 1
 
     # --- Interaction gaps exceeding stay_in_touch threshold ---
+    # Interactions are stored as SPO facts with predicate LIKE 'interaction_%'.
     gap_rows = await pool.fetch(
         """
-        SELECT c.name, c.stay_in_touch_days,
-               EXTRACT(DAY FROM now() - MAX(i.occurred_at)) AS days_since_last
+        SELECT
+            COALESCE(
+                NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
+                c.nickname,
+                'Unknown'
+            ) AS name,
+            c.stay_in_touch_days,
+            EXTRACT(DAY FROM now() - MAX(f.valid_at)) AS days_since_last
         FROM contacts c
-        JOIN interactions i ON i.contact_id = c.id
+        JOIN facts f
+            ON f.subject = 'contact:' || c.id::text
+           AND f.predicate LIKE 'interaction_%'
+           AND f.scope = 'relationship'
+           AND f.validity = 'active'
         WHERE c.stay_in_touch_days IS NOT NULL
-          AND c.archived_at IS NULL
-        GROUP BY c.id, c.name, c.stay_in_touch_days
-        HAVING EXTRACT(DAY FROM now() - MAX(i.occurred_at)) > c.stay_in_touch_days
-        ORDER BY (EXTRACT(DAY FROM now() - MAX(i.occurred_at)) - c.stay_in_touch_days) DESC
+          AND c.listed = true
+        GROUP BY c.id, c.first_name, c.last_name, c.nickname, c.stay_in_touch_days
+        HAVING EXTRACT(DAY FROM now() - MAX(f.valid_at)) > c.stay_in_touch_days
+        ORDER BY (EXTRACT(DAY FROM now() - MAX(f.valid_at)) - c.stay_in_touch_days) DESC
         LIMIT 5
         """,
     )

@@ -505,7 +505,7 @@ async def _compute_salience(
         relationships = {}
 
     # Batch query 3: Interaction counts and recency (last 90 days).
-    # Interactions are stored as SPO facts (predicate='interaction', valid_at=occurred_at).
+    # Interactions are stored as SPO facts (predicate='interaction_{type}', valid_at=occurred_at).
     try:
         interaction_rows = await pool.fetch(
             """
@@ -516,7 +516,7 @@ async def _compute_salience(
             FROM contacts c
             LEFT JOIN facts f
                 ON f.entity_id = c.entity_id
-               AND f.predicate = 'interaction'
+               AND f.predicate LIKE 'interaction_%'
                AND f.scope = 'relationship'
                AND f.validity = 'active'
             WHERE c.id = ANY($1)
@@ -542,7 +542,7 @@ async def _compute_salience(
                 c.id AS contact_id,
                 COUNT(*) FILTER (
                     WHERE f.predicate != 'contact_note'
-                      AND f.predicate != 'interaction'
+                      AND f.predicate NOT LIKE 'interaction_%'
                 ) as fact_count,
                 COUNT(*) FILTER (
                     WHERE f.predicate = 'contact_note'
@@ -722,13 +722,13 @@ async def _boost_single_by_context(
     except asyncpg.PostgresError:
         pass
 
-    # Interactions (predicate='interaction')
+    # Interactions (predicate LIKE 'interaction_%')
     try:
         interaction_rows = await pool.fetch(
             """
             SELECT content FROM facts
             WHERE entity_id = $1
-              AND predicate = 'interaction'
+              AND predicate LIKE 'interaction_%'
               AND scope = 'relationship'
               AND validity = 'active'
               AND content IS NOT NULL

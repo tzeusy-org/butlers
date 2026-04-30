@@ -190,6 +190,7 @@ async def _insert_interaction_fact(
     *,
     contact_id: str,
     occurred_at: datetime | None = None,
+    interaction_type: str = "call",
 ) -> str:
     """Insert an interaction fact for a contact."""
     if occurred_at is None:
@@ -198,10 +199,11 @@ async def _insert_interaction_fact(
     await pool.execute(
         """
         INSERT INTO facts (id, subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1::uuid, $2, 'interaction', 'had a chat', 'relationship', 'active', $3)
+        VALUES ($1::uuid, $2, $3, 'had a chat', 'relationship', 'active', $4)
         """,
         fact_id,
         f"contact:{contact_id}",
+        f"interaction_{interaction_type}",
         occurred_at,
     )
     return fact_id
@@ -1444,17 +1446,18 @@ async def test_interaction_sync_logs_telegram_interaction(provisioned_postgres_p
 
         assert result["logged"] == 1
         assert result["errors"] == 0
-        # Verify a fact was created
+        # Verify a fact was created with the typed predicate
         rows = await pool.fetch(
             """
-            SELECT id, metadata FROM facts
+            SELECT id, predicate, metadata FROM facts
             WHERE subject = $1
-              AND predicate = 'interaction'
+              AND predicate LIKE 'interaction_%'
               AND scope = 'relationship'
             """,
             f"contact:{contact_id}",
         )
         assert len(rows) == 1
+        assert rows[0]["predicate"] == "interaction_telegram_user_client"
         import json as _json
 
         meta = rows[0]["metadata"]
@@ -1525,7 +1528,7 @@ async def test_interaction_sync_different_channels_logged_separately(
 
         assert result["logged"] == 2
         rows = await pool.fetch(
-            "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+            "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
             f"contact:{contact_id}",
         )
         assert len(rows) == 2
@@ -1608,7 +1611,7 @@ async def test_interaction_sync_idempotent_second_run(provisioned_postgres_pool)
 
         # Only one fact should exist
         rows = await pool.fetch(
-            "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+            "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
             f"contact:{contact_id}",
         )
         assert len(rows) == 1
@@ -1849,17 +1852,18 @@ async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_p
         assert result["logged"] == 1
         assert result["errors"] == 0
 
-        # Verify the fact was written correctly
+        # Verify the fact was written correctly with typed predicate
         rows = await pool.fetch(
             """
-            SELECT id, metadata FROM facts
+            SELECT id, predicate, metadata FROM facts
             WHERE subject = $1
-              AND predicate = 'interaction'
+              AND predicate LIKE 'interaction_%'
               AND scope = 'relationship'
             """,
             f"contact:{contact_id}",
         )
         assert len(rows) == 1
+        assert rows[0]["predicate"] == "interaction_calendar_event"
         meta = rows[0]["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta)
@@ -2083,7 +2087,7 @@ async def test_interaction_sync_calendar_multiple_attendees_same_event(
 
         for cid in (contact_a, contact_b):
             rows = await pool.fetch(
-                "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+                "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
                 f"contact:{cid}",
             )
             assert len(rows) == 1
@@ -2148,7 +2152,7 @@ async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postg
         assert result2["logged"] == 0  # duplicate skipped
 
         rows = await pool.fetch(
-            "SELECT id FROM facts WHERE subject = $1 AND predicate = 'interaction'",
+            "SELECT id FROM facts WHERE subject = $1 AND predicate LIKE 'interaction_%'",
             f"contact:{contact_id}",
         )
         assert len(rows) == 1

@@ -304,7 +304,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         FROM contacts c
         LEFT JOIN facts f
             ON f.subject = 'contact:' || c.id::text
-           AND f.predicate = 'interaction'
+           AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE c.listed = true
@@ -521,7 +521,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         FROM contacts c
         LEFT JOIN facts f
             ON f.subject = 'contact:' || c.id::text
-           AND f.predicate = 'interaction'
+           AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE c.listed = true
