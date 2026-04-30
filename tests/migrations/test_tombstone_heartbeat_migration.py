@@ -57,35 +57,29 @@ class TestMigrationFileAndChain:
         """007_tombstone_heartbeat_episodes.py exists at expected path."""
         assert _MIGRATION_PATH.exists(), f"Migration file not found: {_MIGRATION_PATH}"
 
-    def test_revision_id(self) -> None:
+    def test_revision_id(self, migration_mod) -> None:
         """Revision is chronicler_007."""
-        mod = _load_migration()
-        assert mod.revision == "chronicler_007"
+        assert migration_mod.revision == "chronicler_007"
 
-    def test_down_revision(self) -> None:
+    def test_down_revision(self, migration_mod) -> None:
         """down_revision points to chronicler_006."""
-        mod = _load_migration()
-        assert mod.down_revision == "chronicler_006"
+        assert migration_mod.down_revision == "chronicler_006"
 
-    def test_branch_labels_none(self) -> None:
+    def test_branch_labels_none(self, migration_mod) -> None:
         """Non-root migrations must not declare branch_labels."""
-        mod = _load_migration()
-        assert mod.branch_labels is None
+        assert migration_mod.branch_labels is None
 
-    def test_depends_on_none(self) -> None:
+    def test_depends_on_none(self, migration_mod) -> None:
         """No cross-chain dependency declared."""
-        mod = _load_migration()
-        assert mod.depends_on is None
+        assert migration_mod.depends_on is None
 
-    def test_upgrade_callable(self) -> None:
+    def test_upgrade_callable(self, migration_mod) -> None:
         """upgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "upgrade", None))
+        assert callable(getattr(migration_mod, "upgrade", None))
 
-    def test_downgrade_callable(self) -> None:
+    def test_downgrade_callable(self, migration_mod) -> None:
         """downgrade() is a callable."""
-        mod = _load_migration()
-        assert callable(getattr(mod, "downgrade", None))
+        assert callable(getattr(migration_mod, "downgrade", None))
 
     def test_migration_ordered_after_006(self) -> None:
         """007_* must sort after 006_* in the migrations directory."""
@@ -112,39 +106,35 @@ class TestMigrationFileAndChain:
 class TestExclusionConstantsImport:
     """The migration imports constants from sessions.py (not copy-paste)."""
 
-    def test_excluded_trigger_sources_imported_from_sessions(self) -> None:
+    def test_excluded_trigger_sources_imported_from_sessions(self, migration_mod) -> None:
         """EXCLUDED_TRIGGER_SOURCES is imported from adapters.sessions."""
         from butlers.chronicler.adapters.sessions import EXCLUDED_TRIGGER_SOURCES as authoritative
 
-        mod = _load_migration()
         # The migration references the same frozenset object (or identical value).
-        assert mod.EXCLUDED_TRIGGER_SOURCES == authoritative, (
+        assert migration_mod.EXCLUDED_TRIGGER_SOURCES == authoritative, (
             "Migration's EXCLUDED_TRIGGER_SOURCES diverges from sessions.py"
         )
 
-    def test_excluded_trigger_source_prefix_imported_from_sessions(self) -> None:
+    def test_excluded_trigger_source_prefix_imported_from_sessions(self, migration_mod) -> None:
         """EXCLUDED_TRIGGER_SOURCE_PREFIX is imported from adapters.sessions."""
         from butlers.chronicler.adapters.sessions import (
             EXCLUDED_TRIGGER_SOURCE_PREFIX as authoritative,
         )
 
-        mod = _load_migration()
-        assert mod.EXCLUDED_TRIGGER_SOURCE_PREFIX == authoritative, (
+        assert migration_mod.EXCLUDED_TRIGGER_SOURCE_PREFIX == authoritative, (
             "Migration's EXCLUDED_TRIGGER_SOURCE_PREFIX diverges from sessions.py"
         )
 
-    def test_known_exact_sources_present(self) -> None:
+    def test_known_exact_sources_present(self, migration_mod) -> None:
         """Known exact-match sources (tick, qa, healing) are in the exclusion set."""
-        mod = _load_migration()
         for src in ("tick", "qa", "healing"):
-            assert src in mod.EXCLUDED_TRIGGER_SOURCES, (
+            assert src in migration_mod.EXCLUDED_TRIGGER_SOURCES, (
                 f"Expected {src!r} in EXCLUDED_TRIGGER_SOURCES"
             )
 
-    def test_schedule_prefix_is_schedule_colon(self) -> None:
+    def test_schedule_prefix_is_schedule_colon(self, migration_mod) -> None:
         """EXCLUDED_TRIGGER_SOURCE_PREFIX must equal 'schedule:'."""
-        mod = _load_migration()
-        assert mod.EXCLUDED_TRIGGER_SOURCE_PREFIX == "schedule:"
+        assert migration_mod.EXCLUDED_TRIGGER_SOURCE_PREFIX == "schedule:"
 
 
 def _collect_upgrade_calls() -> list[str]:
@@ -183,6 +173,16 @@ def _collect_downgrade_calls() -> list[str]:
     with patch.object(mod, "op", mock_op):
         mod.downgrade()
     return calls_collected
+
+
+@pytest.fixture(scope="module")
+def migration_mod():
+    """Loaded migration module — module-scoped, one load per worker.
+
+    Shared across TestMigrationFileAndChain and TestExclusionConstantsImport to
+    avoid repeated importlib loads for cheap attribute reads.
+    """
+    return _load_migration()
 
 
 @pytest.fixture(scope="module")
