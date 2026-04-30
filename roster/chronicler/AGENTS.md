@@ -107,6 +107,44 @@ answers, prefer:
 Silence is acceptable only for ingestion-triggered or scheduled-no-op
 paths (your adapters are background, not interactive).
 
+# Privacy Contract (bu-6c5i6)
+
+## Three privacy levels
+
+| Privacy | Dashboard behavior | Payload fields | Envelope (start, end, duration) |
+|---------|-------------------|----------------|----------------------------------|
+| `normal` | Full render: title, source, all fields visible | Visible | Visible |
+| `sensitive` | Hatched bar in Gantt; envelope shown; payload masked | **Masked** | **Always visible** |
+| `restricted` | Episode hidden at server layer; never reaches the frontend | Hidden | Hidden |
+
+**Envelope** = `start_at`, `end_at`, `category`, `duration`  
+**Payload** = `title`, `source_name`, `lat`/`lon`, `context_name`, and other identifying fields
+
+## Adapter defaults
+
+- **`spotify.session_summary`**: `privacy=normal` — track names and duration are
+  not sensitive. Per-row overrides remain available via the correction mechanism.
+- **`owntracks.points` (point events)**: `privacy=sensitive` — GPS coordinates
+  are personally identifying.
+- **`owntracks.points` (movement episodes)**: `privacy=sensitive` — the travel
+  trajectory (start/end coordinates, point count) is personally identifying.
+
+## Frontend contract
+
+- Gantt swimlane: every non-restricted episode renders a bar in its lane.
+  Sensitive bars use a hatched fill and show `"<Category>: <duration>"` in
+  the tooltip (e.g. "Travel: 38 min"). The `canonical_title` is never exposed
+  for sensitive episodes.
+- EpisodeDrawer: sensitive episodes show the envelope (Start, End, Duration)
+  but mask title, source, and all payload-level fields.
+- Restricted episodes are filtered server-side and never returned by the API.
+
+## Backfill (core_085)
+
+Existing 13 Spotify rows created with the old `privacy=sensitive` default
+are backfilled to `privacy=normal` via Alembic migration `core_085`
+(`alembic/versions/core/core_085_backfill_spotify_owntracks_privacy.py`).
+
 # Notes to self
 
 ## CoreSessionsAdapter — episode title-resolution rules (bu-fkqv0)

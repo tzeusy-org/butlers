@@ -12,7 +12,11 @@
 // with a dashed right edge + arrow indicator.
 //
 // Sensitive episodes (canonical_privacy = "sensitive") are rendered as
-// masked (hatched) bars and show only "Private activity" in the tooltip.
+// masked (hatched) bars and show only the duration + lane label in the
+// tooltip (e.g. "Travel: 38 min"). The title and payload are masked.
+// Restricted episodes (canonical_privacy = "restricted") remain fully
+// hidden at the server layer and never reach the frontend.
+// See bu-6c5i6 privacy contract in roster/chronicler/AGENTS.md.
 //
 // A hover tooltip (Radix UI primitive) surfaces: title, source, precision,
 // and duration. Drilldown is via clicking the bar (opens EpisodeDrawer);
@@ -361,7 +365,12 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
       >
         {isSensitive ? (
           <>
-            <p className="font-medium">Private activity</p>
+            <p className="font-medium" data-testid="gantt-tooltip-sensitive-label">
+              {LANE_TAXONOMY[category].label}: {durationLabel}
+            </p>
+            <p className="opacity-70">
+              {startLabel} – {endLabel}
+            </p>
             <p className="text-yellow-600 mt-0.5">Sensitive</p>
           </>
         ) : (
