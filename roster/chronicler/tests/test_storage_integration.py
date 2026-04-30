@@ -10,7 +10,9 @@ with other butler migration tests (see ``tests/migrations/``).
 
 from __future__ import annotations
 
+import importlib.util as _importlib_util
 from datetime import UTC, datetime, timedelta
+from pathlib import Path as _Path
 from uuid import uuid4
 
 import pytest
@@ -52,7 +54,14 @@ from butlers.chronicler.storage import (
     upsert_point_event,
 )
 
-from ._inline_ddl import make_sessions_table_ddl
+_inline_ddl_spec = _importlib_util.spec_from_file_location(
+    "_inline_ddl",
+    _Path(__file__).parent / "_inline_ddl.py",
+)
+assert _inline_ddl_spec is not None and _inline_ddl_spec.loader is not None
+_inline_ddl_mod = _importlib_util.module_from_spec(_inline_ddl_spec)
+_inline_ddl_spec.loader.exec_module(_inline_ddl_mod)  # type: ignore[union-attr]
+make_sessions_table_ddl = _inline_ddl_mod.make_sessions_table_ddl
 
 pytestmark = [
     pytest.mark.integration,
