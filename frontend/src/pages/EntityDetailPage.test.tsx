@@ -84,6 +84,37 @@ function renderPage(): string {
   );
 }
 
+describe("EntityDetailPage — relationship activity link", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders the relationship activity link for entity_type='person'", () => {
+    setEntityState({ ...BASE_ENTITY, entity_type: "person" });
+    const html = renderPage();
+    expect(html).toContain("View relationship activity");
+    expect(html).toContain("/butlers/relationship/entities/entity-001");
+  });
+
+  it("does not render the relationship activity link for entity_type='organization'", () => {
+    setEntityState({ ...BASE_ENTITY, entity_type: "organization" });
+    const html = renderPage();
+    expect(html).not.toContain("View relationship activity");
+  });
+
+  it("does not render the relationship activity link for entity_type='place'", () => {
+    setEntityState({ ...BASE_ENTITY, entity_type: "place" });
+    const html = renderPage();
+    expect(html).not.toContain("View relationship activity");
+  });
+
+  it("does not render the relationship activity link for entity_type='other'", () => {
+    setEntityState({ ...BASE_ENTITY, entity_type: "other" });
+    const html = renderPage();
+    expect(html).not.toContain("View relationship activity");
+  });
+});
+
 describe("EntityDetailPage — google_oauth_refresh visibility", () => {
   beforeEach(() => {
     vi.resetAllMocks();
