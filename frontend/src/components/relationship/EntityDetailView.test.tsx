@@ -103,27 +103,27 @@ function setAllTabsEmpty() {
   vi.mocked(useEntityLinkedContacts).mockReturnValue({
     data: [],
     isLoading: false,
-  } as ReturnType<typeof useEntityLinkedContacts>);
+  } as unknown as ReturnType<typeof useEntityLinkedContacts>);
   vi.mocked(useEntityNotes).mockReturnValue({
     data: [],
     isLoading: false,
-  } as ReturnType<typeof useEntityNotes>);
+  } as unknown as ReturnType<typeof useEntityNotes>);
   vi.mocked(useEntityInteractions).mockReturnValue({
     data: [],
     isLoading: false,
-  } as ReturnType<typeof useEntityInteractions>);
+  } as unknown as ReturnType<typeof useEntityInteractions>);
   vi.mocked(useEntityGifts).mockReturnValue({
     data: [],
     isLoading: false,
-  } as ReturnType<typeof useEntityGifts>);
+  } as unknown as ReturnType<typeof useEntityGifts>);
   vi.mocked(useEntityLoans).mockReturnValue({
     data: [],
     isLoading: false,
-  } as ReturnType<typeof useEntityLoans>);
+  } as unknown as ReturnType<typeof useEntityLoans>);
   vi.mocked(useEntityTimeline).mockReturnValue({
     data: [],
     isLoading: false,
-  } as ReturnType<typeof useEntityTimeline>);
+  } as unknown as ReturnType<typeof useEntityTimeline>);
 }
 
 // ---------------------------------------------------------------------------
