@@ -286,3 +286,46 @@ used while the API call is in-flight or returns an error.
   `Date.toLocaleString` or `Date.toLocaleTimeString`.
 - Day boundaries (start-of-day / end-of-day) use `startOfDayInTz` / `endOfDayInTz`
   from `frontend/src/components/chronicles/tz-format.ts`.
+
+## Heartbeat tombstone migration verification (chronicler_007 / bu-6t63s)
+
+Migration `chronicler_007` (`roster/chronicler/migrations/007_tombstone_heartbeat_episodes.py`)
+retroactively tombstones any pre-existing `chronicler.episodes` rows produced by
+butler-internal operational sessions (tick, qa, healing, schedule:*).
+
+**Verify the migration ran cleanly:**
+
+```sql
+-- Should return zero rows after chronicler_007 has been applied.
+SELECT
+    payload->>'trigger_source' AS trigger_source,
+    COUNT(*) AS remaining
+FROM chronicler.episodes
+WHERE source_name = 'core.sessions'
+  AND tombstone_at IS NULL
+  AND (
+      payload->>'trigger_source' IN ('tick', 'qa', 'healing')
+      OR payload->>'trigger_source' LIKE 'schedule:%'
+  )
+GROUP BY 1
+ORDER BY 1;
+```
+
+**Verify tombstoned rows carry the expected reason:**
+
+```sql
+SELECT
+    payload->>'trigger_source' AS trigger_source,
+    tombstone_reason,
+    COUNT(*) AS n
+FROM chronicler.episodes
+WHERE source_name = 'core.sessions'
+  AND tombstone_at IS NOT NULL
+  AND tombstone_reason LIKE '%bu-6t63s%'
+GROUP BY 1, 2
+ORDER BY 1;
+```
+
+Both queries run against the `chronicler` schema. If the first returns non-zero
+rows, the migration has not yet run or was skipped — run `alembic upgrade chronicler@head`
+to apply it.

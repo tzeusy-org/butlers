@@ -136,6 +136,7 @@ async def _apply_chronicler_schema(pool) -> None:
                 CHECK (privacy IN ('normal', 'sensitive', 'restricted')),
             retention_days INTEGER,
             tombstone_at TIMESTAMPTZ,
+            tombstone_reason TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref)
@@ -157,6 +158,7 @@ async def _apply_chronicler_schema(pool) -> None:
                 CHECK (privacy IN ('normal', 'sensitive', 'restricted')),
             retention_days INTEGER,
             tombstone_at TIMESTAMPTZ,
+            tombstone_reason TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (source_name, source_ref),
