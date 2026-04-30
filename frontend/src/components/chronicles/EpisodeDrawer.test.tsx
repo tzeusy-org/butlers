@@ -224,8 +224,36 @@ describe("EpisodeDrawerContent episode detail", () => {
     )
     expect(html).toContain("episode-drawer-content")
     expect(html).toContain("Deep work block")
-    expect(html).toContain("work") // source_name
+    expect(html).toContain("work") // source_name appears in footnote
     expect(html).toContain("minute") // precision badge
+  })
+
+  it("renders canonical_title as primary heading with episode-primary-title testid", () => {
+    reset()
+    _episodeData = makeEpisode({ canonical_title: "Conversation with Alice" })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(
+      <EpisodeDrawerContent episodeId="ep-test-id" />,
+    )
+    expect(html).toContain("episode-primary-title")
+    expect(html).toContain("Conversation with Alice")
+  })
+
+  it("renders source_name as a subordinate footnote, not the primary line", () => {
+    reset()
+    _episodeData = makeEpisode({ canonical_title: "Conversation with Alice" })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(
+      <EpisodeDrawerContent episodeId="ep-test-id" />,
+    )
+    // Source footnote present
+    expect(html).toContain("episode-source-footnote")
+    // Primary title renders BEFORE (higher position in HTML) than the footnote
+    const primaryIdx = html.indexOf("Conversation with Alice")
+    const footnoteIdx = html.indexOf("episode-source-footnote")
+    expect(primaryIdx).toBeLessThan(footnoteIdx)
   })
 })
 

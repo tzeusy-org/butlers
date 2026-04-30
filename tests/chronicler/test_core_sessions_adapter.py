@@ -1,4 +1,4 @@
-"""Tests for the CoreSessionsAdapter trigger_source filter.
+"""Tests for the CoreSessionsAdapter trigger_source filter and title resolution.
 
 Covers:
 - EXCLUDED_TRIGGER_SOURCES constant contains expected values.
@@ -9,6 +9,8 @@ Covers:
 - deadline:* rows are NOT excluded (decision: bu-ve8ne — user-proxied work).
 - Watermark advances correctly across filtered rows (watermark math uses only
   included rows returned by the query, not the raw unfiltered table).
+- Title resolution (bu-fkqv0): route+contact→"Conversation with X",
+  route+no-contact→"Conversation via {channel}", manual task, legacy fallback.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
@@ -43,6 +46,7 @@ def _make_row(
     success: bool = True,
     duration_ms: int | None = None,
     model: str = "claude-sonnet-4-6",
+    ingestion_event_id: object = None,
 ) -> dict:
     return {
         "id": session_id,
@@ -51,6 +55,7 @@ def _make_row(
         "trigger_source": trigger_source,
         "success": success,
         "request_id": None,
+        "ingestion_event_id": ingestion_event_id,
         "duration_ms": duration_ms,
         "model": model,
     }
@@ -472,3 +477,228 @@ async def test_deadline_rows_are_projected() -> None:
     assert result.rows_projected == 1
     assert len(projected_source_refs) == 1
     assert "mybutler.sessions:99" in projected_source_refs[0]
+
+
+# ---------------------------------------------------------------------------
+# Title resolution (bu-fkqv0) — unit tests for _compute_episode_title
+# ---------------------------------------------------------------------------
+
+
+def test_title_route_with_display_name() -> None:
+    """trigger_source='route' with resolved contact → 'Conversation with {name}'."""
+    title = CoreSessionsAdapter._compute_episode_title(
+        "relationship", "route", ("Alice", "telegram")
+    )
+    assert title == "Conversation with Alice"
+
+
+def test_title_route_unresolved_with_channel() -> None:
+    """trigger_source='route' with unresolved contact → 'Conversation via {channel}'."""
+    title = CoreSessionsAdapter._compute_episode_title("relationship", "route", (None, "telegram"))
+    assert title == "Conversation via telegram"
+
+
+def test_title_route_unresolved_no_channel() -> None:
+    """trigger_source='route' with no contact and no channel → 'Conversation via unknown channel'."""
+    title = CoreSessionsAdapter._compute_episode_title("relationship", "route", (None, None))
+    assert title == "Conversation via unknown channel"
+
+
+def test_title_trigger_source_trigger() -> None:
+    """trigger_source='trigger' → '{schema}: manual task'."""
+    title = CoreSessionsAdapter._compute_episode_title("lifestyle", "trigger", (None, None))
+    assert title == "lifestyle: manual task"
+
+
+def test_title_trigger_source_external() -> None:
+    """trigger_source='external' → '{schema}: manual task'."""
+    title = CoreSessionsAdapter._compute_episode_title("health", "external", (None, None))
+    assert title == "health: manual task"
+
+
+def test_title_trigger_source_dashboard() -> None:
+    """trigger_source='dashboard' → '{schema}: manual task'."""
+    title = CoreSessionsAdapter._compute_episode_title("chronicler", "dashboard", (None, None))
+    assert title == "chronicler: manual task"
+
+
+def test_title_fallback_null_trigger_source() -> None:
+    """NULL trigger_source → '{schema} session' (legacy fallback)."""
+    title = CoreSessionsAdapter._compute_episode_title("relationship", None, (None, None))
+    assert title == "relationship session"
+
+
+def test_title_fallback_unrecognised_trigger_source() -> None:
+    """Unrecognised trigger_source → '{schema} session' (legacy fallback)."""
+    title = CoreSessionsAdapter._compute_episode_title(
+        "mybutler", "deadline:passport", (None, None)
+    )
+    assert title == "mybutler session"
+
+
+# ---------------------------------------------------------------------------
+# Title resolution (bu-fkqv0) — regression test: old behaviour was the bug
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_session_title_contains_display_name_regression() -> None:
+    """Regression test (bu-fkqv0): route session with resolved contact must NOT
+    produce '{schema} session' title — it must contain the contact's display name.
+
+    The BEFORE state (the bug): every episode title was f'{schema} session'.
+    The AFTER state (the fix): trigger_source='route' with a resolved contact
+    produces 'Conversation with {display_name}'.
+
+    This test seeds a route session with an ingestion_event_id, mocks the
+    contact-resolution pool to return 'Alice' from the JOIN, and asserts that
+    the projected episode title is 'Conversation with Alice' (not
+    'relationship session').
+    """
+    event_uuid = UUID("01900000-0000-7000-8000-000000000001")
+
+    row = _make_row(
+        session_id=200,
+        started_at=_NOW,
+        completed_at=_NOW + timedelta(minutes=5),
+        trigger_source="route",
+        ingestion_event_id=event_uuid,
+    )
+
+    # Build source pool that returns the session row AND answers the
+    # contact-resolution query.
+    source_conn = AsyncMock()
+    source_conn.fetchval = AsyncMock(return_value=True)  # table-exists check
+    source_conn.fetch = AsyncMock(side_effect=_make_source_fetch(row, event_uuid))
+    source_pool = AsyncMock()
+    source_pool.acquire = MagicMock(return_value=_AsyncCtx(source_conn))
+
+    cp = _chronicler_pool()
+    adapter = _adapter("relationship")
+
+    captured_titles: list[str] = []
+
+    async def _capture_upsert_episode(conn: object, episode: Episode) -> Episode:
+        captured_titles.append(episode.title)
+        return Episode(**{**episode.__dict__, "id": uuid.uuid4()})
+
+    async def _fake_upsert_point_event(conn: object, event: PointEvent) -> PointEvent:
+        return PointEvent(**{**event.__dict__, "id": uuid.uuid4()})
+
+    with (
+        patch("butlers.chronicler.adapters.sessions.get_checkpoint_subsource", return_value=None),
+        patch("butlers.chronicler.adapters.sessions.upsert_checkpoint_subsource"),
+        patch(
+            "butlers.chronicler.adapters.sessions.upsert_episode",
+            side_effect=_capture_upsert_episode,
+        ),
+        patch(
+            "butlers.chronicler.adapters.sessions.upsert_point_event",
+            side_effect=_fake_upsert_point_event,
+        ),
+        patch("butlers.chronicler.adapters.sessions.link_event_to_episode"),
+    ):
+        result = await adapter.project(source_pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert len(captured_titles) == 1
+    # Must NOT be the old buggy title.
+    assert captured_titles[0] != "relationship session"
+    # Must contain the contact display name.
+    assert "Alice" in captured_titles[0]
+    assert captured_titles[0] == "Conversation with Alice"
+
+
+@pytest.mark.asyncio
+async def test_route_session_unresolved_contact_falls_back_to_channel() -> None:
+    """When contact cannot be resolved, title must be 'Conversation via {channel}'.
+
+    Explicit fallback per bu-fkqv0 AC#4 / engineering-bar "Prefer fail-fast
+    over silent fallback": the channel name is surfaced, not silently dropped.
+    """
+    event_uuid = UUID("01900000-0000-7000-8000-000000000002")
+
+    row = _make_row(
+        session_id=201,
+        started_at=_NOW,
+        completed_at=_NOW + timedelta(minutes=3),
+        trigger_source="route",
+        ingestion_event_id=event_uuid,
+    )
+
+    # Contact-resolution returns (display_name=None, channel="telegram").
+    source_conn = AsyncMock()
+    source_conn.fetchval = AsyncMock(return_value=True)
+    source_conn.fetch = AsyncMock(
+        side_effect=_make_source_fetch(row, event_uuid, display_name=None, channel="telegram")
+    )
+    source_pool = AsyncMock()
+    source_pool.acquire = MagicMock(return_value=_AsyncCtx(source_conn))
+
+    cp = _chronicler_pool()
+    adapter = _adapter("relationship")
+
+    captured_titles: list[str] = []
+
+    async def _capture_upsert_episode(conn: object, episode: Episode) -> Episode:
+        captured_titles.append(episode.title)
+        return Episode(**{**episode.__dict__, "id": uuid.uuid4()})
+
+    async def _fake_upsert_point_event(conn: object, event: PointEvent) -> PointEvent:
+        return PointEvent(**{**event.__dict__, "id": uuid.uuid4()})
+
+    with (
+        patch("butlers.chronicler.adapters.sessions.get_checkpoint_subsource", return_value=None),
+        patch("butlers.chronicler.adapters.sessions.upsert_checkpoint_subsource"),
+        patch(
+            "butlers.chronicler.adapters.sessions.upsert_episode",
+            side_effect=_capture_upsert_episode,
+        ),
+        patch(
+            "butlers.chronicler.adapters.sessions.upsert_point_event",
+            side_effect=_fake_upsert_point_event,
+        ),
+        patch("butlers.chronicler.adapters.sessions.link_event_to_episode"),
+    ):
+        await adapter.project(source_pool, chronicler_pool=cp, since=None)
+
+    assert captured_titles == ["Conversation via telegram"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers for title-resolution integration tests
+# ---------------------------------------------------------------------------
+
+
+def _make_source_fetch(
+    row: dict,
+    event_uuid: UUID,
+    display_name: str | None = "Alice",
+    channel: str = "telegram",
+) -> object:
+    """Build a side_effect for conn.fetch that returns:
+    - First call (sessions SELECT):  [row]
+    - Second call (contact JOIN):    [{event_id, channel, display_name}]
+    """
+    call_count = 0
+
+    contact_row_mock = MagicMock(
+        **{
+            "event_id": event_uuid,
+            "channel": channel,
+            "display_name": display_name,
+            "__getitem__": lambda s, k, _d={"event_id": event_uuid, "channel": channel, "display_name": display_name}: (
+                _d[k]
+            ),
+        }
+    )
+
+    def _side_effect(*args: object, **kwargs: object) -> list:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [_make_mock_row(row)]
+        # Second call: contact-resolution JOIN
+        return [contact_row_mock]
+
+    return _side_effect

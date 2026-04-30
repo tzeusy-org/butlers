@@ -109,6 +109,47 @@ paths (your adapters are background, not interactive).
 
 # Notes to self
 
+## CoreSessionsAdapter — episode title-resolution rules (bu-fkqv0)
+
+`CoreSessionsAdapter._compute_episode_title` derives a human-readable title
+for each projected `work` episode.  The rules are applied in priority order:
+
+| Condition | Episode title |
+|-----------|--------------|
+| `trigger_source='route'` AND contact resolved | `Conversation with {display_name}` |
+| `trigger_source='route'` AND contact unresolved | `Conversation via {channel}` (e.g. `via telegram`) |
+| `trigger_source='route'` AND no channel | `Conversation via unknown channel` |
+| `trigger_source` in `trigger`, `external`, `dashboard` | `{schema}: manual task` |
+| `trigger_source` NULL or unrecognised | `{schema} session` *(legacy fallback)* |
+
+Contact resolution is performed by `_resolve_contacts`, which JOINs:
+
+```
+{schema}.sessions.ingestion_event_id
+  → public.ingestion_events.id
+  → public.contact_info(type=source_channel, value=source_sender_identity)
+  → public.contacts.name
+```
+
+The JOIN is guarded: if `public.ingestion_events` or the contact tables are
+absent (e.g. before migration), the adapter degrades to `(None, None)` and
+falls through to `'Conversation via unknown channel'` for route sessions.
+
+Only `trigger_source='route'` rows with a non-NULL `ingestion_event_id` are
+resolved; all other rows skip the JOIN entirely.
+
+The title is written to `chronicler.episodes.title`.  Because `source_ref` is
+`{schema}.sessions:{session_id}`, re-running the adapter with a reset watermark
+re-projects all titles idempotently in-place (no backfill migration needed for
+forward-projected rows; existing `{schema} session` rows from before this change
+require a watermark reset to be re-titled).
+
+**Backfill note (bu-fkqv0 follow-up):** Existing episodes titled `{schema} session`
+where the underlying session has a resolvable contact can be re-titled by resetting
+the per-schema watermark in `projection_checkpoints` to `NULL` and running the
+adapter.  This was not automated in the initial PR; track as a follow-up bead if
+needed.
+
 ## CoreSessionsAdapter — excluded trigger_source values
 
 `CoreSessionsAdapter` (`src/butlers/chronicler/adapters/sessions.py`) filters
