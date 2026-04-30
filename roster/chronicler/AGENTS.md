@@ -367,3 +367,53 @@ ORDER BY 1;
 Both queries run against the `chronicler` schema. If the first returns non-zero
 rows, the migration has not yet run or was skipped — run `alembic upgrade chronicler@head`
 to apply it.
+
+## Memory calendar episode tombstone migration (chronicler_008 / bu-aqqx0)
+
+Migration `chronicler_008` (`roster/chronicler/migrations/008_tombstone_memory_calendar_episodes.py`)
+retroactively tombstones pre-existing `chronicler.episodes` rows produced from
+butler-managed memory housekeeping tasks that were incorrectly projected as
+calendar events before bu-daaff (PR #1297).
+
+Affected titles (exact list): `memory_consolidation`, `memory_episode_cleanup`,
+`memory_purge_superseded`.  Source: `google_calendar.completed`.
+
+**Requires chronicler_007 to run first** (adds the `tombstone_reason` column).
+
+**Verify the migration ran cleanly:**
+
+```sql
+-- Should return zero rows after chronicler_008 has been applied.
+SELECT
+    title,
+    COUNT(*) AS remaining
+FROM chronicler.episodes
+WHERE source_name = 'google_calendar.completed'
+  AND tombstone_at IS NULL
+  AND title IN (
+      'memory_consolidation',
+      'memory_episode_cleanup',
+      'memory_purge_superseded'
+  )
+GROUP BY 1
+ORDER BY 1;
+```
+
+**Verify tombstoned rows carry the expected reason:**
+
+```sql
+SELECT
+    title,
+    tombstone_reason,
+    COUNT(*) AS n
+FROM chronicler.episodes
+WHERE source_name = 'google_calendar.completed'
+  AND tombstone_at IS NOT NULL
+  AND tombstone_reason LIKE '%bu-aqqx0%'
+GROUP BY 1, 2
+ORDER BY 1;
+```
+
+Both queries run against the `chronicler` schema. If the first returns non-zero
+rows, the migration has not yet run or was skipped — run `alembic upgrade chronicler@head`
+to apply it.
