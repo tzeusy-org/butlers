@@ -515,6 +515,7 @@ async def list_pending_contacts(
         ]
 
         _raw_meta = row["metadata"]
+        # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
         metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
         raw_roles = row["roles"]
         roles = list(raw_roles) if raw_roles else []
@@ -1059,6 +1060,7 @@ async def get_contact(
     ]
 
     _raw_meta = row["metadata"]
+    # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
     metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
 
     raw_roles = row["roles"]
@@ -1378,12 +1380,13 @@ async def confirm_contact(
         raise HTTPException(status_code=404, detail="Contact not found")
 
     _raw_meta = row["metadata"]
+    # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
     metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
     metadata.pop("needs_disambiguation", None)
 
     await pool.execute(
-        "UPDATE contacts SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
-        json.dumps(metadata),
+        "UPDATE contacts SET metadata = $1, updated_at = now() WHERE id = $2",
+        metadata,
         contact_id,
     )
 
@@ -2088,6 +2091,7 @@ async def get_entity(
     aliases = list(row["aliases"]) if row["aliases"] else []
     roles = list(row["roles"]) if row["roles"] else []
     _raw_meta = row["metadata"]
+    # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
     metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
 
     return EntityDetail(
@@ -2609,6 +2613,7 @@ async def list_entity_timeline(
             content=r["content"],
             valid_at=r["valid_at"],
             predicate=r["predicate"],
+            # JSONB codec contract: asyncpg decodes JSONB to dict; guard is defensive only.
             metadata=dict(r["metadata"]) if isinstance(r["metadata"], dict) else None,
         )
         for r in rows

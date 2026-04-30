@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -11,6 +12,49 @@ from urllib.parse import parse_qs, urlparse
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+
+def _jsonb_encoder(value: object) -> bytes:
+    """Encode a Python object to the JSONB binary wire format.
+
+    asyncpg's binary JSONB format requires a leading ``\\x01`` version byte
+    followed by the UTF-8-encoded JSON string.
+    """
+    return b"\x01" + json.dumps(value).encode()
+
+
+def _jsonb_decoder(data: bytes) -> object:
+    """Decode the JSONB binary wire format to a Python object.
+
+    asyncpg delivers a ``bytes`` value whose first byte is the JSONB format
+    version (``\\x01``).  Strip it before passing to ``json.loads``.
+    """
+    return json.loads(data[1:])
+
+
+async def register_jsonb_codec(conn: asyncpg.Connection) -> None:
+    """Register a JSONB type codec on an asyncpg connection.
+
+    Without this, asyncpg returns JSONB columns as raw JSON strings instead of
+    Python dicts.  Registering the codec ensures every JSONB value is
+    automatically decoded to a Python object on read and encoded from a Python
+    object on write, eliminating the need for call-site json.loads() guards.
+
+    Uses ``format="binary"`` because asyncpg's JSONB binary wire protocol
+    prepends a ``\\x01`` version byte; the text-format path does not reliably
+    override asyncpg's internal codec for table column fetches.
+
+    This function is designed to be passed as the ``init`` parameter of
+    ``asyncpg.create_pool()`` so it runs once for every new physical connection.
+    """
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=_jsonb_encoder,
+        decoder=_jsonb_decoder,
+        schema="pg_catalog",
+        format="binary",
+    )
+
 
 _VALID_SSL_MODES = {"disable", "prefer", "allow", "require", "verify-ca", "verify-full"}
 _SSL_UPGRADE_CONNECTION_LOST = "unexpected connection_lost() call"
@@ -152,6 +196,16 @@ class Database:
         quoted_role = '"' + self.role.replace('"', '""') + '"'
         await conn.execute(f"SET ROLE {quoted_role}")
 
+    async def _init_connection(self, conn: asyncpg.Connection) -> None:
+        """asyncpg init callback: register JSONB codec on each new connection.
+
+        The init callback runs once when a physical connection is established,
+        making it the right place for per-connection type codec registration.
+        Unlike setup (which runs on every pool acquire), init only fires when
+        the underlying TCP connection is created.
+        """
+        await register_jsonb_codec(conn)
+
     async def provision(self) -> None:
         """Create the database if it doesn't exist.
 
@@ -214,6 +268,7 @@ class Database:
             "database": self.db_name,
             "min_size": self.min_pool_size,
             "max_size": self.max_pool_size,
+            "init": self._init_connection,
         }
         server_settings = self._server_settings()
         if server_settings is not None:
