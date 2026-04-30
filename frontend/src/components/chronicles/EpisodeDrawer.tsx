@@ -233,7 +233,10 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
             <>
               <FieldRow label="Source" value={ep.source_name} />
               {ep.canonical_title && (
-                <FieldRow label="Title" value={ep.canonical_title} />
+                <FieldRow
+                  label="Title"
+                  value={<span data-testid="episode-primary-title">{ep.canonical_title}</span>}
+                />
               )}
               {ep.corrected_at && (
                 <FieldRow
