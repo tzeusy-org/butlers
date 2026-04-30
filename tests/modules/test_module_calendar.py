@@ -922,6 +922,210 @@ class TestCalendarProjectionSchemaCompatibility:
 
 
 # ---------------------------------------------------------------------------
+# Track A: _project_scheduler_source() dispatch_mode exclusion [bu-vc3sl]
+# ---------------------------------------------------------------------------
+
+
+class TestProjectSchedulerSourceDispatchModeFilter:
+    """_project_scheduler_source() must exclude dispatch_mode='job' rows at the SQL level.
+
+    Track A fix (bu-daaff / PR #1297): butler-managed scheduled jobs such as
+    memory_consolidation must never be projected into calendar_event_instances.
+    The fix adds ``WHERE dispatch_mode != 'job'`` directly to the SQL query so
+    that job-dispatch rows are filtered before Python code ever sees them.
+
+    These tests verify:
+    1. The SQL emitted to pool.fetch contains the exclusion clause.
+    2. Non-job rows (dispatch_mode='task' or 'prompt') are processed normally.
+    """
+
+    @staticmethod
+    def _make_full_projection_pool(*, scheduled_rows: list[dict] | None = None) -> MagicMock:
+        """Build a pool mock that passes all schema-availability checks.
+
+        - ``fetchrow`` handles both the projection-tables availability check
+          (returns a row with all flags True) and the ``_ensure_calendar_source``
+          INSERT … RETURNING id (returns a row with a fake UUID).
+        - ``fetchval`` handles ``_table_exists`` (returns True for scheduled_tasks).
+        - ``fetch`` returns the given scheduled_rows for the scheduled_tasks query
+          and an empty list for any other query (e.g. stale-event cleanup).
+        - ``execute`` is a no-op async function.
+        """
+        pool = MagicMock()
+
+        # All schema flags True — used by _projection_tables_available().
+        availability_row = MagicMock()
+        availability_row.__getitem__ = lambda self, key: True
+
+        # _ensure_calendar_source does INSERT … RETURNING id.
+        source_row = MagicMock()
+        source_row.__getitem__ = lambda self, key: uuid.uuid4() if key == "id" else None
+
+        async def fetchrow_side_effect(query, *args):
+            if "to_regclass" in query:
+                return availability_row
+            # _ensure_calendar_source INSERT … RETURNING id
+            return source_row
+
+        pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+
+        # _table_exists → True for every table name.
+        pool.fetchval = AsyncMock(return_value=True)
+
+        # Scheduled-tasks query returns caller-supplied rows; other fetch calls
+        # (e.g. stale-event cancel) return an empty list.
+        #
+        # Use _FakeRecord instead of MagicMock so that dict(row) works correctly.
+        # asyncpg Records support dict() via keys(); MagicMock does not.
+        rows_to_return = [_FakeRecord(r) for r in (scheduled_rows or [])]
+
+        async def fetch_side_effect(query, *args):
+            if "scheduled_tasks" in query:
+                return rows_to_return
+            return []
+
+        pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        pool.execute = AsyncMock()
+        return pool
+
+    @staticmethod
+    def _minimal_scheduled_task(dispatch_mode: str, name: str = "test_task") -> dict:
+        """Return the minimum fields _project_scheduler_source() reads from a row."""
+        return {
+            "id": uuid.uuid4(),
+            "name": name,
+            "cron": "0 * * * *",  # hourly — ensures at least one occurrence
+            "dispatch_mode": dispatch_mode,
+            "prompt": None,
+            "job_name": None,
+            "job_args": None,
+            "timezone": "UTC",
+            "start_at": None,
+            "end_at": None,
+            "until_at": None,
+            "display_title": name,
+            "calendar_event_id": None,
+            "enabled": True,
+            "updated_at": None,
+        }
+
+    async def test_sql_query_excludes_job_dispatch_mode(self) -> None:
+        """The SQL sent to pool.fetch must contain ``WHERE dispatch_mode != 'job'``.
+
+        This is the primary assertion for Track A: the exclusion lives in the
+        query itself, not in a post-fetch Python filter, so that the database
+        never even returns job-dispatch rows.
+        """
+        pool = self._make_full_projection_pool(scheduled_rows=[])
+        mod = _make_module_with_pool(pool)
+        # Pre-seed the availability cache so _projection_tables_available() skips
+        # its own fetchrow and we can inspect the fetch call cleanly.
+        mod._projection_tables_available_cache = True
+
+        await mod._project_scheduler_source()
+
+        # Locate the fetch call that targets scheduled_tasks.
+        scheduled_tasks_calls = [
+            call
+            for call in pool.fetch.call_args_list
+            if call.args and "scheduled_tasks" in call.args[0]
+        ]
+        assert scheduled_tasks_calls, (
+            "pool.fetch should have been called with a scheduled_tasks query"
+        )
+        sql = scheduled_tasks_calls[0].args[0]
+        assert "dispatch_mode != 'job'" in sql, (
+            "SQL must exclude dispatch_mode='job' rows to prevent butler-managed "
+            "jobs from being projected into calendar_event_instances"
+        )
+
+    async def test_non_job_task_row_is_processed(self) -> None:
+        """A row with dispatch_mode='task' (non-job) must be projected normally.
+
+        Verifies that the fix does not over-filter: legitimate user-visible
+        scheduled tasks still reach _upsert_projection_event.
+        """
+        task_row = self._minimal_scheduled_task(dispatch_mode="task", name="Morning briefing")
+        pool = self._make_full_projection_pool(scheduled_rows=[task_row])
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+
+        upsert_calls: list[str] = []
+
+        async def _fake_upsert_event(**kwargs) -> uuid.UUID:
+            upsert_calls.append(kwargs.get("title", ""))
+            return uuid.uuid4()
+
+        async def _noop_upsert_instance(**kwargs) -> None:
+            pass
+
+        async def _noop_mark_stale(**kwargs) -> None:
+            pass
+
+        async def _noop_cursor(**kwargs) -> None:
+            pass
+
+        async def _noop_prune(**kwargs) -> None:
+            pass
+
+        with (
+            patch.object(mod, "_upsert_projection_event", side_effect=_fake_upsert_event),
+            patch.object(mod, "_upsert_projection_instance", side_effect=_noop_upsert_instance),
+            patch.object(
+                mod,
+                "_mark_projection_source_stale_events_cancelled",
+                side_effect=_noop_mark_stale,
+            ),
+            patch.object(mod, "_upsert_projection_cursor", side_effect=_noop_cursor),
+            patch.object(mod, "_prune_recurring_instances_outside_window", side_effect=_noop_prune),
+        ):
+            await mod._project_scheduler_source()
+
+        assert upsert_calls == ["Morning briefing"], (
+            "Non-job dispatch_mode row must be projected via _upsert_projection_event"
+        )
+
+    async def test_job_dispatch_row_absent_from_projection(self) -> None:
+        """A row with dispatch_mode='job' must NOT reach _upsert_projection_event.
+
+        The SQL WHERE clause filters these rows out before Python sees them.
+        We verify this by seeding the pool.fetch mock to return only the non-job
+        row (simulating the DB-level filter) and confirming _upsert_projection_event
+        is called exactly once — for the non-job row only.
+        """
+        non_job_row = self._minimal_scheduled_task(dispatch_mode="prompt", name="User reminder")
+        # NOTE: pool.fetch mock simulates the DB filter: it returns only the non-job row.
+        # The point of this test is that the SQL contains the filter and the job row
+        # never enters the Python processing loop.
+        pool = self._make_full_projection_pool(scheduled_rows=[non_job_row])
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+
+        upsert_calls: list[str] = []
+
+        async def _fake_upsert_event(**kwargs) -> uuid.UUID:
+            upsert_calls.append(kwargs.get("title", ""))
+            return uuid.uuid4()
+
+        async def _noop(**kwargs) -> None:
+            pass
+
+        with (
+            patch.object(mod, "_upsert_projection_event", side_effect=_fake_upsert_event),
+            patch.object(mod, "_upsert_projection_instance", side_effect=_noop),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", side_effect=_noop),
+            patch.object(mod, "_upsert_projection_cursor", side_effect=_noop),
+            patch.object(mod, "_prune_recurring_instances_outside_window", side_effect=_noop),
+        ):
+            await mod._project_scheduler_source()
+
+        assert len(upsert_calls) == 1, (
+            "Only the non-job row should be projected; job rows are excluded by the SQL filter"
+        )
+        assert "User reminder" in upsert_calls, "The non-job row title must be present"
+
+
+# ---------------------------------------------------------------------------
 # tick() — due-reminder evaluation
 # ---------------------------------------------------------------------------
 
@@ -972,6 +1176,34 @@ def _row_to_record(d: dict) -> MagicMock:
     rec = MagicMock()
     rec.__getitem__ = lambda self, key: d[key]
     return rec
+
+
+class _FakeRecord:
+    """Minimal asyncpg Record substitute that supports ``dict(record)`` conversion.
+
+    ``dict(record)`` works via the mapping protocol (keys() + __getitem__).
+    ``MagicMock`` does not implement ``keys()`` so dict() on it returns ``{}``.
+    Use this class wherever the production code calls ``dict(row)`` on a fetched
+    asyncpg record.
+    """
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    def __getitem__(self, key: str):
+        return self._data[key]
+
+    def get(self, key: str, default=None):
+        return self._data.get(key, default)
+
+    def keys(self):
+        return self._data.keys()
+
+    def items(self):
+        return self._data.items()
+
+    def values(self):
+        return self._data.values()
 
 
 def _make_module_with_pool(pool) -> CalendarModule:
