@@ -1385,8 +1385,8 @@ async def confirm_contact(
     metadata.pop("needs_disambiguation", None)
 
     await pool.execute(
-        "UPDATE contacts SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
-        json.dumps(metadata),
+        "UPDATE contacts SET metadata = $1, updated_at = now() WHERE id = $2",
+        metadata,
         contact_id,
     )
 
