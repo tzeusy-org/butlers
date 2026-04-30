@@ -1378,6 +1378,16 @@ export default function EntityDetailPage() {
                 </div>
               </div>
 
+              {/* Relationship activity link — person entities only */}
+              {entity.entity_type === "person" && (
+                <Link
+                  to={`/butlers/relationship/entities/${entity.id}`}
+                  className="text-primary text-sm font-medium hover:underline"
+                >
+                  View relationship activity →
+                </Link>
+              )}
+
               {/* Source provenance */}
               {!!(entity.metadata?.source_butler || entity.metadata?.source_scope) && (
                 <div>
