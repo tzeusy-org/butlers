@@ -2,7 +2,7 @@
 
 Each interaction is a temporal fact in the facts table:
   subject   = contact:{contact_id}
-  predicate = 'interaction'
+  predicate = 'interaction_{type}'  (e.g. 'interaction_call', 'interaction_meeting')
   content   = summary
   metadata  = {type, direction, duration_minutes, extra_metadata}
   valid_at  = occurred_at   (temporal — multiple coexist per contact)
@@ -42,14 +42,24 @@ def _get_embedding_engine() -> Any:
 
 
 def _fact_to_interaction(row: dict[str, Any], contact_id: uuid.UUID) -> dict[str, Any]:
-    """Convert a facts row to the interactions API shape."""
+    """Convert a facts row to the interactions API shape.
+
+    ``type`` is derived from the predicate suffix (e.g. 'interaction_call' → 'call'),
+    falling back to the metadata 'type' field for backward compatibility with any
+    legacy 'interaction' rows that pre-date the predicate migration.
+    """
     meta = row.get("metadata") or {}
     if isinstance(meta, str):
         meta = json.loads(meta)
+    predicate = row.get("predicate", "")
+    if predicate.startswith("interaction_"):
+        interaction_type = predicate[len("interaction_") :]
+    else:
+        interaction_type = meta.get("type", "")
     return {
         "id": row["id"],
         "contact_id": contact_id,
-        "type": meta.get("type", ""),
+        "type": interaction_type,
         "summary": row.get("content") or None,
         "occurred_at": row.get("valid_at"),
         "created_at": row.get("created_at"),
@@ -83,22 +93,22 @@ async def interaction_log(
     # same contact on the same day can coexist (RFC 0013 D4).  Two facts with direction=None
     # still collide with each other to preserve backward compatibility.
     if occurred_at is not None:
+        predicate = f"interaction_{type}"
         if direction is not None:
             existing = await pool.fetchrow(
                 """
                 SELECT id FROM facts
                 WHERE subject = $1
-                  AND predicate = 'interaction'
+                  AND predicate = $2
                   AND scope = 'relationship'
                   AND validity = 'active'
-                  AND valid_at::date = $2::date
-                  AND metadata->>'type' = $3
+                  AND valid_at::date = $3::date
                   AND metadata->>'direction' = $4
                 LIMIT 1
                 """,
                 f"contact:{contact_id}",
+                predicate,
                 occurred_at,
-                type,
                 direction,
             )
         else:
@@ -106,17 +116,16 @@ async def interaction_log(
                 """
                 SELECT id FROM facts
                 WHERE subject = $1
-                  AND predicate = 'interaction'
+                  AND predicate = $2
                   AND scope = 'relationship'
                   AND validity = 'active'
-                  AND valid_at::date = $2::date
-                  AND metadata->>'type' = $3
+                  AND valid_at::date = $3::date
                   AND metadata->>'direction' IS NULL
                 LIMIT 1
                 """,
                 f"contact:{contact_id}",
+                predicate,
                 occurred_at,
-                type,
             )
         if existing is not None:
             return {
@@ -139,7 +148,7 @@ async def interaction_log(
         await store_fact(
             pool,
             subject=f"contact:{contact_id}",
-            predicate="interaction",
+            predicate=f"interaction_{type}",
             content=summary or "",
             embedding_engine=embedding_engine,
             permanence="stable",
@@ -249,7 +258,7 @@ async def interaction_list(
     """
     conditions = [
         "subject = $1",
-        "predicate = 'interaction'",
+        "predicate LIKE 'interaction_%'",
         "scope = 'relationship'",
         "validity = 'active'",
     ]
@@ -262,15 +271,15 @@ async def interaction_list(
         idx += 1
 
     if type is not None:
-        conditions.append(f"metadata->>'type' = ${idx}")
-        params.append(type)
+        conditions.append(f"predicate = ${idx}")
+        params.append(f"interaction_{type}")
         idx += 1
 
     params.append(limit)
     where = " AND ".join(conditions)
     rows = await pool.fetch(
         f"""
-        SELECT id, content, valid_at, created_at, metadata
+        SELECT id, predicate, content, valid_at, created_at, metadata
         FROM facts
         WHERE {where}
         ORDER BY valid_at DESC

@@ -234,7 +234,7 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         FROM contacts c
         LEFT JOIN facts f
             ON  f.subject   = 'contact:' || c.id::text
-            AND f.predicate = 'interaction'
+            AND f.predicate LIKE 'interaction_%'
             AND f.scope     = 'relationship'
             AND f.validity  = 'active'
             AND (
@@ -905,7 +905,7 @@ async def contacts_overdue_with_tiers(pool: asyncpg.Pool) -> list[dict[str, Any]
         FROM contacts c
         LEFT JOIN facts f
             ON f.subject = 'contact:' || c.id::text
-           AND f.predicate = 'interaction'
+           AND f.predicate LIKE 'interaction_%'
            AND f.scope = 'relationship'
            AND f.validity = 'active'
         WHERE c.listed = true
