@@ -21,6 +21,7 @@ from butlers.jobs.briefing import (
     combined_key,
     contribution_key,
     run_finance_briefing_contribution,
+    run_relationship_briefing_contribution,
     today_sgt,
     validate_contribution,
 )
@@ -252,6 +253,48 @@ async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime
     assert "$2 - $1" not in anomaly_sql
     assert len(anomaly_args) == 3
     assert result["spending_anomalies"] == 0
+
+
+async def test_run_relationship_briefing_contribution_uses_interaction_facts():
+    """Relationship interaction gaps must not query the dropped legacy interactions table."""
+
+    class _RecordingPool:
+        def __init__(self) -> None:
+            self.fetch_calls: list[tuple[str, tuple[Any, ...]]] = []
+
+        async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            self.fetch_calls.append((sql, args))
+            if "f.predicate = 'interaction'" in sql:
+                return [
+                    {
+                        "name": "Alice Smith",
+                        "stay_in_touch_days": 14,
+                        "days_since_last": None,
+                    }
+                ]
+            return []
+
+    pool = _RecordingPool()
+    with (
+        patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
+        patch("butlers.jobs.briefing._write_contribution", new_callable=AsyncMock) as write_mock,
+    ):
+        result = await run_relationship_briefing_contribution(pool, None)
+
+    all_sql = "\n".join(sql for sql, _args in pool.fetch_calls).lower()
+    assert "from interactions" not in all_sql
+    assert "join interactions" not in all_sql
+    assert "from facts" in all_sql
+    assert result["interaction_gaps"] == 1
+
+    envelope = write_mock.await_args.args[1]
+    assert envelope["highlights"] == [
+        {
+            "category": "interaction-gaps",
+            "text": "Alice Smith: no recorded contact (threshold: 14d)",
+            "priority": "low",
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------

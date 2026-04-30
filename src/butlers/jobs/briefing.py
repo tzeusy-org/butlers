@@ -641,25 +641,38 @@ async def run_relationship_briefing_contribution(
     gap_rows = await pool.fetch(
         """
         SELECT c.name, c.stay_in_touch_days,
-               EXTRACT(DAY FROM now() - MAX(i.occurred_at)) AS days_since_last
+               EXTRACT(DAY FROM now() - MAX(f.valid_at)) AS days_since_last
         FROM contacts c
-        JOIN interactions i ON i.contact_id = c.id
+        LEFT JOIN facts f
+          ON f.subject = 'contact:' || c.id::text
+         AND f.predicate = 'interaction'
+         AND f.scope = 'relationship'
+         AND f.validity = 'active'
+         AND f.valid_at IS NOT NULL
         WHERE c.stay_in_touch_days IS NOT NULL
           AND c.archived_at IS NULL
         GROUP BY c.id, c.name, c.stay_in_touch_days
-        HAVING EXTRACT(DAY FROM now() - MAX(i.occurred_at)) > c.stay_in_touch_days
-        ORDER BY (EXTRACT(DAY FROM now() - MAX(i.occurred_at)) - c.stay_in_touch_days) DESC
+        HAVING MAX(f.valid_at) IS NULL
+            OR EXTRACT(DAY FROM now() - MAX(f.valid_at)) > c.stay_in_touch_days
+        ORDER BY
+            MAX(f.valid_at) IS NULL DESC,
+            (EXTRACT(DAY FROM now() - MAX(f.valid_at)) - c.stay_in_touch_days) DESC NULLS LAST
         LIMIT 5
         """,
     )
 
     for row in gap_rows:
-        days_gap = int(row["days_since_last"])
         threshold = row["stay_in_touch_days"]
+        days_since_last = row["days_since_last"]
+        if days_since_last is None:
+            gap_text = f"{row['name']}: no recorded contact (threshold: {threshold}d)"
+        else:
+            days_gap = int(days_since_last)
+            gap_text = f"{row['name']}: no contact in {days_gap}d (threshold: {threshold}d)"
         highlights.append(
             {
                 "category": "interaction-gaps",
-                "text": (f"{row['name']}: no contact in {days_gap}d (threshold: {threshold}d)"),
+                "text": gap_text,
                 "priority": "low",
             }
         )
