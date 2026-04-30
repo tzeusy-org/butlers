@@ -417,3 +417,57 @@ ORDER BY 1;
 Both queries run against the `chronicler` schema. If the first returns non-zero
 rows, the migration has not yet run or was skipped — run `alembic upgrade chronicler@head`
 to apply it.
+
+## Session title re-projection watermark reset (chronicler_009 / bu-jpf3o)
+
+Migration `chronicler_009` (`roster/chronicler/migrations/009_reset_watermarks_for_old_session_titles.py`)
+resets `projection_checkpoints` watermarks for `core.sessions` schemas that still carry
+pre-bu-fkqv0 episode titles (`'{schema} session'`).  After the reset, the next
+`CoreSessionsAdapter` run re-projects those sessions with the new
+`'Conversation with {name}'` / `'Conversation via {channel}'` title-resolution logic.
+
+**Affected rows criteria:**
+- `source_name = 'core.sessions'`
+- `payload->>'trigger_source' = 'route'`
+- `title LIKE '% session'`
+- `tombstone_at IS NULL`
+
+**Verify stale titles are gone (spot-check after chronicler_009 + adapter run):**
+
+```sql
+-- Should return zero rows once the watermark reset has triggered re-projection.
+SELECT
+    payload->>'schema'  AS schema_name,
+    title,
+    COUNT(*)            AS remaining
+FROM chronicler.episodes
+WHERE source_name             = 'core.sessions'
+  AND payload->>'trigger_source' = 'route'
+  AND title LIKE '% session'
+  AND tombstone_at IS NULL
+GROUP BY 1, 2
+ORDER BY 1, 2;
+```
+
+**Verify watermarks were reset for affected schemas:**
+
+```sql
+-- Returns the checkpoint rows for all per-schema core.sessions projections.
+-- After chronicler_009 runs, affected schemas show watermark near their
+-- earliest route-session start_at.
+SELECT
+    subsource        AS schema_name,
+    watermark,
+    watermark_id,
+    last_success_at,
+    rows_projected
+FROM chronicler.projection_checkpoints
+WHERE source_name = 'core.sessions'
+  AND subsource  != ''
+ORDER BY subsource;
+```
+
+Both queries run against the `chronicler` schema. If the first returns non-zero
+rows after the adapter has run, either the migration has not been applied
+(`alembic upgrade chronicler@head`) or the adapter has not yet re-projected
+(wait for the next scheduled run or trigger manually).
