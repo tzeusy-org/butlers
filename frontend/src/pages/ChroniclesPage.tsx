@@ -41,13 +41,21 @@ import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton"
 import type { ChroniclerEventsParams } from "@/api/types"
 import { MapPanContext, useMapPanContextValue } from "@/components/chronicles/map-pan-store"
+import { ChroniclesTimezoneProvider } from "@/components/chronicles/timezone-context"
+import { DEFAULT_TZ } from "@/components/chronicles/tz-format"
+import { useGeneralSettings } from "@/hooks/use-general-settings"
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export default function ChroniclesPage() {
-  const timeWindow = useTimeWindow()
+  // Resolve owner timezone before other hooks so day-boundary computations
+  // are tz-aware from the first render. Falls back to DEFAULT_TZ while loading.
+  const { data: generalSettings } = useGeneralSettings()
+  const ownerTz = generalSettings?.data?.timezone ?? DEFAULT_TZ
+
+  const timeWindow = useTimeWindow(ownerTz)
   const autoRefreshControl = useAutoRefresh(30_000)
   // Map pan store: Gantt episode clicks wire through this context to the MapWidget.
   const mapPanValue = useMapPanContextValue()
@@ -192,6 +200,7 @@ export default function ChroniclesPage() {
   function handleByCategoryRetry() { void byCategory.refetch() }
 
   return (
+    <ChroniclesTimezoneProvider timezone={ownerTz}>
     <div className="space-y-6">
       {/* Page heading */}
       <div className="flex items-center justify-between">
@@ -283,6 +292,7 @@ export default function ChroniclesPage() {
         onClose={handleDrawerClose}
       />
     </div>
+    </ChroniclesTimezoneProvider>
   )
 }
 

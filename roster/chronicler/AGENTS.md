@@ -224,3 +224,24 @@ curl "http://localhost:8000/api/chronicler/ops/sessions?since=$(date -u -d '1 ho
 **Invariant:** data from this endpoint will NEVER appear in
 `/api/chronicler/episodes`. The separation is enforced at the adapter layer
 (`CoreSessionsAdapter`) and tested in `tests/chronicler/test_ops_sessions_api.py`.
+
+## Frontend timezone source (bu-k18cm)
+
+All timestamps in the Chronicles frontend (Gantt, Scrubber, EpisodeDrawer,
+axis tick labels) render in the **owner's configured timezone**, not the
+browser's local timezone.
+
+**Source:** `GET /api/settings/general` → `data.timezone` (IANA name, e.g. `"Asia/Singapore"`).
+
+**Fallback:** `"Asia/Singapore"` — matches the `SGT` constant in `briefing.py` —
+used while the API call is in-flight or returns an error.
+
+**Implementation:**
+- `ChroniclesPage` fetches the timezone via `useGeneralSettings()` and passes
+  `ownerTz` to `useTimeWindow(ownerTz)` (day-boundary computations) and
+  `<ChroniclesTimezoneProvider timezone={ownerTz}>` (display formatting).
+- Child components read the tz from context via `useChroniclesTimezone()`.
+- All formatting uses `date-fns-tz` (`formatInTimeZone`, `fromZonedTime`) — never
+  `Date.toLocaleString` or `Date.toLocaleTimeString`.
+- Day boundaries (start-of-day / end-of-day) use `startOfDayInTz` / `endOfDayInTz`
+  from `frontend/src/components/chronicles/tz-format.ts`.

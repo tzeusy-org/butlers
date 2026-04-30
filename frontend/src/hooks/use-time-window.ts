@@ -11,7 +11,11 @@
 
 import { useCallback, useMemo } from "react"
 import { useSearchParams } from "react-router"
-import { endOfDay, format, isValid, parseISO, startOfDay, subDays } from "date-fns"
+import { format, isValid, parseISO, subDays } from "date-fns"
+import { startOfDayInTz, endOfDayInTz } from "@/components/chronicles/tz-format"
+
+/** Default owner timezone — matches the briefing.py SGT constant. */
+export const OWNER_TZ_DEFAULT = "Asia/Singapore"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,14 +62,14 @@ export function isPollingDisabled(to: Date): boolean {
   return Date.now() - to.getTime() >= 24 * 60 * 60 * 1000
 }
 
-function todayWindow(): { from: Date; to: Date } {
+function todayWindow(tz: string): { from: Date; to: Date } {
   const now = new Date()
-  return { from: startOfDay(now), to: endOfDay(now) }
+  return { from: startOfDayInTz(now, tz), to: endOfDayInTz(now, tz) }
 }
 
-function weekWindow(): { from: Date; to: Date } {
+function weekWindow(tz: string): { from: Date; to: Date } {
   const now = new Date()
-  return { from: startOfDay(subDays(now, 6)), to: endOfDay(now) }
+  return { from: startOfDayInTz(subDays(now, 6), tz), to: endOfDayInTz(now, tz) }
 }
 
 // ---------------------------------------------------------------------------
@@ -75,7 +79,12 @@ function weekWindow(): { from: Date; to: Date } {
 const PARAM_FROM = "from"
 const PARAM_TO = "to"
 
-export function useTimeWindow(): UseTimeWindowResult {
+/**
+ * @param tz - IANA timezone for day-boundary computations. Defaults to
+ *   OWNER_TZ_DEFAULT ("Asia/Singapore"). Pass the value from
+ *   useChroniclesTimezone() if available.
+ */
+export function useTimeWindow(tz: string = OWNER_TZ_DEFAULT): UseTimeWindowResult {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const fromParam = searchParams.get(PARAM_FROM)
@@ -89,11 +98,11 @@ export function useTimeWindow(): UseTimeWindowResult {
       const parsedFrom = parseISO(fromParam)
       const parsedTo = parseISO(toParam)
       if (isValid(parsedFrom) && isValid(parsedTo) && parsedFrom <= parsedTo) {
-        const from = startOfDay(parsedFrom)
-        const to = endOfDay(parsedTo)
+        const from = startOfDayInTz(parsedFrom, tz)
+        const to = endOfDayInTz(parsedTo, tz)
         // Detect named presets so the buttons stay highlighted.
-        const wk = weekWindow()
-        const td = todayWindow()
+        const wk = weekWindow(tz)
+        const td = todayWindow(tz)
         let preset: PresetKey
         if (
           formatWindowDate(from) === formatWindowDate(wk.from) &&
@@ -112,13 +121,13 @@ export function useTimeWindow(): UseTimeWindowResult {
       }
     }
     // No params or invalid params — fall back to today
-    const td = todayWindow()
+    const td = todayWindow(tz)
     return { from: td.from, to: td.to, preset: "today", pollingDisabled: isPollingDisabled(td.to) }
-  }, [fromParam, toParam])
+  }, [fromParam, toParam, tz])
 
   const setPreset = useCallback(
     (p: "today" | "week") => {
-      const w = p === "today" ? todayWindow() : weekWindow()
+      const w = p === "today" ? todayWindow(tz) : weekWindow(tz)
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev)
@@ -129,7 +138,7 @@ export function useTimeWindow(): UseTimeWindowResult {
         { replace: true },
       )
     },
-    [setSearchParams],
+    [tz, setSearchParams],
   )
 
   const setCustomRange = useCallback(

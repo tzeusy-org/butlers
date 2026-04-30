@@ -148,6 +148,17 @@ vi.mock("@/components/chronicles/EpisodeDrawer", () => ({
   EpisodeDrawer: () => null,
 }));
 
+// Mock useGeneralSettings so ChroniclesPage can resolve owner timezone without
+// a QueryClientProvider. Returns Asia/Singapore (the default).
+vi.mock("@/hooks/use-general-settings", () => ({
+  useGeneralSettings: () => ({
+    data: { data: { timezone: "Asia/Singapore" } },
+    isLoading: false,
+    isError: false,
+  }),
+  generalSettingsKeys: { settings: () => ["general-settings"] as const },
+}));
+
 // Mocks needed for TimelinePage (regression guard)
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: () => ({ data: undefined }),

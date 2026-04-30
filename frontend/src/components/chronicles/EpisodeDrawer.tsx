@@ -39,18 +39,8 @@ import {
   useChroniclerEpisodeEvents,
   useChroniclerExplain,
 } from "@/hooks/use-chronicles"
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—"
-  return new Date(iso).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  })
-}
+import { useChroniclesTimezone } from "./use-chronicles-timezone"
+import { formatDateTimeInTz } from "./tz-format"
 
 function formatDuration(startIso: string, endIso: string | null | undefined): string {
   if (!endIso) return "ongoing"
@@ -173,6 +163,8 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
   const episode = useChroniclerEpisode(episodeId)
   const events = useChroniclerEpisodeEvents(episodeId)
   const corrections = useChroniclerEpisodeCorrections(episodeId)
+  const tz = useChroniclesTimezone()
+  const formatDateTime = (iso: string | null | undefined) => formatDateTimeInTz(iso, tz)
 
   const ep = episode.data
   const isSensitive = ep?.canonical_privacy === "sensitive"

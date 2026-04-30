@@ -39,6 +39,8 @@ import type { Category } from "./lane-taxonomy"
 import { categoryForSource, LANE_TAXONOMY } from "./lane-taxonomy"
 import { parseLatLng } from "./location-utils"
 import { useMapPanTo } from "./map-pan-store"
+import { useChroniclesTimezone } from "./use-chronicles-timezone"
+import { formatTimeInTz, formatGanttTickLabel } from "./tz-format"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -251,6 +253,9 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
   const { episode, row, xPct, widthPct, isOpen } = positioned
   const isSensitive = episode.canonical_privacy === "sensitive"
 
+  // Owner timezone from context (default: Asia/Singapore).
+  const tz = useChroniclesTimezone()
+
   // ---------------------------------------------------------------------------
   // Location pan (calendar episodes only) — bu-ig72b.24
   // ---------------------------------------------------------------------------
@@ -284,12 +289,12 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
   const endMs = isOpen ? windowEndMs : rawEndMs
   const durationMs = isNaN(startMs) || isNaN(endMs) ? null : endMs - startMs
   const durationLabel = durationMs !== null ? formatDuration(durationMs) : "?"
-  const startLabel = isNaN(startMs) ? "?" : new Date(startMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  const startLabel = isNaN(startMs) ? "?" : formatTimeInTz(startMs, tz)
   const endLabel = isOpen
     ? "ongoing"
     : isNaN(rawEndMs)
     ? "?"
-    : new Date(rawEndMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+    : formatTimeInTz(rawEndMs, tz)
 
   function handleClick() {
     // Open drilldown drawer for all episode types (bu-ig72b.31).
@@ -401,16 +406,6 @@ function buildTicks(windowStartMs: number, windowEndMs: number, count = 6): numb
   return Array.from({ length: count }, (_, i) => windowStartMs + i * step)
 }
 
-function formatTickLabel(ms: number, windowDuration: number): string {
-  const d = new Date(ms)
-  if (windowDuration <= 2 * 86_400_000) {
-    // ≤ 2 days: show time
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
-  }
-  // > 2 days: show date
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
-}
-
 // ---------------------------------------------------------------------------
 // Main inner component
 // ---------------------------------------------------------------------------
@@ -428,6 +423,9 @@ export function GanttSwimlaneInner({
   const windowStartMs = windowStart.getTime()
   const windowEndMs = windowEnd.getTime()
   const windowDuration = windowEndMs - windowStartMs
+
+  // Owner timezone from context (default: Asia/Singapore).
+  const tz = useChroniclesTimezone()
 
   // Categories that have at least one episode in the current window. Derived
   // from the raw `episodes` prop (NOT from `lanes`) so the chip row stays
@@ -772,7 +770,7 @@ export function GanttSwimlaneInner({
                       transform,
                     }}
                   >
-                    {formatTickLabel(ms, windowDuration)}
+                    {formatGanttTickLabel(ms, windowDuration, tz)}
                   </span>
                 )
               })}

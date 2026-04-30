@@ -29,6 +29,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { ChroniclerPointEvent } from "@/api/types"
+import { useChroniclesTimezone } from "./use-chronicles-timezone"
+import { formatScrubberLabel } from "./tz-format"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,18 +61,6 @@ function snapToNearest(valueMs: number, pointEvents: ChroniclerPointEvent[]): nu
   return new Date(best.canonical_occurred_at).getTime()
 }
 
-/** Format epoch ms as a short time/date label. */
-function formatLabel(ms: number, windowDurationMs: number): string {
-  const d = new Date(ms)
-  if (windowDurationMs <= 2 * 86_400_000) {
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
-  }
-  return (
-    d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-    " " +
-    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
-  )
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,6 +100,9 @@ export function Scrubber({ windowStart, windowEnd, pointEvents, onScrub }: Scrub
   const windowEndMs = windowEnd.getTime()
   const windowDurationMs = Math.max(1, windowEndMs - windowStartMs)
 
+  // Owner timezone from context (default: Asia/Singapore).
+  const tz = useChroniclesTimezone()
+
   // Initialized once per mount (parent resets via key prop when window changes).
   const [scrubberMs, setScrubberMs] = useState<number>(windowStartMs)
 
@@ -146,13 +139,13 @@ export function Scrubber({ windowStart, windowEnd, pointEvents, onScrub }: Scrub
     setScrubberMs(Number(e.target.value))
   }, [])
 
-  const label = formatLabel(snappedMs ?? scrubberMs, windowDurationMs)
+  const label = formatScrubberLabel(snappedMs ?? scrubberMs, windowDurationMs, tz)
 
   return (
     <div className="flex items-center gap-3 w-full" data-testid="scrubber">
       {/* Window start label */}
       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-        {formatLabel(windowStartMs, windowDurationMs)}
+        {formatScrubberLabel(windowStartMs, windowDurationMs, tz)}
       </span>
 
       {/* Range input */}
@@ -172,7 +165,7 @@ export function Scrubber({ windowStart, windowEnd, pointEvents, onScrub }: Scrub
 
       {/* Window end label */}
       <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-        {formatLabel(windowEndMs, windowDurationMs)}
+        {formatScrubberLabel(windowEndMs, windowDurationMs, tz)}
       </span>
 
       {/* Current position label */}
