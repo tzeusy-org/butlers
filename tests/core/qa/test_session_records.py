@@ -207,6 +207,29 @@ async def test_finding_construction_fingerprint_and_aggregation():
 
 
 @pytest.mark.asyncio
+async def test_orphaned_daemon_restart_rows_are_not_actionable_findings():
+    """Startup recovery markers are not application failures for QA to dispatch."""
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_asyncpg_record(
+                source_butler="general",
+                error="orphaned: daemon restart",
+                status="error",
+                healing_fingerprint=None,
+            )
+        ]
+    )
+
+    findings = await SessionRecordsSource(pool=pool, repo_root=Path("/tmp")).discover(
+        lookback_minutes=15
+    )
+
+    assert findings == []
+
+
+@pytest.mark.asyncio
 async def test_postgres_error_and_anonymization():
     """PostgresError from main query propagates; event_summary anonymized to strip PII."""
     # Error propagation
