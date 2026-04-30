@@ -157,8 +157,9 @@ describe("Scrubber timezone rendering (bu-k18cm)", () => {
 
     // 2026-04-30T00:00:00Z → 08:00 SGT
     // The scrubber label includes the tz abbreviation.
+    // "SGT" on full-ICU builds, "GMT+8" on minimal-ICU builds (e.g. some CI).
     expect(html).toContain("08:00")
-    expect(html).toContain("SGT")
+    expect(html).toMatch(/SGT|GMT\+8/)
   })
 
   it("renders in America/Los_Angeles tz, not in SGT", () => {
@@ -177,8 +178,8 @@ describe("Scrubber timezone rendering (bu-k18cm)", () => {
     expect(html).toContain("17:00")
     // SGT time (08:00) must NOT appear
     expect(html).not.toContain("08:00")
-    // Must not show SGT abbreviation
-    expect(html).not.toContain("SGT")
+    // Must not show SGT abbreviation (neither full-ICU "SGT" nor minimal-ICU "GMT+8")
+    expect(html).not.toMatch(/SGT|GMT\+8/)
   })
 })
 
@@ -220,7 +221,8 @@ describe("tz-format utility functions (bu-k18cm)", () => {
   describe("formatDateTimeInTz", () => {
     it("formats with SGT abbreviation", () => {
       const result = formatDateTimeInTz(utcMidnight, SGT)
-      expect(result).toContain("SGT")
+      // "SGT" on full-ICU builds, "GMT+8" on minimal-ICU builds (e.g. some CI).
+      expect(result).toMatch(/SGT|GMT\+8/)
       expect(result).toContain("08:00")
     })
 
@@ -233,14 +235,16 @@ describe("tz-format utility functions (bu-k18cm)", () => {
     it("includes timezone abbreviation for ≤2 day window", () => {
       const result = formatScrubberLabel(utcMidnightMs, 86_400_000, SGT)
       expect(result).toContain("08:00")
-      expect(result).toContain("SGT")
+      // "SGT" on full-ICU builds, "GMT+8" on minimal-ICU builds (e.g. some CI).
+      expect(result).toMatch(/SGT|GMT\+8/)
     })
 
     it("differs between SGT and LA for same UTC timestamp", () => {
       const sgt = formatScrubberLabel(utcMidnightMs, 86_400_000, SGT)
       const la = formatScrubberLabel(utcMidnightMs, 86_400_000, LA)
       expect(sgt).not.toBe(la)
-      expect(sgt).toContain("SGT")
+      // "SGT" on full-ICU builds, "GMT+8" on minimal-ICU builds (e.g. some CI).
+      expect(sgt).toMatch(/SGT|GMT\+8/)
       // LA renders 17:00 (UTC-7 = PDT). The abbreviation may be "PDT" or "GMT-7"
       // depending on the Intl timezone database available in the test environment.
       expect(la).toContain("17:00")

@@ -9,7 +9,7 @@
 //   - Component renders preset buttons and date inputs
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, afterEach } from "vitest"
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter, Route, Routes } from "react-router"
 import {
@@ -29,6 +29,21 @@ import { TimeWindowPicker } from "./TimeWindowPicker"
 
 const DATE_FMT = "yyyy-MM-dd"
 const fmt = (d: Date) => format(d, DATE_FMT)
+
+// Freeze the clock to noon UTC on a fixed date so tests that call new Date()
+// multiple times (in assertions and inside the hook) always observe the same
+// instant, even when run close to midnight UTC.
+const FROZEN_NOW = new Date("2026-04-30T12:00:00Z")
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.setSystemTime(FROZEN_NOW)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  document.body.innerHTML = ""
+})
 
 // ---------------------------------------------------------------------------
 // isPollingDisabled unit tests (pure function — no DOM needed)
@@ -130,10 +145,6 @@ function renderHookViaDOM(url: string): Element {
   div.innerHTML = html
   return div.querySelector("[data-testid='tw']")!
 }
-
-afterEach(() => {
-  document.body.innerHTML = ""
-})
 
 describe("useTimeWindow — default (no URL params)", () => {
   it("defaults to today preset", () => {
