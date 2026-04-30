@@ -5,6 +5,13 @@ no summary/title — the adapter should pick the next most-meaningful field
 from the joined ``calendar_events`` row (title → location → truncated
 description → schema-qualified placeholder) instead of always falling back
 to ``"{schema}: calendar block"``.
+
+Also covers the butler-managed calendar exclusion guard (defence-in-depth):
+instances whose ``calendar_sources.lane = 'butler'`` must never be projected
+into the user's Chronicle Calendar lane, regardless of their title.  This
+prevents butler-internal scheduled jobs (memory_consolidation,
+memory_episode_cleanup, memory_purge_superseded, etc.) from polluting the
+/chronicles Calendar view.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.chronicler.adapters.calendar import (
+    BUTLER_MANAGED_SOURCE_KINDS,
     EPISODE_TYPE_SCHEDULED_BLOCK,
     SOURCE_NAME,
     CalendarCompletedAdapter,
@@ -225,3 +233,133 @@ async def test_episode_basic_fields() -> None:
     assert ep.start_at == starts
     assert ep.end_at == ends
     assert ep.title == "Lunch with Jordan"
+
+
+# ---------------------------------------------------------------------------
+# Butler-managed calendar exclusion (Track B defence-in-depth)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_butler_managed_source_kinds_includes_scheduler_and_reminders() -> None:
+    """The documented butler-managed source kinds must be present in the constant."""
+    assert "internal_scheduler" in BUTLER_MANAGED_SOURCE_KINDS
+    assert "internal_reminders" in BUTLER_MANAGED_SOURCE_KINDS
+
+
+def _make_pool_with_rows(rows: list[_Row] | None, *, table_exists: bool = True) -> AsyncMock:
+    """Return a mock asyncpg.Pool that simulates the calendar schema queries.
+
+    ``fetchval`` is used for the table-existence check.
+    ``fetch`` returns ``rows`` (or ``[]`` when ``rows`` is ``None``).
+    The pool's ``.acquire()`` context manager yields a single connection mock.
+    """
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=table_exists)
+    conn.fetch = AsyncMock(return_value=rows if rows is not None else [])
+
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    return pool
+
+
+@pytest.mark.unit
+async def test_fetch_instances_sql_excludes_butler_lane_no_since() -> None:
+    """The SQL emitted for the no-since path must contain the butler-lane guard."""
+    pool = _make_pool_with_rows([])
+    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
+
+    now = datetime.now(UTC)
+    await adapter._fetch_instances(pool, "test_schema", None, now)
+
+    _, fetch_kwargs = pool.acquire.return_value._obj.fetch.call_args
+    fetch_args = pool.acquire.return_value._obj.fetch.call_args[0]
+    sql = fetch_args[0] if fetch_args else ""
+    assert "cs.lane != 'butler'" in sql, (
+        "Exclusion guard 'cs.lane != \\'butler\\'' must appear in the no-since SQL query"
+    )
+    assert "INNER JOIN" in sql.upper() or "JOIN" in sql.upper(), (
+        "calendar_sources join must be present"
+    )
+
+
+@pytest.mark.unit
+async def test_fetch_instances_sql_excludes_butler_lane_with_since() -> None:
+    """The SQL emitted for the since-watermark path must contain the butler-lane guard."""
+    pool = _make_pool_with_rows([])
+    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
+
+    now = datetime.now(UTC)
+    since = now - timedelta(days=7)
+    await adapter._fetch_instances(pool, "test_schema", since, now)
+
+    fetch_args = pool.acquire.return_value._obj.fetch.call_args[0]
+    sql = fetch_args[0] if fetch_args else ""
+    assert "cs.lane != 'butler'" in sql, (
+        "Exclusion guard 'cs.lane != \\'butler\\'' must appear in the with-since SQL query"
+    )
+
+
+@pytest.mark.unit
+async def test_project_skips_butler_managed_internal_scheduler_rows() -> None:
+    """Reproducer: butler-internal scheduler rows must NOT produce Chronicle episodes.
+
+    This is the regression test for the calendar pollution bug (bu-daaff).
+    Seeding rows whose event title matches memory maintenance job names should
+    yield zero projected episodes after the fix.
+    """
+    butler_managed_rows = [
+        _make_row(event_title="memory_consolidation"),
+        _make_row(event_title="memory_episode_cleanup"),
+        _make_row(event_title="memory_purge_superseded"),
+    ]
+
+    pool = _make_pool_with_rows(butler_managed_rows)
+    # The SQL WHERE cs.lane != 'butler' filters these out at the DB level;
+    # since our mock returns the rows unconditionally we test the SQL by
+    # inspecting the emitted query for the guard clause instead.
+    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
+    await adapter._fetch_instances(pool, "test_schema", None, datetime.now(UTC))
+
+    fetch_args = pool.acquire.return_value._obj.fetch.call_args[0]
+    sql = fetch_args[0]
+    assert "cs.lane != 'butler'" in sql, (
+        "SQL must exclude butler-lane instances to prevent memory_* task pollution"
+    )
+
+
+@pytest.mark.unit
+async def test_project_user_lane_rows_are_still_projected() -> None:
+    """User-lane calendar events continue to be projected after the fix."""
+    user_row = _make_row(event_title="Dentist appointment")
+
+    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
+    captured: list[Episode] = []
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        captured.append(episode)
+        return episode
+
+    # Simulate _fetch_instances returning the user_row (as the DB filter
+    # would pass user-lane rows through).
+    with (
+        patch.object(
+            adapter,
+            "_fetch_instances",
+            new=AsyncMock(return_value=[user_row]),
+        ),
+        patch(
+            "butlers.chronicler.adapters.calendar.upsert_episode",
+            side_effect=_fake_upsert,
+        ),
+    ):
+        result = await adapter.project(
+            MagicMock(),
+            chronicler_pool=_chronicler_pool(),
+            since=None,
+        )
+
+    assert result.rows_projected == 1
+    assert result.episodes_closed == 1
+    assert len(captured) == 1
+    assert captured[0].title == "Dentist appointment"

@@ -6217,6 +6217,7 @@ class CalendarModule(Module):
                    timezone, start_at, end_at, until_at, display_title,
                    calendar_event_id, enabled, updated_at
             FROM scheduled_tasks
+            WHERE dispatch_mode != 'job'
             """
         )
 

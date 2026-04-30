@@ -35,6 +35,33 @@ are MCP tools, not CLI commands.
 - Only use overlap overrides when the user explicitly asks to keep the conflict.
 - Attendee invites are out of scope for v1. Do not add attendees or send invitations.
 
+### Butler-Managed Calendar Contract
+
+Butler-internal scheduled tasks (e.g. `memory_consolidation`, `memory_episode_cleanup`,
+`memory_purge_superseded`) must **never** appear on the user's primary Google Calendar or
+in the Chronicle Calendar lane.
+
+**Enforcement (two independent layers):**
+
+1. **Writer-side guard (Track A — `calendar.py:_project_scheduler_source`)**: Only
+   `dispatch_mode != 'job'` scheduled tasks are projected into `calendar_event_instances`.
+   Job-dispatch tasks are internal automation and are explicitly excluded from the
+   scheduler projection loop.
+
+2. **Adapter-side guard (Track B — `chronicler/adapters/calendar.py:_fetch_instances`)**:
+   `CalendarCompletedAdapter` joins `calendar_sources` and adds `AND cs.lane != 'butler'`
+   to all fetch queries. This ensures that even if a butler-managed event reaches
+   `calendar_event_instances` (e.g. through a future code path), it will never be
+   projected into a user-visible Chronicle episode.
+
+**`calendar_sources.lane` values:**
+- `"user"` — provider events from the user's Google Calendar (project normally)
+- `"butler"` — internal sources (`internal_scheduler`, `internal_reminders`); always excluded
+  from Chronicle projection
+
+If you add a new internal calendar source, set `lane="butler"` in `_ensure_calendar_source()`
+to benefit from automatic exclusion.
+
 ## Scheduled Task Output Contract
 
 When a scheduled task fires with `dispatch_mode="prompt"`, you are running in an ephemeral session with **no interactive user present**. Your text output goes nowhere — it is logged but never seen.
