@@ -45,17 +45,17 @@ async def test_finance_insight_scan_handler_dispatches_roster_job(monkeypatch) -
 
     calls: dict[str, Any] = {}
 
-    async def run_finance_insight_scan(pool: Any) -> dict[str, Any]:
+    async def run_insight_scan(pool: Any) -> dict[str, Any]:
         calls["pool"] = pool
         return {"submitted": 0, "accepted": 0, "filtered": 0, "errors": 0}
 
     monkeypatch.setattr(
         "butlers.jobs._roster_loader.load_roster_jobs",
-        lambda name: SimpleNamespace(run_finance_insight_scan=run_finance_insight_scan),
+        lambda name: SimpleNamespace(run_insight_scan=run_insight_scan),
     )
 
     pool = object()
-    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["finance"]["run_finance_insight_scan"]
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["finance"]["insight_scan"]
 
     result = await handler(pool, {"ignored": True})
 

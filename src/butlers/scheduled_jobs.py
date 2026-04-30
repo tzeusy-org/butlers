@@ -272,7 +272,7 @@ async def _run_finance_insight_scan_job(
     from butlers.jobs._roster_loader import load_roster_jobs
 
     mod = load_roster_jobs("finance")
-    return await mod.run_finance_insight_scan(pool)
+    return await mod.run_insight_scan(pool)
 
 
 async def _run_relationship_briefing_contribution_job(
@@ -639,7 +639,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         },
         "finance": {
             "daily_briefing_contribution": _run_finance_briefing_contribution_job,
-            "run_finance_insight_scan": _run_finance_insight_scan_job,
+            "insight_scan": _run_finance_insight_scan_job,
         },
         "relationship": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,

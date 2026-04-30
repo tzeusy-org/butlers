@@ -376,11 +376,11 @@ async def _propose(
 
 
 # ---------------------------------------------------------------------------
-# run_finance_insight_scan
+# run_insight_scan
 # ---------------------------------------------------------------------------
 
 
-async def run_finance_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
+async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Evaluate financial domain data and submit proactive insight candidates.
 
     Scans four categories in order:

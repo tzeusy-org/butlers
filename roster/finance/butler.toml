@@ -152,7 +152,7 @@ Always send the audit summary — this is a monthly review that should always fi
 name = "insight-scan"
 cron = "0 7 30 * *"
 dispatch_mode = "job"
-job_name = "run_finance_insight_scan"
+job_name = "insight_scan"
 
 [[butler.schedule]]
 name = "daily_briefing_contribution"
