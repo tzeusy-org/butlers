@@ -65,6 +65,7 @@ def _row_to_point_event(row: asyncpg.Record) -> PointEvent:
         privacy=Privacy(row["privacy"]),
         retention_days=row["retention_days"],
         tombstone_at=row["tombstone_at"],
+        tombstone_reason=row["tombstone_reason"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -84,6 +85,7 @@ def _row_to_episode(row: asyncpg.Record) -> Episode:
         privacy=Privacy(row["privacy"]),
         retention_days=row["retention_days"],
         tombstone_at=row["tombstone_at"],
+        tombstone_reason=row["tombstone_reason"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -434,9 +436,9 @@ async def upsert_point_event(
         """
         INSERT INTO point_events (
             source_name, source_ref, event_type, occurred_at, precision,
-            title, payload, privacy, retention_days, tombstone_at
+            title, payload, privacy, retention_days, tombstone_at, tombstone_reason
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             event_type = EXCLUDED.event_type,
             occurred_at = EXCLUDED.occurred_at,
@@ -446,6 +448,7 @@ async def upsert_point_event(
             privacy = EXCLUDED.privacy,
             retention_days = EXCLUDED.retention_days,
             tombstone_at = EXCLUDED.tombstone_at,
+            tombstone_reason = EXCLUDED.tombstone_reason,
             updated_at = now()
         RETURNING *
         """,
@@ -459,6 +462,7 @@ async def upsert_point_event(
         event.privacy.value,
         event.retention_days,
         event.tombstone_at,
+        event.tombstone_reason,
     )
     return _row_to_point_event(row)
 
@@ -479,9 +483,9 @@ async def upsert_episode(
         """
         INSERT INTO episodes (
             source_name, source_ref, episode_type, start_at, end_at,
-            precision, title, payload, privacy, retention_days, tombstone_at
+            precision, title, payload, privacy, retention_days, tombstone_at, tombstone_reason
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             episode_type = EXCLUDED.episode_type,
             start_at = EXCLUDED.start_at,
@@ -492,6 +496,7 @@ async def upsert_episode(
             privacy = EXCLUDED.privacy,
             retention_days = EXCLUDED.retention_days,
             tombstone_at = EXCLUDED.tombstone_at,
+            tombstone_reason = EXCLUDED.tombstone_reason,
             updated_at = now()
         RETURNING *
         """,
@@ -506,6 +511,7 @@ async def upsert_episode(
         episode.privacy.value,
         episode.retention_days,
         episode.tombstone_at,
+        episode.tombstone_reason,
     )
     return _row_to_episode(row)
 
