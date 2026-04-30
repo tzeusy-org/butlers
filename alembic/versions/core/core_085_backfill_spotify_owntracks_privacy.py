@@ -33,16 +33,24 @@ depends_on = None
 def upgrade() -> None:
     """Reclassify existing Spotify session-summary episodes from sensitive to normal.
 
-    Uses a schema-qualified table path.  The chronicler butler connects via
-    ``butler_chronicler_rw`` which has its search_path set to ``chronicler``.
-    We qualify the table name explicitly so the migration is safe regardless
-    of which connection role runs it.
+    Guards with an existence check so the migration is safe when the chronicler
+    schema is absent (e.g. test databases that run only the core chain without
+    the chronicler butler chain).  Follows the same pattern as core_080.
     """
     op.execute("""
-        UPDATE chronicler.episodes
-        SET privacy = 'normal'
-        WHERE source_name = 'spotify.session_summary'
-          AND privacy = 'sensitive'
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'chronicler' AND table_name = 'episodes'
+            ) THEN
+                UPDATE chronicler.episodes
+                SET privacy = 'normal'
+                WHERE source_name = 'spotify.session_summary'
+                  AND privacy = 'sensitive';
+            END IF;
+        END
+        $$;
     """)
 
 
@@ -52,8 +60,17 @@ def downgrade() -> None:
     This restores the pre-bu-6c5i6 state for rollback purposes.
     """
     op.execute("""
-        UPDATE chronicler.episodes
-        SET privacy = 'sensitive'
-        WHERE source_name = 'spotify.session_summary'
-          AND privacy = 'normal'
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'chronicler' AND table_name = 'episodes'
+            ) THEN
+                UPDATE chronicler.episodes
+                SET privacy = 'sensitive'
+                WHERE source_name = 'spotify.session_summary'
+                  AND privacy = 'normal';
+            END IF;
+        END
+        $$;
     """)
