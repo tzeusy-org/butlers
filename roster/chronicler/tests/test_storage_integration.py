@@ -52,6 +52,8 @@ from butlers.chronicler.storage import (
     upsert_point_event,
 )
 
+from ._inline_ddl import make_sessions_table_ddl
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -668,23 +670,7 @@ async def test_sessions_adapter_projects_and_replays(chronicler_pool) -> None:
     fake_schema = "testbutler"
     async with chronicler_pool.acquire() as conn:
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{fake_schema}"')
-        await conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS "{fake_schema}".sessions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                prompt TEXT NOT NULL,
-                trigger_source TEXT NOT NULL,
-                model TEXT,
-                success BOOLEAN,
-                error TEXT,
-                result TEXT,
-                tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
-                duration_ms INTEGER,
-                request_id TEXT NOT NULL,
-                ingestion_event_id UUID,
-                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                completed_at TIMESTAMPTZ
-            )
-        """)
+        await conn.execute(make_sessions_table_ddl(fake_schema))
         # One open + one closed session.
         open_id = uuid4()
         closed_id = uuid4()
@@ -811,29 +797,10 @@ async def test_sessions_adapter_per_schema_watermarks_advance_independently(
     schema_b = "wm_test_beta"
     now = datetime.now(UTC)
 
-    async def _make_sessions_table(conn, schema: str) -> None:
-        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-        await conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS "{schema}".sessions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                prompt TEXT NOT NULL,
-                trigger_source TEXT NOT NULL,
-                model TEXT,
-                success BOOLEAN,
-                error TEXT,
-                result TEXT,
-                tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
-                duration_ms INTEGER,
-                request_id TEXT NOT NULL,
-                ingestion_event_id UUID,
-                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                completed_at TIMESTAMPTZ
-            )
-        """)
-
     async with chronicler_pool.acquire() as conn:
-        await _make_sessions_table(conn, schema_a)
-        await _make_sessions_table(conn, schema_b)
+        for schema in (schema_a, schema_b):
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            await conn.execute(make_sessions_table_ddl(schema))
 
         # Schema A: one old closed session (30 days ago).
         old_time = now - timedelta(days=30)
@@ -920,29 +887,10 @@ async def test_sessions_adapter_global_watermark_is_conservative(
     schema_b = "gwm_test_beta"
     now = datetime.now(UTC)
 
-    async def _make_sessions_table(conn, schema: str) -> None:
-        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-        await conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS "{schema}".sessions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                prompt TEXT NOT NULL,
-                trigger_source TEXT NOT NULL,
-                model TEXT,
-                success BOOLEAN,
-                error TEXT,
-                result TEXT,
-                tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
-                duration_ms INTEGER,
-                request_id TEXT NOT NULL,
-                ingestion_event_id UUID,
-                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                completed_at TIMESTAMPTZ
-            )
-        """)
-
     async with chronicler_pool.acquire() as conn:
-        await _make_sessions_table(conn, schema_a)
-        await _make_sessions_table(conn, schema_b)
+        for schema in (schema_a, schema_b):
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            await conn.execute(make_sessions_table_ddl(schema))
 
         # Schema A: old session (30 days ago).
         old_time = now - timedelta(days=30)
