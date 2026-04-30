@@ -131,7 +131,7 @@ class TestUpgradeSQLShape:
         sqls = self._collect_upgrade_sqls()
         step1 = sqls[0]
         assert "interaction_" in step1
-        assert "metadata->>'type'" in step1 or "metadata" in step1
+        assert "metadata->>'type'" in step1
 
     def test_upgrade_step1_where_filters_interaction_predicate(self) -> None:
         """Step 1 UPDATE WHERE clause filters on predicate = 'interaction'."""
@@ -146,7 +146,8 @@ class TestUpgradeSQLShape:
         """Step 1 WHERE clause requires metadata->>'type' IS NOT NULL and != ''."""
         sqls = self._collect_upgrade_sqls()
         step1 = sqls[0]
-        assert "IS NOT NULL" in step1 or "is not null" in step1.lower()
+        assert "IS NOT NULL" in step1.upper()
+        assert "!= ''" in step1
 
     def test_upgrade_step1_scoped_to_relationship(self) -> None:
         """Step 1 UPDATE is scoped to scope = 'relationship'."""
@@ -338,8 +339,8 @@ class TestIdempotency:
             with patch.object(mod, "op", mock_op):
                 mod.upgrade()  # Must not raise regardless of rowcount
 
-        # If we reach here, both runs completed without error
-        assert True
+        # Verify that the second run still emitted the expected guard and update statements
+        assert len(sqls) == 3
 
 
 # ---------------------------------------------------------------------------
