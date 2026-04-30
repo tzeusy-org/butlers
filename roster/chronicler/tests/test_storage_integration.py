@@ -678,6 +678,7 @@ async def test_sessions_adapter_projects_and_replays(chronicler_pool) -> None:
                 tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
                 duration_ms INTEGER,
                 request_id TEXT NOT NULL,
+                ingestion_event_id UUID,
                 started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 completed_at TIMESTAMPTZ
             )
@@ -822,6 +823,7 @@ async def test_sessions_adapter_per_schema_watermarks_advance_independently(
                 tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
                 duration_ms INTEGER,
                 request_id TEXT NOT NULL,
+                ingestion_event_id UUID,
                 started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 completed_at TIMESTAMPTZ
             )
@@ -930,6 +932,7 @@ async def test_sessions_adapter_global_watermark_is_conservative(
                 tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
                 duration_ms INTEGER,
                 request_id TEXT NOT NULL,
+                ingestion_event_id UUID,
                 started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 completed_at TIMESTAMPTZ
             )
