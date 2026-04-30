@@ -322,8 +322,7 @@ async def test_negative_playtime_row_is_skipped_and_watermarked() -> None:
     assert result.episodes_closed == 0
     assert result.watermark == _NOW
     assert result.warnings == [
-        f"connectors.steam_play_history:{_STEAM_ID}:{_APP_ID}:{_DATE} "
-        "has negative playtime_minutes"
+        f"connectors.steam_play_history:{_STEAM_ID}:{_APP_ID}:{_DATE} has negative playtime_minutes"
     ]
     mock_upsert.assert_not_called()
 
