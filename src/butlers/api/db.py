@@ -12,7 +12,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.db import schema_search_path, should_retry_with_ssl_disable
+from butlers.db import register_jsonb_codec, schema_search_path, should_retry_with_ssl_disable
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class DatabaseManager:
             "database": database,
             "min_size": self._min_pool_size,
             "max_size": self._max_pool_size,
+            "init": register_jsonb_codec,
         }
         search_path = schema_search_path(schema)
         if search_path is not None:
