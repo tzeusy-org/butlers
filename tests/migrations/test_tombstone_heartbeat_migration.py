@@ -157,7 +157,7 @@ def _collect_upgrade_calls() -> list[str]:
     calls_collected: list[str] = []
 
     mock_op = MagicMock()
-    mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
+    mock_op.execute.side_effect = calls_collected.append
     # _log_candidate_counts uses op.get_bind() — mock it to return a
     # minimal connection-like object so it doesn't fail the unit test.
     mock_bind = MagicMock()
@@ -179,7 +179,7 @@ def _collect_downgrade_calls() -> list[str]:
     mod = _load_migration()
     calls_collected: list[str] = []
     mock_op = MagicMock()
-    mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
+    mock_op.execute.side_effect = calls_collected.append
     with patch.object(mod, "op", mock_op):
         mod.downgrade()
     return calls_collected
