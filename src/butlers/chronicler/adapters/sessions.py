@@ -22,12 +22,19 @@ Semantics:
   choice.
 - This adapter does NOT use TTL diagnostic process logs as source
   truth (per bu-pa4e0.7 acceptance criteria).
+
+Title-resolution rules (bu-fkqv0):
+  trigger_source='route' AND contact resolved  → 'Conversation with {display_name}'
+  trigger_source='route' AND contact unresolved → 'Conversation via {channel}'
+  trigger_source IN ('trigger','external','dashboard') → '{schema}: manual task'
+  All other / NULL trigger_source              → '{schema} session'  (legacy fallback)
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime
+from uuid import UUID
 
 import asyncpg
 
@@ -117,8 +124,16 @@ class CoreSessionsAdapter(ProjectionAdapter):
                 result.warnings.append(f"sessions table missing for schema {schema!r}; skipping")
                 continue
 
+            # Resolve contact display names for route-triggered sessions
+            # (those with an ingestion_event_id linking back to a channel sender).
+            # The result is a mapping from session_id → (display_name | None, channel | None).
+            contact_map = await self._resolve_contacts(pool, schema_rows)
+
             for row in schema_rows:
-                projected = await self._project_row(chronicler_pool, schema, row)
+                contact_info = contact_map.get(row["id"], (None, None))
+                projected = await self._project_row(
+                    chronicler_pool, schema, row, contact_info=contact_info
+                )
                 result.point_events += projected["point_events"]
                 if projected["opened_episode"]:
                     result.episodes_opened += 1
@@ -200,7 +215,8 @@ class CoreSessionsAdapter(ProjectionAdapter):
                     rows = await conn.fetch(
                         f"""
                         SELECT id, started_at, completed_at, trigger_source,
-                               success, request_id, duration_ms, model
+                               success, request_id, ingestion_event_id,
+                               duration_ms, model
                         FROM {quoted}.sessions
                         WHERE (trigger_source IS NULL
                                OR (trigger_source != ALL($2::text[])
@@ -218,7 +234,8 @@ class CoreSessionsAdapter(ProjectionAdapter):
                     rows = await conn.fetch(
                         f"""
                         SELECT id, started_at, completed_at, trigger_source,
-                               success, request_id, duration_ms, model
+                               success, request_id, ingestion_event_id,
+                               duration_ms, model
                         FROM {quoted}.sessions
                         WHERE (started_at > $1
                                OR (completed_at IS NOT NULL AND completed_at > $1))
@@ -250,11 +267,119 @@ class CoreSessionsAdapter(ProjectionAdapter):
                 watermark = candidate
         return list(rows), watermark
 
+    async def _resolve_contacts(
+        self,
+        pool: asyncpg.Pool,
+        rows: list[asyncpg.Record],
+    ) -> dict[int, tuple[str | None, str | None]]:
+        """Resolve contact display names for route-triggered sessions.
+
+        For sessions with ``trigger_source='route'`` and a non-NULL
+        ``ingestion_event_id``, joins ``public.ingestion_events`` →
+        ``public.contact_info`` → ``public.contacts`` to fetch the sender's
+        display name and channel.
+
+        Returns a mapping ``{session_id: (display_name, channel)}``.
+        Sessions that cannot be resolved get ``(None, channel)`` when the
+        channel is known but the contact is not registered, or ``(None, None)``
+        when the ingestion event is absent.
+
+        The JOIN is guarded against missing tables (``public.ingestion_events``
+        or ``public.contact_info`` / ``public.contacts``) by catching
+        ``asyncpg.PostgresError`` and degrading to an empty dict.
+        """
+        # Collect ingestion_event_ids for route-triggered rows only.
+        event_ids: list[UUID] = []
+        session_to_event: dict[int, UUID] = {}
+        for row in rows:
+            if row["trigger_source"] != "route":
+                continue
+            raw_eid = row["ingestion_event_id"]
+            if raw_eid is None:
+                continue
+            eid = raw_eid if isinstance(raw_eid, UUID) else UUID(str(raw_eid))
+            event_ids.append(eid)
+            session_to_event[row["id"]] = eid
+
+        if not event_ids:
+            return {}
+
+        try:
+            async with pool.acquire() as conn:
+                contact_rows = await conn.fetch(
+                    """
+                    SELECT ie.id                     AS event_id,
+                           ie.source_channel         AS channel,
+                           c.name                    AS display_name
+                    FROM   public.ingestion_events ie
+                    LEFT JOIN public.contact_info ci
+                           ON ci.type  = ie.source_channel
+                          AND ci.value = ie.source_sender_identity
+                    LEFT JOIN public.contacts c
+                           ON c.id = ci.contact_id
+                    WHERE  ie.id = ANY($1::uuid[])
+                    """,
+                    event_ids,
+                )
+        except asyncpg.PostgresError:
+            logger.debug(
+                "CoreSessionsAdapter: contact resolution query failed; "
+                "falling back to unresolved titles",
+                exc_info=True,
+            )
+            return {}
+
+        # Build event_id → (display_name, channel) map.
+        event_map: dict[UUID, tuple[str | None, str | None]] = {}
+        for cr in contact_rows:
+            eid = cr["event_id"]
+            if not isinstance(eid, UUID):
+                eid = UUID(str(eid))
+            event_map[eid] = (cr["display_name"], cr["channel"])
+
+        # Map session_id → (display_name, channel).
+        result: dict[int, tuple[str | None, str | None]] = {}
+        for sid, eid in session_to_event.items():
+            result[sid] = event_map.get(eid, (None, None))
+        return result
+
+    @staticmethod
+    def _compute_episode_title(
+        schema: str,
+        trigger_source: str | None,
+        contact_info: tuple[str | None, str | None],
+    ) -> str:
+        """Derive a human-readable episode title from session metadata.
+
+        Resolution rules (bu-fkqv0):
+        1. trigger_source='route' AND display_name resolved
+               → 'Conversation with {display_name}'
+        2. trigger_source='route' AND display_name unresolved, channel known
+               → 'Conversation via {channel}'
+        3. trigger_source='route' AND display_name unresolved, channel unknown
+               → 'Conversation via unknown channel'
+        4. trigger_source in ('trigger', 'external', 'dashboard')
+               → '{schema}: manual task'
+        5. Fallback (NULL or unrecognised trigger_source)
+               → '{schema} session'
+        """
+        display_name, channel = contact_info
+        if trigger_source == "route":
+            if display_name:
+                return f"Conversation with {display_name}"
+            channel_label = channel or "unknown channel"
+            return f"Conversation via {channel_label}"
+        if trigger_source in ("trigger", "external", "dashboard"):
+            return f"{schema}: manual task"
+        return f"{schema} session"
+
     async def _project_row(
         self,
         chronicler_pool: asyncpg.Pool,
         schema: str,
         row: asyncpg.Record,
+        *,
+        contact_info: tuple[str | None, str | None] = (None, None),
     ) -> dict[str, int | bool]:
         """Upsert the point events + work episode for one session row."""
         session_id = row["id"]
@@ -313,6 +438,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         ),
                     )
 
+                episode_title = self._compute_episode_title(schema, trigger_source, contact_info)
                 episode = await upsert_episode(
                     conn,
                     Episode(
@@ -322,7 +448,7 @@ class CoreSessionsAdapter(ProjectionAdapter):
                         start_at=started_at,
                         end_at=completed_at,
                         precision=Precision.EXACT,
-                        title=f"{schema} session",
+                        title=episode_title,
                         payload=payload_common,
                         privacy=Privacy.NORMAL,
                     ),

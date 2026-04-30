@@ -226,16 +226,20 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
 
           {!isSensitive && (
             <>
-              <FieldRow label="Source" value={ep.source_name} />
+              {ep.canonical_title && (
+                <p
+                  className="text-base font-semibold leading-snug"
+                  data-testid="episode-primary-title"
+                >
+                  {ep.canonical_title}
+                </p>
+              )}
               <FieldRow label="Start" value={formatDateTime(ep.canonical_start_at)} />
               <FieldRow
                 label="End"
                 value={ep.canonical_end_at ? formatDateTime(ep.canonical_end_at) : "ongoing"}
               />
               <FieldRow label="Duration" value={duration} />
-              {ep.canonical_title && (
-                <FieldRow label="Title" value={ep.canonical_title} />
-              )}
               {ep.corrected_at && (
                 <FieldRow
                   label="Corrected"
@@ -245,6 +249,12 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
               {ep.correction_note && (
                 <FieldRow label="Correction note" value={ep.correction_note} />
               )}
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="episode-source-footnote"
+              >
+                Source: {ep.source_name}
+              </p>
             </>
           )}
 
@@ -403,8 +413,8 @@ export interface EpisodeDrawerProps {
  * SINGLE Tier-2 LLM call path on the chronicles page per RFC 0014 §D5.
  */
 export function EpisodeDrawer({ episodeId, open, onClose }: EpisodeDrawerProps) {
-  // Compute a display label for the Sheet title. We use the episode ID as
-  // a short fallback since the full title is fetched inside the content.
+  // The full title is loaded inside EpisodeDrawerContent; use the episode ID
+  // as a minimal fallback while data is in-flight.
   const titleLabel = episodeId ? `Episode ${episodeId.slice(0, 8)}…` : "Episode"
 
   return (
