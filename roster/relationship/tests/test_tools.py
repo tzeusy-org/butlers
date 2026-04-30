@@ -2485,7 +2485,7 @@ async def test_contact_get_with_interactions_shows_nonzero_score(pool):
     await pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction', 'chat', 'relationship', 'active', $2)
+        VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2)
         """,
         f"contact:{cid}",
         occurred,
@@ -2566,7 +2566,7 @@ async def test_contacts_overdue_uses_tier_cadence_when_no_stay_in_touch(pool_wit
         await pool_with_cadence.execute(
             """
             INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-            VALUES ($1, 'interaction', 'chat', 'relationship', 'active', $2)
+            VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2)
             """,
             f"contact:{cid}",
             occurred,
@@ -2689,7 +2689,7 @@ async def test_interaction_log_group_group_size_in_metadata(pool):
         """
         SELECT metadata FROM facts
         WHERE subject = $1
-          AND predicate = 'interaction'
+          AND predicate LIKE 'interaction_%'
           AND scope = 'relationship'
           AND validity = 'active'
         ORDER BY created_at DESC

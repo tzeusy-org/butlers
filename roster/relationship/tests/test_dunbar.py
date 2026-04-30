@@ -447,7 +447,7 @@ async def _log_interaction(pool, contact_id: uuid.UUID, days_ago: float) -> None
     await pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2)
         """,
         f"contact:{contact_id}",
         occurred_at,
@@ -555,7 +555,7 @@ async def test_inactive_facts_excluded(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction', '', 'relationship', 'superseded', now() - INTERVAL '1 day')
+        VALUES ($1, 'interaction_other', '', 'relationship', 'superseded', now() - INTERVAL '1 day')
         """,
         f"contact:{contact['id']}",
     )
@@ -585,7 +585,7 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{outgoing['id']}",
         occurred_at,
@@ -594,7 +594,7 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{incoming['id']}",
         occurred_at,
@@ -629,7 +629,7 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{mutual['id']}",
         occurred_at,
@@ -638,7 +638,7 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{incoming['id']}",
         occurred_at,
@@ -671,7 +671,7 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{group_contact['id']}",
         occurred_at,
@@ -680,7 +680,7 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{dm_contact['id']}",
         occurred_at,
@@ -713,7 +713,7 @@ async def test_null_direction_defaults_to_1x(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2)
         """,
         f"contact:{null_dir['id']}",
         occurred_at,
@@ -721,7 +721,7 @@ async def test_null_direction_defaults_to_1x(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{explicit_incoming['id']}",
         occurred_at,
@@ -752,7 +752,7 @@ async def test_null_group_size_defaults_to_1x(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2)
         """,
         f"contact:{null_gs['id']}",
         occurred_at,
@@ -760,7 +760,7 @@ async def test_null_group_size_defaults_to_1x(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{explicit_dm['id']}",
         occurred_at,
@@ -788,7 +788,7 @@ async def test_connector_extracted_mentions_do_not_count_as_direct_interactions(
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', 'Talked about MentionedPerson', 'relationship', 'active',
+        VALUES ($1, 'interaction_other', 'Talked about MentionedPerson', 'relationship', 'active',
                 $2, $3::jsonb)
         """,
         f"contact:{mentioned['id']}",
@@ -826,7 +826,7 @@ async def test_interaction_sync_connector_events_still_count(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{direct['id']}",
         occurred_at,
@@ -865,7 +865,7 @@ async def test_interview_interactions_are_downweighted(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{interview['id']}",
         occurred_at,
@@ -874,7 +874,7 @@ async def test_interview_interactions_are_downweighted(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{call['id']}",
         occurred_at,
@@ -904,7 +904,7 @@ async def test_email_interactions_are_downweighted(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{email['id']}",
         occurred_at,
@@ -913,7 +913,7 @@ async def test_email_interactions_are_downweighted(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
         """,
         f"contact:{call['id']}",
         occurred_at,
@@ -1403,7 +1403,7 @@ async def _log_simple_interaction(pool, contact_id: uuid.UUID, days_ago: float) 
     await pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at)
-        VALUES ($1, 'interaction', 'chat', 'relationship', 'active', $2)
+        VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2)
         """,
         f"contact:{contact_id}",
         valid_at,

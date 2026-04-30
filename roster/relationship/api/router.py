@@ -2087,7 +2087,8 @@ async def get_entity(
 
     aliases = list(row["aliases"]) if row["aliases"] else []
     roles = list(row["roles"]) if row["roles"] else []
-    metadata = dict(row["metadata"]) if row["metadata"] else {}
+    _raw_meta = row["metadata"]
+    metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
 
     return EntityDetail(
         id=row["id"],
@@ -2608,7 +2609,7 @@ async def list_entity_timeline(
             content=r["content"],
             valid_at=r["valid_at"],
             predicate=r["predicate"],
-            metadata=dict(r["metadata"]) if r["metadata"] else None,
+            metadata=dict(r["metadata"]) if isinstance(r["metadata"], dict) else None,
         )
         for r in rows
     ]

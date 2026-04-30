@@ -12,23 +12,26 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter, Route, Routes } from "react-router"
-import {
-  endOfDay,
-  format,
-  startOfDay,
-  subDays,
-  subHours,
-} from "date-fns"
+import { subDays, subHours } from "date-fns"
+import { formatInTimeZone } from "date-fns-tz"
 
-import { isPollingDisabled, useTimeWindow } from "@/hooks/use-time-window"
+import { startOfDayInTz, endOfDayInTz } from "@/components/chronicles/tz-format"
+import { isPollingDisabled, useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "./TimeWindowPicker"
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+//
+// The hook anchors window boundaries to OWNER_TZ_DEFAULT (Asia/Singapore), so
+// `data-from` / `data-to` reflect SGT calendar days, not the runner's local
+// TZ. Format expectations in the same tz here to keep the assertions stable
+// across CI runners (typically UTC) and dev workstations.
 
 const DATE_FMT = "yyyy-MM-dd"
-const fmt = (d: Date) => format(d, DATE_FMT)
+const fmt = (d: Date) => formatInTimeZone(d, OWNER_TZ_DEFAULT, DATE_FMT)
+const startOfDay = (d: Date) => startOfDayInTz(d, OWNER_TZ_DEFAULT)
+const endOfDay = (d: Date) => endOfDayInTz(d, OWNER_TZ_DEFAULT)
 
 // Freeze the clock to noon UTC on a fixed date so tests that call new Date()
 // multiple times (in assertions and inside the hook) always observe the same

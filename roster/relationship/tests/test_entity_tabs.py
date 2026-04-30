@@ -897,3 +897,138 @@ class TestContactDetailLastInteractionAt:
         body = resp.json()
         assert body["last_interaction_at"] is None
         assert body["entity_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# JSONB metadata defensive parsing (bu-0uc4i)
+# ---------------------------------------------------------------------------
+#
+# asyncpg returns JSONB columns as Python strings unless a type codec is
+# registered on the connection. Calling ``dict(s)`` on a JSON string iterates
+# char-by-char and raises ``TypeError: dictionary update sequence element #0
+# has length 1; 2 is required``.
+#
+# These tests pin the defensive ``isinstance(_, dict)`` guard at:
+#  - ``get_entity`` (router.py around line 2090)
+#  - ``list_entity_timeline`` (router.py around line 2611)
+#
+# Both must return 200 even when the row's metadata is a JSON string rather
+# than a dict.
+# ---------------------------------------------------------------------------
+
+
+def _make_entity_row(**kwargs) -> MagicMock:
+    """Build a MagicMock that behaves like an asyncpg Record for a public.entities row."""
+    data = {
+        "id": _ENT_ID,
+        "canonical_name": "Owner",
+        "entity_type": "person",
+        "aliases": [],
+        "roles": ["owner"],
+        "metadata": {},
+        "created_at": _NOW,
+        "updated_at": _NOW,
+        **kwargs,
+    }
+    row = MagicMock()
+    row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    return row
+
+
+def _app_with_entity_pool(
+    *,
+    entity_row: MagicMock | None,
+    info_rows: list | None = None,
+) -> tuple[FastAPI, AsyncMock]:
+    """Wire a FastAPI app whose pool serves a single entity row via fetchrow.
+
+    The entity GET handler calls pool.fetchrow for the entity then pool.fetch
+    for entity_info. ``entity_row=None`` simulates the 404 path.
+    """
+    mock_pool = AsyncMock()
+    mock_pool.fetchrow = AsyncMock(return_value=entity_row)
+    mock_pool.fetch = AsyncMock(return_value=info_rows or [])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+
+    app = create_app()
+
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+
+    return app, mock_pool
+
+
+class TestEntityGetJsonbMetadata:
+    """Regression: GET /entities/{id} must not crash on string-typed JSONB metadata (bu-0uc4i)."""
+
+    async def test_dict_metadata_returns_200(self):
+        row = _make_entity_row(metadata={"source_butler": "relationship"})
+        app, _ = _app_with_entity_pool(entity_row=row)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}")
+
+        assert resp.status_code == 200
+        assert resp.json()["metadata"] == {"source_butler": "relationship"}
+
+    async def test_string_metadata_does_not_crash(self):
+        # Simulates asyncpg returning JSONB as a JSON string (no type codec registered).
+        # Pre-fix this raised ValueError("dictionary update sequence element #0 has length 1...").
+        row = _make_entity_row(metadata='{"source_butler": "relationship"}')
+        app, _ = _app_with_entity_pool(entity_row=row)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}")
+
+        assert resp.status_code == 200
+        # Defensive fallback: string metadata is dropped to {} rather than parsed.
+        # Proper JSON parsing is tracked as a follow-up bead (per bu-0uc4i AC #7).
+        assert resp.json()["metadata"] == {}
+
+    async def test_empty_dict_metadata_returns_200(self):
+        row = _make_entity_row(metadata={})
+        app, _ = _app_with_entity_pool(entity_row=row)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}")
+
+        assert resp.status_code == 200
+        assert resp.json()["metadata"] == {}
+
+    async def test_missing_entity_returns_404(self):
+        app, _ = _app_with_entity_pool(entity_row=None)
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}")
+        assert resp.status_code == 404
+
+
+class TestTimelineJsonbMetadata:
+    """Regression: GET /entities/{id}/timeline must not crash on string-typed JSONB metadata (bu-0uc4i)."""
+
+    async def test_dict_metadata_returns_200(self):
+        rows = [
+            _make_row(
+                predicate="contact_note",
+                content="Note",
+                metadata={"emotion": "happy"},
+            )
+        ]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/timeline")
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["metadata"] == {"emotion": "happy"}
+
+    async def test_string_metadata_does_not_crash(self):
+        # Pre-fix this raised the same dict() char-iteration error as the entity GET.
+        rows = [
+            _make_row(
+                predicate="contact_note",
+                content="Note",
+                metadata='{"emotion": "happy"}',
+            )
+        ]
+        app, _ = _app_with_pool(fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/timeline")
+
+        assert resp.status_code == 200
+        # Defensive fallback: string metadata is rendered as null per the spec's
+        # "sparse metadata renders as null" rule rather than crashing.
+        assert resp.json()[0]["metadata"] is None
