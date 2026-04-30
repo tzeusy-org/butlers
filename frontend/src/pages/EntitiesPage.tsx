@@ -2,6 +2,7 @@ import type React from "react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
+  Activity,
   ArchiveIcon,
   ArchiveRestoreIcon,
   CheckCircleIcon,
@@ -841,6 +842,30 @@ export default function EntitiesPage() {
                                 </Button>
                               </TooltipTrigger>
                               <TooltipContent>Edit</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                {entity.entity_type === "person" ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-xs"
+                                    onClick={() =>
+                                      navigate(`/butlers/relationship/entities/${entity.id}`)
+                                    }
+                                  >
+                                    <Activity />
+                                  </Button>
+                                ) : (
+                                  <Button variant="ghost" size="icon-xs" disabled>
+                                    <Activity />
+                                  </Button>
+                                )}
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {entity.entity_type === "person"
+                                  ? "Open relationship activity"
+                                  : "Not a person entity"}
+                              </TooltipContent>
                             </Tooltip>
                             <Tooltip>
                               <TooltipTrigger asChild>

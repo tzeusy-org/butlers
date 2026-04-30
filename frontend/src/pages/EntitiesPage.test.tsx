@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 
+const mockNavigate = vi.fn();
+vi.mock("react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>();
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
 import type { EntitySummary } from "@/api/types";
 import {
   useArchiveEntity,
@@ -190,4 +196,141 @@ describe("EntitiesPage delete flow", () => {
     expect(document.body.textContent).toContain("1 active fact(s) that will be retired");
     expect(findButtonByText(document.body, "Retire facts & delete")).toBeDefined();
   });
+});
+
+// ---------------------------------------------------------------------------
+// Activity button tests
+// ---------------------------------------------------------------------------
+
+const PERSON_ENTITY: EntitySummary = {
+  id: "entity-person-001",
+  canonical_name: "Alice Person",
+  entity_type: "person",
+  aliases: [],
+  roles: [],
+  fact_count: 0,
+  linked_contact_id: null,
+  unidentified: false,
+  source_butler: "relationship",
+  source_scope: "relationship",
+  archived: false,
+  created_at: "2026-04-06T12:00:00Z",
+  updated_at: "2026-04-06T12:00:00Z",
+  dunbar_tier: null,
+  dunbar_score: null,
+};
+
+describe("EntitiesPage Activity button", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockNavigate.mockReset();
+
+    vi.mocked(useArchiveEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useArchiveEntity>>(),
+    );
+    vi.mocked(useUnarchiveEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useUnarchiveEntity>>(),
+    );
+    vi.mocked(useMergeEntity).mockReturnValue(mockMutationResult<ReturnType<typeof useMergeEntity>>());
+    vi.mocked(usePromoteEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof usePromoteEntity>>(),
+    );
+    vi.mocked(useDeleteEntity).mockReturnValue(
+      mockMutationResult<ReturnType<typeof useDeleteEntity>>(),
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    document.body.innerHTML = "";
+    vi.restoreAllMocks();
+  });
+
+  function renderWith(entity: EntitySummary) {
+    vi.mocked(useEntities).mockImplementation((params) => {
+      if (params?.unidentified === true) return mockEntitiesResult([]);
+      return mockEntitiesResult([entity]);
+    });
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <EntitiesPage />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  /** Find the Activity button in the row for the given entity by aria-label or svg title fallback.
+   *  We locate it by position: it is the 3rd button in the row actions cluster (0-indexed: 0=User, 1=Edit, 2=Activity, 3=Merge, 4=Archive, 5=Delete). */
+  function getActivityButton(entity: EntitySummary): HTMLButtonElement | undefined {
+    const entityLink = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.textContent?.trim() === entity.canonical_name,
+    );
+    const row = entityLink?.closest("tr");
+    const buttons = row?.querySelectorAll("button") ?? [];
+    // buttons: [User, Edit, Activity, Merge, Archive/Restore, Delete]
+    return buttons[2] as HTMLButtonElement | undefined;
+  }
+
+  it("Activity button is enabled for entity_type='person'", () => {
+    renderWith(PERSON_ENTITY);
+    const btn = getActivityButton(PERSON_ENTITY);
+    expect(btn).toBeDefined();
+    expect(btn?.disabled).toBe(false);
+  });
+
+  it.each(["organization", "place", "other"] as const)(
+    "Activity button is disabled for entity_type='%s'",
+    (entityType) => {
+      const entity: EntitySummary = { ...PERSON_ENTITY, id: `entity-${entityType}`, entity_type: entityType };
+      renderWith(entity);
+      const btn = getActivityButton(entity);
+      expect(btn).toBeDefined();
+      expect(btn?.disabled).toBe(true);
+    },
+  );
+
+  it("clicking enabled Activity button navigates to /butlers/relationship/entities/<id>", async () => {
+    renderWith(PERSON_ENTITY);
+    const btn = getActivityButton(PERSON_ENTITY);
+    expect(btn).toBeDefined();
+
+    await act(async () => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/butlers/relationship/entities/${PERSON_ENTITY.id}`,
+    );
+  });
+
+  it.each(["organization", "place", "other"] as const)(
+    "clicking disabled Activity button does not navigate for entity_type='%s'",
+    async (entityType) => {
+      const entity: EntitySummary = { ...PERSON_ENTITY, id: `entity-${entityType}`, entity_type: entityType };
+      renderWith(entity);
+      const btn = getActivityButton(entity);
+      expect(btn?.disabled).toBe(true);
+
+      await act(async () => {
+        btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await flush();
+      });
+
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        expect.stringContaining("/butlers/relationship/entities/"),
+      );
+    },
+  );
 });
