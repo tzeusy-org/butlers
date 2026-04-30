@@ -826,9 +826,7 @@ async def test_retry_all_fail_raises_runtime_error():
         proc = AsyncMock()
         proc.returncode = 0
         proc.pid = 42
-        proc.communicate = AsyncMock(
-            return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR)
-        )
+        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR))
         return proc
 
     with (
@@ -1332,9 +1330,7 @@ async def test_retry_provenance_result_source_first():
         proc = AsyncMock()
         proc.returncode = 0
         proc.pid = 42
-        proc.communicate = AsyncMock(
-            return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR)
-        )
+        proc.communicate = AsyncMock(return_value=(_make_bash_only_stdout(), _MCP_DISCOVERY_STDERR))
         return proc
 
     with (
