@@ -1,4 +1,10 @@
-## MODIFIED Requirements
+# Dashboard Relationship
+
+## Purpose
+
+Defines the dashboard surfaces for the Relationship butler: the contact detail API, contact detail page, secured credential reveal, owner identity setup, pending identity disambiguation queue, roles management, and the bidirectional bridge between the memory entity pages and the relationship-scoped entity activity page. Together these form the complete operator-facing contract for viewing, managing, and navigating relationship data through the Butlers dashboard.
+
+## Requirements
 
 ### Requirement: Contact detail API
 
@@ -99,8 +105,6 @@ The page MUST contain the following sections:
 - **THEN** the page MUST display a 404 message (e.g., "Contact not found")
 
 ---
-
-## ADDED Requirements
 
 ### Requirement: Secured contact info reveal API
 
