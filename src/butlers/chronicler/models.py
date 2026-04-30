@@ -119,6 +119,7 @@ class PointEvent:
     privacy: Privacy = Privacy.NORMAL
     retention_days: int | None = None
     tombstone_at: datetime | None = None
+    tombstone_reason: str | None = None
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -139,6 +140,7 @@ class Episode:
     privacy: Privacy = Privacy.NORMAL
     retention_days: int | None = None
     tombstone_at: datetime | None = None
+    tombstone_reason: str | None = None
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
