@@ -18,6 +18,17 @@ Semantics:
   episode's deduped payload note.
 - Missing calendar tables (module not enabled on this deployment)
   degrades gracefully — the adapter emits a warning and exits clean.
+
+Butler-managed calendar exclusion (defence-in-depth):
+- Instances whose ``calendar_sources.lane = 'butler'`` are excluded
+  from projection.  Butler-internal sources (``source_kind`` of
+  ``'internal_scheduler'`` or ``'internal_reminders'``) always use
+  ``lane='butler'``.  This prevents scheduled maintenance jobs such as
+  ``memory_consolidation``, ``memory_episode_cleanup``, and
+  ``memory_purge_superseded`` from polluting the user's Chronicle
+  Calendar lane even if the writer-side guard is ever bypassed.
+  The exclusion is applied via an inner join against ``calendar_sources``
+  in ``_fetch_instances``.
 """
 
 from __future__ import annotations
@@ -37,6 +48,17 @@ logger = logging.getLogger(__name__)
 SOURCE_NAME = "google_calendar.completed"
 EPISODE_TYPE_SCHEDULED_BLOCK = "scheduled_block"
 DEFAULT_BATCH_LIMIT = 500
+
+# Butler-managed source kinds — instances from these sources are never projected
+# into the user's Chronicle Calendar lane. The primary guard is the
+# ``lane='butler'`` filter on ``calendar_sources``; this constant documents the
+# underlying source kinds for clarity and test assertions.
+BUTLER_MANAGED_SOURCE_KINDS: frozenset[str] = frozenset(
+    {
+        "internal_scheduler",
+        "internal_reminders",
+    }
+)
 
 
 class CalendarCompletedAdapter(ProjectionAdapter):
@@ -129,8 +151,10 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.location AS event_location
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
+                        INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
                         WHERE i.ends_at <= $1
                           AND i.status != 'cancelled'
+                          AND cs.lane != 'butler'
                         ORDER BY i.ends_at ASC
                         LIMIT $2
                         """,
@@ -148,9 +172,11 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                e.location AS event_location
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
+                        INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
                         WHERE i.ends_at <= $1
                           AND i.ends_at > $2
                           AND i.status != 'cancelled'
+                          AND cs.lane != 'butler'
                         ORDER BY i.ends_at ASC
                         LIMIT $3
                         """,
@@ -255,6 +281,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
 
 
 __all__ = [
+    "BUTLER_MANAGED_SOURCE_KINDS",
     "CalendarCompletedAdapter",
     "EPISODE_TYPE_SCHEDULED_BLOCK",
     "SOURCE_NAME",
