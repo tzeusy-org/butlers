@@ -16,6 +16,9 @@ Semantics:
   mechanism if individual sessions need to be masked.
 - Source ref format: ``connectors.spotify_listening_sessions:{idempotency_key}``
   matching the evidence table's unique key so replays are idempotent.
+- Watermark on ``started_at`` only. ``connectors.spotify_listening_sessions.id``
+  is UUID-backed, so this adapter does not use the integer ``watermark_id``
+  tuple path.
 - Deferred fine-grained track projection: per-track events are OUT OF
   SCOPE per bu-pa4e0.10.  Only session-summary → listening episode.
 - Missing evidence table degrades gracefully (module not enabled /
@@ -72,7 +75,6 @@ class SpotifySessionAdapter(ProjectionAdapter):
             return result
 
         latest_watermark = since
-        latest_watermark_id: int | None = since_id
         for row in rows:
             await self._project_row(chronicler_pool, row)
             result.rows_projected += 1
@@ -82,16 +84,12 @@ class SpotifySessionAdapter(ProjectionAdapter):
             if candidate is not None:
                 if latest_watermark is None or candidate > latest_watermark:
                     latest_watermark = candidate
-                    latest_watermark_id = row["id"]
-                elif candidate == latest_watermark:
-                    row_id = row["id"]
-                    if row_id is not None and (
-                        latest_watermark_id is None or row_id > latest_watermark_id
-                    ):
-                        latest_watermark_id = row_id
 
         result.watermark = latest_watermark
-        result.watermark_id = latest_watermark_id
+        # ``projection_checkpoints.watermark_id`` is BIGINT, but the Spotify
+        # evidence table primary key is UUID. Keep timestamp-only semantics for
+        # this adapter, matching other UUID-backed sources.
+        result.watermark_id = None
         return result
 
     async def _fetch_sessions(
@@ -102,15 +100,14 @@ class SpotifySessionAdapter(ProjectionAdapter):
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark.
 
-        When ``since`` and ``since_id`` are both provided, uses the tuple
-        comparison ``WHERE (started_at, id) > ($1, $2)`` so rows sharing
-        the same timestamp as the previous batch boundary are not missed.
-        When only ``since`` is provided (pre-migration checkpoint), falls
-        back to the single-column ``WHERE started_at > $1`` form.
+        Always uses single-column ``started_at`` semantics. The evidence
+        table's ``id`` column is a UUID, while the shared checkpoint
+        ``watermark_id`` column is BIGINT for integer-backed sources.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
         """
+        del since_id
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -136,22 +133,6 @@ class SpotifySessionAdapter(ProjectionAdapter):
                         ORDER BY started_at ASC, id ASC
                         LIMIT $1
                         """,
-                        self.batch_limit,
-                    )
-                elif since_id is not None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, endpoint_identity,
-                               spotify_user_id, started_at, ended_at,
-                               duration_seconds, track_count, track_names,
-                               context_uri, context_name, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE (started_at, id) > ($1, $2)
-                        ORDER BY started_at ASC, id ASC
-                        LIMIT $3
-                        """,
-                        since,
-                        since_id,
                         self.batch_limit,
                     )
                 else:
