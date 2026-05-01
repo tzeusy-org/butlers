@@ -242,6 +242,8 @@ def upgrade() -> None:
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS TEXT
         LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path FROM CURRENT
         AS $$
         DECLARE
             month_start   TIMESTAMPTZ;
