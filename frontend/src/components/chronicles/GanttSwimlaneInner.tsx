@@ -648,42 +648,32 @@ export function GanttSwimlaneInner({
                 )
               })}
 
-              {/* Empty-lane placeholders — muted dotted rect + label for lanes
-                  with zero episodes in the current window (bu-p4vd3). */}
+              {/* Empty-lane placeholder rectangles — the muted dotted outline
+                  for lanes with zero episodes in the current window (bu-p4vd3).
+                  The "No data this period" TEXT is rendered as an HTML overlay
+                  outside the SVG so it is not stretched horizontally by the
+                  preserveAspectRatio="none" scaling (matches axis-label fix). */}
               {lanes.map((lane) => {
                 if (lane.episodes.length > 0) return null
                 const y = lane.yOffset + LANE_PADDING_TOP
                 const h = LANE_HEIGHT
                 return (
-                  <g
+                  <rect
                     key={`empty-${lane.category}`}
                     data-testid={`gantt-empty-lane-${lane.category}`}
                     aria-label={`${LANE_TAXONOMY[lane.category].label}: no data this period`}
-                  >
-                    <rect
-                      x={4}
-                      y={y}
-                      width={SVG_WIDTH - 8}
-                      height={h}
-                      rx={BAR_RADIUS}
-                      ry={BAR_RADIUS}
-                      fill="none"
-                      stroke="currentColor"
-                      strokeOpacity={0.15}
-                      strokeWidth={1}
-                      strokeDasharray="4 3"
-                    />
-                    <text
-                      x={SVG_WIDTH / 2}
-                      y={y + h / 2 + 4}
-                      textAnchor="middle"
-                      fontSize={10}
-                      fill="currentColor"
-                      fillOpacity={0.3}
-                    >
-                      No data this period
-                    </text>
-                  </g>
+                    x={4}
+                    y={y}
+                    width={SVG_WIDTH - 8}
+                    height={h}
+                    rx={BAR_RADIUS}
+                    ry={BAR_RADIUS}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeOpacity={0.15}
+                    strokeWidth={1}
+                    strokeDasharray="4 3"
+                  />
                 )
               })}
 
@@ -747,6 +737,30 @@ export function GanttSwimlaneInner({
                 )
               })}
             </svg>
+
+            {/* Empty-lane "No data this period" labels — rendered as HTML so
+                the text is NOT distorted by the SVG's preserveAspectRatio="none"
+                stretch. Each lane label is centred over its dotted placeholder
+                rect using the lane's yOffset. */}
+            <div
+              className="pointer-events-none absolute inset-0"
+              data-testid="gantt-no-data-labels"
+              aria-hidden
+            >
+              {lanes.map((lane) => {
+                if (lane.episodes.length > 0) return null
+                const top = lane.yOffset + LANE_PADDING_TOP + LANE_HEIGHT / 2
+                return (
+                  <span
+                    key={`no-data-label-${lane.category}`}
+                    className="absolute left-0 right-0 text-center text-[10px] text-muted-foreground/40 whitespace-nowrap"
+                    style={{ top, transform: "translateY(-50%)" }}
+                  >
+                    No data this period
+                  </span>
+                )
+              })}
+            </div>
 
             {/* Time-axis labels — rendered as HTML so the text is NOT distorted
                 by the SVG's preserveAspectRatio="none" stretch (bug 3 fix).

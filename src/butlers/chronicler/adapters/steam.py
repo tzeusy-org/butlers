@@ -5,11 +5,16 @@ into Chronicler ``play_episode`` episodes.
 
 Semantics:
 - Each row in ``connectors.steam_play_history`` maps to exactly one
-  ``play_episode`` spanning the calendar day of the ``date`` column.
-  ``start_at`` = midnight UTC on that date;
-  ``end_at``   = ``start_at + playtime_minutes``.
+  ``play_episode`` whose duration equals ``playtime_minutes`` and whose
+  end is anchored to the most recent observation timestamp inside the
+  calendar day. Concretely:
+  ``end_at``   = ``min(recorded_at, end_of_date_UTC)``;
+  ``start_at`` = ``max(start_of_date_UTC, end_at - playtime_minutes)``.
+  This keeps the bar visually aligned with when the activity actually
+  happened (typically late-day) instead of always starting at midnight.
 - Boundary precision is ``day`` — the evidence table stores only a date
-  and total playtime for the day, not exact session timestamps.
+  and total playtime for the day, not exact session timestamps. The
+  end-of-observation anchor is a best-effort visual hint.
 - Privacy class is ``normal`` — game title and play duration are not
   sensitive personal data.
 - Source ref format:
@@ -162,10 +167,24 @@ class SteamPlayAdapter(ProjectionAdapter):
         source_ref = f"{_EVIDENCE_TABLE}:{steam_id}:{app_id}:{date}"
 
         # Derive (start_at, end_at) from the daily aggregate.
-        # date is a Python date; attach UTC midnight as the anchor.
-        start_at = datetime(date.year, date.month, date.day, tzinfo=UTC)
+        # Steam exposes only a date + cumulative playtime per day, not exact
+        # session bounds. To avoid every gaming bar starting at midnight UTC
+        # on the Gantt, anchor end_at to the most recent observation time
+        # inside the date and back-calculate start_at from playtime_minutes.
+        start_of_day = datetime(date.year, date.month, date.day, tzinfo=UTC)
+        end_of_day = start_of_day + timedelta(days=1)
         playtime_minutes: int = row["playtime_minutes"] or 0
-        end_at = start_at + timedelta(minutes=playtime_minutes)
+        duration = timedelta(minutes=playtime_minutes)
+        recorded_at = row["recorded_at"]
+        if recorded_at is not None and start_of_day <= recorded_at < end_of_day:
+            anchor_end = recorded_at
+        else:
+            anchor_end = end_of_day
+        start_at = max(start_of_day, anchor_end - duration)
+        end_at = max(start_at + duration, anchor_end) if duration > timedelta(0) else anchor_end
+        if end_at > end_of_day:
+            end_at = end_of_day
+            start_at = max(start_of_day, end_at - duration)
 
         app_name = row["app_name"]
         steam_account_id = row["steam_account_id"]

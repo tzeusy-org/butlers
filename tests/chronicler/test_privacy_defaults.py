@@ -159,16 +159,18 @@ async def test_spotify_default_privacy_is_normal() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Invariant: OwnTracks point event privacy stays sensitive
+# Invariant: OwnTracks point event privacy is normal (owner-view dashboard)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_owntracks_point_event_privacy_is_sensitive() -> None:
-    """OwnTracks location point events MUST remain privacy=sensitive.
+async def test_owntracks_point_event_privacy_is_normal() -> None:
+    """OwnTracks location point events default to privacy=normal.
 
-    GPS coordinates (lat/lon) are personally identifying data. The sensitive
-    class ensures only payload-level content is masked, not the envelope.
+    The Chronicles dashboard is the owner's view of their own location
+    history; blanket sensitive masking hid the trail and made the Map
+    widget useless. Per-recipient masking for shared/screenshot views
+    should be reintroduced via an explicit toggle (core_086, bu-6c5i6).
     """
     row = _make_owntracks_row()
     adapter = OwnTracksPointAdapter()
@@ -197,23 +199,23 @@ async def test_owntracks_point_event_privacy_is_sensitive() -> None:
 
     assert len(upserted_events) == 1
     ev = upserted_events[0]
-    assert ev.privacy == Privacy.SENSITIVE, (
-        f"Expected Privacy.SENSITIVE for OwnTracks point event (GPS coordinates), "
-        f"got {ev.privacy!r}."
+    assert ev.privacy == Privacy.NORMAL, (
+        f"Expected Privacy.NORMAL for OwnTracks point event under the owner-view "
+        f"dashboard contract, got {ev.privacy!r}."
     )
 
 
 # ---------------------------------------------------------------------------
-# Invariant: OwnTracks movement episode privacy stays sensitive
+# Invariant: OwnTracks movement episode privacy is normal
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_owntracks_movement_episode_privacy_is_sensitive() -> None:
-    """OwnTracks movement_episode spans MUST remain privacy=sensitive.
+async def test_owntracks_movement_episode_privacy_is_normal() -> None:
+    """OwnTracks movement_episode spans default to privacy=normal.
 
-    A movement episode encodes the user's travel trajectory (start/end
-    coordinates, point count). This payload remains sensitive.
+    Same rationale as the point-event invariant: the dashboard is the
+    owner's view of their own travel trajectory.
     """
     row = _make_owntracks_row()
     adapter = OwnTracksPointAdapter()
@@ -242,7 +244,7 @@ async def test_owntracks_movement_episode_privacy_is_sensitive() -> None:
 
     assert len(upserted_episodes) == 1
     ep = upserted_episodes[0]
-    assert ep.privacy == Privacy.SENSITIVE, (
-        f"Expected Privacy.SENSITIVE for OwnTracks movement episode (GPS trajectory), "
-        f"got {ep.privacy!r}."
+    assert ep.privacy == Privacy.NORMAL, (
+        f"Expected Privacy.NORMAL for OwnTracks movement episode under the "
+        f"owner-view dashboard contract, got {ep.privacy!r}."
     )

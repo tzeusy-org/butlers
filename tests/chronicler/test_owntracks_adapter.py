@@ -255,7 +255,7 @@ async def test_point_event_fields_from_row() -> None:
     assert ev.event_type == EVENT_TYPE_LOCATION
     assert ev.occurred_at == _NOW
     assert ev.precision == Precision.EXACT
-    assert ev.privacy == Privacy.SENSITIVE
+    assert ev.privacy == Privacy.NORMAL
     assert ev.payload["lat"] == 1.2345
     assert ev.payload["lon"] == 103.8765
     assert ev.payload["accuracy"] == 15.0
@@ -414,7 +414,7 @@ async def test_single_point_produces_one_movement_episode() -> None:
     assert ep.start_at == _NOW
     assert ep.end_at == _NOW
     assert ep.precision == Precision.EXACT
-    assert ep.privacy == Privacy.SENSITIVE
+    assert ep.privacy == Privacy.NORMAL
 
 
 @pytest.mark.asyncio

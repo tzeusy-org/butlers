@@ -15,12 +15,14 @@ Chronicler output layers:
 Semantics:
 - Boundary precision is ``exact`` — OwnTracks device timestamps carry
   second resolution.
-- Privacy class is ``sensitive`` — GPS coordinates are personally identifying
-  retrospective location data.  The ``sensitive`` class masks only the
-  payload-level coordinate fields in the frontend; the envelope
-  (start_at, end_at, category, duration) remains visible in the Travel lane
-  as "Travel: N min".  This is distinct from ``restricted``, which hides
-  the episode entirely (see bu-6c5i6 privacy contract).
+- Privacy class is ``normal`` — the Chronicles dashboard is the owner's
+  view of their own location history, so masking the envelope and excluding
+  markers/trail from the map made the Travel lane and Map widget useless
+  to the only viewer.  Any per-recipient masking (shared dashboards,
+  screenshot views) should be reintroduced via an explicit user-toggle
+  per the ``Map Render Privacy Contract`` requirement, not by blanket
+  classification at the adapter layer.  The ``restricted`` class still
+  exists for episodes that must be hidden entirely (bu-6c5i6).
 - Watermark on ``ts`` only. ``connectors.owntracks_points.id`` is a UUID,
   not an integer serial, so this adapter must not use the integer
   ``watermark_id`` tuple-watermark path.
@@ -372,7 +374,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     precision=Precision.EXACT,
                     title=title,
                     payload=payload,
-                    privacy=Privacy.SENSITIVE,
+                    privacy=Privacy.NORMAL,
                 ),
             )
         return event
@@ -562,7 +564,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         precision=Precision.EXACT,
                         title=title,
                         payload=payload,
-                        privacy=Privacy.SENSITIVE,
+                        privacy=Privacy.NORMAL,
                     ),
                 )
             episodes_upserted += 1

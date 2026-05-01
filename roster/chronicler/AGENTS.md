@@ -124,10 +124,13 @@ paths (your adapters are background, not interactive).
 
 - **`spotify.session_summary`**: `privacy=normal` — track names and duration are
   not sensitive. Per-row overrides remain available via the correction mechanism.
-- **`owntracks.points` (point events)**: `privacy=sensitive` — GPS coordinates
-  are personally identifying.
-- **`owntracks.points` (movement episodes)**: `privacy=sensitive` — the travel
-  trajectory (start/end coordinates, point count) is personally identifying.
+- **`owntracks.points` (point events)**: `privacy=normal` — the Chronicles
+  dashboard is the owner's view of their own location history; blanket masking
+  hid the trail and made the Map widget useless. Per-recipient masking for
+  shared/screenshot views should be reintroduced via an explicit toggle, not
+  by default classification. Backfilled to `normal` via core_086.
+- **`owntracks.points` (movement episodes)**: `privacy=normal` — same rationale
+  as point events. Backfilled to `normal` via core_086.
 
 ## Frontend contract
 
@@ -139,11 +142,15 @@ paths (your adapters are background, not interactive).
   but mask title, source, and all payload-level fields.
 - Restricted episodes are filtered server-side and never returned by the API.
 
-## Backfill (core_085)
+## Backfill (core_085, core_086)
 
-Existing 13 Spotify rows created with the old `privacy=sensitive` default
-are backfilled to `privacy=normal` via Alembic migration `core_085`
-(`alembic/versions/core/core_085_backfill_spotify_owntracks_privacy.py`).
+- `core_085_backfill_spotify_owntracks_privacy.py` reclassified Spotify
+  session-summary rows from `sensitive` to `normal` (the migration name
+  predates the OwnTracks portion landing).
+- `core_086_backfill_owntracks_privacy_normal.py` reclassifies existing
+  `owntracks.points` episodes and point events from `sensitive` to `normal`.
+  The matching adapter change in `OwnTracksPointAdapter` ensures new
+  ingestion uses the same default.
 
 # Notes to self
 

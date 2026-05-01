@@ -230,11 +230,12 @@ async def test_episode_fields_from_row() -> None:
 
 
 @pytest.mark.asyncio
-async def test_episode_start_and_end_derived_from_date_and_playtime() -> None:
-    """start_at = date midnight UTC; end_at = start_at + playtime_minutes."""
+async def test_episode_anchored_to_recorded_at_when_within_day() -> None:
+    """end_at = recorded_at; start_at = recorded_at - playtime_minutes."""
     play_date = date(2026, 4, 25)
     playtime = 90  # minutes
-    row = _make_row(play_date=play_date, playtime_minutes=playtime)
+    recorded = datetime(2026, 4, 25, 12, 0, 0, tzinfo=UTC)
+    row = _make_row(play_date=play_date, playtime_minutes=playtime, recorded_at=recorded)
     adapter = SteamPlayAdapter()
     upserted: list[Episode] = []
 
@@ -249,10 +250,61 @@ async def test_episode_start_and_end_derived_from_date_and_playtime() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
     ep = upserted[0]
-    expected_start = datetime(2026, 4, 25, 0, 0, 0, tzinfo=UTC)
-    expected_end = expected_start + timedelta(minutes=playtime)
-    assert ep.start_at == expected_start
-    assert ep.end_at == expected_end
+    assert ep.end_at == recorded
+    assert ep.start_at == recorded - timedelta(minutes=playtime)
+
+
+@pytest.mark.asyncio
+async def test_episode_anchored_to_end_of_day_when_recorded_at_outside() -> None:
+    """Backfilled day (recorded_at later than the date) anchors at end_of_day."""
+    play_date = date(2026, 4, 23)
+    playtime = 120  # minutes
+    recorded = datetime(2026, 4, 25, 9, 0, 0, tzinfo=UTC)  # 2 days later
+    row = _make_row(play_date=play_date, playtime_minutes=playtime, recorded_at=recorded)
+    adapter = SteamPlayAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.steam.upsert_episode", side_effect=_fake_upsert):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    ep = upserted[0]
+    end_of_day = datetime(2026, 4, 24, 0, 0, 0, tzinfo=UTC)
+    assert ep.end_at == end_of_day
+    assert ep.start_at == end_of_day - timedelta(minutes=playtime)
+
+
+@pytest.mark.asyncio
+async def test_episode_clamps_to_day_when_playtime_exceeds_anchor_offset() -> None:
+    """Playtime longer than the time elapsed before anchor_end clamps start_at to midnight."""
+    play_date = date(2026, 4, 25)
+    playtime = 120  # minutes
+    recorded = datetime(2026, 4, 25, 1, 0, 0, tzinfo=UTC)  # 60 min into day
+    row = _make_row(play_date=play_date, playtime_minutes=playtime, recorded_at=recorded)
+    adapter = SteamPlayAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.steam.upsert_episode", side_effect=_fake_upsert):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    ep = upserted[0]
+    start_of_day = datetime(2026, 4, 25, 0, 0, 0, tzinfo=UTC)
+    assert ep.start_at == start_of_day
+    # End must equal start + playtime (post-clamp), guaranteed by adapter logic.
+    assert ep.end_at == start_of_day + timedelta(minutes=playtime)
 
 
 @pytest.mark.asyncio

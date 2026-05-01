@@ -869,11 +869,12 @@ describe("GanttSwimlaneInner axis labels (bug 3)", () => {
       />,
     )
     expect(html).toContain('data-testid="gantt-axis-labels"')
-    // Time axis tick LABELS are rendered as HTML divs (bug 3 fix). SVG <text>
-    // elements are now present for empty-lane "No data this period" placeholders
-    // (bu-p4vd3), so we verify the HTML overlay is used for axis labels, not
-    // the absence of <text>. Axis tick stroke <line>s remain in the SVG.
+    // Time axis tick LABELS are rendered as HTML divs (bug 3 fix); empty-lane
+    // "No data this period" labels are also HTML overlays. SVG <text> would be
+    // stretched by preserveAspectRatio="none", so neither must appear inside
+    // the SVG. Axis tick stroke <line>s remain in the SVG.
     expect(html).toContain("gantt-axis-labels")
+    expect(html).toContain('data-testid="gantt-no-data-labels"')
     // The SVG tick stroke <line>s use stroke-opacity="0.4" and stroke-width="1"
     // (distinct from the grid lines at 0.08). We verify tick marks are present.
     expect(html).toContain("gantt-svg-wrapper")
@@ -924,8 +925,9 @@ describe("GanttSwimlaneInner render-all-lanes (bu-p4vd3)", () => {
     expect(html).toContain('gantt-empty-lane-gaming')
     // But NOT for the lane that HAS data.
     expect(html).not.toContain('gantt-empty-lane-tasks')
-    // Empty-lane text placeholder is rendered in the SVG.
+    // Empty-lane label is rendered as an HTML overlay (not stretched SVG text).
     expect(html).toContain("No data this period")
+    expect(html).toContain('data-testid="gantt-no-data-labels"')
   })
 
   it("renders 0 empty-lane placeholders when all lanes have data", () => {
