@@ -28,6 +28,10 @@ def _quote_ident(identifier: str) -> str:
 
 def _function_search_path() -> str:
     bind = op.get_bind()
+    if bind is None:
+        # Offline mode (alembic upgrade --sql): no live connection. Fall back to
+        # the well-known target schema for this branch.
+        return _quote_ident("switchboard") + ", pg_temp"
     schema = bind.execute(text("SELECT current_schema()")).scalar_one()
     parts = [_quote_ident(str(schema)), "pg_temp"]
     return ", ".join(dict.fromkeys(parts))

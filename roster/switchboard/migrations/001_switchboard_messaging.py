@@ -28,6 +28,10 @@ def _quote_ident(identifier: str) -> str:
 
 def _function_search_path() -> str:
     bind = op.get_bind()
+    if bind is None:
+        # Offline mode (alembic upgrade --sql): no live connection. Fall back to
+        # the well-known target schema for this branch.
+        return _quote_ident("switchboard") + ", pg_temp"
     schema = bind.execute(text("SELECT current_schema()")).scalar_one()
     parts = [_quote_ident(str(schema)), "pg_temp"]
     return ", ".join(dict.fromkeys(parts))
@@ -374,9 +378,9 @@ def upgrade() -> None:
                 JOIN pg_namespace ns ON ns.oid = child.relnamespace
                 WHERE parent.relname = 'message_inbox'
                 AND ns.nspname = current_schema()
-                AND child.relname ~ '^message_inbox_p[0-9]{6}$'
+                AND child.relname ~ '^message_inbox_p[0-9]{{6}}$'
             LOOP
-                partition_month := to_date(substring(partition_name from '[0-9]{6}$'), 'YYYYMM');
+                partition_month := to_date(substring(partition_name from '[0-9]{{6}}$'), 'YYYYMM');
                 IF partition_month < cutoff_month THEN
                     EXECUTE format('DROP TABLE IF EXISTS %I', partition_name);
                     dropped_count := dropped_count + 1;
