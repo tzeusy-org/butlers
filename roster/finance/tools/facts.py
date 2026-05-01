@@ -1651,7 +1651,6 @@ async def bulk_record_transactions(
         # ------------------------------------------------------------------
         fact_id = uuid.uuid4()
         searchable = preprocess_text(f"owner {predicate} {content}")
-        meta_json = json.dumps(fact_metadata)
 
         try:
             sql = f"""
@@ -1667,7 +1666,7 @@ async def bulk_record_transactions(
                     $1, $2, $3, $4, NULL, {tsvector_sql("$5")},
                     5.0, 1.0, 0.002, 'stable', $11,
                     $12, NULL, 'active', 'finance',
-                    $6, $6, '[]'::jsonb, $7::jsonb, $8,
+                    $6, $6, '[]'::jsonb, $7, $8,
                     $9, 'owner', $10, $6,
                     'operational', 'normal'
                 )
@@ -1681,7 +1680,7 @@ async def bulk_record_transactions(
                 content,  # $4
                 searchable,  # $5 search_vector text
                 now,  # $6 created_at / last_confirmed_at / observed_at
-                meta_json,  # $7 metadata
+                fact_metadata,  # $7 metadata (dict; JSONB codec encodes)
                 owner_entity_id,  # $8 entity_id (may be None)
                 posted_at,  # $9 valid_at
                 idempotency_key,  # $10

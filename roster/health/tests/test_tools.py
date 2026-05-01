@@ -43,7 +43,14 @@ def migrated_db_url(postgres_container) -> str:
 @pytest.fixture
 async def pool(migrated_db_url: str):
     """Return an asyncpg pool with fact tables cleared between tests."""
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    from butlers.db import register_jsonb_codec
+
+    p = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
     await p.execute("TRUNCATE TABLE public.memory_links, public.facts CASCADE")
     yield p
     await p.close()
@@ -604,18 +611,23 @@ async def test_symptom_search_no_matches(pool):
 
 
 async def _insert_fact(pool, predicate: str, content: str, valid_at: datetime, metadata=None):
-    """Helper: insert a meal fact directly into facts table."""
+    """Helper: insert a meal fact directly into facts table.
+
+    The asyncpg pool registers a JSONB codec, so metadata is bound as a Python
+    dict directly — pre-encoding to a JSON string would double-encode under the
+    codec.
+    """
     meta = metadata or {}
     await pool.execute(
         """
         INSERT INTO facts (id, subject, predicate, content, valid_at, metadata, validity, scope)
-        VALUES ($1, 'owner', $2, $3, $4, $5::jsonb, 'active', 'health')
+        VALUES ($1, 'owner', $2, $3, $4, $5, 'active', 'health')
         """,
         uuid.uuid4(),
         predicate,
         content,
         valid_at,
-        __import__("json").dumps(meta),
+        meta,
     )
 
 
