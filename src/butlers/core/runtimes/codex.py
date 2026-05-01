@@ -283,17 +283,13 @@ def _should_retry_mcp_discovery(
     as a transport failure manufactures false ``MCPToolDiscoveryError``
     failures for legitimate no-tool replies.
 
-    We only enter the retry/error path when there is affirmative evidence that
-    Codex expected tool access but likely missed the MCP registration:
-    - bash-only ``command_execution`` output (the common degraded fallback), or
-    - stderr that matches a known MCP / transport / connection failure marker
-      (see ``_looks_like_transport_failure``).
+    We only enter the retry/error path when stderr matches a known MCP /
+    transport / connection failure marker (see ``_looks_like_transport_failure``).
+    Completed turns that only used Codex's built-in ``command_execution`` tool
+    are valid shell-only sessions, not connection-failure evidence on their own.
     """
     if not mcp_servers or _has_mcp_tool_calls(tool_calls):
         return False
-
-    if any(tc.get("name") == "command_execution" for tc in tool_calls):
-        return True
 
     stderr = ""
     if isinstance(process_info, dict):
