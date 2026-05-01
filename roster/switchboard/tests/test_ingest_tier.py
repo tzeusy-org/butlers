@@ -237,9 +237,11 @@ class TestTier1FullIngestion:
         )
         assert row is not None
         assert row["lifecycle_state"] == "accepted"
-        ctx = json.loads(row["request_context"])
+        ctx_raw = row["request_context"]
+        ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
         assert ctx["ingestion_tier"] == "full"
-        raw = json.loads(row["raw_payload"])
+        raw_raw = row["raw_payload"]
+        raw = json.loads(raw_raw) if isinstance(raw_raw, str) else raw_raw
         assert raw["control"]["ingestion_tier"] == "full"
 
     async def test_tier1_raw_payload_persisted(self, pool: asyncpg.Pool) -> None:
@@ -255,7 +257,8 @@ class TestTier1FullIngestion:
             "SELECT raw_payload FROM message_inbox WHERE id = $1",
             result.request_id,
         )
-        raw = json.loads(row["raw_payload"])
+        raw_raw = row["raw_payload"]
+        raw = json.loads(raw_raw) if isinstance(raw_raw, str) else raw_raw
         assert raw["payload"]["raw"] == {"subject": "Salary credit", "body": "$5000 credited"}
         assert raw["payload"]["raw"] is not None
 
@@ -295,7 +298,8 @@ class TestTier2MetadataIngestion:
             "SELECT request_context FROM message_inbox WHERE id = $1",
             result.request_id,
         )
-        ctx = json.loads(row["request_context"])
+        ctx_raw = row["request_context"]
+        ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
         assert ctx["ingestion_tier"] == "metadata"
 
     async def test_tier2_raw_payload_stored_as_null(self, pool: asyncpg.Pool) -> None:
@@ -307,7 +311,8 @@ class TestTier2MetadataIngestion:
             "SELECT raw_payload FROM message_inbox WHERE id = $1",
             result.request_id,
         )
-        raw = json.loads(row["raw_payload"])
+        raw_raw = row["raw_payload"]
+        raw = json.loads(raw_raw) if isinstance(raw_raw, str) else raw_raw
         assert raw["payload"]["raw"] is None
 
     async def test_tier2_normalized_text_contains_subject(self, pool: asyncpg.Pool) -> None:
@@ -367,7 +372,8 @@ class TestIngestionTierBackwardCompatibility:
             result.request_id,
         )
         assert row["lifecycle_state"] == "accepted"
-        ctx = json.loads(row["request_context"])
+        ctx_raw = row["request_context"]
+        ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
         assert ctx["ingestion_tier"] == "full"
 
     async def test_control_without_ingestion_tier_defaults_to_tier1(
@@ -403,5 +409,6 @@ class TestIngestionTierBackwardCompatibility:
             result.request_id,
         )
         assert row["lifecycle_state"] == "accepted"
-        ctx = json.loads(row["request_context"])
+        ctx_raw = row["request_context"]
+        ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else ctx_raw
         assert ctx["ingestion_tier"] == "full"

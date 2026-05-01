@@ -228,12 +228,12 @@ async def _insert_gift_fact(
     await pool.execute(
         """
         INSERT INTO facts (id, subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1::uuid, $2, 'gift', $3, 'relationship', 'active', NULL, $4::jsonb)
+        VALUES ($1::uuid, $2, 'gift', $3, 'relationship', 'active', NULL, $4)
         """,
         fact_id,
         subject,
         description,
-        json.dumps(meta),
+        meta,
     )
     return fact_id
 
@@ -1272,10 +1272,10 @@ async def _insert_message_inbox(
     await pool.execute(
         """
         INSERT INTO switchboard.message_inbox (received_at, request_context, direction)
-        VALUES ($1, $2::jsonb, $3)
+        VALUES ($1, $2, $3)
         """,
         received_at,
-        json.dumps(request_context),
+        request_context,
         direction,
     )
 
@@ -1302,14 +1302,14 @@ async def _insert_calendar_event(
         """
         INSERT INTO public.calendar_events
             (id, title, timezone, starts_at, ends_at, status, metadata)
-        VALUES ($1::uuid, $2, 'UTC', $3, $4, $5, $6::jsonb)
+        VALUES ($1::uuid, $2, 'UTC', $3, $4, $5, $6)
         """,
         event_id,
         title,
         starts_at,
         ends_at,
         status,
-        json.dumps(metadata),
+        metadata,
     )
     return event_id
 

@@ -13,7 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -1902,16 +1901,14 @@ class TestBulkRecordTransactionsCrossSourceDedup:
 
         # Seed an email-sourced fact first (via direct INSERT to simulate what
         # record_transaction_fact / email ingestion would produce)
-        meta = json.dumps(
-            {
-                "merchant": "STARBUCKS COFFEE #1234",
-                "amount": "47.32",
-                "currency": "USD",
-                "category": "dining",
-                "direction": "debit",
-                "source_message_id": "email-msg-abc",
-            }
-        )
+        meta = {
+            "merchant": "STARBUCKS COFFEE #1234",
+            "amount": "47.32",
+            "currency": "USD",
+            "category": "dining",
+            "direction": "debit",
+            "source_message_id": "email-msg-abc",
+        }
         await pool_with_owner.execute(
             """
             INSERT INTO facts (
@@ -1922,7 +1919,7 @@ class TestBulkRecordTransactionsCrossSourceDedup:
                 gen_random_uuid(), 'owner', 'transaction_debit',
                 'STARBUCKS COFFEE #1234 47.32 USD',
                 'active', 'finance', now(), now(), '[]'::jsonb,
-                $1::jsonb, $2, 'owner', now(), 'operational', 'normal'
+                $1, $2, 'owner', now(), 'operational', 'normal'
             )
             """,
             meta,
@@ -1955,16 +1952,14 @@ class TestBulkRecordTransactionsCrossSourceDedup:
         """AC-3: Amount ±$0.01 tolerance — 47.32 vs 47.33 matches."""
         now = datetime(2025, 6, 15, 0, 0, 0, tzinfo=UTC)
 
-        meta = json.dumps(
-            {
-                "merchant": "NETFLIX INC",
-                "amount": "15.49",
-                "currency": "USD",
-                "category": "subscriptions",
-                "direction": "debit",
-                "source_message_id": "email-netflix-1",
-            }
-        )
+        meta = {
+            "merchant": "NETFLIX INC",
+            "amount": "15.49",
+            "currency": "USD",
+            "category": "subscriptions",
+            "direction": "debit",
+            "source_message_id": "email-netflix-1",
+        }
         await pool_with_owner.execute(
             """
             INSERT INTO facts (
@@ -2005,16 +2000,14 @@ class TestBulkRecordTransactionsCrossSourceDedup:
         """AC-3 negative: amount differs by more than $0.01 → NOT skipped."""
         now = datetime(2025, 6, 15, 0, 0, 0, tzinfo=UTC)
 
-        meta = json.dumps(
-            {
-                "merchant": "NETFLIX INC",
-                "amount": "15.49",
-                "currency": "USD",
-                "category": "subscriptions",
-                "direction": "debit",
-                "source_message_id": "email-netflix-2",
-            }
-        )
+        meta = {
+            "merchant": "NETFLIX INC",
+            "amount": "15.49",
+            "currency": "USD",
+            "category": "subscriptions",
+            "direction": "debit",
+            "source_message_id": "email-netflix-2",
+        }
         await pool_with_owner.execute(
             """
             INSERT INTO facts (
@@ -2056,16 +2049,14 @@ class TestBulkRecordTransactionsCrossSourceDedup:
         now = datetime(2025, 6, 15, 0, 0, 0, tzinfo=UTC)
 
         # Seed an email-sourced fact
-        meta = json.dumps(
-            {
-                "merchant": "STARBUCKS COFFEE #1234",
-                "amount": "47.32",
-                "currency": "USD",
-                "category": "dining",
-                "direction": "debit",
-                "source_message_id": "email-original",
-            }
-        )
+        meta = {
+            "merchant": "STARBUCKS COFFEE #1234",
+            "amount": "47.32",
+            "currency": "USD",
+            "category": "dining",
+            "direction": "debit",
+            "source_message_id": "email-original",
+        }
         await pool_with_owner.execute(
             """
             INSERT INTO facts (
@@ -2111,16 +2102,14 @@ class TestBulkRecordTransactionsCrossSourceDedup:
         base = datetime(2025, 7, 1, 0, 0, 0, tzinfo=UTC)
 
         # Seed one email-sourced fact
-        meta = json.dumps(
-            {
-                "merchant": "AMAZON MKTPL",
-                "amount": "25.00",
-                "currency": "USD",
-                "category": "shopping",
-                "direction": "debit",
-                "source_message_id": "email-amazon-1",
-            }
-        )
+        meta = {
+            "merchant": "AMAZON MKTPL",
+            "amount": "25.00",
+            "currency": "USD",
+            "category": "shopping",
+            "direction": "debit",
+            "source_message_id": "email-amazon-1",
+        }
         await pool_with_owner.execute(
             """
             INSERT INTO facts (
@@ -2437,12 +2426,9 @@ class TestBulkRecordTransactions:
             account_id=acct_id,
         )
 
-        meta = await idem_pool.fetchval(
+        stored = await idem_pool.fetchval(
             "SELECT metadata FROM facts WHERE metadata->>'merchant' = 'Chase Fee'"
         )
-        import json as _json
-
-        stored = _json.loads(meta)
         assert stored["account_id"] == acct_id
 
     async def test_per_row_account_id_overrides_top_level(self, idem_pool):
@@ -2466,12 +2452,9 @@ class TestBulkRecordTransactions:
             account_id=top_acct,
         )
 
-        meta_raw = await idem_pool.fetchval(
+        meta = await idem_pool.fetchval(
             "SELECT metadata FROM facts WHERE metadata->>'merchant' = 'Per-row Account Test'"
         )
-        import json as _json
-
-        meta = _json.loads(meta_raw)
         assert meta["account_id"] == row_acct  # per-row wins
 
     # ------------------------------------------------------------------
@@ -2496,12 +2479,9 @@ class TestBulkRecordTransactions:
             source="csv_import",
         )
 
-        meta_raw = await idem_pool.fetchval(
+        meta = await idem_pool.fetchval(
             "SELECT metadata FROM facts WHERE metadata->>'merchant' = 'Source Test'"
         )
-        import json as _json
-
-        meta = _json.loads(meta_raw)
         assert meta["import_source"] == "csv_import"
 
     # ------------------------------------------------------------------

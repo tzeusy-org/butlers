@@ -141,8 +141,6 @@ async def alert_configure(
     if threshold is not None:
         metadata["threshold"] = threshold
 
-    metadata_json = json.dumps(metadata)
-
     # Supersede any existing alert_config fact for the same type.
     # subject = alert type ensures one config per alert type.
     existing = await pool.fetchrow(
@@ -176,13 +174,13 @@ async def alert_configure(
                     """
                     INSERT INTO facts (subject, predicate, content, importance, permanence,
                                        scope, metadata, supersedes_id, created_at, observed_at)
-                    VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4::jsonb, $5, $6, $6)
+                    VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4, $5, $6, $6)
                     RETURNING id
                     """,
                     alert_type,
                     _PREDICATE_ALERT_CONFIG,
                     alert_type,
-                    metadata_json,
+                    metadata,
                     old_id,
                     now,
                 )
@@ -192,13 +190,13 @@ async def alert_configure(
             """
             INSERT INTO facts (subject, predicate, content, importance, permanence,
                                scope, metadata, created_at, observed_at)
-            VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4::jsonb, $5, $5)
+            VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4, $5, $5)
             RETURNING id
             """,
             alert_type,
             _PREDICATE_ALERT_CONFIG,
             alert_type,
-            metadata_json,
+            metadata,
             now,
         )
         fact_id = str(new_row["id"])

@@ -234,12 +234,12 @@ async def _seed_message_inbox(
         INSERT INTO message_inbox (
             id, received_at, request_context, raw_payload, normalized_text,
             lifecycle_state, processing_metadata
-        ) VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, '{}'::jsonb)
+        ) VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb)
         """,
         request_id,
         received_at,
-        json.dumps(request_context),
-        json.dumps(raw_payload),
+        request_context,
+        raw_payload,
         "Hello from wrong butler",
         lifecycle_state,
     )

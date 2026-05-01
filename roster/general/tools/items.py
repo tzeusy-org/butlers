@@ -33,14 +33,14 @@ async def item_create(
             "Use collection_list() to see available collections."
         )
 
-    tags_json = json.dumps(tags if tags is not None else [])
+    tags_value = list(tags) if tags is not None else []
     item_id = await pool.fetchval(
         """INSERT INTO collection_items (collection_id, data, tags)
-           VALUES ($1, $2::jsonb, $3::jsonb)
+           VALUES ($1, $2, $3)
            RETURNING id""",
         collection_id,
-        json.dumps(data),
-        tags_json,
+        data,
+        tags_value,
     )
     return item_id
 
@@ -84,20 +84,19 @@ async def item_update(
     merged = _deep_merge(existing, data)
 
     if tags is not None:
-        tags_json = json.dumps(tags)
         await pool.execute(
             """UPDATE collection_items
-               SET data = $2::jsonb, tags = $3::jsonb, updated_at = now()
+               SET data = $2, tags = $3, updated_at = now()
                WHERE id = $1""",
             item_id,
-            json.dumps(merged),
-            tags_json,
+            merged,
+            list(tags),
         )
     else:
         await pool.execute(
-            "UPDATE collection_items SET data = $2::jsonb, updated_at = now() WHERE id = $1",
+            "UPDATE collection_items SET data = $2, updated_at = now() WHERE id = $1",
             item_id,
-            json.dumps(merged),
+            merged,
         )
 
 
@@ -123,14 +122,14 @@ async def item_search(
         idx += 1
 
     if query:
-        conditions.append(f"e.data @> ${idx}::jsonb")
-        params.append(json.dumps(query))
+        conditions.append(f"e.data @> ${idx}")
+        params.append(query)
         idx += 1
 
     if tags:
         for tag in tags:
-            conditions.append(f"e.tags @> ${idx}::jsonb")
-            params.append(json.dumps([tag]))
+            conditions.append(f"e.tags @> ${idx}")
+            params.append([tag])
             idx += 1
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""

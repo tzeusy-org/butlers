@@ -6,7 +6,6 @@ entity_neighbors — testing through the public tool interface.
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -440,7 +439,9 @@ class TestEntityMerge:
             if "UPDATE public.entities SET metadata" in c[0][0] and SOURCE_UUID in c[0]
         ]
         assert len(tombstones) == 1
-        assert json.loads(tombstones[0][0][1])["merged_into"] == TARGET_ID
+        # Metadata is now bound directly as a Python dict; the registered JSONB
+        # codec on the asyncpg pool handles serialization. See [bu-qki26].
+        assert tombstones[0][0][1]["merged_into"] == TARGET_ID
 
     async def test_unidentified_flag_not_propagated(self) -> None:
         src = _entity_mock_row(SOURCE_UUID, metadata={"unidentified": True, "src_key": "v"})
@@ -452,7 +453,8 @@ class TestEntityMerge:
             for c in conn.execute.call_args_list
             if "UPDATE public.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
         ]
-        merged = json.loads(updates[0][0][2])
+        # Metadata bound as a dict (pre-codec encoding).
+        merged = updates[0][0][2]
         assert "unidentified" not in merged
         assert merged.get("src_key") == "v"
 

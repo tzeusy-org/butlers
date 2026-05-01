@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import date
 from typing import Any
@@ -83,7 +82,7 @@ async def track_subscription(
         raise ValueError(f"Invalid frequency {frequency!r}. Must be one of {_VALID_FREQUENCIES}")
 
     renewal_date = _normalize_renewal_date(next_renewal)
-    metadata_json = json.dumps(metadata) if metadata is not None else "{}"
+    metadata_value: dict[str, Any] = dict(metadata) if metadata is not None else {}
     account_uuid = uuid.UUID(str(account_id)) if account_id is not None else None
 
     # Upsert: look up existing record by (service, frequency)
@@ -106,7 +105,7 @@ async def track_subscription(
                 payment_method    = COALESCE($6, payment_method),
                 account_id        = COALESCE($7, account_id),
                 source_message_id = COALESCE($8, source_message_id),
-                metadata          = metadata || $9::jsonb,
+                metadata          = metadata || $9,
                 updated_at        = now()
             WHERE id = $10
             RETURNING *
@@ -119,7 +118,7 @@ async def track_subscription(
             payment_method,
             account_uuid,
             source_message_id,
-            metadata_json,
+            metadata_value,
             existing["id"],
         )
     else:
@@ -129,7 +128,7 @@ async def track_subscription(
                 service, amount, currency, frequency, next_renewal, status,
                 auto_renew, payment_method, account_id, source_message_id, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             """,
             service,
@@ -142,7 +141,7 @@ async def track_subscription(
             payment_method,
             account_uuid,
             source_message_id,
-            metadata_json,
+            metadata_value,
         )
 
     return _deserialize_row(row)

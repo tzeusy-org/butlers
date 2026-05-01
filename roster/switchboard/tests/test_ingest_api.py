@@ -31,6 +31,18 @@ from butlers.tools.switchboard.routing.contracts import (
     IngestSourceV1,
 )
 
+
+def _decode_jsonb(value: object) -> object:
+    """Decode a JSONB column value, defensive against codec presence.
+
+    Returns the value unchanged when it is already a Python dict/list (codec
+    wired on the pool), or json.loads()'d when it is still a raw JSON string.
+    """
+    if isinstance(value, (str, bytes, bytearray)):
+        return json.loads(value)
+    return value
+
+
 # Skip all tests if Docker not available
 docker_available = shutil.which("docker") is not None
 
@@ -279,9 +291,9 @@ class TestIngestV1Basic:
         assert row is not None
         assert row["lifecycle_state"] == "accepted"
         assert row["normalized_text"] == "Test message"
-        assert json.loads(row["request_context"])["source_channel"] == "telegram_bot"
-        assert json.loads(row["request_context"])["source_endpoint_identity"] == "test_bot"
-        assert json.loads(row["request_context"])["source_sender_identity"] == "user_alice"
+        assert _decode_jsonb(row["request_context"])["source_channel"] == "telegram_bot"
+        assert _decode_jsonb(row["request_context"])["source_endpoint_identity"] == "test_bot"
+        assert _decode_jsonb(row["request_context"])["source_sender_identity"] == "user_alice"
 
     async def test_ingest_email_envelope_success(self, pool: asyncpg.Pool) -> None:
         """Test successful ingestion of an email envelope."""
@@ -305,10 +317,10 @@ class TestIngestV1Basic:
             result.request_id,
         )
         assert row is not None
-        assert json.loads(row["request_context"])["source_channel"] == "email"
-        ctx = json.loads(row["request_context"])
+        assert _decode_jsonb(row["request_context"])["source_channel"] == "email"
+        ctx = _decode_jsonb(row["request_context"])
         assert ctx["source_endpoint_identity"] == "inbox@mybutler.com"
-        assert json.loads(row["request_context"])["source_sender_identity"] == "bob@example.com"
+        assert _decode_jsonb(row["request_context"])["source_sender_identity"] == "bob@example.com"
         assert "Test\nHello" in row["normalized_text"]
 
     async def test_ingest_strips_postgres_invalid_unicode_before_jsonb_insert(
@@ -345,7 +357,7 @@ class TestIngestV1Basic:
         )
         assert row is not None
 
-        raw_payload = json.loads(row["raw_payload"])
+        raw_payload = _decode_jsonb(row["raw_payload"])
         message = raw_payload["payload"]["raw"]["message"]
         assert message["text"] == "Hello world"
         assert message["metakey"] == "value"
@@ -565,7 +577,7 @@ class TestIngestV1RequestContext:
         )
         assert row is not None
 
-        ctx = json.loads(row["request_context"])
+        ctx = _decode_jsonb(row["request_context"])
         assert ctx["request_id"] == str(result.request_id)
         assert "received_at" in ctx
         assert ctx["source_channel"] == "telegram_bot"
@@ -589,7 +601,7 @@ class TestIngestV1RequestContext:
             "SELECT request_context FROM message_inbox WHERE id = $1",
             result.request_id,
         )
-        ctx = json.loads(row["request_context"])
+        ctx = _decode_jsonb(row["request_context"])
         assert ctx["trace_context"]["trace_id"] == "abc123"
         assert ctx["trace_context"]["span_id"] == "def456"
 

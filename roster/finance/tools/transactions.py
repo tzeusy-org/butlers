@@ -537,7 +537,6 @@ async def record_transaction(
             category_source = "manual"
 
     meta_dict = dict(metadata or {})
-    meta_json = json.dumps(meta_dict)
 
     # Check for optional new columns from finance_002 migration.
     has_category_source = await _has_column(pool, "transactions", "category_source")
@@ -586,7 +585,7 @@ async def record_transaction(
                 {extra_cols_sql}
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9,
-                $10::uuid, $11, $12, $13::jsonb
+                $10::uuid, $11, $12, $13
                 {extra_vals_sql}
             )
             RETURNING *
@@ -603,7 +602,7 @@ async def record_transaction(
             account_id,
             receipt_url,
             external_ref,
-            meta_json,
+            meta_dict,
             *extra_params,
         )
     except asyncpg.UniqueViolationError:
@@ -928,8 +927,8 @@ async def update_transaction(
         idx += 1
 
     if metadata is not None:
-        sets.append(f"metadata = ${idx}::jsonb")
-        params.append(json.dumps(metadata))
+        sets.append(f"metadata = ${idx}")
+        params.append(metadata)
         changed_fields["metadata"] = (None, metadata)  # Don't log full metadata diffs
         idx += 1
 
@@ -1185,12 +1184,12 @@ async def merge_duplicates(
             updated_row = await conn.fetchrow(
                 """
                 UPDATE transactions
-                SET metadata = $1::jsonb,
+                SET metadata = $1,
                     updated_at = now()
                 WHERE id = $2::uuid
                 RETURNING *
                 """,
-                json.dumps(merged_meta),
+                merged_meta,
                 keep_id,
             )
 
@@ -1387,7 +1386,7 @@ async def split_transaction(
                         description, amount, currency, direction, category,
                         payment_method, receipt_url, external_ref, metadata
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
                     )
                     RETURNING *
                     """,
@@ -1403,7 +1402,7 @@ async def split_transaction(
                     original["payment_method"],
                     original["receipt_url"],
                     original["external_ref"],
-                    json.dumps(child_meta),
+                    child_meta,
                 )
                 inserted.append(_row_to_dict(row))
 

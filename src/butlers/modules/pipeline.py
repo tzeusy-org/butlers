@@ -1063,13 +1063,13 @@ class MessagePipeline:
                             lifecycle_state,
                             schema_version
                         ) VALUES (
-                            $1, $2::jsonb, $3::jsonb, $4, 'accepted', 'message_inbox.v2'
+                            $1, $2, $3, $4, 'accepted', 'message_inbox.v2'
                         )
                         RETURNING id AS request_id
                         """,
                         received_at,
-                        json.dumps(request_context, default=str),
-                        json.dumps(raw_payload, default=str),
+                        request_context,
+                        raw_payload,
                         message_text,
                     )
                     if row is None:
@@ -1097,14 +1097,6 @@ class MessagePipeline:
             dedupe_strategy=dedupe_strategy,
         )
 
-    @staticmethod
-    def _json_param(payload: Any) -> str | None:
-        import json
-
-        if payload is None:
-            return None
-        return json.dumps(payload)
-
     async def _update_message_inbox_lifecycle(
         self,
         *,
@@ -1117,8 +1109,6 @@ class MessagePipeline:
         classification_duration_ms: float,
         final_state_at: Any,
     ) -> None:
-        import json
-
         if not message_inbox_id:
             return
 
@@ -1132,21 +1122,21 @@ class MessagePipeline:
                 """
                 UPDATE message_inbox
                 SET
-                    decomposition_output = $1::jsonb,
-                    dispatch_outcomes = $2::jsonb,
+                    decomposition_output = $1,
+                    dispatch_outcomes = $2,
                     response_summary = $3,
                     lifecycle_state = $4,
                     final_state_at = $5,
-                    processing_metadata = COALESCE(processing_metadata, '{}'::jsonb) || $6::jsonb,
+                    processing_metadata = COALESCE(processing_metadata, '{}'::jsonb) || $6,
                     updated_at = $7
                 WHERE id = $8
                 """,
-                self._json_param(decomposition_output),
-                self._json_param(dispatch_outcomes),
+                decomposition_output,
+                dispatch_outcomes,
                 response_summary,
                 lifecycle_state,
                 final_state_at,
-                json.dumps(metadata),
+                metadata,
                 final_state_at,
                 message_inbox_id,
             )

@@ -271,8 +271,8 @@ async def contact_create(
     values: list[Any] = []
     for idx, col in enumerate(insert_cols, start=1):
         if col in json_cols:
-            placeholders.append(f"${idx}::jsonb")
-            values.append(json.dumps(payload[col] or {}))
+            placeholders.append(f"${idx}")
+            values.append(payload[col] or {})
         else:
             placeholders.append(f"${idx}")
             values.append(payload[col])
@@ -364,8 +364,8 @@ async def contact_update(
         if col not in cols:
             continue
         if col in json_cols:
-            set_clauses.append(f"{col} = ${idx}::jsonb")
-            params.append(json.dumps(val or {}))
+            set_clauses.append(f"{col} = ${idx}")
+            params.append(val or {})
         else:
             set_clauses.append(f"{col} = ${idx}")
             params.append(val)

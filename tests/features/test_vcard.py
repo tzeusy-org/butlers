@@ -10,6 +10,7 @@ import asyncpg
 import pytest
 import vobject
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # Skip all tests in this module if Docker is not available
@@ -125,6 +126,7 @@ async def pool(postgres_container, migrated_db_url: str):
         migrated_db_url,
         min_size=1,
         max_size=3,
+        init=register_jsonb_codec,
     )
 
     # Truncate data tables in dependency order (children before parents).
