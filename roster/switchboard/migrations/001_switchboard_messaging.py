@@ -11,6 +11,8 @@ dashboard audit log, partitioned message inbox, extraction queue/log, and fanout
 
 from __future__ import annotations
 
+from sqlalchemy import text
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -18,6 +20,17 @@ revision = "sw_001"
 down_revision = None
 branch_labels = ("switchboard",)
 depends_on = None
+
+
+def _quote_ident(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _function_search_path() -> str:
+    bind = op.get_bind()
+    schema = bind.execute(text("SELECT current_schema()")).scalar_one()
+    parts = [_quote_ident(str(schema)), "pg_temp"]
+    return ", ".join(dict.fromkeys(parts))
 
 
 def upgrade() -> None:
@@ -286,12 +299,16 @@ def upgrade() -> None:
     )
 
     # ── message_inbox partition functions (sw_008 + sw_030 proactive next-month) ─
+    function_search_path = _function_search_path()
+
     op.execute(
-        """
+        f"""
         CREATE OR REPLACE FUNCTION switchboard_message_inbox_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS TEXT
         LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO {function_search_path}
         AS $$
         DECLARE
             month_start   TIMESTAMPTZ;
@@ -332,12 +349,14 @@ def upgrade() -> None:
     )
 
     op.execute(
-        """
+        f"""
         CREATE OR REPLACE FUNCTION switchboard_message_inbox_drop_expired_partitions(
             retention INTERVAL DEFAULT INTERVAL '1 month',
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS INTEGER
         LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO {function_search_path}
         AS $$
         DECLARE
             partition_name TEXT;
