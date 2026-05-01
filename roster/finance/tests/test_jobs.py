@@ -971,18 +971,18 @@ async def _fetch_candidates(pool) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Tests: run_finance_insight_scan
+# Tests: run_insight_scan
 # ---------------------------------------------------------------------------
 
 
 async def test_insight_scan_empty_db_no_candidates(provisioned_postgres_pool):
     """No-op: empty finance tables produce no insight candidates."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
 
-        result = await run_finance_insight_scan(pool)
+        result = await run_insight_scan(pool)
 
         assert result["submitted"] == 0
         assert result["accepted"] == 0
@@ -992,7 +992,7 @@ async def test_insight_scan_empty_db_no_candidates(provisioned_postgres_pool):
 
 async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgres_pool):
     """Bill due tomorrow gets priority 92 (time-critical)."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1001,7 +1001,7 @@ async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgr
             pool, payee="Rent", amount="1200.00", due_date=_today() + timedelta(days=1)
         )
 
-        result = await run_finance_insight_scan(pool)
+        result = await run_insight_scan(pool)
 
         assert result["submitted"] >= 1
         assert result["accepted"] >= 1
@@ -1013,7 +1013,7 @@ async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgr
 
 async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postgres_pool):
     """Bill due in 3 days gets priority 75."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1022,7 +1022,7 @@ async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postg
             pool, payee="Internet", amount="89.00", due_date=_today() + timedelta(days=3)
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         bill_candidates = [c for c in candidates if c["category"] == "bill-due"]
@@ -1032,7 +1032,7 @@ async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postg
 
 async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres_pool):
     """Bills due more than 3 days away do not generate insight candidates."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1041,7 +1041,7 @@ async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres
             pool, payee="Insurance", amount="200.00", due_date=_today() + timedelta(days=5)
         )
 
-        result = await run_finance_insight_scan(pool)
+        result = await run_insight_scan(pool)
 
         assert result["submitted"] == 0
         assert await _count_candidates(pool) == 0
@@ -1049,7 +1049,7 @@ async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres
 
 async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
     """Paid bills do not generate insight candidates."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1062,14 +1062,14 @@ async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
             status="paid",
         )
 
-        result = await run_finance_insight_scan(pool)
+        result = await run_insight_scan(pool)
 
         assert result["submitted"] == 0
 
 
 async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
     """Bill insight dedup_key matches finance:bill-due:{bill_id}:{due_date}."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1077,7 +1077,7 @@ async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
         due = _today() + timedelta(days=2)
         bill_id = await _insert_bill_returning_id(pool, due_date=due)
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         bill_cands = [c for c in candidates if c["category"] == "bill-due"]
@@ -1088,14 +1088,14 @@ async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
 
 async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
     """Bill insight has cooldown_days=1."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_bill_returning_id(pool, due_date=_today() + timedelta(days=1))
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         bill_cands = [c for c in candidates if c["category"] == "bill-due"]
@@ -1104,7 +1104,7 @@ async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
 
 async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
     """Budget at 90%+ utilisation gets priority 70."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1125,7 +1125,7 @@ async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
             posted_at=tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
@@ -1135,7 +1135,7 @@ async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
 
 async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_pool):
     """Budget at 80–90% utilisation gets priority 50."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1155,7 +1155,7 @@ async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_
             posted_at=tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
@@ -1165,7 +1165,7 @@ async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_
 
 async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres_pool):
     """Budget below 80% does not generate an insight candidate."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1185,7 +1185,7 @@ async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres
             posted_at=tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
@@ -1194,7 +1194,7 @@ async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres
 
 async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
     """Budget insight dedup_key matches finance:budget-threshold:{category}:{year-month}."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1213,7 +1213,7 @@ async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
             posted_at=tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
@@ -1226,7 +1226,7 @@ async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
     provisioned_postgres_pool,
 ):
     """Annual subscription renewing within 3 days gets priority 75."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1235,7 +1235,7 @@ async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
             pool, service="Adobe", frequency="yearly", next_renewal=_today() + timedelta(days=2)
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
@@ -1247,7 +1247,7 @@ async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
     provisioned_postgres_pool,
 ):
     """Annual subscription renewing in 4–14 days gets priority 55."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1259,7 +1259,7 @@ async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
             next_renewal=_today() + timedelta(days=10),
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
@@ -1269,7 +1269,7 @@ async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
 
 async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_pool):
     """Monthly subscriptions do NOT generate insight candidates (only annual)."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1281,7 +1281,7 @@ async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_p
             next_renewal=_today() + timedelta(days=3),
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
@@ -1290,7 +1290,7 @@ async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_p
 
 async def test_insight_scan_subscription_beyond_14_days_excluded(provisioned_postgres_pool):
     """Annual subscriptions renewing beyond 14 days are excluded."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1299,14 +1299,14 @@ async def test_insight_scan_subscription_beyond_14_days_excluded(provisioned_pos
             pool, service="Dropbox", frequency="yearly", next_renewal=_today() + timedelta(days=20)
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         assert await _count_candidates(pool) == 0
 
 
 async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_pool):
     """Subscription insight dedup_key matches finance:subscription-renewal:{id}:{date}."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1316,7 +1316,7 @@ async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_p
             pool, service="Backblaze", frequency="yearly", next_renewal=renewal_date
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         sub_cands = [c for c in candidates if c["category"] == "subscription-renewal"]
@@ -1328,7 +1328,7 @@ async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
     provisioned_postgres_pool,
 ):
     """Category spending >30% above 3-month average generates an insight."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1366,7 +1366,7 @@ async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
             posted_at=current_tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
@@ -1377,7 +1377,7 @@ async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
 
 async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_postgres_pool):
     """Category 30–50% above average gets priority 50."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1414,7 +1414,7 @@ async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_po
             posted_at=current_tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
@@ -1424,7 +1424,7 @@ async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_po
 
 async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_postgres_pool):
     """Category 50–100% above average gets priority 65."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1461,7 +1461,7 @@ async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_p
             posted_at=current_tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
@@ -1471,7 +1471,7 @@ async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_p
 
 async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(provisioned_postgres_pool):
     """Category within 30% of average does NOT generate an insight."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1508,7 +1508,7 @@ async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(provisione
             posted_at=current_tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
@@ -1519,7 +1519,7 @@ async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
     provisioned_postgres_pool,
 ):
     """Categories with fewer than 3 months of history are excluded from anomaly detection."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1557,7 +1557,7 @@ async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
             posted_at=current_tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
@@ -1566,7 +1566,7 @@ async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
 
 async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgres_pool):
     """Anomaly insight dedup_key matches finance:spending-anomaly:{category}:{year-month}."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1602,7 +1602,7 @@ async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgr
             posted_at=current_tx_date,
         )
 
-        await run_finance_insight_scan(pool)
+        await run_insight_scan(pool)
 
         candidates = await _fetch_candidates(pool)
         anomaly_cands = [c for c in candidates if c["category"] == "spending-anomaly"]
@@ -1612,7 +1612,7 @@ async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgr
 
 async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
     """When verbosity=off, the first submission is filtered and no more are submitted."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1624,7 +1624,7 @@ async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
         await _insert_bill_returning_id(pool, payee="Bill A", due_date=_today() + timedelta(days=1))
         await _insert_bill_returning_id(pool, payee="Bill B", due_date=_today() + timedelta(days=2))
 
-        result = await run_finance_insight_scan(pool)
+        result = await run_insight_scan(pool)
 
         assert result["early_exit"] is True
         assert result["filtered"] >= 1
@@ -1634,12 +1634,12 @@ async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
 
 async def test_insight_scan_result_has_expected_keys(provisioned_postgres_pool):
     """Result dict contains all expected keys."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
 
-        result = await run_finance_insight_scan(pool)
+        result = await run_insight_scan(pool)
 
         assert "submitted" in result
         assert "accepted" in result
@@ -1650,7 +1650,7 @@ async def test_insight_scan_result_has_expected_keys(provisioned_postgres_pool):
 
 async def test_insight_scan_multiple_categories_all_submitted(provisioned_postgres_pool):
     """Multiple categories (bill + subscription) each get a candidate submitted."""
-    from butlers.jobs._roster.finance_jobs import run_finance_insight_scan
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1662,7 +1662,7 @@ async def test_insight_scan_multiple_categories_all_submitted(provisioned_postgr
             pool, service="Adobe", frequency="yearly", next_renewal=_today() + timedelta(days=5)
         )
 
-        result = await run_finance_insight_scan(pool)
+        result = await run_insight_scan(pool)
 
         assert result["submitted"] == 2
         assert result["accepted"] == 2
