@@ -77,6 +77,23 @@ def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> b
     return bool(exists)
 
 
+def _function_is_security_definer(db_url: str, schema_name: str, function_name: str) -> bool:
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "SELECT p.prosecdef "
+                "FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = :s AND p.proname = :f"
+            ),
+            {"s": schema_name, "f": function_name},
+        )
+        value = result.scalar()
+    engine.dispose()
+    return bool(value)
+
+
 def _role_exists(db_url: str, role_name: str) -> bool:
     engine = create_engine(db_url)
     with engine.connect() as conn:
@@ -241,6 +258,39 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         scalar=True,
     )
     assert count == 1
+
+
+def test_switchboard_runtime_role_can_ensure_message_inbox_partitions(postgres_container):
+    """switchboard runtime role can create inbox partitions without owning the parent table."""
+    from butlers.migrations import _build_alembic_config
+
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+
+    switchboard_core = _build_alembic_config(db_url, chains=["core"], target_schema="switchboard")
+    switchboard_chain = _build_alembic_config(
+        db_url, chains=["switchboard"], target_schema="switchboard"
+    )
+
+    command.upgrade(switchboard_core, "core@head")
+    command.upgrade(switchboard_chain, "switchboard@head")
+
+    assert _function_is_security_definer(
+        db_url,
+        "switchboard",
+        "switchboard_message_inbox_ensure_partition",
+    )
+
+    partition_name = _execute_as_role(
+        db_url,
+        RUNTIME_ROLES["switchboard"],
+        "SELECT switchboard.switchboard_message_inbox_ensure_partition("
+        "'2099-01-15T00:00:00+00:00'::timestamptz"
+        ")",
+        scalar=True,
+    )
+    assert partition_name == "message_inbox_p209901"
+    assert _table_exists_in_schema(db_url, "switchboard", "message_inbox_p209901")
 
 
 def test_core_scheduled_tasks_schema_and_constraints(postgres_container):

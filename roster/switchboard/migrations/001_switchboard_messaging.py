@@ -11,6 +11,8 @@ dashboard audit log, partitioned message inbox, extraction queue/log, and fanout
 
 from __future__ import annotations
 
+from sqlalchemy import text
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -18,6 +20,21 @@ revision = "sw_001"
 down_revision = None
 branch_labels = ("switchboard",)
 depends_on = None
+
+
+def _quote_ident(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _function_search_path() -> str:
+    bind = op.get_bind()
+    if bind is None:
+        # Offline mode (alembic upgrade --sql): no live connection. Fall back to
+        # the well-known target schema for this branch.
+        return _quote_ident("switchboard") + ", pg_temp"
+    schema = bind.execute(text("SELECT current_schema()")).scalar_one()
+    parts = [_quote_ident(str(schema)), "pg_temp"]
+    return ", ".join(dict.fromkeys(parts))
 
 
 def upgrade() -> None:
@@ -286,12 +303,16 @@ def upgrade() -> None:
     )
 
     # ── message_inbox partition functions (sw_008 + sw_030 proactive next-month) ─
+    function_search_path = _function_search_path()
+
     op.execute(
-        """
+        f"""
         CREATE OR REPLACE FUNCTION switchboard_message_inbox_ensure_partition(
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS TEXT
         LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO {function_search_path}
         AS $$
         DECLARE
             month_start   TIMESTAMPTZ;
@@ -332,12 +353,14 @@ def upgrade() -> None:
     )
 
     op.execute(
-        """
+        f"""
         CREATE OR REPLACE FUNCTION switchboard_message_inbox_drop_expired_partitions(
             retention INTERVAL DEFAULT INTERVAL '1 month',
             reference_ts TIMESTAMPTZ DEFAULT now()
         ) RETURNS INTEGER
         LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path TO {function_search_path}
         AS $$
         DECLARE
             partition_name TEXT;
@@ -355,9 +378,9 @@ def upgrade() -> None:
                 JOIN pg_namespace ns ON ns.oid = child.relnamespace
                 WHERE parent.relname = 'message_inbox'
                 AND ns.nspname = current_schema()
-                AND child.relname ~ '^message_inbox_p[0-9]{6}$'
+                AND child.relname ~ '^message_inbox_p[0-9]{{6}}$'
             LOOP
-                partition_month := to_date(substring(partition_name from '[0-9]{6}$'), 'YYYYMM');
+                partition_month := to_date(substring(partition_name from '[0-9]{{6}}$'), 'YYYYMM');
                 IF partition_month < cutoff_month THEN
                     EXECUTE format('DROP TABLE IF EXISTS %I', partition_name);
                     dropped_count := dropped_count + 1;
