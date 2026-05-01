@@ -199,6 +199,25 @@ def test_codex_mcp_discovery_exhaustion_excluded_from_log_scanner():
     assert _should_include_entry(entry) is False
 
 
+@pytest.mark.parametrize(
+    "event",
+    [
+        "codex_refresh_lock: lock held >30s by another process — proceeding unlocked to avoid deadlock (lock_path=/tmp/.codex/butlers.refresh.lock)",
+        "codex_refresh_lock: waiting >5s for cross-process refresh lock — possible contention (lock_path=/tmp/.codex/butlers.refresh.lock)",
+    ],
+)
+def test_codex_refresh_lock_contention_excluded_from_log_scanner(event):
+    """Benign Codex refresh-lock contention should not page QA."""
+    entry = LogEntry(
+        level="warning",
+        event=event,
+        timestamp=datetime.now(UTC),
+        butler_name="general",
+        logger="butlers.core.runtimes.codex",
+    )
+    assert _should_include_entry(entry) is False
+
+
 @pytest.mark.asyncio
 async def test_finding_structure_and_pii(tmp_path):
     """QaFinding fields populated; PII stripped from event_summary."""

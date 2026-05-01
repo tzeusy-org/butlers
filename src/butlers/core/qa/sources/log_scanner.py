@@ -221,12 +221,19 @@ def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
 
 def _should_include_entry(entry: LogEntry) -> bool:
     """Return True if this log entry qualifies for finding extraction."""
-    # Codex MCP-discovery exhaustion is better sourced from session_records:
-    # the runtime/session tables tell us whether the session actually failed,
-    # while the raw adapter log can be emitted on a path that later recovers.
-    if (
-        entry.logger == "butlers.core.runtimes.codex"
-        and "MCP discovery failed after" in entry.event
+    # Codex adapter noise that should never reach the QA finding set:
+    #   * "MCP discovery failed after ..." — better sourced from session_records.
+    #     The runtime/session tables tell us whether the session actually
+    #     failed, while the raw adapter log can be emitted on a path that
+    #     later recovers.
+    #   * "codex_refresh_lock: lock held" / "codex_refresh_lock: waiting" —
+    #     these contain the word "deadlock" while describing the adapter's
+    #     non-fatal fallback path. It is operational contention, not a crash
+    #     sentinel.
+    if entry.logger == "butlers.core.runtimes.codex" and (
+        "MCP discovery failed after" in entry.event
+        or "codex_refresh_lock: lock held" in entry.event
+        or "codex_refresh_lock: waiting" in entry.event
     ):
         return False
 
