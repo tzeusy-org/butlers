@@ -317,27 +317,23 @@ async def correct_route(
                     outcome,
                     outcome_details
                 )
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 "correct_route",
                 request_id,
                 "message_inbox",
                 f"correction:{correction_id}",
                 description or "misroute correction",
-                json.dumps(
-                    {
-                        "correction_id": str(correction_id),
-                        "correct_butler": correct_butler,
-                        "original_triage_target": request_context.get("triage_target"),
-                    }
-                ),
+                {
+                    "correction_id": str(correction_id),
+                    "correct_butler": correct_butler,
+                    "original_triage_target": request_context.get("triage_target"),
+                },
                 "failure",
-                json.dumps(
-                    {
-                        "error": "dispatch_failed",
-                        "detail": route_result["error"],
-                    }
-                ),
+                {
+                    "error": "dispatch_failed",
+                    "detail": route_result["error"],
+                },
             )
         except Exception:
             logger.warning(
@@ -374,11 +370,11 @@ async def correct_route(
         UPDATE message_inbox
         SET
             lifecycle_state = 'corrected',
-            processing_metadata = processing_metadata || $1::jsonb,
+            processing_metadata = processing_metadata || $1,
             updated_at = now()
         WHERE id = $2
         """,
-        json.dumps(updated_processing_metadata),
+        updated_processing_metadata,
         request_id,
     )
 
@@ -395,27 +391,23 @@ async def correct_route(
             outcome,
             outcome_details
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """,
         "correct_route",
         request_id,
         "message_inbox",
         f"correction:{correction_id}",
         description or "misroute correction",
-        json.dumps(
-            {
-                "correction_id": str(correction_id),
-                "correct_butler": correct_butler,
-                "original_triage_target": request_context.get("triage_target"),
-            }
-        ),
+        {
+            "correction_id": str(correction_id),
+            "correct_butler": correct_butler,
+            "original_triage_target": request_context.get("triage_target"),
+        },
         "success",
-        json.dumps(
-            {
-                "lifecycle_state": "corrected",
-                "correct_butler": correct_butler,
-            }
-        ),
+        {
+            "lifecycle_state": "corrected",
+            "correct_butler": correct_butler,
+        },
     )
 
     logger.info(

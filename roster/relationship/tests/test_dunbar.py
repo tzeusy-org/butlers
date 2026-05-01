@@ -570,8 +570,6 @@ async def test_inactive_facts_excluded(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     """outgoing direction produces 10x score vs incoming (RFC 0013, D1)."""
-    import json
-
     from butlers.tools.relationship.dunbar import (
         DIRECTION_WEIGHT_INCOMING,
         DIRECTION_WEIGHT_OUTGOING,
@@ -585,20 +583,20 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{outgoing['id']}",
         occurred_at,
-        json.dumps({"direction": "outgoing"}),
+        {"direction": "outgoing"},
     )
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{incoming['id']}",
         occurred_at,
-        json.dumps({"direction": "incoming"}),
+        {"direction": "incoming"},
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -614,8 +612,6 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     """mutual direction produces 5x score vs incoming (RFC 0013, D1)."""
-    import json
-
     from butlers.tools.relationship.dunbar import (
         DIRECTION_WEIGHT_INCOMING,
         DIRECTION_WEIGHT_MUTUAL,
@@ -629,20 +625,20 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{mutual['id']}",
         occurred_at,
-        json.dumps({"direction": "mutual"}),
+        {"direction": "mutual"},
     )
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{incoming['id']}",
         occurred_at,
-        json.dumps({"direction": "incoming"}),
+        {"direction": "incoming"},
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -658,8 +654,6 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_group_size_10_produces_tenth_score(dunbar_pool):
     """group_size=10 produces 1/10th score vs group_size=1 (RFC 0013, D2)."""
-    import json
-
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     group_contact = await _make_contact(dunbar_pool, "GroupContact")
@@ -671,20 +665,20 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{group_contact['id']}",
         occurred_at,
-        json.dumps({"group_size": group_size_large}),
+        {"group_size": group_size_large},
     )
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{dm_contact['id']}",
         occurred_at,
-        json.dumps({"group_size": group_size_dm}),
+        {"group_size": group_size_dm},
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -701,8 +695,6 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_null_direction_defaults_to_1x(dunbar_pool):
     """NULL direction defaults to 1.0x multiplier (backward compatible, RFC 0013, D6)."""
-    import json
-
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     null_dir = await _make_contact(dunbar_pool, "NullDirection")
@@ -721,11 +713,11 @@ async def test_null_direction_defaults_to_1x(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{explicit_incoming['id']}",
         occurred_at,
-        json.dumps({"direction": "incoming"}),
+        {"direction": "incoming"},
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -740,8 +732,6 @@ async def test_null_direction_defaults_to_1x(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_null_group_size_defaults_to_1x(dunbar_pool):
     """NULL group_size defaults to 1.0x divisor (backward compatible, RFC 0013, D6)."""
-    import json
-
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     null_gs = await _make_contact(dunbar_pool, "NullGroupSize")
@@ -760,11 +750,11 @@ async def test_null_group_size_defaults_to_1x(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{explicit_dm['id']}",
         occurred_at,
-        json.dumps({"group_size": 1}),
+        {"group_size": 1},
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -779,8 +769,6 @@ async def test_null_group_size_defaults_to_1x(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_connector_extracted_mentions_do_not_count_as_direct_interactions(dunbar_pool):
     """LLM-extracted facts from connector context can mention a person without direct contact."""
-    import json
-
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     mentioned = await _make_contact(dunbar_pool, "MentionedPerson")
@@ -789,21 +777,19 @@ async def test_connector_extracted_mentions_do_not_count_as_direct_interactions(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
         VALUES ($1, 'interaction_other', 'Talked about MentionedPerson', 'relationship', 'active',
-                $2, $3::jsonb)
+                $2, $3)
         """,
         f"contact:{mentioned['id']}",
         occurred_at,
-        json.dumps(
-            {
-                "type": "chat_message",
-                "direction": "mutual",
-                "extra_metadata": {
-                    "source_channel": "telegram_user_client",
-                    "request_id": "req-123",
-                    "related_contact_name": "MentionedPerson",
-                },
-            }
-        ),
+        {
+            "type": "chat_message",
+            "direction": "mutual",
+            "extra_metadata": {
+                "source_channel": "telegram_user_client",
+                "request_id": "req-123",
+                "related_contact_name": "MentionedPerson",
+            },
+        },
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -817,8 +803,6 @@ async def test_connector_extracted_mentions_do_not_count_as_direct_interactions(
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_interaction_sync_connector_events_still_count(dunbar_pool):
     """Direct interactions created by interaction_sync remain valid Dunbar evidence."""
-    import json
-
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     direct = await _make_contact(dunbar_pool, "DirectChat")
@@ -826,21 +810,19 @@ async def test_interaction_sync_connector_events_still_count(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{direct['id']}",
         occurred_at,
-        json.dumps(
-            {
-                "type": "telegram_user_client",
-                "direction": "incoming",
-                "extra_metadata": {
-                    "source": "interaction_sync",
-                    "message_count": 1,
-                    "group_size": 1,
-                },
-            }
-        ),
+        {
+            "type": "telegram_user_client",
+            "direction": "incoming",
+            "extra_metadata": {
+                "source": "interaction_sync",
+                "message_count": 1,
+                "group_size": 1,
+            },
+        },
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -854,8 +836,6 @@ async def test_interaction_sync_connector_events_still_count(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_interview_interactions_are_downweighted(dunbar_pool):
     """A one-off interview should not carry the same social weight as a direct call."""
-    import json
-
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     interview = await _make_contact(dunbar_pool, "InterviewOnly")
@@ -865,20 +845,20 @@ async def test_interview_interactions_are_downweighted(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{interview['id']}",
         occurred_at,
-        json.dumps({"type": "interview", "direction": "outgoing"}),
+        {"type": "interview", "direction": "outgoing"},
     )
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{call['id']}",
         occurred_at,
-        json.dumps({"type": "call", "direction": "outgoing"}),
+        {"type": "call", "direction": "outgoing"},
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -893,8 +873,6 @@ async def test_interview_interactions_are_downweighted(dunbar_pool):
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_email_interactions_are_downweighted(dunbar_pool):
     """A few transactional emails should not score like direct personal calls."""
-    import json
-
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
 
     email = await _make_contact(dunbar_pool, "EmailOnly")
@@ -904,20 +882,20 @@ async def test_email_interactions_are_downweighted(dunbar_pool):
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{email['id']}",
         occurred_at,
-        json.dumps({"type": "email", "direction": "outgoing"}),
+        {"type": "email", "direction": "outgoing"},
     )
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
-        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3::jsonb)
+        VALUES ($1, 'interaction_other', '', 'relationship', 'active', $2, $3)
         """,
         f"contact:{call['id']}",
         occurred_at,
-        json.dumps({"type": "call", "direction": "outgoing"}),
+        {"type": "call", "direction": "outgoing"},
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
@@ -1112,16 +1090,13 @@ async def test_urgency_pending_gift_bonus(dunbar_pool):
 
     contact = await _make_contact(dunbar_pool, "GiftPending", stay_in_touch_days=365)
 
-    # Insert a pending gift fact
-    import json
-
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, metadata)
-        VALUES ($1, 'gift', 'book', 'relationship', 'active', $2::jsonb)
+        VALUES ($1, 'gift', 'book', 'relationship', 'active', $2)
         """,
         f"contact:{contact['id']}:gift:book",
-        json.dumps({"status": "idea"}),
+        {"status": "idea"},
     )
 
     scores = [
@@ -1150,16 +1125,14 @@ async def test_urgency_positive_note_bonus(dunbar_pool):
 
     contact = await _make_contact(dunbar_pool, "HappyContact", stay_in_touch_days=365)
 
-    import json
-
     await dunbar_pool.execute(
         """
         INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, metadata)
         VALUES ($1, 'contact_note', 'Had a great chat!', 'relationship', 'active',
-                now() - INTERVAL '1 day', $2::jsonb)
+                now() - INTERVAL '1 day', $2)
         """,
         f"contact:{contact['id']}",
-        json.dumps({"emotion": "happy"}),
+        {"emotion": "happy"},
     )
 
     scores = [

@@ -33,7 +33,6 @@ Design notes:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import secrets
 import time
@@ -764,34 +763,32 @@ async def ingest_v1(
     normalized_text = envelope.payload.normalized_text
 
     # 6a. Serialize attachments if present (includes both eager and lazy refs)
-    attachments_json = None
+    attachments_value: list[dict] | None = None
     if envelope.payload.attachments:
-        attachments_json = json.dumps(
-            [
-                {
-                    k: v
-                    for k, v in {
-                        "media_type": att.media_type,
-                        "storage_ref": att.storage_ref,
-                        "size_bytes": att.size_bytes,
-                        "filename": att.filename,
-                        "width": att.width,
-                        "height": att.height,
-                        "source_message_id": att.source_message_id,
-                        "source_attachment_id": att.source_attachment_id,
-                    }.items()
-                    if v is not None
-                }
-                for att in envelope.payload.attachments
-            ]
-        )
+        attachments_value = [
+            {
+                k: v
+                for k, v in {
+                    "media_type": att.media_type,
+                    "storage_ref": att.storage_ref,
+                    "size_bytes": att.size_bytes,
+                    "filename": att.filename,
+                    "width": att.width,
+                    "height": att.height,
+                    "source_message_id": att.source_message_id,
+                    "source_attachment_id": att.source_attachment_id,
+                }.items()
+                if v is not None
+            }
+            for att in envelope.payload.attachments
+        ]
 
     # 6b. Strip null bytes — PostgreSQL rejects \u0000 in text/jsonb columns
     normalized_text = _strip_null_bytes(normalized_text)
     request_context = _strip_null_bytes(request_context)
     raw_payload = _strip_null_bytes(raw_payload)
-    if attachments_json is not None:
-        attachments_json = _strip_null_bytes(attachments_json)
+    if attachments_value is not None:
+        attachments_value = _strip_null_bytes(attachments_value)
 
     # 7. Ensure partition exists for received_at — committed immediately,
     # OUTSIDE any transaction so that DDL (CREATE TABLE IF NOT EXISTS) cannot
@@ -908,16 +905,16 @@ async def ingest_v1(
                         created_at,
                         updated_at
                     ) VALUES (
-                        $1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb,
+                        $1, $2, $3, $4, $5, $6,
                         $7, 'message_inbox.v2', '{}'::jsonb, $2, $2
                     )
                     """,
                     request_id,
                     received_at,
-                    json.dumps(request_context),
-                    json.dumps(raw_payload),
+                    request_context,
+                    raw_payload,
                     normalized_text,
-                    attachments_json,
+                    attachments_value,
                     lifecycle_state,
                 )
 

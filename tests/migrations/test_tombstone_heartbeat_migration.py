@@ -442,17 +442,16 @@ class TestTombstoneHeartbeatMigrationIntegration:
         payload = {}
         if trigger_source is not None:
             payload["trigger_source"] = trigger_source
-        import json
 
         await pool.execute(
             """
             INSERT INTO episodes
                 (source_name, source_ref, episode_type, start_at, payload)
             VALUES
-                ('core.sessions', $1, 'work', now() - interval '1 hour', $2::jsonb)
+                ('core.sessions', $1, 'work', now() - interval '1 hour', $2)
             """,
             source_ref,
-            json.dumps(payload),
+            payload,
         )
 
     @pytest.mark.asyncio(loop_scope="session")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -101,7 +100,7 @@ async def track_bill(
     due = _normalize_date(due_date)
     period_start = _normalize_date(statement_period_start) if statement_period_start else None
     period_end = _normalize_date(statement_period_end) if statement_period_end else None
-    metadata_json = json.dumps(metadata) if metadata is not None else "{}"
+    metadata_value: dict[str, Any] = dict(metadata) if metadata is not None else {}
     account_uuid = uuid.UUID(str(account_id)) if account_id is not None else None
 
     # Normalize paid_at to datetime if provided as string
@@ -134,7 +133,7 @@ async def track_bill(
                 statement_period_end   = COALESCE($8, statement_period_end),
                 paid_at               = COALESCE($9, paid_at),
                 source_message_id     = COALESCE($10, source_message_id),
-                metadata              = metadata || $11::jsonb,
+                metadata              = metadata || $11,
                 updated_at            = now()
             WHERE id = $12
             RETURNING *
@@ -149,7 +148,7 @@ async def track_bill(
             period_end,
             paid_at_dt,
             source_message_id,
-            metadata_json,
+            metadata_value,
             existing["id"],
         )
     else:
@@ -163,7 +162,7 @@ async def track_bill(
             VALUES (
                 $1, $2, $3, $4, $5, $6,
                 $7, $8, $9,
-                $10, $11, $12, $13::jsonb
+                $10, $11, $12, $13
             )
             RETURNING *
             """,
@@ -179,7 +178,7 @@ async def track_bill(
             period_end,
             paid_at_dt,
             source_message_id,
-            metadata_json,
+            metadata_value,
         )
 
     return _deserialize_row(row)
