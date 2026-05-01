@@ -1,7 +1,7 @@
 """Run message_inbox partition maintenance as the table owner.
 
-Revision ID: sw_008
-Revises: sw_007
+Revision ID: sw_009
+Revises: sw_008
 Create Date: 2026-05-01 00:00:00.000000
 
 The switchboard runtime role can insert into ``message_inbox`` but does not own
@@ -16,8 +16,8 @@ from sqlalchemy import text
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "sw_008"
-down_revision = "sw_007"
+revision = "sw_009"
+down_revision = "sw_008"
 branch_labels = None
 depends_on = None
 
