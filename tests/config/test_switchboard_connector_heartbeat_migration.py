@@ -92,9 +92,12 @@ def _run_core_and_switchboard(postgres_container) -> str:
 def _run_schema_scoped_core_and_switchboard(postgres_container, schema_name: str) -> str:
     from butlers.migrations import run_migrations
 
+    # Production layout: core lives in public, switchboard lives in its own
+    # schema. Mirroring that here keeps the search_path/SECURITY DEFINER
+    # behavior under test honest.
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    asyncio.run(run_migrations(db_url, chain="core", schema=schema_name))
+    asyncio.run(run_migrations(db_url, chain="core"))
     asyncio.run(run_migrations(db_url, chain="switchboard", schema=schema_name))
     return db_url
 
@@ -156,23 +159,43 @@ def test_connector_heartbeat_tables_schema(postgres_container):
     assert _get_partition_count(db_url, "connector_heartbeat_log") >= 1
 
 
+def _assert_search_path_is_minimal(config: list[str], expected_schema: str) -> None:
+    """Assert SECURITY DEFINER search_path is pinned to the expected schema only.
+
+    Guards against regressions that would re-expose ``public`` (or any other
+    arbitrary schema) inside a ``SECURITY DEFINER`` function.
+    """
+    search_path_settings = [s for s in config if s.startswith("search_path=")]
+    assert len(search_path_settings) == 1, (
+        f"Expected exactly one search_path setting, got: {search_path_settings}"
+    )
+    setting = search_path_settings[0]
+    value = setting.split("=", 1)[1]
+    parts = [p.strip().strip('"') for p in value.split(",")]
+    # Allow ``pg_temp`` (PostgreSQL appends it implicitly anyway) and the
+    # function's home schema. Reject anything else — especially ``public``
+    # and ``$user``.
+    allowed = {expected_schema, "pg_temp"}
+    assert set(parts) <= allowed, (
+        f"search_path leaks unexpected schemas: {parts} (allowed: {allowed})"
+    )
+    assert expected_schema in parts, f"search_path missing target schema {expected_schema}: {parts}"
+
+
 def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_container):
     """Runtime role can create heartbeat partitions without parent ownership."""
     db_url = _run_schema_scoped_core_and_switchboard(postgres_container, "switchboard")
 
-    assert _function_exists(
-        db_url,
+    for function_name in (
         "switchboard_connector_heartbeat_log_ensure_partition",
-        schema_name="switchboard",
-    )
-    security_definer, config = _function_security_config(
-        db_url,
-        "switchboard_connector_heartbeat_log_ensure_partition",
-        schema_name="switchboard",
-    )
-
-    assert security_definer
-    assert any(setting.startswith("search_path=") for setting in config)
+        "switchboard_connector_heartbeat_log_drop_expired_partitions",
+    ):
+        assert _function_exists(db_url, function_name, schema_name="switchboard")
+        security_definer, config = _function_security_config(
+            db_url, function_name, schema_name="switchboard"
+        )
+        assert security_definer, f"{function_name} must be SECURITY DEFINER"
+        _assert_search_path_is_minimal(config, expected_schema="switchboard")
 
     partition_name = _execute_as_role(
         db_url,
@@ -185,6 +208,18 @@ def test_runtime_role_can_ensure_connector_heartbeat_partition(postgres_containe
 
     assert partition_name == "connector_heartbeat_log_p202708"
     assert _get_partition_count(db_url, "connector_heartbeat_log", schema_name="switchboard") >= 3
+
+    # Cleanup is also a runtime-role responsibility once the maintenance
+    # cron is wired up; verify the role can call it without owning the
+    # parent table.
+    _execute_as_role(
+        db_url,
+        "butler_switchboard_rw",
+        "SELECT switchboard.switchboard_connector_heartbeat_log_drop_expired_partitions("
+        "INTERVAL '7 days', '2027-08-15T00:00:00+00:00'::timestamptz"
+        ")",
+        scalar=True,
+    )
 
 
 def test_downgrade_drops_all_objects(postgres_container):
