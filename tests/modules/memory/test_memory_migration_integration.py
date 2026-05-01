@@ -210,9 +210,15 @@ def test_memory_policies_seeded(memory_migrated_db: str) -> None:
 
 async def _write_and_read_fact(db_url: str) -> dict:
     """Write a fact via store_fact and read it back directly via asyncpg."""
+    from butlers.db import register_jsonb_codec
     from butlers.modules.memory.storage import store_fact
 
-    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
     try:
         embedding_engine = _fake_embedding_engine()
 

@@ -250,3 +250,157 @@ class TestEntityMetadataRoundtrip:
             )
             assert result["emotion"] == "curious"
             assert result["source"] == "call-transcript"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end regression: store_fact writes must survive metadata->>'key' filters
+# ---------------------------------------------------------------------------
+
+
+_FACTS_DDL = """
+CREATE TABLE IF NOT EXISTS facts (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject             TEXT NOT NULL,
+    predicate           TEXT NOT NULL,
+    content             TEXT NOT NULL,
+    embedding           TEXT,
+    search_vector       TSVECTOR,
+    importance          FLOAT NOT NULL DEFAULT 5.0,
+    confidence          FLOAT NOT NULL DEFAULT 1.0,
+    decay_rate          FLOAT NOT NULL DEFAULT 0.002,
+    permanence          TEXT NOT NULL DEFAULT 'stable',
+    source_butler       TEXT,
+    source_episode_id   UUID,
+    supersedes_id       UUID REFERENCES facts(id) ON DELETE SET NULL,
+    validity            TEXT NOT NULL DEFAULT 'active',
+    scope               TEXT NOT NULL DEFAULT 'global',
+    reference_count     INTEGER NOT NULL DEFAULT 0,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_confirmed_at   TIMESTAMPTZ,
+    tags                JSONB DEFAULT '[]'::jsonb,
+    metadata            JSONB DEFAULT '{}'::jsonb,
+    entity_id           UUID,
+    object_entity_id    UUID,
+    valid_at            TIMESTAMPTZ DEFAULT NULL,
+    tenant_id           TEXT NOT NULL DEFAULT 'shared',
+    request_id          TEXT,
+    idempotency_key     TEXT,
+    observed_at         TIMESTAMPTZ DEFAULT now(),
+    invalid_at          TIMESTAMPTZ,
+    retention_class     TEXT NOT NULL DEFAULT 'operational',
+    sensitivity         TEXT NOT NULL DEFAULT 'normal'
+)
+"""
+
+_PREDICATE_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS predicate_registry (
+    name                 TEXT PRIMARY KEY,
+    expected_subject_type TEXT,
+    expected_object_type TEXT,
+    is_edge              BOOLEAN NOT NULL DEFAULT false,
+    is_temporal          BOOLEAN NOT NULL DEFAULT false,
+    description          TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    status               TEXT NOT NULL DEFAULT 'active',
+    superseded_by        TEXT,
+    deprecated_at        TIMESTAMPTZ,
+    inverse_of           TEXT,
+    is_symmetric         BOOLEAN NOT NULL DEFAULT false,
+    aliases              TEXT[] NOT NULL DEFAULT '{}',
+    usage_count          INTEGER NOT NULL DEFAULT 0,
+    last_used_at         TIMESTAMPTZ
+)
+"""
+
+_EPISODES_DDL = """
+CREATE TABLE IF NOT EXISTS episodes (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    butler           TEXT NOT NULL,
+    session_id       UUID,
+    content          TEXT NOT NULL,
+    embedding        TEXT,
+    search_vector    TSVECTOR,
+    importance       FLOAT NOT NULL DEFAULT 5.0,
+    expires_at       TIMESTAMPTZ NOT NULL,
+    metadata         JSONB DEFAULT '{}'::jsonb,
+    tenant_id        TEXT NOT NULL DEFAULT 'shared',
+    request_id       TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    retention_class  TEXT NOT NULL DEFAULT 'operational',
+    sensitivity      TEXT NOT NULL DEFAULT 'normal'
+)
+"""
+
+_MEMORY_LINKS_DDL = """
+CREATE TABLE IF NOT EXISTS memory_links (
+    id          BIGSERIAL PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_id   UUID NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id   UUID NOT NULL,
+    relation    TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_type, source_id, target_type, target_id)
+)
+"""
+
+
+def _mock_embedding_engine():
+    from unittest.mock import MagicMock
+
+    engine = MagicMock()
+    engine.embed.return_value = [0.0] * 8
+    return engine
+
+
+class TestStoreFactDoubleEncodingRegression:
+    """End-to-end regression for [bu-qki26]: store_fact must not double-encode JSONB.
+
+    Reproduces the production failure: the asyncpg pool registers a JSONB codec
+    that already calls ``json.dumps`` on inserted values. If ``store_fact`` also
+    pre-encodes metadata to a JSON string, the codec wraps the string in an
+    extra ``json.dumps`` call, producing a JSON string scalar instead of an
+    object. Subsequent ``metadata->>'key'`` filters return NULL and queries
+    return zero rows — the symptom that broke 10 tests across roster/finance
+    and roster/relationship.
+    """
+
+    async def test_store_fact_metadata_jsonb_filter_finds_row(self, provisioned_postgres_pool):
+        """A fact stored with metadata={'direction': 'incoming'} must be found
+        by ``WHERE metadata->>'direction' = 'incoming'``.
+
+        This test FAILS on broken main (codec double-encodes the string) and
+        PASSES after binding the dict directly.
+        """
+        from butlers.modules.memory.storage import store_fact
+
+        async with provisioned_postgres_pool() as pool:
+            await pool.execute(_PREDICATE_REGISTRY_DDL)
+            await pool.execute(_EPISODES_DDL)
+            await pool.execute(_FACTS_DDL)
+            await pool.execute(_MEMORY_LINKS_DDL)
+
+            embedding_engine = _mock_embedding_engine()
+            await store_fact(
+                pool,
+                subject="contact:alice",
+                predicate="interaction_call",
+                content="ringing the bell",
+                embedding_engine=embedding_engine,
+                metadata={"direction": "incoming", "category": "groceries"},
+            )
+
+            count = await pool.fetchval(
+                "SELECT COUNT(*) FROM facts WHERE metadata->>'direction' = 'incoming'"
+            )
+            assert count == 1, (
+                "JSONB filter returned 0 rows; metadata was likely double-encoded "
+                "into a JSON string scalar. See bu-qki26."
+            )
+
+            row = await pool.fetchrow(
+                "SELECT metadata FROM facts WHERE metadata->>'direction' = 'incoming'"
+            )
+            assert isinstance(row["metadata"], dict)
+            assert row["metadata"]["direction"] == "incoming"
+            assert row["metadata"]["category"] == "groceries"

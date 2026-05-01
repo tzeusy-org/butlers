@@ -430,7 +430,7 @@ async def store_episode(
     search_text = preprocess_text(content)
     ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
     expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
-    meta_json = json.dumps(metadata or {})
+    meta = metadata or {}
     async with pool.acquire() as conn:
         existing_episode_id = None
         if session_id is not None:
@@ -450,7 +450,7 @@ async def store_episode(
                 search_text=search_text,
                 importance=importance,
                 expires_at=expires_at,
-                meta_json=meta_json,
+                meta=meta,
                 request_id=request_id,
                 retention_class=retention_class,
                 sensitivity=sensitivity,
@@ -468,7 +468,7 @@ async def store_episode(
             search_text=search_text,
             importance=importance,
             expires_at=expires_at,
-            meta_json=meta_json,
+            meta=meta,
             tenant_id=tenant_id,
             request_id=request_id,
             retention_class=retention_class,
@@ -509,7 +509,7 @@ async def _insert_episode_record(
     search_text: str,
     importance: float,
     expires_at: datetime,
-    meta_json: str,
+    meta: dict,
     tenant_id: str,
     request_id: str | None,
     retention_class: str,
@@ -531,7 +531,7 @@ async def _insert_episode_record(
         search_text,
         importance,
         expires_at,
-        meta_json,
+        meta,
         tenant_id,
         request_id,
         retention_class,
@@ -548,7 +548,7 @@ async def _update_episode_record(
     search_text: str,
     importance: float,
     expires_at: datetime,
-    meta_json: str,
+    meta: dict,
     request_id: str | None,
     retention_class: str,
     sensitivity: str,
@@ -574,7 +574,7 @@ async def _update_episode_record(
         search_text,
         importance,
         expires_at,
-        meta_json,
+        meta,
         request_id,
         retention_class,
         sensitivity,
@@ -619,7 +619,7 @@ async def _resolve_write_provenance_with_conn(
     placeholder_now = now or datetime.now(UTC)
     ttl_days = _DEFAULT_EPISODE_TTL_DAYS
     expires_at = placeholder_now + timedelta(days=ttl_days)
-    placeholder_metadata = json.dumps({"provenance_placeholder": True})
+    placeholder_metadata: dict = {"provenance_placeholder": True}
     placeholder_embedding = embedding_engine.embed(_RUNTIME_PROVENANCE_PLACEHOLDER)
     placeholder_search_text = preprocess_text(_RUNTIME_PROVENANCE_PLACEHOLDER)
     episode_id = uuid.uuid4()
@@ -633,7 +633,7 @@ async def _resolve_write_provenance_with_conn(
         search_text=placeholder_search_text,
         importance=0.0,
         expires_at=expires_at,
-        meta_json=placeholder_metadata,
+        meta=placeholder_metadata,
         tenant_id=tenant_id,
         request_id=request_id,
         retention_class="transient",
@@ -680,8 +680,8 @@ async def _insert_fact_record(
     supersedes_id: uuid.UUID | None,
     scope: str,
     now: datetime,
-    tags_json: str,
-    meta_json: str,
+    tags: list,
+    meta: dict,
     entity_id: uuid.UUID | None,
     object_entity_id: uuid.UUID | None,
     fact_valid_at: datetime | None,
@@ -715,8 +715,10 @@ async def _insert_fact_record(
         scope: Fact scope string (e.g. ``'global'``).
         now: Timestamp used for ``created_at``, ``last_confirmed_at``, and
             ``observed_at``.
-        tags_json: JSON-serialised tags list.
-        meta_json: JSON-serialised metadata dict.
+        tags: Tags list (bound directly to JSONB column; the registered codec
+            handles encoding).
+        meta: Metadata dict (bound directly to JSONB column; the registered
+            codec handles encoding).
         entity_id: Subject entity UUID, or ``None``.
         object_entity_id: Object entity UUID (edge-facts only), or ``None``.
         fact_valid_at: Temporal validity timestamp, or ``None`` for property facts.
@@ -761,8 +763,8 @@ async def _insert_fact_record(
         supersedes_id,
         scope,
         now,
-        tags_json,
-        meta_json,
+        tags,
+        meta,
         entity_id,
         object_entity_id,
         fact_valid_at,
@@ -877,8 +879,8 @@ async def store_fact(
     # valid_at IS NULL means property fact; valid_at IS NOT NULL means temporal fact.
     # Preserve NULL when omitted — do NOT default to now().
     fact_valid_at = valid_at  # None → property fact, datetime → temporal fact
-    tags_json = json.dumps(tags or [])
-    meta_json = json.dumps(metadata or {})
+    tags_value = list(tags) if tags else []
+    meta_value = dict(metadata) if metadata else {}
 
     # Lifecycle warning populated inside the transaction block when the predicate
     # is deprecated; included in the return dict after the block exits.
@@ -1182,8 +1184,8 @@ async def store_fact(
                 supersedes_id=supersedes_id,
                 scope=scope,
                 now=now,
-                tags_json=tags_json,
-                meta_json=meta_json,
+                tags=tags_value,
+                meta=meta_value,
                 entity_id=entity_id,
                 object_entity_id=object_entity_id,
                 fact_valid_at=fact_valid_at,
@@ -1292,8 +1294,8 @@ async def store_fact(
                             supersedes_id=_inv_supersedes_id,
                             scope=scope,
                             now=now,
-                            tags_json=tags_json,
-                            meta_json=meta_json,
+                            tags=tags_value,
+                            meta=meta_value,
                             entity_id=object_entity_id,  # swapped
                             object_entity_id=entity_id,  # swapped
                             fact_valid_at=fact_valid_at,
@@ -1472,8 +1474,8 @@ async def store_rule(
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
     now = datetime.now(UTC)
-    tags_json = json.dumps(tags or [])
-    meta_json = json.dumps(metadata or {})
+    tags_value = list(tags) if tags else []
+    meta_value = dict(metadata) if metadata else {}
 
     sql = f"""
         INSERT INTO rules (id, content, embedding, search_vector, scope, maturity,
@@ -1497,8 +1499,8 @@ async def store_rule(
         source_episode_id,
         source_butler,
         now,
-        tags_json,
-        meta_json,
+        tags_value,
+        meta_value,
         tenant_id,
         request_id,
         retention_class,
@@ -1888,33 +1890,31 @@ async def _forget_with_correction_provenance(
     if correction_reason is not None:
         provenance_patch["correction_reason"] = correction_reason
 
-    provenance_json = json.dumps(provenance_patch)
-
     async with pool.acquire() as conn:
         async with conn.transaction():
             if memory_type == "fact":
                 result = await conn.execute(
                     "UPDATE facts "
                     "SET validity = 'retracted', "
-                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
                     memory_id,
-                    provenance_json,
+                    provenance_patch,
                 )
             elif memory_type == "episode":
                 result = await conn.execute(
                     "UPDATE episodes "
                     "SET expires_at = now(), "
-                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+                    "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
                     memory_id,
-                    provenance_json,
+                    provenance_patch,
                 )
             else:  # rule
-                rule_patch = json.dumps({"forgotten": True, **provenance_patch})
+                rule_patch = {"forgotten": True, **provenance_patch}
                 result = await conn.execute(
                     "UPDATE rules "
-                    "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
+                    "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
                     memory_id,
                     rule_patch,
@@ -1938,11 +1938,11 @@ async def _forget_with_correction_provenance(
                         (event_type, actor, memory_type, memory_id, payload)
                     VALUES
                         ('correction_driven_retraction', 'correction_system',
-                         $1, $2, $3::jsonb)
+                         $1, $2, $3)
                     """,
                     memory_type,
                     memory_id,
-                    json.dumps(event_payload),
+                    event_payload,
                 )
 
     return found
@@ -2179,8 +2179,6 @@ async def mark_harmful(
             if harmful >= 3 and effectiveness < 0.3:
                 metadata["needs_inversion"] = True
 
-            metadata_json = json.dumps(metadata)
-
             # Persist changes
             await conn.execute(
                 "UPDATE rules "
@@ -2188,7 +2186,7 @@ async def mark_harmful(
                 "WHERE id = $4",
                 effectiveness,
                 new_maturity,
-                metadata_json,
+                metadata,
                 rule_id,
             )
 
@@ -2197,16 +2195,15 @@ async def mark_harmful(
             audit_notes: dict = {}
             if reason:
                 audit_notes["reason"] = reason
-            audit_notes_json = json.dumps(audit_notes)
             await conn.execute(
                 "INSERT INTO rule_applications "
                 "    (tenant_id, rule_id, session_id, request_id, outcome, notes) "
-                "VALUES ($1, $2, $3, $4, 'harmful', $5::jsonb)",
+                "VALUES ($1, $2, $3, $4, 'harmful', $5)",
                 tenant_id,
                 rule_id,
                 session_id,
                 request_id,
-                audit_notes_json,
+                audit_notes,
             )
 
             row["effectiveness_score"] = effectiveness
@@ -2283,7 +2280,6 @@ async def invert_to_anti_pattern(
             # Preserve original content in metadata
             metadata["original_content"] = original_content
             metadata["needs_inversion"] = False
-            metadata_json = json.dumps(metadata)
 
             # Update the rule
             sql = f"""
@@ -2300,7 +2296,7 @@ async def invert_to_anti_pattern(
                 anti_pattern_content,
                 str(new_embedding),
                 search_text,
-                metadata_json,
+                metadata,
                 rule_id,
             )
 
@@ -2411,7 +2407,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                         metadata["archived_content"] = True
                         await conn.execute(
                             "UPDATE facts SET validity = 'expired', metadata = $1 WHERE id = $2",
-                            json.dumps(metadata),
+                            metadata,
                             fact["id"],
                         )
                     except Exception:
@@ -2431,7 +2427,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                 metadata["status"] = "fading"
                 await conn.execute(
                     "UPDATE facts SET metadata = $1 WHERE id = $2",
-                    json.dumps(metadata),
+                    metadata,
                     fact["id"],
                 )
                 stats["facts_fading"] += 1
@@ -2440,7 +2436,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     del metadata["status"]
                     await conn.execute(
                         "UPDATE facts SET metadata = $1 WHERE id = $2",
-                        json.dumps(metadata),
+                        metadata,
                         fact["id"],
                     )
 
@@ -2470,7 +2466,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                 metadata["forgotten"] = True
                 await conn.execute(
                     "UPDATE rules SET metadata = $1 WHERE id = $2",
-                    json.dumps(metadata),
+                    metadata,
                     rule["id"],
                 )
                 stats["rules_expired"] += 1
@@ -2478,7 +2474,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                 metadata["status"] = "fading"
                 await conn.execute(
                     "UPDATE rules SET metadata = $1 WHERE id = $2",
-                    json.dumps(metadata),
+                    metadata,
                     rule["id"],
                 )
                 stats["rules_fading"] += 1
@@ -2487,7 +2483,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     del metadata["status"]
                     await conn.execute(
                         "UPDATE rules SET metadata = $1 WHERE id = $2",
-                        json.dumps(metadata),
+                        metadata,
                         rule["id"],
                     )
 
