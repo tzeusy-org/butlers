@@ -281,6 +281,77 @@ async def test_missing_calendar_table_is_skipped_without_error():
     mock_log.assert_not_called()
 
 
+async def test_checkpoint_read_failure_uses_default_window_without_raising():
+    """Checkpoint read failures are reported in stats instead of escaping to scheduler."""
+    pool = _make_pool()
+    pool.fetch = AsyncMock(side_effect=[[], []])
+
+    mod = _get_rjobs()
+    run_fn = mod.run_interaction_sync
+
+    mock_log = AsyncMock(return_value={"id": str(uuid.uuid4()), "logged": True})
+    mock_state_get = AsyncMock(side_effect=RuntimeError("state unavailable"))
+    mock_state_set = AsyncMock()
+
+    with (
+        patch.object(mod, "state_get", mock_state_get),
+        patch.object(mod, "state_set", mock_state_set),
+        patch(
+            "butlers.tools.relationship.interactions.interaction_log",
+            mock_log,
+        ),
+    ):
+        real_datetime = datetime
+
+        class _FixedDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return _NOW.replace(tzinfo=tz) if tz else _NOW
+
+        with patch.object(mod, "datetime", _FixedDatetime):
+            stats = await run_fn(pool)
+
+    assert stats["errors"] == 1
+    assert stats["scan_window_start"] == "2026-03-17T10:00:00+00:00"
+    mock_state_set.assert_awaited_once_with(pool, "interaction_sync.last_scan_at", _NOW.isoformat())
+    mock_log.assert_not_called()
+
+
+async def test_checkpoint_write_failure_returns_error_stats_without_raising():
+    """Checkpoint write failures do not make deterministic dispatch fail."""
+    pool = _make_pool()
+    pool.fetch = AsyncMock(side_effect=[[], []])
+
+    mod = _get_rjobs()
+    run_fn = mod.run_interaction_sync
+
+    mock_log = AsyncMock(return_value={"id": str(uuid.uuid4()), "logged": True})
+    mock_state_get = AsyncMock(return_value=None)
+    mock_state_set = AsyncMock(side_effect=RuntimeError("state unavailable"))
+
+    with (
+        patch.object(mod, "state_get", mock_state_get),
+        patch.object(mod, "state_set", mock_state_set),
+        patch(
+            "butlers.tools.relationship.interactions.interaction_log",
+            mock_log,
+        ),
+    ):
+        real_datetime = datetime
+
+        class _FixedDatetime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return _NOW.replace(tzinfo=tz) if tz else _NOW
+
+        with patch.object(mod, "datetime", _FixedDatetime):
+            stats = await run_fn(pool)
+
+    assert stats["errors"] == 1
+    mock_state_set.assert_awaited_once_with(pool, "interaction_sync.last_scan_at", _NOW.isoformat())
+    mock_log.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Test: interaction_eligible=false is excluded BEFORE grouping
 #
