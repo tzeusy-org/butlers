@@ -1218,7 +1218,10 @@ def _create_isolated_home_tempdir(real_home: str | None):
         preferred_root = Path(real_home) / ".codex" / ".tmp"
         try:
             preferred_root.mkdir(parents=True, exist_ok=True)
-            return _tempfile.TemporaryDirectory(dir=str(preferred_root))
+            return _tempfile.TemporaryDirectory(
+                dir=str(preferred_root),
+                ignore_cleanup_errors=True,
+            )
         except OSError:
             logger.warning(
                 "Could not create Codex temp root at %s; falling back to default tempdir",
@@ -1226,7 +1229,28 @@ def _create_isolated_home_tempdir(real_home: str | None):
                 exc_info=True,
             )
 
-    return _tempfile.TemporaryDirectory()
+    return _tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+
+
+def _cleanup_isolated_home_tempdir(tmp_dir_obj: Any, tmp_dir: Path) -> None:
+    """Best-effort cleanup for the per-invocation Codex HOME.
+
+    Codex can create transient plugin-cache directories under the isolated
+    HOME while the parent process exits. ``shutil.rmtree`` may observe those
+    directories mid-update and raise ``OSError: Directory not empty``. Cleanup
+    failures must not turn an otherwise completed runtime session into a
+    failed invocation.
+    """
+    try:
+        tmp_dir_obj.cleanup()
+    except OSError:
+        logger.warning(
+            "Codex isolated HOME cleanup failed for %s; attempting best-effort removal",
+            tmp_dir,
+            exc_info=True,
+        )
+        with contextlib.suppress(OSError):
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 class CodexAdapter(RuntimeAdapter):
@@ -1687,7 +1711,7 @@ class CodexAdapter(RuntimeAdapter):
 
             return result_text, tool_calls, usage
         finally:
-            tmp_dir_obj.cleanup()
+            _cleanup_isolated_home_tempdir(tmp_dir_obj, tmp_dir)
 
     async def _run_codex_subprocess(
         self,

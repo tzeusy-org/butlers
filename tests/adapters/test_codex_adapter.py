@@ -318,6 +318,49 @@ async def test_invoke_prefers_home_scoped_tempdir(tmp_path: Path, monkeypatch: p
     assert isolated_home.parent == codex_dir / ".tmp"
 
 
+async def test_invoke_ignores_isolated_home_cleanup_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A temp HOME cleanup race must not fail an otherwise completed invocation."""
+
+    class _TempdirWithRacyCleanup:
+        def __init__(self, path: Path) -> None:
+            self.name = str(path)
+
+        def cleanup(self) -> None:
+            raise OSError(39, "Directory not empty", str(Path(self.name) / ".codex" / ".tmp"))
+
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    home = tmp_path / "home"
+    home.mkdir()
+    isolated_home = tmp_path / "isolated-home"
+    isolated_home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    with (
+        patch(_EXEC, return_value=mock_proc),
+        patch(
+            "butlers.core.runtimes.codex._create_isolated_home_tempdir",
+            return_value=_TempdirWithRacyCleanup(isolated_home),
+        ),
+    ):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "ok"
+    assert tool_calls == []
+    assert usage is None
+
+
 async def test_invoke_stdin_prompt_wraps_system_prompt():
     """invoke() writes the composed system+user prompt to stdin when using "-"."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
