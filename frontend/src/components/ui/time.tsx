@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // <Time> — semantic time primitive with absolute / relative / smart modes
-// (bu-v1tt2.2)
+// (bu-v1tt2.2, bu-fv4vy)
 //
 // Renders a <time> element with a datetime attribute (a11y / machine-readable)
 // and human-readable text according to the chosen mode.
@@ -9,6 +9,16 @@
 //   - absolute: "May 3, 2026 at 4:42 PM SGT"
 //   - relative:  "4 minutes ago"
 //   - smart:     relative for < 24 h, absolute for older (default)
+//
+// compact flag:
+//   When true, absolute output omits the year and timezone abbreviation,
+//   producing shorter output suited for dense table cells.
+//   Examples (compact=true):
+//     precision=minute:  "May 3, 4:42 PM"
+//     precision=second:  "May 3, 4:42:07 PM"
+//     precision=hour:    "May 3, 4 PM"
+//     precision=day:     "May 3"
+//   compact has no effect on relative output.
 //
 // Timezone is read from ChroniclesTimezoneContext via useChroniclesTimezone().
 // An explicit `timezone` prop overrides the context value — useful for
@@ -51,6 +61,17 @@ export interface TimeProps {
    */
   precision?: TimePrecision
   /**
+   * When true, absolute output omits the year and timezone abbreviation for
+   * use in dense table cells where space is limited.
+   *   - precision=minute:  "May 3, 4:42 PM"
+   *   - precision=second:  "May 3, 4:42:07 PM"
+   *   - precision=hour:    "May 3, 4 PM"
+   *   - precision=day:     "May 3"
+   * Has no effect on relative output.
+   * @default false
+   */
+  compact?: boolean
+  /**
    * IANA timezone name override.
    * Defaults to the owner timezone from ChroniclesTimezoneContext.
    */
@@ -76,6 +97,14 @@ const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   day:    "MMM d, yyyy zzz",
 }
 
+// Compact format omits year and timezone — used in dense table cells.
+const COMPACT_FORMAT: Record<TimePrecision, string> = {
+  second: "MMM d, h:mm:ss a",
+  minute: "MMM d, h:mm a",
+  hour:   "MMM d, h a",
+  day:    "MMM d",
+}
+
 // 24-hour threshold in ms — smart mode crossover point.
 const SMART_THRESHOLD_MS = 24 * 60 * 60 * 1_000
 
@@ -87,9 +116,12 @@ function toDate(value: string | Date): Date {
   return value instanceof Date ? value : new Date(value)
 }
 
-function formatAbsolute(date: Date, precision: TimePrecision, tz: string): string {
+function formatAbsolute(date: Date, precision: TimePrecision, tz: string, compact = false): string {
   try {
-    return formatInTimeZone(date, tz, ABSOLUTE_FORMAT[precision])
+    const fmt = compact ? COMPACT_FORMAT[precision] : ABSOLUTE_FORMAT[precision]
+    // Compact format does not embed a timezone token, so tz is still passed to
+    // formatInTimeZone to ensure the rendered local time is correct.
+    return formatInTimeZone(date, tz, fmt)
   } catch {
     return date.toISOString()
   }
@@ -135,11 +167,16 @@ function resolveSmartMode(date: Date): { useRelative: boolean } {
  * @example
  * // Always show absolute, day precision
  * <Time value={fact.created_at} mode="absolute" precision="day" />
+ *
+ * @example
+ * // Compact absolute — no year or timezone, for dense table cells
+ * <Time value={row.created_at} mode="absolute" compact />
  */
 export function Time({
   value,
   mode = "smart",
   precision = "minute",
+  compact = false,
   timezone,
   showTitle = true,
   className,
@@ -165,14 +202,14 @@ export function Time({
   if (mode === "relative") {
     text = formatRelative(date)
   } else if (mode === "absolute") {
-    text = formatAbsolute(date, precision, tz)
+    text = formatAbsolute(date, precision, tz, compact)
   } else {
     // smart: relative for < 24 h, absolute for older.
     // Math.abs ensures future dates obey the threshold symmetrically.
     const { useRelative } = resolveSmartMode(date)
     text = useRelative
       ? formatRelative(date)
-      : formatAbsolute(date, precision, tz)
+      : formatAbsolute(date, precision, tz, compact)
   }
 
   return (

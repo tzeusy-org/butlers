@@ -322,3 +322,106 @@ describe("invalid date guard", () => {
     expect(el!.textContent).toBe("not-a-date")
   })
 })
+
+// ---------------------------------------------------------------------------
+// 9. compact flag — bu-fv4vy
+// ---------------------------------------------------------------------------
+
+describe("compact flag (mode=absolute)", () => {
+  const SGT = "Asia/Singapore"
+  // 2026-05-03T00:00:00Z = 08:00 SGT (UTC+8)
+
+  it("compact=true omits year", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: true }, SGT),
+    )
+    expect(text).not.toContain("2026")
+  })
+
+  it("compact=true omits timezone abbreviation", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: true }, SGT),
+    )
+    expect(text).not.toMatch(/SGT|GMT\+8/)
+  })
+
+  it("compact=true still renders correct local time (not UTC)", () => {
+    // UTC midnight = 8 AM SGT, so compact output must contain "8:00 AM" not "12:00 AM"
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: true }, SGT),
+    )
+    expect(text).toContain("8:00 AM")
+  })
+
+  it("compact=true, precision=second includes seconds but no year/tz", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: true, precision: "second" }, SGT),
+    )
+    expect(text).toMatch(/8:00:00/)
+    expect(text).not.toContain("2026")
+    expect(text).not.toMatch(/SGT|GMT\+8/)
+  })
+
+  it("compact=true, precision=hour renders hour only (no year/tz)", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: true, precision: "hour" }, SGT),
+    )
+    expect(text).toMatch(/8 AM/)
+    expect(text).not.toContain("2026")
+    expect(text).not.toMatch(/SGT|GMT\+8/)
+  })
+
+  it("compact=true, precision=day renders month-day only (no year/tz)", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: true, precision: "day" }, SGT),
+    )
+    expect(text).toBe("May 3")
+  })
+
+  it("compact=false (default) still renders full absolute output", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: false }, SGT),
+    )
+    expect(text).toContain("2026")
+    expect(text).toMatch(/SGT|GMT\+8/)
+  })
+
+  it("title attribute still shows full ISO regardless of compact", () => {
+    const { title } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", compact: true }, SGT),
+    )
+    expect(title).toBe(FIXED_DATE.toISOString())
+  })
+})
+
+describe("compact flag (mode=smart)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("compact=true does not affect the relative branch of smart mode", () => {
+    vi.setSystemTime(NOW_23H_LATER) // within 24 h — relative branch
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "smart", compact: true }),
+    )
+    // Should still render relative text, not absolute
+    expect(text).toMatch(/ago|hour/)
+    expect(text).not.toContain("2026")
+  })
+
+  it("compact=true applies to the absolute branch of smart mode (>= 24 h)", () => {
+    vi.setSystemTime(NOW_25H_LATER) // beyond threshold — absolute branch
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "smart", compact: true }, "Asia/Singapore"),
+    )
+    // Absolute branch must be compact: no year, no tz
+    expect(text).not.toContain("2026")
+    expect(text).not.toMatch(/SGT|GMT\+8/)
+    // But must still contain the month-day
+    expect(text).toContain("May 3")
+  })
+})
