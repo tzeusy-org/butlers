@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { formatDistanceToNow } from 'date-fns'
 import { Link } from 'react-router'
+import { Time } from '@/components/ui/time'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -20,14 +20,6 @@ function getDismissedIssues(): Set<string> {
 
 function issueKey(issue: Issue): string {
   return `${issue.type}:${issue.error_message ?? issue.description}`
-}
-
-function formatWhen(iso: string | null | undefined): string {
-  if (!iso) return 'unknown'
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return 'unknown'
-  const relative = formatDistanceToNow(date, { addSuffix: true })
-  return `${relative} (${date.toLocaleString()})`
 }
 
 interface IssuesPanelProps {
@@ -104,8 +96,10 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
                 </div>
                 <p className="text-sm text-muted-foreground">{issue.description}</p>
                 <p className="text-xs text-muted-foreground">
-                  Seen {issue.occurrences ?? 1}x · First: {formatWhen(issue.first_seen_at)} · Last:{' '}
-                  {formatWhen(issue.last_seen_at)}
+                  Seen {issue.occurrences ?? 1}x · First:{' '}
+                  {issue.first_seen_at ? <Time value={issue.first_seen_at} mode="smart" /> : 'unknown'}
+                  {' '}· Last:{' '}
+                  {issue.last_seen_at ? <Time value={issue.last_seen_at} mode="smart" /> : 'unknown'}
                 </p>
               </div>
               <div className="flex items-center gap-1">

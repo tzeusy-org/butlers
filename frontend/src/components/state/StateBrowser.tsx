@@ -15,6 +15,7 @@ import { useMemo, useState } from "react";
 
 import type { StateEntry } from "@/api/types.ts";
 import { Button } from "@/components/ui/button";
+import { Time } from "@/components/ui/time";
 import {
   Dialog,
   DialogContent,
@@ -54,15 +55,6 @@ interface StateBrowserProps {
 function jsonPreview(value: unknown, maxLen = 80): string {
   const str = JSON.stringify(value);
   return str.length > maxLen ? str.slice(0, maxLen) + "..." : str;
-}
-
-/** Format an ISO timestamp to a human-readable local string. */
-function formatTimestamp(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +351,7 @@ export default function StateBrowser({
                     </button>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground whitespace-nowrap align-top">
-                    {formatTimestamp(entry.updated_at)}
+                    <Time value={entry.updated_at} mode="absolute" />
                   </TableCell>
                   <TableCell className="text-right align-top">
                     <div className="flex justify-end gap-2">

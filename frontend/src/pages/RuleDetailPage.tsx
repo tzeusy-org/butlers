@@ -2,6 +2,7 @@ import { Link, useParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { Time } from "@/components/ui/time";
 import {
   Card,
   CardContent,
@@ -233,18 +234,18 @@ export default function RuleDetailPage() {
               {/* Timestamps */}
               <div className="flex flex-wrap gap-6 text-xs text-muted-foreground">
                 <span>
-                  Created: {new Date(rule.created_at).toLocaleString()}
+                  Created: <Time value={rule.created_at} mode="absolute" />
                 </span>
                 {rule.last_applied_at && (
                   <span>
                     Last applied:{" "}
-                    {new Date(rule.last_applied_at).toLocaleString()}
+                    <Time value={rule.last_applied_at} mode="absolute" />
                   </span>
                 )}
                 {rule.last_evaluated_at && (
                   <span>
                     Last evaluated:{" "}
-                    {new Date(rule.last_evaluated_at).toLocaleString()}
+                    <Time value={rule.last_evaluated_at} mode="absolute" />
                   </span>
                 )}
               </div>

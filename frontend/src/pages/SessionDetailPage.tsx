@@ -1,4 +1,5 @@
 import { Link, useParams, useSearchParams } from "react-router";
+import { Time } from "@/components/ui/time";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,11 +29,6 @@ function formatDuration(ms: number | null): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return `${minutes}m ${remainingSeconds}s`;
-}
-
-function formatTimestamp(iso: string | null): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleString();
 }
 
 function formatTokens(n: number | null): string {
@@ -189,10 +185,10 @@ export default function SessionDetailPage() {
             <dd><Badge variant="secondary">{session.trigger_source}</Badge></dd>
 
             <dt className="text-muted-foreground font-medium">Started</dt>
-            <dd>{formatTimestamp(session.started_at)}</dd>
+            <dd>{session.started_at ? <Time value={session.started_at} mode="absolute" /> : "--"}</dd>
 
             <dt className="text-muted-foreground font-medium">Completed</dt>
-            <dd>{formatTimestamp(session.completed_at)}</dd>
+            <dd>{session.completed_at ? <Time value={session.completed_at} mode="absolute" /> : "--"}</dd>
 
             <dt className="text-muted-foreground font-medium">Duration</dt>
             <dd>{formatDuration(session.duration_ms)}</dd>

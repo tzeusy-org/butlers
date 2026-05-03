@@ -10,7 +10,7 @@
  */
 
 import { useState } from "react";
-import { formatDistanceToNow, parseISO } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { AlertCircle, ChevronDown, ChevronUp, Loader2, PlayCircle, Plus, PauseCircle, XCircle } from "lucide-react";
 
 import type { BackfillJobSummary, ConnectorEntry } from "@/api/types.ts";
@@ -162,7 +162,7 @@ function JobProgressRow({
         </TableCell>
         <TableCell className="text-xs text-muted-foreground">
           {job.created_at
-            ? formatDistanceToNow(parseISO(job.created_at), { addSuffix: true })
+            ? <Time value={job.created_at} mode="relative" />
             : "-"}
         </TableCell>
         <TableCell className="text-right">
@@ -236,13 +236,13 @@ function JobProgressRow({
               {liveJob.started_at && (
                 <div>
                   <span className="text-muted-foreground">Started:</span>{" "}
-                  {formatDistanceToNow(parseISO(liveJob.started_at), { addSuffix: true })}
+                  <Time value={liveJob.started_at} mode="relative" />
                 </div>
               )}
               {liveJob.completed_at && (
                 <div>
                   <span className="text-muted-foreground">Completed:</span>{" "}
-                  {formatDistanceToNow(parseISO(liveJob.completed_at), { addSuffix: true })}
+                  <Time value={liveJob.completed_at} mode="relative" />
                 </div>
               )}
               {liveJob.error && (

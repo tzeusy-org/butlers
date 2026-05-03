@@ -1,6 +1,5 @@
-import { formatDistanceToNow } from "date-fns";
-
 import type { ApprovalAction } from "@/api/types";
+import { Time } from "@/components/ui/time";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -65,7 +64,7 @@ export function HistoryTable({ actions, onActionClick }: HistoryTableProps) {
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
                 {action.decided_at
-                  ? formatDistanceToNow(new Date(action.decided_at), { addSuffix: true })
+                  ? <Time value={action.decided_at} mode="relative" />
                   : "—"}
               </TableCell>
               <TableCell className="max-w-md truncate text-sm">

@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Time } from "@/components/ui/time";
 import {
   Tooltip,
   TooltipContent,
@@ -399,7 +400,7 @@ function UnidentifiedEntitiesSection({
                         {entity.source_scope ?? <span className="italic">—</span>}
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">
-                        {new Date(entity.created_at).toISOString().slice(0, 10)}
+                        <Time value={entity.created_at} mode="absolute" precision="day" />
                       </td>
                       <td className="py-2">
                         <div className="flex items-center gap-1">
@@ -813,7 +814,7 @@ export default function EntitiesPage() {
                           {entity.fact_count}
                         </td>
                         <td className="py-2 pr-4 text-muted-foreground">
-                          {new Date(entity.created_at).toISOString().slice(0, 10)}
+                          <Time value={entity.created_at} mode="absolute" precision="day" />
                         </td>
                         <td className="py-2">
                           <div className="flex items-center gap-1">

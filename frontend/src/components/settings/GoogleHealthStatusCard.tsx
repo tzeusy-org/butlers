@@ -16,8 +16,8 @@
  *       - "Test-Mode Pre-Verification Warning"
  */
 
-import { formatDistanceToNow } from "date-fns";
 import { Loader2 } from "lucide-react";
+import { Time } from "@/components/ui/time";
 
 import {
   getGoogleOAuthStartUrl,
@@ -76,17 +76,6 @@ function statePillSpec(state: GoogleHealthConnectorState): StatePillSpec {
 // ---------------------------------------------------------------------------
 // Relative time formatter — tolerant of bad inputs.
 // ---------------------------------------------------------------------------
-
-function formatRelative(iso: string | null): string {
-  if (!iso) return "never";
-  try {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return iso;
-    return formatDistanceToNow(date, { addSuffix: true });
-  } catch {
-    return iso;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Test-mode banner (orange + red variants)
@@ -176,7 +165,7 @@ function StatusCardBody({ data }: { data: GoogleHealthStatusResponse }) {
         <div className="text-right min-w-0">
           <p className="text-xs text-muted-foreground">Last ingest</p>
           <p className="text-sm font-medium">
-            {formatRelative(data.last_ingest_at)}
+            {data.last_ingest_at ? <Time value={data.last_ingest_at} mode="relative" /> : "never"}
           </p>
         </div>
       </div>
@@ -184,7 +173,7 @@ function StatusCardBody({ data }: { data: GoogleHealthStatusResponse }) {
       {data.last_token_refresh_at && (
         <div>
           <p className="text-xs text-muted-foreground">Last token refresh</p>
-          <p className="text-sm">{formatRelative(data.last_token_refresh_at)}</p>
+          <p className="text-sm"><Time value={data.last_token_refresh_at} mode="relative" /></p>
         </div>
       )}
 

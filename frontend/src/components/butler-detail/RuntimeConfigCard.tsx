@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Time } from "@/components/ui/time";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -102,7 +103,7 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
         <CardAction>
           {config.updated_at && (
             <span className="text-xs text-muted-foreground mr-3">
-              Updated: {new Date(config.updated_at).toLocaleString()}
+              Updated: <Time value={config.updated_at} mode="absolute" />
             </span>
           )}
           <Button

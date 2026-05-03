@@ -1,4 +1,4 @@
-import { formatDistanceToNow, format } from "date-fns";
+import { Time } from "@/components/ui/time";
 
 import type { Schedule, ScheduleDispatchMode } from "@/api/types.ts";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge.tsx";
@@ -52,15 +52,6 @@ function formatJobArgsPreview(jobArgs: Schedule["job_args"]): string {
   } catch {
     return "";
   }
-}
-
-/** Format an ISO timestamp as relative + absolute tooltip. */
-function formatTimestamp(iso: string | null): { relative: string; absolute: string } | null {
-  if (!iso) return null;
-  const date = new Date(iso);
-  const relative = formatDistanceToNow(date, { addSuffix: true });
-  const absolute = format(date, "MMM d, h:mm a");
-  return { relative, absolute };
 }
 
 // ---------------------------------------------------------------------------
@@ -139,8 +130,6 @@ export function ScheduleTable({
           <SkeletonRows />
         ) : (
           schedules.map((schedule) => {
-            const nextRun = formatTimestamp(schedule.next_run_at);
-            const lastRun = formatTimestamp(schedule.last_run_at);
             const dispatchMode = resolveDispatchMode(schedule);
             const promptText = schedule.prompt?.trim() ?? "";
             const jobArgsPreview = formatJobArgsPreview(schedule.job_args);
@@ -206,17 +195,15 @@ export function ScheduleTable({
                 <TableCell className="text-xs text-muted-foreground">
                   {schedule.source}
                 </TableCell>
-                <TableCell
-                  className="text-xs text-muted-foreground"
-                  title={nextRun?.absolute}
-                >
-                  {nextRun?.relative ?? "\u2014"}
+                <TableCell className="text-xs text-muted-foreground">
+                  {schedule.next_run_at
+                    ? <Time value={schedule.next_run_at} mode="smart" />
+                    : "\u2014"}
                 </TableCell>
-                <TableCell
-                  className="text-xs text-muted-foreground"
-                  title={lastRun?.absolute}
-                >
-                  {lastRun?.relative ?? "\u2014"}
+                <TableCell className="text-xs text-muted-foreground">
+                  {schedule.last_run_at
+                    ? <Time value={schedule.last_run_at} mode="smart" />
+                    : "\u2014"}
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">

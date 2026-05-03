@@ -39,6 +39,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Time } from "@/components/ui/time";
 import {
   useOwnTracksConfig,
   useOwnTracksGenerateToken,
@@ -75,21 +76,6 @@ function stateBadgeLabel(state: OwnTracksState): string {
     default:
       return state;
   }
-}
-
-function formatDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return "—";
-  }
-  return date.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +409,7 @@ export function OwnTracksSection() {
             {status.last_event_at && (
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">Last event</span>
-                <span>{formatDateTime(status.last_event_at)}</span>
+                <span><Time value={status.last_event_at} mode="absolute" /></span>
               </div>
             )}
             <div className="flex items-center gap-2">
@@ -611,7 +597,7 @@ export function OwnTracksSetupCard() {
               {status.last_event_at && (
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">Last event</span>
-                  <span>{formatDateTime(status.last_event_at)}</span>
+                  <span><Time value={status.last_event_at} mode="absolute" /></span>
                 </div>
               )}
               <div className="flex items-center gap-2">

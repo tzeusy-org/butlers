@@ -11,7 +11,7 @@
 
 import { useState } from "react";
 import { PlusIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SearchIcon, XIcon } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,14 +30,6 @@ const SIDEBAR_COLLAPSED_KEY = "butlers:chat-sidebar-collapsed";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function relativeTime(iso: string): string {
-  try {
-    return formatDistanceToNow(new Date(iso), { addSuffix: true });
-  } catch {
-    return "";
-  }
-}
 
 // ---------------------------------------------------------------------------
 // ConversationItem
@@ -90,7 +82,7 @@ function ConversationItem({
     >
       <p className="text-sm font-medium line-clamp-2 leading-tight">{title}</p>
       <p className="text-xs text-muted-foreground mt-0.5">
-        {relativeTime(conversation.updated_at)}
+        <Time value={conversation.updated_at} mode="relative" />
       </p>
     </button>
   );

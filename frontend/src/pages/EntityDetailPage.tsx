@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { format, formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import type {
@@ -736,6 +737,7 @@ function PulseStrip({
         currentTier={dunbarTier}
         isPinned={isPinned}
       />
+      {/* formatDistanceToNow kept: PulseTile.value is typed string, cannot accept <Time> JSX */}
       <PulseTile
         label="Last interaction"
         value={
@@ -1398,11 +1400,8 @@ function TimelineRow({ item }: { item: EntityTimelineItem }) {
           {subtitle}
         </p>
       </div>
-      <span
-        className="text-muted-foreground shrink-0 text-xs tabular-nums"
-        title={date?.toLocaleString() ?? undefined}
-      >
-        {date ? formatDistanceToNow(date, { addSuffix: true }) : "—"}
+      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+        {date ? <Time value={date} mode="relative" /> : "—"}
       </span>
     </li>
   );
@@ -1441,7 +1440,7 @@ function GiftsPanel({ entityId }: { entityId: string }) {
             )}
             {gift.created_at && (
               <span className="text-muted-foreground text-xs tabular-nums">
-                {format(new Date(gift.created_at), "MMM d, yyyy")}
+                <Time value={gift.created_at} mode="absolute" precision="day" />
               </span>
             )}
           </li>
@@ -1551,11 +1550,8 @@ function MessageThreadRow({ thread }: { thread: MessageThreadSummary }) {
           {thread.thread_identity && ` · thread ${thread.thread_identity}`}
         </p>
       </div>
-      <span
-        className="text-muted-foreground shrink-0 text-xs tabular-nums"
-        title={date?.toLocaleString() ?? undefined}
-      >
-        {date ? formatDistanceToNow(date, { addSuffix: true }) : ""}
+      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+        {date ? <Time value={date} mode="relative" /> : ""}
       </span>
     </li>
   );
@@ -1754,11 +1750,8 @@ function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
           fact.content
         )}
       </span>
-      <span
-        className="text-muted-foreground shrink-0 text-xs tabular-nums"
-        title={created.toLocaleString()}
-      >
-        {format(created, "MMM d, yyyy")}
+      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+        <Time value={created} mode="absolute" precision="day" />
         {fact.session_id && (
           <Link
             to={sessionDetailHref(fact.session_id, fact.source_butler)}
@@ -1851,8 +1844,8 @@ function ProvenanceFooter({
             <span className="text-foreground font-medium">{String(sourceScope)}</span>
           </span>
         )}
-        <span>Created {format(new Date(entity.created_at), "MMM d, yyyy")}</span>
-        <span>Updated {format(new Date(entity.updated_at), "MMM d, yyyy")}</span>
+        <span>Created <Time value={entity.created_at} mode="absolute" precision="day" /></span>
+        <span>Updated <Time value={entity.updated_at} mode="absolute" precision="day" /></span>
       </div>
       {hasExtra && (
         <details>

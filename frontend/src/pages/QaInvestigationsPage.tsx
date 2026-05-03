@@ -49,11 +49,8 @@ const STATUS_OPTIONS = [
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatTs(iso: string | null | undefined): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleString();
-}
-
+// NOTE: formatRelative uses a custom compact format ("just now", "5m ago", "2h ago", "3d ago")
+// that differs from date-fns formatDistanceToNow. Not migrated to <Time> — kept intentionally.
 function formatRelative(iso: string | null | undefined): string {
   if (!iso) return "--";
   const diff = Date.now() - new Date(iso).getTime();
@@ -158,7 +155,8 @@ function InvestigationRow({ inv }: { inv: QaInvestigation }) {
         )}
       </TableCell>
       <TableCell>
-        <span className="text-xs text-muted-foreground" title={formatTs(inv.created_at)}>
+        {/* Uses compact relative format intentionally; <Time> would use date-fns natural language */}
+        <span className="text-xs text-muted-foreground">
           {formatRelative(inv.created_at)}
         </span>
       </TableCell>

@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import {
   Card,
   CardContent,
@@ -31,14 +32,6 @@ function typeBadge(type: string) {
       );
     default:
       return <Badge variant="secondary">{type}</Badge>;
-  }
-}
-
-function formatTimestamp(ts: string) {
-  try {
-    return new Date(ts).toLocaleString();
-  } catch {
-    return ts;
   }
 }
 
@@ -113,7 +106,7 @@ export default function MemoryActivityTimeline({
                   </div>
                   <p className="mt-1 truncate text-sm">{item.summary}</p>
                   <p className="text-muted-foreground mt-0.5 text-xs">
-                    {formatTimestamp(item.created_at)}
+                    <Time value={item.created_at} mode="absolute" />
                   </p>
                 </div>
               </div>

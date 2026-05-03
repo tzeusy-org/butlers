@@ -12,7 +12,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ExternalLinkIcon } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -167,7 +167,7 @@ function MessageBubble({
         )}
       >
         <span className="text-xs text-muted-foreground">
-          {formatDistanceToNow(new Date(message.created_at), { addSuffix: true })}
+          <Time value={message.created_at} mode="relative" />
         </span>
 
         {!isUser && message.model && (

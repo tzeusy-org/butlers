@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import { Loader2, RotateCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -56,21 +57,6 @@ function truncateId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) + "…" : id;
 }
 
-/** Format an ISO datetime string as a short human-readable date+time. */
-function formatDatetime(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
-}
 
 /** Format duration between two ISO timestamps (ms → human-readable). */
 function formatDuration(startedAt: string | null, completedAt: string | null): string {
@@ -310,7 +296,7 @@ function LineageView({ requestId, triageDecision }: LineageViewProps) {
                   {s.model ?? "—"}
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {formatDatetime(s.started_at)}
+                  {s.started_at ? <Time value={s.started_at} mode="absolute" precision="second" /> : "—"}
                 </TableCell>
                 <TableCell className="text-sm">
                   {formatDuration(s.started_at, s.completed_at)}
@@ -480,7 +466,7 @@ function EventRow({ event, isExpanded, onToggle, onOptimisticUpdate }: EventRowP
           {truncateId(event.id)}
         </TableCell>
         <TableCell className="text-sm text-muted-foreground">
-          {formatDatetime(event.received_at)}
+          {event.received_at ? <Time value={event.received_at} mode="absolute" precision="second" /> : "—"}
         </TableCell>
         <TableCell className="text-sm">
           {event.source_channel ?? "—"}

@@ -11,7 +11,7 @@
 
 import { useState } from "react";
 import { useParams, useSearchParams, Link } from "react-router";
-import { formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { ArrowLeft, Info, Pencil } from "lucide-react";
 
 import {
@@ -152,19 +152,6 @@ export default function ConnectorDetailPage() {
     });
   }
 
-  const lastSeen = connector?.last_heartbeat_at
-    ? formatDistanceToNow(new Date(connector.last_heartbeat_at), {
-        addSuffix: true,
-      })
-    : "never";
-
-  const firstSeen = connector?.first_seen_at
-    ? new Date(connector.first_seen_at).toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      })
-    : "\u2014";
 
   return (
     <div className="space-y-6">
@@ -235,11 +222,19 @@ export default function ConnectorDetailPage() {
                 <TableBody>
                   <TableRow>
                     <TableCell className="text-muted-foreground">Last seen</TableCell>
-                    <TableCell>{lastSeen}</TableCell>
+                    <TableCell>
+                      {connector.last_heartbeat_at
+                        ? <Time value={connector.last_heartbeat_at} mode="relative" />
+                        : "never"}
+                    </TableCell>
                   </TableRow>
                   <TableRow>
                     <TableCell className="text-muted-foreground">First seen</TableCell>
-                    <TableCell>{firstSeen}</TableCell>
+                    <TableCell>
+                      {connector.first_seen_at
+                        ? <Time value={connector.first_seen_at} mode="absolute" precision="day" />
+                        : "—"}
+                    </TableCell>
                   </TableRow>
                   {connector.registered_via && (
                     <TableRow>

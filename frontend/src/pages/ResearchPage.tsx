@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { format } from "date-fns";
+import { Time } from "@/components/ui/time";
 
 import type { ResearchParams } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -216,7 +216,7 @@ export default function ResearchPage() {
                           )}
                         </TableCell>
                         <TableCell className="text-muted-foreground text-sm">
-                          {format(new Date(note.created_at), "MMM d, yyyy")}
+                          <Time value={note.created_at} mode="absolute" precision="day" />
                         </TableCell>
                       </TableRow>
                       {expandedId === note.id && (

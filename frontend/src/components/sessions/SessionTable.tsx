@@ -1,4 +1,4 @@
-import { formatDistanceToNow, format } from "date-fns";
+import { Time } from "@/components/ui/time";
 
 import type { SessionSummary } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -32,14 +32,6 @@ export interface SessionTableProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Format an ISO timestamp as relative ("2h ago") or absolute ("Feb 10, 2:30 PM"). */
-function formatTimestamp(iso: string): { relative: string; absolute: string } {
-  const date = new Date(iso);
-  const relative = formatDistanceToNow(date, { addSuffix: true });
-  const absolute = format(date, "MMM d, h:mm a");
-  return { relative, absolute };
-}
 
 /** Format duration_ms to a human-friendly string (e.g. "1.2s", "45s", "2m 15s"). */
 function formatDuration(ms: number | null): string {
@@ -200,7 +192,6 @@ export function SessionTable({
           <SkeletonRows showButlerColumn={showButlerColumn} />
         ) : (
           sessions.map((session) => {
-            const ts = formatTimestamp(session.started_at);
             return (
               <TableRow
                 key={session.id}
@@ -210,11 +201,8 @@ export function SessionTable({
                 )}
                 onClick={() => onSessionClick?.(session)}
               >
-                <TableCell
-                  className="text-muted-foreground text-xs"
-                  title={ts.absolute}
-                >
-                  {ts.relative}
+                <TableCell className="text-muted-foreground text-xs">
+                  <Time value={session.started_at} mode="smart" />
                 </TableCell>
                 {showButlerColumn && (
                   <TableCell>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { format } from "date-fns";
+import { Time } from "@/components/ui/time";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -131,14 +131,14 @@ export default function ConditionsPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
                         {cond.diagnosed_at
-                          ? format(new Date(cond.diagnosed_at), "MMM d, yyyy")
+                          ? <Time value={cond.diagnosed_at} mode="absolute" precision="day" />
                           : "\u2014"}
                       </TableCell>
                       <TableCell className="text-muted-foreground max-w-xs truncate text-sm">
                         {cond.notes ?? "\u2014"}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
-                        {format(new Date(cond.updated_at), "MMM d, yyyy")}
+                        <Time value={cond.updated_at} mode="absolute" precision="day" />
                       </TableCell>
                     </TableRow>
                   ))

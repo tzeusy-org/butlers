@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { format } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { CopyIcon, CheckIcon } from "lucide-react";
 
 import { useSessionDetail } from "@/hooks/use-sessions";
@@ -30,11 +30,6 @@ export interface SessionDetailDrawerProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatTimestamp(iso: string | null): string {
-  if (!iso) return "\u2014";
-  return format(new Date(iso), "MMM d, yyyy h:mm:ss a");
-}
 
 function formatDuration(ms: number | null): string {
   if (ms == null) return "\u2014";
@@ -180,8 +175,12 @@ export function SessionDetailDrawer({
                 <div className="rounded-md border p-3">
                   <MetadataRow label="Butler">{session.butler}</MetadataRow>
                   <MetadataRow label="Trigger">{session.trigger_source}</MetadataRow>
-                  <MetadataRow label="Started">{formatTimestamp(session.started_at)}</MetadataRow>
-                  <MetadataRow label="Completed">{formatTimestamp(session.completed_at)}</MetadataRow>
+                  <MetadataRow label="Started">
+                    {session.started_at ? <Time value={session.started_at} mode="absolute" precision="second" /> : "—"}
+                  </MetadataRow>
+                  <MetadataRow label="Completed">
+                    {session.completed_at ? <Time value={session.completed_at} mode="absolute" precision="second" /> : "—"}
+                  </MetadataRow>
                   <MetadataRow label="Duration">{formatDuration(session.duration_ms)}</MetadataRow>
                   <MetadataRow label="Model">
                     <span className="font-mono">{session.model ?? "\u2014"}</span>

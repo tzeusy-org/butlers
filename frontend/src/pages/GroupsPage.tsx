@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { format } from "date-fns";
+import { Time } from "@/components/ui/time";
 
 import type { GroupParams } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -161,7 +161,7 @@ export default function GroupsPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
-                        {format(new Date(group.created_at), "MMM d, yyyy")}
+                        <Time value={group.created_at} mode="absolute" precision="day" />
                       </TableCell>
                     </TableRow>
                   ))

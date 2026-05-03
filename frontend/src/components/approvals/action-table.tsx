@@ -1,5 +1,5 @@
-import { formatDistanceToNow } from "date-fns";
 import { Link } from "react-router";
+import { Time } from "@/components/ui/time";
 
 import type { ApprovalAction } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -82,9 +82,7 @@ export function ActionTable({ actions, onActionClick }: ActionTableProps) {
                 </Badge>
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
-                {formatDistanceToNow(new Date(action.requested_at), {
-                  addSuffix: true,
-                })}
+                <Time value={action.requested_at} mode="relative" />
               </TableCell>
               <TableCell className="max-w-md truncate text-sm">
                 {action.agent_summary || "—"}

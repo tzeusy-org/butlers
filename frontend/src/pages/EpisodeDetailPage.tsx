@@ -2,6 +2,7 @@ import { useParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { Time } from "@/components/ui/time";
 import {
   Card,
   CardContent,
@@ -108,7 +109,7 @@ export default function EpisodeDetailPage() {
                   <div>
                     <span className="text-muted-foreground">Expires: </span>
                     <span>
-                      {new Date(episode.expires_at).toLocaleString()}
+                      <Time value={episode.expires_at} mode="absolute" />
                     </span>
                   </div>
                 )}
@@ -129,12 +130,12 @@ export default function EpisodeDetailPage() {
               {/* Timestamps */}
               <div className="flex flex-wrap gap-6 text-xs text-muted-foreground">
                 <span>
-                  Created: {new Date(episode.created_at).toLocaleString()}
+                  Created: <Time value={episode.created_at} mode="absolute" />
                 </span>
                 {episode.last_referenced_at && (
                   <span>
                     Last referenced:{" "}
-                    {new Date(episode.last_referenced_at).toLocaleString()}
+                    <Time value={episode.last_referenced_at} mode="absolute" />
                   </span>
                 )}
               </div>

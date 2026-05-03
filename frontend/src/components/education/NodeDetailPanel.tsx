@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Time } from "@/components/ui/time";
 import { X } from "lucide-react";
 import { useMindMap } from "@/hooks/use-education";
 import QuizHistoryList from "./QuizHistoryList";
@@ -78,7 +79,7 @@ export default function NodeDetailPanel({
             <div className="col-span-2">
               <span className="text-muted-foreground">Next Review</span>
               <p className="font-medium">
-                {new Date(node.next_review_at).toLocaleDateString()}
+                <Time value={node.next_review_at} mode="absolute" precision="day" />
               </p>
             </div>
           )}

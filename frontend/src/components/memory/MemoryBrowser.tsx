@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import { Link, useNavigate } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -469,7 +470,7 @@ function EpisodesTab({ butlerScope }: { butlerScope?: string }) {
                         )}
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
-                        {new Date(ep.created_at).toLocaleString()}
+                        <Time value={ep.created_at} mode="absolute" />
                       </TableCell>
                     </TableRow>
 

@@ -23,6 +23,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Time } from "@/components/ui/time";
 import { useDisconnectGoogleHealth } from "@/hooks/use-google-health";
 import {
   useDisconnectAccount,
@@ -87,15 +88,6 @@ function accountStatusBadge(
       return { variant: "destructive", label: "Expired" };
     default:
       return { variant: "secondary", label: status };
-  }
-}
-
-function formatTimestamp(ts: string | null): string {
-  if (!ts) return "\u2014";
-  try {
-    return new Date(ts).toLocaleString();
-  } catch {
-    return ts;
   }
 }
 
@@ -466,9 +458,9 @@ function GoogleAccountRow({ account }: { account: GoogleAccount }) {
             <Badge variant={statusVariant}>{statusLabel}</Badge>
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Connected: {formatTimestamp(account.connected_at)}
+            Connected: {account.connected_at ? <Time value={account.connected_at} mode="absolute" /> : "—"}
             {account.last_token_refresh_at && (
-              <> &middot; Last refresh: {formatTimestamp(account.last_token_refresh_at)}</>
+              <> &middot; Last refresh: <Time value={account.last_token_refresh_at} mode="absolute" /></>
             )}
           </p>
           {/*

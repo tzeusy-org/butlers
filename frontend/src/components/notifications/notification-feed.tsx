@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
-import { formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 
 import type { NotificationSummary } from "@/api/types";
 import { NotificationTableSkeleton } from "@/components/skeletons";
@@ -75,11 +75,6 @@ function truncate(text: string, max = 60): string {
 
 function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}...` : id;
-}
-
-/** Format an ISO timestamp as a relative human-readable string. */
-function relativeTime(iso: string): string {
-  return formatDistanceToNow(new Date(iso), { addSuffix: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +169,7 @@ export function NotificationFeed({
               )}
             </TableCell>
             <TableCell className="text-muted-foreground text-right text-xs">
-              {relativeTime(n.created_at)}
+              <Time value={n.created_at} mode="relative" />
             </TableCell>
           </TableRow>
           );

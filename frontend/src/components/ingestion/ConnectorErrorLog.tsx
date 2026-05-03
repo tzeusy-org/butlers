@@ -3,9 +3,8 @@
  * Derived from the connector list (liveness + state + error_message).
  */
 
-import { formatDistanceToNow } from "date-fns";
-
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import {
   Table,
   TableBody,
@@ -56,15 +55,12 @@ export function ConnectorErrorLog({
             <TableBody>
               {errorConnectors.map((c) => {
                 const identity = `${c.connector_type}:${c.endpoint_identity}`;
-                const lastSeen = c.last_heartbeat_at
-                  ? formatDistanceToNow(new Date(c.last_heartbeat_at), {
-                      addSuffix: true,
-                    })
-                  : "never";
                 return (
                   <TableRow key={identity}>
                     <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                      {lastSeen}
+                      {c.last_heartbeat_at
+                        ? <Time value={c.last_heartbeat_at} mode="relative" />
+                        : "never"}
                     </TableCell>
                     <TableCell className="font-mono text-xs">{identity}</TableCell>
                     <TableCell>

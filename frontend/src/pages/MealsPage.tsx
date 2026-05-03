@@ -226,6 +226,7 @@ export default function MealsPage() {
               {Array.from(grouped.entries()).map(([day, dayMeals]) => (
                 <div key={day}>
                   <h3 className="mb-2 text-sm font-semibold">
+                    {/* <Time> doesn't support day-of-week format ("EEEE, MMMM d, yyyy"); kept as-is */}
                     {format(new Date(day), "EEEE, MMMM d, yyyy")}
                   </h3>
                   <Table>
@@ -256,6 +257,7 @@ export default function MealsPage() {
                               {formatNutrition(m.nutrition)}
                             </TableCell>
                             <TableCell className="text-muted-foreground text-sm">
+                              {/* <Time> doesn't support time-only format ("HH:mm"); kept as-is */}
                               {format(new Date(m.eaten_at), "HH:mm")}
                             </TableCell>
                             <TableCell className="text-muted-foreground max-w-xs truncate text-sm">

@@ -6,9 +6,8 @@
  * - Loading skeleton, empty state
  */
 
-import { formatDistanceToNow } from "date-fns";
-
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -145,9 +144,7 @@ export default function RegistryTable() {
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
                     {entry.last_seen_at
-                      ? formatDistanceToNow(new Date(entry.last_seen_at), {
-                          addSuffix: true,
-                        })
+                      ? <Time value={entry.last_seen_at} mode="relative" />
                       : "\u2014"}
                   </TableCell>
                   </TableRow>

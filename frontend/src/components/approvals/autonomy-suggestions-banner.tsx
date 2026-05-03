@@ -7,8 +7,8 @@
  * auto-approved pattern and invite the user to revoke the standing rule.
  */
 
-import { formatDistanceToNow } from "date-fns";
 import { AlertTriangle, CheckCircle, Clock, TrendingUp, X } from "lucide-react";
+import { Time } from "@/components/ui/time";
 import type { AutonomySuggestion } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -71,7 +71,7 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
           <span>·</span>
           <span>
             Created{" "}
-            {formatDistanceToNow(new Date(suggestion.created_at), { addSuffix: true })}
+            <Time value={suggestion.created_at} mode="relative" />
           </span>
           <VelocityIndicator suggestion={suggestion} />
         </div>
@@ -126,7 +126,7 @@ function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggestio
           <span>·</span>
           <span>
             Created{" "}
-            {formatDistanceToNow(new Date(suggestion.created_at), { addSuffix: true })}
+            <Time value={suggestion.created_at} mode="relative" />
           </span>
         </div>
       </CardContent>

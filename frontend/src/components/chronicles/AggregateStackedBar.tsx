@@ -37,6 +37,9 @@ function categoryColour(category: Category): string {
 // Format helpers
 // ---------------------------------------------------------------------------
 
+// NOTE: formatDay produces chart axis labels ("May 3") from raw YYYY-MM-DD strings using local
+// noon to avoid UTC offset issues. <Time> is not suitable for non-React chart axis contexts;
+// kept as-is.
 function formatDay(day: string): string {
   // day is YYYY-MM-DD; parse as a local noon to avoid UTC-offset boundary issues
   const [year, month, date] = day.split("-").map(Number)

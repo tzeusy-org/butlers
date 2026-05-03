@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { Time } from "@/components/ui/time";
 import {
   Card,
   CardContent,
@@ -25,11 +26,6 @@ import type { QaFindingRecord } from "@/api/index.ts";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatTs(iso: string | null | undefined): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleString();
-}
 
 function formatDuration(start: string, end: string | null | undefined): string {
   if (!end) return "running...";
@@ -285,10 +281,10 @@ export default function QaPatrolDetailPage() {
         <CardContent>
           <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-3 text-sm">
             <dt className="text-muted-foreground font-medium">Started</dt>
-            <dd>{formatTs(patrol.started_at)}</dd>
+            <dd><Time value={patrol.started_at} mode="absolute" /></dd>
 
             <dt className="text-muted-foreground font-medium">Completed</dt>
-            <dd>{formatTs(patrol.completed_at)}</dd>
+            <dd>{patrol.completed_at ? <Time value={patrol.completed_at} mode="absolute" /> : "--"}</dd>
 
             <dt className="text-muted-foreground font-medium">Duration</dt>
             <dd>{formatDuration(patrol.started_at, patrol.completed_at)}</dd>

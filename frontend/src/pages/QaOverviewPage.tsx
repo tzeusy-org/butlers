@@ -15,6 +15,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Time } from "@/components/ui/time";
 import {
   Card,
   CardAction,
@@ -56,11 +57,6 @@ import type {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatTs(iso: string | null | undefined): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleString();
-}
-
 function formatDuration(start: string, end: string | null | undefined): string {
   if (!end) return "running...";
   const ms = new Date(end).getTime() - new Date(start).getTime();
@@ -70,6 +66,8 @@ function formatDuration(start: string, end: string | null | undefined): string {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
+// NOTE: formatRelative uses a custom compact format ("just now", "5m ago", "2h ago", "3d ago")
+// that differs from date-fns formatDistanceToNow. Not migrated to <Time> — kept intentionally.
 function formatRelative(iso: string | null | undefined): string {
   if (!iso) return "--";
   const diff = Date.now() - new Date(iso).getTime();
@@ -202,7 +200,7 @@ function RecentPatrolsTable({ patrols }: { patrols: QaPatrolSummary[] }) {
                 to={`/qa/patrols/${p.id}`}
                 className="text-primary font-mono text-xs underline-offset-4 hover:underline"
               >
-                {formatTs(p.started_at)}
+                <Time value={p.started_at} mode="absolute" />
               </Link>
             </TableCell>
             <TableCell className="text-muted-foreground text-xs">
@@ -821,7 +819,7 @@ export default function QaOverviewPage() {
                     <div className="flex items-center gap-2">
                       <PatrolStatusBadge status={summary.last_patrol.status} />
                       <span className="text-sm">
-                        {formatTs(summary.last_patrol.started_at)}
+                        <Time value={summary.last_patrol.started_at} mode="absolute" />
                       </span>
                       <span className="text-muted-foreground text-xs">
                         ({formatRelative(summary.last_patrol.started_at)})

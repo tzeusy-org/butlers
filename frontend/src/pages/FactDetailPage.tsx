@@ -2,6 +2,7 @@ import { Link, useParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { Time } from "@/components/ui/time";
 import {
   Card,
   CardContent,
@@ -261,18 +262,18 @@ export default function FactDetailPage() {
               {/* Timestamps */}
               <div className="flex flex-wrap gap-6 text-xs text-muted-foreground">
                 <span>
-                  Created: {new Date(fact.created_at).toLocaleString()}
+                  Created: <Time value={fact.created_at} mode="absolute" />
                 </span>
                 {fact.last_referenced_at && (
                   <span>
                     Last referenced:{" "}
-                    {new Date(fact.last_referenced_at).toLocaleString()}
+                    <Time value={fact.last_referenced_at} mode="absolute" />
                   </span>
                 )}
                 {fact.last_confirmed_at && (
                   <span>
                     Last confirmed:{" "}
-                    {new Date(fact.last_confirmed_at).toLocaleString()}
+                    <Time value={fact.last_confirmed_at} mode="absolute" />
                   </span>
                 )}
               </div>

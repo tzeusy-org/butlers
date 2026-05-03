@@ -1,6 +1,6 @@
 import { EmptyState } from "@/components/ui/empty-state";
 import { useState } from "react";
-import { formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 import type { AuditEntry } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -85,7 +85,7 @@ export default function AuditLogTable({ entries, isLoading }: AuditLogTableProps
                 onClick={() => toggleExpanded(entry.id)}
               >
                 <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
-                  {formatDistanceToNow(new Date(entry.created_at), { addSuffix: true })}
+                  <Time value={entry.created_at} mode="relative" />
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline">{entry.butler}</Badge>

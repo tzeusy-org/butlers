@@ -1,4 +1,5 @@
 import { Link } from "react-router";
+import { Time } from "@/components/ui/time";
 
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationTableSkeleton } from "@/components/skeletons";
@@ -81,7 +82,7 @@ function QaWidget() {
         ) : (
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
             <dt className="text-muted-foreground">Last patrol</dt>
-            <dd>{new Date(summary.last_patrol.started_at).toLocaleString()}</dd>
+            <dd><Time value={summary.last_patrol.started_at} mode="absolute" /></dd>
 
             <dt className="text-muted-foreground">Status</dt>
             <dd>

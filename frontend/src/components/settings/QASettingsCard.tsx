@@ -9,6 +9,7 @@
  */
 
 import { useState } from "react";
+import { Time } from "@/components/ui/time";
 
 import {
   Eye,
@@ -284,7 +285,7 @@ export function QASettingsCard() {
             />
             {repoConfig?.last_synced_at && (
               <p className="text-xs text-muted-foreground">
-                Last synced: {new Date(repoConfig.last_synced_at).toLocaleString()}
+                Last synced: <Time value={repoConfig.last_synced_at} mode="absolute" />
               </p>
             )}
             {repoConfig?.last_sync_error && (

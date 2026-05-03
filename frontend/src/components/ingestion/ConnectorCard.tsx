@@ -9,7 +9,7 @@
 
 import { useState } from "react";
 import { Link } from "react-router";
-import { formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -53,11 +53,6 @@ export function ConnectorCard({
   const todayIngested = connector.today?.messages_ingested ?? 0;
   const uptimePct = connector.today?.uptime_pct;
 
-  const lastSeen = connector.last_heartbeat_at
-    ? formatDistanceToNow(new Date(connector.last_heartbeat_at), {
-        addSuffix: true,
-      })
-    : "never";
 
   return (
     <>
@@ -117,7 +112,11 @@ export function ConnectorCard({
               )}
 
               <dt className="text-muted-foreground">Last seen</dt>
-              <dd className="text-right text-xs text-muted-foreground">{lastSeen}</dd>
+              <dd className="text-right text-xs text-muted-foreground">
+                {connector.last_heartbeat_at
+                  ? <Time value={connector.last_heartbeat_at} mode="relative" />
+                  : "never"}
+              </dd>
             </dl>
           </CardContent>
         </Card>

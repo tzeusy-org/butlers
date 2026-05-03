@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { format } from "date-fns";
+import { Time } from "@/components/ui/time";
 
 import type { SymptomParams } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -205,7 +205,7 @@ export default function SymptomsPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-muted-foreground text-sm">
-                        {format(new Date(symptom.occurred_at), "MMM d, yyyy HH:mm")}
+                        <Time value={symptom.occurred_at} mode="absolute" />
                       </TableCell>
                       <TableCell className="text-muted-foreground max-w-xs truncate text-sm">
                         {symptom.notes ?? "\u2014"}

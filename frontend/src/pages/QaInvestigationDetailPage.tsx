@@ -1,6 +1,7 @@
 import { Link, useParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import {
@@ -17,11 +18,6 @@ import type { HealingAttempt, QaFindingRecord } from "@/api/index.ts";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatTs(iso: string | null | undefined): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleString();
-}
 
 function formatDuration(
   start: string | null | undefined,
@@ -141,7 +137,7 @@ function DispatchReasonCard({
             <dd>
               <span className="font-mono text-sm">{finding.occurrence_count}</span>
               <span className="text-muted-foreground text-xs ml-2">
-                ({formatTs(finding.first_seen)} → {formatTs(finding.last_seen)})
+                (<Time value={finding.first_seen} mode="absolute" /> → <Time value={finding.last_seen} mode="absolute" />)
               </span>
             </dd>
 
@@ -385,7 +381,7 @@ function Timeline({ attempt }: { attempt: HealingAttempt }) {
               {step.label}
             </span>
             {step.time && (
-              <span className="text-muted-foreground text-xs">{formatTs(step.time)}</span>
+              <span className="text-muted-foreground text-xs"><Time value={step.time} mode="absolute" /></span>
             )}
           </div>
         </li>
@@ -507,15 +503,15 @@ export default function QaInvestigationDetailPage() {
             </dd>
 
             <dt className="text-muted-foreground font-medium">Created</dt>
-            <dd>{formatTs(attempt.created_at)}</dd>
+            <dd><Time value={attempt.created_at} mode="absolute" /></dd>
 
             <dt className="text-muted-foreground font-medium">Updated</dt>
-            <dd>{formatTs(attempt.updated_at)}</dd>
+            <dd><Time value={attempt.updated_at} mode="absolute" /></dd>
 
             {attempt.closed_at && (
               <>
                 <dt className="text-muted-foreground font-medium">Closed</dt>
-                <dd>{formatTs(attempt.closed_at)}</dd>
+                <dd><Time value={attempt.closed_at} mode="absolute" /></dd>
               </>
             )}
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
-import { formatDistanceToNow } from "date-fns";
+import { Time } from "@/components/ui/time";
 import { useNavigate } from "react-router";
 import { ArchiveIcon, ArchiveRestoreIcon, EditIcon, GitMergeIcon, TrashIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -374,9 +374,7 @@ export default function ContactTable({
                     </TableCell>
                     <TableCell className="text-muted-foreground text-xs">
                       {contact.last_interaction_at
-                        ? formatDistanceToNow(new Date(contact.last_interaction_at), {
-                            addSuffix: true,
-                          })
+                        ? <Time value={contact.last_interaction_at} mode="relative" />
                         : "\u2014"}
                     </TableCell>
                     <TableCell onClick={stopPropagation}>
