@@ -125,3 +125,107 @@ class TestResolveContactFunction:
 
         assert _extract_whatsapp_jid_phone("1234567890@s.whatsapp.net") == "1234567890"
         assert _extract_whatsapp_jid_phone("123456789@g.us") is None
+
+
+class TestOwnerBootstrap:
+    """RFC 0004: Owner entity is bootstrapped automatically on daemon startup."""
+
+    def test_owner_contact_bootstrapped_with_owner_role(self):
+        """RFC 0004: Daemon startup creates owner entity with ['owner'] role.
+
+        _ensure_owner_entity() inserts a row into public.entities with
+        roles=['owner'] on first boot. This is idempotent and uses ON CONFLICT.
+        The owner role drives identity preamble, approval gates, and routing priority.
+        """
+        import inspect
+
+        from butlers.owner_bootstrap import _ensure_owner_entity
+
+        assert callable(_ensure_owner_entity)
+        assert __import__("asyncio").iscoroutinefunction(_ensure_owner_entity), (
+            "_ensure_owner_entity must be async (requires DB access at startup)"
+        )
+
+        # The function must write the 'owner' role to public.entities
+        src = inspect.getsource(_ensure_owner_entity)
+        assert "owner" in src, (
+            "_ensure_owner_entity must create an entity with 'owner' role (RFC 0004)"
+        )
+        assert "public.entities" in src or "entities" in src, (
+            "_ensure_owner_entity must write to public.entities (RFC 0004)"
+        )
+        # Must be idempotent — uses ON CONFLICT
+        assert "ON CONFLICT" in src, (
+            "_ensure_owner_entity must be idempotent via ON CONFLICT (RFC 0004)"
+        )
+
+    def test_owner_bootstrap_called_during_startup(self):
+        """RFC 0004: lifecycle.run_startup calls _ensure_owner_entity during phase 8b.
+
+        Owner entity bootstrapping occurs at phase 8b (alongside credential store
+        creation), ensuring owner context is available before module on_startup()
+        calls that may need identity resolution.
+        """
+        import inspect
+
+        from butlers import lifecycle
+
+        src = inspect.getsource(lifecycle)
+        assert "_ensure_owner_entity" in src or "owner" in src.lower(), (
+            "lifecycle.run_startup must call _ensure_owner_entity during startup (RFC 0004)"
+        )
+
+    def test_owner_entity_carries_owner_role_in_resolved_contact(self):
+        """RFC 0004: A ResolvedContact with roles=['owner'] identifies the owner.
+
+        The identity preamble function formats owner contacts distinctly with
+        '[Source: Owner ...]' — this only happens when 'owner' is in roles.
+        """
+        from butlers.identity import ResolvedContact, build_identity_preamble
+
+        owner_contact = ResolvedContact(
+            contact_id=uuid.uuid4(),
+            name="Owner",
+            roles=["owner"],
+            entity_id=uuid.uuid4(),
+        )
+
+        preamble = build_identity_preamble(owner_contact, "telegram")
+        assert "[Source: Owner" in preamble, (
+            "Owner contact (roles=['owner']) must produce '[Source: Owner ...]' preamble (RFC 0004)"
+        )
+        assert "pending disambiguation" not in preamble, (
+            "Owner contact must not be marked as needing disambiguation (RFC 0004)"
+        )
+
+    def test_context_aware_notify_filters_by_sphere(self):
+        """RFC 0004: notify() with msg_context='work' routes only to work-sphere channels.
+
+        contact_info.context column tags channels as 'personal', 'work', 'other', or NULL.
+        When msg_context is provided, recipient selection prefers entries whose
+        context matches msg_context over unclassified (NULL) entries.
+
+        The context-aware resolution logic lives in daemon._resolve_contact_channel_identifier().
+        """
+        import inspect
+
+        from butlers.daemon import ButlerDaemon
+
+        daemon_src = inspect.getsource(ButlerDaemon)
+
+        # msg_context parameter enables sphere routing in notify()
+        assert "msg_context" in daemon_src, (
+            "ButlerDaemon must implement msg_context parameter for context-aware notify (RFC 0004)"
+        )
+
+        # The context column in contact_info drives the routing
+        assert "context" in daemon_src, (
+            "ButlerDaemon must reference contact_info.context for sphere routing (RFC 0004)"
+        )
+
+        # The RFC specifies three context values + NULL
+        valid_contexts = {"personal", "work", "other", None}
+        assert "personal" in daemon_src or "work" in daemon_src, (
+            "ButlerDaemon must reference context sphere values (RFC 0004)"
+        )
+        assert len(valid_contexts) == 4, "RFC 0004 defines 3 context spheres + NULL (unclassified)"

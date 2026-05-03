@@ -134,3 +134,76 @@ class TestConcreteModuleBoundaries:
         assert isinstance(meta, dict)
         for tool_name, tm in meta.items():
             assert "session_log" not in str(tm.arg_sensitivities)
+
+
+class TestModuleStartupFailureHandling:
+    """RFC 0002 + RFC 0001: Module startup failure marks module unavailable; daemon continues."""
+
+    def test_failed_module_on_startup_marks_available_false(self):
+        """RFC 0002: Module raising in on_startup() is marked unavailable; daemon continues.
+
+        This is non-fatal (phase 9). The lifecycle layer catches the exception,
+        marks the module's status as 'failed', and propagates the failure to
+        dependent modules. The daemon's overall startup is not aborted.
+        """
+        import inspect
+
+        from butlers import lifecycle
+
+        src = inspect.getsource(lifecycle)
+
+        # on_startup failures are caught and logged, not re-raised
+        assert "on_startup" in src, "lifecycle must call on_startup (RFC 0002)"
+        assert "except" in src or "try" in src, (
+            "lifecycle must catch on_startup exceptions for non-fatal handling (RFC 0001)"
+        )
+        # Module status tracking: failed modules recorded
+        assert "failed" in src.lower() or "disabled" in src.lower(), (
+            "lifecycle must record failed module status (RFC 0001)"
+        )
+
+    def test_module_on_startup_receives_credential_store(self):
+        """RFC 0002: on_startup() receives an optional CredentialStore for DB-first resolution.
+
+        Modules needing credentials use the CredentialStore passed to on_startup(),
+        not direct os.environ access (which would violate the credential tier model).
+        """
+        import inspect
+
+        from butlers.modules.base import Module
+
+        sig = inspect.signature(Module.on_startup)
+        params = list(sig.parameters.keys())
+
+        # on_startup receives optional credential_store
+        assert "credential_store" in params, (
+            "Module.on_startup must accept credential_store param (RFC 0002 + RFC 0006)"
+        )
+
+        # credential_store must be optional (modules without secrets still work)
+        default = sig.parameters["credential_store"].default
+        assert default in (None, inspect.Parameter.empty), (
+            "credential_store param must have a default (optional for modules without secrets)"
+        )
+
+    def test_module_cannot_receive_core_infra_via_register_tools(self):
+        """RFC 0002: register_tools() cannot be used to pass core infrastructure to modules.
+
+        The signature of register_tools() accepts mcp, config, db, butler_name.
+        Scheduler, spawner, and session_log are NOT in the signature — modules
+        can never receive these via the standard registration path.
+        """
+        import inspect
+
+        from butlers.modules.base import Module
+
+        sig = inspect.signature(Module.register_tools)
+        params = list(sig.parameters.keys())
+
+        # Core infra parameters that must NOT be present
+        forbidden = {"scheduler", "spawner", "session_log", "state_store", "tick_handler"}
+        for param in forbidden:
+            assert param not in params, (
+                f"register_tools must not accept '{param}' — "
+                "modules cannot receive core infrastructure (RFC 0002)"
+            )

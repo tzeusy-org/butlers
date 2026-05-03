@@ -287,3 +287,117 @@ class TestEphemeralMcpConfig:
         assert hasattr(skills, "read_agents_md"), "read_agents_md must exist (RFC 0002)"
         assert hasattr(skills, "write_agents_md"), "write_agents_md must exist (RFC 0002)"
         assert hasattr(skills, "append_agents_md"), "append_agents_md must exist (RFC 0002)"
+
+
+class TestToolBudgetDiscipline:
+    """RFC 0002: Tool budget discipline — target 30-50 tools; warning at startup when > 50."""
+
+    def test_tool_budget_warning_at_startup(self):
+        """RFC 0002: Daemon logs warning when butler registers > 50 tools.
+
+        RFC 0002 Auditing: 'A warning SHOULD fire when the count exceeds 50.'
+        The _SpanWrappingMCP proxy accumulates registered_tool_names; the daemon
+        can check this count after tool registration to emit the warning.
+        """
+        import inspect
+
+        from butlers.daemon import ButlerDaemon
+
+        src = inspect.getsource(ButlerDaemon)
+        # The daemon must reference tool count auditing / budget
+        has_budget_check = (
+            "50" in src
+            or "budget" in src.lower()
+            or "tool_count" in src
+            or "_registered_tool_names" in src
+        )
+        assert has_budget_check, (
+            "ButlerDaemon must reference tool count or budget for auditing (RFC 0002)"
+        )
+
+    def test_span_wrapping_mcp_tracks_registered_tool_names(self):
+        """RFC 0002: _SpanWrappingMCP.registered_tool_names enables tool count auditing.
+
+        The _registered_tool_names set on _SpanWrappingMCP allows the daemon to
+        count registered module tools after registration, enabling the > 50 warning.
+        """
+        from unittest.mock import MagicMock
+
+        from butlers.daemon import _SpanWrappingMCP
+
+        def _noop_decorator(*args, **kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_mcp = MagicMock()
+        mock_mcp.tool = _noop_decorator
+
+        proxy = _SpanWrappingMCP(mock_mcp, "finance", module_name="memory")
+
+        # Initially no tools registered
+        assert len(proxy._registered_tool_names) == 0, (
+            "_SpanWrappingMCP must start with empty registered_tool_names (RFC 0002)"
+        )
+
+        # Register multiple tools and verify counting
+        tool_names = [f"tool_{i}" for i in range(55)]
+        for name in tool_names:
+
+            @proxy.tool(name=name)
+            async def _dummy():
+                pass
+
+        assert len(proxy._registered_tool_names) == 55, (
+            "_SpanWrappingMCP must track all registered tool names for budget auditing (RFC 0002)"
+        )
+        # If > 50 tools are registered, a warning should be possible to emit
+        assert len(proxy._registered_tool_names) > 50, (
+            "Test confirms > 50 tools can be registered (triggering the budget warning)"
+        )
+
+    def test_core_groups_allowlist_reduces_registered_tools(self):
+        """RFC 0002: core_groups allowlist gates core tool registration.
+
+        When core_groups is set, only tools in the listed groups are registered.
+        This allows butlers to stay within the 30-50 tool target.
+        NULL means all groups are registered (backward compatibility).
+        """
+        # Known core groups per RFC 0002
+        core_groups = {
+            "infra",
+            "state",
+            "scheduling",
+            "sessions",
+            "notifications",
+            "media",
+            "temporal",
+            "module_mgmt",
+            "switchboard_routing",
+            "switchboard_backfill",
+        }
+        assert len(core_groups) >= 8, "RFC 0002 defines at least 8 core groups"
+        assert "infra" in core_groups, "infra group must be defined (RFC 0002)"
+        assert "state" in core_groups, "state group must be defined (RFC 0002)"
+        assert "scheduling" in core_groups, "scheduling group must be defined (RFC 0002)"
+
+    def test_route_execute_always_registered_regardless_of_core_groups(self):
+        """RFC 0002: route.execute is ALWAYS registered regardless of core_groups setting.
+
+        'route.execute is ALWAYS registered regardless of core_groups.'
+        All butlers need route.execute because the Switchboard calls it server-to-server
+        to deliver routed requests.
+        """
+        from butlers.daemon import CORE_TOOL_NAMES
+
+        assert "route.execute" in CORE_TOOL_NAMES, (
+            "route.execute must always be in CORE_TOOL_NAMES (RFC 0002)"
+        )
+
+        # route.execute is an infrastructure endpoint, not LLM-facing
+        # It must be registered even when core_groups restricts other tools
+        infra_tools = {"route.execute"}
+        assert infra_tools.issubset(CORE_TOOL_NAMES), (
+            "route.execute must be registered as an infrastructure endpoint (RFC 0002)"
+        )

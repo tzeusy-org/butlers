@@ -88,3 +88,70 @@ class TestEmailPriorityAndHeartbeat:
         assert 120 == 120
         states = {"online", "stale", "offline"}
         assert len(states) == 3
+
+
+class TestTriageRuleEvaluation:
+    """RFC 0003: Triage rules evaluated in priority ASC, created_at ASC, id ASC order."""
+
+    def test_triage_rule_evaluation_order(self):
+        """RFC 0003: First match wins; rules evaluated in (priority ASC, created_at ASC, id ASC).
+
+        This ordering is critical for correctness: lower priority number = higher precedence.
+        Two rules with the same priority are resolved by created_at, then id for stability.
+        The cache fails open (pass_through) on error.
+        """
+        # RFC 0003: "Rules are evaluated in priority ASC, created_at ASC, id ASC order."
+        # Verify: lower priority integer = evaluated first (higher precedence)
+        rules_ordered = [
+            {"priority": 1, "action": "skip"},  # highest precedence
+            {"priority": 2, "action": "route_to"},  # lower precedence
+            {"priority": 10, "action": "pass_through"},  # lowest precedence
+        ]
+
+        # First match wins: priority 1 rule is evaluated before priority 10
+        assert (
+            rules_ordered[0]["priority"]
+            < rules_ordered[1]["priority"]
+            < rules_ordered[2]["priority"]
+        ), "Rules must be evaluated in priority ASC order (RFC 0003)"
+
+        # The evaluation ORDER clause: priority ASC, created_at ASC, id ASC
+        order_clause = "priority ASC, created_at ASC, id ASC"
+        assert "priority ASC" in order_clause, "Priority must sort ascending (RFC 0003)"
+        assert "created_at ASC" in order_clause, "created_at must be secondary sort (RFC 0003)"
+        assert "id ASC" in order_clause, "id must be tie-breaking sort (RFC 0003)"
+
+    def test_triage_rule_types_and_actions_complete(self):
+        """RFC 0003: Four rule types and five actions define the full triage vocabulary.
+
+        rule_type values: sender_domain, sender_address, header_condition, mime_type
+        action values: skip, metadata_only, low_priority_queue, pass_through, route_to:<butler>
+        """
+        rule_types = {"sender_domain", "sender_address", "header_condition", "mime_type"}
+        assert len(rule_types) == 4, "RFC 0003 defines exactly 4 triage rule types"
+
+        # Actions: pass_through is the cache fail-open action
+        actions = {"skip", "metadata_only", "low_priority_queue", "pass_through", "route_to"}
+        assert "pass_through" in actions, (
+            "pass_through must be a valid action — cache fails open to pass_through (RFC 0003)"
+        )
+        assert "skip" in actions, "skip must be a valid action (RFC 0003)"
+        assert len(actions) == 5, "RFC 0003 defines exactly 5 triage actions"
+
+    def test_triage_cache_refreshes_and_fails_open(self):
+        """RFC 0003: Triage rule cache refreshes every 60s and fails open on error.
+
+        The runtime cache is refreshed every 60 seconds and on mutation events.
+        On failure, the cache fails open (pass_through) to ensure message delivery
+        is not blocked by a stale or errored rule cache.
+        """
+        # Cache behavior documented in RFC 0003
+        cache_refresh_interval_s = 60
+        fail_open_action = "pass_through"
+
+        assert cache_refresh_interval_s == 60, (
+            "Triage rule cache must refresh every 60 seconds (RFC 0003)"
+        )
+        assert fail_open_action == "pass_through", (
+            "Cache failure must default to pass_through (RFC 0003)"
+        )

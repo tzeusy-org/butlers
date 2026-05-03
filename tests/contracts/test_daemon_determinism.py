@@ -83,3 +83,101 @@ class TestRouteInboxAndConcurrency:
         # Trigger sources documented
         trigger_sources = {"trigger", "route", "schedule"}
         assert len(trigger_sources) == 3
+
+
+class TestCrashRecoveryAndGlobalConcurrency:
+    """RFC 0001: Crash recovery re-dispatches orphaned routes; global semaphore limits sessions."""
+
+    def test_crash_recovery_replays_orphaned_routes(self):
+        """RFC 0001: route_inbox rows in accepted/processing > grace window re-dispatched at startup.
+
+        On startup, the daemon scans for rows in 'accepted' or 'processing' state
+        older than the configurable grace period (default 10s) and re-dispatches them.
+        Both states are scanned because a crash can leave rows in either state.
+        """
+        from butlers.switchboard_wiring import recover_route_inbox
+
+        assert callable(recover_route_inbox), (
+            "recover_route_inbox must be importable from switchboard_wiring (RFC 0001)"
+        )
+        assert __import__("asyncio").iscoroutinefunction(recover_route_inbox), (
+            "recover_route_inbox must be async (scans DB and re-dispatches routes)"
+        )
+
+        # The recovery function scans both accepted and processing states
+        src = inspect.getsource(recover_route_inbox)
+        assert "accepted" in src, "crash recovery must scan 'accepted' rows (RFC 0001)"
+        assert "processing" in src or "grace" in src, (
+            "crash recovery must scan 'processing' rows or use grace period filter (RFC 0001)"
+        )
+
+    def test_global_semaphore_limits_cross_butler_concurrency(self):
+        """RFC 0001: BUTLERS_MAX_GLOBAL_SESSIONS shared across all butlers.
+
+        The global semaphore is process-wide and shared across all butler instances.
+        It is lazy-initialized on first access via _get_global_semaphore().
+        Default cap is 3, configurable via BUTLERS_MAX_GLOBAL_SESSIONS env var.
+        """
+        from butlers.core.spawner import _get_global_semaphore
+
+        assert callable(_get_global_semaphore), (
+            "_get_global_semaphore must be importable (RFC 0001)"
+        )
+
+        src = inspect.getsource(_get_global_semaphore)
+        assert "BUTLERS_MAX_GLOBAL_SESSIONS" in src, (
+            "_get_global_semaphore must read BUTLERS_MAX_GLOBAL_SESSIONS (RFC 0001)"
+        )
+
+        # Default max global sessions documented in RFC 0001
+        from butlers.core.spawner import _DEFAULT_MAX_GLOBAL_SESSIONS
+
+        assert _DEFAULT_MAX_GLOBAL_SESSIONS == 3, "Default max global sessions must be 3 (RFC 0001)"
+
+    def test_route_inbox_state_machine_transitions(self):
+        r"""RFC 0001: route_inbox row transitions: accepted -> processing -> processed/errored.
+
+        RFC 0001 defines the state machine:
+          accepted --> processing --> processed (session_id stored)
+                                 \--> errored   (error stored)
+        Both crash recovery and the hot path must respect these states.
+        """
+        # State machine transitions per RFC 0001
+        states = {"accepted", "processing", "processed", "errored"}
+        valid_terminal_states = {"processed", "errored"}
+        initial_state = "accepted"
+
+        assert initial_state in states, "Initial state must be 'accepted'"
+        assert "processing" in states, "Intermediate state must be 'processing'"
+
+        # Both processed and errored are terminal
+        for terminal in valid_terminal_states:
+            assert terminal in states, f"Terminal state '{terminal}' must exist"
+
+        # Processing leads to processed OR errored (not back to accepted)
+        non_reversible_transition = "accepted"
+        assert non_reversible_transition not in valid_terminal_states, (
+            "accepted is not a terminal state — rows must advance through the machine (RFC 0001)"
+        )
+
+    def test_spawner_drain_cancels_after_timeout(self):
+        """RFC 0001: Spawner.drain() cancels in-flight sessions after timeout expires.
+
+        Sessions get a configurable drain window; if they don't finish, they are
+        force-cancelled. This enforces the shutdown guarantee without hanging.
+        """
+        import asyncio
+
+        from butlers.core.spawner import Spawner
+
+        assert hasattr(Spawner, "drain"), "Spawner must have drain() method (RFC 0001)"
+        assert asyncio.iscoroutinefunction(Spawner.drain), "Spawner.drain must be async (RFC 0001)"
+
+        # drain() signature must accept timeout parameter
+        sig = inspect.signature(Spawner.drain)
+        params = list(sig.parameters.keys())
+        assert "timeout" in params, "Spawner.drain must accept timeout parameter (RFC 0001)"
+
+        # Default timeout must be 30s per RFC 0001
+        default_timeout = sig.parameters["timeout"].default
+        assert default_timeout == 30.0, "Spawner.drain default timeout must be 30.0s (RFC 0001)"

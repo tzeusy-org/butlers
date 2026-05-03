@@ -9,6 +9,8 @@ modules in reverse topological order (RFC 0001).
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from pydantic import BaseModel
 
@@ -182,6 +184,33 @@ class TestShutdownSequenceContracts:
         )
         assert has_shutdown, "ButlerDaemon must have a shutdown/stop/close method (RFC 0001)"
 
+    def test_global_shutdown_timeout_force_exit(self):
+        """RFC 0001: Shutdown > 30s forces exit via drain timeout cancellation.
+
+        The configurable shutdown_timeout_s (default 30s) is passed to Spawner.drain().
+        After timeout, in-flight sessions are cancelled and the daemon proceeds to
+        module shutdown. There is no indefinite wait.
+        """
+        import inspect
+
+        from butlers import lifecycle
+
+        src = inspect.getsource(lifecycle)
+        # Shutdown timeout is respected in the lifecycle
+        assert "shutdown_timeout" in src or "drain" in src, (
+            "lifecycle must use shutdown_timeout for session drain (RFC 0001)"
+        )
+        assert "drain" in src.lower(), (
+            "lifecycle must call spawner.drain() during shutdown (RFC 0001)"
+        )
+
+        # Default shutdown timeout (30s) documented in RFC 0001
+        from butlers.core.spawner import Spawner
+
+        sig = inspect.signature(Spawner.drain)
+        default_timeout = sig.parameters["timeout"].default
+        assert default_timeout == 30.0, "Default drain timeout must be 30.0s per RFC 0001"
+
     def test_on_shutdown_is_async(self):
         """RFC 0001: Module.on_shutdown() must be async for the shutdown protocol."""
         import asyncio
@@ -244,6 +273,32 @@ class TestConcreteModuleShutdown:
         m = NoopShutdown()
         await m.on_shutdown()
         assert shutdown_called == [True], "on_shutdown must be called once"
+
+    async def test_session_drain_timeout_and_force_kill(self):
+        """RFC 0001: In-flight sessions get configured drain window, then force-terminate.
+
+        Spawner.drain() waits up to timeout seconds for in-flight sessions to finish.
+        If sessions don't complete within the window, they are cancelled (force-terminated).
+        This enforces the shutdown guarantee without hanging indefinitely.
+        """
+        import asyncio
+
+        from butlers.core.spawner import Spawner
+
+        # drain() must be async and accept a timeout parameter
+        assert asyncio.iscoroutinefunction(Spawner.drain), "Spawner.drain must be async (RFC 0001)"
+        sig = inspect.signature(Spawner.drain)
+        params = list(sig.parameters.keys())
+        assert "timeout" in params, "Spawner.drain must accept timeout parameter (RFC 0001)"
+
+        # Source must cancel tasks after timeout
+        src = inspect.getsource(Spawner.drain)
+        assert "cancel" in src.lower(), (
+            "Spawner.drain must cancel in-flight tasks after timeout (RFC 0001)"
+        )
+        assert "timeout" in src.lower() or "TimeoutError" in src, (
+            "Spawner.drain must handle timeout condition (RFC 0001)"
+        )
 
     async def test_module_shutdown_order_is_reverse_of_load_all_order(self):
         """RFC 0001: load_all() startup order reverses to shutdown order."""

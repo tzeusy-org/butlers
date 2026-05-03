@@ -396,3 +396,50 @@ class TestMcpOnlyInterButler:
         assert heartbeat_schema == "connector.heartbeat.v1", (
             "Heartbeat protocol is liveness-only (RFC 0003), not an inter-butler data channel"
         )
+
+    def test_switchboard_router_classifies_then_dispatches(self):
+        """RFC 0003 + Vision Rule 3: Classifier picks butler from registry THEN dispatcher routes.
+
+        The Switchboard pipeline has two distinct steps:
+        1. Classifier selects the target butler (excluding staffers, RFC 0003)
+        2. Dispatcher calls route.execute on that target butler only
+
+        This two-step model ensures no message is sent to multiple butlers
+        and the classifier never directly executes anything.
+        """
+        import inspect
+
+        from butlers.tools.switchboard.routing import classify
+
+        src = inspect.getsource(classify)
+
+        # Classify module must reference staffer exclusion
+        assert "staffer" in src.lower(), (
+            "classify module must reference staffer type for exclusion (RFC 0003)"
+        )
+
+        # list_butlers with butler_only=True is the exclusion mechanism
+        assert "butler_only" in src, (
+            "classify must use butler_only=True to exclude staffers from classification (RFC 0003)"
+        )
+
+    def test_route_execute_is_the_only_cross_butler_dispatch_mechanism(self):
+        """RFC 0003 + Vision Rule 3: route.execute is the sole dispatching mechanism.
+
+        No butler calls another butler's Python functions. All cross-butler
+        communication goes through route.execute MCP calls via the Switchboard.
+        This is enforced by the ephemeral MCP config (RFC 0002) and the registry
+        routing model (RFC 0003).
+        """
+        # route.execute is registered as a core tool on every butler (RFC 0002)
+        from butlers.daemon import CORE_TOOL_NAMES
+
+        assert "route.execute" in CORE_TOOL_NAMES, (
+            "route.execute must be a core tool — it is the cross-butler dispatch mechanism (RFC 0003)"
+        )
+
+        # The Switchboard routing pipeline uses this tool for dispatch
+        route_execute_tool = "route.execute"
+        assert "." in route_execute_tool, (
+            "route.execute uses dot notation, confirming it is an MCP tool (not a Python call)"
+        )

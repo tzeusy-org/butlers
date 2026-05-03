@@ -198,3 +198,87 @@ class TestContextBusFunctions:
             confidence=1.0,
         )
         assert format_context_preamble([entry]).startswith("[User Context:")
+
+
+class TestContextSupersession:
+    """RFC 0009: Newer signal of same type with higher confidence wins via supersession."""
+
+    def test_context_supersession_newer_overrides_older(self):
+        """RFC 0009: When butler updates a signal it uses ON CONFLICT DO UPDATE with superseded_at=NULL.
+
+        The UNIQUE constraint (signal_type, set_by_butler) means each butler maintains
+        one active signal per type. Updating clears superseded_at to reactivate.
+        The confidence field provides a tiebreaker: higher confidence wins in queries.
+        """
+        import inspect
+
+        from butlers.context_bus import set_context
+
+        src = inspect.getsource(set_context)
+
+        # set_context uses ON CONFLICT DO UPDATE to supersede the old signal
+        assert "ON CONFLICT" in src, (
+            "set_context must use ON CONFLICT DO UPDATE to handle signal updates (RFC 0009)"
+        )
+        assert "superseded_at" in src, (
+            "set_context must update superseded_at = NULL to reactivate signals (RFC 0009)"
+        )
+        # The confidence value is updated on conflict
+        assert "confidence" in src, "set_context must update confidence on conflict (RFC 0009)"
+
+    def test_confidence_field_is_tiebreaker_in_queries(self):
+        """RFC 0009: get_active_context() orders by confidence DESC to surface higher-confidence signals.
+
+        When multiple butlers assert the same signal type, the confidence field
+        determines which signal is returned first. This lets explicit user statements
+        (confidence=1.0) outrank inferred signals.
+        """
+        import inspect
+
+        from butlers.context_bus import get_active_context
+
+        src = inspect.getsource(get_active_context)
+        # Query orders by confidence DESC
+        assert "confidence" in src, "get_active_context must reference confidence (RFC 0009)"
+        assert "DESC" in src or "desc" in src, (
+            "get_active_context must order by confidence DESC (RFC 0009)"
+        )
+
+    def test_unique_constraint_per_butler_per_signal_type(self):
+        """RFC 0009: UNIQUE (signal_type, set_by_butler) — one active signal per type per butler.
+
+        This constraint allows multiple butlers to assert the same signal type
+        independently, while preventing a single butler from stacking multiple
+        assertions of the same type.
+        """
+        import inspect
+
+        from butlers.context_bus import set_context
+
+        src = inspect.getsource(set_context)
+
+        # ON CONFLICT uses (signal_type, set_by_butler) to upsert
+        # The unique constraint is referenced in the INSERT ON CONFLICT clause
+        conflict_markers = ["signal_type", "set_by_butler"]
+        for marker in conflict_markers:
+            assert marker in src, (
+                f"set_context SQL must reference '{marker}' in ON CONFLICT clause (RFC 0009)"
+            )
+
+    def test_expired_signals_are_not_active(self):
+        """RFC 0009: A signal is active when superseded_at IS NULL AND expires_at > now().
+
+        Expired signals are NOT deleted — they remain for audit. Only signals meeting
+        both conditions (non-superseded AND non-expired) are returned by get_active_context().
+        """
+        import inspect
+
+        from butlers.context_bus import get_active_context, is_user_in_context
+
+        # Both functions must filter on superseded_at IS NULL AND expires_at > now()
+        for fn in [get_active_context, is_user_in_context]:
+            src = inspect.getsource(fn)
+            assert "superseded_at IS NULL" in src, (
+                f"{fn.__name__} must filter superseded_at IS NULL (RFC 0009)"
+            )
+            assert "expires_at" in src, f"{fn.__name__} must filter by expires_at (RFC 0009)"
