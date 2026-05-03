@@ -179,7 +179,7 @@ function NavGroup({
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+          className={`shrink-0 transition-transform duration-base ease-out-quart ${expanded ? 'rotate-90' : ''}`}
         >
           <path d="m9 18 6-6-6-6" />
         </svg>
@@ -188,7 +188,7 @@ function NavGroup({
       {/* Children (with smooth height transition) */}
       <div
         aria-hidden={!expanded}
-        className={`overflow-hidden transition-all duration-200 ${
+        className={`overflow-hidden transition-all duration-base ease-out-quart ${
           expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
         }`}
       >
@@ -268,7 +268,7 @@ function NavSectionGroup({
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className={`shrink-0 text-muted-foreground/40 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+            className={`shrink-0 text-muted-foreground/40 transition-transform duration-base ease-out-quart ${expanded ? 'rotate-90' : ''}`}
           >
             <path d="m9 18 6-6-6-6" />
           </svg>
@@ -285,7 +285,7 @@ function NavSectionGroup({
         className={
           collapsed
             ? 'space-y-1'
-            : `overflow-hidden transition-all duration-200 space-y-1 ${
+            : `overflow-hidden transition-all duration-base ease-out-quart space-y-1 ${
                 expanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0'
               }`
         }
@@ -355,7 +355,7 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClic
       {/* Brand */}
       <div className="flex h-14 items-center border-b border-border px-4">
         <span
-          className={`text-lg font-semibold transition-opacity duration-200 ${
+          className={`text-lg font-semibold transition-opacity duration-base ease-out-quart ${
             collapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'
           }`}
         >
@@ -401,7 +401,7 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClic
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
-              className={`transition-transform duration-200 ${collapsed ? 'rotate-180' : ''}`}
+              className={`transition-transform duration-base ease-out-quart ${collapsed ? 'rotate-180' : ''}`}
             >
               <path d="m11 17-5-5 5-5" />
               <path d="m18 17-5-5 5-5" />

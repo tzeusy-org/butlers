@@ -27,7 +27,7 @@ export default function Shell({ header, children }: ShellProps) {
 
       {/* Desktop sidebar — hidden below md */}
       <aside
-        className={`hidden md:flex md:flex-col border-r border-border transition-[width] duration-200 ${
+        className={`hidden md:flex md:flex-col border-r border-border transition-[width] duration-base ease-out-quart ${
           desktopCollapsed ? 'md:w-16' : 'md:w-64'
         }`}
       >

@@ -284,6 +284,87 @@ These were open questions in the first draft. The owner has answered.
    home page as supporting context, but session count is the one
    that gets visual primacy.
 
+## Motion
+
+> Status: **settled** — owner-confirmed contract for all interactive components.
+
+### The Contract
+
+Every interactive state transition in the dashboard must honor these rules:
+
+**Duration tiers** (declared in `frontend/src/index.css` as `--duration-fast/base/slow`):
+
+| Tier | Token | Value | When to use |
+|------|-------|-------|-------------|
+| fast | `duration-fast` | 150 ms | Micro-interactions: hover, focus rings, button press |
+| base | `duration-base` | 200 ms | Layout-affecting: sidebar collapse, drawer open |
+| slow | `duration-slow` | 250 ms | Transitions spanning > 200 px of travel |
+
+**Easing** (`--ease-out-quart`, `cubic-bezier(0.22, 1, 0.36, 1)`):
+- Ease-out exponential family only. Applied via the `ease-out-quart` Tailwind utility.
+- No bounce, no elastic, no ease-in-out for state changes.
+
+**Animated properties** — only these are permitted:
+- `transform` (translate, scale, rotate)
+- `opacity`
+- `color`, `background-color`, `border-color`, `box-shadow` (paint-only)
+
+**Banned animated properties** — these cause layout reflow and are forbidden:
+- `width`, `height`, `max-height` (use transform or opacity instead)
+- `top`, `left`, `right`, `bottom` (use `translate` instead)
+- `margin`, `padding`
+
+**Page-load orchestration is banned.** No staggered entry sequences, no cascading
+fade-ins on mount. Motion conveys state change, not personality.
+
+**Decorative motion is banned.** If a transition does not communicate a state change
+to the user, it does not belong.
+
+### Tailwind Utilities
+
+The `@utility` blocks in `index.css` define compound transition shortcuts with
+duration and easing baked in. The `@theme inline` block separately exposes
+`ease-out-quart` as a Tailwind timing-function utility:
+
+```
+transition-fast  →  all 150ms cubic-bezier(0.22, 1, 0.36, 1)
+transition-base  →  all 200ms cubic-bezier(0.22, 1, 0.36, 1)
+transition-slow  →  all 250ms cubic-bezier(0.22, 1, 0.36, 1)
+```
+
+To limit the animated property, combine with a `transition-[property]` utility
+before the duration:
+
+```jsx
+// Chevron rotation — transform only, fast tier
+<svg className="transition-transform duration-fast ease-out-quart ...">
+
+// Brand fade on sidebar collapse — opacity only, base tier
+<span className="transition-opacity duration-base ease-out-quart ...">
+
+// Hover color change — paint-only, no duration needed (browser default is fine)
+<button className="transition-colors ...">
+```
+
+### Existing Violations (discovered at contract introduction)
+
+The following components animate layout properties and are known violations.
+They are tracked for migration but were not fixed in-place to avoid scope creep.
+
+| File | Violation | Recommended migration |
+|------|-----------|----------------------|
+| `frontend/src/components/layout/Shell.tsx:30` | `transition-[width]` on sidebar `<aside>` | Use `transform: translateX` or accept as a shell-layout exception |
+| `frontend/src/components/chronicles/FloatingMapMinimap.tsx:65` | `transition-[width,height]` | Accept as map-widget exception or use `transform: scale` |
+| `frontend/src/components/chat/ConversationList.tsx:144` | `transition-all` with width toggle | Use `transform: translateX` or clip with overflow |
+| `frontend/src/components/layout/Sidebar.tsx:191,288` | `transition-all` with `max-height` toggle | Use grid row / opacity or accept as a minor exception |
+
+The progress bars in `MedicationTracker.tsx` and `ModelCatalogCard.tsx` use
+`transition-all` with `style={{ width: ... }}`. These are covered by the typed-primitives
+exemption in the Non-negotiable rules above ("A `<Progress>` whose internal
+`style={{ width: '42%' }}` is unavoidable does not violate the rule").
+
+---
+
 ## Detail-page canonicalization
 
 The detail-page archetype today has seven divergent

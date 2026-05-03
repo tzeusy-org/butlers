@@ -160,6 +160,25 @@
   --calendar-grid-height: calc(var(--calendar-hour-height) * 24);
 
   /* ---------------------------------------------------------------------------
+   * Motion tokens
+   *
+   * Duration tiers and the program-wide easing function for all state
+   * transitions. See about/heart-and-soul/design-language.md § Motion.
+   *
+   * --duration-fast   150ms  Micro-interactions: hover, focus rings, button press.
+   * --duration-base   200ms  Layout-affecting: sidebar collapse, drawer open.
+   * --duration-slow   250ms  Transitions spanning >200 px of travel.
+   *
+   * --ease-out-quart  cubic-bezier(0.22, 1, 0.36, 1)
+   *                   Ease-out exponential (ease-out-quart family).
+   *                   Do NOT use bounce, elastic, or ease-in-out for state changes.
+   * ---------------------------------------------------------------------------*/
+  --duration-fast:   150ms;
+  --duration-base:   200ms;
+  --duration-slow:   250ms;
+  --ease-out-quart:  cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ---------------------------------------------------------------------------
    * Spacing scale
    *
    * Base unit: 0.25rem (4px). Linear steps 1–12.
@@ -268,6 +287,11 @@ body {
   --font-size-2xl:  var(--text-2xl);
   --font-size-3xl:  var(--text-3xl);
 
+  /* Motion tokens — easing utility.
+   * --ease-out-quart exposes the program-wide easing as an `ease-out-quart`
+   * Tailwind utility (sets transition-timing-function). */
+  --ease-out-quart: cubic-bezier(0.22, 1, 0.36, 1);
+
   /* Spacing scale — Tailwind spacing-* utilities */
   --spacing-1:   var(--space-1);
   --spacing-2:   var(--space-2);
@@ -358,4 +382,46 @@ body {
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Motion utilities
+ *
+ * Compound transition shortcuts with duration and easing baked in.
+ * Prefer these over bare `duration-200 ease-*` pairs so the contract
+ * stays single-source.
+ *
+ * Usage:
+ *   .transition-fast   transition: all 150ms cubic-bezier(0.22, 1, 0.36, 1)
+ *   .transition-base   transition: all 200ms cubic-bezier(0.22, 1, 0.36, 1)
+ *   .transition-slow   transition: all 250ms cubic-bezier(0.22, 1, 0.36, 1)
+ *
+ * To animate a specific property, combine with a transition-property modifier:
+ *   transition-[transform] duration-base ease-out-quart
+ *   transition-[opacity] duration-fast ease-out-quart
+ * ---------------------------------------------------------------------------*/
+@utility transition-fast {
+  transition: all var(--duration-fast) var(--ease-out-quart);
+}
+
+@utility transition-base {
+  transition: all var(--duration-base) var(--ease-out-quart);
+}
+
+@utility transition-slow {
+  transition: all var(--duration-slow) var(--ease-out-quart);
+}
+
+/* Named duration utilities for use alongside transition-property modifiers.
+ * e.g. transition-[transform] duration-base ease-out-quart */
+@utility duration-fast {
+  transition-duration: var(--duration-fast);
+}
+
+@utility duration-base {
+  transition-duration: var(--duration-base);
+}
+
+@utility duration-slow {
+  transition-duration: var(--duration-slow);
 }
