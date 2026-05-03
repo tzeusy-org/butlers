@@ -88,9 +88,15 @@ export function SystemPage() {
         <VersionTile />
         <UptimeTile />
         <DbSizeTile />
-        <BackupTile />
-        <EgressCatalogTile />
-        <ButlerHeartbeatTile />
+        <div className="lg:col-span-2">
+          <BackupTile />
+        </div>
+        <div className="lg:col-span-3">
+          <EgressCatalogTile />
+        </div>
+        <div className="lg:col-span-2">
+          <ButlerHeartbeatTile />
+        </div>
       </div>
 
       {/* Ecosystem topology -- full-width section below ownership fact tiles */}
