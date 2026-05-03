@@ -98,6 +98,15 @@
    * Consumers should migrate to CSS variables; inline hex is a token leak.
    * ---------------------------------------------------------------------------
    *
+   * State tokens
+   *
+   * --state-unidentified  Orange — warning signal for entities that have not
+   *                        yet been matched to a known contact. Used in
+   *                        EntitiesPage.tsx unidentified-entity badges.
+   *
+   * Sources: EntitiesPage.tsx inline hex — #ea580c (orange-600).
+   * ---------------------------------------------------------------------------
+   *
    * Dunbar tier ramp tokens
    *
    * --tier-1..6     Warm-to-cool ramp mapping Dunbar's six canonical layers.
@@ -114,6 +123,9 @@
   --role-owner:   oklch(0.491 0.270 275.1);  /* violet — #7c3aed */
   --role-admin:   oklch(0.572 0.178 67.6);   /* amber  — #b45309 */
   --role-default: oklch(0.529 0.148 237.5);  /* blue   — #0369a1 */
+
+  /* State badges */
+  --state-unidentified: oklch(0.608 0.222 50.8);  /* orange — #ea580c */
 
   /* Dunbar tier ramp (warm = innermost, cool = outermost) */
   --tier-1: oklch(0.477 0.223 27.5);   /* deep red    — #b91c1c (Support Clique)    */
@@ -251,6 +263,9 @@ body {
   --color-role-admin:   var(--role-admin);
   --color-role-default: var(--role-default);
 
+  /* State badges */
+  --color-state-unidentified: var(--state-unidentified);
+
   /* Dunbar tier ramp */
   --color-tier-1: var(--tier-1);
   --color-tier-2: var(--tier-2);
@@ -341,6 +356,9 @@ body {
   --role-owner:   oklch(0.561 0.262 275.1);
   --role-admin:   oklch(0.642 0.170 67.6);
   --role-default: oklch(0.599 0.140 237.5);
+
+  /* State badges — lifted ~0.07 L for legibility on dark card backgrounds */
+  --state-unidentified: oklch(0.678 0.215 50.8);  /* orange (lifted) — #ea580c */
 
   /* Dunbar tier ramp — lifted ~0.07 L for legibility on dark card backgrounds */
   --tier-1: oklch(0.547 0.215 27.5);

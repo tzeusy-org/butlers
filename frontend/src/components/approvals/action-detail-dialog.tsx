@@ -30,15 +30,13 @@ interface ActionDetailDialogProps {
 
 /** Role badge inline styles, consistent with action-table and ContactDetailView. */
 function roleBadgeStyle(role: string): React.CSSProperties {
-  // Role-specific semantic colors; no category/severity/permanence token fits these.
-  // A future --role-owner/admin/default token set could replace them (see bu-azzsf).
   switch (role.toLowerCase()) {
     case "owner":
-      return { backgroundColor: "#7c3aed", color: "#fff" }; // violet-700
+      return { backgroundColor: "var(--role-owner)", color: "#fff" };
     case "admin":
-      return { backgroundColor: "#b45309", color: "#fff" }; // amber-700
+      return { backgroundColor: "var(--role-admin)", color: "#fff" };
     default:
-      return { backgroundColor: "#0369a1", color: "#fff" }; // sky-700
+      return { backgroundColor: "var(--role-default)", color: "#fff" };
   }
 }
 

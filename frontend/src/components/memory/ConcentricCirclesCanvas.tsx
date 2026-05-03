@@ -414,9 +414,9 @@ export function ConcentricCirclesCanvas({
             cx={cx}
             cy={cy}
             r={maxR * 0.07}
-            fill="#7c3aed"
+            fill="var(--role-owner)"
             fillOpacity={0.2}
-            stroke="#7c3aed"
+            stroke="var(--role-owner)"
             strokeWidth={1.5}
           />
           <text
@@ -426,7 +426,7 @@ export function ConcentricCirclesCanvas({
             dominantBaseline="central"
             fontSize={9}
             fontWeight="700"
-            fill="#7c3aed"
+            fill="var(--role-owner)"
           >
             {getInitials(ownerName)}
           </text>
