@@ -1218,10 +1218,7 @@ def _create_isolated_home_tempdir(real_home: str | None):
         preferred_root = Path(real_home) / ".codex" / ".tmp"
         try:
             preferred_root.mkdir(parents=True, exist_ok=True)
-            return _tempfile.TemporaryDirectory(
-                dir=str(preferred_root),
-                ignore_cleanup_errors=True,
-            )
+            return _tempfile.TemporaryDirectory(dir=str(preferred_root))
         except OSError:
             logger.warning(
                 "Could not create Codex temp root at %s; falling back to default tempdir",
@@ -1229,7 +1226,7 @@ def _create_isolated_home_tempdir(real_home: str | None):
                 exc_info=True,
             )
 
-    return _tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    return _tempfile.TemporaryDirectory()
 
 
 def _cleanup_isolated_home_tempdir(tmp_dir_obj: Any, tmp_dir: Path) -> None:
@@ -1249,8 +1246,7 @@ def _cleanup_isolated_home_tempdir(tmp_dir_obj: Any, tmp_dir: Path) -> None:
             tmp_dir,
             exc_info=True,
         )
-        with contextlib.suppress(OSError):
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 class CodexAdapter(RuntimeAdapter):

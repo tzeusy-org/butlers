@@ -12,6 +12,7 @@ Unique behaviors not in test_adapter_contract.py:
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import tempfile
@@ -329,7 +330,11 @@ async def test_invoke_ignores_isolated_home_cleanup_race(
             self.name = str(path)
 
         def cleanup(self) -> None:
-            raise OSError(39, "Directory not empty", str(Path(self.name) / ".codex" / ".tmp"))
+            raise OSError(
+                errno.ENOTEMPTY,
+                "Directory not empty",
+                str(Path(self.name) / ".codex" / ".tmp"),
+            )
 
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
     mock_proc = AsyncMock()
