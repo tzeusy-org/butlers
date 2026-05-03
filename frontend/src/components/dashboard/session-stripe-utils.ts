@@ -131,8 +131,11 @@ function rollingWindow(windowHours: number): { from: Date; to: Date } {
  * Window boundaries are recomputed inside `queryFn` on every refetch so the
  * chart always shows the *current* trailing window, not a closed interval
  * frozen at mount time.
+ *
+ * Pass `refetchInterval` from `useAutoRefresh()` so the user's auto-refresh
+ * preference is honoured. Use `false` to disable polling entirely.
  */
-export function useSessionStripeData(windowHours = 24) {
+export function useSessionStripeData(windowHours = 24, refetchInterval: number | false = 60_000) {
   return useQuery({
     // Key on window length only; refetchInterval drives the rolling advance.
     queryKey: ["session-stripe", windowHours],
@@ -145,7 +148,7 @@ export function useSessionStripeData(windowHours = 24) {
         offset: 0,
       })
     },
-    refetchInterval: 60_000,
+    refetchInterval,
   })
 }
 
