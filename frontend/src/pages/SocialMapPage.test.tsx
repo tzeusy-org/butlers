@@ -248,6 +248,41 @@ describe("SocialMapPage", () => {
     expect(container.querySelector("[data-testid='empty-state-panel']")).toBeNull();
   });
 
+  it("applies aria-hidden and pointerEvents:none to canvas wrapper when cold-start", async () => {
+    // scoredCount 0 => isColdStart; the canvas wrapper must be removed from
+    // the a11y tree and made non-interactive so focus lands on the CTA instead.
+    vi.mocked(useDunbarRanking).mockReturnValue(makeRankingResult([], null));
+    renderPage();
+    await act(async () => { await flush(); });
+
+    const canvasWrapper = container.querySelector("[data-testid='canvas']")?.parentElement;
+    expect(canvasWrapper).toBeTruthy();
+    expect(canvasWrapper?.getAttribute("aria-hidden")).toBe("true");
+    expect((canvasWrapper as HTMLElement | null)?.style.pointerEvents).toBe("none");
+  });
+
+  it("does not apply aria-hidden to canvas wrapper when not cold-start", async () => {
+    // 5 scored contacts => isColdStart false; canvas must be accessible.
+    const scored = Array.from({ length: 5 }, (_, i) => ({
+      contact_id: `c-${i}`,
+      entity_id: `e-${i}`,
+      canonical_name: `Contact ${i}`,
+      dunbar_tier: 50 as const,
+      dunbar_score: 0.5,
+      dunbar_tier_override: false,
+    }));
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, ...scored], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    const canvasWrapper = container.querySelector("[data-testid='canvas']")?.parentElement;
+    expect(canvasWrapper).toBeTruthy();
+    expect(canvasWrapper?.getAttribute("aria-hidden")).toBeNull();
+    expect((canvasWrapper as HTMLElement | null)?.style.pointerEvents).toBe("");
+  });
+
   it("renders jump-to-tier chips", async () => {
     vi.mocked(useDunbarRanking).mockReturnValue(
       makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
