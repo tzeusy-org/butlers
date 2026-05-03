@@ -224,6 +224,7 @@ async def get_instance_facts() -> ApiResponse[InstanceFacts]:
     Version is read from importlib.metadata or the package __version__
     constant. Falls back to 'unknown' rather than raising a 500.
     """
+    system_instance_reads_total.inc()
     try:
         version = importlib.metadata.version("butlers")
     except importlib.metadata.PackageNotFoundError:
@@ -264,6 +265,7 @@ async def get_database_facts(
 
     Returns HTTP 503 on any catalog query failure.
     """
+    system_database_reads_total.inc()
     try:
         # Use the switchboard pool (it has pg catalog read access from the
         # shared database; all butlers share one PostgreSQL database).
@@ -369,6 +371,7 @@ async def get_backup_facts() -> ApiResponse[BackupFacts]:
     Graceful degradation: always returns HTTP 200 with null fields when the
     backup source is unreachable or unconfigured, never HTTP 503.
     """
+    system_backups_reads_total.inc()
     return ApiResponse(
         data=BackupFacts(
             last_backup_at=None,
@@ -441,6 +444,7 @@ async def get_egress_catalog(
     Only the owner contact may view the egress catalog. Non-owner callers
     receive HTTP 403. See _assert_owner_contact() for the assertion logic.
     """
+    system_egress_reads_total.inc()
     try:
         sw_pool = db.pool("switchboard")
     except KeyError:
@@ -566,6 +570,7 @@ async def get_butlers_heartbeat(
     If a butler's schema is unreachable, its session fields are null/0 and
     the entry is included with error='schema_unreachable'.
     """
+    system_butlers_heartbeat_reads_total.inc()
     try:
         sw_pool = db.pool("switchboard")
     except KeyError:
