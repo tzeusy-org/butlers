@@ -9,6 +9,9 @@
  * (e5/e6/e7) will replace each stub with purpose-built tile bodies.
  */
 
+import { DbSizeTile } from "@/components/system/DbSizeTile";
+import { UptimeTile } from "@/components/system/UptimeTile";
+import { VersionTile } from "@/components/system/VersionTile";
 import {
   Card,
   CardContent,
@@ -19,9 +22,7 @@ import { Page } from "@/components/ui/page";
 import {
   useBackupFacts,
   useButlerHeartbeats,
-  useDatabaseFacts,
   useEgressFacts,
-  useInstanceFacts,
 } from "@/hooks/use-system";
 
 // ---------------------------------------------------------------------------
@@ -50,61 +51,6 @@ function SystemTile({ title, action, children }: SystemTileProps) {
 // Individual tile implementations (stub pass-through for bu-ngfzz.4)
 // ---------------------------------------------------------------------------
 
-function InstanceTile() {
-  const { data, isLoading, error } = useInstanceFacts();
-
-  if (isLoading) {
-    return (
-      <SystemTile title="Instance">
-        <div className="h-16 animate-pulse rounded bg-muted" />
-      </SystemTile>
-    );
-  }
-
-  if (error) {
-    return (
-      <SystemTile title="Instance">
-        <p className="text-sm text-destructive">Failed to load instance facts.</p>
-      </SystemTile>
-    );
-  }
-
-  return (
-    <SystemTile title="Instance">
-      <pre className="overflow-auto text-xs text-muted-foreground">
-        {JSON.stringify(data?.data, null, 2)}
-      </pre>
-    </SystemTile>
-  );
-}
-
-function DatabaseTile() {
-  const { data, isLoading, error } = useDatabaseFacts();
-
-  if (isLoading) {
-    return (
-      <SystemTile title="Database">
-        <div className="h-16 animate-pulse rounded bg-muted" />
-      </SystemTile>
-    );
-  }
-
-  if (error) {
-    return (
-      <SystemTile title="Database">
-        <p className="text-sm text-destructive">Failed to load database facts.</p>
-      </SystemTile>
-    );
-  }
-
-  return (
-    <SystemTile title="Database">
-      <pre className="overflow-auto text-xs text-muted-foreground">
-        {JSON.stringify(data?.data, null, 2)}
-      </pre>
-    </SystemTile>
-  );
-}
 
 function BackupTile() {
   const { data, isLoading, error } = useBackupFacts();
@@ -218,8 +164,9 @@ export function SystemPage() {
       description="Your instance, your data, your butlers."
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <InstanceTile />
-        <DatabaseTile />
+        <VersionTile />
+        <UptimeTile />
+        <DbSizeTile />
         <BackupTile />
         <EgressTile />
         <HeartbeatTile />

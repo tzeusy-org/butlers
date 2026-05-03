@@ -175,16 +175,16 @@ describe("SystemPage -- tiles render with mock data", () => {
     setAllSuccess();
   });
 
-  it("renders Instance tile with version data", () => {
+  it("renders Version tile with version data", () => {
     const html = renderPage();
-    expect(html).toContain("Instance");
+    expect(html).toContain("Version");
     expect(html).toContain("1.0.0");
   });
 
-  it("renders Database tile with size data", () => {
+  it("renders Database Size tile with humanized size data", () => {
     const html = renderPage();
-    expect(html).toContain("Database");
-    expect(html).toContain("1024");
+    expect(html).toContain("Database Size");
+    expect(html).toContain("1.0 KB");
   });
 
   it("renders Backups tile", () => {
@@ -223,7 +223,7 @@ describe("SystemPage -- egress 403 handling", () => {
     const html = renderPage();
     expect(html).toContain("Owner only");
     // Page must not crash -- other tiles still render
-    expect(html).toContain("Instance");
+    expect(html).toContain("Version");
     expect(html).toContain("Butler Heartbeats");
   });
 
