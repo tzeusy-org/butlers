@@ -717,29 +717,34 @@ async def persist_session_summary(
     spotify_user_id: str,
     session: ListeningSession,
 ) -> bool:
-    """Write a closed listening session to the durable evidence table.
+    """Upsert a listening session row into the durable evidence table.
 
-    Idempotent — uses ON CONFLICT DO NOTHING on ``idempotency_key``.
-    Returns True if the row was inserted, False if it already existed.
+    Works for both in-progress and closed sessions:
+      - In-progress: ``session.drain_started_at`` is None → ``ended_at`` is
+        set to ``last_activity_at`` (or now), so the Music lane shows a
+        live-extending bar instead of staying empty until the 5-minute
+        idle-drain closes the session.
+      - Closed: ``session.drain_started_at`` is set → final ``ended_at``.
+
+    On conflict (same ``idempotency_key`` from a prior poll) the mutable
+    fields are updated in place: ``ended_at``, ``duration_seconds``,
+    ``track_count``, ``track_names``, ``context_name``, ``recorded_at``.
+    The Chronicler adapter watermarks on ``recorded_at`` so updates flow
+    through to ``chronicler.episodes`` via ``upsert_episode`` on the next
+    projection run.
 
     This table is the Chronicler-readable evidence surface for
-    ``spotify.session_summary`` (RFC 0014 §D9).  The connector writes here
-    directly (connector_writer role) on every clean session close.  Errors
-    are caught and logged; failure to persist does NOT abort the ingest
-    submission path.
+    ``spotify.session_summary`` (RFC 0014 §D9).  Errors are caught by
+    callers and do NOT abort the ingest submission path.
 
-    Args:
-        pool: asyncpg connection pool (connector_writer role).
-        endpoint_identity: Connector endpoint identity string.
-        spotify_user_id: Spotify user ID (from /me).
-        session: Closed ``ListeningSession`` instance.
-
-    Returns:
-        True if a new row was inserted; False if a duplicate was skipped.
+    Returns True for both insert and update (the row exists with current
+    state). The boolean is retained for backward-compat with callers that
+    log on insert; updates are indistinguishable from inserts at this
+    layer by design.
     """
     session_start_ms = int(session.started_at.timestamp() * 1000)
     idempotency_key = f"spotify:{endpoint_identity}:session:{session_start_ms}"
-    ended_at = session.drain_started_at or datetime.now(UTC)
+    ended_at = session.drain_started_at or session.last_activity_at or datetime.now(UTC)
     duration_s = int(max(0.0, (ended_at - session.started_at).total_seconds()))
 
     result = await pool.fetchval(
@@ -756,7 +761,16 @@ async def persist_session_summary(
             context_uri,
             context_name
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
-        ON CONFLICT (idempotency_key) DO NOTHING
+        ON CONFLICT (idempotency_key) DO UPDATE SET
+            ended_at         = EXCLUDED.ended_at,
+            duration_seconds = EXCLUDED.duration_seconds,
+            track_count      = EXCLUDED.track_count,
+            track_names      = EXCLUDED.track_names,
+            context_name     = COALESCE(
+                EXCLUDED.context_name,
+                {_SESSION_EVIDENCE_TABLE}.context_name
+            ),
+            recorded_at      = now()
         RETURNING id
         """,
         idempotency_key,
@@ -1628,6 +1642,11 @@ class SpotifyConnector:
                 endpoint_identity=self._endpoint_identity, status="success"
             ).inc()
 
+        # Persist in-progress session evidence so the Music lane shows the
+        # current session immediately instead of waiting for idle-drain
+        # close. Survives container restart on the next active poll.
+        await self._persist_in_progress_session()
+
         # Update recently-played cursor to current timestamp
         self._last_recently_played_cursor = str(timestamp_ms)
 
@@ -1747,6 +1766,39 @@ class SpotifyConnector:
 
             # Advance cursor to the latest gap-fill track
             self._last_recently_played_cursor = str(last_cursor_ms)
+
+    async def _persist_in_progress_session(self) -> None:
+        """Upsert the currently-active session into the evidence table.
+
+        Called from ``_handle_active_playback`` on every active poll so the
+        Music lane shows a live-extending bar within ~60s of playback start
+        instead of waiting for the 5-minute idle-drain to close the session.
+
+        Survives container restart: the next active poll re-upserts the same
+        idempotency_key and the previously-projected episode's ``end_at``
+        moves forward via the chronicler adapter on its next run.
+
+        No-ops when (a) cursor_pool / identity not yet wired, (b) no session
+        is open, or (c) the session is empty (zero tracks). Failures are
+        logged at debug and never propagated.
+        """
+        if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
+            return
+        session = self._session_tracker.current_session
+        if session is None or session.track_count == 0:
+            return
+        try:
+            await persist_session_summary(
+                self._cursor_pool,
+                endpoint_identity=self._endpoint_identity,
+                spotify_user_id=self._spotify_user_id,
+                session=session,
+            )
+        except Exception as exc:
+            logger.debug(
+                "SpotifyConnector: in-progress session persist failed (non-fatal): %s",
+                exc,
+            )
 
     async def _emit_session_summary(self, session: ListeningSession, observed_at: str) -> None:
         """Emit a session summary ingest envelope and persist to evidence table.

@@ -4,7 +4,9 @@ Covers:
 - Per-episode projection correctness (one listening episode per session row).
 - Replay / idempotency (same source_ref on repeated runs).
 - Missing evidence surface graceful degradation.
-- Checkpoint advance / resume (watermark advances by started_at).
+- Checkpoint advance / resume (watermark advances by recorded_at so
+  in-progress sessions re-projected by every connector upsert flow into
+  chronicler.episodes).
 - Source-scan guardrail: no LLM imports in adapters/spotify.py.
 - Deferred-tracks verification: per-track events NOT produced.
 """
@@ -473,12 +475,16 @@ async def test_undefined_table_exception_returns_skipped_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_watermark_advances_to_latest_started_at() -> None:
+async def test_watermark_advances_to_latest_recorded_at() -> None:
+    """Watermark tracks ``recorded_at`` so updated rows (in-progress sessions
+    re-upserted by the connector on every active poll) get re-projected."""
     t1 = _NOW
     t2 = _NOW + timedelta(hours=1)
+    # Same started_at on both rows; what advances the watermark is the
+    # connector's recorded_at on each upsert.
     rows = [
-        _make_row(started_at=t1, idempotency_key="k1"),
-        _make_row(started_at=t2, idempotency_key="k2"),
+        {**_make_row(started_at=t1, idempotency_key="k1"), "recorded_at": t1},
+        {**_make_row(started_at=t1, idempotency_key="k2"), "recorded_at": t2},
     ]
     adapter = SpotifySessionAdapter()
 
@@ -534,7 +540,9 @@ async def test_since_filter_passed_to_query() -> None:
     assert conn.fetch.await_count == 1
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "started_at > $1" in query
+    # Watermark column is recorded_at so that in-progress upserts get
+    # re-fetched and the chronicler episode's end_at extends.
+    assert "recorded_at > $1" in query
     assert call_args.args[1] == since
 
 
@@ -564,7 +572,7 @@ async def test_order_by_includes_id_tiebreaker_without_since() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
     query: str = conn.fetch.call_args.args[0]
-    assert "ORDER BY started_at ASC, id ASC" in query
+    assert "ORDER BY recorded_at ASC, id ASC" in query
 
 
 @pytest.mark.asyncio
@@ -584,7 +592,7 @@ async def test_order_by_includes_id_tiebreaker_with_since() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=since)
 
     query: str = conn.fetch.call_args.args[0]
-    assert "ORDER BY started_at ASC, id ASC" in query
+    assert "ORDER BY recorded_at ASC, id ASC" in query
 
 
 # ---------------------------------------------------------------------------
@@ -675,15 +683,17 @@ async def test_since_id_is_ignored_uuid_pk() -> None:
     assert conn.fetch.await_count == 1
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "(started_at, id) > ($1, $2)" not in query
-    assert "started_at > $1" in query
+    # Tuple watermark is never used (UUID PK, BIGINT watermark_id mismatch).
+    assert "(recorded_at, id) > ($1, $2)" not in query
+    assert "recorded_at > $1" in query
     assert call_args.args[1] == since
 
 
 @pytest.mark.asyncio
 async def test_single_column_fallback_when_since_id_is_none() -> None:
     """When ``since`` is given but ``since_id`` is None (pre-migration
-    checkpoint), the query must use the legacy ``WHERE started_at > $1`` form.
+    checkpoint), the query must use the single-column ``WHERE recorded_at > $1``
+    form. Adapter watermarks on ``recorded_at`` so in-progress upserts re-project.
     """
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
@@ -700,8 +710,8 @@ async def test_single_column_fallback_when_since_id_is_none() -> None:
 
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "started_at > $1" in query
-    assert "(started_at, id) > ($1, $2)" not in query
+    assert "recorded_at > $1" in query
+    assert "(recorded_at, id) > ($1, $2)" not in query
 
 
 @pytest.mark.asyncio

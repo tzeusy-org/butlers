@@ -83,9 +83,13 @@ class SpotifySessionAdapter(ProjectionAdapter):
         for row in rows:
             await self._project_row(chronicler_pool, row)
             result.rows_projected += 1
+            # The adapter cannot tell from the schema alone whether
+            # ``ended_at`` is a final drain timestamp or a live in-progress
+            # cursor; both upsert the same chronicler episode and the
+            # ``end_at`` extends on every connector update.
             result.episodes_closed += 1
 
-            candidate = row["started_at"]
+            candidate = row["recorded_at"]
             if candidate is not None:
                 if latest_watermark is None or candidate > latest_watermark:
                     latest_watermark = candidate
@@ -105,9 +109,13 @@ class SpotifySessionAdapter(ProjectionAdapter):
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark.
 
-        Always uses single-column ``started_at`` semantics. The evidence
-        table's ``id`` column is a UUID, while the shared checkpoint
-        ``watermark_id`` column is BIGINT for integer-backed sources.
+        Watermarks on ``recorded_at`` so in-progress sessions that the
+        connector upserts on every active poll are re-projected and their
+        ``end_at`` extends in ``chronicler.episodes`` via the idempotent
+        ``upsert_episode``. The evidence table's ``id`` column is a UUID,
+        while the shared checkpoint ``watermark_id`` column is BIGINT for
+        integer-backed sources, so this adapter keeps timestamp-only
+        watermarks.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
@@ -135,7 +143,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
                                duration_seconds, track_count, track_names,
                                context_uri, context_name, recorded_at
                         FROM {_EVIDENCE_TABLE}
-                        ORDER BY started_at ASC, id ASC
+                        ORDER BY recorded_at ASC, id ASC
                         LIMIT $1
                         """,
                         self.batch_limit,
@@ -148,8 +156,8 @@ class SpotifySessionAdapter(ProjectionAdapter):
                                duration_seconds, track_count, track_names,
                                context_uri, context_name, recorded_at
                         FROM {_EVIDENCE_TABLE}
-                        WHERE started_at > $1
-                        ORDER BY started_at ASC, id ASC
+                        WHERE recorded_at > $1
+                        ORDER BY recorded_at ASC, id ASC
                         LIMIT $2
                         """,
                         since,
