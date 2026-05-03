@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +13,7 @@ pytestmark = pytest.mark.unit
 
 class TestWriteAuditEntry:
     async def test_audit_entry_fields_and_serialization(self):
-        """Correct SQL/fields on success; serializes complex request_summary; error result recorded."""
+        """Correct SQL/fields on success; passes plain dict for JSONB codec; error result recorded."""
         pool = MagicMock()
         pool.execute = AsyncMock()
 
@@ -32,10 +31,13 @@ class TestWriteAuditEntry:
         assert "INSERT INTO dashboard_audit_log" in args[0]
         assert args[1] == "my-butler"
         assert args[2] == "session"
-        assert json.loads(args[3]) == {"session_id": "abc", "trigger_source": "tick"}
+        # request_summary is passed as a plain dict (not a JSON string) so that
+        # the registered asyncpg JSONB codec handles encoding without double-encoding.
+        assert args[3] == {"session_id": "abc", "trigger_source": "tick"}
         assert args[4] == "success"
         assert args[5] is None
-        assert json.loads(args[6]) == {}
+        # user_context is passed as a plain empty dict
+        assert args[6] == {}
 
         # Complex nested summary
         pool.execute.reset_mock()
@@ -43,7 +45,7 @@ class TestWriteAuditEntry:
         await write_audit_entry(
             pool, butler="b", operation="session", request_summary=complex_summary
         )
-        assert json.loads(pool.execute.call_args[0][3]) == complex_summary
+        assert pool.execute.call_args[0][3] == complex_summary
 
         # Error result
         pool.execute.reset_mock()

@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from butlers.core.audit import write_audit_entry
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,8 @@ class TelegramModule(Module):
         self._config: TelegramConfig = TelegramConfig()
         self._client: httpx.AsyncClient | None = None
         self._db: Any = None
+        self._audit_pool: Any = None
+        self._butler_name: str = "telegram"
         # Credentials cached at startup: user-scope from owner entity_info,
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
@@ -203,6 +206,7 @@ class TelegramModule(Module):
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
+        self._butler_name = butler_name or self._butler_name
         module = self  # capture for closures
 
         async def telegram_send_message(chat_id: str, text: str) -> dict[str, Any]:
@@ -263,6 +267,10 @@ class TelegramModule(Module):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+    def wire_audit_pool(self, audit_pool: Any) -> None:
+        """Store the switchboard audit pool for telegram_send egress audit entries."""
+        self._audit_pool = audit_pool
 
     async def react_for_ingest(
         self,
@@ -344,8 +352,22 @@ class TelegramModule(Module):
                 chat_id,
                 detail,
             )
+            await write_audit_entry(
+                self._audit_pool,
+                self._butler_name,
+                "telegram_send",
+                {"chat_id": chat_id, "text_length": len(text)},
+                result="error",
+                error=f"HTTP {resp.status_code}: {detail}",
+            )
             resp.raise_for_status()
         data: dict[str, Any] = resp.json()
+        await write_audit_entry(
+            self._audit_pool,
+            self._butler_name,
+            "telegram_send",
+            {"chat_id": chat_id, "text_length": len(text)},
+        )
         return data
 
     async def _reply_to_message(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:

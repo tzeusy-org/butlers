@@ -142,6 +142,24 @@ class Module(abc.ABC):
         """Called during butler shutdown."""
         ...
 
+    def wire_audit_pool(self, audit_pool: Any) -> None:
+        """Wire the switchboard audit pool for egress audit logging.
+
+        Called by the daemon lifecycle after the audit pool is created (step
+        10a), giving modules that emit egress audit entries access to the
+        switchboard ``dashboard_audit_log`` table.
+
+        The default implementation is a no-op.  Modules that emit egress
+        audit entries (e.g. telegram, email, calendar) should override this
+        method to store *audit_pool* for use in their outbound call paths.
+
+        Parameters
+        ----------
+        audit_pool:
+            asyncpg connection pool scoped to the switchboard schema, or
+            ``None`` when the audit pool could not be created.
+        """
+
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Return sensitivity metadata for tools registered by this module.
 

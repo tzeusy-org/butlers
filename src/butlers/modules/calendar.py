@@ -25,6 +25,7 @@ import httpx
 from croniter import croniter as _croniter
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from butlers.core.audit import write_audit_entry
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
 from butlers.core.scheduler import schedule_update as _schedule_update
@@ -2463,6 +2464,7 @@ class CalendarModule(Module):
         self._butler_name: str = DEFAULT_BUTLER_NAME
         self._approval_enqueuer: ApprovalEnqueuer | None = None
         self._db: Any = None
+        self._audit_pool: Any = None
         self._credential_store: Any = None
         self._sync_task: asyncio.Task[None] | None = None
         self._internal_projection_task: asyncio.Task[None] | None = None
@@ -2869,6 +2871,13 @@ class CalendarModule(Module):
                     provider=provider.name,
                     calendar_id=resolved_calendar_id,
                 )
+                await module._emit_calendar_audit(
+                    "create",
+                    title,
+                    resolved_calendar_id,
+                    result="error",
+                    error=str(exc),
+                )
                 await module._finalize_workspace_mutation(
                     idempotency_key=idempotency_key,
                     action_type="workspace_user_create",
@@ -2891,6 +2900,7 @@ class CalendarModule(Module):
                     "entity_ids": resolved_entity_ids,
                 }
             )
+            await module._emit_calendar_audit("create", title, resolved_calendar_id)
             result: dict[str, Any] = {
                 "status": "created",
                 "provider": provider.name,
@@ -3207,6 +3217,13 @@ class CalendarModule(Module):
                     provider=provider.name,
                     calendar_id=resolved_calendar_id,
                 )
+                await module._emit_calendar_audit(
+                    "update",
+                    title,
+                    resolved_calendar_id,
+                    result="error",
+                    error=str(exc),
+                )
                 await module._finalize_workspace_mutation(
                     idempotency_key=idempotency_key,
                     action_type="workspace_user_update",
@@ -3229,6 +3246,7 @@ class CalendarModule(Module):
                     "entity_ids": entity_ids if entity_ids is not None else event.entity_ids,
                 }
             )
+            await module._emit_calendar_audit("update", event.title or title, resolved_calendar_id)
             result = {
                 "status": "updated",
                 "provider": provider.name,
@@ -3361,6 +3379,13 @@ class CalendarModule(Module):
                     send_updates=send_updates,
                 )
             except CalendarAuthError as exc:
+                await module._emit_calendar_audit(
+                    "delete",
+                    existing_event.title if existing_event else None,
+                    resolved_calendar_id,
+                    result="error",
+                    error=str(exc),
+                )
                 await module._finalize_workspace_mutation(
                     idempotency_key=idempotency_key,
                     action_type="workspace_user_delete",
@@ -3378,6 +3403,11 @@ class CalendarModule(Module):
                     error=str(exc),
                 )
                 raise
+            await module._emit_calendar_audit(
+                "delete",
+                existing_event.title if existing_event else None,
+                resolved_calendar_id,
+            )
             result = {
                 "status": "deleted",
                 "provider": provider.name,
@@ -5137,6 +5167,43 @@ class CalendarModule(Module):
         if self._provider is not None:
             await self._provider.shutdown()
         self._provider = None
+
+    def wire_audit_pool(self, audit_pool: Any) -> None:
+        """Store the switchboard audit pool for google_calendar_write egress audit entries."""
+        self._audit_pool = audit_pool
+
+    async def _emit_calendar_audit(
+        self,
+        action: str,
+        event_title: str | None,
+        calendar_id: str | None,
+        *,
+        result: str = "success",
+        error: str | None = None,
+    ) -> None:
+        """Fire-and-forget egress audit entry for a Google Calendar API write.
+
+        Parameters
+        ----------
+        action:
+            One of ``"create"``, ``"update"``, ``"delete"``.
+        event_title:
+            Human-readable event title (may be ``None`` for delete paths).
+        calendar_id:
+            Provider calendar ID that was mutated.
+        """
+        await write_audit_entry(
+            self._audit_pool,
+            self._butler_name,
+            "google_calendar_write",
+            {
+                "action": action,
+                "event_title": event_title,
+                "calendar_id": calendar_id,
+            },
+            result=result,
+            error=error,
+        )
 
     # ------------------------------------------------------------------
     # Due-reminder tick

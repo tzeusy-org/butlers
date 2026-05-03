@@ -15,7 +15,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -90,6 +90,56 @@ class TestToolRegistration:
         assert EXPECTED_EMAIL_READ_TOOLS.issubset(registered)
         # Send tools NOT registered by default
         assert "email_send_message" not in registered
+
+
+class TestGmailSendAuditEmit:
+    """gmail_send is emitted to dashboard_audit_log on outbound SMTP send."""
+
+    async def test_audit_emitted_on_success(self) -> None:
+        mod = EmailModule()
+        mock_pool = MagicMock()
+        mod.wire_audit_pool(mock_pool)
+        mod._butler_name = "test-butler"
+
+        with (
+            patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock) as mock_emit,
+            patch.object(
+                mod, "_smtp_send", return_value={"status": "sent", "to": "a@b.com", "subject": "Hi"}
+            ),
+        ):
+            result = await mod._send_email("a@b.com", "Hi", "body")
+
+        assert result["status"] == "sent"
+        mock_emit.assert_awaited_once()
+        call_args = mock_emit.call_args
+        assert call_args.args[2] == "gmail_send"
+        assert call_args.args[3]["to"] == "a@b.com"
+        assert call_args.args[3]["subject"] == "Hi"
+
+    async def test_audit_emitted_on_error(self) -> None:
+        mod = EmailModule()
+        mock_pool = MagicMock()
+        mod.wire_audit_pool(mock_pool)
+        mod._butler_name = "test-butler"
+
+        with (
+            patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock) as mock_emit,
+            patch.object(mod, "_smtp_send", side_effect=RuntimeError("SMTP failure")),
+        ):
+            with pytest.raises(RuntimeError, match="SMTP failure"):
+                await mod._send_email("a@b.com", "Hi", "body")
+
+        mock_emit.assert_awaited_once()
+        call_args = mock_emit.call_args
+        assert call_args.args[2] == "gmail_send"
+        assert call_args.kwargs["result"] == "error"
+        assert "SMTP failure" in call_args.kwargs["error"]
+
+    def test_wire_audit_pool_stores_pool(self) -> None:
+        mod = EmailModule()
+        pool = MagicMock()
+        mod.wire_audit_pool(pool)
+        assert mod._audit_pool is pool
 
 
 class TestSendEmailBehavior:

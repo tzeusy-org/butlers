@@ -1078,6 +1078,15 @@ For more details, see README.md and docs/QUICKSTART.md.
 
 ## Notes to self
 
+### Egress audit operation naming convention
+Dashboard egress catalog (`GET /api/system/egress`) is powered by `switchboard.dashboard_audit_log`. Four operation strings represent outbound external calls — each must be emitted at the actual call site using `write_audit_entry` (daemon) or `emit_dashboard_audit` (API layer):
+- `llm_api_call` — emitted by `src/butlers/core/spawner.py` after every LLM session (success and error paths); `request_summary` carries `provider`, `model`, `session_id`, `input_tokens`, `output_tokens`.
+- `telegram_send` — emitted by `TelegramModule._send_message()` in `src/butlers/modules/telegram.py`; `request_summary` carries `chat_id`, `text_length`.
+- `google_calendar_write` — emitted by `CalendarModule._emit_calendar_audit()` (called from `calendar_create_event`, `calendar_update_event`, `calendar_delete_event` tools in `src/butlers/modules/calendar.py`); `request_summary` carries `action` (create/update/delete), `event_title`, `calendar_id`.
+- `gmail_send` — emitted by `EmailModule._send_email()` in `src/butlers/modules/email.py`; `request_summary` carries `to`, `subject`.
+
+Modules receive the audit pool via `Module.wire_audit_pool(pool)` — a post-startup hook called in `lifecycle.py` step 10a-ii after the audit pool is created. The base class default is a no-op; only modules that emit egress audit entries need to override it.
+
 - `about/craft-and-care/` is the canonical fifth project-shape pillar for repository engineering standards; keep testing, verification, review, observability, interface/dependency, security, and performance guidance there instead of scattering new standards across ad hoc docs.
 - Memory entity merge tombstones the source with `metadata.merged_into`, excludes it from entity list/search/`entity_resolve`, and re-links `public.contacts.entity_id` from source to target.
 - Memory entity merge only unions the source entity's `aliases` onto the target; it does not automatically add the source `canonical_name` as a target alias, so old-name lookups only keep working if that string already exists in aliases or another resolver path still matches.

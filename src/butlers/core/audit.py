@@ -39,7 +39,10 @@ async def write_audit_entry(
     operation:
         Activity type (e.g. ``"session"``).
     request_summary:
-        Arbitrary dict serialized as JSON into the ``request_summary`` column.
+        Arbitrary dict passed as a JSONB value.  Non-JSON-safe values are
+        coerced to strings.  Pass the dict directly — do not pre-serialise
+        with ``json.dumps``; the registered asyncpg JSONB codec handles
+        encoding.
     result:
         ``"success"`` or ``"error"``.
     error:
@@ -48,6 +51,11 @@ async def write_audit_entry(
     if pool is None:
         return
 
+    # Coerce non-JSON-safe values (e.g. UUID, datetime) to strings so the
+    # JSONB codec receives a plain dict it can always encode.  This mirrors
+    # the approach used by log_audit_entry in butlers.api.routers.audit.
+    safe_summary = json.loads(json.dumps(request_summary, default=str))
+
     try:
         await pool.execute(
             "INSERT INTO dashboard_audit_log "
@@ -55,10 +63,10 @@ async def write_audit_entry(
             "VALUES ($1, $2, $3, $4, $5, $6)",
             butler,
             operation,
-            json.dumps(request_summary),
+            safe_summary,
             result,
             error,
-            json.dumps({}),
+            {},
         )
     except Exception:
         logger.warning(

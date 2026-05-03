@@ -20,6 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from butlers.core.audit import write_audit_entry
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,8 @@ class EmailModule(Module):
 
     def __init__(self) -> None:
         self._config: EmailConfig = EmailConfig()
+        self._audit_pool: Any = None
+        self._butler_name: str = "email"
         # Credentials cached at startup: user-scope from owner entity_info,
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
@@ -146,6 +149,7 @@ class EmailModule(Module):
         All other butlers use ``notify()`` for outbound delivery.
         """
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
+        self._butler_name = butler_name or self._butler_name
         module = self  # capture for closures
 
         if self._config.send_tools:
@@ -218,7 +222,10 @@ class EmailModule(Module):
 
     async def on_shutdown(self) -> None:
         """No persistent connections to clean up."""
-        pass
+
+    def wire_audit_pool(self, audit_pool: Any) -> None:
+        """Store the switchboard audit pool for gmail_send egress audit entries."""
+        self._audit_pool = audit_pool
 
     # ------------------------------------------------------------------
     # Implementation helpers using stdlib imaplib/smtplib
@@ -357,7 +364,25 @@ class EmailModule(Module):
 
     async def _send_email(self, to: str, subject: str, body: str) -> dict:
         """Send email via SMTP. Uses asyncio.to_thread for blocking SMTP calls."""
-        return await asyncio.to_thread(self._smtp_send, to, subject, body)
+        try:
+            result = await asyncio.to_thread(self._smtp_send, to, subject, body)
+        except Exception as exc:
+            await write_audit_entry(
+                self._audit_pool,
+                self._butler_name,
+                "gmail_send",
+                {"to": to, "subject": subject},
+                result="error",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        await write_audit_entry(
+            self._audit_pool,
+            self._butler_name,
+            "gmail_send",
+            {"to": to, "subject": subject},
+        )
+        return result
 
     async def _reply_to_thread(
         self,

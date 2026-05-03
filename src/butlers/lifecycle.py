@@ -320,6 +320,18 @@ async def run_startup(daemon: Any) -> None:
     # 10a. Set up audit pool for daemon-side audit logging
     audit_pool = await daemon._create_audit_pool(pool)
 
+    # 10a-ii. Wire audit pool into modules that emit egress audit entries
+    # (telegram_send, gmail_send, google_calendar_write).  This is a post-startup
+    # hook so modules receive the pool after it is created, without altering the
+    # on_startup signature or ordering.
+    for mod in started_modules:
+        try:
+            mod.wire_audit_pool(audit_pool)
+        except Exception:
+            logger.debug(
+                "wire_audit_pool failed for module '%s' (non-fatal)", mod.name, exc_info=True
+            )
+
     daemon.spawner = Spawner(
         config=daemon.config,
         config_dir=daemon.config_dir,

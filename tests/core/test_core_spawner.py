@@ -2000,12 +2000,16 @@ class TestCatalogModelResolution:
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner.trigger("prompt", "tick", complexity=Complexity.HIGH)
 
-        assert len(audit_entries) == 1
-        data = audit_entries[0]["data"]
-        assert data["model"] == "claude-opus-4-20250514"
-        assert data["runtime_type"] == DEFAULT_RUNTIME_TYPE
-        assert data["complexity"] == "high"
-        assert data["resolution_source"] == "catalog"
+        # Two entries: "session" + "llm_api_call" (egress)
+        assert len(audit_entries) == 2
+        session_entry = next(e for e in audit_entries if e["data"].get("complexity"))
+        llm_entry = next(e for e in audit_entries if "provider" in e["data"])
+        assert session_entry["data"]["model"] == "claude-opus-4-20250514"
+        assert session_entry["data"]["runtime_type"] == DEFAULT_RUNTIME_TYPE
+        assert session_entry["data"]["complexity"] == "high"
+        assert session_entry["data"]["resolution_source"] == "catalog"
+        assert llm_entry["data"]["provider"] == "anthropic"
+        assert llm_entry["data"]["model"] == "claude-opus-4-20250514"
 
         # Also verify the static_fallback source
         from butlers.core.spawner import _FALLBACK_MODEL_ID
@@ -2029,10 +2033,12 @@ class TestCatalogModelResolution:
         ):
             mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
             await spawner2.trigger("prompt", "tick")
-        assert len(audit_entries) == 1
-        data2 = audit_entries[0]["data"]
-        assert data2["model"] == _FALLBACK_MODEL_ID
-        assert data2["resolution_source"] == "static_fallback"
+        assert len(audit_entries) == 2
+        session_entry2 = next(e for e in audit_entries if e["data"].get("resolution_source"))
+        llm_entry2 = next(e for e in audit_entries if "provider" in e["data"])
+        assert session_entry2["data"]["model"] == _FALLBACK_MODEL_ID
+        assert session_entry2["data"]["resolution_source"] == "static_fallback"
+        assert llm_entry2["data"]["provider"] == "anthropic"
 
 
 # ---------------------------------------------------------------------------

@@ -418,6 +418,88 @@ class TestCalendarWriteTools:
 
 
 # ---------------------------------------------------------------------------
+# google_calendar_write egress audit emission
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarWriteAuditEmit:
+    """google_calendar_write is emitted to dashboard_audit_log on provider writes."""
+
+    def _make_module_with_provider(self, provider: _ProviderDouble) -> CalendarModule:
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        return mod
+
+    async def test_create_event_emits_audit(self) -> None:
+        created = _make_event(
+            title="BUTLER: Meeting", butler_generated=True, butler_name="test-butler"
+        )
+        provider = _ProviderDouble(event=created)
+        mod = self._make_module_with_provider(provider)
+        mock_pool = MagicMock()
+        mod.wire_audit_pool(mock_pool)
+        mcp = _StubMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="test-butler"),
+            butler_name="test-butler",
+        )
+
+        with patch(
+            "butlers.modules.calendar.write_audit_entry", new_callable=AsyncMock
+        ) as mock_emit:
+            await mcp.tools["calendar_create_event"](
+                title="Meeting",
+                start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+                end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            )
+
+        mock_emit.assert_awaited()
+        audit_calls = [c for c in mock_emit.await_args_list if c.args[2] == "google_calendar_write"]
+        assert len(audit_calls) == 1
+        summary = audit_calls[0].args[3]
+        assert summary["action"] == "create"
+        assert summary["calendar_id"] == "primary"
+
+    async def test_delete_event_emits_audit(self) -> None:
+        existing = _make_event(event_id="evt-1", title="To Delete")
+
+        class _DeleteCapableProvider(_ProviderDouble):
+            async def delete_event(self, *, calendar_id, event_id, send_updates=None):
+                self.delete_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+
+        provider = _DeleteCapableProvider(event=existing)
+        mod = self._make_module_with_provider(provider)
+        mock_pool = MagicMock()
+        mod.wire_audit_pool(mock_pool)
+        mcp = _StubMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="test-butler"),
+            butler_name="test-butler",
+        )
+
+        with patch(
+            "butlers.modules.calendar.write_audit_entry", new_callable=AsyncMock
+        ) as mock_emit:
+            await mcp.tools["calendar_delete_event"](event_id="evt-1")
+
+        audit_calls = [c for c in mock_emit.await_args_list if c.args[2] == "google_calendar_write"]
+        assert len(audit_calls) == 1
+        summary = audit_calls[0].args[3]
+        assert summary["action"] == "delete"
+
+    def test_wire_audit_pool_stores_pool(self) -> None:
+        mod = CalendarModule()
+        pool = MagicMock()
+        mod.wire_audit_pool(pool)
+        assert mod._audit_pool is pool
+
+
+# ---------------------------------------------------------------------------
 # Projection persistence
 # ---------------------------------------------------------------------------
 
