@@ -129,9 +129,7 @@ def _build_app(
     ],
     ids=["null-phase", "populated-phase", "diagnose", "verify"],
 )
-async def test_list_attempts_phase_fields(
-    current_phase, deadline, expect_phase, expect_deadline
-):
+async def test_list_attempts_phase_fields(current_phase, deadline, expect_phase, expect_deadline):
     row = _make_attempt_row(current_phase=current_phase, workflow_deadline_at=deadline)
     app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
     async with httpx.AsyncClient(

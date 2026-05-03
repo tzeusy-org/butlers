@@ -135,21 +135,41 @@ async def test_catalog_list_and_503(app):
     [
         # Create 201
         (
-            {"alias": "new-model", "runtime_type": "codex", "model_id": "gpt-5",
-             "complexity_tier": "medium", "enabled": True, "priority": 0},
-            None, "INSERT 1", 201,
+            {
+                "alias": "new-model",
+                "runtime_type": "codex",
+                "model_id": "gpt-5",
+                "complexity_tier": "medium",
+                "enabled": True,
+                "priority": 0,
+            },
+            None,
+            "INSERT 1",
+            201,
         ),
         # Create 409 duplicate alias
         (
-            {"alias": "claude-sonnet", "runtime_type": "claude", "model_id": "claude-sonnet-4-6",
-             "complexity_tier": "medium"},
-            asyncpg.UniqueViolationError("uq_model_catalog_alias"), "INSERT 1", 409,
+            {
+                "alias": "claude-sonnet",
+                "runtime_type": "claude",
+                "model_id": "claude-sonnet-4-6",
+                "complexity_tier": "medium",
+            },
+            asyncpg.UniqueViolationError("uq_model_catalog_alias"),
+            "INSERT 1",
+            409,
         ),
         # Create 422 invalid complexity tier
         (
-            {"alias": "x", "runtime_type": "claude", "model_id": "y",
-             "complexity_tier": "invalid_tier"},
-            None, "INSERT 1", 422,
+            {
+                "alias": "x",
+                "runtime_type": "claude",
+                "model_id": "y",
+                "complexity_tier": "invalid_tier",
+            },
+            None,
+            "INSERT 1",
+            422,
         ),
     ],
     ids=["create-201", "create-409-duplicate", "create-422-bad-tier"],

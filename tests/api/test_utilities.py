@@ -80,9 +80,23 @@ def _secrets_app(app, *, list_return=None, pool_raises=None):
 @pytest.mark.parametrize(
     "list_return,pool_raises,expected_status",
     [
-        ([SecretMetadata(key="K", category="c", description=None, is_sensitive=True,
-                         is_set=True, created_at=_NOW, updated_at=_NOW, expires_at=None,
-                         source="database")], None, 200),
+        (
+            [
+                SecretMetadata(
+                    key="K",
+                    category="c",
+                    description=None,
+                    is_sensitive=True,
+                    is_set=True,
+                    created_at=_NOW,
+                    updated_at=_NOW,
+                    expires_at=None,
+                    source="database",
+                )
+            ],
+            None,
+            200,
+        ),
         (None, KeyError("no pool"), 503),
     ],
     ids=["happy", "503"],

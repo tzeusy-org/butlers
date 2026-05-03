@@ -155,6 +155,8 @@ class TestButlerTrigger:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.post("/api/butlers/general/trigger", json={"prompt": "do something"})
+            resp = await client.post(
+                "/api/butlers/general/trigger", json={"prompt": "do something"}
+            )
         assert resp.status_code == 200
         assert resp.json()["data"]["session_id"] == "sess-1"

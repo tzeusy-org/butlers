@@ -89,12 +89,23 @@ def test_get_success_returns_field_tiers():
     "method,path,body,butler_name,known,expected",
     [
         ("GET", "/api/butlers/nonexistent/runtime-config", None, "nonexistent", False, 404),
-        ("PATCH", "/api/butlers/test/runtime-config",
-         {"core_groups": ["infra", "unknown_group"]}, "test", True, 422),
-        ("PATCH", "/api/butlers/test/runtime-config",
-         {"max_concurrent": -1}, "test", True, 422),
-        ("PATCH", "/api/butlers/test/runtime-config",
-         {"session_timeout_s": 1200}, "test", True, 422),
+        (
+            "PATCH",
+            "/api/butlers/test/runtime-config",
+            {"core_groups": ["infra", "unknown_group"]},
+            "test",
+            True,
+            422,
+        ),
+        ("PATCH", "/api/butlers/test/runtime-config", {"max_concurrent": -1}, "test", True, 422),
+        (
+            "PATCH",
+            "/api/butlers/test/runtime-config",
+            {"session_timeout_s": 1200},
+            "test",
+            True,
+            422,
+        ),
     ],
     ids=["get-404-unknown", "patch-422-bad-group", "patch-422-negative", "patch-422-removed-field"],
 )
@@ -121,14 +132,10 @@ def test_patch_cold_field_returns_restart_required():
     app = _make_app(_make_db_manager(pool=pool))
     client = TestClient(app)
 
-    resp_cold = client.patch(
-        "/api/butlers/test/runtime-config", json={"core_groups": ["infra"]}
-    )
+    resp_cold = client.patch("/api/butlers/test/runtime-config", json={"core_groups": ["infra"]})
     assert resp_cold.status_code == 200
     assert "core_groups" in resp_cold.json()["restart_required"]
 
-    resp_concurrent = client.patch(
-        "/api/butlers/test/runtime-config", json={"max_concurrent": 5}
-    )
+    resp_concurrent = client.patch("/api/butlers/test/runtime-config", json={"max_concurrent": 5})
     assert resp_concurrent.status_code == 200
     assert "max_concurrent" in resp_concurrent.json()["restart_required"]

@@ -50,9 +50,7 @@ def _make_maintenance_row(next_due_at=None):
     return row
 
 
-def _app_with_mock_db(
-    app: FastAPI, *, fetch_rows=None, fetchval_result=0, pool_available=True
-):
+def _app_with_mock_db(app: FastAPI, *, fetch_rows=None, fetchval_result=0, pool_available=True):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
