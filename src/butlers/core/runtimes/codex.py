@@ -22,6 +22,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import errno
 import fcntl
 import json
 import logging
@@ -74,6 +75,7 @@ _TRANSIENT_CLI_RETRY_DELAYS: tuple[float, ...] = (1.0, 3.0)
 # expose a large tool surface (calendar, contacts, memory, media modules), so
 # make the generated runtime config explicit and less brittle.
 _DEFAULT_MCP_STARTUP_TIMEOUT_SECONDS = 30.0
+_TEMP_HOME_CLEANUP_RETRY_DELAYS: tuple[float, ...] = (0.1, 0.5)
 _BENIGN_STDERR_LINES = frozenset(
     {
         "Reading additional input from stdin...",
@@ -1229,6 +1231,42 @@ def _create_isolated_home_tempdir(real_home: str | None):
     return _tempfile.TemporaryDirectory()
 
 
+async def _cleanup_isolated_home_tempdir(tmp_dir_obj: Any, tmp_dir: Path) -> None:
+    """Clean up a per-invocation Codex HOME without failing the session.
+
+    Codex may create plugin helper clone directories under the isolated HOME.
+    On some filesystems those descendants can still be settling when the CLI
+    process exits, causing ``TemporaryDirectory.cleanup()`` to raise transient
+    ``ENOTEMPTY``/``EBUSY`` errors. Cleanup is operational hygiene; it should
+    not override a completed runtime result.
+    """
+    attempt = 0
+    while True:
+        try:
+            tmp_dir_obj.cleanup()
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.ENOTEMPTY, errno.EBUSY}:
+                logger.warning(
+                    "Could not remove Codex isolated HOME at %s after invocation",
+                    tmp_dir,
+                    exc_info=True,
+                )
+                return
+
+            if attempt >= len(_TEMP_HOME_CLEANUP_RETRY_DELAYS):
+                logger.warning(
+                    "Codex isolated HOME cleanup left temporary files at %s after %d attempts",
+                    tmp_dir,
+                    attempt + 1,
+                    exc_info=True,
+                )
+                return
+
+            await asyncio.sleep(_TEMP_HOME_CLEANUP_RETRY_DELAYS[attempt])
+            attempt += 1
+
+
 class CodexAdapter(RuntimeAdapter):
     """Runtime adapter for the OpenAI Codex CLI.
 
@@ -1687,7 +1725,7 @@ class CodexAdapter(RuntimeAdapter):
 
             return result_text, tool_calls, usage
         finally:
-            tmp_dir_obj.cleanup()
+            await _cleanup_isolated_home_tempdir(tmp_dir_obj, tmp_dir)
 
     async def _run_codex_subprocess(
         self,

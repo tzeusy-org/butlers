@@ -12,6 +12,7 @@ Unique behaviors not in test_adapter_contract.py:
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import tempfile
@@ -22,6 +23,7 @@ import pytest
 
 from butlers.core.runtimes import CodexAdapter
 from butlers.core.runtimes.codex import (
+    _cleanup_isolated_home_tempdir,
     _extract_structured_stdout_error,
     _extract_tool_call,
     _find_codex_binary,
@@ -316,6 +318,62 @@ async def test_invoke_prefers_home_scoped_tempdir(tmp_path: Path, monkeypatch: p
 
     isolated_home = Path(mock_sub.call_args[1]["env"]["HOME"])
     assert isolated_home.parent == codex_dir / ".tmp"
+
+
+async def test_invoke_ignores_codex_temp_home_cleanup_enotempty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A cleanup race in Codex's plugin helper dirs should not fail invoke()."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+    temp_home = tmp_path / "isolated-home"
+    temp_home.mkdir()
+
+    class _TempHome:
+        name = str(temp_home)
+
+        def cleanup(self):
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", "plugins")
+
+    monkeypatch.setattr(
+        "butlers.core.runtimes.codex._create_isolated_home_tempdir",
+        lambda _home: _TempHome(),
+    )
+    monkeypatch.setattr("butlers.core.runtimes.codex._TEMP_HOME_CLEANUP_RETRY_DELAYS", ())
+
+    with patch(_EXEC, return_value=mock_proc):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "ok"
+    assert tool_calls == []
+    assert usage is None
+
+
+async def test_cleanup_isolated_home_tempdir_retries_enotempty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Transient non-empty temp dirs are retried before being abandoned."""
+    calls = 0
+
+    class _TempHome:
+        def cleanup(self):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError(errno.ENOTEMPTY, "Directory not empty", "plugins")
+
+    monkeypatch.setattr("butlers.core.runtimes.codex._TEMP_HOME_CLEANUP_RETRY_DELAYS", (0.0,))
+
+    await _cleanup_isolated_home_tempdir(_TempHome(), tmp_path / "isolated-home")
+
+    assert calls == 2
 
 
 async def test_invoke_stdin_prompt_wraps_system_prompt():
