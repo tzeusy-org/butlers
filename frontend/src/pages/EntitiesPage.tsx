@@ -97,22 +97,19 @@ const DUNBAR_TIER_LABELS: Record<number, string> = {
 
 /** Returns inline style colors for a Dunbar tier badge. Inner tiers get warmer colours. */
 function dunbarTierBadgeStyle(tier: number): React.CSSProperties {
-  // Dunbar tier colors are ordinal (innermost = warmest). No category/severity/permanence
-  // token maps to this ordered warm→cool ramp; leaving as-is until a --tier-* token set
-  // is added (follow-up bu-azzsf).
   switch (tier) {
     case 5:
-      return { backgroundColor: "#b91c1c", color: "#fff" }; // red-700   (innermost)
+      return { backgroundColor: "var(--tier-1)", color: "#fff" }; // Support Clique   (innermost)
     case 15:
-      return { backgroundColor: "#c2410c", color: "#fff" }; // orange-700
+      return { backgroundColor: "var(--tier-2)", color: "#fff" }; // Sympathy Group
     case 50:
-      return { backgroundColor: "#92400e", color: "#fff" }; // amber-800 (~7:1 contrast, WCAG AA)
+      return { backgroundColor: "var(--tier-3)", color: "#fff" }; // Good Friends
     case 150:
-      return { backgroundColor: "#15803d", color: "#fff" }; // green-700
+      return { backgroundColor: "var(--tier-4)", color: "#fff" }; // Meaningful
     case 500:
-      return { backgroundColor: "#0369a1", color: "#fff" }; // sky-700
+      return { backgroundColor: "var(--tier-5)", color: "#fff" }; // Acquaintances
     default:
-      return { backgroundColor: "#6b7280", color: "#fff" }; // gray-500 (tier 1500 / cold-start)
+      return { backgroundColor: "var(--tier-6)", color: "#fff" }; // Recognizable (tier 1500 / cold-start)
   }
 }
 
@@ -329,8 +326,7 @@ function UnidentifiedEntitiesSection({
               <CardTitle className="flex items-center gap-2">
                 Unidentified Entities
                 <Badge
-                  // orange-600: unidentified-entity warning state; no existing token fits (follow-up bu-azzsf)
-                  style={{ backgroundColor: "#ea580c", color: "#fff" }}
+                  style={{ backgroundColor: "var(--state-unidentified)", color: "#fff" }}
                   className="text-xs"
                 >
                   {entities.length}
@@ -760,8 +756,7 @@ export default function EntitiesPage() {
                             </Link>
                             {entity.roles?.includes("owner") && (
                               <Badge
-                                // violet-700: owner role; no existing token fits (follow-up bu-azzsf)
-                                style={{ backgroundColor: "#7c3aed", color: "#fff" }}
+                                style={{ backgroundColor: "var(--role-owner)", color: "#fff" }}
                                 className="text-xs"
                               >
                                 Owner
@@ -769,8 +764,7 @@ export default function EntitiesPage() {
                             )}
                             {entity.unidentified && (
                               <Badge
-                                // orange-600: unidentified-entity state; no existing token fits (follow-up bu-azzsf)
-                                style={{ backgroundColor: "#ea580c", color: "#fff" }}
+                                style={{ backgroundColor: "var(--state-unidentified)", color: "#fff" }}
                                 className="text-xs"
                               >
                                 Unidentified
