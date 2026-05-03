@@ -12,6 +12,7 @@ interface Breadcrumb {
 interface PageHeaderProps {
   title?: string
   breadcrumbs?: Breadcrumb[]
+  hideBreadcrumbs?: boolean
 }
 
 function buildBreadcrumbs(pathname: string): Breadcrumb[] {
@@ -35,7 +36,7 @@ function buildBreadcrumbs(pathname: string): Breadcrumb[] {
   return crumbs
 }
 
-export default function PageHeader({ title, breadcrumbs }: PageHeaderProps) {
+export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false }: PageHeaderProps) {
   const location = useLocation()
   const { theme, setTheme, resolvedTheme } = useDarkMode()
 
@@ -53,20 +54,22 @@ export default function PageHeader({ title, breadcrumbs }: PageHeaderProps) {
     <div className="flex items-center justify-between w-full">
       <div className="flex flex-col gap-0.5">
         {/* Breadcrumbs */}
-        <nav className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {crumbs.map((crumb, i) => (
-            <span key={i} className="flex items-center gap-1.5">
-              {i > 0 && <span>/</span>}
-              {crumb.path ? (
-                <Link to={crumb.path} className="hover:text-foreground transition-colors">
-                  {crumb.label}
-                </Link>
-              ) : (
-                <span className="text-foreground">{crumb.label}</span>
-              )}
-            </span>
-          ))}
-        </nav>
+        {!hideBreadcrumbs && (
+          <nav className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            {crumbs.map((crumb, i) => (
+              <span key={i} className="flex items-center gap-1.5">
+                {i > 0 && <span>/</span>}
+                {crumb.path ? (
+                  <Link to={crumb.path} className="hover:text-foreground transition-colors">
+                    {crumb.label}
+                  </Link>
+                ) : (
+                  <span className="text-foreground">{crumb.label}</span>
+                )}
+              </span>
+            ))}
+          </nav>
+        )}
 
         {/* Title */}
         {title && <h1 className="text-lg font-semibold">{title}</h1>}
