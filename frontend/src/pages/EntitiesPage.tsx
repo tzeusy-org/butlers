@@ -105,7 +105,7 @@ function dunbarTierBadgeStyle(tier: number): React.CSSProperties {
     case 50:
       return { backgroundColor: "var(--tier-3)", color: "#fff" }; // Good Friends
     case 150:
-      return { backgroundColor: "var(--tier-4)", color: "#fff" }; // Dunbar's Number
+      return { backgroundColor: "var(--tier-4)", color: "#fff" }; // Meaningful
     case 500:
       return { backgroundColor: "var(--tier-5)", color: "#fff" }; // Acquaintances
     default:
@@ -326,7 +326,6 @@ function UnidentifiedEntitiesSection({
               <CardTitle className="flex items-center gap-2">
                 Unidentified Entities
                 <Badge
-                  // orange-600: unidentified-entity warning state; no existing token fits (follow-up bu-azzsf)
                   style={{ backgroundColor: "var(--state-unidentified)", color: "#fff" }}
                   className="text-xs"
                 >
