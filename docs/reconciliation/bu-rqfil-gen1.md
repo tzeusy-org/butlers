@@ -3,7 +3,7 @@
 **Issue:** bu-rqfil.8
 **Date:** 2026-05-03
 **Epic:** bu-rqfil — Frontend redesign B: <DetailPage> consolidation
-**Status:** Gap beads to be filed; gen-2 reconciliation bead pending.
+**Status:** Gap beads filed; gen-2 reconciliation bead pending (bu-wqb69).
 
 ---
 
@@ -132,17 +132,17 @@
 
 ### bu-rqfil.9 — Delta detail-page-archetype across three dashboard specs
 
-**Status:** BLOCKED (PR #1398 open, not merged)
+**Status:** MERGED (PR #1398 merged 2026-05-03T19:27:18Z)
 
 | AC | Status | Finding |
 |---|---|---|
-| 1. openspec/changes/detail-page-archetype/ exists with proposal, tasks, and deltas to all three dashboard specs | PASS (in PR) | PR #1398 files: proposal.md, design.md, tasks.md, 4 spec files confirmed in PR diff |
-| 2. Detail-page archetype documented as normative spec section with four-tier density | PASS (in PR) | design.md 154 lines; specs/detail-page-archetype/spec.md 175 lines |
+| 1. openspec/changes/detail-page-archetype/ exists with proposal, tasks, and deltas to all three dashboard specs | PASS | PR #1398 merged; proposal.md, design.md, tasks.md, 4 spec files landed on main |
+| 2. Detail-page archetype documented as normative spec section with four-tier density | PASS | design.md 154 lines; specs/detail-page-archetype/spec.md 175 lines |
 | 3. Contact route duplication RESOLVED in spec and router config | PASS | router.tsx has single canonical `/contacts/:contactId` route; no `/butlers/relationship/contacts/:id` in router |
 | 4. /opsx validate passes | PASS (per close reason) | Close reason states "opsx validate passes" |
 | 5. grep for deprecated route literal returns zero matches in router config + nav-config + page imports | PASS | Only `/relationship/contacts` in API client.ts (backend API paths) — no UI router equivalent |
 
-**Gap:** PR #1398 not merged → OpenSpec changes are not in main/authoritative specs yet. The `openspec/changes/detail-page-archetype/` directory does not exist on main. `/opsx:sync` cannot be run until PR merges.
+**Note:** PR #1398 was already merged before this reconciliation report was finalized. The OpenSpec change directory now exists on main. The remaining work in bu-r8j9n is to run `/opsx:sync` and verify ConnectorDetailPage spec coverage.
 
 **Additional finding from bu-rqfil.9 notes:** ConnectorDetailPage is flagged as a sibling follow-up — it is not covered in any of the three dashboard specs targeted by bu-rqfil.9 (dashboard-domain-pages, dashboard-relationship, dashboard-butler-management). A separate spec delta for the ingestion/connectors detail page is needed.
 
@@ -163,11 +163,11 @@ Two structural gaps require new child beads:
 
 **Severity:** Medium — pages function correctly and use the right Page archetype, but drift from the unified slot contract is a tech debt accumulation point.
 
-### Gap B — OpenSpec sync blocked on PR #1398
+### Gap B — OpenSpec sync (PR #1398 now merged; /opsx:sync still needed)
 
-**Detail:** The `detail-page-archetype` OpenSpec change (PR #1398) is open but not merged. The authoritative specs do not yet reflect vertical B's detail-page archetype. `/opsx:sync` cannot be run.
+**Detail:** PR #1398 merged at 2026-05-03T19:27:18Z — the `detail-page-archetype` OpenSpec change is now in main. Remaining work: run `/opsx:sync` to apply delta specs to authoritative spec files, verify `/opsx validate` passes post-sync, and confirm ConnectorDetailPage spec coverage.
 
-**Severity:** Low — code is correct; only the spec documentation lags.
+**Severity:** Low — code is correct; spec documentation sync is the only remaining step.
 
 ---
 
