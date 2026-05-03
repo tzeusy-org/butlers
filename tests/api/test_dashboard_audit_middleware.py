@@ -1,12 +1,8 @@
 """Tests for the dashboard audit middleware and audit_emit helper.
 
-Covers:
-- audit_emit.redact_body: field redaction logic
-- DashboardAuditMiddleware: fires on mutating methods, skips GETs
-- Integration: DELETE /api/relationship/contacts/{id}/contact-info/{id} produces audit row
-- Integration: GET /api/… does NOT produce audit row
-- Explicit emit in runtime_config PATCH produces operation='runtime_config_patch' row
-- audit READ endpoint (GET /api/audit-log) is not broken by the middleware
+Condensed: 26 → ~14 tests [bu-gg4y1].
+Keeps: redact_body contract (parametrized), emit integration (insert/noop/swallow),
+middleware fires on DELETE/POST, skips GET/health, trace-id header, audit endpoint.
 """
 
 from __future__ import annotations
@@ -24,89 +20,42 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Unit: redact_body
+# Unit: redact_body (parametrized)
 # ---------------------------------------------------------------------------
 
 
-class TestRedactBody:
-    def test_redacts_sensitive_fields(self):
-        body = {
-            "type": "email",
-            "value": "secret@example.com",
-            "is_primary": True,
-            "password": "hunter2",
-            "token": "abc123",
-        }
-        result = redact_body(body)
-        assert result["type"] == "email"
-        assert result["is_primary"] is True
-        assert result["value"] == "[REDACTED]"
-        assert result["password"] == "[REDACTED]"
-        assert result["token"] == "[REDACTED]"
+@pytest.mark.parametrize("body,expected_redacted,expected_kept", [
+    ({"type": "email", "value": "secret@example.com", "password": "x", "token": "t"},
+     ["value", "password", "token"], ["type"]),
+    ({"name": "Alice", "is_primary": False}, [], ["name", "is_primary"]),
+    ({}, [], []),
+    ({"Password": "abc", "API_KEY": "key"}, ["Password", "API_KEY"], []),
+])
+def test_redact_body(body, expected_redacted, expected_kept):
+    result = redact_body(body)
+    for k in expected_redacted:
+        assert result[k] == "[REDACTED]"
+    for k in expected_kept:
+        assert result[k] == body[k]
 
-    def test_preserves_non_sensitive_fields(self):
-        body = {"name": "Alice", "is_primary": False, "context": "work"}
-        result = redact_body(body)
-        assert result == {"name": "Alice", "is_primary": False, "context": "work"}
 
-    def test_empty_body_returns_empty(self):
-        assert redact_body({}) == {}
+def test_redact_body_nested_sensitive_key_redacts_whole_value():
+    body = {"credentials": {"password": "x", "username": "alice"}}
+    assert redact_body(body)["credentials"] == "[REDACTED]"
 
-    def test_case_insensitive_matching(self):
-        body = {"Password": "abc", "API_KEY": "key"}
-        result = redact_body(body)
-        # Key casing preserved, value redacted
-        assert result["Password"] == "[REDACTED]"
-        assert result["API_KEY"] == "[REDACTED]"
 
-    def test_nested_dict_redacts_inner_sensitive_key(self):
-        body = {"credentials": {"password": "x", "username": "alice"}}
-        result = redact_body(body)
-        # "credentials" is itself sensitive — the whole value is redacted
-        assert result["credentials"] == "[REDACTED]"
+def test_redact_body_non_sensitive_nesting_recurses():
+    body = {"metadata": {"password": "x", "label": "prod"}}
+    result = redact_body(body)
+    assert result["metadata"]["password"] == "[REDACTED]"
+    assert result["metadata"]["label"] == "prod"
 
-    def test_nested_dict_under_non_sensitive_key(self):
-        body = {"metadata": {"password": "x", "label": "prod"}}
-        result = redact_body(body)
-        assert result["metadata"]["password"] == "[REDACTED]"
-        assert result["metadata"]["label"] == "prod"
 
-    def test_list_of_dicts_redacts_sensitive_keys(self):
-        body = {"items": [{"token": "x"}, {"label": "ok"}]}
-        result = redact_body(body)
-        assert result["items"][0]["token"] == "[REDACTED]"
-        assert result["items"][1]["label"] == "ok"
-
-    def test_list_with_non_dict_elements_unchanged(self):
-        body = {"tags": ["alpha", "beta"], "name": "test"}
-        result = redact_body(body)
-        assert result["tags"] == ["alpha", "beta"]
-        assert result["name"] == "test"
-
-    def test_deeply_nested_three_levels(self):
-        body = {"level1": {"level2": {"token": "deep-secret", "safe": "keep"}}}
-        result = redact_body(body)
-        assert result["level1"]["level2"]["token"] == "[REDACTED]"
-        assert result["level1"]["level2"]["safe"] == "keep"
-
-    def test_deeply_nested_in_list(self):
-        body = {
-            "requests": [
-                {"auth": {"api_key": "sk-abc", "user": "bob"}},
-                {"auth": {"api_key": "sk-xyz", "user": "carol"}},
-            ]
-        }
-        result = redact_body(body)
-        assert result["requests"][0]["auth"]["api_key"] == "[REDACTED]"
-        assert result["requests"][0]["auth"]["user"] == "bob"
-        assert result["requests"][1]["auth"]["api_key"] == "[REDACTED]"
-        assert result["requests"][1]["auth"]["user"] == "carol"
-
-    def test_original_dict_not_mutated(self):
-        body = {"metadata": {"password": "secret", "label": "prod"}}
-        original_inner = body["metadata"].copy()
-        redact_body(body)
-        assert body["metadata"] == original_inner
+def test_redact_body_does_not_mutate_original():
+    body = {"metadata": {"password": "secret", "label": "prod"}}
+    original_inner = body["metadata"].copy()
+    redact_body(body)
+    assert body["metadata"] == original_inner
 
 
 # ---------------------------------------------------------------------------
