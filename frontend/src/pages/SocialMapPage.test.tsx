@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 
@@ -9,19 +9,65 @@ import SocialMapPage from "@/pages/SocialMapPage";
 import { useDunbarRanking } from "@/hooks/use-memory";
 import type { DunbarEntry, DunbarRankingResponse } from "@/api/types";
 
-// jsdom does not implement ResizeObserver. Stub it before any module loads.
+// jsdom does not implement ResizeObserver. Stub it so useElementSize fires
+// immediately and returns non-zero dimensions before the component mounts.
+const _originalResizeObserver = (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver;
 (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver =
   class {
-    observe() {}
+    private _cb: ResizeObserverCallback;
+    constructor(cb: ResizeObserverCallback) { this._cb = cb; }
+    observe() {
+      // Trigger immediately so useElementSize can set a non-zero size.
+      this._cb(
+        [{ contentRect: { width: 800, height: 600 } } as ResizeObserverEntry],
+        this as unknown as ResizeObserver,
+      );
+    }
     unobserve() {}
     disconnect() {}
   };
 
-// Mock the canvas component to avoid SVG complexity in jsdom
+// Return 800x600 for all element size queries so the canvas renders in jsdom.
+const _originalClientWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+const _originalClientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 });
+Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+
+afterAll(() => {
+  // Restore globals so this file's module-scope stubs don't leak into other workers.
+  (globalThis as typeof globalThis & { ResizeObserver?: unknown }).ResizeObserver = _originalResizeObserver;
+  if (_originalClientWidthDescriptor) {
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", _originalClientWidthDescriptor);
+  } else {
+    delete (HTMLElement.prototype as Partial<HTMLElement>).clientWidth;
+  }
+  if (_originalClientHeightDescriptor) {
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", _originalClientHeightDescriptor);
+  } else {
+    delete (HTMLElement.prototype as Partial<HTMLElement>).clientHeight;
+  }
+});
+
+import type { Tier } from "@/components/memory/concentric-circles-constants";
+
+// Stores the last onTierExpand callback provided to the canvas mock,
+// so tests can simulate tier-badge clicks without needing real DOM dimensions.
+let capturedOnTierExpand: ((tier: Tier) => void) | null = null;
+
+// Mock the canvas component to avoid SVG complexity in jsdom.
+// Captures onTierExpand so tests can invoke it directly.
 vi.mock("@/components/memory/ConcentricCirclesCanvas", () => ({
-  ConcentricCirclesCanvas: ({ entries }: { entries: DunbarEntry[] }) => (
-    <div data-testid="canvas">canvas:{entries.length}</div>
-  ),
+  ConcentricCirclesCanvas: ({
+    entries,
+    onTierExpand,
+  }: {
+    entries: DunbarEntry[];
+    expandedTiers: Set<Tier>;
+    onTierExpand: (tier: Tier) => void;
+  }) => {
+    capturedOnTierExpand = onTierExpand;
+    return <div data-testid="canvas">canvas:{entries.length}</div>;
+  },
 }));
 
 vi.mock("@/hooks/use-memory", () => ({
@@ -66,6 +112,7 @@ describe("SocialMapPage", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    capturedOnTierExpand = null;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -170,5 +217,105 @@ describe("SocialMapPage", () => {
 
     const input = container.querySelector("input[aria-label='Search contacts']") as HTMLInputElement | null;
     expect(input).toBeTruthy();
+  });
+
+  it("pill bar is hidden when no tiers are expanded", async () => {
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    // No "Showing all:" text should appear when nothing is expanded
+    expect(container.textContent).not.toContain("Showing all:");
+  });
+
+  it("pill bar shows tier pill when a tier is expanded via badge click", async () => {
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    // Simulate the canvas calling onTierExpand(50) (as if the user clicked the +N badge)
+    expect(capturedOnTierExpand).toBeTruthy();
+    act(() => { capturedOnTierExpand!(50); });
+    await act(async () => { await flush(); });
+
+    // Pill bar should now show "Good Friends" tier
+    expect(container.textContent).toContain("Showing all:");
+    expect(container.textContent).toContain("Good Friends");
+  });
+
+  it("expanding two tiers shows two pills and a Reset all button", async () => {
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    act(() => { capturedOnTierExpand!(50); });
+    act(() => { capturedOnTierExpand!(150); });
+    await act(async () => { await flush(); });
+
+    expect(container.textContent).toContain("Good Friends");
+    expect(container.textContent).toContain("Dunbar's Number");
+    expect(container.textContent).toContain("Reset all");
+  });
+
+  it("clicking ✕ on one pill collapses that tier but leaves the other expanded", async () => {
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    // Expand both tiers 50 and 150
+    act(() => { capturedOnTierExpand!(50); });
+    act(() => { capturedOnTierExpand!(150); });
+    await act(async () => { await flush(); });
+
+    // Verify both pills are present in the pill bar
+    expect(container.querySelector("[aria-label='Collapse Good Friends']")).toBeTruthy();
+    expect(container.querySelector("[aria-label='Collapse Dunbar\\'s Number']")).toBeTruthy();
+
+    // Click the collapse button for "Good Friends" (tier 50)
+    const collapseGoodFriends = container.querySelector(
+      "[aria-label='Collapse Good Friends']",
+    ) as HTMLButtonElement;
+    act(() => { collapseGoodFriends.click(); });
+    await act(async () => { await flush(); });
+
+    // Tier 50 pill should be gone; tier 150 pill should remain
+    expect(container.querySelector("[aria-label='Collapse Good Friends']")).toBeNull();
+    expect(container.querySelector("[aria-label='Collapse Dunbar\\'s Number']")).toBeTruthy();
+    // With only one tier expanded, "Reset all" should be hidden
+    expect(container.querySelector("[aria-label='Collapse all expanded tiers']")).toBeNull();
+  });
+
+  it("Reset all clears all expanded tiers and hides the pill bar", async () => {
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    // Expand both tiers
+    act(() => { capturedOnTierExpand!(50); });
+    act(() => { capturedOnTierExpand!(150); });
+    await act(async () => { await flush(); });
+
+    const resetAll = container.querySelector(
+      "[aria-label='Collapse all expanded tiers']",
+    ) as HTMLButtonElement | null;
+    expect(resetAll).toBeTruthy();
+    act(() => { resetAll!.click(); });
+    await act(async () => { await flush(); });
+
+    // Pill bar should disappear entirely (no tier collapse pills remain)
+    expect(container.querySelector("[aria-label='Collapse Good Friends']")).toBeNull();
+    expect(container.querySelector("[aria-label='Collapse Dunbar\\'s Number']")).toBeNull();
+    expect(container.querySelector("[aria-label='Collapse all expanded tiers']")).toBeNull();
+    expect(container.textContent).not.toContain("Showing all:");
   });
 });

@@ -24,6 +24,7 @@ import {
   easeOutExpo,
   getInitials,
   matchesSearch,
+  TIER_BADGE_ANGLES,
   TIER_NAMES,
   TIER_RADIUS_FRACTIONS,
   TIER_RING_COLORS,
@@ -485,63 +486,43 @@ export function ConcentricCirclesCanvas({
                   />
                 );
               })}
-              {/* Show "+N" expand button for collapsed tiers */}
-              {hiddenCount > 0 && (
-                <g
-                  style={{ cursor: "pointer" }}
-                  onClick={() => onTierExpand(tier)}
-                >
-                  <circle
-                    cx={cx + ringR}
-                    cy={cy}
-                    r={nodeRadius}
-                    fill={color}
-                    fillOpacity={0.25}
-                    stroke={color}
-                    strokeWidth={1}
-                  />
-                  <text
-                    x={cx + ringR}
-                    y={cy}
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fontSize={7}
-                    fontWeight="700"
-                    fill={color}
+              {/* Show "+N" expand button for collapsed tiers at a per-tier compass angle */}
+              {hiddenCount > 0 && (() => {
+                const badgeAngle = TIER_BADGE_ANGLES[tier] ?? 0;
+                const bx = cx + ringR * Math.cos(badgeAngle);
+                const by = cy + ringR * Math.sin(badgeAngle);
+                return (
+                  <g
+                    style={{ cursor: "pointer" }}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onTierExpand(tier)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onTierExpand(tier); } }}
+                    aria-label={`Show ${hiddenCount} more contacts in ${TIER_NAMES[tier]}`}
                   >
-                    +{hiddenCount}
-                  </text>
-                </g>
-              )}
-              {/* Show collapse button for manually expanded tiers (not inner rings and not search-expanded) */}
-              {isExpanded && tier > 15 && searchQuery.length === 0 && (
-                <g
-                  style={{ cursor: "pointer" }}
-                  onClick={() => onTierExpand(tier)}
-                >
-                  <circle
-                    cx={cx - ringR}
-                    cy={cy}
-                    r={nodeRadius}
-                    fill={color}
-                    fillOpacity={0.15}
-                    stroke={color}
-                    strokeWidth={1}
-                    strokeDasharray="2,2"
-                  />
-                  <text
-                    x={cx - ringR}
-                    y={cy}
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fontSize={7}
-                    fontWeight="700"
-                    fill={color}
-                  >
-                    &minus;
-                  </text>
-                </g>
-              )}
+                    <circle
+                      cx={bx}
+                      cy={by}
+                      r={nodeRadius}
+                      fill={color}
+                      fillOpacity={0.25}
+                      stroke={color}
+                      strokeWidth={1}
+                    />
+                    <text
+                      x={bx}
+                      y={by}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize={7}
+                      fontWeight="700"
+                      fill={color}
+                    >
+                      +{hiddenCount}
+                    </text>
+                  </g>
+                );
+              })()}
             </g>
           );
         })}

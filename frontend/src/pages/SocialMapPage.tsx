@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { ArrowLeftIcon, CrosshairIcon, PinIcon, SearchIcon } from "lucide-react";
+import { ArrowLeftIcon, CrosshairIcon, PinIcon, SearchIcon, XIcon } from "lucide-react";
 
 import type { DunbarEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
@@ -81,6 +81,56 @@ function TierLegend({ tierGroups }: { tierGroups: Record<Tier, DunbarEntry[]> })
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Expanded-tier pill bar
+// ---------------------------------------------------------------------------
+
+interface ExpandedTierPillBarProps {
+  expandedTiers: Set<Tier>;
+  onCollapse: (tier: Tier) => void;
+  onResetAll: () => void;
+}
+
+function ExpandedTierPillBar({ expandedTiers, onCollapse, onResetAll }: ExpandedTierPillBarProps) {
+  if (expandedTiers.size === 0) return null;
+
+  return (
+    <div className="flex items-center flex-wrap gap-2" aria-label="Expanded tiers">
+      <span className="text-xs text-muted-foreground">Showing all:</span>
+      {TIERS.filter((tier) => expandedTiers.has(tier)).map((tier) => {
+        const color = TIER_RING_COLORS[tier];
+        return (
+          <button
+            key={tier}
+            type="button"
+            onClick={() => onCollapse(tier)}
+            className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors hover:opacity-80"
+            style={{
+              borderColor: color + "60",
+              color,
+              backgroundColor: color + "12",
+            }}
+            aria-label={`Collapse ${TIER_NAMES[tier]}`}
+          >
+            {TIER_NAMES[tier]}
+            <XIcon className="h-3 w-3 opacity-70" />
+          </button>
+        );
+      })}
+      {expandedTiers.size > 1 && (
+        <button
+          type="button"
+          onClick={onResetAll}
+          className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+          aria-label="Collapse all expanded tiers"
+        >
+          Reset all
+        </button>
+      )}
     </div>
   );
 }
@@ -228,6 +278,10 @@ export default function SocialMapPage() {
     });
   }
 
+  function handleResetAllExpanded() {
+    setExpandedTiers(new Set());
+  }
+
   // Keyboard shortcuts
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -318,6 +372,13 @@ export default function SocialMapPage() {
           <JumpToTierChips onJump={handleJumpToTier} activeTier={focusTier} />
           {!isLoading && !isError && <TierLegend tierGroups={tierGroups} />}
         </div>
+
+        {/* Expanded-tier pill bar -- only visible when at least one outer tier is expanded */}
+        <ExpandedTierPillBar
+          expandedTiers={expandedTiers}
+          onCollapse={handleTierExpand}
+          onResetAll={handleResetAllExpanded}
+        />
       </div>
 
       {/* Canvas area -- no border/card wrapper per impeccable ban on nested cards */}

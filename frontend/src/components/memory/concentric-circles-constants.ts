@@ -69,6 +69,23 @@ export function circlePositions(
   });
 }
 
+/**
+ * Per-tier badge angles in radians (0 = east, π/2 = south, π = west, 3π/2 = north).
+ * Chosen to spread badges in a clockwise fan in the lower hemisphere,
+ * away from the top arc where tier labels live.
+ *
+ * Tier 50   → 0       (3 o'clock, east)
+ * Tier 150  → π/4     (4–5 o'clock, down-right)
+ * Tier 500  → π/2     (6 o'clock, south)
+ * Tier 1500 → 3π/4    (7–8 o'clock, down-left)
+ */
+export const TIER_BADGE_ANGLES: Partial<Record<Tier, number>> = {
+  50: 0,
+  150: Math.PI / 4,
+  500: Math.PI / 2,
+  1500: (3 * Math.PI) / 4,
+};
+
 /** ease-out-expo easing for jump-to-tier animation. */
 export function easeOutExpo(t: number): number {
   return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
