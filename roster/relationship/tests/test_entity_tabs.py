@@ -1189,9 +1189,7 @@ class TestEntityImportantDates:
 
     async def test_returns_404_when_entity_missing(self):
         app, _ = _app_with_pool(entity_exists=False)
-        resp = await _get(
-            app, f"/api/relationship/entities/{_MISSING_ENT_ID}/dates"
-        )
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/dates")
         assert resp.status_code == 404
 
     async def test_returns_empty_when_no_dates(self):
@@ -1299,9 +1297,7 @@ class TestDunbarTierOverride:
         assert resp.status_code == 404
 
     async def test_returns_404_when_no_linked_contact(self):
-        app, _ = _build_app_for_dunbar_patch(
-            entity_exists=True, contact_row=None
-        )
+        app, _ = _build_app_for_dunbar_patch(entity_exists=True, contact_row=None)
         resp = await _patch(
             app,
             f"/api/relationship/entities/{_ENT_ID}/dunbar-tier",
