@@ -190,9 +190,97 @@ describe("SocialMapPage", () => {
     renderPage();
     await act(async () => { await flush(); });
 
-    // No error or loading message — cold-start is handled inside the canvas
+    // No error or loading message -- cold-start shows the actionable EmptyStatePanel instead
     expect(container.textContent).not.toContain("Failed to load social map");
     expect(container.textContent).not.toContain("Loading social map");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cold-start empty state (scoredCount < 5)
+  // ---------------------------------------------------------------------------
+
+  it("shows EmptyStatePanel with CTA when scoredCount is 0", async () => {
+    vi.mocked(useDunbarRanking).mockReturnValue(makeRankingResult([], null));
+    renderPage();
+    await act(async () => { await flush(); });
+
+    expect(container.querySelector("[data-testid='empty-state-panel']")).toBeTruthy();
+    const ctaLink = container.querySelector("a[href='/ingestion?tab=connectors']") as HTMLAnchorElement | null;
+    expect(ctaLink).toBeTruthy();
+    expect(ctaLink?.textContent).toContain("Connect a service");
+  });
+
+  it("shows EmptyStatePanel when scoredCount is 4 (below threshold)", async () => {
+    // Owner + 4 scored contacts = scoredCount 4 (< 5)
+    const scored = Array.from({ length: 4 }, (_, i) => ({
+      contact_id: `c-${i}`,
+      entity_id: `e-${i}`,
+      canonical_name: `Contact ${i}`,
+      dunbar_tier: 50 as const,
+      dunbar_score: 0.5,
+      dunbar_tier_override: false,
+    }));
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, ...scored], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    expect(container.querySelector("[data-testid='empty-state-panel']")).toBeTruthy();
+  });
+
+  it("hides EmptyStatePanel when scoredCount reaches 5", async () => {
+    // Owner + 5 scored contacts = scoredCount 5 (at threshold, panel disappears)
+    const scored = Array.from({ length: 5 }, (_, i) => ({
+      contact_id: `c-${i}`,
+      entity_id: `e-${i}`,
+      canonical_name: `Contact ${i}`,
+      dunbar_tier: 50 as const,
+      dunbar_score: 0.5,
+      dunbar_tier_override: false,
+    }));
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, ...scored], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    expect(container.querySelector("[data-testid='empty-state-panel']")).toBeNull();
+  });
+
+  it("applies aria-hidden and pointerEvents:none to canvas wrapper when cold-start", async () => {
+    // scoredCount 0 => isColdStart; the canvas wrapper must be removed from
+    // the a11y tree and made non-interactive so focus lands on the CTA instead.
+    vi.mocked(useDunbarRanking).mockReturnValue(makeRankingResult([], null));
+    renderPage();
+    await act(async () => { await flush(); });
+
+    const canvasWrapper = container.querySelector("[data-testid='canvas']")?.parentElement;
+    expect(canvasWrapper).toBeTruthy();
+    expect(canvasWrapper?.getAttribute("aria-hidden")).toBe("true");
+    expect((canvasWrapper as HTMLElement | null)?.style.pointerEvents).toBe("none");
+  });
+
+  it("does not apply aria-hidden to canvas wrapper when not cold-start", async () => {
+    // 5 scored contacts => isColdStart false; canvas must be accessible.
+    const scored = Array.from({ length: 5 }, (_, i) => ({
+      contact_id: `c-${i}`,
+      entity_id: `e-${i}`,
+      canonical_name: `Contact ${i}`,
+      dunbar_tier: 50 as const,
+      dunbar_score: 0.5,
+      dunbar_tier_override: false,
+    }));
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, ...scored], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    const canvasWrapper = container.querySelector("[data-testid='canvas']")?.parentElement;
+    expect(canvasWrapper).toBeTruthy();
+    expect(canvasWrapper?.getAttribute("aria-hidden")).toBeNull();
+    expect((canvasWrapper as HTMLElement | null)?.style.pointerEvents).toBe("");
   });
 
   it("renders jump-to-tier chips", async () => {

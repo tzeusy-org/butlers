@@ -24,6 +24,7 @@ import type { DunbarEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ConcentricCirclesCanvas } from "@/components/memory/ConcentricCirclesCanvas";
+import { EmptyStatePanel } from "@/components/memory/EmptyStatePanel";
 import {
   TIER_NAMES,
   TIER_RING_COLORS,
@@ -230,6 +231,18 @@ export default function SocialMapPage() {
     return { tierGroups: groups, hasPinnedOverride: pinned };
   }, [data]);
 
+  // Cold-start detection: fewer than 5 scored non-owner contacts means the
+  // map has no meaningful signal yet. Computed from the same data object so
+  // it stays in sync with the tier groups above.
+  const scoredCount = useMemo(
+    () =>
+      (data?.entries ?? []).filter(
+        (e) => e.dunbar_score > 0 && e.entity_id !== (data?.owner_entity_id ?? null),
+      ).length,
+    [data],
+  );
+  const isColdStart = !isLoading && !isError && scoredCount < 5;
+
   // Sync debounced search back to URL
   useEffect(() => {
     setSearchParams(
@@ -398,24 +411,37 @@ export default function SocialMapPage() {
           </div>
         )}
         {!isLoading && !isError && stageSize.width > 0 && stageSize.height > 0 && (
-          <ConcentricCirclesCanvas
-            key={canvasKey}
-            entries={entries}
-            ownerEntityId={ownerEntityId}
-            ownerName={ownerName}
-            width={stageSize.width}
-            height={stageSize.height}
-            searchQuery={debouncedSearch}
-            focusTier={focusTier}
-            focusTrigger={focusTrigger}
-            expandedTiers={expandedTiers}
-            onNavigate={handleNavigate}
-            onTierExpand={handleTierExpand}
-          />
+          <div
+            className="w-full h-full"
+            style={isColdStart ? { opacity: 0.3, pointerEvents: "none" } : undefined}
+            aria-hidden={isColdStart || undefined}
+          >
+            <ConcentricCirclesCanvas
+              key={canvasKey}
+              entries={entries}
+              ownerEntityId={ownerEntityId}
+              ownerName={ownerName}
+              width={stageSize.width}
+              height={stageSize.height}
+              searchQuery={debouncedSearch}
+              focusTier={focusTier}
+              focusTrigger={focusTrigger}
+              expandedTiers={expandedTiers}
+              onNavigate={handleNavigate}
+              onTierExpand={handleTierExpand}
+            />
+          </div>
         )}
         {!isLoading && !isError && (stageSize.width === 0 || stageSize.height === 0) && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
             Sizing canvas...
+          </div>
+        )}
+
+        {/* Cold-start overlay: actionable empty state centered over the dimmed canvas */}
+        {isColdStart && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <EmptyStatePanel />
           </div>
         )}
       </div>
