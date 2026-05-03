@@ -11,7 +11,6 @@ import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
  */
 
 import { useState } from "react";
-import { format } from "date-fns";
 
 import type { GeneralCollection, GeneralEntity } from "@/api/types.ts";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +34,7 @@ import {
 } from "@/components/ui/table";
 
 import JsonViewer from "./JsonViewer.tsx";
+import { Time } from "@/components/ui/time";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -243,7 +243,7 @@ export default function EntityBrowser({
                       )}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-sm text-muted-foreground align-top">
-                      {format(new Date(entity.created_at), "MMM d, yyyy")}
+                      <Time value={entity.created_at} mode="absolute" precision="day" compact />
                     </TableCell>
                   </TableRow>
                 );

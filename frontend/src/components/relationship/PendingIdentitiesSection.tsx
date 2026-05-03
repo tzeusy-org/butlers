@@ -10,7 +10,6 @@
  */
 
 import { useState } from "react";
-import { format } from "date-fns";
 import { toast } from "sonner";
 
 import type { ContactDetail, ContactSummary } from "@/api/types";
@@ -47,6 +46,7 @@ import {
   useMergeContact,
   usePendingContacts,
 } from "@/hooks/use-contacts";
+import { Time } from "@/components/ui/time";
 
 // ---------------------------------------------------------------------------
 // MergeDialog
@@ -261,7 +261,7 @@ export function PendingIdentitiesSection() {
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
-                      {format(new Date(contact.created_at), "MMM d, yyyy")}
+                      <Time value={contact.created_at} mode="absolute" precision="day" compact />
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-2">

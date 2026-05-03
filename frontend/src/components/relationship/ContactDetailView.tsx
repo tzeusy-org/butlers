@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { format } from "date-fns";
 import { AlertTriangle, Pencil, Plus, Trash2, Unlink, X, Check } from "lucide-react";
 import { toast } from "sonner";
 
@@ -9,6 +8,7 @@ import type {
   ContactInfoEntry,
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -59,10 +59,6 @@ function labelStyle(label: { color: string | null; name: string }): string {
     hash = (hash * 31 + label.name.charCodeAt(i)) | 0;
   }
   return colors[Math.abs(hash) % colors.length];
-}
-
-function formatDate(iso: string): string {
-  return format(new Date(iso), "MMM d, yyyy");
 }
 
 /** Return inline background style for a role badge. */
@@ -337,7 +333,7 @@ function ContactInfoSection({ contact }: { contact: ContactDetail }) {
               <span className="text-muted-foreground text-sm w-24 shrink-0">
                 Birthday
               </span>
-              <span className="text-sm">{formatDate(contact.birthday)}</span>
+              <span className="text-sm"><Time value={contact.birthday} mode="absolute" precision="day" compact /></span>
             </div>
           )}
         </>

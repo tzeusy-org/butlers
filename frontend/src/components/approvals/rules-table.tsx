@@ -1,5 +1,5 @@
-import { format } from "date-fns";
 import type { ApprovalRule } from "@/api/types";
+import { Time } from "@/components/ui/time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -69,7 +69,7 @@ export function RulesTable({ rules, onRuleClick }: RulesTableProps) {
                 {rule.max_uses !== null ? ` / ${rule.max_uses}` : ""}
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
-                {format(new Date(rule.created_at), "PP")}
+                <Time value={rule.created_at} mode="absolute" precision="day" compact />
               </TableCell>
               <TableCell>
                 {rule.active && (
