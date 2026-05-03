@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { permanenceBadge } from "@/components/memory/badges";
 import { useEpisodes, useFacts, useRules } from "@/hooks/use-memory";
 import type { EpisodeParams, FactParams, RuleParams } from "@/api/types";
 
@@ -43,26 +44,6 @@ const PAGE_SIZE = 20;
 // ---------------------------------------------------------------------------
 // Badge helpers
 // ---------------------------------------------------------------------------
-
-function permanenceBadge(p: string) {
-  const colors: Record<string, string> = {
-    permanent: "bg-blue-600 text-white hover:bg-blue-600/90",
-    stable: "bg-sky-600 text-white hover:bg-sky-600/90",
-    standard: "",
-    volatile: "border-amber-500 text-amber-600",
-    ephemeral: "border-red-500 text-red-500",
-  };
-  const cls = colors[p];
-  if (cls === undefined) return <Badge variant="secondary">{p}</Badge>;
-  if (cls === "") return <Badge variant="secondary">{p}</Badge>;
-  if (cls.startsWith("border-"))
-    return (
-      <Badge variant="outline" className={cls}>
-        {p}
-      </Badge>
-    );
-  return <Badge className={cls}>{p}</Badge>;
-}
 
 function validityBadge(v: string) {
   switch (v) {

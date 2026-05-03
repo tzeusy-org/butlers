@@ -10,26 +10,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { permanenceBadge, PercentageProgressBar } from "@/components/memory/badges";
 import { useFact } from "@/hooks/use-memory";
-
-function permanenceBadge(p: string) {
-  const colors: Record<string, string> = {
-    permanent: "bg-blue-600 text-white hover:bg-blue-600/90",
-    stable: "bg-sky-600 text-white hover:bg-sky-600/90",
-    standard: "",
-    volatile: "border-amber-500 text-amber-600",
-    ephemeral: "border-red-500 text-red-500",
-  };
-  const cls = colors[p];
-  if (!cls) return <Badge variant="secondary">{p}</Badge>;
-  if (cls.startsWith("border-"))
-    return (
-      <Badge variant="outline" className={cls}>
-        {p}
-      </Badge>
-    );
-  return <Badge className={cls}>{p}</Badge>;
-}
 
 function validityBadge(v: string) {
   switch (v) {
@@ -52,21 +34,6 @@ function validityBadge(v: string) {
     default:
       return <Badge variant="secondary">{v}</Badge>;
   }
-}
-
-function confidenceBar(value: number) {
-  const pct = Math.round(value * 100);
-  return (
-    <div className="flex items-center gap-2">
-      <div className="bg-muted h-2 w-24 overflow-hidden rounded-full">
-        <div
-          className="bg-primary h-full rounded-full"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className="text-muted-foreground text-sm">{pct}%</span>
-    </div>
-  );
 }
 
 export default function FactDetailPage() {
@@ -141,12 +108,7 @@ export default function FactDetailPage() {
 
               {/* Status row */}
               <div className="flex flex-wrap items-center gap-4">
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Confidence
-                  </p>
-                  {confidenceBar(fact.confidence)}
-                </div>
+                <PercentageProgressBar value={fact.confidence} label="Confidence" />
                 <div>
                   <p className="text-muted-foreground mb-1 text-xs font-medium">
                     Permanence

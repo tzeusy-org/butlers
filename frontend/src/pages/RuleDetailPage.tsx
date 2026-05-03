@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { permanenceBadge, PercentageProgressBar } from "@/components/memory/badges";
 import { useRule } from "@/hooks/use-memory";
 
 function maturityBadge(m: string) {
@@ -33,43 +34,6 @@ function maturityBadge(m: string) {
     default:
       return <Badge variant="secondary">{m}</Badge>;
   }
-}
-
-function permanenceBadge(p: string) {
-  const colors: Record<string, string> = {
-    permanent: "bg-blue-600 text-white hover:bg-blue-600/90",
-    stable: "bg-sky-600 text-white hover:bg-sky-600/90",
-    standard: "",
-    volatile: "border-amber-500 text-amber-600",
-    ephemeral: "border-red-500 text-red-500",
-  };
-  const cls = colors[p];
-  if (!cls) return <Badge variant="secondary">{p}</Badge>;
-  if (cls.startsWith("border-"))
-    return (
-      <Badge variant="outline" className={cls}>
-        {p}
-      </Badge>
-    );
-  return <Badge className={cls}>{p}</Badge>;
-}
-
-function progressBar(value: number, label: string) {
-  const pct = Math.round(value * 100);
-  return (
-    <div>
-      <p className="text-muted-foreground mb-1 text-xs font-medium">{label}</p>
-      <div className="flex items-center gap-2">
-        <div className="bg-muted h-2 w-24 overflow-hidden rounded-full">
-          <div
-            className="bg-primary h-full rounded-full"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <span className="text-muted-foreground text-sm">{pct}%</span>
-      </div>
-    </div>
-  );
 }
 
 export default function RuleDetailPage() {
@@ -144,7 +108,7 @@ export default function RuleDetailPage() {
 
               {/* Effectiveness */}
               <div className="flex flex-wrap items-end gap-6">
-                {progressBar(rule.effectiveness_score, "Effectiveness")}
+                <PercentageProgressBar value={rule.effectiveness_score} label="Effectiveness" />
                 <div className="text-sm">
                   <span className="text-muted-foreground">Applied: </span>
                   <span className="tabular-nums">{rule.applied_count}</span>
@@ -161,7 +125,7 @@ export default function RuleDetailPage() {
 
               {/* Confidence */}
               <div className="flex flex-wrap items-end gap-6">
-                {progressBar(rule.confidence, "Confidence")}
+                <PercentageProgressBar value={rule.confidence} label="Confidence" />
                 <div className="text-sm">
                   <span className="text-muted-foreground">Decay rate: </span>
                   <span className="tabular-nums">{rule.decay_rate}</span>
