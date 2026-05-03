@@ -1,0 +1,614 @@
+"""System overview endpoints for the dashboard's /system page.
+
+Surfaces five ownership-fact domains:
+
+    GET /api/system/instance       -- software version and process uptime
+    GET /api/system/database       -- PostgreSQL catalog size breakdown
+    GET /api/system/backups        -- backup recency and source reachability
+    GET /api/system/egress         -- external-actor egress catalog (owner-only)
+    GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
+
+Privacy contract: /api/system/egress is owner-only. The owner is identified
+by joining public.contacts -> public.entities and asserting
+'owner' = ANY(e.roles). Non-owner callers receive HTTP 403. All other endpoints
+are gated only by the standard dashboard session boundary (v1 simplification).
+
+All endpoints are read-only. No writes, no new tables.
+
+Operation names assumed in the actor registry for /api/system/egress
+(documented here for the bu-n28xh audit):
+    "llm_api_call"          -- outbound call to an LLM provider API
+    "telegram_send"         -- outbound Telegram Bot API message
+    "google_calendar_write" -- outbound Google Calendar API mutation
+    "gmail_send"            -- outbound Gmail SMTP / API send
+
+These names are the values stored in the ``operation`` column of
+``switchboard.dashboard_audit_log`` for externally-visible API calls.
+"""
+
+from __future__ import annotations
+
+import importlib.metadata
+import logging
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from butlers.api.db import DatabaseManager
+from butlers.api.models import ApiResponse
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/system", tags=["system"])
+
+# Module-level start time recorded when this module is first imported.
+# The lifespan startup imports all routers, so this approximates the
+# FastAPI lifespan start time closely enough for v1.
+_PROCESS_START: datetime = datetime.now(UTC)
+
+
+def _get_db_manager() -> DatabaseManager:
+    """Dependency stub -- overridden at app startup or in tests."""
+    raise RuntimeError("DatabaseManager not initialized")
+
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+
+class InstanceFacts(BaseModel):
+    """Software identity and process uptime facts."""
+
+    version: str
+    uptime_seconds: float
+    started_at: str
+
+
+class SchemaSize(BaseModel):
+    """Disk footprint of a single butler schema."""
+
+    schema_name: str
+    size_bytes: int
+    table_count: int
+
+
+class TableSize(BaseModel):
+    """Disk footprint of a single table."""
+
+    schema_name: str
+    table_name: str
+    size_bytes: int
+
+
+class DatabaseFacts(BaseModel):
+    """PostgreSQL catalog size facts for the running database."""
+
+    total_size_bytes: int
+    schemas: list[SchemaSize]
+    largest_tables: list[TableSize]
+    growth_rate_bytes_per_day: None = None  # reserved for v2
+
+
+class BackupEvent(BaseModel):
+    """Single backup event in the backup history list."""
+
+    completed_at: str
+    size_bytes: int
+    status: str  # "success" or "failed"
+
+
+class BackupFacts(BaseModel):
+    """Backup recency and source reachability facts."""
+
+    last_backup_at: str | None
+    last_backup_size_bytes: int | None
+    backup_source_reachable: bool
+    backup_history: list[BackupEvent]
+
+
+class EgressActor(BaseModel):
+    """A single external actor that has received data from this instance."""
+
+    actor_id: str
+    display_name: str
+    last_seen_at: str
+    total_calls: int
+    data_types: list[str]
+
+
+class EgressCatalog(BaseModel):
+    """Aggregated catalog of external-actor egress events."""
+
+    actors: list[EgressActor]
+    catalog_covers_from: str | None
+
+
+class ButlerHeartbeat(BaseModel):
+    """Per-butler liveness and session snapshot."""
+
+    name: str
+    last_heartbeat_at: str | None
+    last_session_at: str | None
+    active_session_count: int
+    heartbeat_age_seconds: float | None
+    error: str | None = None
+
+
+class HeartbeatFacts(BaseModel):
+    """Collection of per-butler heartbeat entries."""
+
+    butlers: list[ButlerHeartbeat]
+
+
+# ---------------------------------------------------------------------------
+# Actor registry (server-side constant)
+#
+# Maps operation strings from switchboard.dashboard_audit_log to stable
+# actor identifiers and human-readable display names.
+#
+# Operation naming convention (see module docstring and bu-n28xh audit):
+#   - llm_api_call:          outbound LLM provider API call
+#   - telegram_send:         outbound Telegram Bot API message
+#   - google_calendar_write: outbound Google Calendar API mutation
+#   - gmail_send:            outbound Gmail SMTP / API send
+# ---------------------------------------------------------------------------
+
+_ACTOR_REGISTRY: dict[str, tuple[str, str]] = {
+    # operation -> (actor_id, display_name)
+    "llm_api_call": ("anthropic.claude", "Anthropic Claude API"),
+    "telegram_send": ("telegram.api", "Telegram Bot API"),
+    "google_calendar_write": ("google.calendar", "Google Calendar API"),
+    "gmail_send": ("google.gmail", "Gmail API"),
+}
+
+# data_types derived from operation -- these are coarse labels for the
+# type of data the operation carries.
+_OPERATION_DATA_TYPES: dict[str, list[str]] = {
+    "llm_api_call": ["session_prompt"],
+    "telegram_send": ["message_text"],
+    "google_calendar_write": ["calendar_event"],
+    "gmail_send": ["message_text"],
+}
+
+_UNKNOWN_ACTOR_ID = "other"
+_UNKNOWN_ACTOR_NAME = "Other / Unrecognized"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/instance
+# ---------------------------------------------------------------------------
+
+
+@router.get("/instance", response_model=ApiResponse[InstanceFacts])
+async def get_instance_facts() -> ApiResponse[InstanceFacts]:
+    """Return software version, process uptime, and start timestamp.
+
+    Version is read from importlib.metadata or the package __version__
+    constant. Falls back to 'unknown' rather than raising a 500.
+    """
+    try:
+        version = importlib.metadata.version("butlers")
+    except importlib.metadata.PackageNotFoundError:
+        try:
+            from butlers import __version__
+
+            version = __version__
+        except Exception:
+            version = "unknown"
+
+    now = datetime.now(UTC)
+    uptime = (now - _PROCESS_START).total_seconds()
+
+    return ApiResponse(
+        data=InstanceFacts(
+            version=version,
+            uptime_seconds=uptime,
+            started_at=_PROCESS_START.isoformat(),
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/database
+# ---------------------------------------------------------------------------
+
+
+@router.get("/database", response_model=ApiResponse[DatabaseFacts])
+async def get_database_facts(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[DatabaseFacts]:
+    """Return PostgreSQL catalog size facts for the current database.
+
+    Queries:
+    - pg_database_size(current_database()) for total bytes
+    - information_schema.tables for schema/table enumeration
+    - pg_catalog.pg_total_relation_size() for per-table sizes
+
+    Returns HTTP 503 on any catalog query failure.
+    """
+    try:
+        # Use the switchboard pool (it has pg catalog read access from the
+        # shared database; all butlers share one PostgreSQL database).
+        pool = db.pool("switchboard")
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+
+    try:
+        total_bytes: int = await pool.fetchval("SELECT pg_database_size(current_database())") or 0
+    except Exception as exc:
+        logger.warning("Failed to query database size: %s", exc)
+        raise HTTPException(status_code=503, detail="Database catalog query failed")
+
+    # Per-schema breakdown: only butler-owned schemas (exclude public, pg_*,
+    # information_schema). Table count via information_schema.
+    try:
+        schema_rows = await pool.fetch(
+            """
+            SELECT
+                t.table_schema AS schema_name,
+                count(*) AS table_count,
+                coalesce(
+                    sum(pg_total_relation_size(
+                        (quote_ident(t.table_schema) || '.' || quote_ident(t.table_name))::regclass
+                    )),
+                    0
+                ) AS size_bytes
+            FROM information_schema.tables t
+            WHERE t.table_schema NOT IN ('public', 'pg_catalog', 'information_schema',
+                                          'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
+              AND t.table_schema NOT LIKE 'pg_%'
+              AND t.table_type = 'BASE TABLE'
+            GROUP BY t.table_schema
+            ORDER BY size_bytes DESC
+            """
+        )
+        schemas = [
+            SchemaSize(
+                schema_name=row["schema_name"],
+                size_bytes=int(row["size_bytes"] or 0),
+                table_count=int(row["table_count"] or 0),
+            )
+            for row in schema_rows
+        ]
+    except Exception as exc:
+        logger.warning("Failed to query schema sizes: %s", exc)
+        raise HTTPException(status_code=503, detail="Schema size query failed")
+
+    # Top 10 tables by total relation size across all non-system schemas
+    try:
+        table_rows = await pool.fetch(
+            """
+            SELECT
+                t.table_schema AS schema_name,
+                t.table_name,
+                pg_total_relation_size(
+                    (quote_ident(t.table_schema) || '.' || quote_ident(t.table_name))::regclass
+                ) AS size_bytes
+            FROM information_schema.tables t
+            WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema',
+                                          'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
+              AND t.table_schema NOT LIKE 'pg_%'
+              AND t.table_type = 'BASE TABLE'
+            ORDER BY size_bytes DESC
+            LIMIT 10
+            """
+        )
+        largest_tables = [
+            TableSize(
+                schema_name=row["schema_name"],
+                table_name=row["table_name"],
+                size_bytes=int(row["size_bytes"] or 0),
+            )
+            for row in table_rows
+        ]
+    except Exception as exc:
+        logger.warning("Failed to query table sizes: %s", exc)
+        raise HTTPException(status_code=503, detail="Table size query failed")
+
+    return ApiResponse(
+        data=DatabaseFacts(
+            total_size_bytes=total_bytes,
+            schemas=schemas,
+            largest_tables=largest_tables,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/backups
+# ---------------------------------------------------------------------------
+
+
+@router.get("/backups", response_model=ApiResponse[BackupFacts])
+async def get_backup_facts() -> ApiResponse[BackupFacts]:
+    """Return backup recency and source reachability.
+
+    In v1, no backup strategy has been configured in this codebase (no
+    pg_dump cron, no Minio/S3 bucket is documented). The endpoint always
+    returns backup_source_reachable=false and null fields. A follow-up bead
+    should be filed to configure and document the backup strategy.
+
+    Graceful degradation: always returns HTTP 200 with null fields when the
+    backup source is unreachable or unconfigured, never HTTP 503.
+    """
+    return ApiResponse(
+        data=BackupFacts(
+            last_backup_at=None,
+            last_backup_size_bytes=None,
+            backup_source_reachable=False,
+            backup_history=[],
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Owner-contact assertion helper
+# ---------------------------------------------------------------------------
+
+
+async def _assert_owner_contact(pool) -> None:
+    """Raise HTTP 403 unless the caller can be mapped to the owner contact.
+
+    Joins public.contacts -> public.entities and asserts 'owner' = ANY(e.roles).
+    public.contacts.roles was dropped in migration core_016; roles live on
+    public.entities.roles exclusively.
+
+    In v1, the dashboard is owner-only and there is no per-request identity
+    attached to /api/system/* calls. The assertion checks that at least one
+    owner entity exists in the database (i.e., the system is bootstrapped and
+    the owner contact is registered). If no owner entity is found, the request
+    is rejected with 403 to prevent data leakage in misconfigured deployments.
+
+    Note: a fuller v2 implementation would extract the calling identity from
+    the request session/cookie and verify it against the owner entity.
+    """
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT e.id
+            FROM public.contacts c
+            JOIN public.entities e ON c.entity_id = e.id
+            WHERE 'owner' = ANY(e.roles)
+            LIMIT 1
+            """
+        )
+    except Exception as exc:
+        logger.warning("Owner-contact assertion query failed: %s", exc)
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "forbidden", "message": "Owner contact assertion failed"},
+        )
+
+    if row is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "forbidden", "message": "Owner contact not found"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/egress
+# ---------------------------------------------------------------------------
+
+
+@router.get("/egress", response_model=ApiResponse[EgressCatalog])
+async def get_egress_catalog(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[EgressCatalog]:
+    """Return the data-egress catalog for this instance (owner-only).
+
+    Aggregates switchboard.dashboard_audit_log by operation, mapping each
+    operation to an external actor via the server-side actor registry.
+
+    Only the owner contact may view the egress catalog. Non-owner callers
+    receive HTTP 403. See _assert_owner_contact() for the assertion logic.
+    """
+    try:
+        sw_pool = db.pool("switchboard")
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+
+    # Owner-contact assertion (non-negotiable privacy contract)
+    await _assert_owner_contact(sw_pool)
+
+    # Query audit log grouped by operation
+    try:
+        rows = await sw_pool.fetch(
+            """
+            SELECT
+                operation,
+                max(created_at) AS last_seen_at,
+                count(*) AS total_calls,
+                min(created_at) AS first_seen_at
+            FROM dashboard_audit_log
+            GROUP BY operation
+            ORDER BY last_seen_at DESC
+            """
+        )
+    except Exception as exc:
+        logger.warning("Egress catalog query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Egress catalog query failed")
+
+    # Derive catalog_covers_from from the oldest first_seen_at already in the result set.
+    # No second query needed -- we already have min(created_at) per operation above.
+    catalog_covers_from: str | None = None
+    if rows:
+        oldest_raw = min(
+            (row["first_seen_at"] for row in rows if row["first_seen_at"] is not None),
+            default=None,
+        )
+        if oldest_raw is not None:
+            catalog_covers_from = (
+                oldest_raw.isoformat() if hasattr(oldest_raw, "isoformat") else str(oldest_raw)
+            )
+
+    # Aggregate rows by actor_id
+    actor_buckets: dict[str, dict] = {}
+    for row in rows:
+        operation = row["operation"]
+        last_seen = row["last_seen_at"]
+        total_calls = int(row["total_calls"] or 0)
+
+        if operation in _ACTOR_REGISTRY:
+            actor_id, display_name = _ACTOR_REGISTRY[operation]
+            data_types = _OPERATION_DATA_TYPES.get(operation, [])
+        else:
+            actor_id = _UNKNOWN_ACTOR_ID
+            display_name = _UNKNOWN_ACTOR_NAME
+            data_types = []
+
+        if actor_id not in actor_buckets:
+            actor_buckets[actor_id] = {
+                "actor_id": actor_id,
+                "display_name": display_name,
+                "last_seen_at": last_seen,
+                "total_calls": 0,
+                "data_types": set(data_types),
+            }
+        else:
+            # Update last_seen_at to the latest across merged operations
+            if last_seen and (
+                actor_buckets[actor_id]["last_seen_at"] is None
+                or last_seen > actor_buckets[actor_id]["last_seen_at"]
+            ):
+                actor_buckets[actor_id]["last_seen_at"] = last_seen
+            actor_buckets[actor_id]["data_types"].update(data_types)
+
+        actor_buckets[actor_id]["total_calls"] += total_calls
+
+    # Sort by last_seen_at descending
+    actors = sorted(
+        actor_buckets.values(),
+        key=lambda a: a["last_seen_at"] or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
+    )
+
+    egress_actors = [
+        EgressActor(
+            actor_id=a["actor_id"],
+            display_name=a["display_name"],
+            last_seen_at=(
+                a["last_seen_at"].isoformat()
+                if hasattr(a["last_seen_at"], "isoformat")
+                else str(a["last_seen_at"])
+            ),
+            total_calls=a["total_calls"],
+            data_types=sorted(a["data_types"]),
+        )
+        for a in actors
+        if a["last_seen_at"] is not None
+    ]
+
+    return ApiResponse(
+        data=EgressCatalog(
+            actors=egress_actors,
+            catalog_covers_from=catalog_covers_from,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/butlers/heartbeat
+# ---------------------------------------------------------------------------
+
+
+@router.get("/butlers/heartbeat", response_model=ApiResponse[HeartbeatFacts])
+async def get_butlers_heartbeat(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[HeartbeatFacts]:
+    """Return per-butler liveness registry snapshots and session facts.
+
+    Reads from the switchboard's butler_registry table for heartbeat timestamps
+    and fans out to per-butler schema sessions tables for session facts. Does
+    not issue live MCP calls to any butler.
+
+    If a butler's schema is unreachable, its session fields are null/0 and
+    the entry is included with error='schema_unreachable'.
+    """
+    try:
+        sw_pool = db.pool("switchboard")
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+
+    # Fetch liveness registry: butler name -> last_seen_at
+    try:
+        registry_rows = await sw_pool.fetch(
+            "SELECT name, last_seen_at FROM butler_registry ORDER BY name ASC"
+        )
+    except Exception as exc:
+        logger.warning("Failed to query butler_registry: %s", exc)
+        raise HTTPException(status_code=503, detail="Butler registry query failed")
+
+    # Build registry map
+    registry: dict[str, datetime | None] = {
+        row["name"]: row["last_seen_at"] for row in registry_rows
+    }
+
+    # All butler names from the DatabaseManager (the registered roster)
+    all_butler_names = sorted(db.butler_names)
+
+    # Merge: include all butlers the DB manager knows about, plus any in the
+    # registry that the DB manager doesn't have a pool for (edge case).
+    all_names = sorted(set(all_butler_names) | set(registry.keys()))
+
+    now = datetime.now(UTC)
+    entries: list[ButlerHeartbeat] = []
+
+    for name in all_names:
+        last_heartbeat_raw = registry.get(name)
+
+        # Normalize heartbeat timestamp to UTC-aware datetime
+        if last_heartbeat_raw is not None:
+            if hasattr(last_heartbeat_raw, "tzinfo") and last_heartbeat_raw.tzinfo is None:
+                last_heartbeat_dt: datetime | None = last_heartbeat_raw.replace(tzinfo=UTC)
+            else:
+                last_heartbeat_dt = last_heartbeat_raw
+        else:
+            last_heartbeat_dt = None
+
+        last_heartbeat_at = last_heartbeat_dt.isoformat() if last_heartbeat_dt else None
+        heartbeat_age = (now - last_heartbeat_dt).total_seconds() if last_heartbeat_dt else None
+
+        # Per-butler session facts
+        last_session_at: str | None = None
+        active_session_count: int = 0
+        entry_error: str | None = None
+
+        if name in all_butler_names:
+            try:
+                pool = db.pool(name)
+                # Most-recent completed session
+                last_row = await pool.fetchrow(
+                    "SELECT completed_at FROM sessions "
+                    "WHERE completed_at IS NOT NULL "
+                    "ORDER BY completed_at DESC LIMIT 1"
+                )
+                if last_row and last_row["completed_at"] is not None:
+                    ts = last_row["completed_at"]
+                    if hasattr(ts, "tzinfo") and ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=UTC)
+                    last_session_at = ts.isoformat()
+
+                # Active session count
+                active_count_row = await pool.fetchval(
+                    "SELECT count(*) FROM sessions WHERE completed_at IS NULL"
+                )
+                active_session_count = int(active_count_row or 0)
+            except Exception as exc:
+                logger.warning("Session query failed for butler %s: %s", name, exc)
+                entry_error = "schema_unreachable"
+
+        entries.append(
+            ButlerHeartbeat(
+                name=name,
+                last_heartbeat_at=last_heartbeat_at,
+                last_session_at=last_session_at,
+                active_session_count=active_session_count,
+                heartbeat_age_seconds=heartbeat_age,
+                error=entry_error,
+            )
+        )
+
+    return ApiResponse(data=HeartbeatFacts(butlers=entries))

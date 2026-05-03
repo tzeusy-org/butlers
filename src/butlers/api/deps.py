@@ -485,6 +485,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         spotify,
         state,
         steam,
+        system,
         telegram_auth,
         timeline,
     )
@@ -518,6 +519,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         spotify,
         state,
         steam,
+        system,
         telegram_auth,
         timeline,
     ]:
