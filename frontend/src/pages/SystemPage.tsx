@@ -7,6 +7,7 @@
  */
 
 import { BackupTile } from "@/components/system/BackupTile";
+import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { DbSizeTile } from "@/components/system/DbSizeTile";
 import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
 import { UptimeTile } from "@/components/system/UptimeTile";
@@ -21,9 +22,6 @@ import {
 import { Page } from "@/components/ui/page";
 import { useButlers } from "@/hooks/use-butlers";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
-import {
-  useButlerHeartbeats,
-} from "@/hooks/use-system";
 
 // ---------------------------------------------------------------------------
 // SystemTile
@@ -44,38 +42,6 @@ function SystemTile({ title, action, children }: SystemTileProps) {
       </CardHeader>
       <CardContent>{children}</CardContent>
     </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// HeartbeatTile stub (bu-ngfzz.7)
-// ---------------------------------------------------------------------------
-
-function HeartbeatTile() {
-  const { data, isLoading, error } = useButlerHeartbeats();
-
-  if (isLoading) {
-    return (
-      <SystemTile title="Butler Heartbeats">
-        <div className="h-16 animate-pulse rounded bg-muted" />
-      </SystemTile>
-    );
-  }
-
-  if (error) {
-    return (
-      <SystemTile title="Butler Heartbeats">
-        <p className="text-sm text-destructive">Failed to load heartbeat data.</p>
-      </SystemTile>
-    );
-  }
-
-  return (
-    <SystemTile title="Butler Heartbeats">
-      <pre className="overflow-auto text-xs text-muted-foreground">
-        {JSON.stringify(data?.data, null, 2)}
-      </pre>
-    </SystemTile>
   );
 }
 
@@ -124,7 +90,7 @@ export function SystemPage() {
         <DbSizeTile />
         <BackupTile />
         <EgressCatalogTile />
-        <HeartbeatTile />
+        <ButlerHeartbeatTile />
       </div>
 
       {/* Ecosystem topology -- full-width section below ownership fact tiles */}
