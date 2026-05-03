@@ -3,7 +3,7 @@
 //
 // Widget regions:
 //   - Gantt area (bu-ig72b.5 / bu-ig72b.28)
-//   - Map area (bu-ig72b.14)
+//   - Map area (bu-ig72b.14) — rendered as a floating bottom-right minimap
 //   - Scrubber (bu-ig72b.23) — single time-scrubber driving Gantt cursor and map playhead
 //   - Aggregations area (bu-ig72b.7, bu-ig72b.33)
 //
@@ -27,7 +27,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { useTimeWindow } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
-import { MapWidget } from "@/components/chronicles/MapWidget"
+import { FloatingMapMinimap } from "@/components/chronicles/FloatingMapMinimap"
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
 import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer"
 import { Scrubber } from "@/components/chronicles/Scrubber"
@@ -186,7 +186,9 @@ export default function ChroniclesPage() {
 
   return (
     <ChroniclesTimezoneProvider timezone={ownerTz}>
-    <div className="space-y-6">
+    {/* pb-72 leaves room below the last section so the floating minimap
+        does not permanently obscure aggregation content when scrolled. */}
+    <div className="space-y-6 pb-72">
       {/* Page heading */}
       <div className="flex items-center justify-between">
         <div>
@@ -240,11 +242,13 @@ export default function ChroniclesPage() {
           />
         </section>
 
-        {/* Map area */}
-        <section aria-label="Map area" className="rounded-lg border bg-card p-6">
-          <h2 className="text-sm font-medium text-muted-foreground mb-4">Map area</h2>
-          <MapWidget points={[]} playheadPoint={playheadPoint} trailPoints={trailPoints} />
-        </section>
+        {/* Map area — floating minimap pinned to the bottom-right viewport
+            corner so the page stays scannable vertically. Lives inside the
+            MapPanContext.Provider so Gantt episode clicks still pan it. */}
+        <FloatingMapMinimap
+          playheadPoint={playheadPoint}
+          trailPoints={trailPoints}
+        />
       </MapPanContext.Provider>
 
       {/* Aggregations area */}
