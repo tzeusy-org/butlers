@@ -18,7 +18,7 @@ import {
   YAxis,
 } from "recharts"
 
-import { Skeleton } from "@/components/ui/skeleton"
+import { ChartSkeleton } from "@/components/skeletons"
 import type { ButlerSummary } from "@/api/types"
 import {
   bucketUnit,
@@ -108,39 +108,6 @@ function StripeTooltip({ active, label, payload, unit }: CustomTooltipProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Loading skeleton
-// ---------------------------------------------------------------------------
-
-function SessionStripeChartSkeleton() {
-  return (
-    <div
-      className="flex h-[200px] flex-col gap-2 py-4"
-      data-testid="session-stripe-skeleton"
-      role="status"
-      aria-label="Loading session chart"
-    >
-      <div className="flex h-full gap-2">
-        <Skeleton className="w-8 h-full rounded-md" />
-        <div className="flex flex-1 items-end gap-0.5">
-          {Array.from({ length: 24 }, (_, i) => (
-            <Skeleton
-              key={i}
-              className="flex-1 rounded-sm"
-              style={{ height: `${20 + (i % 4) * 15}%` }}
-            />
-          ))}
-        </div>
-      </div>
-      <div className="flex gap-0.5 pl-10">
-        {Array.from({ length: 6 }, (_, i) => (
-          <Skeleton key={i} className="flex-1 h-3 rounded" />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
@@ -180,7 +147,7 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
   }, [sessions, windowHours, butlers])
 
   if (isLoading) {
-    return <SessionStripeChartSkeleton />
+    return <ChartSkeleton height="h-[200px]" testId="session-stripe-skeleton" />
   }
 
   if (isError) {
