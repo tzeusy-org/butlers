@@ -512,3 +512,43 @@ describe("compact flag (mode=smart)", () => {
     expect(text).toContain("May 3")
   })
 })
+
+// ---------------------------------------------------------------------------
+// 12. date-only string handling (bu-meoqp review fix)
+// ---------------------------------------------------------------------------
+
+describe("date-only string (YYYY-MM-DD)", () => {
+  // "2026-05-03" should render as May 3 in all timezones — no UTC-midnight shift.
+
+  it("renders correct weekday in America/New_York despite UTC-midnight parsing", () => {
+    // Without the fix, new Date("2026-05-03") = UTC midnight = May 2 in NYC (EDT=UTC-4).
+    // With the fix, it's anchored to UTC noon, so it lands on May 3 in NYC.
+    const { text } = parseTime(
+      render({ value: "2026-05-03", mode: "absolute", precision: "weekday" }, "America/New_York"),
+    )
+    expect(text).toContain("May 3")
+    expect(text).toContain("Sunday")
+  })
+
+  it("renders correct date in America/Los_Angeles (UTC-7)", () => {
+    const { text } = parseTime(
+      render({ value: "2026-05-03", mode: "absolute", precision: "day" }, "America/Los_Angeles"),
+    )
+    expect(text).toContain("May 3")
+  })
+
+  it("renders correct date in Asia/Singapore (UTC+8)", () => {
+    const { text } = parseTime(
+      render({ value: "2026-05-03", mode: "absolute", precision: "day" }),
+    )
+    expect(text).toContain("May 3")
+  })
+
+  it("datetime attribute is the anchored UTC noon ISO string, not the bare date", () => {
+    const { datetime } = parseTime(
+      render({ value: "2026-05-03", mode: "absolute", precision: "day" }),
+    )
+    // Should be anchored to UTC noon, not midnight
+    expect(datetime).toBe("2026-05-03T12:00:00.000Z")
+  })
+})

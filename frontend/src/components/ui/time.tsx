@@ -23,8 +23,17 @@
 // precision extensions (bu-5j7p9):
 //   - weekday: full weekday + date, e.g. "Sunday, May 3, 2026"
 //              Compact form omits year: "Sunday, May 3"
+//              Timezone label intentionally suppressed (date headings need none).
 //   - time:    time-only (24-hour clock), e.g. "08:30"
 //              Used for dense time-column cells. compact flag ignored.
+//              Timezone label intentionally suppressed (cell is too narrow).
+//   Both precisions still use the user's timezone for TZ-correct rendering.
+//
+// Date-only strings (YYYY-MM-DD):
+//   Anchored to UTC noon (T12:00:00.000Z) to prevent midnight-crossing
+//   artifacts when rendering in the user's timezone. Without this, `new Date(
+//   "YYYY-MM-DD")` parses as UTC midnight and can show the previous local day
+//   for timezones west of UTC.
 //
 // Timezone is read from ChroniclesTimezoneContext via useChroniclesTimezone().
 // An explicit `timezone` prop overrides the context value — useful for
@@ -63,8 +72,8 @@ export interface TimeProps {
    *   - minute:  "May 3, 2026 at 4:42 PM SGT"  (default)
    *   - hour:    "May 3, 2026 at 4 PM SGT"
    *   - day:     "May 3, 2026 SGT"
-   *   - weekday: "Sunday, May 3, 2026"  (compact: "Sunday, May 3")
-   *   - time:    "08:30"  (24-hour clock, time-only; compact has no effect)
+   *   - weekday: "Sunday, May 3, 2026"  (compact: "Sunday, May 3"; no tz label)
+   *   - time:    "08:30"  (24-hour clock, time-only; compact has no effect; no tz label)
    * @default "minute"
    */
   precision?: TimePrecision
@@ -98,6 +107,10 @@ export interface TimeProps {
 // Format strings per precision
 // ---------------------------------------------------------------------------
 
+// Note: `weekday` and `time` precisions intentionally omit the timezone
+// abbreviation (zzz). `weekday` renders a calendar-date heading where the tz
+// label adds no value; `time` renders a compact 24-hour column cell. Both still
+// consume the user's timezone via formatInTimeZone() so output is TZ-correct.
 const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
   second:  "MMM d, yyyy 'at' h:mm:ss a zzz",
   minute:  "MMM d, yyyy 'at' h:mm a zzz",
@@ -124,7 +137,17 @@ const SMART_THRESHOLD_MS = 24 * 60 * 60 * 1_000
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Regex for ISO date-only strings ("YYYY-MM-DD"). When JS parses these with
+// `new Date("YYYY-MM-DD")` it treats them as UTC midnight, which shifts the
+// displayed date by one day for timezones west of UTC. To avoid this, we
+// anchor date-only values to UTC noon — far enough from midnight to survive
+// any real-world UTC offset (UTC-12 through UTC+14).
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/
+
 function toDate(value: string | Date): Date {
+  if (typeof value === "string" && DATE_ONLY_RE.test(value)) {
+    return new Date(value + "T12:00:00.000Z")
+  }
   return value instanceof Date ? value : new Date(value)
 }
 
