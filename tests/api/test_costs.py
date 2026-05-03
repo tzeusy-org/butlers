@@ -132,21 +132,21 @@ def test_load_pricing_flat_and_tiered(tmp_path):
     assert cfg2.get_model_pricing("nonexistent-model") is None
 
 
+def test_load_pricing_missing_file_raises(tmp_path):
+    with pytest.raises(PricingError, match="not found"):
+        load_pricing(tmp_path / "nonexistent.toml")
+
+
 @pytest.mark.parametrize("content,match", [
-    ("", "not found"),  # missing file — created but empty triggers missing fields
     ("[models\ngarbage!!!", "Invalid TOML"),
     ('[models]\n[models."m1"]\ninput_price_per_token = 0.001\n', "Missing required field"),
     ('[models]\n[models."m"]\ntiers = []\n', "non-empty array"),
 ])
-def test_load_pricing_errors(tmp_path, content, match):
-    if match == "not found":
-        with pytest.raises(PricingError, match=match):
-            load_pricing(tmp_path / "nonexistent.toml")
-    else:
-        p = tmp_path / "bad.toml"
-        p.write_text(content)
-        with pytest.raises(PricingError, match=match):
-            load_pricing(p)
+def test_load_pricing_malformed_content_raises(tmp_path, content, match):
+    p = tmp_path / "bad.toml"
+    p.write_text(content)
+    with pytest.raises(PricingError, match=match):
+        load_pricing(p)
 
 
 # ---------------------------------------------------------------------------
