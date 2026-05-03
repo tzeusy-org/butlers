@@ -322,8 +322,14 @@ async def test_invoke_prefers_home_scoped_tempdir(tmp_path: Path, monkeypatch: p
 async def test_invoke_ignores_isolated_home_cleanup_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ):
-    """A temp HOME cleanup race must not fail an otherwise completed invocation."""
+    """A temp HOME cleanup race must not fail an otherwise completed invocation.
+
+    Verifies the full observability contract: the OSError is caught, a warning
+    is logged so leaked session dirs are diagnosable, and the best-effort
+    rmtree fallback runs and removes the directory.
+    """
 
     class _TempdirWithRacyCleanup:
         def __init__(self, path: Path) -> None:
@@ -345,9 +351,12 @@ async def test_invoke_ignores_isolated_home_cleanup_race(
     home.mkdir()
     isolated_home = tmp_path / "isolated-home"
     isolated_home.mkdir()
+    # Drop a residual file so we can prove rmtree actually ran.
+    (isolated_home / "leftover").write_text("residual")
     monkeypatch.setenv("HOME", str(home))
 
     with (
+        caplog.at_level(logging.WARNING, logger="butlers.core.runtimes.codex"),
         patch(_EXEC, return_value=mock_proc),
         patch(
             "butlers.core.runtimes.codex._create_isolated_home_tempdir",
@@ -364,6 +373,12 @@ async def test_invoke_ignores_isolated_home_cleanup_race(
     assert result_text == "ok"
     assert tool_calls == []
     assert usage is None
+    assert any(
+        "Codex isolated HOME cleanup failed" in rec.message
+        for rec in caplog.records
+        if rec.levelno >= logging.WARNING
+    ), "expected ENOTEMPTY race to emit a warning for telemetry"
+    assert not isolated_home.exists(), "rmtree fallback should have removed the leaked dir"
 
 
 async def test_invoke_stdin_prompt_wraps_system_prompt():
