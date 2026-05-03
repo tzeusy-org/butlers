@@ -173,6 +173,7 @@ Admission-control decisions that did not launch a runtime session (for example c
 | `/qa/patrols/:patrolId` | QA patrol detail |
 | `/qa/investigations/:attemptId` | QA investigation detail |
 | `/settings` | Local UI preferences |
+| `/system` | System ownership page (see Amendment 1) |
 
 ### Butler Detail Tabs
 
@@ -233,3 +234,71 @@ All routes render inside a common shell with:
 **Centralized butler route registration.** Rejected in favor of auto-discovery. Requiring new butlers to modify a central registration file creates merge conflicts and coupling. Auto-discovery from `roster/<butler>/api/router.py` allows butlers to add dashboard capabilities independently.
 
 **WebSocket for real-time updates.** Not implemented for most surfaces. Polling at 15-30s intervals is sufficient for the current update frequency. The SSE endpoint exists for targeted real-time use cases but is not the primary data access pattern. WebSocket could be added for the approvals queue if sub-second notification latency becomes important.
+
+---
+
+## Amendment 1: /system Namespace
+
+**Date:** 2026-05-03
+**Status:** Accepted
+**Implementing change:** `openspec/changes/system-page-capability/` (bu-ngfzz.*)
+
+Vertical E shipped the `/system` dashboard route and the `/api/system/*` API namespace. This amendment registers both in RFC 0007.
+
+### Frontend Route
+
+Add to the Frontend Route Map under the Telemetry section:
+
+| Route | Surface |
+|-------|---------|
+| `/system` | System ownership page (instance version, uptime, database size, backup recency, data-egress catalog, per-butler heartbeats) |
+
+This route is registered in `frontend/src/router.tsx` alongside the Telemetry routes (`/traces`, `/timeline`) and appears in `frontend/src/components/layout/nav-config.ts` under the Telemetry nav section with no butler-presence filter (it is always visible). The page uses the `<Page archetype="overview">` shell.
+
+### API Surface
+
+Five ownership-fact endpoints are registered under `/api/system/`. Each endpoint uses the standard `ApiResponse<T>` envelope and is independently queryable so the frontend can load domains with different stale-time and retry policies.
+
+| Endpoint | Response model | Description |
+|----------|----------------|-------------|
+| `GET /api/system/instance` | `ApiResponse<InstanceFacts>` | Software version (`version`), process uptime (`uptime_seconds`), and daemon start time (`started_at`). Version is read from `importlib.metadata`; on `PackageNotFoundError` falls back to `butlers.__version__`, then to `"unknown"` if that import also fails. |
+| `GET /api/system/database` | `ApiResponse<DatabaseFacts>` | Total database size in bytes (`total_size_bytes`), per-butler-schema size breakdown (`schemas: SchemaSize[]`), and the ten largest tables (`largest_tables: TableSize[]`). `growth_rate_bytes_per_day` is always `null` in v1 (deferred to v2). Derived from PostgreSQL catalog queries (`pg_database_size`, `pg_total_relation_size`, `information_schema.tables`). Returns HTTP 503 if the catalog query fails. |
+| `GET /api/system/backups` | `ApiResponse<BackupFacts>` | Backup recency (`last_backup_at`, `last_backup_size_bytes`), source reachability (`backup_source_reachable: bool`), and recent backup history (`backup_history: BackupEvent[]`). Degrades gracefully: always returns HTTP 200 with `backup_source_reachable: false` and null fields when no backup strategy is configured. |
+| `GET /api/system/egress` | `ApiResponse<EgressCatalog>` | External-actor egress catalog: which external endpoints have received data from this instance, with `last_seen_at` and `total_calls` per actor (`actors: EgressActor[]`). `catalog_covers_from` communicates the oldest audit record used to build the catalog. **Owner-only**: returns HTTP 403 when the owner contact cannot be asserted. |
+| `GET /api/system/butlers/heartbeat` | `ApiResponse<HeartbeatFacts>` | Per-butler liveness snapshot from the switchboard registry (`butlers: ButlerHeartbeat[]`). Each entry carries `last_heartbeat_at`, `heartbeat_age_seconds`, `last_session_at`, and `active_session_count`. Reads from the registry; does not issue live MCP calls. Degrades gracefully per butler when a schema is unreachable (`error: "schema_unreachable"`). |
+
+Full Pydantic response models (`InstanceFacts`, `DatabaseFacts`, `SchemaSize`, `TableSize`, `BackupFacts`, `BackupEvent`, `EgressCatalog`, `EgressActor`, `HeartbeatFacts`, `ButlerHeartbeat`) are defined in `src/butlers/api/routers/system.py`. The router is registered in `src/butlers/api/app.py` (explicit include; the system router lives in the core `src/butlers/api/routers/` package rather than in a butler-specific `roster/*/api/` directory and is therefore not subject to butler auto-discovery).
+
+For the complete data-model and privacy-contract specification, see `openspec/changes/system-page-capability/design.md`.
+
+### Egress Catalog Data Source
+
+The egress catalog is a read-only aggregation of `switchboard.dashboard_audit_log` — the same table that powers the audit-log dashboard view. No new write path or table is introduced.
+
+**Actor enumeration.** The server-side actor registry maps `operation` strings to stable `actor_id` values and human-readable `display_name` values:
+
+| `operation` (audit log) | `actor_id` | `display_name` |
+|-------------------------|-----------|----------------|
+| `llm_api_call` | `anthropic.claude` | Anthropic Claude API |
+| `telegram_send` | `telegram.api` | Telegram Bot API |
+| `google_calendar_write` | `google.calendar` | Google Calendar API |
+| `gmail_send` | `google.gmail` | Gmail API |
+
+Operations not in the registry are bucketed under `other / Other / Unrecognized`.
+
+**What counts as an "external actor."** An external actor is any third-party service that receives a payload from this instance: LLM providers, messaging APIs, Google APIs, and any future outbound connector. Each outbound call site MUST emit a `dashboard_audit_log` row with the appropriate `operation` string so the catalog captures it. See `AGENTS.md` (§ "Egress audit operation naming convention") for the per-operation `request_summary` JSONB contract and the `write_audit_entry` / `emit_dashboard_audit` call sites.
+
+**Privacy contract (v1).** The egress catalog is owner-only. The owner is identified by joining `public.contacts → public.entities` and asserting `'owner' = ANY(e.roles)` (`public.contacts.roles` was dropped in migration `core_016`; roles live exclusively on `public.entities.roles`). Non-owner callers receive HTTP 403. The endpoint never returns a partial view of egress data to non-owner contacts; multi-viewer access (if added in a future spec) MUST gate on an explicit owner-only capability flag rather than treating any authenticated dashboard session as sufficient.
+
+The `catalog_covers_from` field on `EgressCatalog` makes the audit window explicit. The UI SHOULD display a footnote: "This catalog reflects data captured by the audit log. Coverage may be incomplete for some external services."
+
+### OTel Egress Span
+
+Every successful read of `GET /api/system/egress` MUST emit an OTel span named **`system.egress.read`** with the attribute **`actor_count`** set to the number of distinct actors returned in the response. This span is required for privacy auditing and was implemented in bu-4tluf (PR #1378).
+
+Conformance with RFC 0005 (observability and telemetry):
+
+- The span is created via the OpenTelemetry Python SDK tracer (`opentelemetry.trace.get_tracer`).
+- `actor_count` MUST be a low-cardinality integer attribute (count of distinct `actor_id` values, not raw audit rows).
+- The span MUST NOT carry high-cardinality identifiers (`request_id`, session IDs, actor names) as span attributes — these belong in logs or structured evidence, not metric labels (RFC 0005 § "Cardinality Discipline").
+- The span wraps the egress query and actor-aggregation block; it is not emitted for 403 (owner-gate failure) or 503 (DB error) responses, where the endpoint returns before reaching the aggregation step.

@@ -62,6 +62,7 @@ from butlers.api.routers.notifications import (
 )
 from butlers.api.routers.oauth import router as oauth_router
 from butlers.api.routers.owntracks import router as owntracks_router
+from butlers.api.routers.preferences import router as preferences_router
 from butlers.api.routers.provider_settings import router as provider_settings_router
 from butlers.api.routers.qa import router as qa_router
 from butlers.api.routers.runtime_config import router as runtime_config_router
@@ -80,7 +81,6 @@ from butlers.api.routers.state import router as state_router
 from butlers.api.routers.steam import router as steam_router
 from butlers.api.routers.system import router as system_router
 from butlers.api.routers.telegram_auth import router as telegram_auth_router
-from butlers.api.routers.preferences import router as preferences_router
 from butlers.api.routers.timeline import router as timeline_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
 
