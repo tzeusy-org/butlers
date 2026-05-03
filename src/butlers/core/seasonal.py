@@ -348,8 +348,6 @@ async def seasonal_period_create(
     validate_month_day(start_month, start_day)
     validate_month_day(end_month, end_day)
 
-    metadata_json = json.dumps(metadata) if metadata is not None else None
-
     try:
         row = await pool.fetchrow(
             """
@@ -357,7 +355,7 @@ async def seasonal_period_create(
                 name, period_type, start_month, start_day,
                 end_month, end_day, timezone, metadata, butler_name, enabled
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING id
             """,
             name,
@@ -367,7 +365,7 @@ async def seasonal_period_create(
             end_month,
             end_day,
             timezone,
-            metadata_json,
+            metadata,
             butler_name,
             enabled,
         )
@@ -482,7 +480,7 @@ async def seasonal_period_update(
     if timezone is not None:
         _add("timezone", timezone)
     if metadata is not None:
-        _add("metadata", json.dumps(metadata))
+        _add("metadata", metadata)
     if enabled is not None:
         _add("enabled", enabled)
     _add("updated_at", datetime.now(UTC))

@@ -59,15 +59,14 @@ async def route_inbox_insert(
         The newly created row id.
     """
     row_id = uuid.uuid4()
-    envelope_json = json.dumps(route_envelope)
     async with pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO route_inbox (id, route_envelope, lifecycle_state)
-            VALUES ($1, $2::jsonb, $3)
+            VALUES ($1, $2, $3)
             """,
             row_id,
-            envelope_json,
+            route_envelope,
             STATE_ACCEPTED,
         )
     logger.debug("route_inbox: inserted id=%s", row_id)

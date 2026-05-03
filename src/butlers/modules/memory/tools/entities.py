@@ -83,15 +83,14 @@ async def entity_create(
 
     aliases_list = aliases or []
     roles_list = roles or []
-    metadata_json = json.dumps(metadata or {})
 
     insert_sql = """
         INSERT INTO public.entities
             (canonical_name, entity_type, aliases, metadata, roles)
-        VALUES ($1, $2, $3, $4::jsonb, $5)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id
     """
-    insert_args = (canonical_name, entity_type, aliases_list, metadata_json, roles_list)
+    insert_args = (canonical_name, entity_type, aliases_list, metadata or {}, roles_list)
 
     try:
         entity_id = await pool.fetchval(insert_sql, *insert_args)
@@ -206,8 +205,8 @@ async def entity_update(
     if metadata is not None:
         existing_metadata: dict[str, Any] = _parse_metadata(current["metadata"])
         merged = {**existing_metadata, **metadata}
-        params.append(json.dumps(merged))
-        set_clauses.append(f"metadata = ${param_idx}::jsonb")
+        params.append(merged)
+        set_clauses.append(f"metadata = ${param_idx}")
         param_idx += 1
 
     params.append(eid)
@@ -1090,10 +1089,10 @@ async def entity_merge(
             merged_metadata = {**src_metadata_clean, **tgt_metadata}
 
             await conn.execute(
-                "UPDATE public.entities SET aliases = $1, metadata = $2::jsonb, roles = $3, "
+                "UPDATE public.entities SET aliases = $1, metadata = $2, roles = $3, "
                 "updated_at = now() WHERE id = $4",
                 new_aliases,
-                json.dumps(merged_metadata),
+                merged_metadata,
                 merged_roles,
                 tgt_uuid,
             )
@@ -1101,8 +1100,8 @@ async def entity_merge(
             # Tombstone source
             src_metadata_tombstoned = {**src_metadata, "merged_into": target_entity_id}
             await conn.execute(
-                "UPDATE public.entities SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
-                json.dumps(src_metadata_tombstoned),
+                "UPDATE public.entities SET metadata = $1, updated_at = now() WHERE id = $2",
+                src_metadata_tombstoned,
                 src_uuid,
             )
 
@@ -1147,19 +1146,17 @@ async def entity_merge(
             await conn.execute(
                 """
                 INSERT INTO memory_events (event_type, tenant_id, payload)
-                VALUES ('entity_merge', 'shared', $1::jsonb)
+                VALUES ('entity_merge', 'shared', $1)
                 """,
-                json.dumps(
-                    {
-                        "source_entity_id": source_entity_id,
-                        "target_entity_id": target_entity_id,
-                        "facts_repointed": facts_repointed,
-                        "facts_superseded": facts_superseded,
-                        "edge_facts_repointed": edge_facts_repointed,
-                        "edge_facts_superseded": edge_facts_superseded,
-                        "aliases_added": aliases_added,
-                    }
-                ),
+                {
+                    "source_entity_id": source_entity_id,
+                    "target_entity_id": target_entity_id,
+                    "facts_repointed": facts_repointed,
+                    "facts_superseded": facts_superseded,
+                    "edge_facts_repointed": edge_facts_repointed,
+                    "edge_facts_superseded": edge_facts_superseded,
+                    "aliases_added": aliases_added,
+                },
             )
 
     return {

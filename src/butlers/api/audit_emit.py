@@ -19,7 +19,6 @@ Design notes
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -138,10 +137,10 @@ async def emit_dashboard_audit(
             "VALUES ($1, $2, $3, $4, $5, $6)",
             butler,
             operation,
-            json.dumps(request_summary, default=str),
+            request_summary,
             result,
             error,
-            json.dumps({}),
+            {},
         )
     except Exception:
         logger.warning(

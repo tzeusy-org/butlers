@@ -440,7 +440,11 @@ class TestEntityMerge:
             if "UPDATE public.entities SET metadata" in c[0][0] and SOURCE_UUID in c[0]
         ]
         assert len(tombstones) == 1
-        assert json.loads(tombstones[0][0][1])["merged_into"] == TARGET_ID
+        # metadata is now passed as a dict directly (no json.dumps encoding)
+        meta_arg = tombstones[0][0][1]
+        if isinstance(meta_arg, str):
+            meta_arg = json.loads(meta_arg)
+        assert meta_arg["merged_into"] == TARGET_ID
 
     async def test_unidentified_flag_not_propagated(self) -> None:
         src = _entity_mock_row(SOURCE_UUID, metadata={"unidentified": True, "src_key": "v"})
@@ -452,7 +456,9 @@ class TestEntityMerge:
             for c in conn.execute.call_args_list
             if "UPDATE public.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
         ]
-        merged = json.loads(updates[0][0][2])
+        # metadata is now passed as a dict directly (no json.dumps encoding)
+        meta_arg = updates[0][0][2]
+        merged = json.loads(meta_arg) if isinstance(meta_arg, str) else meta_arg
         assert "unidentified" not in merged
         assert merged.get("src_key") == "v"
 

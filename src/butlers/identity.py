@@ -12,7 +12,6 @@ Used by:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -281,11 +280,11 @@ async def create_temp_contact(
                     """
                     INSERT INTO public.entities
                         (canonical_name, entity_type, aliases, metadata, roles)
-                    VALUES ($1, 'person', '{}', $2::jsonb, '{}')
+                    VALUES ($1, 'person', '{}', $2, '{}')
                     RETURNING id
                     """,
                     name,
-                    json.dumps(entity_metadata),
+                    entity_metadata,
                 )
 
                 # Create the contact linked to the entity.
@@ -297,12 +296,12 @@ async def create_temp_contact(
                 contact_row: asyncpg.Record = await conn.fetchrow(
                     """
                     INSERT INTO public.contacts (name, entity_id, metadata)
-                    VALUES ($1, $2, $3::jsonb)
+                    VALUES ($1, $2, $3)
                     RETURNING id, name, entity_id
                     """,
                     name,
                     entity_id,
-                    json.dumps(contact_metadata),
+                    contact_metadata,
                 )
                 contact_id: UUID = contact_row["id"]
 

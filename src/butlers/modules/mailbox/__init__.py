@@ -158,27 +158,23 @@ class MailboxModule(Module):
         metadata_payload = _normalize_json_input(metadata)
 
         body_value: Any
-        body_expr: str
         if body_type == "jsonb":
-            body_value = json.dumps(body_payload)
-            body_expr = "$4::jsonb"
+            # Pass dict directly — asyncpg JSONB codec handles encoding.
+            body_value = body_payload
         else:
             body_value = body if isinstance(body, str) else json.dumps(body_payload)
-            body_expr = "$4"
 
         metadata_value: Any
-        metadata_expr: str
         if metadata_type == "jsonb":
-            metadata_value = json.dumps(metadata_payload)
-            metadata_expr = "$6::jsonb"
+            # Pass dict directly — asyncpg JSONB codec handles encoding.
+            metadata_value = metadata_payload
         else:
             metadata_value = json.dumps(metadata_payload)
-            metadata_expr = "$6"
 
         row = await pool.fetchrow(
-            f"""
+            """
             INSERT INTO mailbox (sender, sender_channel, subject, body, priority, metadata)
-            VALUES ($1, $2, $3, {body_expr}, $5, {metadata_expr})
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, created_at
             """,
             sender,
@@ -345,12 +341,11 @@ class MailboxModule(Module):
             )
 
         pool = self._get_pool()
-        meta_json = json.dumps(metadata or {})
 
         row = await pool.fetchrow(
             """
             INSERT INTO mailbox (sender, sender_channel, subject, body, priority, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, created_at
             """,
             sender,
@@ -358,7 +353,7 @@ class MailboxModule(Module):
             subject,
             body,
             priority,
-            meta_json,
+            metadata or {},
         )
 
         return {

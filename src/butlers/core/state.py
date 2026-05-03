@@ -79,11 +79,10 @@ async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
     Returns:
         The new version number for the row after the upsert.
     """
-    json_value = json.dumps(value)
     new_version: int = await pool.fetchval(
         """
         INSERT INTO state (key, value, updated_at, version)
-        VALUES ($1, $2::jsonb, now(), 1)
+        VALUES ($1, $2, now(), 1)
         ON CONFLICT (key) DO UPDATE
             SET value = EXCLUDED.value,
                 updated_at = now(),
@@ -91,7 +90,7 @@ async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
         RETURNING version
         """,
         key,
-        json_value,
+        value,
     )
     return new_version
 
@@ -122,11 +121,10 @@ async def state_compare_and_set(
         CASConflictError: If the stored version does not match *expected_version*,
             or the key does not exist.
     """
-    json_value = json.dumps(new_value)
     row = await pool.fetchrow(
         """
         UPDATE state
-        SET value = $3::jsonb,
+        SET value = $3,
             updated_at = now(),
             version = version + 1
         WHERE key = $1 AND version = $2
@@ -134,7 +132,7 @@ async def state_compare_and_set(
         """,
         key,
         expected_version,
-        json_value,
+        new_value,
     )
     if row is not None:
         return row["version"]

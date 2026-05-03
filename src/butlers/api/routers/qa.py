@@ -1625,13 +1625,11 @@ async def create_synthetic_finding(
         traceback_str=None,
         severity_hint=_SEVERITY_INT_TO_HINT.get(body.severity),
     )
-    structured_evidence_json = json.dumps(
-        {
-            "synthetic_validation": True,
-            "injected_via": "dashboard_api",
-            "expected_outcome": "Treat as validation canary and follow the UNFIXABLE protocol.",
-        }
-    )
+    structured_evidence = {
+        "synthetic_validation": True,
+        "injected_via": "dashboard_api",
+        "expected_outcome": "Treat as validation canary and follow the UNFIXABLE protocol.",
+    }
 
     await pool.execute(
         """
@@ -1657,7 +1655,7 @@ async def create_synthetic_finding(
             $1, $2, 'butler_reports', $3,
             $4, $5, $6, $7,
             $8, $9, $10, NULL,
-            $11, $12::jsonb, TRUE
+            $11, $12, TRUE
         )
         RETURNING id, fingerprint, patrol_id
         """,
@@ -1672,7 +1670,7 @@ async def create_synthetic_finding(
         now,
         now,
         body.trigger_source,
-        structured_evidence_json,
+        structured_evidence,
     )
     if row is None:
         raise HTTPException(status_code=500, detail="Synthetic finding insert returned no row")

@@ -1173,23 +1173,22 @@ class GDriveAccountLoop:
                     "shared": entry.shared,
                     "modified_time": entry.modified_time,
                 }
-            metadata_cache_json = json.dumps(cache_data)
             async with self._cursor_pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO switchboard.connector_registry
                         (connector_type, endpoint_identity, settings)
-                    VALUES ($1, $2, jsonb_set('{}'::jsonb, '{metadata_cache}', $3::jsonb))
+                    VALUES ($1, $2, jsonb_set('{}'::jsonb, '{metadata_cache}', $3))
                     ON CONFLICT (connector_type, endpoint_identity)
                     DO UPDATE SET settings = jsonb_set(
                         COALESCE(connector_registry.settings, '{}'::jsonb),
                         '{metadata_cache}',
-                        $3::jsonb
+                        $3
                     )
                     """,
                     _CONNECTOR_TYPE,
                     self._config.cursor_key,
-                    metadata_cache_json,
+                    cache_data,
                 )
             logger.debug(
                 "Drive: saved metadata cache for email=%s entries=%d",

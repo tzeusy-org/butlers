@@ -11,7 +11,6 @@ logging never blocks or breaks the primary operation.
 
 from __future__ import annotations
 
-import json
 import logging
 
 import asyncpg
@@ -55,10 +54,10 @@ async def write_audit_entry(
             "VALUES ($1, $2, $3, $4, $5, $6)",
             butler,
             operation,
-            json.dumps(request_summary),
+            request_summary,
             result,
             error,
-            json.dumps({}),
+            {},
         )
     except Exception:
         logger.warning(

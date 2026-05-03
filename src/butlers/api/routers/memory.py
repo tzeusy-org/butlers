@@ -1088,8 +1088,8 @@ async def update_entity(
         }
         if allowed_metadata:
             # Merge patch into existing metadata (JSONB || operator)
-            sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${idx}::jsonb")
-            args.append(json.dumps(allowed_metadata))
+            sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${idx}")
+            args.append(allowed_metadata)
             idx += 1
 
     if not sets:
@@ -1357,11 +1357,11 @@ async def delete_entity(
     deleted_at = datetime.now(UTC).isoformat()
     await pool.execute(
         "UPDATE public.entities"
-        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,"
+        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
         " updated_at = now()"
         " WHERE id = $1",
         eid,
-        json.dumps({"deleted_at": deleted_at}),
+        {"deleted_at": deleted_at},
     )
 
     # Unlink any contacts referencing this entity
@@ -1411,11 +1411,11 @@ async def archive_entity(
     archived_at = datetime.now(UTC).isoformat()
     await pool.execute(
         "UPDATE public.entities"
-        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,"
+        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
         " updated_at = now()"
         " WHERE id = $1",
         eid,
-        json.dumps({"archived_at": archived_at}),
+        {"archived_at": archived_at},
     )
 
 

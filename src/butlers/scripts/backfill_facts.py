@@ -195,8 +195,8 @@ async def _insert_fact(
     }
     decay_rate = decay_rates.get(permanence, 0.008)
     now = datetime.now(UTC)
-    tags_json = json.dumps(tags or [])
-    meta_json = json.dumps({"backfill_source": backfill_key})
+    tags_json = tags or []
+    meta_json = {"backfill_source": backfill_key}
 
     await pool.execute(
         """

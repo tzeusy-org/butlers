@@ -11,7 +11,6 @@ Helpers: ``_check_write_permission``, ``_clamp_ttl``
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -310,9 +309,6 @@ async def set_context(
     # Clamp to maximum TTL
     expires_at = _clamp_ttl(signal_type, now, expires_at)
 
-    # asyncpg does not auto-serialize dicts to JSONB; pass as JSON string.
-    metadata_json: str | None = json.dumps(metadata) if metadata is not None else None
-
     await pool.execute(
         """
         INSERT INTO public.user_context
@@ -333,7 +329,7 @@ async def set_context(
         now,
         expires_at,
         confidence,
-        metadata_json,
+        metadata,
     )
 
 

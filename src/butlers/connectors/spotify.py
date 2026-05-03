@@ -47,7 +47,6 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import signal
@@ -755,7 +754,7 @@ async def persist_session_summary(
             track_names,
             context_uri,
             context_name
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
         """,
@@ -766,7 +765,7 @@ async def persist_session_summary(
         ended_at,
         duration_s,
         session.track_count,
-        json.dumps(list(session.track_names)),
+        list(session.track_names),
         session.context_uri,
         session.context_name,
     )

@@ -150,23 +150,16 @@ async def upsert_delivery_preferences(
     if batch_delivery_time is not None:
         fields["batch_delivery_time"] = _parse_time(batch_delivery_time)
     if override_channels is not None:
-        fields["override_channels"] = json.dumps(override_channels)
+        fields["override_channels"] = override_channels
 
     # Build INSERT with all provided columns so first-upsert sets values.
     insert_cols = ["butler_name"] + list(fields.keys())
     params: list[Any] = [butler_name] + list(fields.values())
     placeholders = ", ".join(f"${i}" for i in range(1, len(params) + 1))
-    # JSONB columns need explicit casts in the VALUES clause
-    jsonb_cols = {"override_channels"}
-    cast_placeholders = []
-    for i, col in enumerate(insert_cols, 1):
-        cast_placeholders.append(f"${i}::jsonb" if col in jsonb_cols else f"${i}")
-    placeholders = ", ".join(cast_placeholders)
 
     update_parts = ["updated_at = now()"]
     for col in fields:
-        cast = "::jsonb" if col in jsonb_cols else ""
-        update_parts.append(f"{col} = EXCLUDED.{col}{cast}")
+        update_parts.append(f"{col} = EXCLUDED.{col}")
     set_clause = ", ".join(update_parts)
 
     row = await pool.fetchrow(
@@ -233,14 +226,14 @@ async def insert_deferred_notification(
         """
         INSERT INTO deferred_notifications
             (butler_name, channel, message, priority, envelope, deliver_at, deferred_at, status)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6, COALESCE($7, now()), 'pending')
+        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), 'pending')
         RETURNING id
         """,
         butler_name,
         channel,
         message,
         priority,
-        json.dumps(envelope),
+        envelope,
         deliver_at,
         deferred_at,
     )

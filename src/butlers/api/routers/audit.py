@@ -65,10 +65,10 @@ async def log_audit_entry(
             "VALUES ($1, $2, $3, $4, $5, $6)",
             butler,
             operation,
-            json.dumps(request_summary),
+            request_summary,
             result,
             error,
-            json.dumps(user_context or {}),
+            user_context or {},
         )
     except Exception:
         logger.warning(
