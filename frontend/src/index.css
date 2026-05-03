@@ -85,6 +85,45 @@
   --category-8: oklch(0.737 0.213 58.0);   /* orange — #f97316 */
 
   /* ---------------------------------------------------------------------------
+   * Role badge tokens
+   *
+   * --role-owner    Purple/violet — authority signal. Used on contact/entity
+   *                 detail views for the "owner" role badge.
+   * --role-admin    Warm amber — elevated-access signal. Used for "admin" role
+   *                 badges where a step below owner but above default.
+   * --role-default  Blue — neutral default role. Fallback badge color for any
+   *                 role that is not owner or admin.
+   *
+   * Sources: ContactDetailView.tsx inline hex — #7c3aed, #b45309, #0369a1.
+   * Consumers should migrate to CSS variables; inline hex is a token leak.
+   * ---------------------------------------------------------------------------
+   *
+   * Dunbar tier ramp tokens
+   *
+   * --tier-1..6     Warm-to-cool ramp mapping Dunbar's six canonical layers.
+   *                 tier-1 = innermost circle (Support Clique, ~5 people);
+   *                 tier-6 = outermost (Recognizable, ~1500 people).
+   *                 Consumers pick the token by Dunbar tier index (1-based),
+   *                 not by the raw tier size value.
+   *
+   * Sources: EntitiesPage.tsx dunbarTierBadgeStyle — #b91c1c, #c2410c,
+   *          #92400e, #15803d, #0369a1, #6b7280.
+   * ---------------------------------------------------------------------------*/
+
+  /* Role badges */
+  --role-owner:   oklch(0.491 0.270 275.1);  /* violet — #7c3aed */
+  --role-admin:   oklch(0.572 0.178 67.6);   /* amber  — #b45309 */
+  --role-default: oklch(0.529 0.148 237.5);  /* blue   — #0369a1 */
+
+  /* Dunbar tier ramp (warm = innermost, cool = outermost) */
+  --tier-1: oklch(0.477 0.223 27.5);   /* deep red    — #b91c1c (Support Clique)    */
+  --tier-2: oklch(0.535 0.213 46.5);   /* orange-red  — #c2410c (Sympathy Group)    */
+  --tier-3: oklch(0.498 0.155 66.0);   /* amber-brown — #92400e (Good Friends)      */
+  --tier-4: oklch(0.527 0.163 152.0);  /* green       — #15803d (Dunbar's Number)   */
+  --tier-5: oklch(0.529 0.148 237.5);  /* blue        — #0369a1 (Acquaintances)     */
+  --tier-6: oklch(0.543 0.012 264.0);  /* gray        — #6b7280 (Recognizable)      */
+
+  /* ---------------------------------------------------------------------------
    * Typography scale
    *
    * Ratio: 1.2 (minor third) — tight enough for product UI density,
@@ -195,6 +234,19 @@ body {
   --color-category-7: var(--category-7);
   --color-category-8: var(--category-8);
 
+  /* Role badges */
+  --color-role-owner:   var(--role-owner);
+  --color-role-admin:   var(--role-admin);
+  --color-role-default: var(--role-default);
+
+  /* Dunbar tier ramp */
+  --color-tier-1: var(--tier-1);
+  --color-tier-2: var(--tier-2);
+  --color-tier-3: var(--tier-3);
+  --color-tier-4: var(--tier-4);
+  --color-tier-5: var(--tier-5);
+  --color-tier-6: var(--tier-6);
+
   /* Typography scale — Tailwind font-size-* utilities */
   --font-size-xs:   var(--text-xs);
   --font-size-sm:   var(--text-sm);
@@ -272,6 +324,19 @@ body {
   --category-6: oklch(0.640 0.218 278.0);
   --category-7: oklch(0.770 0.168 208.5);
   --category-8: oklch(0.790 0.200 58.0);
+
+  /* Role badges — lifted ~0.07 L for legibility on dark card backgrounds */
+  --role-owner:   oklch(0.561 0.262 275.1);
+  --role-admin:   oklch(0.642 0.170 67.6);
+  --role-default: oklch(0.599 0.140 237.5);
+
+  /* Dunbar tier ramp — lifted ~0.07 L for legibility on dark card backgrounds */
+  --tier-1: oklch(0.547 0.215 27.5);
+  --tier-2: oklch(0.605 0.205 46.5);
+  --tier-3: oklch(0.568 0.147 66.0);
+  --tier-4: oklch(0.597 0.155 152.0);
+  --tier-5: oklch(0.599 0.140 237.5);
+  --tier-6: oklch(0.613 0.004 264.0);
 }
 
 @layer base {
