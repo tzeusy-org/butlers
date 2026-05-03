@@ -28,17 +28,24 @@ let _autoRefreshEnabled = true
 let _autoRefreshInterval = 60_000
 
 // ---------------------------------------------------------------------------
-// Mock useAutoRefresh — must be registered before SessionStripeChart import
+// Mock useAutoRefresh — must be registered before SessionStripeChart import.
+// useAutoRefresh is wrapped in vi.fn() so call arguments (defaultInterval) are
+// captured and can be asserted in integration tests.
 // ---------------------------------------------------------------------------
 
+const mockUseAutoRefresh = vi.fn()
+
 vi.mock("@/hooks/use-auto-refresh", () => ({
-  useAutoRefresh: () => ({
-    enabled: _autoRefreshEnabled,
-    interval: _autoRefreshInterval,
-    refetchInterval: _autoRefreshEnabled ? _autoRefreshInterval : (false as const),
-    setEnabled: vi.fn(),
-    setInterval: vi.fn(),
-  }),
+  useAutoRefresh: (...args: Parameters<typeof mockUseAutoRefresh>) => {
+    mockUseAutoRefresh(...args)
+    return {
+      enabled: _autoRefreshEnabled,
+      interval: _autoRefreshInterval,
+      refetchInterval: _autoRefreshEnabled ? _autoRefreshInterval : (false as const),
+      setEnabled: vi.fn(),
+      setInterval: vi.fn(),
+    }
+  },
 }))
 
 // ---------------------------------------------------------------------------
@@ -110,6 +117,7 @@ function renderChart(props: Parameters<typeof SessionStripeChart>[0]): string {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  mockUseAutoRefresh.mockClear()
   _autoRefreshEnabled = true
   _autoRefreshInterval = 60_000
 })
@@ -372,6 +380,8 @@ describe("SessionStripeChart — useAutoRefresh integration", () => {
 
     renderChart({ butlers: [] })
 
+    // Verify the component passes the correct defaultInterval to the hook
+    expect(mockUseAutoRefresh).toHaveBeenCalledWith(60_000)
     expect(mockUseQuery).toHaveBeenCalledWith(
       expect.objectContaining({ refetchInterval: false }),
     )
@@ -389,6 +399,8 @@ describe("SessionStripeChart — useAutoRefresh integration", () => {
 
     renderChart({ butlers: [] })
 
+    // Verify the component passes the correct defaultInterval to the hook
+    expect(mockUseAutoRefresh).toHaveBeenCalledWith(60_000)
     expect(mockUseQuery).toHaveBeenCalledWith(
       expect.objectContaining({ refetchInterval: 60_000 }),
     )
