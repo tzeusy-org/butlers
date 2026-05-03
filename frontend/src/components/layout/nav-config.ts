@@ -81,6 +81,7 @@ export const navSections: NavSection[] = [
       { path: '/issues', label: 'Issues' },
       { path: '/sessions', label: 'Sessions' },
       { path: '/audit-log', label: 'Audit Log' },
+      { path: '/system', label: 'System', tooltip: 'Instance ownership and runtime facts' },
     ],
   },
 ]

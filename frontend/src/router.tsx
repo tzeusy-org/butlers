@@ -39,6 +39,7 @@ import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
 import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
 import QaInvestigationsPage from './pages/QaInvestigationsPage.tsx'
 import ChroniclesPage from './pages/ChroniclesPage.tsx'
+import SystemPage from './pages/SystemPage.tsx'
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
 // Redirect /connectors/:connectorType/:endpointIdentity
@@ -117,6 +118,8 @@ export const router = createBrowserRouter(
           path: '/ingestion/connectors/:connectorType/:endpointIdentity',
           element: <ConnectorDetailPage />,
         },
+        // System page
+        { path: '/system', element: <SystemPage /> },
         // Legacy /connectors redirects → /ingestion equivalents (spec section 3.3)
         {
           path: '/connectors',
