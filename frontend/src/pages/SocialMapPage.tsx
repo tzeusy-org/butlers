@@ -24,6 +24,7 @@ import type { DunbarEntry } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ConcentricCirclesCanvas } from "@/components/memory/ConcentricCirclesCanvas";
+import { HorizontalStrataCanvas } from "@/components/memory/HorizontalStrataCanvas";
 import { EmptyStatePanel } from "@/components/memory/EmptyStatePanel";
 import {
   TIER_NAMES,
@@ -33,6 +34,7 @@ import {
 } from "@/components/memory/concentric-circles-constants";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useDunbarRanking } from "@/hooks/use-memory";
+import { useViewport } from "@/hooks/use-viewport";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -196,6 +198,9 @@ export default function SocialMapPage() {
 
   // Expanded tiers
   const [expandedTiers, setExpandedTiers] = useState<Set<Tier>>(new Set());
+
+  // Viewport -- drives layout switching. isMobile = viewport ≤640px → strata.
+  const { isMobile } = useViewport();
 
   // Canvas size
   const { ref: stageRef, size: stageSize } = useElementSize();
@@ -416,20 +421,37 @@ export default function SocialMapPage() {
             style={isColdStart ? { opacity: 0.3, pointerEvents: "none" } : undefined}
             aria-hidden={isColdStart || undefined}
           >
-            <ConcentricCirclesCanvas
-              key={canvasKey}
-              entries={entries}
-              ownerEntityId={ownerEntityId}
-              ownerName={ownerName}
-              width={stageSize.width}
-              height={stageSize.height}
-              searchQuery={debouncedSearch}
-              focusTier={focusTier}
-              focusTrigger={focusTrigger}
-              expandedTiers={expandedTiers}
-              onNavigate={handleNavigate}
-              onTierExpand={handleTierExpand}
-            />
+            {isMobile ? (
+              <HorizontalStrataCanvas
+                key="strata"
+                entries={entries}
+                ownerEntityId={ownerEntityId}
+                ownerName={ownerName}
+                width={stageSize.width}
+                height={stageSize.height}
+                searchQuery={debouncedSearch}
+                focusTier={focusTier}
+                focusTrigger={focusTrigger}
+                expandedTiers={expandedTiers}
+                onNavigate={handleNavigate}
+                onTierExpand={handleTierExpand}
+              />
+            ) : (
+              <ConcentricCirclesCanvas
+                key={canvasKey}
+                entries={entries}
+                ownerEntityId={ownerEntityId}
+                ownerName={ownerName}
+                width={stageSize.width}
+                height={stageSize.height}
+                searchQuery={debouncedSearch}
+                focusTier={focusTier}
+                focusTrigger={focusTrigger}
+                expandedTiers={expandedTiers}
+                onNavigate={handleNavigate}
+                onTierExpand={handleTierExpand}
+              />
+            )}
           </div>
         )}
         {!isLoading && !isError && (stageSize.width === 0 || stageSize.height === 0) && (

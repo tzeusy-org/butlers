@@ -54,7 +54,7 @@ import type { Tier } from "@/components/memory/concentric-circles-constants";
 // so tests can simulate tier-badge clicks without needing real DOM dimensions.
 let capturedOnTierExpand: ((tier: Tier) => void) | null = null;
 
-// Mock the canvas component to avoid SVG complexity in jsdom.
+// Mock the canvas components to avoid SVG complexity in jsdom.
 // Captures onTierExpand so tests can invoke it directly.
 vi.mock("@/components/memory/ConcentricCirclesCanvas", () => ({
   ConcentricCirclesCanvas: ({
@@ -70,8 +70,29 @@ vi.mock("@/components/memory/ConcentricCirclesCanvas", () => ({
   },
 }));
 
+vi.mock("@/components/memory/HorizontalStrataCanvas", () => ({
+  HorizontalStrataCanvas: ({
+    entries,
+    onTierExpand,
+  }: {
+    entries: DunbarEntry[];
+    expandedTiers: Set<Tier>;
+    onTierExpand: (tier: Tier) => void;
+  }) => {
+    capturedOnTierExpand = onTierExpand;
+    return <div data-testid="strata-canvas">strata:{entries.length}</div>;
+  },
+}));
+
 vi.mock("@/hooks/use-memory", () => ({
   useDunbarRanking: vi.fn(),
+}));
+
+// Mock useViewport so we can control isMobile in tests.
+// Default: desktop (isMobile = false). Individual tests override via mockReturnValue.
+const mockUseViewport = vi.fn(() => ({ width: 1280, isMobile: false }));
+vi.mock("@/hooks/use-viewport", () => ({
+  useViewport: () => mockUseViewport(),
 }));
 
 // react-router's useNavigate / useSearchParams need a real router context
@@ -112,6 +133,8 @@ describe("SocialMapPage", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default viewport: desktop.
+    mockUseViewport.mockReturnValue({ width: 1280, isMobile: false });
     capturedOnTierExpand = null;
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -405,5 +428,66 @@ describe("SocialMapPage", () => {
     expect(container.querySelector("[aria-label='Collapse Dunbar\\'s Number']")).toBeNull();
     expect(container.querySelector("[aria-label='Collapse all expanded tiers']")).toBeNull();
     expect(container.textContent).not.toContain("Showing all:");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Responsive layout switching
+  // ---------------------------------------------------------------------------
+
+  it("renders ConcentricCirclesCanvas (rings) on desktop viewport (>640px)", async () => {
+    mockUseViewport.mockReturnValue({ width: 1280, isMobile: false });
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    // On desktop the rings canvas is rendered, not the strata canvas.
+    expect(container.querySelector("[data-testid='canvas']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='strata-canvas']")).toBeNull();
+  });
+
+  it("renders HorizontalStrataCanvas (strata) on mobile viewport (≤640px)", async () => {
+    mockUseViewport.mockReturnValue({ width: 390, isMobile: true });
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage();
+    await act(async () => { await flush(); });
+
+    // On mobile the strata canvas is rendered, not the rings canvas.
+    expect(container.querySelector("[data-testid='strata-canvas']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='canvas']")).toBeNull();
+  });
+
+  it("preserves search state when switching from desktop rings to mobile strata", async () => {
+    // Start in desktop mode with a search active.
+    mockUseViewport.mockReturnValue({ width: 1280, isMobile: false });
+    vi.mocked(useDunbarRanking).mockReturnValue(
+      makeRankingResult([OWNER_ENTRY, CONTACT_ENTRY], OWNER_ENTRY.entity_id),
+    );
+    renderPage("/entities/social-map?q=alice");
+    await act(async () => { await flush(); });
+
+    // Verify search input is populated from URL.
+    const input = container.querySelector("input[aria-label='Search contacts']") as HTMLInputElement;
+    expect(input).toBeTruthy();
+    expect(input.value).toBe("alice");
+
+    // Simulate viewport switch to mobile.
+    mockUseViewport.mockReturnValue({ width: 390, isMobile: true });
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/entities/social-map?q=alice"]}>
+          <SocialMapPage />
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => { await flush(); });
+
+    // Strata is now shown and search input is still populated.
+    expect(container.querySelector("[data-testid='strata-canvas']")).toBeTruthy();
+    const inputAfter = container.querySelector("input[aria-label='Search contacts']") as HTMLInputElement;
+    expect(inputAfter.value).toBe("alice");
   });
 });
