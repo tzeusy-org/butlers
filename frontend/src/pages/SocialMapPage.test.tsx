@@ -39,12 +39,12 @@ afterAll(() => {
   if (_originalClientWidthDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "clientWidth", _originalClientWidthDescriptor);
   } else {
-    delete (HTMLElement.prototype as Partial<HTMLElement>).clientWidth;
+    Reflect.deleteProperty(HTMLElement.prototype, "clientWidth");
   }
   if (_originalClientHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "clientHeight", _originalClientHeightDescriptor);
   } else {
-    delete (HTMLElement.prototype as Partial<HTMLElement>).clientHeight;
+    Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   }
 });
 

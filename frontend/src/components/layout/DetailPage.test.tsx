@@ -16,13 +16,13 @@ import { DetailPage, type DetailPageProps } from "@/components/layout/DetailPage
 // Helper
 // ---------------------------------------------------------------------------
 
-type PartialDetailPageProps = Partial<Omit<DetailPageProps, "record" | "primary">> &
-  Pick<DetailPageProps, "record" | "primary">;
+type PartialDetailPageProps = Partial<Omit<DetailPageProps, "record">> &
+  Pick<DetailPageProps, "record">;
 
 function render(props: PartialDetailPageProps): string {
   const full: DetailPageProps = {
-    primary: <div>Primary content</div>,
     ...props,
+    primary: props.primary ?? <div>Primary content</div>,
   };
   return renderToStaticMarkup(
     <MemoryRouter>
