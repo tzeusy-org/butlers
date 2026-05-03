@@ -13,14 +13,12 @@ Drops: repetitive filter tests, field-by-field assertions, per-module duplicate 
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest

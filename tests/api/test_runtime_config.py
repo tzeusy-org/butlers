@@ -15,8 +15,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from butlers.api.routers.runtime_config import KNOWN_CORE_GROUPS
-
 pytestmark = pytest.mark.unit
 
 

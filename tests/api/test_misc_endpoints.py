@@ -15,8 +15,6 @@ Keeps: health/CORS, auth gate (parametrized), middleware error codes,
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -28,12 +26,8 @@ import pytest
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
-    ButlerConnectionInfo,
     ButlerNotFoundError,
     ButlerUnreachableError,
-    MCPClientManager,
-    get_butler_configs,
-    get_mcp_manager,
 )
 from butlers.api.routers.audit import _get_db_manager as _audit_get_db
 from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
