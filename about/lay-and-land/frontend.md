@@ -138,8 +138,9 @@ still compose the archetype by hand; see the Migration Checklist below.
 
 ### A. Overview / dashboard
 Top-level multi-region surface. Hero chart → above-the-fold feed →
-secondary cards → demoted stat strip. Examples: `DashboardPage`,
-`QaOverviewPage`, `CostsPage`.
+secondary cards → demoted stat strip. Example (post-vertical-D):
+`DashboardPage`. `QaOverviewPage` and `CostsPage` still use the older
+stats-grid + chart layout and are candidates for the same migration.
 
 Post-vertical-D pattern in code (`DashboardPage`, shipped PRs
 #1345, #1346, #1351, #1361):
@@ -155,6 +156,9 @@ Post-vertical-D pattern in code (`DashboardPage`, shipped PRs
 
   {/* Secondary cards (grid lg:grid-cols-2) */}
   <div className="grid gap-6 lg:grid-cols-2">…</div>
+
+  {/* QA widget — standalone Card (approval metrics + investigations) */}
+  <QaWidget />
 
   {/* Demoted four-stat strip — no Card wrapper, border-t visual demotion */}
   <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-border pt-3">
@@ -542,7 +546,10 @@ Reference page: `DashboardPage` (post-vertical-D, uses `<Page archetype="overvie
   2. **Above-the-fold feed** — `RecentMoments` inside a `<Card>` (`<Time mode="relative">`
      + butler glyph + prompt summary + session detail link)
   3. **Secondary cards** — `grid gap-6 lg:grid-cols-2` of `<Card>` widgets
-  4. **Demoted stat strip** — `flex flex-wrap border-t border-border pt-3` row of
+     (Failed Notifications + IssuesPanel)
+  4. **QA widget** — standalone `<QaWidget>` `<Card>` (approval metrics + active
+     investigations summary)
+  5. **Demoted stat strip** — `flex flex-wrap border-t border-border pt-3` row of
      `<StatItem>` entries (`text-sm font-medium tabular-nums`); no `<Card>` wrapper
 - Rationale: `DashboardPage` was migrated to `<Page>` (PRs #1345–#1361).
   The topology graph previously on `/` is now at `/system`.
