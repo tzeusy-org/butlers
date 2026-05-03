@@ -13,8 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { EmptyState } from "@/components/ui/empty-state";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Page } from "@/components/ui/page";
 
 function statusBadge(status: string) {
   switch (status) {
@@ -83,33 +82,8 @@ function ButlerCard({ butler }: { butler: ButlerSummary }) {
   );
 }
 
-function LoadingState() {
-  return (
-    <div className="space-y-4">
-      <p className="text-muted-foreground text-sm">Loading butlers...</p>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {Array.from({ length: 6 }, (_, i) => (
-          <Card key={i}>
-            <CardHeader>
-              <Skeleton className="h-5 w-32" />
-              <Skeleton className="h-4 w-44" />
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <Skeleton className="h-4 w-28" />
-              <Skeleton className="h-4 w-20" />
-            </CardContent>
-            <CardFooter>
-              <Skeleton className="h-9 w-28" />
-            </CardFooter>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 export default function ButlersPage() {
-  const { data: response, isLoading, isError, error } = useButlers();
+  const { data: response, isLoading, isError, error, refetch } = useButlers();
   const { butlers, staffers, onlineCount } = useMemo(() => {
     const allSorted = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
     const butlerList = allSorted.filter((b) => b.type !== "staffer");
@@ -118,47 +92,46 @@ export default function ButlersPage() {
     return { butlers: butlerList, staffers: stafferList, onlineCount: count };
   }, [response?.data]);
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Butlers</h1>
-        <p className="text-muted-foreground mt-1">
-          Browse all registered butlers and jump directly to detail views.
-        </p>
-      </div>
+  const hasData = butlers.length > 0 || staffers.length > 0;
 
-      {isLoading ? (
-        <LoadingState />
-      ) : isError && butlers.length === 0 && staffers.length === 0 ? (
+  // Full-page error only when there is no cached data to show
+  const pageError = isError && !hasData ? error : null;
+
+  return (
+    <Page
+      archetype="overview"
+      title="Butlers"
+      description="Browse all registered butlers and jump directly to detail views."
+      loading={isLoading}
+      error={pageError}
+      onRetry={pageError != null ? () => void refetch() : undefined}
+    >
+      {/* Partial-data stale-fetch banner */}
+      {isError && hasData && (
         <Card>
-          <CardContent className="py-10">
+          <CardContent className="py-4">
             <p className="text-sm text-destructive">
-              Failed to load butlers. {error instanceof Error ? error.message : "Unknown error"}
+              Showing last known butler status. Refresh failed:{" "}
+              {error instanceof Error ? error.message : "Unknown error"}
             </p>
           </CardContent>
         </Card>
-      ) : butlers.length === 0 && staffers.length === 0 ? (
+      )}
+
+      {/* Empty state (no data at all, no error) */}
+      {!isError && !hasData && (
         <Card>
           <CardContent className="py-6">
-            <EmptyState
-              title="No butlers found"
-              description="No butlers were returned by the API. Check daemon status and try again."
-            />
+            <p className="text-sm text-muted-foreground">
+              No butlers found. Check daemon status and try again.
+            </p>
           </CardContent>
         </Card>
-      ) : (
-        <>
-          {isError ? (
-            <Card>
-              <CardContent className="py-4">
-                <p className="text-sm text-destructive">
-                  Showing last known butler status. Refresh failed:{" "}
-                  {error instanceof Error ? error.message : "Unknown error"}
-                </p>
-              </CardContent>
-            </Card>
-          ) : null}
+      )}
 
+      {hasData && (
+        <>
+          {/* Stats row */}
           <div className="grid gap-4 sm:grid-cols-2">
             <Card>
               <CardHeader className="pb-2">
@@ -219,6 +192,6 @@ export default function ButlersPage() {
           )}
         </>
       )}
-    </div>
+    </Page>
   );
 }
