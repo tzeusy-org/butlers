@@ -116,11 +116,11 @@ describe("ConnectorDetailPage — single-H1 contract", () => {
     vi.mocked(useUpdateConnectorCursor).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
-    } as ReturnType<typeof useUpdateConnectorCursor>);
+    } as unknown as ReturnType<typeof useUpdateConnectorCursor>);
     vi.mocked(useUpdateConnectorSettings).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
-    } as ReturnType<typeof useUpdateConnectorSettings>);
+    } as unknown as ReturnType<typeof useUpdateConnectorSettings>);
   });
 
   it("renders exactly one H1 when connector is loaded", () => {
@@ -149,11 +149,11 @@ describe("ConnectorDetailPage — content", () => {
     vi.mocked(useUpdateConnectorCursor).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
-    } as ReturnType<typeof useUpdateConnectorCursor>);
+    } as unknown as ReturnType<typeof useUpdateConnectorCursor>);
     vi.mocked(useUpdateConnectorSettings).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
-    } as ReturnType<typeof useUpdateConnectorSettings>);
+    } as unknown as ReturnType<typeof useUpdateConnectorSettings>);
   });
 
   it("renders connector type as the H1 title", () => {
@@ -268,7 +268,7 @@ describe("ConnectorDetailPage — content", () => {
       },
       isLoading: false,
       error: null,
-    } as UseConnectorStatsResult);
+    } as unknown as UseConnectorStatsResult);
     const html = renderPage();
     expect(html).toContain("Period Summary");
   });
@@ -280,11 +280,11 @@ describe("ConnectorDetailPage — error state", () => {
     vi.mocked(useUpdateConnectorCursor).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
-    } as ReturnType<typeof useUpdateConnectorCursor>);
+    } as unknown as ReturnType<typeof useUpdateConnectorCursor>);
     vi.mocked(useUpdateConnectorSettings).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,
-    } as ReturnType<typeof useUpdateConnectorSettings>);
+    } as unknown as ReturnType<typeof useUpdateConnectorSettings>);
   });
 
   it("shows an error region when connector fetch fails", () => {
