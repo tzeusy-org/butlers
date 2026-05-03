@@ -33,6 +33,8 @@ export interface PageProps {
   breadcrumbs?: Breadcrumb[];
 
   // --- chrome ---
+  /** Status pills rendered inline with the H1 on the title row (e.g. maturity badge). */
+  status?: React.ReactNode;
   actions?: React.ReactNode;
 
   // --- async state ---
@@ -71,11 +73,13 @@ function HeadingBlock({
   title,
   description,
   breadcrumbs,
+  status,
   actions,
 }: {
   title: string;
   description?: string;
   breadcrumbs?: Breadcrumb[];
+  status?: React.ReactNode;
   actions?: React.ReactNode;
 }) {
   return (
@@ -85,7 +89,10 @@ function HeadingBlock({
       )}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+            {status && <div className="flex items-center gap-2">{status}</div>}
+          </div>
           {description && (
             <p className="text-muted-foreground mt-1">{description}</p>
           )}
@@ -194,6 +201,7 @@ export function Page({
   title,
   description,
   breadcrumbs,
+  status,
   actions,
   loading = false,
   error,
@@ -268,6 +276,7 @@ export function Page({
             title={title}
             description={description}
             breadcrumbs={breadcrumbs}
+            status={status}
             actions={actions}
           />
           <Card className="border-destructive" role="alert">
@@ -297,6 +306,7 @@ export function Page({
             title={title}
             description={description}
             breadcrumbs={breadcrumbs}
+            status={status}
             actions={actions}
           />
           <EmptyState
@@ -318,6 +328,7 @@ export function Page({
           title={title}
           description={description}
           breadcrumbs={breadcrumbs}
+          status={status}
           actions={actions}
         />
         {children}

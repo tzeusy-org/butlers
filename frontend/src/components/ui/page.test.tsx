@@ -65,6 +65,56 @@ describe("Page -- title and description", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Status slot
+// ---------------------------------------------------------------------------
+
+describe("Page -- status slot", () => {
+  it("renders status node inline with the h1 when provided", () => {
+    const html = render({
+      title: "Rule Detail",
+      archetype: "detail",
+      status: <span data-testid="status-badge">Established</span>,
+    });
+    // Status content must be present
+    expect(html).toContain("Established");
+    // Status must appear on the same row as the h1 (inside the same flex container)
+    const h1Pos = html.indexOf("<h1");
+    const statusPos = html.indexOf("Established");
+    const h1End = html.indexOf("</h1>", h1Pos);
+    // status node appears after the h1 opening tag but within the same title row div
+    expect(statusPos).toBeGreaterThan(h1Pos);
+    // The h1 and status are siblings in the flex row — status comes after </h1>
+    expect(statusPos).toBeGreaterThan(h1End);
+  });
+
+  it("does not render status wrapper when status is omitted", () => {
+    const html = render({ title: "No Status" });
+    // Without status, the inner flex wrapper for status should not appear
+    expect(html).not.toContain("flex items-center gap-2");
+  });
+
+  it("renders status in all non-loading states (error and empty)", () => {
+    const statusNode = <span>Active</span>;
+
+    const errorHtml = render({
+      title: "Error Page",
+      status: statusNode,
+      error: new Error("boom"),
+      children: <div>hidden</div>,
+    });
+    expect(errorHtml).toContain("Active");
+
+    const emptyHtml = render({
+      title: "Empty Page",
+      status: statusNode,
+      empty: { title: "Nothing here", description: "desc" },
+      children: <div>hidden</div>,
+    });
+    expect(emptyHtml).toContain("Active");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
