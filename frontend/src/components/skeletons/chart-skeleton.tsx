@@ -1,4 +1,3 @@
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface ChartSkeletonProps {
@@ -9,21 +8,19 @@ interface ChartSkeletonProps {
 }
 
 /**
- * Skeleton loader for chart/visualization cards.
+ * Skeleton loader for chart/visualization areas.
  *
- * Renders a card with a title placeholder and a large rectangular area
- * simulating where the chart will appear once data loads.
+ * Renders a rectangular skeleton placeholder matching the chart's height.
+ * Intended to be composed inside an existing card container rather than used
+ * as a standalone card-level skeleton.
  */
 export function ChartSkeleton({ height = "h-64", testId }: ChartSkeletonProps) {
   return (
-    <Card data-testid={testId} role="status" aria-label="Loading chart">
-      <CardHeader>
-        <Skeleton className="h-5 w-40" />
-        <Skeleton className="h-4 w-64" />
-      </CardHeader>
-      <CardContent>
-        <Skeleton className={`w-full rounded-lg ${height}`} />
-      </CardContent>
-    </Card>
+    <Skeleton
+      className={`w-full rounded-lg ${height}`}
+      data-testid={testId}
+      role="status"
+      aria-label="Loading chart"
+    />
   );
 }
