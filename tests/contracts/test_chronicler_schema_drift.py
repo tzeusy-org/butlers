@@ -371,7 +371,6 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: object) 
     identifies the exact table and missing column so the fix is unambiguous.
     """
     from alembic import command as alembic_command
-
     from butlers.migrations import _build_alembic_config
 
     # ── Provision DB-A: inline DDL ────────────────────────────────────────

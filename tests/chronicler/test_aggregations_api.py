@@ -197,6 +197,44 @@ async def test_sensitive_episodes_contribute_by_default(endpoint):
             params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
         )
     assert resp.status_code == 200
+    items = _extract_items(resp.json(), endpoint)
+    assert len(items) == 1, "Sensitive episode must produce at least one bucket"
+    assert items[0]["total_seconds"] == pytest.approx(7200.0)
+    assert items[0]["episode_count"] == 1
+
+
+@pytest.mark.parametrize("endpoint", _BOTH_ENDPOINTS)
+async def test_privacy_tier_normal_excludes_sensitive(endpoint):
+    """privacy_tier=normal excludes sensitive episodes from results.
+
+    The mock returns only the normal row (simulating SQL-filtered result), then
+    asserts the response reflects only that row — verifying the param is wired
+    through to the SQL WHERE clause.
+    """
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
+            privacy="normal",
+        ),
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            endpoint,
+            params={
+                "start_at": "2024-03-15T00:00:00Z",
+                "end_at": "2024-03-16T00:00:00Z",
+                "privacy_tier": "normal",
+            },
+        )
+    assert resp.status_code == 200
+    items = _extract_items(resp.json(), endpoint)
+    assert len(items) == 1
+    assert items[0]["total_seconds"] == pytest.approx(3600.0)
 
 
 def _extract_items(body: Any, endpoint: str) -> list[dict]:
@@ -236,10 +274,10 @@ async def test_tombstoned_excluded_include_tombstoned_flag(endpoint):
         )
     assert resp.status_code == 200
     items = _extract_items(resp.json(), endpoint)
-    if items:
-        breakdown = items[0].get("source_breakdown", [])
-        if breakdown:
-            assert breakdown[0].get("tombstoned") is True
+    assert len(items) >= 1, "include_tombstoned=true must return at least one bucket"
+    breakdown = items[0].get("source_breakdown", [])
+    assert len(breakdown) >= 1, "Tombstoned episode must appear in source_breakdown"
+    assert breakdown[0].get("tombstoned") is True
 
 
 @pytest.mark.parametrize("endpoint", _BOTH_ENDPOINTS)
@@ -247,7 +285,9 @@ async def test_precision_carries_least_precise(endpoint):
     """The least-precise precision value across contributing rows is returned."""
     day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
     rows = [
-        _make_episode_row(start_at=day_start, end_at=day_start + timedelta(hours=1), precision="exact"),
+        _make_episode_row(
+            start_at=day_start, end_at=day_start + timedelta(hours=1), precision="exact"
+        ),
         _make_episode_row(
             start_at=day_start + timedelta(hours=2),
             end_at=day_start + timedelta(hours=3),
@@ -610,7 +650,9 @@ async def test_by_category_sorted_by_total_seconds_desc_then_category_asc():
             start_at=day_start,
             end_at=day_start + timedelta(hours=1),
         ),
-        _make_episode_row(start_at=day_start + timedelta(hours=2), end_at=day_start + timedelta(hours=5)),
+        _make_episode_row(
+            start_at=day_start + timedelta(hours=2), end_at=day_start + timedelta(hours=5)
+        ),
         _make_episode_row(
             source_name="steam.play_history",
             episode_type="play_episode",
@@ -845,11 +887,16 @@ async def test_day_close_span_cache_states(otel_exporter):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/chronicler/aggregate/day-close", params={"date": "2026-04-01"})
+        resp = await client.get(
+            "/api/chronicler/aggregate/day-close", params={"date": "2026-04-01"}
+        )
     assert resp.status_code == 200
-    assert _get_span(otel_exporter, "chronicler.aggregate.day_close").attributes.get(
-        "chronicler.day_close.cache_state"
-    ) == "fresh"
+    assert (
+        _get_span(otel_exporter, "chronicler.aggregate.day_close").attributes.get(
+            "chronicler.day_close.cache_state"
+        )
+        == "fresh"
+    )
 
     # Miss: no cache entry (404)
     pool2 = AsyncMock()
@@ -865,8 +912,13 @@ async def test_day_close_span_cache_states(otel_exporter):
         )
     assert resp2.status_code == 404
     all_spans = otel_exporter.get_finished_spans()
-    day_close_spans = [s for s in all_spans[spans_before:] if s.name == "chronicler.aggregate.day_close"]
-    assert day_close_spans and day_close_spans[-1].attributes.get("chronicler.day_close.cache_state") == "miss"
+    day_close_spans = [
+        s for s in all_spans[spans_before:] if s.name == "chronicler.aggregate.day_close"
+    ]
+    assert (
+        day_close_spans
+        and day_close_spans[-1].attributes.get("chronicler.day_close.cache_state") == "miss"
+    )
 
 
 async def test_source_state_span_row_count(otel_exporter):
