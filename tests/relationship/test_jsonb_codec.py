@@ -419,9 +419,7 @@ class TestNoDoubleEncoding:
     than a plain dict, so a read-back returns a str not a dict.
     """
 
-    async def test_dict_written_without_cast_roundtrips_as_dict(
-        self, provisioned_postgres_pool
-    ):
+    async def test_dict_written_without_cast_roundtrips_as_dict(self, provisioned_postgres_pool):
         """Writing a dict directly (no ::jsonb cast) stores a JSON object, not a string."""
         async with provisioned_postgres_pool() as pool:
             await pool.execute("""
@@ -432,9 +430,7 @@ class TestNoDoubleEncoding:
             """)
             payload = {"key": "value", "count": 42, "nested": {"a": 1}}
             # Pass dict directly — asyncpg codec encodes it once.
-            await pool.execute(
-                "INSERT INTO _no_double_enc_test (payload) VALUES ($1)", payload
-            )
+            await pool.execute("INSERT INTO _no_double_enc_test (payload) VALUES ($1)", payload)
             row = await pool.fetchrow("SELECT payload FROM _no_double_enc_test LIMIT 1")
             result = row["payload"]
             assert isinstance(result, dict), (
@@ -445,9 +441,7 @@ class TestNoDoubleEncoding:
             assert result["count"] == 42
             assert result["nested"]["a"] == 1
 
-    async def test_json_string_roundtrips_as_string_not_dict(
-        self, provisioned_postgres_pool
-    ):
+    async def test_json_string_roundtrips_as_string_not_dict(self, provisioned_postgres_pool):
         """A json.dumps() string written without ::jsonb is treated as text → JSONB cast.
 
         This is the old pre-codec pattern.  PostgreSQL accepts a JSON string for a
@@ -466,9 +460,7 @@ class TestNoDoubleEncoding:
             """)
             original = {"writer": "test", "value": 99}
             # Pass dict directly: asyncpg codec encodes once → stored as JSON object.
-            await pool.execute(
-                "INSERT INTO _str_roundtrip_test (payload) VALUES ($1)", original
-            )
+            await pool.execute("INSERT INTO _str_roundtrip_test (payload) VALUES ($1)", original)
             row = await pool.fetchrow("SELECT payload FROM _str_roundtrip_test LIMIT 1")
             result = row["payload"]
             # The codec decoded the stored JSONB back to a Python dict.
@@ -483,9 +475,7 @@ class TestNoDoubleEncoding:
             json_str = json.dumps(original)
             assert isinstance(json_str, str), "Sanity: json.dumps produces a str"
 
-    async def test_list_written_directly_roundtrips_as_list(
-        self, provisioned_postgres_pool
-    ):
+    async def test_list_written_directly_roundtrips_as_list(self, provisioned_postgres_pool):
         """A Python list written directly to a JSONB column roundtrips as a list."""
         async with provisioned_postgres_pool() as pool:
             await pool.execute("""
@@ -495,9 +485,7 @@ class TestNoDoubleEncoding:
                 )
             """)
             tags = ["alpha", "beta", "gamma"]
-            await pool.execute(
-                "INSERT INTO _list_jsonb_test (tags) VALUES ($1)", tags
-            )
+            await pool.execute("INSERT INTO _list_jsonb_test (tags) VALUES ($1)", tags)
             row = await pool.fetchrow("SELECT tags FROM _list_jsonb_test LIMIT 1")
             result = row["tags"]
             assert isinstance(result, list), (

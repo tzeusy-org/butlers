@@ -19,6 +19,8 @@ from datetime import date
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
+
 docker_available = shutil.which("docker") is not None
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,7 @@ async def _make_pool(postgres_container, *ddl_statements: str) -> asyncpg.Pool:
         database=db_name,
         min_size=1,
         max_size=3,
+        init=register_jsonb_codec,
     )
     for ddl in ddl_statements:
         await p.execute(ddl)

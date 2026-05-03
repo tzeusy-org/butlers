@@ -28,6 +28,7 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
+from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 from butlers.testing.migration import create_migration_db, migration_db_name
 
@@ -210,7 +211,6 @@ def test_memory_policies_seeded(memory_migrated_db: str) -> None:
 
 async def _write_and_read_fact(db_url: str) -> dict:
     """Write a fact via store_fact and read it back directly via asyncpg."""
-    from butlers.db import register_jsonb_codec
     from butlers.modules.memory.storage import store_fact
 
     pool = await asyncpg.create_pool(

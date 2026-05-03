@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [pytest.mark.unit]
@@ -94,6 +95,7 @@ class TestEventChainsDB:
             min_size=1,
             max_size=3,
             server_settings={"search_path": "general,public"},
+            init=register_jsonb_codec,
         )
         await p.execute("TRUNCATE event_chains CASCADE")
         yield p

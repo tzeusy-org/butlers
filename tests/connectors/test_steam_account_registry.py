@@ -312,13 +312,11 @@ class TestCreateSteamAccount:
         execute_calls = [str(c[0][0]) for c in conn.execute.call_args_list]
         assert any("entity_info" in c for c in execute_calls)
 
-    async def test_metadata_is_json_serialized_for_jsonb_param(self) -> None:
-        """Regression: asyncpg rejects a dict for a ``$N::jsonb`` parameter unless a
-        JSONB codec is registered on the pool. The production shared pool has no such
-        codec, so metadata must reach the INSERT as a ``json.dumps``-serialized string.
-        Previously this raised ``DataError: invalid input for query argument $7:
-        {} (expected str, got dict)`` and surfaced as "Failed to register the Steam
-        account due to an internal error" in the dashboard.
+    async def test_metadata_passed_directly_to_jsonb(self) -> None:
+        """The asyncpg JSONB codec is registered on all production pools so metadata
+        must reach the INSERT as a Python dict (not a json.dumps-serialized string).
+        Previously the code called json.dumps + ::jsonb double-encoding; bu-aaacv
+        removed that pattern and now relies on the codec to handle encoding.
         """
         conn = _FakeConn()
         pool = _make_pool(conn)
@@ -340,10 +338,10 @@ class TestCreateSteamAccount:
             if "INSERT INTO public.steam_accounts" in str(c[0][0])
         )
         metadata_arg = insert_call[0][7]
-        assert isinstance(metadata_arg, str), (
-            f"metadata must be JSON-serialized string for $7::jsonb, got {type(metadata_arg).__name__}"
+        assert isinstance(metadata_arg, dict), (
+            f"metadata must be a dict for the asyncpg JSONB codec, got {type(metadata_arg).__name__}"
         )
-        assert json.loads(metadata_arg) == meta
+        assert metadata_arg == meta
 
 
 # ---------------------------------------------------------------------------

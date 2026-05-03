@@ -179,7 +179,7 @@ async def test_insert_finding_includes_source_session_trigger_source():
 
 @pytest.mark.asyncio
 async def test_insert_finding_includes_structured_evidence_as_json():
-    """insert_finding serializes structured_evidence to JSON for storage."""
+    """insert_finding passes structured_evidence as a dict for the asyncpg JSONB codec."""
     pool = _make_qa_pool()
     evidence = {"session_id": "abc-123", "trace_id": "def-456"}
     finding = _make_finding(structured_evidence=evidence)
@@ -188,10 +188,9 @@ async def test_insert_finding_includes_structured_evidence_as_json():
     await insert_finding(pool, patrol_id, finding, dedup_reason=None)
 
     call_args = pool.fetchval.call_args.args
-    # The JSON string should be in args
-    import json
-
-    assert json.dumps(evidence) in call_args
+    # structured_evidence is passed as a Python dict; the asyncpg JSONB codec
+    # registered on the pool handles encoding (no json.dumps pre-serialization).
+    assert evidence in call_args
 
 
 @pytest.mark.asyncio

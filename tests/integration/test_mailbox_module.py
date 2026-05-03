@@ -116,7 +116,11 @@ async def pool(migrated_db_url: str):
     """Return an asyncpg pool with mailbox table cleared between tests."""
     import asyncpg
 
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    from butlers.db import register_jsonb_codec
+
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
     await p.execute("TRUNCATE TABLE mailbox CASCADE")
     yield p
     await p.close()

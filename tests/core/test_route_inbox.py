@@ -54,8 +54,6 @@ def _sample_envelope() -> dict:
 async def test_insert_and_lifecycle_mutations() -> None:
     """insert returns UUID; INSERT with accepted state; mark_processing/processed/errored
     each correct."""
-    import json
-
     # Insert
     pool, conn = _make_pool()
     conn.execute = AsyncMock()
@@ -63,7 +61,8 @@ async def test_insert_and_lifecycle_mutations() -> None:
     assert isinstance(result, uuid.UUID)
     sql = conn.execute.call_args.args[0]
     assert "INSERT INTO route_inbox" in sql and conn.execute.call_args.args[3] == STATE_ACCEPTED
-    assert json.loads(conn.execute.call_args.args[2])["schema_version"] == "route.v1"
+    # route_envelope is passed as a dict (asyncpg JSONB codec handles encoding)
+    assert conn.execute.call_args.args[2]["schema_version"] == "route.v1"
 
     row_id = uuid.uuid4()
     session_id = uuid.uuid4()

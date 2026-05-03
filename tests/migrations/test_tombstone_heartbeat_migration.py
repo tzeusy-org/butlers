@@ -439,10 +439,13 @@ class TestTombstoneHeartbeatMigrationIntegration:
 
     async def _insert_episode(self, pool, *, source_ref: str, trigger_source: str | None) -> None:
         """Insert one test episode with the given trigger_source in payload."""
-        payload = {}
+        payload: dict = {}
         if trigger_source is not None:
             payload["trigger_source"] = trigger_source
 
+        # Pass payload as a dict; the asyncpg JSONB codec registered on the pool
+        # handles encoding.  The ::jsonb cast is omitted because it conflicts with
+        # the binary codec format (double-encoding).
         await pool.execute(
             """
             INSERT INTO episodes

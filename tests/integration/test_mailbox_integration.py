@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from butlers.db import register_jsonb_codec
+
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
