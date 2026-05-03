@@ -1,7 +1,7 @@
+import { useMemo } from "react";
 import { useParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Time } from "@/components/ui/time";
 import {
   Card,
@@ -9,7 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Page } from "@/components/ui/page";
 import { useEpisode } from "@/hooks/use-memory";
 
 export default function EpisodeDetailPage() {
@@ -17,50 +17,53 @@ export default function EpisodeDetailPage() {
   const { data, isLoading, error } = useEpisode(episodeId);
   const episode = data?.data;
 
+  // Derive record fields from the loaded episode (or a loading placeholder).
+  // title  = first non-empty line of content (trimmed), capped at 80 chars;
+  //          leading blank lines are skipped so whitespace-padded content
+  //          does not produce a blank title.
+  // subtitle = source butler (the "lane")
+  const title = useMemo(() => {
+    if (!episode) return "Episode";
+    const firstLine = episode.content.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+    return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine || "Episode";
+  }, [episode]);
+
+  const subtitle = episode?.butler ?? undefined;
+
+  const breadcrumbs = useMemo(
+    () => [
+      { label: "Memory", href: "/memory" },
+      { label: "Episodes", href: "/memory?tab=episodes" },
+      { label: title },
+    ],
+    [title],
+  );
+
   return (
-    <div className="space-y-6">
-      <Breadcrumbs
-        items={[
-          { label: "Memory", href: "/memory" },
-          { label: "Episodes", href: "/memory?tab=episodes" },
-          { label: "Episode" },
-        ]}
-      />
-
-      {isLoading && (
-        <div className="space-y-4">
-          <Skeleton className="h-8 w-64" />
-          <Skeleton className="h-48 w-full" />
-          <Skeleton className="h-64 w-full" />
-        </div>
-      )}
-
-      {error && (
-        <div className="text-destructive py-12 text-center text-sm">
-          Failed to load episode. {(error as Error).message}
-        </div>
-      )}
-
+    <Page
+      archetype="detail"
+      title={title}
+      description={subtitle}
+      breadcrumbs={breadcrumbs}
+      loading={isLoading}
+      error={error ?? null}
+    >
       {episode && (
         <>
+          {/* Primary: episode body + status */}
           <Card>
             <CardHeader>
               <div className="flex flex-wrap items-center gap-3">
-                <CardTitle className="text-2xl">Episode</CardTitle>
+                <CardTitle>Content</CardTitle>
                 <Badge variant="outline">{episode.butler}</Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Content */}
-              <div>
-                <p className="text-muted-foreground mb-1 text-sm font-medium">
-                  Content
+              {/* Full content */}
+              <div className="rounded-md bg-muted/30 p-4">
+                <p className="text-sm whitespace-pre-wrap break-words">
+                  {episode.content}
                 </p>
-                <div className="rounded-md bg-muted/30 p-4">
-                  <p className="text-sm whitespace-pre-wrap break-words">
-                    {episode.content}
-                  </p>
-                </div>
               </div>
 
               {/* Status row */}
@@ -126,8 +129,15 @@ export default function EpisodeDetailPage() {
                   </pre>
                 </div>
               )}
+            </CardContent>
+          </Card>
 
-              {/* Timestamps */}
+          {/* Supporting: provenance + timestamps */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Provenance</CardTitle>
+            </CardHeader>
+            <CardContent>
               <div className="flex flex-wrap gap-6 text-xs text-muted-foreground">
                 <span>
                   Created: <Time value={episode.created_at} mode="absolute" />
@@ -143,6 +153,6 @@ export default function EpisodeDetailPage() {
           </Card>
         </>
       )}
-    </div>
+    </Page>
   );
 }
