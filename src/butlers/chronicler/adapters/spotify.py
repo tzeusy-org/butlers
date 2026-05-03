@@ -28,6 +28,7 @@ Semantics:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 
@@ -38,6 +39,10 @@ from butlers.chronicler.models import Episode, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of track names to enumerate inline in the episode title
+# before switching to a "+N more" suffix. Keeps Gantt tooltips compact.
+_TITLE_MAX_INLINE_TRACKS = 2
 
 SOURCE_NAME = "spotify.session_summary"
 EPISODE_TYPE_LISTENING = "listening_episode"
@@ -167,13 +172,15 @@ class SpotifySessionAdapter(ProjectionAdapter):
         context_name = row["context_name"]
         context_uri = row["context_uri"]
         endpoint_identity = row["endpoint_identity"]
+        track_names_raw = row["track_names"]
+        track_names = _coerce_track_names(track_names_raw)
 
-        if context_name:
-            title = f"Listened to {context_name}"
-        elif context_uri:
-            title = f"Listened to {context_uri.split(':')[-1]}"
-        else:
-            title = f"Spotify session ({endpoint_identity})"
+        title = _compose_session_title(
+            context_name=context_name,
+            context_uri=context_uri,
+            track_names=track_names,
+            endpoint_identity=endpoint_identity,
+        )
 
         payload = {
             "idempotency_key": idempotency_key,
@@ -183,6 +190,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
             "duration_seconds": row["duration_seconds"],
             "context_uri": context_uri,
             "context_name": context_name,
+            "track_names": track_names,
         }
 
         async with chronicler_pool.acquire() as conn:
@@ -201,6 +209,59 @@ class SpotifySessionAdapter(ProjectionAdapter):
                 ),
             )
         return episode
+
+
+def _coerce_track_names(raw: object) -> list[str]:
+    """Best-effort decode of the JSONB ``track_names`` column to ``list[str]``.
+
+    asyncpg may surface JSONB as either a Python list (when its codec is
+    registered) or a JSON-encoded string (default). Handle both, and drop
+    any non-string entries defensively.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    else:
+        decoded = raw
+    if not isinstance(decoded, list):
+        return []
+    return [t for t in decoded if isinstance(t, str) and t]
+
+
+def _compose_session_title(
+    *,
+    context_name: str | None,
+    context_uri: str | None,
+    track_names: list[str],
+    endpoint_identity: str,
+) -> str:
+    """Derive a human-readable Spotify episode title.
+
+    Resolution order:
+      1. ``Listened to {context_name}`` — playlist/album/show name.
+      2. ``Listened to {context_uri-tail}`` — bare context URI when no name.
+      3. ``Listened to {Track1, Track2}`` — when no context but track names
+         exist; longer track lists collapse to ``Track1, Track2 (+N more)``.
+      4. ``Spotify session ({endpoint_identity})`` — last-resort fallback
+         (no context, no tracks). The endpoint identity at least disambiguates
+         which Spotify account was active.
+    """
+    if context_name:
+        return f"Listened to {context_name}"
+    if context_uri:
+        return f"Listened to {context_uri.split(':')[-1]}"
+    if track_names:
+        head = track_names[:_TITLE_MAX_INLINE_TRACKS]
+        joined = ", ".join(head)
+        remaining = len(track_names) - len(head)
+        if remaining > 0:
+            return f"Listened to {joined} (+{remaining} more)"
+        return f"Listened to {joined}"
+    return f"Spotify session ({endpoint_identity})"
 
 
 __all__ = [

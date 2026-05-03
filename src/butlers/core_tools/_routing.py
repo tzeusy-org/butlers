@@ -528,6 +528,13 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             trigger_source="route",
                             request_id=_request_id,
                             complexity=_complexity,
+                            # The ingestion request_id is the same UUID7 as
+                            # public.ingestion_events.id (inserted in the same
+                            # transaction by switchboard.ingest). Persist it as
+                            # the session's ingestion_event_id FK so chronicler
+                            # contact resolution can join sessions back to the
+                            # originating channel/contact.
+                            ingestion_event_id=_request_id,
                         )
                         await route_inbox_mark_processed(_pool, _inbox_id, result.session_id)
                     except Exception as exc:

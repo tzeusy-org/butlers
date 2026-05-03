@@ -927,6 +927,7 @@ class Spawner:
         max_token_budget: int | None = None,
         env_override: dict[str, str] | None = None,
         timeout_override: int | None = None,
+        ingestion_event_id: str | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -978,6 +979,12 @@ class Spawner:
             invocation (in seconds). Used by the self-healing and QA dispatchers
             whose workflow watchdog caps may differ from the catalog/default
             session timeout.
+        ingestion_event_id:
+            Optional UUID of the ``public.ingestion_events`` row that caused
+            this trigger. Set by the route handler so the resulting session
+            row joins back to the ingestion event (for chronicler contact
+            resolution and downstream provenance). Internally-triggered
+            sessions (tick, scheduler, manual trigger) leave this as ``None``.
 
         Returns
         -------
@@ -1079,6 +1086,7 @@ class Spawner:
                         max_token_budget=max_token_budget,
                         env_override=env_override,
                         timeout_override=timeout_override,
+                        ingestion_event_id=ingestion_event_id,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -1105,6 +1113,7 @@ class Spawner:
                             max_token_budget=max_token_budget,
                             env_override=env_override,
                             timeout_override=timeout_override,
+                            ingestion_event_id=ingestion_event_id,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1259,6 +1268,7 @@ class Spawner:
         max_token_budget: int | None = None,
         env_override: dict[str, str] | None = None,
         timeout_override: int | None = None,
+        ingestion_event_id: str | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1429,6 +1439,7 @@ class Spawner:
                     trace_id,
                     model=model,
                     request_id=effective_request_id,
+                    ingestion_event_id=ingestion_event_id,
                     complexity=str(complexity),
                     resolution_source=resolution_source,
                 )

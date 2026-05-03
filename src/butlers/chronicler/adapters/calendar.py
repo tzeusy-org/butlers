@@ -8,14 +8,18 @@ Semantics:
 - "Completed" means ``ends_at <= now()`` AND ``status != 'cancelled'``.
 - Future or open instances are NOT projected.
 - Each instance maps to one ``scheduled_block`` episode with
-  ``source_ref = {schema}.calendar_event_instances:{id}``.
+  ``source_ref = calendar:{origin_instance_ref}``.
 - Boundary precision is ``exact``.
 - Cross-butler deduplication: the same provider calendar event may
-  appear in multiple butler schemas if more than one butler has the
-  calendar module enabled. The adapter dedups by
-  ``(source_id, origin_instance_ref)`` tuple exposed in the payload;
-  the earliest-observed schema wins, and later schemas emit only the
-  episode's deduped payload note.
+  appear in multiple butler schemas (one row per schema in
+  ``calendar_event_instances``) and may even appear under multiple
+  ``event_id`` values within a single schema (if the calendar sync
+  inserted the upstream event more than once). The adapter dedups
+  globally by ``origin_instance_ref`` — the upstream Google Calendar
+  instance identifier, which is stable across schemas and resync
+  rounds. The episode's ``source_ref`` is derived from
+  ``origin_instance_ref`` alone (``calendar:{origin_instance_ref}``)
+  so the upsert is idempotent across runs and schemas.
 - Missing calendar tables (module not enabled on this deployment)
   degrades gracefully — the adapter emits a warning and exits clean.
 
@@ -84,9 +88,14 @@ class CalendarCompletedAdapter(ProjectionAdapter):
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
         latest_watermark = since
-        # Provider-level dedup set for this run. Keyed on
-        # (source_id, origin_instance_ref).
-        seen_origin: set[tuple[str, str]] = set()
+        # Provider-level dedup set for this run, keyed on origin_instance_ref.
+        # The upstream Google Calendar instance ID is stable across butler
+        # schemas, so the same logical event appearing in multiple schemas
+        # collapses to a single projection. The persistent upsert key
+        # (source_name, source_ref) is also derived from origin_instance_ref,
+        # so even without this in-run guard the database would converge to
+        # one row per upstream instance — this just avoids redundant writes.
+        seen_origin: set[str] = set()
         now = datetime.now(UTC)
 
         for schema in self.butler_schemas:
@@ -98,7 +107,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 continue
 
             for row in rows:
-                dedup_key = (str(row["source_id"]), row["origin_instance_ref"])
+                dedup_key = row["origin_instance_ref"]
                 if dedup_key in seen_origin:
                     # Earlier schema already projected this origin instance.
                     continue
@@ -197,7 +206,11 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         row: asyncpg.Record,
     ) -> Episode:
         instance_id = row["id"]
-        source_ref = f"{schema}.calendar_event_instances:{instance_id}"
+        # Stable across schemas and resync rounds: the upstream Google
+        # Calendar instance identifier is the same regardless of which
+        # butler synced the row. This makes the upsert idempotent and
+        # collapses the per-schema fan-out into a single chronicler episode.
+        source_ref = f"calendar:{row['origin_instance_ref']}"
 
         title = None
         metadata = row["metadata"] or {}

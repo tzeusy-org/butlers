@@ -46,6 +46,7 @@ def _make_row(
     duration_seconds: int = 1800,
     context_uri: str | None = "spotify:playlist:abc",
     context_name: str | None = "Deep Focus",
+    track_names: list[str] | None = None,
 ) -> dict:
     return {
         "id": "some-uuid",
@@ -56,7 +57,7 @@ def _make_row(
         "ended_at": ended_at or (started_at + timedelta(minutes=30)),
         "duration_seconds": duration_seconds,
         "track_count": track_count,
-        "track_names": ["Song A", "Song B"],
+        "track_names": track_names if track_names is not None else ["Song A", "Song B"],
         "context_uri": context_uri,
         "context_name": context_name,
         "recorded_at": started_at,
@@ -247,8 +248,32 @@ async def test_episode_title_falls_back_to_context_uri_fragment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_episode_title_falls_back_to_endpoint_when_no_context() -> None:
+async def test_episode_title_falls_back_to_track_names_when_no_context() -> None:
+    """When neither context_name nor context_uri is set, prefer track_names."""
     row = _make_row(context_name=None, context_uri=None)
+    adapter = SpotifySessionAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    title = upserted[0].title
+    assert title.startswith("Listened to ")
+    assert "Song A" in title
+    assert "Song B" in title
+
+
+@pytest.mark.asyncio
+async def test_episode_title_falls_back_to_endpoint_when_no_context_or_tracks() -> None:
+    """When context AND track_names are missing, surface endpoint identity."""
+    row = _make_row(context_name=None, context_uri=None, track_names=[])
     adapter = SpotifySessionAdapter()
     upserted: list[Episode] = []
 

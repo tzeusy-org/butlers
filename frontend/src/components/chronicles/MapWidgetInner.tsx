@@ -266,14 +266,26 @@ export function MapWidgetInner({
   //
   // A LineString requires ≥2 coordinate pairs; buildTrailGeoJSON returns an
   // empty FeatureCollection for 0 or 1 points so the layer renders nothing.
+  //
+  // map.addSource / map.addLayer require the style to be loaded — calling
+  // them before the style finishes loading throws "Style is not done loading"
+  // and bubbles into the MapErrorBoundary as "Failed to load the map".
+  // The map is constructed synchronously in the init effect above, but its
+  // style loads asynchronously, so on first render this effect can run with
+  // a map whose style is still pending. Defer the work to the 'load' event
+  // when needed; subsequent renders run synchronously through the setData
+  // path.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
 
     const geoJSON = buildTrailGeoJSON(trailPoints)
 
-    if (!trailReadyRef.current) {
-      // First time: add the GeoJSON source and line layer.
+    const installTrailLayer = () => {
+      if (trailReadyRef.current) {
+        ;(map.getSource(TRAIL_SOURCE_ID) as GeoJSONSource).setData(geoJSON)
+        return
+      }
       map.addSource(TRAIL_SOURCE_ID, {
         type: "geojson",
         data: geoJSON,
@@ -293,9 +305,12 @@ export function MapWidgetInner({
         },
       })
       trailReadyRef.current = true
+    }
+
+    if (map.isStyleLoaded()) {
+      installTrailLayer()
     } else {
-      // Source already registered — update its data in-place.
-      ;(map.getSource(TRAIL_SOURCE_ID) as GeoJSONSource).setData(geoJSON)
+      map.once("load", installTrailLayer)
     }
   }, [trailPoints])
 
