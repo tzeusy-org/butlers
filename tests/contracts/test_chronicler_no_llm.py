@@ -1,5 +1,5 @@
-"""Guardrail test: aggregation, source-state, and day-close handler modules
-must not import or reference any LLM provider package or interpretation helper.
+"""Contract: aggregation, source-state, and day-close handler modules must not
+import or reference any LLM provider package or interpretation helper.
 
 Mirrors RFC 0014 §D5 L175 invariant: aggregation paths are pure-Python,
 deterministic, and must never invoke an LLM.
@@ -22,12 +22,18 @@ Identifiers (Name / Attribute nodes):
 
 The ``butlers.chronicler.interpretation`` module does not yet exist; this test
 is a forward-looking regression guard.
+
+Promoted from tests/chronicler/test_aggregation_no_llm.py [bu-m564i].
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.contract
 
 # ---------------------------------------------------------------------------
 # File list

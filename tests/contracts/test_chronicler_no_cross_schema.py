@@ -1,4 +1,4 @@
-"""Static-analysis guardrail: no cross-schema SQL references in chronicler handlers.
+"""Contract: no cross-schema SQL references in chronicler handlers (RFC D17).
 
 Per design.md §D17, every SQL string literal in ``roster/chronicler/api/router.py``
 must reference only relations that resolve into the ``chronicler`` schema.
@@ -15,6 +15,8 @@ authoritative check for the entire handler module.
 Backfill audit result (run 2026-04-25 against main):
   All 11 SQL strings extracted from router.py resolved to known chronicler
   relations. Zero violations found. Clean.
+
+Promoted from tests/chronicler/test_aggregation_no_cross_schema.py [bu-m564i].
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.unit
+pytestmark = pytest.mark.contract
 
 # ---------------------------------------------------------------------------
 # Target file
@@ -153,7 +155,7 @@ def _categorize_relation(raw_token: str) -> tuple[str, str | None]:
 
 
 # ---------------------------------------------------------------------------
-# Test
+# Tests
 # ---------------------------------------------------------------------------
 
 
