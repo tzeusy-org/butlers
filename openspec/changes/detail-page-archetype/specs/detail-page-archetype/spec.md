@@ -40,9 +40,9 @@ implementation of that contract as the `Page` component with `archetype="detail"
 
 ---
 
-### Requirement: Detail-page four-tier body layout
+### Requirement: Detail-page six-tier body layout
 
-The body of a detail page SHALL be organized into the following named tiers in render order, passed as `children` inside `<Page archetype="detail">`. Not all tiers are required on every page; required tiers are marked.
+The body of a detail page SHALL be organized into the following named tiers in render order. Tier 1 is owned by the `<Page>` shell and is supplied via props. Tiers 2–6 are passed as `children` inside `<Page archetype="detail">`. Not all tiers are required on every page; required tiers are marked.
 
 **Tier 1 — Header-hero (required, owned by `<Page>`):**
 Breadcrumbs, `<h1>` title, optional subtitle, status pills, and action buttons.
@@ -137,6 +137,12 @@ session reference, the subject line — truncated to 80 characters if needed.
 ### Requirement: Status pills on the title row
 
 Meaningful status, type, or ownership indicators on a detail page SHALL be rendered adjacent to the title on the same row via the `status` prop on `<Page>`, not in a separate metadata card below the title.
+
+**Implementation note:** `PageProps` in `frontend/src/components/ui/page.tsx` does not
+yet include a `status` slot. Adding `status?: React.ReactNode` to `PageProps` and
+rendering it inline with the `<h1>` in `HeadingBlock` is a required implementation step
+for any bead that adopts this requirement. This is a narrow, additive change to the
+`<Page>` API.
 
 The convention for ordering pills: ownership first (e.g., "Owner"), severity /
 state second (e.g., "Established", "Fading"), tertiary chips last.

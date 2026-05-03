@@ -69,7 +69,9 @@ detail page):**
    prop (see point 4).
 
 4. **Status pills.** The Maturity badge MUST be passed via the `status` prop so it
-   appears adjacent to the title row rather than inside `<CardContent>`.
+   appears adjacent to the title row rather than inside `<CardContent>`. This requires
+   adding a `status?: React.ReactNode` slot to `PageProps` (see detail-page-archetype
+   spec §Requirement: Status pills on the title row — implementation note).
 
 5. **Body layout.** The existing card sections (Content, Status row, Effectiveness,
    Confidence, Provenance, Tags, Metadata, Timestamps) become the `primary` body slot.
@@ -132,7 +134,7 @@ detail page):**
 #### Scenario: Episode detail page title falls back to ID prefix
 
 - **WHEN** an episode has `session_id = null` and `id = "ep-12345678-abcd-..."`
-- **THEN** the `<h1>` MUST read "Episode ep-123456" (first 8 chars of id)
+- **THEN** the `<h1>` MUST read "Episode ep-12345" (`id.slice(0, 8)` prepended with "Episode ")
 
 #### Scenario: Episode detail page uses shell loading state
 

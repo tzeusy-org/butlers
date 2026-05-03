@@ -1,22 +1,24 @@
 ## ADDED Requirements
 
-### Requirement: Contact detail page canonical route is /contacts/:id
+### Requirement: Contact detail page canonical route is /contacts/:contactId
 
 The contact detail page SHALL be served exclusively at the canonical route
-`/contacts/:id`. The legacy route `/butlers/relationship/contacts/:id` (specified in
-the existing "Contact detail page" requirement) is deprecated and MUST NOT be treated
+`/contacts/:contactId`. The legacy route `/butlers/relationship/contacts/:id` (specified
+in the existing "Contact detail page" requirement) is deprecated and MUST NOT be treated
 as a normative route.
 
 **Route duplication resolution:**
 
-- **Canonical route:** `/contacts/:id` (renders `ContactDetailPage`)
-- **Legacy route:** `/butlers/relationship/contacts/:id` — MUST redirect permanently
-  to `/contacts/:id`. The redirect MUST be implemented as a 308 Permanent Redirect in
-  the React Router configuration, following the `RelationshipEntityRedirect` pattern
-  already present at `frontend/src/router.tsx` lines 57–64.
+- **Canonical route:** `/contacts/:contactId` (renders `ContactDetailPage`; matches the
+  parameter name already registered at `frontend/src/router.tsx` line 84)
+- **Legacy route:** `/butlers/relationship/contacts/:id` — MUST redirect to the canonical
+  path via a client-side React Router entry using `<Navigate replace />`, following the
+  `RelationshipEntityRedirect` pattern already present at `frontend/src/router.tsx`
+  lines 57–64. This is a client-side redirect; for external HTTP-level bookmarks a
+  hosting-level redirect would be needed separately (out of scope for this change).
 - Any internal navigation link (breadcrumb, "View contact" button, notification link,
   email) that currently targets `/butlers/relationship/contacts/:id` MUST be updated
-  to target `/contacts/:id`.
+  to target `/contacts/:contactId`.
 
 **Verification:**
 
@@ -34,20 +36,20 @@ redirect requirement for any external links that may have been bookmarked.
 #### Scenario: Legacy URL redirects to canonical
 
 - **WHEN** a user navigates to `/butlers/relationship/contacts/abc-123-uuid`
-- **THEN** the browser MUST be permanently redirected to `/contacts/abc-123-uuid`
+- **THEN** the client-side router MUST redirect to `/contacts/abc-123-uuid`
 - **AND** the contact detail page MUST render for contact `abc-123-uuid`
 
 #### Scenario: Internal contact links use canonical route
 
 - **WHEN** a contact name is rendered as a navigation link anywhere in the dashboard
   (e.g., in the contacts table, in a relationship entry, in a notification)
-- **THEN** the link target MUST be `/contacts/{id}`, not `/butlers/relationship/contacts/{id}`
+- **THEN** the link target MUST be `/contacts/{contactId}`, not `/butlers/relationship/contacts/{id}`
 
 ---
 
 ### Requirement: Contact detail page conforms to the detail-page archetype
 
-The contact detail page at `/contacts/:id` SHALL conform to the detail-page archetype
+The contact detail page at `/contacts/:contactId` SHALL conform to the detail-page archetype
 defined in the `detail-page-archetype` spec.
 
 **Changes from the existing requirement (dashboard-relationship §Requirement: Contact
@@ -72,12 +74,12 @@ detail page):**
 4. **Body layout.** The `<ContactDetailView>` component output (minus the header
    card's edit/delete buttons) becomes the `primary` body slot inside the shell.
 
-5. **Token cleanup prerequisite.** Before or alongside this migration, the hex-literal
-   color palettes in `ContactDetailView.tsx` lines 53–62 (eight-element array) and
-   lines 69–77 (three role-badge hex codes) MUST be replaced with semantic Tailwind
-   tokens or CSS custom properties. These are the highest-priority token leaks in the
-   detail-page family per `detail-page-audit.md` §2 (Token & primitive discipline
-   score: 2/5).
+5. **Token cleanup status.** The hex-literal color palettes previously at
+   `ContactDetailView.tsx` lines 53–62 and 69–77 have already been replaced with
+   CSS custom properties (`var(--category-*)` and `var(--role-*)`) as of the migration
+   in ce185209 (role badge hex → CSS tokens). No token-cleanup prerequisite remains
+   for this migration step. Implementers should verify no new hex literals were
+   introduced during the archetype migration.
 
 #### Scenario: Contact detail uses shell loading state
 

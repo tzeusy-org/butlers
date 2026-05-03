@@ -31,7 +31,10 @@ reconciliation does not have to re-derive intent from code.
 **Non-Goals:**
 
 - Implementing frontend components. Implementation is in the bu-rqfil epic beads.
-- Changing the `<Page>` or `<DetailPage>` component API. The shell already ships.
+- Large-scale changes to the `<Page>` component API. Adding a narrow `status?: React.ReactNode`
+  slot to `PageProps` is required by the status-pills requirement (see D2) and is an
+  implementation-bead concern, not a design concern. The shell's overall contract and
+  all other props remain unchanged.
 - Specifying visual design tokens. That is `about/heart-and-soul/design-language.md`.
 - Altering the EntityDetailPage spec. Entity is the reference consumer, not a
   migration target.
@@ -50,9 +53,9 @@ rates.
 the shell spec is already large and stable; the archetype spec is new and will be revised
 as more pages migrate. Separate specs for separate concerns.
 
-### D2: Four-tier body vocabulary matches the audit source verbatim.
+### D2: Six-tier body vocabulary matches the audit source verbatim.
 
-`detail-page-audit.md` §3.2 names five regions in render order:
+`detail-page-audit.md` §3.2 names six regions in render order:
 
 1. **Header-hero** — breadcrumbs + H1 + status pills + action buttons
    (owned by `<Page>`, not a body slot).
@@ -65,7 +68,7 @@ as more pages migrate. Separate specs for separate concerns.
 The archetype spec preserves this vocabulary so implementation code and spec
 requirements share the same names. ButlerDetailPage's tab body maps to **primary**.
 
-### D3: Contact route — canonical is `/contacts/:id`; legacy is a permanent redirect.
+### D3: Contact route — canonical is `/contacts/:contactId`; legacy is a client-side redirect.
 
 The router (`frontend/src/router.tsx` line 84) already registers
 `/contacts/:contactId` and renders `ContactDetailPage`. The legacy path
@@ -74,10 +77,14 @@ line 54 and is not registered in the router.
 
 The spec is wrong; the router is right. The delta:
 - Removes `/butlers/relationship/contacts/:id` as the normative route from the spec.
-- Installs `/contacts/:id` as the single canonical route.
-- Requires that any inbound link to the legacy path be served via a permanent (308)
-  redirect to the canonical path. The redirect entry MUST be documented in the router
-  source alongside the existing `RelationshipEntityRedirect` pattern.
+- Installs `/contacts/:contactId` as the single canonical route, matching the router
+  parameter name already in use.
+- Requires that any inbound link to the legacy path be redirected to the canonical path
+  via a client-side route entry in React Router (a `<Navigate replace />` component
+  following the `RelationshipEntityRedirect` pattern at `frontend/src/router.tsx`
+  lines 57–64). This is a client-side redirect, not an HTTP 308. For external bookmarks
+  that bypass React Router (i.e., are fetched directly as HTTP requests), a hosting-level
+  redirect would be needed separately; that is out of scope for this change.
 - Documents both paths in the spec so operators who have bookmarked the legacy path
   know what to expect.
 
