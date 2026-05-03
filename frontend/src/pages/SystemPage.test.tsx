@@ -308,6 +308,37 @@ describe("SystemPage -- backup source unreachable", () => {
   });
 });
 
+describe("SystemPage -- tile sizing (bu-ozbtv)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setAllLoading();
+  });
+
+  it("wraps EgressCatalogTile in a lg:col-span-3 div (full-width privacy headline)", () => {
+    const html = renderPage();
+    expect(html).toContain('class="lg:col-span-3 h-full"');
+  });
+
+  it("wraps BackupTile in a lg:col-span-2 div", () => {
+    const html = renderPage();
+    // Two lg:col-span-2 wrappers exist (BackupTile and ButlerHeartbeatTile)
+    const matches = html.match(/class="lg:col-span-2 h-full"/g) ?? [];
+    expect(matches.length).toBe(2);
+  });
+
+  it("wraps ButlerHeartbeatTile in a lg:col-span-2 div", () => {
+    const html = renderPage();
+    const matches = html.match(/class="lg:col-span-2 h-full"/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("wrapper divs include h-full so cards fill grid-row height", () => {
+    const html = renderPage();
+    expect(html).not.toContain('"lg:col-span-2"');
+    expect(html).not.toContain('"lg:col-span-3"');
+  });
+});
+
 describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
   beforeEach(() => {
     vi.resetAllMocks();

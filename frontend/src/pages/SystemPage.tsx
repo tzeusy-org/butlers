@@ -88,13 +88,13 @@ export function SystemPage() {
         <VersionTile />
         <UptimeTile />
         <DbSizeTile />
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 h-full">
           <BackupTile />
         </div>
-        <div className="lg:col-span-3">
+        <div className="lg:col-span-3 h-full">
           <EgressCatalogTile />
         </div>
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 h-full">
           <ButlerHeartbeatTile />
         </div>
       </div>
