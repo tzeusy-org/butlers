@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
@@ -23,25 +24,26 @@ import { useNotifications } from "@/hooks/use-notifications";
 import { useSessions } from "@/hooks/use-sessions";
 import { useQaSummary } from "@/hooks/use-qa";
 
-function StatsCard({
-  title,
-  value,
-  description,
-}: {
-  title: string;
-  value: string | number;
-  description?: string;
-}) {
+function StatItem({ label, value }: { label: string; value: string | number }) {
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-muted-foreground text-sm font-medium">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
-        {description && <p className="text-muted-foreground mt-1 text-xs">{description}</p>}
-      </CardContent>
-    </Card>
+    <span className="flex items-baseline gap-1.5">
+      <span className="text-foreground text-sm font-medium tabular-nums">{value}</span>
+      <span className="text-muted-foreground text-xs">{label}</span>
+    </span>
+  );
+}
+
+function StatStripSkeleton() {
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-border pt-3"
+      role="status"
+      aria-label="Loading stats"
+    >
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="h-4 w-20 animate-pulse rounded bg-muted" />
+      ))}
+    </div>
   );
 }
 
@@ -118,23 +120,6 @@ function QaWidget() {
   );
 }
 
-function StatsBarSkeleton() {
-  return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      {Array.from({ length: 4 }).map((_, i) => (
-        <Card key={i}>
-          <CardHeader className="pb-2">
-            <div className="h-4 w-24 animate-pulse rounded bg-muted" />
-          </CardHeader>
-          <CardContent>
-            <div className="h-8 w-16 animate-pulse rounded bg-muted" />
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
-
 export default function DashboardPage() {
   const { data: butlersResponse, isLoading: butlersLoading } = useButlers();
   const { data: costSummaryResponse, isLoading: costSummaryLoading } = useCostSummary("today");
@@ -149,6 +134,7 @@ export default function DashboardPage() {
     status: "failed",
     limit: 5,
   });
+  const { data: approvalMetricsResponse, isLoading: approvalsLoading } = useApprovalMetrics();
 
   const butlers = butlersResponse?.data ?? [];
   const totalButlers = butlers.length;
@@ -160,36 +146,11 @@ export default function DashboardPage() {
   const sessionsToday = sessionsTodayResponse?.meta.total ?? 0;
   const costToday = costSummaryResponse?.data.total_cost_usd ?? 0;
   const issues = issuesResponse?.data ?? [];
+  const pendingApprovals = approvalMetricsResponse?.data.total_pending ?? 0;
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
-
-      {/* Aggregate Stats Bar */}
-      {butlersLoading ? (
-        <StatsBarSkeleton />
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatsCard title="Total Butlers" value={totalButlers} />
-          <StatsCard
-            title="Healthy"
-            value={healthyButlers}
-            description={
-              totalButlers > 0
-                ? `${Math.round((healthyButlers / totalButlers) * 100)}% online`
-                : undefined
-            }
-          />
-          <StatsCard
-            title="Sessions Today"
-            value={sessionsTodayLoading ? "--" : sessionsToday}
-          />
-          <StatsCard
-            title="Est. Cost Today"
-            value={costSummaryLoading ? "--" : `$${costToday.toFixed(2)}`}
-          />
-        </div>
-      )}
 
       {/* Ecosystem Topology */}
       <div className="grid gap-6 lg:grid-cols-2">
@@ -238,6 +199,30 @@ export default function DashboardPage() {
 
       {/* QA Widget */}
       <QaWidget />
+
+      {/* Supporting stat strip -- quiet context, not hero */}
+      {butlersLoading ? (
+        <StatStripSkeleton />
+      ) : (
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-border pt-3">
+          <StatItem
+            label={`of ${totalButlers} healthy`}
+            value={healthyButlers}
+          />
+          <StatItem
+            label="sessions today"
+            value={sessionsTodayLoading ? "--" : sessionsToday}
+          />
+          <StatItem
+            label="est. cost today"
+            value={costSummaryLoading ? "--" : `$${costToday.toFixed(2)}`}
+          />
+          <StatItem
+            label="pending approvals"
+            value={approvalsLoading ? "--" : pendingApprovals}
+          />
+        </div>
+      )}
     </div>
   );
 }
