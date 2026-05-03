@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import ast
+import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -545,15 +546,15 @@ def test_spotify_session_summary_not_in_deferred_names() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tuple-watermark: (started_at, id) > ($1, $2) boundary precision
+# UUID-backed watermark semantics
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
-    """When both ``since`` and ``since_id`` are provided, the query must use
-    the row-value comparison ``WHERE (started_at, id) > ($1, $2)`` so that
-    rows sharing the same timestamp as the batch boundary are not missed.
+async def test_since_id_is_ignored_uuid_pk() -> None:
+    """Spotify evidence rows use UUID primary keys, so integer ``since_id``
+    must not select a tuple ``(started_at, id)`` path backed by BIGINT
+    checkpoints.
     """
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
@@ -572,9 +573,9 @@ async def test_tuple_filter_used_when_since_and_since_id_both_given() -> None:
     assert conn.fetch.await_count == 1
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    assert "(started_at, id) > ($1, $2)" in query
+    assert "(started_at, id) > ($1, $2)" not in query
+    assert "started_at > $1" in query
     assert call_args.args[1] == since
-    assert call_args.args[2] == since_id
 
 
 @pytest.mark.asyncio
@@ -602,11 +603,12 @@ async def test_single_column_fallback_when_since_id_is_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_set_in_result() -> None:
-    """``AdapterResult.watermark_id`` must be set to the ``id`` of the
-    last-processed row after a successful run.
-    """
-    row = {**_make_row(started_at=_NOW), "id": 55}
+async def test_watermark_id_is_always_none_for_uuid_pk() -> None:
+    """``watermark_id`` stays None because projection_checkpoints stores BIGINT ids."""
+    row = {
+        **_make_row(started_at=_NOW),
+        "id": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+    }
 
     async def _fake_upsert(conn: object, episode: Episode) -> Episode:
         return episode
@@ -619,19 +621,26 @@ async def test_watermark_id_set_in_result() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == _NOW
-    assert result.watermark_id == 55
+    assert result.watermark_id is None
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_tracks_max_id_at_same_timestamp() -> None:
-    """When multiple sessions share the same ``started_at``, ``watermark_id``
-    must be the maximum ``id`` at that timestamp.
-    """
+async def test_watermark_id_not_populated_for_rows_sharing_started_at() -> None:
+    """Rows sharing a timestamp must not push UUID ids into BIGINT checkpoints."""
     t = _NOW
     rows = [
-        {**_make_row(started_at=t, idempotency_key="k1"), "id": 11},
-        {**_make_row(started_at=t, idempotency_key="k2"), "id": 22},
-        {**_make_row(started_at=t, idempotency_key="k3"), "id": 33},
+        {
+            **_make_row(started_at=t, idempotency_key="k1"),
+            "id": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        },
+        {
+            **_make_row(started_at=t, idempotency_key="k2"),
+            "id": uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+        },
+        {
+            **_make_row(started_at=t, idempotency_key="k3"),
+            "id": uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+        },
     ]
 
     async def _fake_upsert(conn: object, episode: Episode) -> Episode:
@@ -645,39 +654,40 @@ async def test_watermark_id_tracks_max_id_at_same_timestamp() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == t
-    assert result.watermark_id == 33
+    assert result.watermark_id is None
 
 
 @pytest.mark.asyncio
-async def test_boundary_rows_not_missed_with_tuple_watermark() -> None:
-    """The tuple query uses both since and since_id as parameters so
-    Postgres applies ``WHERE (started_at, id) > ($1, $2)`` rather than
-    the single-column filter.
-    """
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
+async def test_run_persists_checkpoint_without_uuid_watermark_id() -> None:
+    """A successful run must not bind the UUID source id into BIGINT watermark_id."""
+    row = {
+        **_make_row(started_at=_NOW),
+        "id": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+    }
+    pool = _pool_returning(row)
     cp = _chronicler_pool()
-    since = _NOW
-    since_id = 10
+    adapter = SpotifySessionAdapter()
 
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        return episode
 
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    assert "(started_at, id) > ($1, $2)" in query
-    assert call_args.args[1] == since
-    assert call_args.args[2] == since_id
+    with (
+        patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert),
+        patch("butlers.chronicler.adapters.base.get_checkpoint", AsyncMock(return_value=None)),
+        patch("butlers.chronicler.adapters.base.mark_source_active", AsyncMock()),
+        patch("butlers.chronicler.adapters.base.upsert_checkpoint", AsyncMock()) as checkpoint,
+    ):
+        result = await adapter.run(pool=pool, chronicler_pool=cp)
+
+    assert result.error is None
+    checkpoint.assert_awaited_once()
+    assert checkpoint.await_args.kwargs["watermark"] == _NOW
+    assert checkpoint.await_args.kwargs["watermark_id"] is None
 
 
 @pytest.mark.asyncio
-async def test_watermark_id_preserved_when_no_rows() -> None:
-    """When no rows are returned, ``watermark_id`` stays at ``since_id``."""
+async def test_watermark_id_cleared_when_no_rows() -> None:
+    """Even when passed, ``since_id`` is ignored for the UUID-backed source."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -698,4 +708,4 @@ async def test_watermark_id_preserved_when_no_rows() -> None:
         )
 
     assert result.watermark == prior_watermark
-    assert result.watermark_id == prior_watermark_id
+    assert result.watermark_id is None
