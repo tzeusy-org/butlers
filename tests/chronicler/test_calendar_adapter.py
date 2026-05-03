@@ -363,3 +363,110 @@ async def test_project_user_lane_rows_are_still_projected() -> None:
     assert result.episodes_closed == 1
     assert len(captured) == 1
     assert captured[0].title == "Dentist appointment"
+
+
+# ---------------------------------------------------------------------------
+# Cross-schema fan-out collapse
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_project_collapses_same_origin_instance_across_schemas() -> None:
+    """Same Google Calendar event in N schemas projects to ONE chronicler episode.
+
+    Regression for the "five Labour Day bars" bug. The dedup key is
+    ``origin_instance_ref`` alone (the upstream Google Calendar identifier),
+    not ``(source_id, origin_instance_ref)``, so per-schema row IDs do not
+    create distinct upsert keys.
+    """
+    shared_origin_ref = "evt:labour_day:2026-05-01T00:00:00Z"
+    rows_by_schema = {
+        "schema_a": [_make_row(event_title="Labour Day")],
+        "schema_b": [_make_row(event_title="Labour Day")],
+        "schema_c": [_make_row(event_title="Labour Day")],
+    }
+    # Override origin_instance_ref so every schema points at the same upstream
+    # instance — _make_row defaults to a single shared value but be explicit.
+    for rows in rows_by_schema.values():
+        for row in rows:
+            row["origin_instance_ref"] = shared_origin_ref
+
+    adapter = CalendarCompletedAdapter(
+        butler_schemas=tuple(rows_by_schema.keys()),
+    )
+    captured: list[Episode] = []
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        captured.append(episode)
+        return episode
+
+    async def _fake_fetch(_pool: object, schema: str, _since: object, _now: object) -> list[_Row]:
+        return rows_by_schema[schema]
+
+    with (
+        patch.object(adapter, "_fetch_instances", new=AsyncMock(side_effect=_fake_fetch)),
+        patch(
+            "butlers.chronicler.adapters.calendar.upsert_episode",
+            side_effect=_fake_upsert,
+        ),
+    ):
+        result = await adapter.project(
+            MagicMock(),
+            chronicler_pool=_chronicler_pool(),
+            since=None,
+        )
+
+    assert result.rows_projected == 1, "Cross-schema fan-out must collapse to a single projection"
+    assert len(captured) == 1
+    # And the persistent source_ref is derived from origin_instance_ref so
+    # the upsert key would also have collapsed at the database layer.
+    assert captured[0].source_ref == f"calendar:{shared_origin_ref}"
+
+
+@pytest.mark.unit
+async def test_project_collapses_same_origin_under_multiple_event_ids_in_one_schema() -> None:
+    """Two rows in ONE schema sharing origin_instance_ref but with different
+    event_id values collapse to a single episode.
+
+    The unique constraint on calendar_event_instances is
+    ``(event_id, origin_instance_ref)``, so the calendar sync can legitimately
+    insert duplicate origin_instance_ref rows under different event_ids when
+    the upstream calendar event is duplicated. Chronicler must still emit one
+    episode.
+    """
+    shared_origin_ref = "evt:dup_event_ids:2026-05-01T07:00:00Z"
+    row1 = _make_row(event_title="Daily standup")
+    row2 = _make_row(event_title="Daily standup")
+    row1["origin_instance_ref"] = shared_origin_ref
+    row2["origin_instance_ref"] = shared_origin_ref
+    # Different event_ids to mirror the same-schema duplicate scenario.
+    row1["event_id"] = uuid4()
+    row2["event_id"] = uuid4()
+
+    adapter = CalendarCompletedAdapter(butler_schemas=("schema_only",))
+    captured: list[Episode] = []
+
+    async def _fake_upsert(_conn: object, episode: Episode) -> Episode:
+        captured.append(episode)
+        return episode
+
+    with (
+        patch.object(
+            adapter,
+            "_fetch_instances",
+            new=AsyncMock(return_value=[row1, row2]),
+        ),
+        patch(
+            "butlers.chronicler.adapters.calendar.upsert_episode",
+            side_effect=_fake_upsert,
+        ),
+    ):
+        result = await adapter.project(
+            MagicMock(),
+            chronicler_pool=_chronicler_pool(),
+            since=None,
+        )
+
+    assert result.rows_projected == 1
+    assert len(captured) == 1
+    assert captured[0].source_ref == f"calendar:{shared_origin_ref}"

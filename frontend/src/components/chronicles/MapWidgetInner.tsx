@@ -309,8 +309,18 @@ export function MapWidgetInner({
 
     if (map.isStyleLoaded()) {
       installTrailLayer()
-    } else {
-      map.once("load", installTrailLayer)
+      return
+    }
+
+    // Style is still loading. Defer the source/layer installation to the
+    // 'load' event AND register a cleanup that detaches the listener if
+    // the component unmounts (or trailPoints changes again) before the
+    // map finishes loading. Without the cleanup the closure can fire on
+    // a torn-down map instance, which we treat as a "do nothing" via the
+    // mapRef.current guard below for extra safety.
+    map.once("load", installTrailLayer)
+    return () => {
+      map.off("load", installTrailLayer)
     }
   }, [trailPoints])
 

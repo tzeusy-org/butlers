@@ -23,6 +23,8 @@ from butlers.chronicler.adapters.spotify import (
     EPISODE_TYPE_LISTENING,
     SOURCE_NAME,
     SpotifySessionAdapter,
+    _coerce_track_names,
+    _compose_session_title,
 )
 from butlers.chronicler.models import Episode, Precision, Privacy
 
@@ -288,6 +290,81 @@ async def test_episode_title_falls_back_to_endpoint_when_no_context_or_tracks() 
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert _ENDPOINT in upserted[0].title
+
+
+@pytest.mark.asyncio
+async def test_episode_title_lists_first_two_tracks_with_remainder_count() -> None:
+    """When track_names has >2 entries, the title enumerates the first two
+    inline and appends a "+N more" suffix to keep tooltips compact."""
+    row = _make_row(
+        context_name=None,
+        context_uri=None,
+        track_names=["Song A", "Song B", "Song C", "Song D"],
+    )
+    adapter = SpotifySessionAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    title = upserted[0].title
+    assert title == "Listened to Song A, Song B (+2 more)"
+
+
+@pytest.mark.asyncio
+async def test_episode_title_three_tracks_uses_singular_more_count() -> None:
+    """Exactly 3 tracks: the first two are inline, suffix is "+1 more"."""
+    row = _make_row(
+        context_name=None,
+        context_uri=None,
+        track_names=["Track 1", "Track 2", "Track 3"],
+    )
+    adapter = SpotifySessionAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert upserted[0].title == "Listened to Track 1, Track 2 (+1 more)"
+
+
+@pytest.mark.asyncio
+async def test_episode_payload_includes_track_names() -> None:
+    """track_names SHALL be exposed on the episode payload so the dashboard
+    drawer can render the full track list, not just what fit in the title."""
+    row = _make_row(
+        context_name=None,
+        context_uri=None,
+        track_names=["Aria", "Adagio", "Allegro"],
+    )
+    adapter = SpotifySessionAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
+        await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert upserted[0].payload["track_names"] == ["Aria", "Adagio", "Allegro"]
 
 
 # ---------------------------------------------------------------------------
@@ -734,3 +811,98 @@ async def test_watermark_id_cleared_when_no_rows() -> None:
 
     assert result.watermark == prior_watermark
     assert result.watermark_id is None
+
+
+# ---------------------------------------------------------------------------
+# _coerce_track_names — pure helper unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_track_names_handles_none() -> None:
+    assert _coerce_track_names(None) == []
+
+
+def test_coerce_track_names_handles_already_decoded_list() -> None:
+    assert _coerce_track_names(["A", "B"]) == ["A", "B"]
+
+
+def test_coerce_track_names_handles_jsonb_string_payload() -> None:
+    """asyncpg sometimes surfaces JSONB columns as raw JSON strings."""
+    assert _coerce_track_names('["A","B"]') == ["A", "B"]
+
+
+def test_coerce_track_names_drops_non_string_and_empty_entries() -> None:
+    assert _coerce_track_names(["A", "", None, 42, "B"]) == ["A", "B"]
+
+
+def test_coerce_track_names_returns_empty_for_malformed_json() -> None:
+    assert _coerce_track_names("not json [") == []
+
+
+def test_coerce_track_names_returns_empty_for_non_list_top_level() -> None:
+    assert _coerce_track_names('{"foo": "bar"}') == []
+
+
+# ---------------------------------------------------------------------------
+# _compose_session_title — pure helper unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_compose_session_title_prefers_context_name() -> None:
+    title = _compose_session_title(
+        context_name="Deep Focus",
+        context_uri="spotify:playlist:xyz",
+        track_names=["Track 1"],
+        endpoint_identity="ep:user",
+    )
+    assert title == "Listened to Deep Focus"
+
+
+def test_compose_session_title_uses_context_uri_tail_when_no_name() -> None:
+    title = _compose_session_title(
+        context_name=None,
+        context_uri="spotify:album:abc123",
+        track_names=["Track 1"],
+        endpoint_identity="ep:user",
+    )
+    assert title == "Listened to abc123"
+
+
+def test_compose_session_title_falls_back_to_single_track() -> None:
+    title = _compose_session_title(
+        context_name=None,
+        context_uri=None,
+        track_names=["Solo Track"],
+        endpoint_identity="ep:user",
+    )
+    assert title == "Listened to Solo Track"
+
+
+def test_compose_session_title_lists_two_tracks_without_more_suffix() -> None:
+    title = _compose_session_title(
+        context_name=None,
+        context_uri=None,
+        track_names=["A", "B"],
+        endpoint_identity="ep:user",
+    )
+    assert title == "Listened to A, B"
+
+
+def test_compose_session_title_appends_more_suffix_for_three_tracks() -> None:
+    title = _compose_session_title(
+        context_name=None,
+        context_uri=None,
+        track_names=["A", "B", "C"],
+        endpoint_identity="ep:user",
+    )
+    assert title == "Listened to A, B (+1 more)"
+
+
+def test_compose_session_title_falls_back_to_endpoint_when_nothing_else() -> None:
+    title = _compose_session_title(
+        context_name=None,
+        context_uri=None,
+        track_names=[],
+        endpoint_identity="ep:user",
+    )
+    assert title == "Spotify session (ep:user)"

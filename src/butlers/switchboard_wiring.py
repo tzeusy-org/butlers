@@ -315,6 +315,13 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                     context=context_text,
                     trigger_source="route",
                     request_id=route_request_id,
+                    # Recovery dispatches replay the original ingest;
+                    # request_id is the same UUID7 the switchboard wrote
+                    # as public.ingestion_events.id, so persist it as the
+                    # session's ingestion_event_id FK to preserve the
+                    # chronicler contact-resolution join (mirrors the
+                    # primary route handler in core_tools/_routing.py).
+                    ingestion_event_id=route_request_id,
                 )
                 await route_inbox_mark_processed(pool, row_id, result.session_id)
             except Exception as exc:

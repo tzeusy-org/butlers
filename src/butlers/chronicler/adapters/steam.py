@@ -215,6 +215,28 @@ class SteamPlayAdapter(ProjectionAdapter):
             end_at = end_of_day
             start_at = max(start_of_day, end_at - duration)
 
+        # When the daily aggregate exceeds the wall-clock window from
+        # start-of-day to the anchor observation, start_at clamps to
+        # start_of_day. This is the documented best-effort behaviour for
+        # daily-aggregate sources, but it is also a real signal of a
+        # connector polling gap or accumulated overnight play that an
+        # operator may want to investigate. Surface it via a structured
+        # warning so it is greppable and never silently swallowed.
+        elapsed_since_midnight = anchor_end - start_of_day
+        if duration > elapsed_since_midnight and start_at == start_of_day:
+            logger.warning(
+                "steam.play_history clamp: start_at pinned to %s for "
+                "steam_id=%s app_id=%s date=%s playtime_minutes=%d "
+                "(exceeds elapsed_minutes=%d since midnight; anchor=%s)",
+                start_of_day,
+                steam_id,
+                app_id,
+                date,
+                playtime_minutes,
+                int(elapsed_since_midnight.total_seconds() // 60),
+                anchor_end,
+            )
+
         app_name = row["app_name"]
         steam_account_id = row["steam_account_id"]
 

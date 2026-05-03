@@ -2290,3 +2290,91 @@ class TestSpawnerCwdAndBypassSemaphore:
         )
         assert all(r.success for r in results)
         assert len(completed) == 2
+
+
+# ---------------------------------------------------------------------------
+# Ingestion event propagation through trigger pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionEventIdPropagation:
+    """Spawner.trigger forwards ingestion_event_id to session_create.
+
+    Regression for the "Conversation via unknown channel" chronicler bug:
+    routed sessions need their session row to FK back into
+    public.ingestion_events so chronicler contact resolution can join the
+    sender's display name. Without this propagation every routed
+    conversation degrades to the catch-all unknown-channel title.
+    """
+
+    async def test_route_trigger_forwards_ingestion_event_id_to_session_create(
+        self, tmp_path: Path
+    ):
+        """When the route handler passes ingestion_event_id, it lands in
+        session_create as a kwarg verbatim."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        ingestion_uuid = "019deb89-f3da-7a63-be86-794aa2b1de76"
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000001")
+            await Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=MockAdapter(result_text="ok"),
+            ).trigger(
+                "hello",
+                "route",
+                request_id=ingestion_uuid,
+                ingestion_event_id=ingestion_uuid,
+            )
+
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs.get("ingestion_event_id") == ingestion_uuid, (
+            "session_create must receive the ingestion_event_id forwarded by trigger()"
+        )
+        assert kwargs.get("request_id") == ingestion_uuid
+
+    async def test_internal_trigger_omits_ingestion_event_id(self, tmp_path: Path):
+        """Tick / schedule callers leave ingestion_event_id unset → session
+        row stores NULL and chronicler skips contact resolution for it."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_create.return_value = uuid.UUID("00000000-0000-0000-0000-000000000002")
+            await Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=MockAdapter(result_text="ok"),
+            ).trigger("tick prompt", "tick")
+
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs.get("ingestion_event_id") is None, (
+            "Internal triggers must not invent an ingestion_event_id"
+        )
