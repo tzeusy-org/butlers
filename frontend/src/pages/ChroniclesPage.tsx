@@ -44,6 +44,10 @@ import { MapPanContext, useMapPanContextValue } from "@/components/chronicles/ma
 import { ChroniclesTimezoneProvider } from "@/components/chronicles/timezone-context"
 import { DEFAULT_TZ } from "@/components/chronicles/tz-format"
 import { useGeneralSettings } from "@/hooks/use-general-settings"
+import {
+  interpolatePlayhead,
+  type TimedTrailPoint,
+} from "@/components/chronicles/playhead-interp"
 
 // ---------------------------------------------------------------------------
 // Page
@@ -116,16 +120,15 @@ export default function ChroniclesPage() {
   })
   const pointEvents = useMemo(() => pointEventsData?.data ?? [], [pointEventsData])
 
-  // OwnTracks trail (bu-ig72b.35): derive {lng, lat} pairs from point events.
+  // OwnTracks trail with timestamps (bu-ig72b.35): derive {lng, lat, ms} from
+  // point events. Used both as the raw trail and as the keyframe list for
+  // smooth playhead interpolation.
   //
   // Filter: exclude events where canonical_privacy === 'sensitive' (masking
   // policy per bu-ig72b.29) and events without lat/lon coordinates in payload.
   // Sort:   ascending canonical_occurred_at so the line connects in time order.
   // Tombstoned events are excluded by the hook default (include_tombstoned=false).
-  //
-  // This is intentionally empty until the OwnTracks projection adapter
-  // (bu-ahs9z) lands and starts emitting point events with lat/lon payloads.
-  const trailPoints = useMemo(() => {
+  const timedTrail = useMemo<TimedTrailPoint[]>(() => {
     return pointEvents
       .filter((ev) => ev.canonical_privacy !== "sensitive")
       .filter((ev) => {
@@ -133,59 +136,41 @@ export default function ChroniclesPage() {
         const lon = ev.payload.lon ?? ev.payload.lng
         return typeof lat === "number" && typeof lon === "number"
       })
-      .sort(
-        (a, b) =>
-          new Date(a.canonical_occurred_at).getTime() -
-          new Date(b.canonical_occurred_at).getTime(),
-      )
       .map((ev) => ({
         lng: (ev.payload.lon ?? ev.payload.lng) as number,
         lat: ev.payload.lat as number,
+        ms: new Date(ev.canonical_occurred_at).getTime(),
       }))
+      .sort((a, b) => a.ms - b.ms)
   }, [pointEvents])
 
-  // Playhead state (D12): lifted here and passed down to Gantt + MapWidget.
-  // snappedMs drives the Gantt cursor line.
-  // playheadPoint drives the map marker (derived from snapped point event payload).
+  const trailPoints = useMemo(
+    () => timedTrail.map(({ lng, lat }) => ({ lng, lat })),
+    [timedTrail],
+  )
+
+  // Playhead state (D12).
+  //   snappedMs    drives the Gantt cursor line (snapped to nearest event).
+  //   scrubberMs   drives the map marker via interpolation along the trail —
+  //                this lets the marker glide smoothly between samples while
+  //                the user is dragging.
   const [snappedMs, setSnappedMs] = useState<number | null>(null)
-  const [playheadPoint, setPlayheadPoint] = useState<{ lng: number; lat: number } | null>(null)
+  const [scrubberMs, setScrubberMs] = useState<number | null>(null)
 
   const handleScrub = useCallback(
-    (_scrubberMs: number, newSnappedMs: number | null) => {
+    (newScrubberMs: number, newSnappedMs: number | null) => {
       setSnappedMs(newSnappedMs)
-
-      // Resolve the snapped point event to extract {lng, lat} from its payload.
-      // Only events from the owntracks source carry lat/lon coordinates.
-      if (newSnappedMs === null) {
-        setPlayheadPoint(null)
-        return
-      }
-
-      const snappedEvent = pointEvents.find(
-        (ev) => new Date(ev.canonical_occurred_at).getTime() === newSnappedMs,
-      )
-      if (!snappedEvent) {
-        setPlayheadPoint(null)
-        return
-      }
-
-      // Never plot coordinates for sensitive events — consistent with MapWidgetInner's
-      // sensitive-point exclusion and the bu-ig72b.29 masking policy.
-      if (snappedEvent.canonical_privacy === "sensitive") {
-        setPlayheadPoint(null)
-        return
-      }
-
-      const lat = snappedEvent.payload.lat
-      const lon = snappedEvent.payload.lon ?? snappedEvent.payload.lng
-      if (typeof lat === "number" && typeof lon === "number") {
-        setPlayheadPoint({ lng: lon, lat })
-      } else {
-        setPlayheadPoint(null)
-      }
+      setScrubberMs(newScrubberMs)
     },
-    [pointEvents],
+    [],
   )
+
+  // Live, interpolated playhead position. Recomputes per scrubber tick but
+  // only does an O(log N) binary search + two multiplications — cheap.
+  const playheadPoint = useMemo(() => {
+    if (scrubberMs === null) return null
+    return interpolatePlayhead(scrubberMs, timedTrail)
+  }, [scrubberMs, timedTrail])
 
   const { byCategory, byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
     refetchInterval,

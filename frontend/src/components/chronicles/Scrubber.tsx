@@ -21,12 +21,14 @@
 //   - When there are no point events, `snappedMs` is null and the map shows
 //     its own empty state (no playhead marker).
 //
-// Debounce:
-//   - onScrub is debounced 60 ms so that rapid scrubbing does not trigger
-//     expensive map repaints on every tick.
+// Update cadence:
+//   - onScrub fires synchronously on every slider input change. The map
+//     marker uses interpolation between trail samples, so the parent can
+//     update the playhead position smoothly as scrubberMs changes; there is
+//     no per-tick map repaint to debounce.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import type { ChroniclerPointEvent } from "@/api/types"
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
@@ -106,34 +108,18 @@ export function Scrubber({ windowStart, windowEnd, pointEvents, onScrub }: Scrub
   // Initialized once per mount (parent resets via key prop when window changes).
   const [scrubberMs, setScrubberMs] = useState<number>(windowStartMs)
 
-  // Debounce ref for onScrub calls.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
   // Snap to nearest point event — recomputed only when inputs change.
   const snappedMs = useMemo(
     () => snapToNearest(scrubberMs, pointEvents),
     [scrubberMs, pointEvents],
   )
 
-  // Build the debounced emit function.
-  const emitScrub = useCallback(
-    (rawMs: number, snapped: number | null) => {
-      if (debounceRef.current !== null) clearTimeout(debounceRef.current)
-      debounceRef.current = setTimeout(() => {
-        onScrub(rawMs, snapped)
-      }, 60)
-    },
-    [onScrub],
-  )
-
-  // Emit whenever scrubberMs or snappedMs changes.
+  // Emit synchronously whenever scrubberMs or snappedMs changes. The map
+  // marker is driven by raw scrubberMs (with interpolation) so the parent
+  // wants every tick — no debouncing.
   useEffect(() => {
-    emitScrub(scrubberMs, snappedMs)
-    // Cleanup on unmount: cancel any pending debounce.
-    return () => {
-      if (debounceRef.current !== null) clearTimeout(debounceRef.current)
-    }
-  }, [scrubberMs, snappedMs, emitScrub])
+    onScrub(scrubberMs, snappedMs)
+  }, [scrubberMs, snappedMs, onScrub])
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setScrubberMs(Number(e.target.value))

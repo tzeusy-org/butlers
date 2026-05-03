@@ -2,14 +2,17 @@
 // MapWidgetInner — inner MapLibre-GL component (bu-ig72b.14)
 //
 // Imported only via the lazy() split in MapWidget.tsx so that maplibre-gl
-// lands in its own async chunk and does not inflate the main bundle.
+// (and h3-js) land in a separate async chunk and don't inflate the main bundle.
 //
 // Responsibilities:
-//   - Mount / tear-down a MapLibre map with an OSM tile source.
+//   - Mount / tear-down a MapLibre map with a theme-aware CARTO basemap
+//     (Positron No Labels in light mode, Dark Matter No Labels in dark mode).
 //   - Show an EmptyState overlay when both `points` and `trailPoints` are empty.
-//   - Accept optional GeoJSON points and fit the map to their bounds.
 //   - Render an OwnTracks trail as a connected line layer (bu-ig72b.35).
-//   - Attribution is rendered by MapLibre natively (OSM attribution required).
+//   - Overlay a hexagonal density heatmap (H3 binning, red→green palette)
+//     derived from `trailPoints`.
+//   - Position a red playhead marker that glides smoothly between trail
+//     samples as the user drags the scrubber.
 // ---------------------------------------------------------------------------
 
 import maplibreGl, { type GeoJSONSource, type Map as MapLibreMap } from "maplibre-gl"
@@ -18,14 +21,15 @@ import { MapPin } from "lucide-react"
 import { useEffect, useMemo, useRef } from "react"
 
 import { EmptyState } from "@/components/ui/empty-state"
+import { useDarkMode } from "@/hooks/useDarkMode"
 import { useRegisterMapPan } from "./map-pan-store"
 import { buildTrailGeoJSON } from "./trail-geojson"
+import { buildHexHeatmap, type HexFeatureCollection } from "./hex-heatmap"
 
 // ---------------------------------------------------------------------------
 // Playhead marker helpers
 // ---------------------------------------------------------------------------
 
-/** Create a DOM element for the playhead marker (filled circle). */
 function createPlayheadEl(): HTMLElement {
   const el = document.createElement("div")
   el.setAttribute("data-testid", "map-playhead")
@@ -33,7 +37,7 @@ function createPlayheadEl(): HTMLElement {
     "width: 14px",
     "height: 14px",
     "border-radius: 50%",
-    "background: hsl(0 84% 60%)",  // destructive red — clearly distinguishable
+    "background: hsl(0 84% 60%)",
     "border: 2px solid white",
     "box-shadow: 0 0 0 2px hsl(0 84% 60% / 40%)",
     "pointer-events: none",
@@ -45,20 +49,12 @@ function createPlayheadEl(): HTMLElement {
 // Types
 // ---------------------------------------------------------------------------
 
-/** A single displayable location point. */
 export interface MapPoint {
-  /** Longitude in decimal degrees (WGS 84). */
   lng: number
-  /** Latitude in decimal degrees (WGS 84). */
   lat: number
-  /** Optional label shown in the marker popup. */
   label?: string
-  /** Optional category string from the lane taxonomy (used for future coloring). */
   category?: string
-  /**
-   * Privacy tier inherited from the linked episode.
-   * Points with privacy_tier "sensitive" are never plotted on the map.
-   */
+  /** Points with privacy_tier "sensitive" are never plotted. */
   privacy_tier?: string
 }
 
@@ -67,57 +63,126 @@ export interface MapWidgetInnerProps {
   points: MapPoint[]
   /** Height class for the map container. @default "h-80" */
   height?: string
-  /**
-   * The snapped playhead point (lng, lat) in epoch ms coordinates.
-   * When set, a distinct marker is placed at this position (D12 — map
-   * playhead follows scrubber). The nearest point in `points` matching
-   * this epoch ms is highlighted; if none match, no playhead is shown.
-   *
-   * Pass null or undefined when no scrubber position is active.
-   */
+  /** Live playhead position (lng, lat) — updates as the scrubber moves. */
   playheadPoint?: { lng: number; lat: number } | null
   /**
    * OwnTracks trail points to render as a connected line layer (bu-ig72b.35).
-   * Points are already sorted by occurred_at and pre-filtered (sensitive
-   * events excluded). A LineString is rendered when ≥2 points are provided.
-   * Empty array or single point → empty FeatureCollection (no line drawn).
+   * Pre-sorted by occurred_at and pre-filtered (sensitive events excluded).
    */
   trailPoints?: Array<{ lng: number; lat: number }>
+  /**
+   * Whether the hex heatmap overlay is visible. The hexagons are always
+   * computed from `trailPoints` (so toggling does not stutter); the layer
+   * visibility is flipped via setLayoutProperty.
+   * @default true
+   */
+  heatmapVisible?: boolean
 }
 
 // ---------------------------------------------------------------------------
-// OSM tile style
+// CARTO basemaps (theme-aware)
+//
+// Positron No Labels (light) and Dark Matter No Labels (dark) — CARTO's
+// label-free basemaps. Labels are stripped because the heatmap and markers
+// already carry the location story; labels would compete visually.
+// Free for non-commercial use; attribution is provided in the style.
 // ---------------------------------------------------------------------------
 
-/** Minimal MapLibre style that uses the OpenStreetMap raster tile service. */
-const OSM_STYLE: maplibreGl.StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
-      maxzoom: 19,
+const CARTO_LIGHT_TILES = [
+  "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+  "https://b.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+  "https://c.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+  "https://d.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png",
+]
+
+const CARTO_DARK_TILES = [
+  "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+  "https://b.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+  "https://c.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+  "https://d.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+]
+
+const CARTO_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>'
+
+function cartoStyle(isDark: boolean): maplibreGl.StyleSpecification {
+  return {
+    version: 8,
+    sources: {
+      basemap: {
+        type: "raster",
+        tiles: isDark ? CARTO_DARK_TILES : CARTO_LIGHT_TILES,
+        tileSize: 256,
+        attribution: CARTO_ATTRIBUTION,
+        maxzoom: 19,
+      },
     },
-  },
-  layers: [
-    {
-      id: "osm-tiles",
-      type: "raster",
-      source: "osm",
-    },
-  ],
+    layers: [{ id: "basemap-tiles", type: "raster", source: "basemap" }],
+  }
 }
 
 // Default center (0,0) and zoom when there are no points.
 const DEFAULT_CENTER: [number, number] = [0, 0]
 const DEFAULT_ZOOM = 1
 
-// OwnTracks trail layer identifiers (bu-ig72b.35).
+// Layer / source identifiers.
 const TRAIL_SOURCE_ID = "owntracks-trail"
 const TRAIL_LAYER_ID = "owntracks-trail-line"
+const HEATMAP_SOURCE_ID = "owntracks-heatmap"
+const HEATMAP_FILL_LAYER_ID = "owntracks-heatmap-fill"
+const HEATMAP_OUTLINE_LAYER_ID = "owntracks-heatmap-outline"
+
+// ---------------------------------------------------------------------------
+// Overlay install helpers
+// ---------------------------------------------------------------------------
+
+function installOverlayLayers(
+  map: MapLibreMap,
+  trailGeoJSON: GeoJSON.FeatureCollection,
+  heatmapGeoJSON: HexFeatureCollection,
+  heatmapVisible: boolean,
+): void {
+  // Heatmap is added first so it sits beneath the trail line in z-order.
+  map.addSource(HEATMAP_SOURCE_ID, { type: "geojson", data: heatmapGeoJSON })
+  map.addLayer({
+    id: HEATMAP_FILL_LAYER_ID,
+    type: "fill",
+    source: HEATMAP_SOURCE_ID,
+    layout: { visibility: heatmapVisible ? "visible" : "none" },
+    paint: {
+      "fill-color": ["get", "color"],
+      "fill-opacity": [
+        "interpolate", ["linear"], ["get", "intensity"],
+        0, 0.35,
+        1, 0.65,
+      ],
+    },
+  })
+  map.addLayer({
+    id: HEATMAP_OUTLINE_LAYER_ID,
+    type: "line",
+    source: HEATMAP_SOURCE_ID,
+    layout: { visibility: heatmapVisible ? "visible" : "none" },
+    paint: {
+      "line-color": ["get", "color"],
+      "line-width": 0.5,
+      "line-opacity": 0.55,
+    },
+  })
+
+  map.addSource(TRAIL_SOURCE_ID, { type: "geojson", data: trailGeoJSON })
+  map.addLayer({
+    id: TRAIL_LAYER_ID,
+    type: "line",
+    source: TRAIL_SOURCE_ID,
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: {
+      "line-color": "hsl(220 90% 56%)",
+      "line-width": 3,
+      "line-opacity": 0.85,
+    },
+  })
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -128,70 +193,78 @@ export function MapWidgetInner({
   height = "h-80",
   playheadPoint,
   trailPoints = [],
+  heatmapVisible = true,
 }: MapWidgetInnerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const markersRef = useRef<maplibreGl.Marker[]>([])
   const playheadMarkerRef = useRef<maplibreGl.Marker | null>(null)
-  // Whether the trail source/layer have been added to the current map instance.
-  const trailReadyRef = useRef<boolean>(false)
+  const overlaysReadyRef = useRef<boolean>(false)
 
-  // Register flyTo with the pan store so Gantt episode clicks can pan the map.
-  // useRegisterMapPan returns a no-op if there is no MapPanContext provider,
-  // which keeps MapWidgetInner usable in standalone / test contexts.
+  const { resolvedTheme } = useDarkMode()
+  const isDark = resolvedTheme === "dark"
+
   const registerMapPan = useRegisterMapPan()
 
-  // Sensitive points are never plotted — filter them out before rendering.
-  // Memoised to avoid recreating the array on every render (stable reference
-  // prevents the marker-sync useEffect from firing spuriously).
   const visiblePoints = useMemo(
     () => points.filter((p) => p.privacy_tier !== "sensitive"),
     [points],
   )
 
-  // hasMapData determines whether the map canvas is rendered.  The map canvas
-  // mounts whenever there is any displayable data — either visible marker
-  // points or trail geometry.  The empty state is shown only when both are
-  // absent.  The map initialisation effect depends on this flag so that React
-  // re-runs the effect (and mounts a fresh map instance) whenever the component
-  // switches between the empty-state overlay and the real map container.
   const hasTrailPoints = trailPoints.length > 0
   const hasMapData = visiblePoints.length > 0 || hasTrailPoints
 
+  // Hex heatmap GeoJSON — memoised on trailPoints so scrubber drags do NOT
+  // recompute the binning. This is the key performance lever: layer geometry
+  // is uploaded to the GPU once per data change, not per frame.
+  const heatmapGeoJSON = useMemo(
+    () => buildHexHeatmap(trailPoints),
+    [trailPoints],
+  )
+
+  // Trail GeoJSON — memoised for the same reason.
+  const trailGeoJSON = useMemo(() => buildTrailGeoJSON(trailPoints), [trailPoints])
+
   // Initialise the map once the container is present; tear down on unmount or
   // when the component transitions back to the empty state.
+  // We deliberately do NOT depend on `isDark` — theme switches reuse the
+  // existing map instance via setStyle().
   useEffect(() => {
     if (!containerRef.current) return
 
     const map = new maplibreGl.Map({
       container: containerRef.current,
-      style: OSM_STYLE,
+      style: cartoStyle(isDark),
       center: DEFAULT_CENTER,
       zoom: DEFAULT_ZOOM,
-      // Attribution control uses default options (compact mode); OSM attribution is in OSM_STYLE sources.
       attributionControl: { compact: false },
     })
 
     mapRef.current = map
 
     return () => {
-      // Remove playhead marker before destroying the map instance.
       playheadMarkerRef.current?.remove()
       playheadMarkerRef.current = null
-      // Remove all regular markers before destroying the map instance.
-      for (const marker of markersRef.current) {
-        marker.remove()
-      }
+      for (const marker of markersRef.current) marker.remove()
       markersRef.current = []
-      trailReadyRef.current = false
+      overlaysReadyRef.current = false
       map.remove()
       mapRef.current = null
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasMapData])
 
+  // Theme switch — replace the basemap style without remounting. setStyle
+  // strips our custom sources/layers, so flip overlaysReadyRef and let the
+  // overlay-sync effect re-install them once the new style finishes loading.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    overlaysReadyRef.current = false
+    map.setStyle(cartoStyle(isDark))
+  }, [isDark])
+
   // Register a panTo implementation with the shared pan store.
-  // Re-runs whenever hasMapData changes (same dependency as the map init effect).
-  // The closure captures mapRef so it always calls the current map instance.
   useEffect(() => {
     registerMapPan((lat, lng) => {
       mapRef.current?.flyTo({ center: [lng, lat], zoom: 13 })
@@ -203,126 +276,109 @@ export function MapWidgetInner({
     const map = mapRef.current
     if (!map) return
 
-    // Clear existing markers.
-    for (const marker of markersRef.current) {
-      marker.remove()
-    }
+    for (const marker of markersRef.current) marker.remove()
     markersRef.current = []
 
     if (visiblePoints.length === 0) return
 
     const bounds = new maplibreGl.LngLatBounds()
-
     for (const point of visiblePoints) {
       const popup = point.label
         ? new maplibreGl.Popup({ offset: 25 }).setText(point.label)
         : undefined
-
       const marker = new maplibreGl.Marker()
         .setLngLat([point.lng, point.lat])
         .addTo(map)
-
-      if (popup) {
-        marker.setPopup(popup)
-      }
-
+      if (popup) marker.setPopup(popup)
       markersRef.current.push(marker)
       bounds.extend([point.lng, point.lat])
     }
-
     map.fitBounds(bounds, { padding: 48, maxZoom: 14 })
   }, [visiblePoints])
 
-  // Sync the playhead marker position whenever `playheadPoint` changes.
+  // Fit the map to the trail's bounding box on first load so the user sees
+  // their movement immediately, even when no marker `points` are provided.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (visiblePoints.length > 0) return // marker effect already fits
+    if (trailPoints.length === 0) return
+
+    const bounds = new maplibreGl.LngLatBounds()
+    for (const p of trailPoints) bounds.extend([p.lng, p.lat])
+    map.fitBounds(bounds, { padding: 48, maxZoom: 14, duration: 0 })
+    // We only want to auto-fit on data changes (window switch / refresh);
+    // we don't want to fight the user's pan/zoom while they scrub.
+  }, [trailPoints, visiblePoints.length])
+
+  // Sync the playhead marker. setLngLat is just a transform update — cheap
+  // enough to call on every scrubber tick without debouncing.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
 
     if (!playheadPoint) {
-      // No active playhead — remove the marker if it exists.
       playheadMarkerRef.current?.remove()
       playheadMarkerRef.current = null
       return
     }
 
     const { lng, lat } = playheadPoint
-
     if (playheadMarkerRef.current) {
-      // Update position of existing marker (cheap — avoids DOM churn).
       playheadMarkerRef.current.setLngLat([lng, lat])
     } else {
-      // Create a new playhead marker.
       playheadMarkerRef.current = new maplibreGl.Marker({ element: createPlayheadEl() })
         .setLngLat([lng, lat])
         .addTo(map)
     }
   }, [playheadPoint])
 
-  // Sync the OwnTracks trail source/layer whenever `trailPoints` changes (bu-ig72b.35).
-  //
-  // The trail source ('owntracks-trail') and layer ('owntracks-trail-line') are
-  // added lazily on the first render after the map is ready. Subsequent updates
-  // call setData() on the existing source — cheaper than remove/re-add.
-  //
-  // A LineString requires ≥2 coordinate pairs; buildTrailGeoJSON returns an
-  // empty FeatureCollection for 0 or 1 points so the layer renders nothing.
-  //
-  // map.addSource / map.addLayer require the style to be loaded — calling
-  // them before the style finishes loading throws "Style is not done loading"
-  // and bubbles into the MapErrorBoundary as "Failed to load the map".
-  // The map is constructed synchronously in the init effect above, but its
-  // style loads asynchronously, so on first render this effect can run with
-  // a map whose style is still pending. Defer the work to the 'load' event
-  // when needed; subsequent renders run synchronously through the setData
-  // path.
+  // Overlay sync — adds heatmap + trail sources/layers when the style is
+  // ready, and updates source data on subsequent renders. A single styledata
+  // listener handles both the initial map load and any later setStyle() call
+  // (theme switch). overlaysReadyRef guards against duplicate add* calls.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
 
-    const geoJSON = buildTrailGeoJSON(trailPoints)
+    const sync = () => {
+      if (!mapRef.current) return
+      if (!map.isStyleLoaded()) return
 
-    const installTrailLayer = () => {
-      if (trailReadyRef.current) {
-        ;(map.getSource(TRAIL_SOURCE_ID) as GeoJSONSource).setData(geoJSON)
+      if (overlaysReadyRef.current) {
+        ;(map.getSource(HEATMAP_SOURCE_ID) as GeoJSONSource | undefined)?.setData(heatmapGeoJSON)
+        ;(map.getSource(TRAIL_SOURCE_ID) as GeoJSONSource | undefined)?.setData(trailGeoJSON)
+        // Toggle visibility if heatmapVisible flipped while overlays existed.
+        if (map.getLayer(HEATMAP_FILL_LAYER_ID)) {
+          map.setLayoutProperty(
+            HEATMAP_FILL_LAYER_ID,
+            "visibility",
+            heatmapVisible ? "visible" : "none",
+          )
+        }
+        if (map.getLayer(HEATMAP_OUTLINE_LAYER_ID)) {
+          map.setLayoutProperty(
+            HEATMAP_OUTLINE_LAYER_ID,
+            "visibility",
+            heatmapVisible ? "visible" : "none",
+          )
+        }
         return
       }
-      map.addSource(TRAIL_SOURCE_ID, {
-        type: "geojson",
-        data: geoJSON,
-      })
-      map.addLayer({
-        id: TRAIL_LAYER_ID,
-        type: "line",
-        source: TRAIL_SOURCE_ID,
-        layout: {
-          "line-join": "round",
-          "line-cap": "round",
-        },
-        paint: {
-          "line-color": "hsl(220 90% 56%)",
-          "line-width": 3,
-          "line-opacity": 0.85,
-        },
-      })
-      trailReadyRef.current = true
+      installOverlayLayers(map, trailGeoJSON, heatmapGeoJSON, heatmapVisible)
+      overlaysReadyRef.current = true
     }
 
     if (map.isStyleLoaded()) {
-      installTrailLayer()
-      return
+      sync()
     }
-
-    // Style is still loading. Defer the source/layer installation to the
-    // 'load' event AND register a cleanup that detaches the listener if
-    // the component unmounts (or trailPoints changes again) before the
-    // map finishes loading. Without the cleanup the closure can fire on
-    // a torn-down map instance, which we treat as a "do nothing" via the
-    // mapRef.current guard below for extra safety.
-    map.once("load", installTrailLayer)
+    // styledata fires after the initial style load AND after any setStyle()
+    // call from the theme-switch effect, so a single listener covers both.
+    map.on("styledata", sync)
     return () => {
-      map.off("load", installTrailLayer)
+      map.off("styledata", sync)
     }
-  }, [trailPoints])
+  }, [heatmapGeoJSON, trailGeoJSON, heatmapVisible])
 
   if (!hasMapData) {
     return (
