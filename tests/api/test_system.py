@@ -311,24 +311,54 @@ async def test_heartbeat_503_when_registry_fails():
 # ---------------------------------------------------------------------------
 
 
-def _reset_otel_global_state() -> None:
-    """Fully reset the OpenTelemetry global tracer provider state."""
+def _save_otel_state() -> dict:
+    """Capture the current OTel global state for restoration after the test."""
+    return {
+        "set_once": trace._TRACER_PROVIDER_SET_ONCE,
+        "provider": trace._TRACER_PROVIDER,
+        "proxy": getattr(trace, "_PROXY_TRACER_PROVIDER", None),
+    }
+
+
+def _restore_otel_state(saved: dict) -> None:
+    """Restore OTel global state to what it was before the test."""
+    trace._TRACER_PROVIDER_SET_ONCE = saved["set_once"]
+    trace._TRACER_PROVIDER = saved["provider"]
+    if hasattr(trace, "_PROXY_TRACER_PROVIDER"):
+        trace._PROXY_TRACER_PROVIDER = saved["proxy"]
+
+
+def _install_fresh_otel_provider() -> tuple[InMemorySpanExporter, TracerProvider]:
+    """Reset OTel state and install a fresh in-memory provider.
+
+    Resets _PROXY_TRACER_PROVIDER so that ProxyTracer objects re-resolve
+    against the new provider on their next span-creation call.
+    """
     trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
     trace._TRACER_PROVIDER = None
+    if hasattr(trace, "_PROXY_TRACER_PROVIDER"):
+        trace._PROXY_TRACER_PROVIDER = None
 
-
-@pytest.fixture()
-def otel_exporter():
-    """Install a fresh in-memory TracerProvider, yield the exporter, then tear down."""
-    _reset_otel_global_state()
     exporter = InMemorySpanExporter()
     resource = Resource.create({"service.name": "butler-test"})
     provider = TracerProvider(resource=resource)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
+    return exporter, provider
+
+
+@pytest.fixture()
+def otel_exporter():
+    """Install an in-memory TracerProvider and yield the exporter.
+
+    Saves and restores all OTel global state so that other tests in the same
+    xdist worker process are not affected by the provider reset.
+    """
+    saved = _save_otel_state()
+    exporter, provider = _install_fresh_otel_provider()
     yield exporter
     provider.shutdown()
-    _reset_otel_global_state()
+    _restore_otel_state(saved)
 
 
 class TestEgressSpan:
