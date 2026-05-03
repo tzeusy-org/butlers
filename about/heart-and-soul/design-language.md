@@ -322,9 +322,9 @@ to the user, it does not belong.
 
 ### Tailwind Utilities
 
-The `@theme` block in `index.css` exposes the motion tokens as Tailwind utilities.
-Because `transition-*` utilities accept a full `transition` shorthand, the easing
-is baked in:
+The `@utility` blocks in `index.css` define compound transition shortcuts with
+duration and easing baked in. The `@theme inline` block separately exposes
+`ease-out-quart` as a Tailwind timing-function utility:
 
 ```
 transition-fast  →  all 150ms cubic-bezier(0.22, 1, 0.36, 1)
@@ -336,11 +336,11 @@ To limit the animated property, combine with a `transition-[property]` utility
 before the duration:
 
 ```jsx
-// Sidebar collapse — width change uses the base tier
-<aside className="transition-[width] duration-base ease-out-quart ...">
-
 // Chevron rotation — transform only, fast tier
 <svg className="transition-transform duration-fast ease-out-quart ...">
+
+// Brand fade on sidebar collapse — opacity only, base tier
+<span className="transition-opacity duration-base ease-out-quart ...">
 
 // Hover color change — paint-only, no duration needed (browser default is fine)
 <button className="transition-colors ...">
@@ -353,6 +353,7 @@ They are tracked for migration but were not fixed in-place to avoid scope creep.
 
 | File | Violation | Recommended migration |
 |------|-----------|----------------------|
+| `frontend/src/components/layout/Shell.tsx:30` | `transition-[width]` on sidebar `<aside>` | Use `transform: translateX` or accept as a shell-layout exception |
 | `frontend/src/components/chronicles/FloatingMapMinimap.tsx:65` | `transition-[width,height]` | Accept as map-widget exception or use `transform: scale` |
 | `frontend/src/components/chat/ConversationList.tsx:144` | `transition-all` with width toggle | Use `transform: translateX` or clip with overflow |
 | `frontend/src/components/layout/Sidebar.tsx:191,288` | `transition-all` with `max-height` toggle | Use grid row / opacity or accept as a minor exception |
