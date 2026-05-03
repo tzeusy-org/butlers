@@ -338,11 +338,6 @@ export function ConcentricCirclesCanvas({
     if (tierGroups[tier]) tierGroups[tier].push(entry);
   }
 
-  const scoredCount = entries.filter(
-    (e) => e.dunbar_score > 0 && e.entity_id !== ownerEntityId,
-  ).length;
-  const isColdStart = scoredCount < 5;
-
   const navigateGuarded = (id: string) => {
     if (dragRef.current?.moved) return;
     onNavigate(id);
@@ -529,43 +524,6 @@ export function ConcentricCirclesCanvas({
           );
         })}
 
-        {isColdStart && (
-          <g>
-            <rect
-              x={cx - 140}
-              y={cy + maxR * 0.12}
-              width={280}
-              height={52}
-              rx={8}
-              fill="var(--background)"
-              fillOpacity={0.9}
-              stroke="var(--border)"
-              strokeWidth={1}
-            />
-            <text
-              x={cx}
-              y={cy + maxR * 0.12 + 18}
-              textAnchor="middle"
-              dominantBaseline="hanging"
-              fontSize={10}
-              fill="currentColor"
-              opacity={0.6}
-            >
-              Interact with your contacts to see
-            </text>
-            <text
-              x={cx}
-              y={cy + maxR * 0.12 + 32}
-              textAnchor="middle"
-              dominantBaseline="hanging"
-              fontSize={10}
-              fill="currentColor"
-              opacity={0.6}
-            >
-              your social map take shape
-            </text>
-          </g>
-        )}
       </svg>
     </div>
     </TooltipProvider>
