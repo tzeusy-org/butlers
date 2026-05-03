@@ -133,6 +133,23 @@ _GIT_AUTH_TOKEN_ENV_VAR = "BUTLERS_QA_GIT_TOKEN"
 #: Sentinel file placed by investigation agent to signal unfixable error.
 _UNFIXABLE_FILE = UNFIXABLE_SENTINEL_FILENAME
 
+#: Filename written by the investigation agent (in its CWD, which is
+#: ``{worktree}/.tmp/qa-agent``) to populate the PR body's Root Cause / Fix
+#: Summary / Test Coverage sections.  The agent is instructed to write here
+#: by ``build_investigation_prompt``.  See ``_load_investigation_notes``.
+_INVESTIGATION_NOTES_FILE = "INVESTIGATION_NOTES.md"
+
+#: Mapping from H2 header text (lowercased, no leading "## ") to the section
+#: key returned by ``_load_investigation_notes``.
+_NOTES_HEADER_TO_KEY: dict[str, str] = {
+    "root cause": "root_cause",
+    "fix summary": "fix_summary",
+    "test coverage": "test_coverage",
+}
+
+#: Substituted into the PR body for any section the agent did not provide.
+_NOTES_PLACEHOLDER = "*(The investigation agent did not provide this section.)*"
+
 #: Environment variables that must never leak into investigation agent sandboxes.
 _BLOCKED_ENV_PREFIXES = (
     "BUTLERS_",
@@ -617,6 +634,63 @@ async def _resolve_pr_by_head(
         return None, None
 
 
+def _load_investigation_notes(worktree_path: Path | None) -> dict[str, str]:
+    """Read and parse the agent's ``INVESTIGATION_NOTES.md`` file.
+
+    The agent's CWD is ``{worktree}/.tmp/qa-agent``; the prompt instructs it
+    to write ``INVESTIGATION_NOTES.md`` there with three H2 sections:
+    "## Root Cause", "## Fix Summary", "## Test Coverage".
+
+    Returns a dict keyed by section (``root_cause``, ``fix_summary``,
+    ``test_coverage``) with the section body (whitespace-stripped) as the
+    value.  Sections the agent omitted are simply absent from the dict.
+    Returns an empty dict if ``worktree_path`` is ``None``, the file does
+    not exist, or the file is unreadable / not UTF-8.
+
+    The parser is intentionally lenient: header matching is case-insensitive,
+    extra H2 sections are ignored, and the three expected sections may appear
+    in any order.  Empty sections (header present but no body) are dropped so
+    the caller falls back to placeholder text.
+    """
+    if worktree_path is None:
+        return {}
+    notes_path = worktree_path / _QA_AGENT_SUBDIR / _INVESTIGATION_NOTES_FILE
+    try:
+        raw = notes_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        return {}
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.warning(
+            "_load_investigation_notes: failed to read %s (%s); falling back to placeholders",
+            notes_path,
+            exc,
+        )
+        return {}
+
+    sections: dict[str, str] = {}
+    current_key: str | None = None
+    buf: list[str] = []
+
+    def _flush() -> None:
+        if current_key is None:
+            return
+        body = "\n".join(buf).strip()
+        if body:
+            sections[current_key] = body
+
+    for line in raw.splitlines():
+        if line.startswith("## "):
+            _flush()
+            header = line[3:].strip().lower()
+            current_key = _NOTES_HEADER_TO_KEY.get(header)
+            buf = []
+            continue
+        if current_key is not None:
+            buf.append(line)
+    _flush()
+    return sections
+
+
 async def _create_qa_pr(
     repo_root: Path,
     branch_name: str,
@@ -626,8 +700,15 @@ async def _create_qa_pr(
     gh_token: str | None,
     dashboard_base_url: str | None = None,
     whitelist: RepoWhitelist | None = None,
+    worktree_path: Path | None = None,
 ) -> tuple[str | None, int | None, str | None]:
     """Push branch and create a QA investigation GitHub PR.
+
+    When ``worktree_path`` is provided, the dispatcher reads
+    ``{worktree_path}/.tmp/qa-agent/INVESTIGATION_NOTES.md`` (written by the
+    investigation agent) and substitutes its Root Cause / Fix Summary / Test
+    Coverage sections into the PR body.  Missing file or missing sections fall
+    back to a placeholder string.
 
     Returns
     -------
@@ -701,6 +782,11 @@ async def _create_qa_pr(
 
     raw_title = f"fix(qa): {finding.exception_type} in {finding.call_site} [{fp_short}]"
 
+    notes = _load_investigation_notes(worktree_path)
+    root_cause = notes.get("root_cause", _NOTES_PLACEHOLDER)
+    fix_summary = notes.get("fix_summary", _NOTES_PLACEHOLDER)
+    test_coverage = notes.get("test_coverage", _NOTES_PLACEHOLDER)
+
     raw_body = f"""\
 ## QA Investigation Fix: {fp_short}
 
@@ -715,13 +801,13 @@ async def _create_qa_pr(
 **Last seen:** {finding.last_seen.isoformat()}
 
 ### Root Cause
-*(Filled in by the investigation agent's commit message and PR description.)*
+{root_cause}
 
 ### Fix Summary
-*(Filled in by the investigation agent.)*
+{fix_summary}
 
 ### Test Coverage
-*(Filled in by the investigation agent.)*
+{test_coverage}
 
 ---
 *Automated fix proposed by QA Staffer. Review carefully before merging.*
@@ -1085,6 +1171,7 @@ async def _run_investigation_session(
             gh_token=gh_token,
             dashboard_base_url=config.dashboard_base_url,
             whitelist=config.repo_whitelist,
+            worktree_path=worktree_path,
         )
 
         if pr_error == "anonymization_failed":

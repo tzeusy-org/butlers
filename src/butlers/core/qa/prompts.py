@@ -51,6 +51,40 @@ will open a PR automatically (do NOT push yourself).
 4. If it is NOT a code bug (external service outage, missing infrastructure, \
 bad user data, known limitation): signal this by creating an ``UNFIXABLE`` \
 file in the worktree root, then committing it. See the protocol below.
+5. After committing your fix, write an investigation notes file so the \
+dispatcher can populate the PR description. See the protocol below.
+
+## Writing the PR Description (INVESTIGATION_NOTES.md)
+
+After your fix is committed, write a file named ``INVESTIGATION_NOTES.md`` \
+**in your current working directory** (NOT the repository root — your CWD is \
+already gitignored, so the file will not be committed). The dispatcher reads \
+this file and substitutes its sections into the PR body before opening the PR.
+
+The file MUST follow this exact structure — three H2 headers in this order, \
+each followed by plain prose:
+
+```
+## Root Cause
+<1-3 paragraphs explaining what was actually wrong in the code>
+
+## Fix Summary
+<1-3 paragraphs describing what you changed and why it fixes the root cause>
+
+## Test Coverage
+<short description of the tests you added or updated, and what they assert>
+```
+
+Rules for the notes file:
+
+- Use exactly the three H2 headers above, spelled and capitalized as shown.
+- Do NOT include any PII, user data, credentials, hostnames, file paths \
+outside the repo, or environment-specific identifiers — the dispatcher \
+re-runs anonymization, but your notes should already be safe.
+- Keep total length under ~500 words. Prose is fine; bullet lists are fine; \
+code fences are fine. Do not include screenshots or attachments.
+- If you skip this file, the PR will be opened with placeholder text instead. \
+The fix still ships, but reviewers lose the context — please write it.
 
 ## Signaling an Unfixable Error
 
@@ -67,14 +101,15 @@ Then commit it::
     git commit -m "chore: unfixable — <brief reason>"
 
 The dispatcher detects this file after your session ends and transitions the \
-attempt to ``unfixable`` status (no PR will be opened).
+attempt to ``unfixable`` status (no PR will be opened). You do not need to \
+write ``INVESTIGATION_NOTES.md`` in the unfixable case.
 
 ## Important Rules
 
 - Do NOT create a PR yourself — the dispatcher handles that.
 - Do NOT include any PII, user data, credentials, environment-specific \
-information, or sensitive context in commit messages, code changes, or the \
-UNFIXABLE file.
+information, or sensitive context in commit messages, code changes, the \
+UNFIXABLE file, or the INVESTIGATION_NOTES.md file.
 - Beads is NOT part of the QA workflow. Do NOT run ``bd`` or follow repo-level \
 issue-tracker/session-close procedures that are unrelated to this investigation.
 - Run tests after a code fix: ``uv run pytest`` and \
