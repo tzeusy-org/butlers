@@ -358,8 +358,9 @@ function sessionSearchParams(params?: SessionParams): URLSearchParams {
   if (params?.request_id != null && params.request_id !== "")
     sp.set("request_id", params.request_id);
   if (params?.status != null && params.status !== "all") sp.set("status", params.status);
-  if (params?.since != null && params.since !== "") sp.set("since", params.since);
-  if (params?.until != null && params.until !== "") sp.set("until", params.until);
+  // Backend uses from_date/to_date; SessionParams uses since/until as field names.
+  if (params?.since != null && params.since !== "") sp.set("from_date", params.since);
+  if (params?.until != null && params.until !== "") sp.set("to_date", params.until);
   return sp;
 }
 
