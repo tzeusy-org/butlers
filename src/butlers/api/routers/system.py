@@ -33,6 +33,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
@@ -413,93 +414,96 @@ async def get_egress_catalog(
     # Owner-contact assertion (non-negotiable privacy contract)
     await _assert_owner_contact(sw_pool)
 
-    # Query audit log grouped by operation
-    try:
-        rows = await sw_pool.fetch(
-            """
-            SELECT
-                operation,
-                max(created_at) AS last_seen_at,
-                count(*) AS total_calls,
-                min(created_at) AS first_seen_at
-            FROM dashboard_audit_log
-            GROUP BY operation
-            ORDER BY last_seen_at DESC
-            """
-        )
-    except Exception as exc:
-        logger.warning("Egress catalog query failed: %s", exc)
-        raise HTTPException(status_code=503, detail="Egress catalog query failed")
-
-    # Derive catalog_covers_from from the oldest first_seen_at already in the result set.
-    # No second query needed -- we already have min(created_at) per operation above.
-    catalog_covers_from: str | None = None
-    if rows:
-        oldest_raw = min(
-            (row["first_seen_at"] for row in rows if row["first_seen_at"] is not None),
-            default=None,
-        )
-        if oldest_raw is not None:
-            catalog_covers_from = (
-                oldest_raw.isoformat() if hasattr(oldest_raw, "isoformat") else str(oldest_raw)
+    with trace.get_tracer("butlers").start_as_current_span("system.egress.read") as span:
+        # Query audit log grouped by operation
+        try:
+            rows = await sw_pool.fetch(
+                """
+                SELECT
+                    operation,
+                    max(created_at) AS last_seen_at,
+                    count(*) AS total_calls,
+                    min(created_at) AS first_seen_at
+                FROM dashboard_audit_log
+                GROUP BY operation
+                ORDER BY last_seen_at DESC
+                """
             )
+        except Exception as exc:
+            logger.warning("Egress catalog query failed: %s", exc)
+            raise HTTPException(status_code=503, detail="Egress catalog query failed")
 
-    # Aggregate rows by actor_id
-    actor_buckets: dict[str, dict] = {}
-    for row in rows:
-        operation = row["operation"]
-        last_seen = row["last_seen_at"]
-        total_calls = int(row["total_calls"] or 0)
+        # Derive catalog_covers_from from the oldest first_seen_at already in the result set.
+        # No second query needed -- we already have min(created_at) per operation above.
+        catalog_covers_from: str | None = None
+        if rows:
+            oldest_raw = min(
+                (row["first_seen_at"] for row in rows if row["first_seen_at"] is not None),
+                default=None,
+            )
+            if oldest_raw is not None:
+                catalog_covers_from = (
+                    oldest_raw.isoformat() if hasattr(oldest_raw, "isoformat") else str(oldest_raw)
+                )
 
-        if operation in _ACTOR_REGISTRY:
-            actor_id, display_name = _ACTOR_REGISTRY[operation]
-            data_types = _OPERATION_DATA_TYPES.get(operation, [])
-        else:
-            actor_id = _UNKNOWN_ACTOR_ID
-            display_name = _UNKNOWN_ACTOR_NAME
-            data_types = []
+        # Aggregate rows by actor_id
+        actor_buckets: dict[str, dict] = {}
+        for row in rows:
+            operation = row["operation"]
+            last_seen = row["last_seen_at"]
+            total_calls = int(row["total_calls"] or 0)
 
-        if actor_id not in actor_buckets:
-            actor_buckets[actor_id] = {
-                "actor_id": actor_id,
-                "display_name": display_name,
-                "last_seen_at": last_seen,
-                "total_calls": 0,
-                "data_types": set(data_types),
-            }
-        else:
-            # Update last_seen_at to the latest across merged operations
-            if last_seen and (
-                actor_buckets[actor_id]["last_seen_at"] is None
-                or last_seen > actor_buckets[actor_id]["last_seen_at"]
-            ):
-                actor_buckets[actor_id]["last_seen_at"] = last_seen
-            actor_buckets[actor_id]["data_types"].update(data_types)
+            if operation in _ACTOR_REGISTRY:
+                actor_id, display_name = _ACTOR_REGISTRY[operation]
+                data_types = _OPERATION_DATA_TYPES.get(operation, [])
+            else:
+                actor_id = _UNKNOWN_ACTOR_ID
+                display_name = _UNKNOWN_ACTOR_NAME
+                data_types = []
 
-        actor_buckets[actor_id]["total_calls"] += total_calls
+            if actor_id not in actor_buckets:
+                actor_buckets[actor_id] = {
+                    "actor_id": actor_id,
+                    "display_name": display_name,
+                    "last_seen_at": last_seen,
+                    "total_calls": 0,
+                    "data_types": set(data_types),
+                }
+            else:
+                # Update last_seen_at to the latest across merged operations
+                if last_seen and (
+                    actor_buckets[actor_id]["last_seen_at"] is None
+                    or last_seen > actor_buckets[actor_id]["last_seen_at"]
+                ):
+                    actor_buckets[actor_id]["last_seen_at"] = last_seen
+                actor_buckets[actor_id]["data_types"].update(data_types)
 
-    # Sort by last_seen_at descending
-    actors = sorted(
-        actor_buckets.values(),
-        key=lambda a: a["last_seen_at"] or datetime.min.replace(tzinfo=UTC),
-        reverse=True,
-    )
+            actor_buckets[actor_id]["total_calls"] += total_calls
 
-    egress_actors = [
-        EgressActor(
-            actor_id=a["actor_id"],
-            display_name=a["display_name"],
-            last_seen_at=(
-                a["last_seen_at"].isoformat()
-                if hasattr(a["last_seen_at"], "isoformat")
-                else str(a["last_seen_at"])
-            ),
-            total_calls=a["total_calls"],
-            data_types=sorted(a["data_types"]),
+        # Sort by last_seen_at descending
+        actors = sorted(
+            actor_buckets.values(),
+            key=lambda a: a["last_seen_at"] or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
         )
-        for a in actors
-        if a["last_seen_at"] is not None
-    ]
+
+        egress_actors = [
+            EgressActor(
+                actor_id=a["actor_id"],
+                display_name=a["display_name"],
+                last_seen_at=(
+                    a["last_seen_at"].isoformat()
+                    if hasattr(a["last_seen_at"], "isoformat")
+                    else str(a["last_seen_at"])
+                ),
+                total_calls=a["total_calls"],
+                data_types=sorted(a["data_types"]),
+            )
+            for a in actors
+            if a["last_seen_at"] is not None
+        ]
+
+        span.set_attribute("actor_count", len(egress_actors))
 
     return ApiResponse(
         data=EgressCatalog(
