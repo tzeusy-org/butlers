@@ -13,6 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
 import { Page, type PageProps } from "@/components/ui/page";
+import { BreadcrumbsControlProvider, useBreadcrumbsControl } from "@/components/ui/breadcrumbs-control";
 
 // useEffect is a no-op in renderToStaticMarkup; the static-markup tests need no
 // DOM setup. DOM lifecycle tests (document.title, click) use createRoot + act.
@@ -507,5 +508,132 @@ describe("Page -- onRetry click", () => {
       retryBtn!.click();
     });
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BreadcrumbsControlContext integration (DOM tests -- requires createRoot + act)
+// ---------------------------------------------------------------------------
+
+describe("Page -- BreadcrumbsControlContext", () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  /**
+   * Mounts a probe component that reads isSupplyingBreadcrumbs from context
+   * and renders the boolean as a string so we can inspect it via textContent.
+   */
+  function ContextProbe() {
+    const { isSupplyingBreadcrumbs } = useBreadcrumbsControl();
+    return <span data-testid="probe">{String(isSupplyingBreadcrumbs)}</span>;
+  }
+
+  it("sets isSupplyingBreadcrumbs=true when Page receives a non-empty breadcrumbs prop", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <BreadcrumbsControlProvider>
+            <Page
+              title="Detail"
+              archetype="detail"
+              breadcrumbs={[{ label: "Home", href: "/" }, { label: "Detail" }]}
+            >
+              <div>content</div>
+            </Page>
+            <ContextProbe />
+          </BreadcrumbsControlProvider>
+        </MemoryRouter>,
+      );
+    });
+    const probe = container.querySelector("[data-testid='probe']");
+    expect(probe?.textContent).toBe("true");
+  });
+
+  it("sets isSupplyingBreadcrumbs=false when Page receives no breadcrumbs prop", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <BreadcrumbsControlProvider>
+            <Page title="Overview" archetype="overview">
+              <div>content</div>
+            </Page>
+            <ContextProbe />
+          </BreadcrumbsControlProvider>
+        </MemoryRouter>,
+      );
+    });
+    const probe = container.querySelector("[data-testid='probe']");
+    expect(probe?.textContent).toBe("false");
+  });
+
+  it("sets isSupplyingBreadcrumbs=false when Page receives an empty breadcrumbs array", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <BreadcrumbsControlProvider>
+            <Page title="Overview" archetype="overview" breadcrumbs={[]}>
+              <div>content</div>
+            </Page>
+            <ContextProbe />
+          </BreadcrumbsControlProvider>
+        </MemoryRouter>,
+      );
+    });
+    const probe = container.querySelector("[data-testid='probe']");
+    expect(probe?.textContent).toBe("false");
+  });
+
+  it("resets isSupplyingBreadcrumbs to false when Page unmounts", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <BreadcrumbsControlProvider>
+            <Page
+              title="Detail"
+              archetype="detail"
+              breadcrumbs={[{ label: "Home", href: "/" }, { label: "Detail" }]}
+            >
+              <div>content</div>
+            </Page>
+            <ContextProbe />
+          </BreadcrumbsControlProvider>
+        </MemoryRouter>,
+      );
+    });
+    // Confirm it was true
+    let probe = container.querySelector("[data-testid='probe']");
+    expect(probe?.textContent).toBe("true");
+
+    // Unmount Page by rendering only the provider + probe (no Page)
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <BreadcrumbsControlProvider>
+            <ContextProbe />
+          </BreadcrumbsControlProvider>
+        </MemoryRouter>,
+      );
+    });
+    probe = container.querySelector("[data-testid='probe']");
+    expect(probe?.textContent).toBe("false");
   });
 });

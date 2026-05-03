@@ -6,6 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 
 import PageHeader from "@/components/layout/PageHeader";
+import { BreadcrumbsControlProvider } from "@/components/ui/breadcrumbs-control";
+import { Page } from "@/components/ui/page";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { OPEN_COMMAND_PALETTE_EVENT } from "@/lib/command-palette";
 
@@ -111,6 +113,48 @@ describe("PageHeader", () => {
     expect(nav).not.toBeNull();
     expect(nav?.textContent).toContain("Home");
     expect(nav?.textContent).toContain("Custom");
+  });
+
+  it("suppresses auto-builder crumbs when a sibling <Page> supplies breadcrumbs via context", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/entities/entity-001"]}>
+          <BreadcrumbsControlProvider>
+            <PageHeader />
+            {/* Page with breadcrumbs sets isSupplyingBreadcrumbs=true in context */}
+            <Page
+              title="Alice"
+              archetype="detail"
+              breadcrumbs={[
+                { label: "Home", href: "/" },
+                { label: "Entities", href: "/entities" },
+                { label: "Alice" },
+              ]}
+            >
+              <div>content</div>
+            </Page>
+          </BreadcrumbsControlProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    // The shell-level <nav> from PageHeader's auto-builder should be suppressed.
+    // Note: <Page> also renders a <nav aria-label="Breadcrumb"> inside the main
+    // content; we verify the PageHeader nav (first nav, before the page content)
+    // is gone. In practice both are in the same container here, so we confirm
+    // the auto-builder's crumbs ("Entities" slug "entities") are not duplicated
+    // and the PageHeader nav itself is absent.
+    const navs = container.querySelectorAll("nav");
+    // Only the <Page> breadcrumb nav should exist (inside the Page content)
+    // The PageHeader should not render its own nav when context signals suppression
+    navs.forEach((nav) => {
+      // If any nav is from PageHeader auto-builder it would contain raw URL segment "entities"
+      // as a current-page (non-link) span. The <Page> nav renders "Entities" as a link.
+      // A simpler check: confirm the auto-builder nav (with path "/entities/entity-001"
+      // split to segments) is not rendered. The auto-builder would produce "Entity-001"
+      // as the last crumb, but our <Page> crumb says "Alice".
+      expect(nav.textContent).not.toContain("Entity-001");
+    });
   });
 
   it("renders search trigger with Cmd/Ctrl+K hint and dispatches open event", () => {

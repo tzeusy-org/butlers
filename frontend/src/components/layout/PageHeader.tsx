@@ -1,6 +1,7 @@
 import { useLocation, Link } from 'react-router'
 import { Search } from 'lucide-react'
 import { Button } from '../ui/button'
+import { useBreadcrumbsControl } from '../ui/breadcrumbs-control'
 import { useDarkMode } from '../../hooks/useDarkMode'
 import { dispatchOpenCommandPalette } from '../../lib/command-palette'
 
@@ -39,8 +40,13 @@ function buildBreadcrumbs(pathname: string): Breadcrumb[] {
 export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false }: PageHeaderProps) {
   const location = useLocation()
   const { theme, setTheme, resolvedTheme } = useDarkMode()
+  const { isSupplyingBreadcrumbs } = useBreadcrumbsControl()
 
   const crumbs = breadcrumbs ?? buildBreadcrumbs(location.pathname)
+  // Suppress shell auto-builder only when the active <Page> supplies breadcrumbs
+  // AND this header has no explicit breadcrumbs prop of its own. If the header
+  // is given its own breadcrumbs they should always render.
+  const shouldHideBreadcrumbs = hideBreadcrumbs || (isSupplyingBreadcrumbs && breadcrumbs == null)
 
   const toggleTheme = () => {
     if (theme === 'system') {
@@ -54,7 +60,7 @@ export default function PageHeader({ title, breadcrumbs, hideBreadcrumbs = false
     <div className="flex items-center justify-between w-full">
       <div className="flex flex-col gap-0.5">
         {/* Breadcrumbs */}
-        {!hideBreadcrumbs && (
+        {!shouldHideBreadcrumbs && (
           <nav className="flex items-center gap-1.5 text-xs text-muted-foreground">
             {crumbs.map((crumb, i) => (
               <span key={i} className="flex items-center gap-1.5">
