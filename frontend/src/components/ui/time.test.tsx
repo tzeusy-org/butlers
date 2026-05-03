@@ -394,6 +394,93 @@ describe("compact flag (mode=absolute)", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// 10. precision=weekday (bu-5j7p9)
+// ---------------------------------------------------------------------------
+
+describe("precision=weekday", () => {
+  const SGT = "Asia/Singapore"
+  // 2026-05-03T00:00:00Z = 08:00 SGT (UTC+8) on Sunday 3 May 2026
+
+  it("renders full weekday + date + year in non-compact mode", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "weekday" }, SGT),
+    )
+    expect(text).toContain("Sunday")
+    expect(text).toContain("May 3")
+    expect(text).toContain("2026")
+  })
+
+  it("compact=true omits year but keeps weekday and month-day", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "weekday", compact: true }, SGT),
+    )
+    expect(text).toContain("Sunday")
+    expect(text).toContain("May 3")
+    expect(text).not.toContain("2026")
+  })
+
+  it("reflects the correct timezone (SGT = UTC+8 so UTC midnight is Sunday)", () => {
+    // 2026-05-03T00:00:00Z = 2026-05-03 08:00 SGT (same Sunday)
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "weekday" }, SGT),
+    )
+    expect(text).toContain("Sunday")
+  })
+
+  it("reflects a different weekday when timezone shifts the day", () => {
+    // 2026-05-03T00:00:00Z = 2026-05-02 20:00 EDT (Saturday)
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "weekday", timezone: "America/New_York" }),
+    )
+    expect(text).toContain("Saturday")
+    expect(text).toContain("May 2")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 11. precision=time (bu-5j7p9)
+// ---------------------------------------------------------------------------
+
+describe("precision=time", () => {
+  const SGT = "Asia/Singapore"
+  // 2026-05-03T00:00:00Z = 08:00 SGT
+
+  it("renders 24-hour time only (HH:mm) in user's timezone", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "time" }, SGT),
+    )
+    // 08:00 in SGT
+    expect(text).toBe("08:00")
+  })
+
+  it("does not include date or year", () => {
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "time" }, SGT),
+    )
+    expect(text).not.toContain("May")
+    expect(text).not.toContain("2026")
+  })
+
+  it("compact flag is a no-op for time precision (same output)", () => {
+    const { text: plain } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "time" }, SGT),
+    )
+    const { text: compactText } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "time", compact: true }, SGT),
+    )
+    expect(plain).toBe(compactText)
+  })
+
+  it("renders correct local time in a different timezone", () => {
+    // 2026-05-03T00:00:00Z = 20:00 EDT (previous day)
+    const { text } = parseTime(
+      render({ value: FIXED_ISO, mode: "absolute", precision: "time", timezone: "America/New_York" }),
+    )
+    expect(text).toBe("20:00")
+  })
+})
+
 describe("compact flag (mode=smart)", () => {
   beforeEach(() => {
     vi.useFakeTimers()

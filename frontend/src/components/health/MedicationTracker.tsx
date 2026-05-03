@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { format } from "date-fns";
 
 import type { Medication } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useMedicationDoses, useMedications } from "@/hooks/use-health";
+import { Time } from "@/components/ui/time";
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -114,7 +114,7 @@ function DoseLog({ medicationId, frequency }: { medicationId: string; frequency:
           {doses.slice(0, 20).map((dose) => (
             <TableRow key={dose.id}>
               <TableCell className="text-sm">
-                {format(new Date(dose.taken_at), "MMM d, yyyy HH:mm")}
+                <Time value={dose.taken_at} mode="absolute" precision="minute" compact />
               </TableCell>
               <TableCell>
                 <Badge variant={dose.skipped ? "destructive" : "default"} className="text-xs">

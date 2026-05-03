@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { format } from "date-fns";
 import { Link } from "react-router";
 
 import type { ApprovalAction } from "@/api/types";
@@ -16,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Time } from "@/components/ui/time";
 import {
   useApproveAction,
   useRejectAction,
@@ -160,7 +160,7 @@ export function ActionDetailDialog({
             <div>
               <Label className="text-muted-foreground">Requested At</Label>
               <p className="mt-1 text-sm">
-                {format(new Date(action.requested_at), "PPpp")}
+                <Time value={action.requested_at} mode="absolute" precision="minute" />
               </p>
             </div>
 
@@ -168,7 +168,7 @@ export function ActionDetailDialog({
               <div>
                 <Label className="text-muted-foreground">Expires At</Label>
                 <p className="mt-1 text-sm">
-                  {format(new Date(action.expires_at), "PPpp")}
+                  <Time value={action.expires_at} mode="absolute" precision="minute" />
                 </p>
               </div>
             )}
@@ -184,7 +184,7 @@ export function ActionDetailDialog({
               <div>
                 <Label className="text-muted-foreground">Decided At</Label>
                 <p className="mt-1 text-sm">
-                  {format(new Date(action.decided_at), "PPpp")}
+                  <Time value={action.decided_at} mode="absolute" precision="minute" />
                 </p>
               </div>
             )}

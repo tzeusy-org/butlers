@@ -24,6 +24,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useMeasurements } from "@/hooks/use-health";
+import { Time } from "@/components/ui/time";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -266,7 +267,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
                 {measurements.map((m) => (
                   <TableRow key={m.id}>
                     <TableCell className="text-sm">
-                      {format(new Date(m.measured_at), "MMM d, yyyy HH:mm")}
+                      <Time value={m.measured_at} mode="absolute" precision="minute" compact />
                     </TableCell>
                     <TableCell>
                       <Badge variant="outline" className="text-xs">

@@ -9,9 +9,9 @@
  */
 
 import { useState } from "react";
-import { format } from "date-fns";
 
 import type { RoutingLogParams } from "@/api/types.ts";
+import { Time } from "@/components/ui/time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -147,7 +147,7 @@ export default function RoutingLogTable() {
               entries.map((entry) => (
                 <TableRow key={entry.id}>
                   <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
-                    {format(new Date(entry.created_at), "MMM d, HH:mm:ss")}
+                    <Time value={entry.created_at} mode="absolute" precision="second" compact />
                   </TableCell>
                   <TableCell className="text-sm font-medium">
                     {entry.source_butler}

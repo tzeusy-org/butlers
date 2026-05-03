@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // <Time> — semantic time primitive with absolute / relative / smart modes
-// (bu-v1tt2.2, bu-fv4vy)
+// (bu-v1tt2.2, bu-fv4vy, bu-5j7p9)
 //
 // Renders a <time> element with a datetime attribute (a11y / machine-readable)
 // and human-readable text according to the chosen mode.
@@ -20,6 +20,12 @@
 //     precision=day:     "May 3"
 //   compact has no effect on relative output.
 //
+// precision extensions (bu-5j7p9):
+//   - weekday: full weekday + date, e.g. "Sunday, May 3, 2026"
+//              Compact form omits year: "Sunday, May 3"
+//   - time:    time-only (24-hour clock), e.g. "08:30"
+//              Used for dense time-column cells. compact flag ignored.
+//
 // Timezone is read from ChroniclesTimezoneContext via useChroniclesTimezone().
 // An explicit `timezone` prop overrides the context value — useful for
 // isolated rendering outside a ChroniclesTimezoneProvider.
@@ -37,7 +43,7 @@ import { useChroniclesTimezone } from "@/components/chronicles/use-chronicles-ti
 // ---------------------------------------------------------------------------
 
 export type TimeMode = "absolute" | "relative" | "smart"
-export type TimePrecision = "second" | "minute" | "hour" | "day"
+export type TimePrecision = "second" | "minute" | "hour" | "day" | "weekday" | "time"
 
 export interface TimeProps {
   /** The date value to render. Accepts an ISO 8601 string or a Date object. */
@@ -53,10 +59,12 @@ export interface TimeProps {
   /**
    * Display precision (affects absolute / smart-absolute output only).
    * Relative mode always uses date-fns natural language.
-   *   - second: "May 3, 2026 at 4:42:07 PM SGT"
-   *   - minute: "May 3, 2026 at 4:42 PM SGT"  (default)
-   *   - hour:   "May 3, 2026 at 4 PM SGT"
-   *   - day:    "May 3, 2026 SGT"
+   *   - second:  "May 3, 2026 at 4:42:07 PM SGT"
+   *   - minute:  "May 3, 2026 at 4:42 PM SGT"  (default)
+   *   - hour:    "May 3, 2026 at 4 PM SGT"
+   *   - day:     "May 3, 2026 SGT"
+   *   - weekday: "Sunday, May 3, 2026"  (compact: "Sunday, May 3")
+   *   - time:    "08:30"  (24-hour clock, time-only; compact has no effect)
    * @default "minute"
    */
   precision?: TimePrecision
@@ -91,18 +99,22 @@ export interface TimeProps {
 // ---------------------------------------------------------------------------
 
 const ABSOLUTE_FORMAT: Record<TimePrecision, string> = {
-  second: "MMM d, yyyy 'at' h:mm:ss a zzz",
-  minute: "MMM d, yyyy 'at' h:mm a zzz",
-  hour:   "MMM d, yyyy 'at' h a zzz",
-  day:    "MMM d, yyyy zzz",
+  second:  "MMM d, yyyy 'at' h:mm:ss a zzz",
+  minute:  "MMM d, yyyy 'at' h:mm a zzz",
+  hour:    "MMM d, yyyy 'at' h a zzz",
+  day:     "MMM d, yyyy zzz",
+  weekday: "EEEE, MMMM d, yyyy",
+  time:    "HH:mm",
 }
 
 // Compact format omits year and timezone — used in dense table cells.
 const COMPACT_FORMAT: Record<TimePrecision, string> = {
-  second: "MMM d, h:mm:ss a",
-  minute: "MMM d, h:mm a",
-  hour:   "MMM d, h a",
-  day:    "MMM d",
+  second:  "MMM d, h:mm:ss a",
+  minute:  "MMM d, h:mm a",
+  hour:    "MMM d, h a",
+  day:     "MMM d",
+  weekday: "EEEE, MMMM d",
+  time:    "HH:mm",  // time precision: compact has no effect, same format
 }
 
 // 24-hour threshold in ms — smart mode crossover point.
@@ -171,6 +183,14 @@ function resolveSmartMode(date: Date): { useRelative: boolean } {
  * @example
  * // Compact absolute — no year or timezone, for dense table cells
  * <Time value={row.created_at} mode="absolute" compact />
+ *
+ * @example
+ * // Weekday section heading — "Sunday, May 3, 2026"
+ * <Time value={entry.date} mode="absolute" precision="weekday" />
+ *
+ * @example
+ * // Time-only cell (24-hour clock) — "08:30"
+ * <Time value={entry.eaten_at} mode="absolute" precision="time" />
  */
 export function Time({
   value,

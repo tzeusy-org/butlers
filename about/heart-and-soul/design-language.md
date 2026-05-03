@@ -232,6 +232,15 @@ the use case before being treated as binding.
    `<Time>` component that knows the user's timezone, the butler's
    timezone, the desired precision, and the relative-vs-absolute mode.
    `new Date(x).toLocaleString()` in a page file is a bug.
+   - **Exemption: calendar layout helpers.** The `CalendarWorkspacePage`
+     uses `date-fns format()` for calendar-grid structural labels:
+     navigation headers (`"MMMM yyyy"`, `"EEE, MMM d, yyyy"`), date
+     ranges (`"MMM d, yyyy"`), grid cell day labels (`"d"`, `"EEE d"`),
+     time-axis labels (`"h a"`), and inline event time ranges
+     (`"MMM d, HH:mm"`, `"h:mm a"`). These are grid-coordinate displays
+     intrinsic to the calendar layout, not user activity timestamps.
+     They are exempt from `<Time>` migration. Do not extend this
+     exemption beyond `CalendarWorkspacePage`.
 5. **Voice is owner-direct.** Sentence case for everything except
    proper nouns and product names. Active verbs in buttons. No
    chatty marketing language. No empty enthusiasm.

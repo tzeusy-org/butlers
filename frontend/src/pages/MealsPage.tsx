@@ -3,6 +3,7 @@ import { format } from "date-fns";
 
 import type { MealParams } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
+import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -226,8 +227,7 @@ export default function MealsPage() {
               {Array.from(grouped.entries()).map(([day, dayMeals]) => (
                 <div key={day}>
                   <h3 className="mb-2 text-sm font-semibold">
-                    {/* <Time> doesn't support day-of-week format ("EEEE, MMMM d, yyyy"); kept as-is */}
-                    {format(new Date(day), "EEEE, MMMM d, yyyy")}
+                    <Time value={day} mode="absolute" precision="weekday" showTitle={false} />
                   </h3>
                   <Table>
                     <TableHeader>
@@ -257,8 +257,7 @@ export default function MealsPage() {
                               {formatNutrition(m.nutrition)}
                             </TableCell>
                             <TableCell className="text-muted-foreground text-sm">
-                              {/* <Time> doesn't support time-only format ("HH:mm"); kept as-is */}
-                              {format(new Date(m.eaten_at), "HH:mm")}
+                              <Time value={m.eaten_at} mode="absolute" precision="time" showTitle={false} />
                             </TableCell>
                             <TableCell className="text-muted-foreground max-w-xs truncate text-sm">
                               {m.notes ?? "\u2014"}

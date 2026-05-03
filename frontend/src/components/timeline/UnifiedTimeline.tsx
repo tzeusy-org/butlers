@@ -1,11 +1,11 @@
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { useState } from "react";
-import { format } from "date-fns";
 
 import type { TimelineEvent } from "@/api/types.ts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -22,10 +22,6 @@ export interface UnifiedTimelineProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatTimestamp(iso: string): string {
-  return format(new Date(iso), "MMM d, h:mm:ss a");
-}
 
 /** Map event type to badge color classes. */
 function eventTypeBadge(type: string) {
@@ -144,7 +140,7 @@ function EventRow({ event }: { event: TimelineEvent }) {
         className="flex w-full items-start gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/50"
       >
         <span className="text-xs text-muted-foreground shrink-0 w-[130px] pt-0.5">
-          {formatTimestamp(event.timestamp)}
+          <Time value={event.timestamp} mode="absolute" precision="second" compact showTitle={false} />
         </span>
         <Badge variant="outline" className="text-[10px] shrink-0">
           {event.butler}
@@ -181,7 +177,7 @@ function HeartbeatRow({ group }: { group: HeartbeatGroup }) {
         className="flex w-full items-start gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/50"
       >
         <span className="text-xs text-muted-foreground shrink-0 w-[130px] pt-0.5">
-          {formatTimestamp(group.timestamp)}
+          <Time value={group.timestamp} mode="absolute" precision="second" compact showTitle={false} />
         </span>
         <Badge variant="outline" className="text-[10px] shrink-0 border-dashed">
           heartbeat
@@ -203,7 +199,7 @@ function HeartbeatRow({ group }: { group: HeartbeatGroup }) {
               className="flex items-center gap-2 rounded px-2 py-1 text-xs text-muted-foreground"
             >
               <span className="w-[110px] shrink-0">
-                {formatTimestamp(event.timestamp)}
+                <Time value={event.timestamp} mode="absolute" precision="second" compact showTitle={false} />
               </span>
               <Badge variant="outline" className="text-[10px]">
                 {event.butler}
