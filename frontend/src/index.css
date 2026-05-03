@@ -83,6 +83,49 @@
   --category-6: oklch(0.585 0.233 278.0);  /* indigo — #6366f1 */
   --category-7: oklch(0.717 0.184 208.5);  /* cyan   — #06b6d4 */
   --category-8: oklch(0.737 0.213 58.0);   /* orange — #f97316 */
+
+  /* ---------------------------------------------------------------------------
+   * Typography scale
+   *
+   * Ratio: 1.2 (minor third) — tight enough for product UI density,
+   * per impeccable product doctrine (1.125–1.2 for tool surfaces).
+   * Base: 1rem (browser default 16px).
+   *
+   * Step  Multiplier  Value
+   * xs    1.2⁻²       0.694rem
+   * sm    1.2⁻¹       0.833rem
+   * base  1.2⁰        1rem
+   * lg    1.2¹         1.2rem
+   * xl    1.2²         1.44rem
+   * 2xl   1.2³         1.728rem
+   * 3xl   1.2⁴         2.074rem
+   * ---------------------------------------------------------------------------*/
+  --text-xs:   0.694rem;
+  --text-sm:   0.833rem;
+  --text-base: 1rem;
+  --text-lg:   1.2rem;
+  --text-xl:   1.44rem;
+  --text-2xl:  1.728rem;
+  --text-3xl:  2.074rem;
+
+  /* ---------------------------------------------------------------------------
+   * Spacing scale
+   *
+   * Base unit: 0.25rem (4px). Linear steps 1–12.
+   * --space-N = N × 0.25rem
+   * ---------------------------------------------------------------------------*/
+  --space-1:   0.25rem;
+  --space-2:   0.5rem;
+  --space-3:   0.75rem;
+  --space-4:   1rem;
+  --space-5:   1.25rem;
+  --space-6:   1.5rem;
+  --space-7:   1.75rem;
+  --space-8:   2rem;
+  --space-9:   2.25rem;
+  --space-10:  2.5rem;
+  --space-11:  2.75rem;
+  --space-12:  3rem;
 }
 
 body {
@@ -151,6 +194,29 @@ body {
   --color-category-6: var(--category-6);
   --color-category-7: var(--category-7);
   --color-category-8: var(--category-8);
+
+  /* Typography scale — Tailwind font-size-* utilities */
+  --font-size-xs:   var(--text-xs);
+  --font-size-sm:   var(--text-sm);
+  --font-size-base: var(--text-base);
+  --font-size-lg:   var(--text-lg);
+  --font-size-xl:   var(--text-xl);
+  --font-size-2xl:  var(--text-2xl);
+  --font-size-3xl:  var(--text-3xl);
+
+  /* Spacing scale — Tailwind spacing-* utilities */
+  --spacing-1:   var(--space-1);
+  --spacing-2:   var(--space-2);
+  --spacing-3:   var(--space-3);
+  --spacing-4:   var(--space-4);
+  --spacing-5:   var(--space-5);
+  --spacing-6:   var(--space-6);
+  --spacing-7:   var(--space-7);
+  --spacing-8:   var(--space-8);
+  --spacing-9:   var(--space-9);
+  --spacing-10:  var(--space-10);
+  --spacing-11:  var(--space-11);
+  --spacing-12:  var(--space-12);
 }
 
 .dark {
