@@ -22,7 +22,8 @@ The home page at `/` SHALL render five regions in order, top to bottom:
 2. **Secondary region**: recent moments feed (latest meaningful butler actions).
 3. **Secondary card grid**: operational alerts — failed notifications and active issues
    in a two-column responsive grid (`lg:grid-cols-2`).
-4. **QA widget**: approval metrics and active QA investigations, rendered as a standalone
+4. **QA widget**: QA patrol status and active investigation stats (last patrol, status,
+   patrols/findings per 24h, dispatched investigations), rendered as a standalone
    `<QaWidget />` card below the secondary grid.
 5. **Supporting strip**: demoted stat context (health, cost, pending approvals).
 
@@ -148,8 +149,10 @@ provide below-the-fold context for system health monitoring.
 ### Requirement: QA Widget
 
 Below the secondary card grid, the home page SHALL render a standalone `<QaWidget />`
-card showing approval metrics and active QA investigations. This widget was added as
-part of bu-yo4bt.9 (PR #1380) and is region 4 in the page's document order.
+card showing QA patrol status and investigation stats (last patrol timestamp, patrol
+status, patrols completed/findings in the past 24h, and active dispatched investigations).
+This widget was added as part of bu-yo4bt.9 (PR #1380) and is region 4 in the page's
+document order.
 
 #### Scenario: QA widget renders below secondary cards
 

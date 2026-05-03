@@ -50,8 +50,9 @@
 - [x] 6.2 Wire RecentMoments feed below the chart (region 2).
 - [x] 6.3 Place stat strip as the final region (region 5, below the QaWidget).
 - [x] 6.4 Secondary card grid (Failed Notifications + IssuesPanel) wired as region 3.
-      QaWidget wired as region 4 (added by bu-yo4bt.9, PR #1380 — approved standalone
-      card between secondary grid and stat strip).
+      QaWidget wired as region 4 (added by bu-yo4bt.9, PR #1380 — standalone card
+      showing QA patrol status/findings and active investigations, between secondary
+      grid and stat strip).
 - [x] 6.5 Adopted `<Page archetype='overview'>` shell — `<Page>` primitive shipped via
       Vertical A (bu-vj0h3).
 - [x] 6.6 `<Time mode="relative">` used in RecentMoments for relative timestamps.
