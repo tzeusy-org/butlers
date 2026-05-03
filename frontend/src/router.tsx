@@ -31,6 +31,7 @@ import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 import EducationPage from './pages/EducationPage.tsx'
 import EntitiesPage from './pages/EntitiesPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
+import SocialMapPage from './pages/SocialMapPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
 import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 import QaOverviewPage from './pages/QaOverviewPage.tsx'
@@ -93,6 +94,7 @@ export const router = createBrowserRouter(
         { path: '/memory/rules/:ruleId', element: <RuleDetailPage /> },
         { path: '/memory/episodes/:episodeId', element: <EpisodeDetailPage /> },
         { path: '/entities', element: <EntitiesPage /> },
+        { path: '/entities/social-map', element: <SocialMapPage /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },

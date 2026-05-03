@@ -1,5 +1,9 @@
 /**
- * ConcentricCirclesDialog — Dunbar social map visualization.
+ * @deprecated No consumers remain. The visualization has been extracted to
+ * ConcentricCirclesCanvas.tsx and the page chassis lives in SocialMapPage.tsx.
+ * This file is kept only for git history; it can be deleted once the PR is merged.
+ *
+ * ConcentricCirclesDialog — Dunbar social map visualization (deprecated modal form).
  *
  * Renders a concentric-rings SVG diagram where:
  * - The owner sits at the center

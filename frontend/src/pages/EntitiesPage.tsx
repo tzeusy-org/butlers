@@ -6,6 +6,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   CheckCircleIcon,
+  CrosshairIcon,
   EditIcon,
   GitMergeIcon,
   Loader2Icon,
@@ -13,8 +14,6 @@ import {
   UserIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-
-import { ConcentricCirclesDialog } from "@/components/memory/ConcentricCirclesDialog";
 
 import type { EntityParams, EntitySummary } from "@/api/types";
 import {
@@ -660,7 +659,12 @@ export default function EntitiesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 pt-1">
-          <ConcentricCirclesDialog />
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/entities/social-map">
+              <CrosshairIcon className="h-4 w-4 mr-1.5" />
+              Social Map
+            </Link>
+          </Button>
         </div>
       </div>
 

@@ -22,10 +22,6 @@ import {
 } from "@/hooks/use-memory";
 import EntitiesPage from "@/pages/EntitiesPage";
 
-vi.mock("@/components/memory/ConcentricCirclesDialog", () => ({
-  ConcentricCirclesDialog: () => null,
-}));
-
 vi.mock("@/hooks/use-memory", () => {
   const mutation = () => ({
     mutate: vi.fn(),
