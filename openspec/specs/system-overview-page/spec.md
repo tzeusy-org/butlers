@@ -13,7 +13,7 @@ The page is operator-grade read-only. It contains no write operations, no approv
 and no administrative actions. It is the answer to: "What is my system, and where has
 my data been?"
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: System Route and Navigation
 

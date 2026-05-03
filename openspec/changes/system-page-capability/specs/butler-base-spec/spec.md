@@ -17,7 +17,7 @@ This requirement defines what the daemon is responsible for maintaining.
 #### Scenario: Heartbeat registration is kept current
 
 - **WHEN** a butler daemon is running
-- **THEN** its heartbeat task fires at least once every `liveness_ttl_s / 2` seconds
+- **THEN** its heartbeat task fires at least once every `liveness_ttl_seconds / 2` seconds
 - **AND** each heartbeat upserts the butler's liveness record in the switchboard
   liveness registry with the current UTC timestamp
 - **AND** if the heartbeat task fails, the butler logs the failure but does not shut
