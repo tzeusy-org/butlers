@@ -430,7 +430,10 @@ It wraps the `<main>` outlet content only.
 ```ts
 interface Breadcrumb {
   label: string;
-  path?: string;         // omit for the current (final) crumb
+  href?: string;         // omit for the current (final) crumb
+  // NOTE: PageHeader uses `path?` internally; <Page> maps `href` to `path`
+  // when passing crumbs to PageHeader, and passes `href` directly to
+  // <Breadcrumbs> (components/ui/breadcrumbs.tsx). One canonical field name.
 }
 
 interface EmptyStateProps {
@@ -451,11 +454,16 @@ interface PageProps {
 
   // --- async state ---
   loading?: boolean;            // true = render skeleton for the archetype
-  error?: Error | null;         // non-null = render error region
+  error?: unknown | null;       // non-null = render error region; <Page> extracts
+                                // the message via `error instanceof Error ? error.message : String(error)`
   empty?: EmptyStateProps | null; // non-null and !loading = render EmptyState
+  onRetry?: () => void;         // if set, error region shows a retry button
+                                // (e.g. () => query.refetch() from TanStack Query)
 
   // --- layout ---
   archetype: 'overview' | 'list' | 'detail' | 'workspace' | 'editor';
+  skeletonSectionCount?: number; // editor archetype only: number of CardSkeleton
+                                 // placeholders to render (default 2)
 
   children: React.ReactNode;
 }
@@ -468,11 +476,12 @@ interface PageProps {
   It is also used for `<title>` via a `useEffect` if there is no other title
   manager.
 - `description` renders as `text-muted-foreground mt-1` below the title.
-- `breadcrumbs`, when supplied, are passed to `PageHeader` instead of the
-  auto-generated crumbs. Open question: whether `<Page>` should write directly
-  to the `PageHeader` slot (requires context or lifting state) or whether it
-  renders a secondary breadcrumb row below the shell header. See "Open
-  Questions" below.
+- `breadcrumbs`, when supplied, are rendered as a secondary row inside `<Page>`
+  (above the `<h1>`, below the shell header line) using the shared `<Breadcrumbs>`
+  component (`components/ui/breadcrumbs.tsx`). When `breadcrumbs` is provided,
+  `PageHeader` must suppress its URL-segment auto-builder (see Open Question 1
+  for the wiring approach). The `Breadcrumb.href` field maps to `BreadcrumbItem.href`
+  in the `<Breadcrumbs>` component and to `Breadcrumb.path` in `PageHeader`.
 - `actions` is a `ReactNode` placed at the end of the title row (right-aligned).
   Buttons here follow the existing pattern: `variant="outline"` for secondary
   actions, `variant="default"` for the single primary action if one exists.
@@ -496,9 +505,11 @@ Reference page: `DashboardPage` (line 165 heading, `space-y-6` root div),
   shell). No additional horizontal constraint.
 - Content padding: inherited from shell (`p-6`). `<Page>` adds `space-y-6`
   between its internal regions (heading block, children).
-- Heading block: `<h1 text-3xl font-bold tracking-tight>` + optional
-  `<p text-muted-foreground mt-1>` + right-aligned `actions`. Flex row,
-  `items-start justify-between gap-4`.
+- Heading block: a flex row (`items-start justify-between gap-4`) containing
+  two children: (left) a vertical stack of `<h1 text-3xl font-bold tracking-tight>`
+  + optional `<p text-muted-foreground mt-1>`, and (right) the `actions` node.
+  This is the `EntitiesPage:655-665` canonical pattern -- title and description
+  stack vertically inside a `<div>`, not side-by-side with actions.
 - Section rhythm: `space-y-6` between sections within `children`. Authors are
   responsible for their own section spacing inside `children`.
 - Rationale: `DashboardPage` uses `space-y-6` consistently (line 160 root
@@ -527,10 +538,12 @@ Reference pages: `EntitiesPage` (line 653 root div `space-y-6`),
 
 Reference pages: `EntityDetailPage`, `ButlerDetailPage` (tabs pattern).
 
-- Max content width: `max-w-5xl` (80rem). Detail pages benefit from a
+- Max content width: `max-w-5xl` (64rem / 1024px). Detail pages benefit from a
   constrained reading width. This is a new constraint: no existing detail page
   enforces it today, which is a known drift. The value is a proposal for the
-  reviewer to confirm or adjust.
+  reviewer to confirm or adjust. (Note: Tailwind default scale is `max-w-5xl =
+  64rem`, `max-w-6xl = 72rem`, `max-w-7xl = 80rem`. The 80rem citation in Open
+  Question 2 below was incorrect and has been corrected here.)
 - Content padding: inherited from shell.
 - Heading block: title + optional metadata strip (badges, secondary labels)
   left, actions right. A `<Breadcrumbs>` component (`components/ui/breadcrumbs.tsx`)
@@ -610,9 +623,10 @@ Heading block skeleton (shared across all archetypes):
 - Rendered when `empty` is non-null and `loading` is false.
 - Uses the shared `EmptyState` component from `components/ui/empty-state.tsx`
   (already exported: `title`, `description`, `icon?`, `action?`).
-- `<Page>` renders `children` if `empty` is null or if children explicitly
-  bypass it (workspace pages handle their own per-region empty states and
-  should pass `empty={null}` to `<Page>`).
+- `<Page>` renders `children` when `empty` is `null` (or unset). There is no
+  bypass mechanism -- "bypassing" simply means passing `empty={null}`, which
+  is the correct pattern for workspace and list pages that handle their own
+  per-region empty states.
 - For list pages, `empty` should appear inside the `<Card>` body, not as a
   full-page takeover. This means list pages must pass `empty={null}` to
   `<Page>` and handle empty inline (as `SymptomsPage:64-70` already does).
@@ -691,10 +705,30 @@ Migration order (rough priority by blast radius and visitor frequency):
    appear if the auto-builder is not disabled. Which approach does the owner
    prefer?
 
+   **Reviewer answer:** Use option (c) -- render breadcrumbs as a secondary row
+   inside `<Page>`, above the `<h1>`. The `PageHeader` auto-builder already
+   produces a "dumb" URL-segment crumb row that is functionally redundant when a
+   page supplies explicit crumbs. The implementation should suppress the
+   auto-builder's crumb row when `breadcrumbs` is supplied (expose a
+   `hideBreadcrumbs` boolean on `PageHeader`, or pass a sentinel to tell the
+   auto-builder to render nothing). This keeps `<Page>` entirely inside `<main>`
+   with no context or lifting required. Detail archetype pages are the primary
+   consumers; they already render `<Breadcrumbs>` inline today -- this just
+   formalizes that pattern inside `<Page>`.
+
 2. **`max-w-5xl` for detail archetype.** No existing detail page enforces a
-   max width today. Proposing `max-w-5xl` (80rem) as the detail cap. Is this
-   too narrow for `EntityDetailPage` which has wide tab panels? An alternative
-   is `max-w-6xl` or no cap (letting the shell `p-6` + sidebar handle it).
+   max width today. Proposing `max-w-5xl` (64rem / 1024px) as the detail cap.
+   Is this too narrow for `EntityDetailPage` which has wide tab panels? An
+   alternative is `max-w-6xl` (72rem) or no cap (letting the shell `p-6` +
+   sidebar handle it).
+
+   **Reviewer answer:** Keep `max-w-5xl` (64rem). `EntityDetailPage` is the
+   widest detail page in the roster and its tab panels are readable at 64rem
+   on a typical laptop viewport (1280px wide with the 256px sidebar leaves
+   roughly 1024px of usable main width -- a perfect fit). Unconstrained detail
+   pages feel poorly composed on wide monitors. If a future detail page
+   genuinely needs more horizontal space, override locally rather than
+   widening the default.
 
 3. **Empty state placement for list pages.** The spec says list pages handle
    empty inline (inside the `<Card>`). Should `<Page>` expose an
@@ -702,20 +736,62 @@ Migration order (rough priority by blast radius and visitor frequency):
    inside a wrapping `<Card>` automatically? This would let list pages remove
    their inline empty logic while preserving the card-contained visual.
 
+   **Reviewer answer:** No -- do not add `emptyInCard`. The `<Page>` empty prop
+   is for full-page empty states (overview and detail archetypes). List pages
+   have one `<Card>` containing both filters and the table; placing the empty
+   state inside that card is a structural decision the list page owns. Hiding
+   that behind a `<Page>` variant makes `<Page>` aware of list internals,
+   which is the wrong abstraction boundary. List pages should continue to pass
+   `empty={null}` and handle empty states inline (as `SymptomsPage:64-70`
+   already does). The migration checklist step 5 already documents this
+   correctly.
+
 4. **`onRetry` prop.** Should the error region include a retry callback?
    If yes, the signature becomes `onRetry?: () => void` on `PageProps`.
    Pages using TanStack Query would pass `() => query.refetch()`.
+
+   **Reviewer answer:** Yes -- include `onRetry`. An error region with no
+   recovery path is a dead end for the operator. The prop is optional, so pages
+   that genuinely cannot retry (e.g. a static config page) omit it and the
+   error card renders without the retry button. `onRetry` has been added to
+   `PageProps` in the interface above.
 
 5. **Workspace `loading` skeleton.** The proposed full-width `h-96` placeholder
    is intentionally coarse. Is it acceptable for `ChroniclesPage` during
    initial load, or should workspace pages always handle their own loading UI
    and `loading` prop be disallowed (or ignored) for `archetype="workspace"`?
 
+   **Reviewer answer:** Allow `loading` for workspace but keep the coarse
+   placeholder. `ChroniclesPage` already has its own per-widget skeleton logic
+   inside its timeline, scrubber, and map sections; the `<Page>`-level `loading`
+   prop is a fallback for the case where the entire workspace data fetch fails
+   before any widget can render at all. The `h-96` placeholder is acceptable
+   for that edge case. Workspace pages that want finer loading fidelity simply
+   do not pass `loading` to `<Page>` and manage skeletons inside `children`
+   instead -- this is the normal case for Chronicles today.
+
 6. **`<title>` management.** The spec proposes a `useEffect` on `<Page>` to
    set `document.title`. Does the project want this behavior, or is the page
    title managed elsewhere (e.g. React Router's `<meta>` or a future SEO layer)?
    If title management is out of scope for `<Page>`, remove the `useEffect`.
 
+   **Reviewer answer:** Yes -- let `<Page>` manage `document.title` via
+   `useEffect`. This is a single-tenant personal dashboard, not a marketing
+   site; there is no SEO layer, no React Router `<meta>` management, and no
+   other title manager in the codebase today. Setting
+   `document.title = \`${title} | Butlers\`` inside `<Page>` is the right
+   place: centralized, automatic, and removes per-page boilerplate. The prop
+   rule note ("used for `<title>` via a `useEffect` if there is no other title
+   manager") is correct as written.
+
 7. **`skeletonSectionCount` for editor.** The proposal includes an optional
    `skeletonSectionCount` hint. If editors are always two sections (e.g.
    settings + save), hardcode 2 and drop the prop.
+
+   **Reviewer answer:** Keep the prop but make it optional with a default of 2.
+   `SettingsPage` has two form sections, `SecretsPage` has one, and future
+   editor pages may vary. A hardcoded 2 would render an extra skeleton section
+   for `SecretsPage`. The prop's default-2 behavior satisfies the common case
+   with zero boilerplate; pages that differ from the default pass an explicit
+   value. The prop has been added to `PageProps` as `skeletonSectionCount?:
+   number` in the interface above.
