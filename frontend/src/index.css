@@ -148,6 +148,18 @@
   --text-3xl:  2.074rem;
 
   /* ---------------------------------------------------------------------------
+   * Calendar layout tokens
+   *
+   * --calendar-hour-height  Pixel height of one clock hour in the time grid.
+   *                         Must match HOUR_HEIGHT_PX in CalendarWorkspacePage.tsx.
+   * --calendar-grid-height  Total pixel height of the 24-hour time grid.
+   *                         Derived from --calendar-hour-height × 24.
+   *                         Consumed by CalendarWorkspacePage time-grid container.
+   * ---------------------------------------------------------------------------*/
+  --calendar-hour-height: 60px;
+  --calendar-grid-height: calc(var(--calendar-hour-height) * 24);
+
+  /* ---------------------------------------------------------------------------
    * Spacing scale
    *
    * Base unit: 0.25rem (4px). Linear steps 1–12.
