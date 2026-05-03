@@ -4,6 +4,7 @@ Condensed: 28 → ~14 tests [bu-gg4y1].
 Keeps: instance shape, DB happy-path + 503, backups graceful-degrade,
 egress 403 gate + happy path + actor mapping + aggregation,
 heartbeat happy + null-heartbeat + schema_unreachable + 503.
+OTel span system.egress.read: emitted + actor_count attribute + per-request.
 """
 
 from __future__ import annotations
@@ -13,6 +14,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
@@ -298,3 +304,125 @@ async def test_heartbeat_503_when_registry_fails():
     ) as client:
         resp = await client.get("/api/system/butlers/heartbeat")
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# OTel span: system.egress.read
+# ---------------------------------------------------------------------------
+
+
+def _reset_otel_global_state() -> None:
+    """Fully reset the OpenTelemetry global tracer provider state."""
+    trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
+    trace._TRACER_PROVIDER = None
+
+
+@pytest.fixture()
+def otel_exporter():
+    """Install a fresh in-memory TracerProvider, yield the exporter, then tear down."""
+    _reset_otel_global_state()
+    exporter = InMemorySpanExporter()
+    resource = Resource.create({"service.name": "butler-test"})
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    yield exporter
+    provider.shutdown()
+    _reset_otel_global_state()
+
+
+class TestEgressSpan:
+    """Verify that GET /api/system/egress emits the system.egress.read OTel span."""
+
+    def _make_db_with_owner(
+        self,
+        *,
+        audit_rows: list[dict] | None = None,
+    ) -> DatabaseManager:
+        """Wire a mock DatabaseManager for the egress endpoint (owner present)."""
+        if audit_rows is None:
+            audit_rows = [
+                {
+                    "operation": "llm_api_call",
+                    "last_seen_at": _NOW,
+                    "total_calls": 5,
+                    "first_seen_at": _NOW,
+                },
+                {
+                    "operation": "telegram_send",
+                    "last_seen_at": _NOW,
+                    "total_calls": 3,
+                    "first_seen_at": _NOW,
+                },
+            ]
+
+        pool = AsyncMock()
+
+        async def _fetchrow(sql, *args):
+            if "ANY(e.roles)" in sql:
+                rec = MagicMock()
+                rec.__getitem__ = MagicMock(return_value="fake-uuid")
+                return rec
+            return None
+
+        async def _fetch(sql, *args):
+            return [_make_record(r) for r in audit_rows]
+
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetch = AsyncMock(side_effect=_fetch)
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = pool
+        return mock_db
+
+    async def test_span_emitted_on_successful_read(self, otel_exporter: InMemorySpanExporter):
+        """system.egress.read span is emitted with actor_count on every successful read."""
+        mock_db = self._make_db_with_owner()
+        app = _make_app_with_db(mock_db)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/system/egress")
+        assert resp.status_code == 200
+
+        spans = otel_exporter.get_finished_spans()
+        egress_spans = [s for s in spans if s.name == "system.egress.read"]
+        assert len(egress_spans) == 1, (
+            f"expected 1 system.egress.read span, got {len(egress_spans)}"
+        )
+
+        span = egress_spans[0]
+        assert "actor_count" in span.attributes, "span must carry actor_count attribute"
+        # Two distinct operations map to two distinct actors (anthropic.claude, telegram.api)
+        assert span.attributes["actor_count"] == 2
+
+    async def test_span_actor_count_reflects_empty_catalog(
+        self, otel_exporter: InMemorySpanExporter
+    ):
+        """actor_count is 0 when the audit log has no rows."""
+        mock_db = self._make_db_with_owner(audit_rows=[])
+        app = _make_app_with_db(mock_db)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/system/egress")
+        assert resp.status_code == 200
+
+        spans = otel_exporter.get_finished_spans()
+        egress_spans = [s for s in spans if s.name == "system.egress.read"]
+        assert len(egress_spans) == 1
+        assert egress_spans[0].attributes["actor_count"] == 0
+
+    async def test_span_emitted_on_each_request(self, otel_exporter: InMemorySpanExporter):
+        """A span is emitted on every call to the endpoint, not just the first."""
+        mock_db = self._make_db_with_owner()
+        app = _make_app_with_db(mock_db)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/api/system/egress")
+            await client.get("/api/system/egress")
+
+        spans = otel_exporter.get_finished_spans()
+        egress_spans = [s for s in spans if s.name == "system.egress.read"]
+        assert len(egress_spans) == 2
