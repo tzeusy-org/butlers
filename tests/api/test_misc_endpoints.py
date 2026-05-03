@@ -55,22 +55,31 @@ async def test_health_returns_ok():
 
 
 @pytest.mark.parametrize(
-    "api_key,headers,path,expected,check_not",
+    "api_key,headers,path,expected",
     [
-        ("", {}, "/api/health", 200, None),                                    # auth disabled
-        ("secret", {}, "/api/butlers", 401, None),                            # missing key
-        ("secret", {"X-API-Key": "secret"}, "/api/health", 200, None),       # valid key reaches endpoint
-        ("secret", {}, "/api/health", 200, None),                             # health bypasses auth
+        ("", {}, "/api/health", 200),           # auth disabled
+        ("secret", {}, "/api/butlers", 401),    # missing key → 401
+        ("secret", {}, "/api/health", 200),     # health bypasses auth
     ],
-    ids=["auth-disabled", "missing-key-401", "valid-key-ok", "health-bypasses-auth"],
+    ids=["auth-disabled", "missing-key-401", "health-bypasses-auth"],
 )
-async def test_auth_gate(api_key, headers, path, expected, check_not):
+async def test_auth_gate(api_key, headers, path, expected):
     app = create_app(api_key=api_key)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get(path, headers=headers)
     assert resp.status_code == expected
+
+
+async def test_valid_api_key_grants_access_to_protected_endpoint():
+    """A valid X-API-Key must not be rejected with 401 on a protected route."""
+    app = create_app(api_key="secret")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/butlers", headers={"X-API-Key": "secret"})
+    assert resp.status_code != 401
 
 
 # ---------------------------------------------------------------------------

@@ -119,10 +119,10 @@ async def test_list_actions_returns_paginated_structure(app):
     [
         (f"/api/approvals/actions/{uuid4()}", "GET", None, 404),
         ("/api/approvals/actions/not-a-uuid", "GET", None, 400),
-        ("/api/approvals/rules", "POST", {"tool_name": "x", "max_uses": -1}, 422),
+        ("/api/approvals/rules", "POST", {"tool_name": "x", "arg_constraints": {}, "description": "test", "max_uses": -1}, 400),
         (f"/api/approvals/rules/{uuid4()}/revoke", "POST", None, 404),
     ],
-    ids=["action-404", "action-bad-uuid-400", "rule-invalid-max-uses-422", "revoke-rule-404"],
+    ids=["action-404", "action-bad-uuid-400", "rule-invalid-max-uses-400", "revoke-rule-404"],
 )
 async def test_approvals_error_paths(app, path, method, body, expected):
     app, _ = _app_with_mock_db(app, fetchrow_return=None)
