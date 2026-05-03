@@ -716,14 +716,18 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     now_utc = datetime.now(UTC)
     max_lookback = now_utc - timedelta(days=_INTERACTION_SYNC_MAX_WINDOW_DAYS)
 
-    # Load checkpoint from state store. Checkpoint failures should not make the
-    # scheduler treat the whole deterministic job as a dispatch failure.
+    # Fail-open on checkpoint I/O: this is a periodic job whose 30-day max_lookback
+    # bounds the cost of a missed checkpoint, and interaction_log() already dedups
+    # re-scanned windows; raising would trigger scheduler retry storms and hide the
+    # work the job did complete. Failures are surfaced via stats["errors"] + logs.
     checkpoint_errors = 0
     try:
         last_scan_at_raw = await state_get(db_pool, _INTERACTION_SYNC_STATE_KEY)
     except Exception:
         logger.exception(
-            "interaction_sync: failed to read checkpoint; using 30-day default"
+            "interaction_sync: failed to read checkpoint key=%s; falling back to %d-day lookback",
+            _INTERACTION_SYNC_STATE_KEY,
+            _INTERACTION_SYNC_MAX_WINDOW_DAYS,
         )
         last_scan_at_raw = None
         checkpoint_errors += 1
@@ -735,8 +739,11 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 scan_window_start = scan_window_start.replace(tzinfo=UTC)
         except (ValueError, TypeError):
             logger.warning(
-                "interaction_sync: invalid checkpoint value %r — using 30-day default",
+                "interaction_sync: invalid checkpoint value key=%s value=%r; "
+                "falling back to %d-day lookback",
+                _INTERACTION_SYNC_STATE_KEY,
                 last_scan_at_raw,
+                _INTERACTION_SYNC_MAX_WINDOW_DAYS,
             )
             scan_window_start = max_lookback
     else:
@@ -1279,13 +1286,19 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 )
                 stats["errors"] += 1
 
-    # Persist the end of this scan window as the next checkpoint. Do not raise
-    # out to the scheduler; a failed checkpoint write should be visible in stats
-    # and logs while allowing the job result to be recorded.
+    # Persist the end of this scan window as the next checkpoint. Fail-open for
+    # the same reasons as the read above (interaction_log() dedups, scheduler
+    # storm avoidance). Surface via stats["errors"] + logs so monitoring catches
+    # recurring write failures.
+    next_checkpoint = scan_window_end.isoformat()
     try:
-        await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, scan_window_end.isoformat())
+        await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
     except Exception:
-        logger.exception("interaction_sync: failed to write checkpoint")
+        logger.exception(
+            "interaction_sync: failed to write checkpoint key=%s value=%s",
+            _INTERACTION_SYNC_STATE_KEY,
+            next_checkpoint,
+        )
         stats["errors"] += 1
 
     logger.info(

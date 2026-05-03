@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import ModuleType
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -311,9 +311,15 @@ async def test_checkpoint_read_failure_uses_default_window_without_raising():
         with patch.object(mod, "datetime", _FixedDatetime):
             stats = await run_fn(pool)
 
+    # On read failure the job falls back to the module's max-lookback window,
+    # so derive the expected start from _NOW and the constant rather than
+    # hard-coding a date string that will rot if the window changes.
+    expected_start = _NOW - timedelta(days=_rjobs_attr("_INTERACTION_SYNC_MAX_WINDOW_DAYS"))
     assert stats["errors"] == 1
-    assert stats["scan_window_start"] == "2026-03-17T10:00:00+00:00"
-    mock_state_set.assert_awaited_once_with(pool, "interaction_sync.last_scan_at", _NOW.isoformat())
+    assert stats["scan_window_start"] == expected_start.isoformat()
+    mock_state_set.assert_awaited_once_with(
+        pool, _rjobs_attr("_INTERACTION_SYNC_STATE_KEY"), _NOW.isoformat()
+    )
     mock_log.assert_not_called()
 
 
@@ -348,7 +354,9 @@ async def test_checkpoint_write_failure_returns_error_stats_without_raising():
             stats = await run_fn(pool)
 
     assert stats["errors"] == 1
-    mock_state_set.assert_awaited_once_with(pool, "interaction_sync.last_scan_at", _NOW.isoformat())
+    mock_state_set.assert_awaited_once_with(
+        pool, _rjobs_attr("_INTERACTION_SYNC_STATE_KEY"), _NOW.isoformat()
+    )
     mock_log.assert_not_called()
 
 
