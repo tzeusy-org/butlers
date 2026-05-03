@@ -80,6 +80,7 @@ from butlers.api.routers.state import router as state_router
 from butlers.api.routers.steam import router as steam_router
 from butlers.api.routers.system import router as system_router
 from butlers.api.routers.telegram_auth import router as telegram_auth_router
+from butlers.api.routers.preferences import router as preferences_router
 from butlers.api.routers.timeline import router as timeline_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
 
@@ -260,6 +261,7 @@ def create_app(
     app.include_router(telegram_auth_router)
     app.include_router(whatsapp_router)
     app.include_router(conversations_router)
+    app.include_router(preferences_router)
     app.include_router(runtime_config_router)
     app.include_router(system_router)
 
