@@ -131,28 +131,44 @@ but there is unresolved namespace drift between
 
 ## Page Archetypes
 
-Pages today fall into roughly five archetypes. There is no shared
-`<Page>` wrapper enforcing them, so each page composes the archetype
-by hand.
+Pages today fall into roughly five archetypes. The shared `<Page>`
+primitive (`components/ui/page.tsx`) enforces heading block, skeleton,
+error/empty regions, and `space-y-6` rhythm. Pages not yet migrated
+still compose the archetype by hand; see the Migration Checklist below.
 
 ### A. Overview / dashboard
-Top-level multi-region surface. Stats bar → primary visualization
-→ secondary cards. Examples: `DashboardPage`, `QaOverviewPage`,
-`CostsPage`.
+Top-level multi-region surface. Hero chart → above-the-fold feed →
+secondary cards → demoted stat strip. Examples: `DashboardPage`,
+`QaOverviewPage`, `CostsPage`.
 
-Pattern in code:
+Post-vertical-D pattern in code (`DashboardPage`, shipped PRs
+#1345, #1346, #1351, #1361):
 ```tsx
-<div className="space-y-6">
-  <h1 className="text-2xl|3xl font-bold tracking-tight">…</h1>
-  <StatsBar />            // grid grid-cols-2|4 of StatsCard
-  <PrimaryRegion />       // topology, chart, kanban, etc.
-  <SecondaryGrid />       // grid lg:grid-cols-2 of cards
-</div>
+<Page archetype="overview" title="Overview">
+  {/* Hero: SessionStripeChart — recharts stacked BarChart, butler-colored
+      via --category-N deterministic tokens */}
+  <Card><CardContent><SessionStripeChart butlers={butlers} /></CardContent></Card>
+
+  {/* Above-the-fold list: RecentMoments feed */}
+  {/* <Time mode="relative"> + butler glyph + prompt summary + session link */}
+  <Card><CardContent><RecentMoments limit={7} /></CardContent></Card>
+
+  {/* Secondary cards (grid lg:grid-cols-2) */}
+  <div className="grid gap-6 lg:grid-cols-2">…</div>
+
+  {/* Demoted four-stat strip — no Card wrapper, border-t visual demotion */}
+  <div className="flex flex-wrap items-center gap-x-6 gap-y-1 border-t border-border pt-3">
+    <StatItem label="…" value={…} />  {/* text-sm font-medium, no Card */}
+  </div>
+</Page>
 ```
 
-`StatsCard` is **defined inline in each page** with the same
-`Card / CardHeader pb-2 / CardTitle text-sm / CardContent`
-boilerplate. There is no shared component. (See doctrine drift #3.)
+`StatItem` (defined inline in `DashboardPage`) replaces the old
+`StatsCard` boilerplate. It uses `text-sm font-medium tabular-nums`
+for the value and `text-xs text-muted-foreground` for the label —
+no `Card` wrapper, intentionally demoted visual weight.
+The topology graph previously shown on `/` has been relocated to
+`/system`.
 
 ### B. List / index
 Filterable table-of-things. Header + filter bar + table + manual
@@ -374,9 +390,9 @@ not literals.
 
 | Concern | Where it shows up | Note |
 |---|---|---|
-| H1 size varies | `text-2xl` (DashboardPage:165, CostsPage) vs `text-3xl` (ButlersPage:124, ChroniclesPage:208) | No `<Page>` enforces |
-| `StatsCard` reimplemented | DashboardPage:25, CostsPage:20, QaOverviewPage:149 | Candidate for shared `<Stat>` |
-| Date formatters disagree | `toLocaleString` (DashboardPage:84, EpisodeDetailPage:140), `toISOString().slice(0,10)` (EntitiesPage:196), `format(...)` from date-fns (GroupsPage:155) | Need `<Time>` primitive |
+| H1 size varies | `text-2xl` (CostsPage) vs `text-3xl` (ButlersPage:124, ChroniclesPage:208) | `<Page>` enforces `text-3xl`; remaining `text-2xl` pages pre-date migration |
+| `StatsCard` reimplemented | CostsPage:20, QaOverviewPage:149 | `DashboardPage` migrated to `StatItem` (no-Card strip). Remaining pages are candidates for the same pattern |
+| Date formatters disagree | `toLocaleString` (EpisodeDetailPage:140), `toISOString().slice(0,10)` (EntitiesPage:196), `format(...)` from date-fns (GroupsPage:155) | `<Time>` primitive shipped; `DashboardPage` already uses `<Time mode="relative">` |
 | Hex literals | EntitiesPage:102-113, EntityDetailPage:313/316, SymptomsPage, GroupsPage:121 | Need named tokens |
 | Inline `style={{...}}` | FactDetailPage:101, RuleDetailPage:97, CalendarWorkspacePage:188, ConcentricCirclesDialog | Tailwind arbitrary values |
 | Button variant for "secondary" action | `outline` (33 sites) vs `ghost` (7 sites) | No documented rule |
@@ -408,17 +424,20 @@ This document covers the dashboard's surface. It is the map an
 
 ## `<Page>` Primitive Contract
 
-> Status: **design spec** (written for bead bu-yo4bt.1). No implementation
-> exists yet. This section is the contract for the downstream implementation bead.
+> Status: **shipped** (implemented in bu-yo4bt epic; `DashboardPage` migrated
+> post-vertical-D via PRs #1345–#1361, #1363). This section documents the
+> contract as implemented in `components/ui/page.tsx`.
 
 ### Motivation
 
 Every page today re-invents its heading region, loading skeleton, empty state,
 and error region by hand. The result is documented in the "Inconsistencies
-Worth Tracking" table above: H1 sizes vary (`text-2xl` in `DashboardPage:165`,
+Worth Tracking" table above: H1 sizes vary (`text-2xl` in `CostsPage` vs
 `text-3xl` in `EntitiesPage:657`, `SymptomsPage:108`, `ChroniclesPage:195`),
 action placement varies, and the shared `EmptyState` component is used
 inconsistently. A single `<Page>` wrapper makes these decisions once.
+`DashboardPage` has been migrated to `<Page archetype="overview">` and uses
+`text-3xl font-bold tracking-tight` via the `<Page>` heading block.
 
 The `<Page>` primitive does not replace the shell (`Shell.tsx`, `PageHeader.tsx`).
 It wraps the `<main>` outlet content only.
@@ -472,12 +491,12 @@ interface PageProps {
 **Prop rules:**
 
 - `title` is required. It becomes the page `<h1>` (rendered at
-  `text-2xl font-bold tracking-tight`). The detail-page audit picked
-  `text-2xl` as the canonical operator-tool H1 size (see
-  [`detail-page-audit.md`](detail-page-audit.md) section "Section 6:
-  Layout & Style"); `<Page>` matches. Pages currently using `text-3xl`
-  (Butlers, Chronicles, Entities, Symptoms) get demoted during their
-  migration onto `<Page>`.
+  `text-3xl font-bold tracking-tight`). This was confirmed during the
+  bu-yo4bt.9 spec sync and PR #1373 review: `text-3xl` is the canonical
+  operator-tool H1 size — not `text-2xl` as the pre-D detail-page audit
+  had proposed. The shipped `<Page>` `HeadingBlock` uses `text-3xl`.
+  Pages not yet migrated to `<Page>` that use `text-2xl` (e.g. `CostsPage`)
+  will adopt `text-3xl` when they migrate.
   It is also used for `<title>` via a `useEffect` if there is no other title
   manager.
 - `description` renders as `text-muted-foreground mt-1` below the title.
@@ -503,7 +522,7 @@ interface PageProps {
 
 #### A. Overview (`archetype="overview"`)
 
-Reference page: `DashboardPage` (line 165 heading, `space-y-6` root div),
+Reference page: `DashboardPage` (post-vertical-D, uses `<Page archetype="overview">`),
 `QaOverviewPage`.
 
 - Max content width: unrestricted (fills `<main>` which has `p-6` from the
@@ -511,16 +530,22 @@ Reference page: `DashboardPage` (line 165 heading, `space-y-6` root div),
 - Content padding: inherited from shell (`p-6`). `<Page>` adds `space-y-6`
   between its internal regions (heading block, children).
 - Heading block: a flex row (`items-start justify-between gap-4`) containing
-  two children: (left) a vertical stack of `<h1 text-2xl font-bold tracking-tight>`
+  two children: (left) a vertical stack of `<h1 text-3xl font-bold tracking-tight>`
   + optional `<p text-muted-foreground mt-1>`, and (right) the `actions` node.
   This is the `EntitiesPage:655-665` canonical pattern -- title and description
   stack vertically inside a `<div>`, not side-by-side with actions.
 - Section rhythm: `space-y-6` between sections within `children`. Authors are
   responsible for their own section spacing inside `children`.
-- Rationale: `DashboardPage` uses `space-y-6` consistently (line 160 root
-  wrapper). `QaOverviewPage` matches. `ChroniclesPage` (line 191) also uses
-  `space-y-6 pb-72` -- the `pb-72` is workspace-specific (floating minimap
-  clearance) and belongs inside children, not in `<Page>`.
+- Post-vertical-D region order for `DashboardPage` (canonical overview):
+  1. **Hero** — `SessionStripeChart` inside a `<Card>` (recharts stacked BarChart,
+     butler-colored via `--category-N` deterministic CSS tokens)
+  2. **Above-the-fold feed** — `RecentMoments` inside a `<Card>` (`<Time mode="relative">`
+     + butler glyph + prompt summary + session detail link)
+  3. **Secondary cards** — `grid gap-6 lg:grid-cols-2` of `<Card>` widgets
+  4. **Demoted stat strip** — `flex flex-wrap border-t border-border pt-3` row of
+     `<StatItem>` entries (`text-sm font-medium tabular-nums`); no `<Card>` wrapper
+- Rationale: `DashboardPage` was migrated to `<Page>` (PRs #1345–#1361).
+  The topology graph previously on `/` is now at `/system`.
 
 #### B. List (`archetype="list"`)
 
@@ -692,7 +717,7 @@ For converting an existing page to the `<Page>` primitive:
 Migration order (rough priority by blast radius and visitor frequency):
 1. `SymptomsPage` -- small, clean, easy reference implementation
 2. `EntitiesPage` -- list archetype canonical case
-3. `DashboardPage` -- overview canonical case
+3. `DashboardPage` -- ~~overview canonical case~~ **already migrated** (post-vertical-D, PRs #1345–#1361)
 4. Detail pages in dependency order (start with `FactDetailPage`, least tangled)
 5. `ChroniclesPage` last -- workspace archetype needs the least from `<Page>`
 
