@@ -16,23 +16,28 @@ logger = logging.getLogger(__name__)
 
 
 def decode_jsonb(val: Any) -> Any:
-    """Decode a JSONB value, handling potential double-encoding.
+    """Decode a JSONB value, handling absent codec and legacy double-encoding.
 
-    asyncpg returns JSONB columns as Python strings (text representation)
-    when no custom codec is registered.  Normally one ``json.loads`` pass
-    suffices.  If the stored JSONB was accidentally double-encoded (a JSON
-    string containing JSON text), a second pass is needed.
+    With the asyncpg JSONB codec registered (production), JSONB columns come
+    back as native Python types — pass through.  Without the codec, asyncpg
+    returns the column as a Python ``str`` (text representation); call
+    ``json.loads`` once.  If the result is still a ``str`` it could be either
+    (a) a legitimate JSONB string scalar (e.g. ``"failure"``) or (b) legacy
+    double-encoded data from the pre-codec era.  Try one more decode pass —
+    if it parses, return the inner value; if not, return the string as-is.
     """
     if not isinstance(val, str):
         return val
-    val = json.loads(val)
-    if isinstance(val, str):
-        logger.warning("Double-encoded JSONB detected — applying second decode pass")
+    try:
+        decoded = json.loads(val)
+    except (json.JSONDecodeError, ValueError):
+        return val
+    if isinstance(decoded, str):
         try:
-            val = json.loads(val)
+            return json.loads(decoded)
         except (json.JSONDecodeError, ValueError):
-            pass
-    return val
+            return decoded
+    return decoded
 
 
 class CASConflictError(Exception):
@@ -79,7 +84,6 @@ async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
     Returns:
         The new version number for the row after the upsert.
     """
-    json_value = json.dumps(value)
     new_version: int = await pool.fetchval(
         """
         INSERT INTO state (key, value, updated_at, version)
@@ -91,7 +95,7 @@ async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
         RETURNING version
         """,
         key,
-        json_value,
+        value,
     )
     return new_version
 
@@ -122,7 +126,6 @@ async def state_compare_and_set(
         CASConflictError: If the stored version does not match *expected_version*,
             or the key does not exist.
     """
-    json_value = json.dumps(new_value)
     row = await pool.fetchrow(
         """
         UPDATE state
@@ -134,7 +137,7 @@ async def state_compare_and_set(
         """,
         key,
         expected_version,
-        json_value,
+        new_value,
     )
     if row is not None:
         return row["version"]

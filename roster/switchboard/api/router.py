@@ -1186,7 +1186,7 @@ async def update_connector_settings(
             " RETURNING *",
             connector_type,
             endpoint_identity,
-            json.dumps(body.settings),
+            body.settings,
         )
     except Exception:
         logger.warning(
@@ -1909,7 +1909,6 @@ async def create_backfill_job(
 
     job_id = str(uuid.uuid4())
     now = datetime.datetime.now(datetime.UTC)
-    target_categories_json = json.dumps(body.target_categories)
 
     try:
         row = await pool.fetchrow(
@@ -1926,7 +1925,7 @@ async def create_backfill_job(
             job_id,
             body.connector_type,
             body.endpoint_identity,
-            target_categories_json,
+            body.target_categories,
             body.date_from,
             body.date_to,
             body.rate_limit_per_hour,
@@ -2854,7 +2853,7 @@ async def create_ingestion_rule(
         "           name, description, created_by, created_at, updated_at, deleted_at",
         body.scope,
         body.rule_type,
-        json.dumps(validated_condition),
+        validated_condition,
         body.action,
         body.priority,
         body.enabled,
@@ -2985,7 +2984,7 @@ async def update_ingestion_rule(
             validated_condition = validate_condition(effective_rule_type, body.condition)
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc))
-        updates["condition"] = json.dumps(validated_condition)
+        updates["condition"] = validated_condition
 
     if body.priority is not None:
         updates["priority"] = body.priority

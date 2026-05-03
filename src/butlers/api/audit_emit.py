@@ -130,6 +130,11 @@ async def emit_dashboard_audit(
     if trace_id:
         request_summary["trace_id"] = trace_id
 
+    # Pre-coerce non-JSON-safe values (e.g. UUIDs in path_params) to strings,
+    # then hand the codec a plain dict — wrapping with json.dumps() here would
+    # double-encode and store a JSONB string scalar instead of an object.
+    safe_summary = json.loads(json.dumps(request_summary, default=str))
+
     try:
         pool = db_manager.pool("switchboard")
         await pool.execute(
@@ -138,10 +143,10 @@ async def emit_dashboard_audit(
             "VALUES ($1, $2, $3, $4, $5, $6)",
             butler,
             operation,
-            json.dumps(request_summary, default=str),
+            safe_summary,
             result,
             error,
-            json.dumps({}),
+            {},
         )
     except Exception:
         logger.warning(

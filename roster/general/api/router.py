@@ -7,7 +7,6 @@ directly from the general butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import importlib.util
-import json
 import logging
 import sys
 from pathlib import Path
@@ -206,7 +205,7 @@ async def list_entities(
 
     if tag is not None:
         conditions.append(f"e.tags @> ${idx}::jsonb")
-        args.append(json.dumps([tag]))
+        args.append([tag])
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""

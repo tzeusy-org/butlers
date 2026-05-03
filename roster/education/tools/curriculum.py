@@ -23,7 +23,6 @@ data/persistence layer.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import defaultdict
 from typing import Any
@@ -360,7 +359,6 @@ async def curriculum_generate(
 
     # Transition to 'active'; merge goal into metadata if supplied
     if goal is not None:
-        goal_json = json.dumps({"goal": goal})
         await pool.execute(
             """
             UPDATE education.mind_maps
@@ -369,7 +367,7 @@ async def curriculum_generate(
                 updated_at = now()
             WHERE id = $2
             """,
-            goal_json,
+            {"goal": goal},
             mind_map_id,
         )
     else:

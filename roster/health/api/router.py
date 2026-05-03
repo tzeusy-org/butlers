@@ -479,7 +479,7 @@ async def list_research(
 
     if tag is not None:
         conditions.append(f"tags @> ${idx}::jsonb")
-        args.append(json.dumps([tag]))
+        args.append([tag])
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""

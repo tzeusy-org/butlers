@@ -26,7 +26,6 @@ CAS semantics: state_compare_and_set is used for concurrent-safe writes.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
@@ -248,7 +247,7 @@ async def teaching_flow_start(
             SET metadata = metadata || $1::jsonb, updated_at = now()
             WHERE id = $2
             """,
-            json.dumps({"goal": goal}),
+            {"goal": goal},
             mind_map_id,
         )
 

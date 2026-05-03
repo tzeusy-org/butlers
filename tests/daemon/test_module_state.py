@@ -12,7 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -140,36 +139,59 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
 
 
 def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
-    """Return a mock pool whose fetchval respects a simple in-memory state store."""
+    """Return a mock pool whose fetchval respects a simple in-memory state store.
+
+    Mirrors the asyncpg JSONB codec: writes pass Python objects directly
+    (no pre-serialization) and reads return Python objects directly.
+    """
     store = state_store if state_store is not None else {}
     versions: dict[str, int] = {}
     pool = AsyncMock()
 
-    async def _fetchval(sql, key, *args):
+    async def _fetchval(sql, *fargs):
+        key = fargs[0] if fargs else None
         if "SELECT value FROM state" in sql:
-            if key not in store:
-                return None
-            return json.dumps(store[key])
+            return store.get(key)
         if "INSERT INTO state" in sql:
-            value_str = args[0] if args else None
-            if value_str is not None:
-                store[key] = json.loads(value_str)
+            # state_set always passes value as the second positional after SQL.
+            # Storing None is meaningful (clears the disabled_by marker).
+            if len(fargs) > 1:
+                store[key] = fargs[1]
             versions[key] = versions.get(key, 0) + 1
             return versions[key]
         if "SELECT version FROM state" in sql:
             return versions.get(key)
         return MagicMock()
 
-    async def _execute(sql, key, *args):
+    async def _execute(sql, *fargs):
+        key = fargs[0] if fargs else None
         if "INSERT INTO state" in sql:
-            value_str = args[0] if args else None
-            if value_str is not None:
-                store[key] = json.loads(value_str)
+            if len(fargs) > 1:
+                store[key] = fargs[1]
+        elif "DELETE FROM state" in sql and key is not None:
+            store.pop(key, None)
         return None
 
     pool.fetchval = AsyncMock(side_effect=_fetchval)
     pool.execute = AsyncMock(side_effect=_execute)
     pool.fetch = AsyncMock(return_value=[])
+
+    # pool.acquire() is used as `async with pool.acquire() as conn:` in some
+    # daemon code paths (e.g. contact_info resolution). Provide a context
+    # manager that yields a no-op connection so those paths don't crash.
+    from contextlib import asynccontextmanager
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield mock_conn
+
+    pool.acquire = _acquire
     return pool
 
 

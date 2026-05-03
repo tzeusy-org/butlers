@@ -57,6 +57,12 @@ async def log_audit_entry(
     Silently logs and swallows errors so audit logging never breaks the
     primary operation.
     """
+    # Pre-coerce non-JSON-safe values to strings, then hand the codec dicts —
+    # wrapping with json.dumps() here would double-encode and store JSONB
+    # string scalars in JSONB columns instead of objects.
+    safe_summary = json.loads(json.dumps(request_summary, default=str))
+    safe_context = json.loads(json.dumps(user_context or {}, default=str))
+
     try:
         pool = db.pool("switchboard")
         await pool.execute(
@@ -65,10 +71,10 @@ async def log_audit_entry(
             "VALUES ($1, $2, $3, $4, $5, $6)",
             butler,
             operation,
-            json.dumps(request_summary),
+            safe_summary,
             result,
             error,
-            json.dumps(user_context or {}),
+            safe_context,
         )
     except Exception:
         logger.warning(

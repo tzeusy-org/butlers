@@ -173,7 +173,7 @@ async def create_provider(
             """,
             body.provider_type,
             body.display_name,
-            json.dumps(body.config),
+            body.config,
             body.enabled,
         )
     except asyncpg.UniqueViolationError:
@@ -216,7 +216,7 @@ async def update_provider(
     for field, value in updates.items():
         if field == "config":
             set_parts.append(f"config = ${idx}::jsonb")
-            params.append(json.dumps(value))
+            params.append(value)
         else:
             set_parts.append(f"{field} = ${idx}")
             params.append(value)

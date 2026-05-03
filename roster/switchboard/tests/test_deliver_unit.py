@@ -1269,7 +1269,6 @@ class TestWriteOutboundMessageInbox:
 
     async def test_derives_thread_from_recipient_when_no_request_context(self) -> None:
         """Derives thread identity from delivery.recipient for telegram send-intent."""
-        import json as _json
 
         from butlers.tools.switchboard import _write_outbound_message_inbox
         from butlers.tools.switchboard.routing.contracts import (
@@ -1300,7 +1299,8 @@ class TestWriteOutboundMessageInbox:
 
         pool.execute.assert_awaited_once()
         call_args = pool.execute.call_args
-        req_ctx = _json.loads(call_args[0][2])
+        req_ctx = call_args[0][2]
+        assert isinstance(req_ctx, dict)
         assert req_ctx["source_thread_identity"] == "206570151"
         assert req_ctx["source_sender_identity"] == "relationship"
         assert req_ctx["source_channel"] == "telegram_bot"
@@ -1337,7 +1337,6 @@ class TestWriteOutboundMessageInbox:
 
     async def test_derives_thread_from_recipient_when_no_thread_identity(self) -> None:
         """Derives thread identity from recipient when request_context lacks it."""
-        import json as _json
 
         from butlers.tools.switchboard import _write_outbound_message_inbox
         from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
@@ -1372,7 +1371,8 @@ class TestWriteOutboundMessageInbox:
 
         pool.execute.assert_awaited_once()
         call_args = pool.execute.call_args
-        req_ctx = _json.loads(call_args[0][2])
+        req_ctx = call_args[0][2]
+        assert isinstance(req_ctx, dict)
         # Thread identity derived from delivery.recipient
         assert req_ctx["source_thread_identity"] == "206570151"
         # source_channel from request_context (not derived)
@@ -1423,15 +1423,16 @@ class TestWriteOutboundMessageInbox:
         # Verify the positional arguments
         pos_args = call_args[0]
         assert pos_args[1] == delivered_at  # received_at
-        # request_context JSON should include thread identity and origin_butler
-        import json as _json
-
-        req_ctx = _json.loads(pos_args[2])
+        # request_context and raw_payload are passed as Python dicts; the asyncpg
+        # JSONB codec encodes them at the wire layer (no pre-serialization here).
+        req_ctx = pos_args[2]
+        assert isinstance(req_ctx, dict)
         assert req_ctx["source_channel"] == "telegram_bot"
         assert req_ctx["source_thread_identity"] == "12345678:999"
         assert req_ctx["source_sender_identity"] == "relationship"
 
-        raw_payload = _json.loads(pos_args[3])
+        raw_payload = pos_args[3]
+        assert isinstance(raw_payload, dict)
         expected_text = "Got it! I've stored Dua um's address as 71 nim road 804975."
         assert raw_payload["content"] == expected_text
         assert raw_payload["metadata"]["origin_butler"] == "relationship"

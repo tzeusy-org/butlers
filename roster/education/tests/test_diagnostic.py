@@ -229,7 +229,10 @@ class TestDiagnosticStart:
         # as the third positional argument.
         assert pool.fetchval.await_count == 2
         state_set_call_args = pool.fetchval.call_args_list[1][0]
-        stored = json.loads(state_set_call_args[2])
+        # state_set passes the value as a Python dict — the asyncpg JSONB codec
+        # encodes it at the wire layer, so no pre-serialization happens here.
+        stored = state_set_call_args[2]
+        assert isinstance(stored, dict)
         assert stored["status"] == "diagnosing"
         assert stored["mind_map_id"] == MAP_ID
         assert stored["probes_issued"] == 0
@@ -714,7 +717,10 @@ class TestDiagnosticComplete:
         # as the third positional argument.
         assert pool.fetchval.await_count == 2
         state_set_call_args = pool.fetchval.call_args_list[1][0]
-        stored = json.loads(state_set_call_args[2])
+        # state_set passes the value as a Python dict — the asyncpg JSONB codec
+        # encodes it at the wire layer, so no pre-serialization happens here.
+        stored = state_set_call_args[2]
+        assert isinstance(stored, dict)
         assert stored["status"] == "planning"
 
     async def test_raises_if_not_diagnosing(self) -> None:
@@ -885,7 +891,10 @@ class TestDiagnosticComplete:
         await diagnostic_complete(pool, MAP_ID)
 
         state_set_call_args = pool.fetchval.call_args_list[1][0]
-        stored = json.loads(state_set_call_args[2])
+        # state_set passes the value as a Python dict — the asyncpg JSONB codec
+        # encodes it at the wire layer, so no pre-serialization happens here.
+        stored = state_set_call_args[2]
+        assert isinstance(stored, dict)
         assert "last_session_at" in stored
 
     async def test_unprobed_count_zero_when_all_probed(self) -> None:

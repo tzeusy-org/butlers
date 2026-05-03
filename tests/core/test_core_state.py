@@ -30,8 +30,19 @@ def migrated_db_url(postgres_container) -> str:
 
 @pytest.fixture
 async def pool(migrated_db_url: str):
-    """Return an asyncpg pool with state table cleared between tests."""
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=5)
+    """Return an asyncpg pool with state table cleared between tests.
+
+    Register the JSONB codec so writes match production behaviour
+    (``state_set`` passes Python dicts/lists, not pre-serialized JSON strings).
+    """
+    from butlers.db import register_jsonb_codec
+
+    p = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=5,
+        init=register_jsonb_codec,
+    )
     await p.execute("TRUNCATE TABLE state CASCADE")
     yield p
     await p.close()

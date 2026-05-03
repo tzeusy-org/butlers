@@ -110,6 +110,8 @@ async def mailbox_pool(postgres_container):
     finally:
         await admin_conn.close()
 
+    from butlers.db import register_jsonb_codec
+
     pool = await asyncpg.create_pool(
         host=postgres_container.get_container_host_ip(),
         port=int(postgres_container.get_exposed_port(5432)),
@@ -118,6 +120,7 @@ async def mailbox_pool(postgres_container):
         database=db_name,
         min_size=1,
         max_size=3,
+        init=register_jsonb_codec,
     )
     await pool.execute(MAILBOX_TABLE_SQL)
     yield pool
@@ -143,6 +146,8 @@ async def switchboard_pool(postgres_container):
     finally:
         await admin_conn.close()
 
+    from butlers.db import register_jsonb_codec
+
     pool = await asyncpg.create_pool(
         host=postgres_container.get_container_host_ip(),
         port=int(postgres_container.get_exposed_port(5432)),
@@ -151,6 +156,7 @@ async def switchboard_pool(postgres_container):
         database=db_name,
         min_size=1,
         max_size=3,
+        init=register_jsonb_codec,
     )
     await pool.execute(SWITCHBOARD_TABLES_SQL)
     yield pool

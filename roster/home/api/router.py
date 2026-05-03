@@ -1157,7 +1157,7 @@ async def update_thresholds(
                 " VALUES ($1, $2::jsonb, now())"
                 " ON CONFLICT (key) DO UPDATE SET value = $2::jsonb, updated_at = now()",
                 store_key,
-                json.dumps(value),
+                value,
             )
         except Exception as exc:
             logger.warning("Failed to persist threshold key %s: %s", store_key, exc)

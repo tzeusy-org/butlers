@@ -1087,9 +1087,12 @@ async def update_entity(
             k: v for k, v in body.metadata.items() if k not in _SYSTEM_METADATA_KEYS
         }
         if allowed_metadata:
-            # Merge patch into existing metadata (JSONB || operator)
+            # Merge patch into existing metadata (JSONB || operator).
+            # Pass the dict directly — the asyncpg JSONB codec handles encoding.
+            # json.dumps() here would double-encode and store a JSONB string scalar,
+            # which the || operator then arrayifies, corrupting the column.
             sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${idx}::jsonb")
-            args.append(json.dumps(allowed_metadata))
+            args.append(allowed_metadata)
             idx += 1
 
     if not sets:
@@ -1361,7 +1364,7 @@ async def delete_entity(
         " updated_at = now()"
         " WHERE id = $1",
         eid,
-        json.dumps({"deleted_at": deleted_at}),
+        {"deleted_at": deleted_at},
     )
 
     # Unlink any contacts referencing this entity
@@ -1404,8 +1407,8 @@ async def archive_entity(
     if "owner" in roles:
         raise HTTPException(status_code=403, detail="Cannot archive owner entity")
 
-    metadata = json.loads(row["metadata"]) if row["metadata"] else {}
-    if metadata.get("archived_at"):
+    metadata = _parse_jsonb(row["metadata"])
+    if isinstance(metadata, dict) and metadata.get("archived_at"):
         return  # Already archived — idempotent
 
     archived_at = datetime.now(UTC).isoformat()
@@ -1415,7 +1418,7 @@ async def archive_entity(
         " updated_at = now()"
         " WHERE id = $1",
         eid,
-        json.dumps({"archived_at": archived_at}),
+        {"archived_at": archived_at},
     )
 
 

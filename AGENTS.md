@@ -816,6 +816,7 @@ make test-qg
 - `src/butlers/api/models/state.py::StateEntry.value` and `StateSetRequest.value` are typed `Any` (widened from `dict[str, Any]` in PR #205); scalar/array/null JSON rows in `state.value` are now serialized correctly.
 - Keep list/get state endpoint value-shape contracts aligned with the full JSON domain accepted by the underlying state storage.
 - asyncpg decodes JSONB columns directly to native Python types; no secondary `json.loads` fallback is needed in the router.
+- The asyncpg JSONB codec also encodes write parameters: pass dicts/lists directly to `$N::jsonb` placeholders. Wrapping with `json.dumps(...)` double-encodes and stores a JSONB string scalar instead of an object. With `metadata = COALESCE(metadata, '{}'::jsonb) || $N::jsonb`, this corruption is destructive — PostgreSQL coerces both operands to arrays and concatenates, leaving e.g. `metadata = [<orig_dict>, "<stringified-patch>"]` and breaking later reads (Pydantic `dict` validation fails). Audit any router/SQL site that combines `json.dumps(value)` with `$N::jsonb`.
 
 ### Connector credential resolution pattern (CredentialStore)
 - Connectors are standalone processes and need their own short-lived asyncpg pool (min_size=1, max_size=2, command_timeout=5) gated on `DATABASE_URL` or `POSTGRES_HOST` being set.

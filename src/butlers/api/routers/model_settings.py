@@ -374,7 +374,7 @@ async def create_catalog_entry(
             body.alias,
             body.runtime_type,
             body.model_id,
-            json.dumps(body.extra_args),
+            body.extra_args,
             body.complexity_tier,
             body.enabled,
             body.priority,
@@ -424,7 +424,7 @@ async def update_catalog_entry(
     for field, value in updates.items():
         if field == "extra_args":
             set_parts.append(f"extra_args = ${idx}::jsonb")
-            params.append(json.dumps(value))
+            params.append(value)
         else:
             set_parts.append(f"{field} = ${idx}")
             params.append(value)

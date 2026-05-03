@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import secrets
 import uuid
@@ -183,8 +182,8 @@ async def _write_outbound_message_inbox(
             )
             """,
             delivered_at,
-            json.dumps(request_context_payload),
-            json.dumps(raw_payload),
+            request_context_payload,
+            raw_payload,
             message_text,
         )
     except Exception:
@@ -457,7 +456,7 @@ async def deliver(
             WHERE modules::jsonb @> $1::jsonb
             ORDER BY name
             """,
-            json.dumps([module_name]),
+            [module_name],
         )
 
         if not rows:

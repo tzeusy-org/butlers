@@ -163,8 +163,6 @@ class TestEmitDashboardAudit:
         )
 
     async def test_body_redaction_applied(self):
-        import json
-
         mock_pool = AsyncMock()
         mock_pool.execute = AsyncMock()
         mock_db = MagicMock(spec=DatabaseManager)
@@ -179,8 +177,12 @@ class TestEmitDashboardAudit:
             body={"type": "email", "value": "secret@example.com"},
         )
 
+        # request_summary is now passed as a dict so the asyncpg JSONB codec
+        # encodes it once, not as a pre-serialized JSON string (double-encoding
+        # corrupts the column).
         call_args = mock_pool.execute.call_args[0]
-        summary = json.loads(call_args[3])
+        summary = call_args[3]
+        assert isinstance(summary, dict)
         assert summary["body"]["type"] == "email"
         assert summary["body"]["value"] == "[REDACTED]"
 
@@ -288,8 +290,6 @@ class TestDashboardAuditMiddleware:
 
     async def test_middleware_records_method_and_path(self):
         """Audit row request_summary contains method and path."""
-        import json as _json
-
         app, mock_db, mock_pool = self._make_app_with_mock_db()
 
         with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
@@ -303,19 +303,20 @@ class TestDashboardAuditMiddleware:
             ) as client:
                 await client.delete("/api/test-detail-check")
 
-        # Find the audit INSERT call and inspect request_summary
+        # Find the audit INSERT call and inspect request_summary (passed as a dict
+        # so the asyncpg JSONB codec encodes it once).
         audit_calls = [
             call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
         ]
         assert audit_calls, "No audit INSERT found"
         call_args = audit_calls[-1][0]
-        summary = _json.loads(call_args[3])
+        summary = call_args[3]
+        assert isinstance(summary, dict)
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
 
     async def test_x_trace_id_header_present_and_matches_audit_row(self):
         """X-Trace-Id response header is present and matches the trace_id in the audit row."""
-        import json as _json
         import uuid as _uuid
 
         app, mock_db, mock_pool = self._make_app_with_mock_db()
@@ -339,15 +340,16 @@ class TestDashboardAuditMiddleware:
         _uuid.UUID(header_trace_id)  # raises ValueError if not a UUID
 
         # The same trace_id must appear in the audit INSERT call.
-        # emit_dashboard_audit stores trace_id inside the request_summary JSON blob
-        # (positional arg index 3 after the SQL string).
+        # emit_dashboard_audit passes request_summary as a dict (the asyncpg JSONB
+        # codec encodes it once at the wire layer).
+        # Index: 0=sql 1=butler 2=operation 3=summary_dict 4=result 5=error 6=user_context
         audit_calls = [
             call for call in mock_pool.execute.call_args_list if "dashboard_audit_log" in str(call)
         ]
         assert audit_calls, "No audit INSERT found"
         call_args = audit_calls[-1][0]
-        # Index: 0=sql 1=butler 2=operation 3=summary_json 4=result 5=error 6=user_context
-        summary = _json.loads(call_args[3])
+        summary = call_args[3]
+        assert isinstance(summary, dict)
         audit_trace_id = summary.get("trace_id")
         assert audit_trace_id == header_trace_id, (
             f"X-Trace-Id header ({header_trace_id!r}) does not match "
