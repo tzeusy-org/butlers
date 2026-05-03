@@ -3514,3 +3514,81 @@ export interface RelationshipEntityDetail {
   created_at: string;
   updated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// System endpoints — GET /api/system/*
+// ---------------------------------------------------------------------------
+
+/** Software identity and process uptime facts. */
+export interface InstanceFacts {
+  version: string;
+  uptime_seconds: number;
+  started_at: string;
+}
+
+/** Disk footprint of a single butler schema. */
+export interface SchemaSize {
+  schema_name: string;
+  size_bytes: number;
+  table_count: number;
+}
+
+/** Disk footprint of a single table. */
+export interface TableSize {
+  schema_name: string;
+  table_name: string;
+  size_bytes: number;
+}
+
+/** PostgreSQL catalog size facts for the running database. */
+export interface DatabaseFacts {
+  total_size_bytes: number;
+  schemas: SchemaSize[];
+  largest_tables: TableSize[];
+  growth_rate_bytes_per_day: number | null;
+}
+
+/** Single backup event in the backup history list. */
+export interface BackupEvent {
+  completed_at: string;
+  size_bytes: number;
+  status: "success" | "failed";
+}
+
+/** Backup recency and source reachability facts. */
+export interface BackupFacts {
+  last_backup_at: string | null;
+  last_backup_size_bytes: number | null;
+  backup_source_reachable: boolean;
+  backup_history: BackupEvent[];
+}
+
+/** A single external actor that has received data from this instance. */
+export interface EgressActor {
+  actor_id: string;
+  display_name: string;
+  last_seen_at: string;
+  total_calls: number;
+  data_types: string[];
+}
+
+/** Aggregated catalog of external-actor egress events. */
+export interface EgressCatalog {
+  actors: EgressActor[];
+  catalog_covers_from: string | null;
+}
+
+/** Per-butler liveness and session snapshot. */
+export interface ButlerHeartbeat {
+  name: string;
+  last_heartbeat_at: string | null;
+  last_session_at: string | null;
+  active_session_count: number;
+  heartbeat_age_seconds: number | null;
+  error?: string | null;
+}
+
+/** Collection of per-butler heartbeat entries. */
+export interface HeartbeatFacts {
+  butlers: ButlerHeartbeat[];
+}

@@ -642,6 +642,27 @@ export type {
 } from "./types.ts";
 
 export {
+  getInstanceFacts,
+  getDatabaseFacts,
+  getBackupFacts,
+  getEgressCatalog,
+  getButlerHeartbeats,
+} from "./client.ts";
+
+export type {
+  BackupEvent,
+  BackupFacts,
+  ButlerHeartbeat,
+  DatabaseFacts,
+  EgressActor,
+  EgressCatalog,
+  HeartbeatFacts,
+  InstanceFacts,
+  SchemaSize,
+  TableSize,
+} from "./types.ts";
+
+export {
   dismissQaKnownIssue,
   forceQaPatrol,
   getQaFindingByAttempt,

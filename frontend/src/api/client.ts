@@ -238,6 +238,11 @@ import type {
   LinkedContactSummary,
   MessageThreadSummary,
   RelationshipEntityDetail,
+  InstanceFacts,
+  DatabaseFacts,
+  BackupFacts,
+  EgressCatalog,
+  HeartbeatFacts,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3644,4 +3649,38 @@ export function getChroniclerEvents(
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events");
+}
+
+// ---------------------------------------------------------------------------
+// System endpoints — GET /api/system/*
+// ---------------------------------------------------------------------------
+
+/** Fetch software version, process uptime, and start timestamp. */
+export function getInstanceFacts(): Promise<ApiResponse<InstanceFacts>> {
+  return apiFetch<ApiResponse<InstanceFacts>>("/system/instance");
+}
+
+/** Fetch PostgreSQL catalog size facts: total size, per-schema breakdown, largest tables. */
+export function getDatabaseFacts(): Promise<ApiResponse<DatabaseFacts>> {
+  return apiFetch<ApiResponse<DatabaseFacts>>("/system/database");
+}
+
+/** Fetch backup recency and source reachability. Degrades gracefully (never 503). */
+export function getBackupFacts(): Promise<ApiResponse<BackupFacts>> {
+  return apiFetch<ApiResponse<BackupFacts>>("/system/backups");
+}
+
+/**
+ * Fetch data-egress catalog (owner-only).
+ *
+ * Returns HTTP 403 for non-owner callers. Callers should handle `ApiError`
+ * with `status === 403` gracefully rather than treating it as an unexpected error.
+ */
+export function getEgressCatalog(): Promise<ApiResponse<EgressCatalog>> {
+  return apiFetch<ApiResponse<EgressCatalog>>("/system/egress");
+}
+
+/** Fetch per-butler liveness registry snapshots and session facts. */
+export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
+  return apiFetch<ApiResponse<HeartbeatFacts>>("/system/butlers/heartbeat");
 }
