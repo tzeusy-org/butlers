@@ -102,7 +102,7 @@ class TestAC3OwnerGate:
         # Verify args include the speculative email
         # tool_args is serialized as JSON in the INSERT; check the raw args
         tool_args_json = insert_call_args[3]  # 4th positional param after id, tool_name
-        parsed = json.loads(tool_args_json)
+        parsed = tool_args_json if isinstance(tool_args_json, dict) else json.loads(tool_args_json)
         assert parsed["value"] == WORK_EMAIL, f"pending_action must record the email: {parsed}"
         assert str(parsed["contact_id"]) == str(OWNER_CONTACT_ID)
 
