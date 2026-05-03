@@ -9,7 +9,7 @@
 - [ ] 2.1 Create `src/butlers/api/routers/system.py` with the five endpoints: `GET /api/system/instance`, `GET /api/system/database`, `GET /api/system/backups`, `GET /api/system/egress`, `GET /api/system/butlers/heartbeat`.
 - [ ] 2.2 Create co-located `src/butlers/api/routers/system_models.py` (or `models.py`) with Pydantic response models: `InstanceFacts`, `DatabaseFacts`, `SchemaSize`, `TableSize`, `BackupFacts`, `BackupEvent`, `EgressCatalog`, `EgressActor`, `HeartbeatFacts`, `ButlerHeartbeat`.
 - [ ] 2.3 Wire the router into `src/butlers/api/app.py` router registration (confirm auto-discovery or add explicit include).
-- [ ] 2.4 Implement the owner-contact assertion for `GET /api/system/egress`; return HTTP 403 if the authenticated session cannot be mapped to `public.contacts WHERE roles @> ARRAY['owner']`.
+- [ ] 2.4 Implement the owner-contact assertion for `GET /api/system/egress`; return HTTP 403 if the authenticated session cannot be mapped to the owner contact. Use the correct role lookup: join `public.contacts c` → `public.entities e` on `c.entity_id = e.id` and assert `'owner' = ANY(e.roles)`. Do NOT query `public.contacts.roles` -- that column was dropped in migration `core_016`; roles now live exclusively on `public.entities.roles`. See `src/butlers/credential_store.py` for the canonical owner-entity query pattern.
 - [ ] 2.5 Implement backup recency: discover the backup strategy (Minio/S3 or filesystem), implement the source-reachable health check, and handle graceful degradation when the source is unreachable.
 - [ ] 2.6 Implement actor registry (server-side constant mapping `actor_id` to `display_name`); populate it for all currently known egress paths.
 - [ ] 2.7 Write tests in `tests/api/test_system_router.py` covering: each endpoint's happy path, the egress 403 path, the backup degraded path, and the DB error 503 path.
@@ -42,6 +42,19 @@
 
 ## 6. Open Question Resolution
 
-- [ ] 6.1 Resolve: does the audit log uniformly cover all egress paths? File follow-up beads for any gaps before shipping the EgressCatalogTile.
-- [ ] 6.2 Resolve: should database growth rate be shown in v1? If yes, design and implement a periodic snapshot mechanism (scheduled job + new migration) before closing the DbSizeTile task.
-- [ ] 6.3 Document the backup strategy in `AGENTS.md` after the implementation bead discovers it; link from the BackupTile implementation notes.
+All four open questions are answered in `design.md`. Key directives for the
+implementation bead:
+
+- [x] 6.1 **Audit log coverage** (Q1 — answered): Ship egress catalog as "recorded
+  egress" with a `catalog_covers_from` window caveat. During implementation (bu-ngfzz.2),
+  audit each egress path (`dashboard_audit_log` entries for LLM API, Telegram, Google
+  Calendar, Gmail SMTP) and file follow-up beads for any paths not captured.
+- [x] 6.2 **Database growth rate** (Q3 — answered): Deferred to v2. v1 shows current
+  size only; `growth_rate_bytes_per_day` is always `null`. No snapshot table needed.
+- [ ] 6.3 **Backup strategy** (Q2 — deferred to implementation): Discover the actual
+  backup mechanism (filesystem pg_dump, Minio/S3, or none) during bu-ngfzz.2 and
+  document it in `AGENTS.md`. If no backup strategy exists, file a follow-up bead for
+  configuring backup.
+- [x] 6.4 **Multi-viewer egress access** (Q4 — answered): Egress catalog is hidden
+  entirely from non-owner contacts in v2. No partial view is appropriate until a separate
+  spec change introduces per-contact capability gates.

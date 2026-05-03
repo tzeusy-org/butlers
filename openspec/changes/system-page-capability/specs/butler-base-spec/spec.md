@@ -9,9 +9,10 @@ this requirement codifies the contract so the System Overview page aggregator ha
 normative interface to consume.
 
 This requirement covers only the contractual shape of the data the System page expects.
-The physical access path (liveness registry table, `{schema}.sessions` table, asyncpg
-pool stats) is documented in the `system-overview-page` spec. This requirement defines
-what the daemon is responsible for maintaining.
+The physical access path (liveness registry table, `{schema}.sessions` table) is
+documented in the `system-overview-page` spec. asyncpg pool stats are explicitly out
+of scope for v1 (they require in-process access the dashboard API layer does not have).
+This requirement defines what the daemon is responsible for maintaining.
 
 #### Scenario: Heartbeat registration is kept current
 
@@ -26,8 +27,11 @@ what the daemon is responsible for maintaining.
 
 - **WHEN** an ephemeral LLM session completes (success or failure)
 - **THEN** the session row in `{schema}.sessions` is updated with:
-  - `completed_at: timestamptz` -- the UTC timestamp at session completion
-  - `status: "completed" | "failed"` -- terminal status
+  - `completed_at: timestamptz` -- the UTC timestamp at session completion (was NULL
+    while the session was active; a non-NULL value signals terminal state)
+  - `success: boolean` -- `true` if the session completed successfully, `false` if it
+    failed. Note: there is no `status` text column; the actual schema uses `success`
+    (boolean) and `completed_at` (timestamptz) as the two terminal-state fields.
 - **AND** this row is the source of truth for `last_session_at` in the System page
   heartbeat endpoint
 
@@ -35,7 +39,9 @@ what the daemon is responsible for maintaining.
 
 - **WHEN** the System page queries active sessions for a butler
 - **THEN** it derives the count from `SELECT COUNT(*) FROM {schema}.sessions WHERE
-  status = 'running'` -- no dedicated active-session counter table is required
+  completed_at IS NULL` -- no dedicated active-session counter table is required.
+  Note: there is no `status` column; a session is active when `completed_at IS NULL`
+  (see `src/butlers/core/sessions.py` `sessions_active` for the canonical query).
 - **AND** this query is safe to run concurrently with session creation and completion
   without locking
 

@@ -3,7 +3,7 @@
 ## Purpose
 
 The System Overview page (`/system`) is the dashboard surface where the owner sees their
-instance as infrastructure they own. It surfaces six ownership-fact domains: software
+instance as infrastructure they own. It surfaces five ownership-fact domains: software
 version and uptime, database state, backup state, data egress catalog, and per-butler
 heartbeats. This page exists because the doctrine in
 `about/heart-and-soul/vision.md` Non-Negotiable Rule 1 is not visible anywhere else in the
@@ -63,8 +63,10 @@ process started.
 ### Requirement: Database State Facts
 
 The `/api/system/database` endpoint SHALL return the total size of the `butlers`
-PostgreSQL database in bytes, a per-schema breakdown, and the table row count estimate
-for the largest tables. Growth-rate fields are reserved for a future extension.
+PostgreSQL database in bytes, a per-schema breakdown, and a disk-size ranking of the
+largest tables. Growth-rate and row-count-estimate fields are reserved for a future
+extension (row counts from `pg_stat_user_tables` require elevated permissions not
+guaranteed on the dashboard API role).
 
 #### Scenario: Database size query
 
@@ -155,10 +157,14 @@ the "your data has been seen by these endpoints" surface.
 
 - **WHEN** the egress catalog is assembled
 - **THEN** it reads exclusively from the existing audit log table
-  (`dashboard_audit_log` in the switchboard DB or `audit.events` if that table
-  exists) -- no new write path is introduced
-- **AND** only records with `actor_kind = "external"` or equivalent flag that marks
-  outbound API calls are included
+  (`switchboard.dashboard_audit_log`) -- no new write path is introduced. There is no
+  `audit.events` table in the current codebase; all audit records go to
+  `switchboard.dashboard_audit_log`. Actor identity is derived from the `operation`
+  field and `request_summary` JSONB via the server-side actor registry.
+- **AND** only records whose `operation` value maps to an external actor in the
+  actor registry are included (e.g., `"llm_api_call"`, `"telegram_send"`,
+  `"google_calendar_write"`, `"gmail_send"`); the implementation bead MUST define
+  and document this naming convention in `AGENTS.md`
 - **AND** the implementation bead SHALL verify audit log coverage for each egress
   path (LLM API calls, Telegram outbound, Google APIs, Gmail SMTP) and file
   follow-up beads for any paths not captured
@@ -167,12 +173,15 @@ the "your data has been seen by these endpoints" surface.
 
 - **WHEN** `GET /api/system/egress` is called
 - **THEN** the endpoint SHALL assert that the requesting session corresponds to the
-  owner contact (`public.contacts WHERE roles @> ARRAY['owner']`)
+  owner contact -- resolved by joining `public.contacts c` to `public.entities e` on
+  `c.entity_id = e.id` and asserting `'owner' = ANY(e.roles)`. Note:
+  `public.contacts.roles` was dropped in migration `core_016`; role lookups MUST use
+  `public.entities.roles` via this JOIN.
 - **AND** if the owner assertion fails, the endpoint returns HTTP 403
 - **AND** in v1, no other contact type is permitted to retrieve the egress catalog
-- **AND** the forward path (family-member access, delegated view) is an open question
-  documented in the design doc; it MUST NOT be implemented without a separate spec
-  change
+- **AND** the forward path (family-member access, delegated view) is answered in the
+  design doc (Q4): egress catalog is hidden entirely from non-owner contacts until a
+  separate spec change introduces per-contact capability gates
 
 #### Scenario: Egress catalog actor enumeration is bounded to known actor identifiers
 
@@ -202,10 +211,15 @@ timestamp and session activity summary for each registered butler.
     liveness heartbeat recorded in the switchboard registry, or `null` if the butler
     has never registered
   - `last_session_at: string | null` -- ISO 8601 UTC timestamp of the most recent
-    completed session for this butler, derived from `{schema}.sessions` ordered by
-    `completed_at` descending
-  - `active_session_count: number` -- count of sessions in `status = "running"` in
-    `{schema}.sessions` at query time
+    completed session for this butler, derived from `{schema}.sessions WHERE
+    completed_at IS NOT NULL ORDER BY completed_at DESC LIMIT 1`. The `IS NOT NULL`
+    filter is required because active sessions have `completed_at = NULL` and
+    PostgreSQL sorts NULLs last by default in DESC -- omitting the filter risks
+    returning an active (incomplete) session as the "last" session.
+  - `active_session_count: number` -- count of sessions where `completed_at IS NULL`
+    in `{schema}.sessions` at query time. Note: the sessions table has no `status`
+    column; active sessions are identified by `completed_at IS NULL` (see
+    `src/butlers/core/sessions.py` `sessions_active` implementation)
   - `heartbeat_age_seconds: number | null` -- seconds since `last_heartbeat_at`,
     or `null`; the frontend uses this to classify freshness without client-side math
 - **AND** the response wraps in the standard `ApiResponse<HeartbeatFacts>` envelope
@@ -249,8 +263,10 @@ MUST be denied in v1.
 - **WHEN** `GET /api/system/egress` is called
 - **THEN** the endpoint performs an owner-contact assertion before returning data
   (see Egress Catalog access-is-owner-only scenario above)
-- **AND** the assertion is performed by checking the authenticated session against
-  `public.contacts WHERE roles @> ARRAY['owner']`
+- **AND** the assertion is performed by joining `public.contacts c` to
+  `public.entities e` on `c.entity_id = e.id` and asserting `'owner' = ANY(e.roles)`
+  (`public.contacts.roles` was dropped in migration `core_016`; the JOIN to
+  `public.entities` is required)
 
 #### Scenario: Non-owner access returns 403 for egress catalog
 
