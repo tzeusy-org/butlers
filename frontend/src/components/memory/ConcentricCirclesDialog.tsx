@@ -61,14 +61,16 @@ const TIER_RADIUS_FRACTIONS: Record<Tier, number> = {
   1500: 0.94,
 };
 
-// Color per tier ring
+// Single warm hue (terracotta family, h≈35) with chroma + lightness falloff:
+// intimacy reads as saturation, not as a rainbow gradient. Owner stays violet
+// so the center reads as distinct from the innermost tier.
 const TIER_RING_COLORS: Record<Tier, string> = {
-  5: "#7c3aed", // violet-700
-  15: "#2563eb", // blue-600
-  50: "#0891b2", // cyan-600
-  150: "#059669", // emerald-600
-  500: "#ca8a04", // yellow-600
-  1500: "#9ca3af", // gray-400
+  5: "oklch(0.50 0.18 35)",
+  15: "oklch(0.58 0.16 35)",
+  50: "oklch(0.65 0.13 35)",
+  150: "oklch(0.71 0.10 35)",
+  500: "oklch(0.76 0.06 35)",
+  1500: "oklch(0.80 0.02 35)",
 };
 
 // ---------------------------------------------------------------------------
@@ -185,10 +187,10 @@ function TierNode({ entry, x, y, tier, showName, radius, onNavigate }: TierNodeP
             {showName && (
               <text
                 x={x}
-                y={y + radius + 9}
+                y={y + radius + 11}
                 textAnchor="middle"
                 dominantBaseline="hanging"
-                fontSize={8}
+                fontSize={10}
                 fill="currentColor"
                 opacity={0.85}
               >
@@ -377,7 +379,7 @@ function ConcentricCirclesVisualization({
         onMouseUp={endDrag}
         onMouseLeave={endDrag}
         role="img"
-        aria-label="Dunbar social map — concentric rings of contacts"
+        aria-label="Dunbar social map: concentric rings of contacts"
       >
         {/* Tier rings (outermost first so inner rings draw on top) */}
         {[...TIERS].reverse().map((tier) => {
@@ -399,11 +401,12 @@ function ConcentricCirclesVisualization({
               {/* Tier label at top of ring */}
               <text
                 x={cx}
-                y={cy - r + 12}
+                y={cy - r + 14}
                 textAnchor="middle"
-                fontSize={9}
+                fontSize={13}
+                fontWeight={600}
                 fill={color}
-                opacity={0.7}
+                opacity={0.85}
               >
                 {TIER_NAMES[tier]} ({count})
               </text>
@@ -416,24 +419,32 @@ function ConcentricCirclesVisualization({
           style={{ cursor: ownerEntityId ? "pointer" : "default" }}
           onClick={() => ownerEntityId && navigateGuarded(ownerEntityId)}
         >
-          <circle cx={cx} cy={cy} r={maxR * 0.07} fill="#7c3aed" fillOpacity={0.2} stroke="#7c3aed" strokeWidth={1.5} />
+          <circle
+            cx={cx}
+            cy={cy}
+            r={maxR * 0.07}
+            fill="oklch(0.55 0.18 290)"
+            fillOpacity={0.2}
+            stroke="oklch(0.55 0.18 290)"
+            strokeWidth={1.5}
+          />
           <text
             x={cx}
             y={cy}
             textAnchor="middle"
             dominantBaseline="central"
-            fontSize={9}
+            fontSize={maxR * 0.07 * 0.7}
             fontWeight="700"
-            fill="#7c3aed"
+            fill="oklch(0.55 0.18 290)"
           >
             {getInitials(ownerName)}
           </text>
           <text
             x={cx}
-            y={cy + maxR * 0.07 + 9}
+            y={cy + maxR * 0.07 + 11}
             textAnchor="middle"
             dominantBaseline="hanging"
-            fontSize={8}
+            fontSize={10}
             fill="currentColor"
             opacity={0.7}
           >
@@ -498,7 +509,7 @@ function ConcentricCirclesVisualization({
                     y={cy}
                     textAnchor="middle"
                     dominantBaseline="central"
-                    fontSize={7}
+                    fontSize={9}
                     fontWeight="700"
                     fill={TIER_RING_COLORS[tier]}
                   >
@@ -529,20 +540,22 @@ function ConcentricCirclesVisualization({
               y={cy + maxR * 0.12 + 18}
               textAnchor="middle"
               dominantBaseline="hanging"
-              fontSize={10}
+              fontSize={13}
+              fontWeight={500}
               fill="currentColor"
-              opacity={0.6}
+              opacity={0.7}
             >
               Interact with your contacts to see
             </text>
             <text
               x={cx}
-              y={cy + maxR * 0.12 + 32}
+              y={cy + maxR * 0.12 + 36}
               textAnchor="middle"
               dominantBaseline="hanging"
-              fontSize={10}
+              fontSize={13}
+              fontWeight={500}
               fill="currentColor"
-              opacity={0.6}
+              opacity={0.7}
             >
               your social map take shape
             </text>
@@ -649,8 +662,8 @@ export function ConcentricCirclesDialog() {
             Concentric Circles
           </DialogTitle>
           <DialogDescription>
-            Your contacts arranged by Dunbar tier — rings represent intimacy
-            layers from inner circle (5) to acquaintances (1500).
+            Your contacts arranged by Dunbar tier: rings represent intimacy
+            layers from inner circle (5) out to acquaintances (1500).
             {entries.some((e) => e.dunbar_tier_override) && (
               <span className="ml-1">
                 <PinIcon className="inline h-3 w-3 mr-0.5" />
@@ -677,7 +690,7 @@ export function ConcentricCirclesDialog() {
             <>
               <div
                 ref={stageRef}
-                className="relative w-full overflow-hidden rounded-md border bg-muted/20"
+                className="relative w-full overflow-hidden"
                 style={{ flex: "1 1 0", minHeight: 0 }}
               >
                 {stageSize.width > 0 && stageSize.height > 0 ? (
