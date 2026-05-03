@@ -222,7 +222,10 @@ describe("ChroniclesPage", () => {
   it("renders the Map area widget region", () => {
     _pollingDisabled = false;
     const html = renderChroniclesPage();
-    expect(html).toContain("Map area");
+    // After minimap refactor (03a43cee) the Map section is a floating panel
+    // rendered by FloatingMapMinimap; assert on its data-testid instead of
+    // the former aria-label="Map area" which no longer exists.
+    expect(html).toContain('data-testid="map-minimap"');
   });
 
   it("renders the Aggregations area widget region", () => {
