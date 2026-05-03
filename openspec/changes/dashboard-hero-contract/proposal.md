@@ -25,9 +25,10 @@ implementing. The openspec change backfills the doctrine before the implementati
 ## What Changes
 
 - **New capability**: `dashboard-overview` -- the home page at `/` SHALL have sessions over
-  time as its primary visualization. The topology graph and four equal-weight stat tiles are
-  demoted to supporting context. The page follows the Overview/Dashboard archetype defined in
-  `about/lay-and-land/frontend.md`.
+  time as its primary visualization. The four equal-weight stat tiles are demoted to a quiet
+  supporting strip (region 5). A secondary card grid (Failed Notifications + Issues, region 3)
+  and a QA widget (region 4, added by bu-yo4bt.9 / PR #1380) occupy the below-the-fold area.
+  The page follows the Overview/Dashboard archetype defined in `about/lay-and-land/frontend.md`.
 - The `dashboard-shell` spec is not modified. It already registers `/` as a route; this
   change defines what that route renders inside.
 - No backend API changes are required. The existing `/api/sessions` endpoint (with `since`,

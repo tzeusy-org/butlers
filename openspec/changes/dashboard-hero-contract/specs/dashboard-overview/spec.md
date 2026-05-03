@@ -16,11 +16,16 @@ endpoint contracts are owned by `dashboard-api`. This spec owns the page composi
 
 ### Requirement: Home Page Information Hierarchy
 
-The home page at `/` SHALL render three regions in order, top to bottom:
+The home page at `/` SHALL render five regions in order, top to bottom:
 
 1. **Primary region**: sessions over time visualization (butler-colored stripe chart).
 2. **Secondary region**: recent moments feed (latest meaningful butler actions).
-3. **Supporting strip**: demoted stat context (health, cost, pending approvals).
+3. **Secondary card grid**: operational alerts — failed notifications and active issues
+   in a two-column responsive grid (`lg:grid-cols-2`).
+4. **QA widget**: QA patrol status and active investigation stats (last patrol, status,
+   patrols/findings per 24h, dispatched investigations), rendered as a standalone
+   `<QaWidget />` card below the secondary grid.
+5. **Supporting strip**: demoted stat context (health, cost, pending approvals).
 
 No region SHALL visually outrank the primary region. The supporting strip SHALL NOT
 use the same visual weight (card wrapper, large type) as the current four-stat grid.
@@ -119,6 +124,44 @@ the session stripe chart. The feed answers: "What did my system actually do?"
 - **AND** it MAY reuse a warm TanStack Query cache already populated by the
   stripe chart query if the query keys overlap
 
+### Requirement: Secondary Card Grid
+
+Below the recent moments feed, the home page SHALL render a two-column secondary
+card grid (`grid gap-6 lg:grid-cols-2`) containing operational alert cards that
+provide below-the-fold context for system health monitoring.
+
+#### Scenario: Failed Notifications card renders in the left column
+
+- **WHEN** the secondary card grid renders
+- **THEN** the left column SHALL render a "Failed Notifications" card showing
+  recent notification delivery failures across all butlers
+- **AND** if failed notifications exist, the card header SHALL display a destructive
+  badge with the failure count
+- **AND** if no failures exist, the card body SHALL render a success empty state:
+  "No failed notifications. All systems healthy."
+
+#### Scenario: Issues panel renders in the right column
+
+- **WHEN** the secondary card grid renders
+- **THEN** the right column SHALL render an `<IssuesPanel>` card showing active
+  butler issues
+
+### Requirement: QA Widget
+
+Below the secondary card grid, the home page SHALL render a standalone `<QaWidget />`
+card showing QA patrol status and investigation stats (last patrol timestamp, patrol
+status, patrols completed/findings in the past 24h, and active dispatched investigations).
+This widget was added as part of bu-yo4bt.9 (PR #1380) and is region 4 in the page's
+document order.
+
+#### Scenario: QA widget renders below secondary cards
+
+- **WHEN** the home page renders
+- **THEN** the `<QaWidget />` SHALL appear after the secondary card grid
+  (`Failed Notifications` + `IssuesPanel`) and before the supporting stat strip
+- **AND** the widget SHALL render as a standalone full-width card (not inside the
+  `lg:grid-cols-2` grid)
+
 ### Requirement: Supporting Stat Strip
 
 The home page SHALL retain the four cross-system context metrics (butler health,
@@ -129,9 +172,10 @@ supporting strip. The strip SHALL NOT dominate the layout.
 
 - **WHEN** the supporting stat strip renders
 - **THEN** it SHALL NOT use `Card` wrappers for each metric
-- **AND** metric values SHALL use `text-base` or smaller type, not `text-2xl`
-- **AND** the strip SHALL render as a single horizontal row with subtle dividers
-  between metrics, or as a compact `text-sm` grid
+- **AND** metric values SHALL use `text-sm font-medium tabular-nums` (not `text-2xl`)
+- **AND** metric labels SHALL use `text-xs text-muted-foreground`
+- **AND** the strip SHALL render as a single horizontal row (`flex flex-wrap`) with
+  a `border-t border-border pt-3` visual separator above it
 - **AND** the strip's visual weight SHALL be clearly subordinate to the session
   stripe chart above it
 
@@ -146,10 +190,10 @@ supporting strip. The strip SHALL NOT dominate the layout.
 ### Requirement: Page Archetype Compliance
 
 The home page SHALL adopt the Overview/Dashboard archetype as defined in
-`about/lay-and-land/frontend.md` (archetype A), which requires: stats context,
-primary visualization, secondary cards. The page SHALL use the shared `<Page>`
-primitive when Vertical A (bu-vj0h3 epic) lands the `<Page archetype='overview'>`
-shell.
+`about/lay-and-land/frontend.md` (archetype A). The shared `<Page>` primitive
+(`components/ui/page.tsx`) was shipped as part of Vertical A (bu-vj0h3) and
+`DashboardPage` was migrated to use it in bu-2okpr.6 (PR #1363). The primitive
+is no longer future-tense; it is the current implementation contract.
 
 #### Scenario: Page renders inside the standard shell
 
@@ -158,13 +202,13 @@ shell.
   (sidebar, header bar, error boundary) as defined by `dashboard-shell`
 - **AND** the page content SHALL not reimplement chrome that belongs to the shell
 
-#### Scenario: Page uses shared Page primitive when available
+#### Scenario: Page uses the shared Page primitive
 
-- **WHEN** the shared `<Page archetype='overview'>` primitive exists in the codebase
-- **THEN** the DashboardPage component SHALL render its content regions inside that
-  primitive rather than a raw `<div className="space-y-6">`
-- **AND** the page title, description, and action bar SHALL be passed as props to
-  `<Page>` rather than inlined as ad-hoc markup
+- **WHEN** `DashboardPage` renders
+- **THEN** it SHALL use `<Page archetype="overview" title="Overview">` as its
+  outermost container
+- **AND** the five content regions SHALL be direct children of `<Page>`, not
+  wrapped in a raw `<div className="space-y-6">`
 
 ## Source References
 
