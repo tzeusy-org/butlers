@@ -24,7 +24,7 @@ Epic: bu-2okpr — Frontend redesign D: home page — sessions as hero
 | 4 | Four-stat bar visually demoted (smaller type, less weight, no card-wrap) | bu-2okpr.4 | CLOSED (PR #1351) | `StatItem` renders `text-sm font-medium` values. No Card wrappers. Strip uses `border-t border-border pt-3` — subordinate weight. All 4 metrics retained. |
 | 5 | Topology graph removed from DashboardPage or relocated to /system | bu-2okpr.5 | CLOSED (PR #1361) | TopologyGraph imported in SystemPage. Zero references in DashboardPage. Live verification confirms Ecosystem Topology visible at /system. |
 | 6 | DashboardPage renders via `<Page archetype='overview'>` with session-stripe chart as dominant primary region | bu-2okpr.6 | CLOSED (duplicate of work in PR #1351, PR #1356, PR #1361) | `<Page archetype="overview" title="Overview">` confirmed in DashboardPage.tsx line 151. SessionStripeChart is first card. |
-| 7 | gen-1 reconciliation closed clean | bu-2okpr.7 (this bead) | IN PROGRESS | 2 gaps found — gap beads created |
+| 7 | gen-1 reconciliation closed clean | bu-2okpr.7 (this bead) | IN PROGRESS | 4 gaps found — gap beads created or queued |
 
 ---
 
@@ -40,9 +40,11 @@ Epic: bu-2okpr — Frontend redesign D: home page — sessions as hero
 | 4. Color choice documented | PASS | `CATEGORY_VARS` comment block + `butlerColor()` function fully documented inline |
 | 5. Motion follows 150-250ms, ease-out-quart contract | PASS* | `isAnimationActive={false}` — animation disabled; no motion contract violation because disabled |
 
-*Note: spec says to use `ChartSkeleton` from skeleton library; implementation uses a custom `SessionStripeChartSkeleton`. A shared `ChartSkeleton` exists at `frontend/src/components/skeletons/chart-skeleton.tsx` but is not wired into this component. Logged as minor drift — not creating a bead as the custom skeleton is functionally equivalent and the spec wording ("matching chart's height") is satisfied.
-
 Note on limit: spec requires "minimum 500" sessions fetched. Backend caps `limit` at 200. The code comment documents this constraint (`capped at 200 (backend Query constraint)`). Spec was written before the backend cap was discovered. This is a known tension; follow-up bead bu-2okpr.8 should address this in the spec delta.
+
+**Gap: ChartSkeleton not used.** Spec (`spec.md:69-76`) says loading state SHALL use the standard `ChartSkeleton` component. Implementation defines a custom `SessionStripeChartSkeleton` (lines 114-141 of `SessionStripeChart.tsx`) and never imports `chart-skeleton.tsx`. This is a normative spec violation, not minor drift. Gap bead to be filed as follow-up to bu-e3248.
+
+**Gap: useAutoRefresh hook not used.** Spec (`spec.md:86-92`) says the 60-second auto-refresh SHALL use the existing `useAutoRefresh` hook pattern. Implementation in `session-stripe-utils.ts:148` hard-codes `refetchInterval: 60_000` directly in `useQuery()`, bypassing `useAutoRefresh` entirely. The hook manages user-controlled enabled/disabled state and persisted interval from local settings — all of which are bypassed. Gap bead to be filed as follow-up to bu-e3248.
 
 ### bu-2okpr.3 — RecentMoments
 
@@ -97,6 +99,16 @@ Note on limit: spec requires "minimum 500" sessions fetched. Backend caps `limit
 - **State**: Current code renders "No sessions in this window."
 - **Gap bead**: bu-3ztj8 (priority 3, created 2026-05-03)
 
+### Gap 3 (MEDIUM): SessionStripeChart loading state uses custom skeleton, not shared ChartSkeleton
+- **AC**: spec scenario "Chart handles loading state" (`spec.md:69-76`) — SHALL use the standard `ChartSkeleton` component from the skeleton library
+- **State**: `SessionStripeChart.tsx:114-141` defines and renders a local `SessionStripeChartSkeleton`. The shared `ChartSkeleton` at `frontend/src/components/skeletons/chart-skeleton.tsx` is never imported. This is a normative violation (SHALL, not SHOULD).
+- **Gap bead**: to be created as follow-up to bu-e3248 (depends on bu-e3248)
+
+### Gap 4 (MEDIUM): SessionStripeChart bypasses useAutoRefresh hook
+- **AC**: spec scenario "Chart auto-refreshes for the current day" (`spec.md:86-92`) — refresh SHALL use the existing `useAutoRefresh` hook pattern
+- **State**: `session-stripe-utils.ts:148` hard-codes `refetchInterval: 60_000` directly in `useQuery()`. The `useAutoRefresh` hook (`frontend/src/hooks/use-auto-refresh.ts`) manages user-controlled enabled/disabled state and persisted interval from local settings — all of which are bypassed. This means the chart ignores the user's auto-refresh preference.
+- **Gap bead**: to be created as follow-up to bu-e3248 (depends on bu-e3248)
+
 ### Pre-existing tracked gap: openspec sync not run
 - **Tracked by**: bu-2okpr.8 (open, pre-existing, created before this reconciliation)
 - `openspec/specs/dashboard-overview/` does not exist in the authoritative specs tree. The delta spec lives in `openspec/changes/dashboard-hero-contract/specs/` but has not been promoted via `openspec sync` / `/opsx:sync`.
@@ -109,6 +121,7 @@ Note on limit: spec requires "minimum 500" sessions fetched. Backend caps `limit
 Because gaps were found, a gen-2 bead was created: **bu-e3248**
 - Blocks on: bu-ch3uj, bu-3ztj8, bu-2okpr.8
 - Dependencies wired via `bd dep add`
+- Two additional gaps (ChartSkeleton, useAutoRefresh) were confirmed post-PR-review; follow-up beads should be added as dependencies of bu-e3248 before it can close.
 
 ---
 
@@ -149,12 +162,18 @@ the Costs page delta question (bu-2okpr.8 AC3) must be resolved first.
 
 ## Final Verdict
 
-`blocked` — two gap beads and one pre-existing spec-sync bead must close before gen-1 can
-be marked complete. Gen-2 bead bu-e3248 is created and blocked on all three.
+`blocked` — four gaps (two gap beads, two additional findings from PR review) and one
+pre-existing spec-sync bead must close before gen-1 can be marked complete.
+Gen-2 bead bu-e3248 is created and blocked on the first three; the two additional
+gaps need follow-up beads added to bu-e3248's dependency set.
 
 Gap beads created:
 - bu-ch3uj (p2): Update frontend.md Overview archetype description
 - bu-3ztj8 (p3): Fix SessionStripeChart empty state text
+
+Additional gaps confirmed during PR review (beads not yet created — coordinator to create):
+- (p2): Use shared ChartSkeleton in SessionStripeChart loading state
+- (p2): Wire useAutoRefresh hook in session-stripe-utils.ts instead of hard-coded interval
 
 Pre-existing gap (not new):
 - bu-2okpr.8 (p2): openspec sync for dashboard-hero-contract
