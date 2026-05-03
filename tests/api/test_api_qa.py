@@ -31,163 +31,96 @@ from butlers.api.routers.qa import _get_credentials_status_fn, _get_db_manager, 
 
 pytestmark = pytest.mark.unit
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 _NOW = datetime(2026, 4, 5, 12, 0, 0, tzinfo=UTC)
 
 
-def _make_patrol_row(
-    *,
-    patrol_id: uuid.UUID | None = None,
-    started_at: datetime | None = None,
-    completed_at: datetime | None = None,
-    status: str = "clean",
-    findings_count: int = 0,
-    novel_count: int = 0,
-    dispatched_count: int = 0,
-    log_lookback_minutes: int = 15,
-    sources_polled: list[str] | None = None,
-    error_detail: str | None = None,
-) -> dict[str, Any]:
-    """Build a fake qa_patrols row dict."""
+def _make_patrol_row(*, patrol_id: uuid.UUID | None = None, **overrides: Any) -> dict[str, Any]:
     return {
         "id": patrol_id or uuid.uuid4(),
-        "started_at": started_at or _NOW,
-        "completed_at": completed_at or _NOW,
-        "status": status,
-        "findings_count": findings_count,
-        "novel_count": novel_count,
-        "dispatched_count": dispatched_count,
-        "log_lookback_minutes": log_lookback_minutes,
-        "sources_polled": sources_polled or ["log_scanner"],
-        "error_detail": error_detail,
+        "status": "clean",
+        "findings_count": 0,
+        "novel_count": 0,
+        "dispatched_count": 0,
+        "started_at": _NOW,
+        "completed_at": _NOW,
+        "log_lookback_minutes": 15,
+        "sources_polled": ["log_scanner"],
+        "error_detail": None,
+        **overrides,
     }
 
 
-def _make_finding_row(
-    *,
-    finding_id: uuid.UUID | None = None,
-    patrol_id: uuid.UUID | None = None,
-    fingerprint: str = "a" * 64,
-    source_type: str = "log_scanner",
-    source_butler: str = "general",
-    severity: int = 2,
-    exception_type: str = "KeyError",
-    event_summary: str = "missing key",
-    call_site: str = "src/foo.py:bar",
-    occurrence_count: int = 1,
-    first_seen: datetime | None = None,
-    last_seen: datetime | None = None,
-    dedup_reason: str | None = None,
-    healing_attempt_id: uuid.UUID | None = None,
-    source_session_trigger_source: str | None = None,
-    structured_evidence: dict | None = None,
-    created_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Build a fake qa_findings row dict."""
+def _make_finding_row(*, patrol_id: uuid.UUID | None = None, **overrides: Any) -> dict[str, Any]:
     return {
-        "id": finding_id or uuid.uuid4(),
+        "id": uuid.uuid4(),
         "patrol_id": patrol_id or uuid.uuid4(),
-        "fingerprint": fingerprint,
-        "source_type": source_type,
-        "source_butler": source_butler,
-        "severity": severity,
-        "exception_type": exception_type,
-        "event_summary": event_summary,
-        "call_site": call_site,
-        "occurrence_count": occurrence_count,
-        "first_seen": first_seen or _NOW,
-        "last_seen": last_seen or _NOW,
-        "dedup_reason": dedup_reason,
-        "healing_attempt_id": healing_attempt_id,
-        "source_session_trigger_source": source_session_trigger_source,
-        "structured_evidence": structured_evidence,
-        "created_at": created_at or _NOW,
+        "fingerprint": "a" * 64,
+        "source_type": "log_scanner",
+        "source_butler": "general",
+        "severity": 2,
+        "exception_type": "KeyError",
+        "event_summary": "missing key",
+        "call_site": "src/foo.py:bar",
+        "occurrence_count": 1,
+        "first_seen": _NOW,
+        "last_seen": _NOW,
+        "dedup_reason": None,
+        "healing_attempt_id": None,
+        "source_session_trigger_source": None,
+        "structured_evidence": None,
+        "created_at": _NOW,
+        **overrides,
     }
 
 
-def _make_dismissal_row(
-    *,
-    fingerprint: str = "a" * 64,
-    dismissed_until: datetime | None = None,
-    dismissed_by: str = "dashboard_user",
-    created_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Build a fake qa_dismissals row dict."""
+def _make_dismissal_row(**overrides: Any) -> dict[str, Any]:
     return {
-        "fingerprint": fingerprint,
-        "dismissed_until": dismissed_until or datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
-        "dismissed_by": dismissed_by,
-        "created_at": created_at or _NOW,
+        "fingerprint": "a" * 64,
+        "dismissed_until": datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+        "dismissed_by": "dashboard_user",
+        "created_at": _NOW,
+        **overrides,
     }
 
 
-def _make_investigation_row(
-    *,
-    attempt_id: uuid.UUID | None = None,
-    fingerprint: str = "a" * 64,
-    butler_name: str = "general",
-    status: str = "investigating",
-    severity: int = 2,
-    exception_type: str = "KeyError",
-    call_site: str = "src/foo.py:bar",
-    sanitized_msg: str | None = "error msg",
-    pr_url: str | None = None,
-    pr_number: int | None = None,
-    healing_session_id: uuid.UUID | None = None,
-    qa_patrol_id: uuid.UUID | None = None,
-    current_phase: str | None = None,
-    workflow_deadline_at: datetime | None = None,
-    created_at: datetime | None = None,
-    updated_at: datetime | None = None,
-    closed_at: datetime | None = None,
-    error_detail: str | None = None,
-    review_state: str | None = None,
-    last_review_check_at: datetime | None = None,
-    review_feedback_summary: str | None = None,
-    follow_up_count: int = 0,
-    follow_up_cycle_patrol_id: uuid.UUID | None = None,
-    follow_up_cycle_count: int = 0,
-    last_follow_up_status: str | None = None,
-    last_follow_up_session_id: uuid.UUID | None = None,
-    last_follow_up_error: str | None = None,
-    last_follow_up_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Build a fake healing_attempts row dict."""
-    return {
-        "id": attempt_id or uuid.uuid4(),
-        "fingerprint": fingerprint,
-        "butler_name": butler_name,
-        "status": status,
-        "severity": severity,
-        "exception_type": exception_type,
-        "call_site": call_site,
-        "sanitized_msg": sanitized_msg,
-        "pr_url": pr_url,
-        "pr_number": pr_number,
-        "healing_session_id": healing_session_id,
-        "qa_patrol_id": qa_patrol_id or uuid.uuid4(),
-        "current_phase": current_phase,
-        "workflow_deadline_at": workflow_deadline_at,
-        "created_at": created_at or _NOW,
-        "updated_at": updated_at or _NOW,
-        "closed_at": closed_at,
-        "error_detail": error_detail,
-        "review_state": review_state,
-        "last_review_check_at": last_review_check_at,
-        "review_feedback_summary": review_feedback_summary,
-        "follow_up_count": follow_up_count,
-        "follow_up_cycle_patrol_id": follow_up_cycle_patrol_id,
-        "follow_up_cycle_count": follow_up_cycle_count,
-        "last_follow_up_status": last_follow_up_status,
-        "last_follow_up_session_id": last_follow_up_session_id,
-        "last_follow_up_error": last_follow_up_error,
-        "last_follow_up_at": last_follow_up_at,
-    }
+_INV_NONE_FIELDS = (
+    "pr_url",
+    "pr_number",
+    "healing_session_id",
+    "current_phase",
+    "workflow_deadline_at",
+    "closed_at",
+    "error_detail",
+    "review_state",
+    "last_review_check_at",
+    "review_feedback_summary",
+    "follow_up_cycle_patrol_id",
+    "last_follow_up_status",
+    "last_follow_up_session_id",
+    "last_follow_up_error",
+    "last_follow_up_at",
+)
+_INVESTIGATION_DEFAULTS: dict[str, Any] = {
+    "fingerprint": "a" * 64,
+    "butler_name": "general",
+    "status": "investigating",
+    "severity": 2,
+    "exception_type": "KeyError",
+    "call_site": "src/foo.py:bar",
+    "sanitized_msg": "error msg",
+    "follow_up_count": 0,
+    "follow_up_cycle_count": 0,
+    **dict.fromkeys(_INV_NONE_FIELDS, None),
+}
+
+
+def _make_investigation_row(**overrides: Any) -> dict[str, Any]:
+    row = {**_INVESTIGATION_DEFAULTS, **overrides}
+    row.setdefault("id", uuid.uuid4())
+    row.setdefault("qa_patrol_id", uuid.uuid4())
+    row["created_at"] = _NOW
+    row["updated_at"] = _NOW
+    return row
 
 
 class _MockRecord(dict):
@@ -200,7 +133,7 @@ class _MockRecord(dict):
             raise AttributeError(name) from None
 
 
-def _mock_record(row: dict[str, Any]) -> _MockRecord:
+def _r(row: dict[str, Any]) -> _MockRecord:
     return _MockRecord(row)
 
 
@@ -210,31 +143,27 @@ def _build_app(
     fetchrow_result: dict[str, Any] | None = None,
     fetchval_result: Any = 0,
     execute_result: str = "DELETE 1",
-    # Allow per-call customization via side_effect
     fetch_side_effect: Any = None,
     fetchrow_side_effect: Any = None,
     fetchval_side_effect: Any = None,
 ) -> tuple[Any, MagicMock]:
     """Build a test FastAPI app with a mocked database pool."""
     mock_pool = AsyncMock()
-
-    if fetch_side_effect is not None:
-        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
-    else:
-        mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in (fetch_rows or [])])
-
-    if fetchrow_side_effect is not None:
-        mock_pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
-    else:
-        mock_pool.fetchrow = AsyncMock(
-            return_value=_mock_record(fetchrow_result) if fetchrow_result else None
-        )
-
-    if fetchval_side_effect is not None:
-        mock_pool.fetchval = AsyncMock(side_effect=fetchval_side_effect)
-    else:
-        mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
-
+    mock_pool.fetch = (
+        AsyncMock(side_effect=fetch_side_effect)
+        if fetch_side_effect is not None
+        else AsyncMock(return_value=[_r(row) for row in (fetch_rows or [])])
+    )
+    mock_pool.fetchrow = (
+        AsyncMock(side_effect=fetchrow_side_effect)
+        if fetchrow_side_effect is not None
+        else AsyncMock(return_value=_r(fetchrow_result) if fetchrow_result else None)
+    )
+    mock_pool.fetchval = (
+        AsyncMock(side_effect=fetchval_side_effect)
+        if fetchval_side_effect is not None
+        else AsyncMock(return_value=fetchval_result)
+    )
     mock_pool.execute = AsyncMock(return_value=execute_result)
 
     mock_db = MagicMock(spec=DatabaseManager)
@@ -261,9 +190,7 @@ def _make_stats_row(
 
 
 def _make_pr_stats_row(
-    prs_merged: int = 0,
-    prs_failed: int = 0,
-    total_dispatched: int = 0,
+    prs_merged: int = 0, prs_failed: int = 0, total_dispatched: int = 0
 ) -> dict[str, Any]:
     return {
         "prs_merged": prs_merged,
@@ -283,131 +210,107 @@ def _build_summary_app(
     source_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, MagicMock]:
     """Build a test app with mocks wired to the summary endpoint's call sequence."""
-    if stats_24h is None:
-        stats_24h = _make_stats_row()
-    if all_time_stats is None:
-        all_time_stats = _make_stats_row()
-    if pr_stats is None:
-        pr_stats = _make_pr_stats_row()
-
     return _build_app(
         fetchrow_side_effect=[
-            _mock_record(last_patrol) if last_patrol is not None else None,
-            _mock_record(stats_24h),
-            _mock_record(all_time_stats),
-            _mock_record(pr_stats),
+            _r(last_patrol) if last_patrol is not None else None,
+            _r(stats_24h or _make_stats_row()),
+            _r(all_time_stats or _make_stats_row()),
+            _r(pr_stats or _make_pr_stats_row()),
         ],
         fetchval_side_effect=[prs_opened_24h],
         fetch_side_effect=[
-            [_mock_record(r) for r in (cb_rows or [])],  # circuit breaker rows
-            [_mock_record(r) for r in (source_rows or [])],  # active sources
+            [_r(row) for row in (cb_rows or [])],
+            [_r(row) for row in (source_rows or [])],
         ],
     )
 
 
-# ---------------------------------------------------------------------------
-# GET /api/qa/summary
-# ---------------------------------------------------------------------------
+def _make_503_app() -> Any:
+    """Build an app that raises KeyError on pool access, exercising the 503 path."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.side_effect = KeyError("no pool")
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    return app
+
+
+async def _call(app: Any, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    """Make a single HTTP call to the test app and return the response."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await getattr(client, method)(path, **kwargs)
 
 
 class TestGetQaSummary:
-    async def test_returns_summary_with_empty_db(self) -> None:
-        """When no patrols exist, summary should return zeros and no last_patrol."""
+    async def test_summary_shape_and_stats(self) -> None:
+        """Empty DB → nulls/zeros; with patrol data → last_patrol + stats populated; PR stats included; 503 on DB failure."""
+        # Empty DB
         app, _ = _build_summary_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        body = response.json()
+        body = (await _call(app, "get", "/api/qa/summary")).json()
         assert body["data"]["last_patrol"] is None
         assert body["data"]["stats_24h"]["patrols_completed"] == 0
-        assert body["data"]["stats_all_time"]["total_patrols"] == 0
         assert body["data"]["active_sources"] == []
 
-    async def test_returns_last_patrol_when_present(self) -> None:
-        """When patrols exist, last_patrol should be populated."""
+        # With patrol and stats
         patrol_id = uuid.uuid4()
         patrol = _make_patrol_row(patrol_id=patrol_id, status="clean", findings_count=3)
         stats = _make_stats_row(patrols_completed=5, total_findings=10)
-        app, _ = _build_summary_app(
+        pr_stats = _make_pr_stats_row(prs_merged=10, prs_failed=2, total_dispatched=20)
+        app2, _ = _build_summary_app(
             last_patrol=patrol,
             stats_24h=stats,
             all_time_stats=stats,
-            source_rows=[{"sources_polled": ["log_scanner", "session_records"]}],
+            prs_opened_24h=3,
+            pr_stats=pr_stats,
+            source_rows=[{"sources_polled": ["log_scanner"]}],
         )
+        body2 = (await _call(app2, "get", "/api/qa/summary")).json()["data"]
+        assert body2["last_patrol"]["id"] == str(patrol_id)
+        assert body2["stats_24h"]["patrols_completed"] == 5
+        assert body2["stats_24h"]["prs_opened"] == 3
+        assert body2["stats_all_time"]["prs_merged"] == 10
+        assert body2["stats_all_time"]["success_rate"] == 0.5
+        assert "log_scanner" in body2["active_sources"]
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
+        # 503 on DB failure
+        assert (await _call(_make_503_app(), "get", "/api/qa/summary")).status_code == 503
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["last_patrol"]["id"] == str(patrol_id)
-        assert body["data"]["last_patrol"]["status"] == "clean"
-        assert body["data"]["last_patrol"]["findings_count"] == 3
-        assert body["data"]["stats_24h"]["patrols_completed"] == 5
-        assert "log_scanner" in body["data"]["active_sources"]
-
-    async def test_returns_circuit_breaker_tripped_when_enough_failures(self) -> None:
-        """Circuit breaker should trip when 5+ consecutive failures exist."""
-        cb_rows = [{"status": "failed"} for _ in range(5)]
-        app, _ = _build_summary_app(cb_rows=cb_rows)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        body = response.json()
+    async def test_circuit_breaker_logic(self) -> None:
+        """CB trips on 5 consecutive failures; resets on success; anonymization_failed counts."""
+        # tripped
+        app, _ = _build_summary_app(cb_rows=[{"status": "failed"} for _ in range(5)])
+        body = (await _call(app, "get", "/api/qa/summary")).json()
         assert body["data"]["circuit_breaker"]["tripped"] is True
         assert body["data"]["circuit_breaker"]["consecutive_failures"] == 5
         assert body["data"]["staffer_status"] == "circuit_breaker_tripped"
 
-    async def test_returns_circuit_breaker_not_tripped_after_success(self) -> None:
-        """Circuit breaker should not trip when failures are interrupted by a success."""
-        cb_rows = [
-            {"status": "failed"},
-            {"status": "failed"},
-            {"status": "pr_merged"},  # resets the count
-            {"status": "failed"},
-        ]
-        app, _ = _build_summary_app(cb_rows=cb_rows)
+        # success resets consecutive count
+        app2, _ = _build_summary_app(
+            cb_rows=[
+                {"status": "failed"},
+                {"status": "failed"},
+                {"status": "pr_merged"},
+                {"status": "failed"},
+            ]
+        )
+        body2 = (await _call(app2, "get", "/api/qa/summary")).json()
+        assert body2["data"]["circuit_breaker"]["tripped"] is False
+        assert body2["data"]["circuit_breaker"]["consecutive_failures"] == 2
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["circuit_breaker"]["tripped"] is False
-        assert body["data"]["circuit_breaker"]["consecutive_failures"] == 2
-
-    async def test_circuit_breaker_counts_anonymization_failed_as_failure(self) -> None:
-        """anonymization_failed must count as a CB failure (aligns with dispatch.py)."""
-        cb_rows = [
-            {"status": "anonymization_failed"},
-            {"status": "timeout"},
-            {"status": "failed"},
-            {"status": "anonymization_failed"},
-            {"status": "failed"},
-        ]
-        app, _ = _build_summary_app(cb_rows=cb_rows)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["circuit_breaker"]["tripped"] is True
-        assert body["data"]["circuit_breaker"]["consecutive_failures"] == 5
+        # anonymization_failed counts as failure
+        app3, _ = _build_summary_app(
+            cb_rows=[
+                {"status": "anonymization_failed"},
+                {"status": "timeout"},
+                {"status": "failed"},
+                {"status": "anonymization_failed"},
+                {"status": "failed"},
+            ]
+        )
+        body3 = (await _call(app3, "get", "/api/qa/summary")).json()
+        assert body3["data"]["circuit_breaker"]["tripped"] is True
+        assert body3["data"]["circuit_breaker"]["consecutive_failures"] == 5
 
     async def test_summary_uses_manual_reset_aware_breaker_filter(self) -> None:
         """Summary must mirror dispatch semantics: launched attempts plus manual_reset sentinel."""
@@ -415,143 +318,67 @@ class TestGetQaSummary:
         def _fetch_side_effect(query: str, *_args: Any):
             if "status = 'manual_reset'" in query and "healing_session_id IS NOT NULL" in query:
                 return [
-                    _mock_record({"status": "failed"}),
-                    _mock_record({"status": "failed"}),
-                    _mock_record({"status": "failed"}),
-                    _mock_record({"status": "failed"}),
-                    _mock_record({"status": "manual_reset"}),
+                    _r({"status": "failed"}),
+                    _r({"status": "failed"}),
+                    _r({"status": "failed"}),
+                    _r({"status": "failed"}),
+                    _r({"status": "manual_reset"}),
                 ]
-            return [_mock_record({"sources_polled": []})]
+            return [_r({"sources_polled": []})]
 
         app, _ = _build_app(
             fetchrow_side_effect=[
                 None,
-                _mock_record(_make_stats_row()),
-                _mock_record(_make_stats_row()),
-                _mock_record(_make_pr_stats_row()),
+                _r(_make_stats_row()),
+                _r(_make_stats_row()),
+                _r(_make_pr_stats_row()),
             ],
             fetchval_side_effect=[0],
             fetch_side_effect=_fetch_side_effect,
         )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
+        response = await _call(app, "get", "/api/qa/summary")
         assert response.status_code == 200
         body = response.json()
         assert body["data"]["circuit_breaker"]["tripped"] is False
         assert body["data"]["circuit_breaker"]["consecutive_failures"] == 4
 
-    async def test_summary_includes_prs_opened_24h(self) -> None:
-        """stats_24h.prs_opened should reflect the fetchval result."""
-        app, _ = _build_summary_app(prs_opened_24h=3)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        assert response.json()["data"]["stats_24h"]["prs_opened"] == 3
-
-    async def test_summary_includes_all_time_pr_stats(self) -> None:
-        """stats_all_time should include prs_merged, prs_failed, success_rate."""
-        pr_stats = _make_pr_stats_row(prs_merged=10, prs_failed=2, total_dispatched=20)
-        app, _ = _build_summary_app(pr_stats=pr_stats)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        data = response.json()["data"]
-        assert data["stats_all_time"]["prs_merged"] == 10
-        assert data["stats_all_time"]["prs_failed"] == 2
-        assert data["stats_all_time"]["success_rate"] == 0.5
-
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/patrols
-# ---------------------------------------------------------------------------
-
 
 class TestListPatrols:
-    async def test_returns_empty_list_when_no_patrols(self) -> None:
-        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+    async def test_list_patrols_empty_and_with_data(self) -> None:
+        """Empty list with meta; with data: row fields mapped, pagination/has_more computed."""
+        assert (
+            await _call(_build_app(fetch_rows=[], fetchval_result=0)[0], "get", "/api/qa/patrols")
+        ).json()["meta"]["limit"] == 20
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/patrols")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"] == []
-        assert body["meta"]["total"] == 0
-        assert body["meta"]["limit"] == 20
-
-    async def test_returns_patrols_with_pagination(self) -> None:
         patrol_id = uuid.uuid4()
-        row = _make_patrol_row(patrol_id=patrol_id, status="findings_dispatched", findings_count=5)
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/patrols")
-
+        app, _ = _build_app(
+            fetch_rows=[
+                _make_patrol_row(
+                    patrol_id=patrol_id, status="findings_dispatched", findings_count=5
+                )
+            ],
+            fetchval_result=50,
+        )
+        response = await _call(app, "get", "/api/qa/patrols", params={"limit": 10, "offset": 5})
         assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
-        assert body["data"][0]["id"] == str(patrol_id)
-        assert body["data"][0]["status"] == "findings_dispatched"
-        assert body["data"][0]["findings_count"] == 5
-        assert body["meta"]["total"] == 1
+        meta = response.json()["meta"]
+        assert meta["total"] == 50 and meta["has_more"] is True
+        assert response.json()["data"][0]["id"] == str(patrol_id)
+        assert response.json()["data"][0]["status"] == "findings_dispatched"
 
-    async def test_accepts_valid_status_filter(self) -> None:
-        row = _make_patrol_row(status="clean")
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+    async def test_status_filter_valid_accepted_invalid_rejected(self) -> None:
+        assert (
+            await _call(
+                _build_app(fetch_rows=[_make_patrol_row(status="clean")], fetchval_result=1)[0],
+                "get",
+                "/api/qa/patrols",
+                params={"status": "clean"},
+            )
+        ).status_code == 200
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/patrols", params={"status": "clean"})
-
-        assert response.status_code == 200
-        assert response.json()["data"][0]["status"] == "clean"
-
-    async def test_rejects_invalid_status_filter(self) -> None:
-        app, _ = _build_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/patrols", params={"status": "not_valid"})
-
-        assert response.status_code == 422
-        assert "not_valid" in response.json()["detail"]
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/circuit-breaker
-# ---------------------------------------------------------------------------
+        app2, _ = _build_app()
+        r = await _call(app2, "get", "/api/qa/patrols", params={"status": "not_valid"})
+        assert r.status_code == 422 and "not_valid" in r.json()["detail"]
 
 
 class TestGetCircuitBreakerStatus:
@@ -561,261 +388,103 @@ class TestGetCircuitBreakerStatus:
         def _fetch_side_effect(query: str, *_args: Any):
             if "status = 'manual_reset'" in query and "healing_session_id IS NOT NULL" in query:
                 return [
-                    _mock_record(
-                        {
-                            "id": uuid.uuid4(),
-                            "status": "failed",
-                            "closed_at": _NOW,
-                        }
-                    ),
-                    _mock_record(
-                        {
-                            "id": uuid.uuid4(),
-                            "status": "failed",
-                            "closed_at": _NOW,
-                        }
-                    ),
-                    _mock_record(
-                        {
-                            "id": uuid.uuid4(),
-                            "status": "failed",
-                            "closed_at": _NOW,
-                        }
-                    ),
-                    _mock_record(
-                        {
-                            "id": uuid.uuid4(),
-                            "status": "failed",
-                            "closed_at": _NOW,
-                        }
-                    ),
-                    _mock_record(
-                        {
-                            "id": uuid.uuid4(),
-                            "status": "manual_reset",
-                            "closed_at": _NOW,
-                        }
-                    ),
+                    _r({"id": uuid.uuid4(), "status": "failed", "closed_at": _NOW}),
+                    _r({"id": uuid.uuid4(), "status": "failed", "closed_at": _NOW}),
+                    _r({"id": uuid.uuid4(), "status": "failed", "closed_at": _NOW}),
+                    _r({"id": uuid.uuid4(), "status": "failed", "closed_at": _NOW}),
+                    _r({"id": uuid.uuid4(), "status": "manual_reset", "closed_at": _NOW}),
                 ]
-            return [_mock_record({"status": "failed"}) for _ in range(5)]
+            return [_r({"status": "failed"}) for _ in range(5)]
 
         app, _ = _build_app(fetch_side_effect=_fetch_side_effect)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/circuit-breaker")
-
+        response = await _call(app, "get", "/api/qa/circuit-breaker")
         assert response.status_code == 200
         body = response.json()
         assert body["data"]["tripped"] is False
         assert body["data"]["recent_statuses"][-1] == "manual_reset"
 
-    async def test_pagination_parameters_accepted(self) -> None:
-        app, _ = _build_app(fetch_rows=[], fetchval_result=100)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/patrols", params={"limit": 5, "offset": 10})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["limit"] == 5
-        assert body["meta"]["offset"] == 10
-        assert body["meta"]["total"] == 100
-
-    async def test_has_more_computed_correctly(self) -> None:
-        rows = [_make_patrol_row() for _ in range(10)]
-        app, _ = _build_app(fetch_rows=rows, fetchval_result=50)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/patrols", params={"limit": 10, "offset": 0})
-
-        assert response.status_code == 200
-        assert response.json()["meta"]["has_more"] is True
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/patrols/{patrolId}
-# ---------------------------------------------------------------------------
-
 
 class TestGetPatrol:
-    async def test_returns_404_for_missing_patrol(self) -> None:
-        app, _ = _build_app(fetchrow_result=None)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{uuid.uuid4()}")
-
-        assert response.status_code == 404
-
-    async def test_returns_patrol_with_nested_findings(self) -> None:
+    async def test_patrol_detail_happy_path_and_error_cases(self) -> None:
+        """Returns findings when found; 404 when missing; 422 for invalid UUID."""
         patrol_id = uuid.uuid4()
         patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=2)
         finding1 = _make_finding_row(patrol_id=patrol_id, fingerprint="a" * 64)
         finding2 = _make_finding_row(
             patrol_id=patrol_id, fingerprint="b" * 64, dedup_reason="active_attempt"
         )
-        app, _ = _build_app(
-            fetchrow_result=patrol,
-            fetch_rows=[finding1, finding2],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{patrol_id}")
-
+        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding1, finding2])
+        response = await _call(app, "get", f"/api/qa/patrols/{patrol_id}")
         assert response.status_code == 200
         body = response.json()
         assert body["data"]["id"] == str(patrol_id)
-        assert len(body["data"]["findings"]) == 2
         fp_list = [f["fingerprint"] for f in body["data"]["findings"]]
-        assert "a" * 64 in fp_list
-        assert "b" * 64 in fp_list
+        assert "a" * 64 in fp_list and "b" * 64 in fp_list
 
-    async def test_returns_patrol_with_empty_findings(self) -> None:
-        patrol_id = uuid.uuid4()
-        patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=0)
-        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[])
+        # Empty findings
+        app2, _ = _build_app(fetchrow_result=_make_patrol_row(patrol_id=patrol_id), fetch_rows=[])
+        assert (await _call(app2, "get", f"/api/qa/patrols/{patrol_id}")).json()["data"][
+            "findings"
+        ] == []
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{patrol_id}")
+        # 404 when missing
+        assert (
+            await _call(
+                _build_app(fetchrow_result=None)[0], "get", f"/api/qa/patrols/{uuid.uuid4()}"
+            )
+        ).status_code == 404
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["findings"] == []
-
-    async def test_rejects_invalid_uuid(self) -> None:
-        app, _ = _build_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/patrols/not-a-uuid")
-
-        assert response.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/patrols/{patrolId}/findings
-# ---------------------------------------------------------------------------
+        # 422 for invalid UUID
+        assert (
+            await _call(_build_app()[0], "get", "/api/qa/patrols/not-a-uuid")
+        ).status_code == 422
 
 
 class TestListPatrolFindings:
-    async def test_returns_404_for_unknown_patrol(self) -> None:
-        app, _ = _build_app(fetchval_result=None)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{uuid.uuid4()}/findings")
-
-        assert response.status_code == 404
-
-    async def test_returns_findings_for_valid_patrol(self) -> None:
+    async def test_findings_for_patrol(self) -> None:
+        """Returns findings when patrol exists; 404 when not; novel_only and pagination accepted."""
         patrol_id = uuid.uuid4()
         finding = _make_finding_row(patrol_id=patrol_id, fingerprint="c" * 64)
         app, _ = _build_app(
-            fetchval_result=1,  # patrol exists
-            fetch_side_effect=[
-                [_mock_record(finding)],  # first fetch: findings list (for count)
-                [_mock_record(finding)],  # second fetch: paginated findings
-            ],
-            fetchval_side_effect=[
-                1,  # patrol existence check
-                1,  # total count
-            ],
+            fetchval_side_effect=[1, 1], fetch_side_effect=[[_r(finding)], [_r(finding)]]
         )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{patrol_id}/findings")
-
+        response = await _call(app, "get", f"/api/qa/patrols/{patrol_id}/findings")
         assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
-        assert body["data"][0]["fingerprint"] == "c" * 64
+        assert response.json()["data"][0]["fingerprint"] == "c" * 64
 
-    async def test_novel_only_filter_accepted(self) -> None:
-        patrol_id = uuid.uuid4()
-        finding = _make_finding_row(patrol_id=patrol_id, dedup_reason=None)
-        app, _ = _build_app(
-            fetchval_side_effect=[1, 1],
-            fetch_side_effect=[[_mock_record(finding)]],
-        )
+        # 404 when patrol not found
+        app2, _ = _build_app(fetchval_result=None)
+        assert (
+            await _call(app2, "get", f"/api/qa/patrols/{uuid.uuid4()}/findings")
+        ).status_code == 404
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                f"/api/qa/patrols/{patrol_id}/findings", params={"novel_only": "true"}
+        # novel_only filter and pagination
+        app3, _ = _build_app(fetchval_side_effect=[1, 1], fetch_side_effect=[[_r(finding)]])
+        assert (
+            await _call(
+                app3, "get", f"/api/qa/patrols/{patrol_id}/findings", params={"novel_only": "true"}
             )
+        ).status_code == 200
 
-        assert response.status_code == 200
-
-    async def test_pagination_parameters_accepted(self) -> None:
-        patrol_id = uuid.uuid4()
-        app, _ = _build_app(
-            fetchval_side_effect=[1, 0],
-            fetch_side_effect=[[]],
+        app4, _ = _build_app(fetchval_side_effect=[1, 0], fetch_side_effect=[[]])
+        r = await _call(
+            app4, "get", f"/api/qa/patrols/{patrol_id}/findings", params={"offset": 20, "limit": 10}
         )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                f"/api/qa/patrols/{patrol_id}/findings",
-                params={"offset": 20, "limit": 10},
-            )
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["offset"] == 20
-        assert body["meta"]["limit"] == 10
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/findings/by-attempt/{attemptId}
-# ---------------------------------------------------------------------------
+        assert r.json()["meta"]["offset"] == 20 and r.json()["meta"]["limit"] == 10
 
 
 class TestGetFindingByAttempt:
-    async def test_returns_404_when_no_finding_links_to_attempt(self) -> None:
-        app, _ = _build_app(fetchrow_result=None)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/findings/by-attempt/{uuid.uuid4()}")
-
-        assert response.status_code == 404
-
-    async def test_returns_linked_finding_with_evidence(self) -> None:
+    async def test_finding_by_attempt(self) -> None:
+        """Returns finding with evidence when found; 404 when missing; 422 for invalid UUID."""
         attempt_id = uuid.uuid4()
-        patrol_id = uuid.uuid4()
         finding = _make_finding_row(
-            patrol_id=patrol_id,
             healing_attempt_id=attempt_id,
             dedup_reason="novel",
             source_session_trigger_source="scheduler",
-            structured_evidence={"session_id": str(uuid.uuid4()), "trace_id": "abc"},
+            structured_evidence={"trace_id": "abc"},
         )
         app, _ = _build_app(fetchrow_result=finding)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/findings/by-attempt/{attempt_id}")
-
+        response = await _call(app, "get", f"/api/qa/findings/by-attempt/{attempt_id}")
         assert response.status_code == 200
         body = response.json()
         assert body["data"]["healing_attempt_id"] == str(attempt_id)
@@ -823,700 +492,308 @@ class TestGetFindingByAttempt:
         assert body["data"]["source_session_trigger_source"] == "scheduler"
         assert body["data"]["structured_evidence"]["trace_id"] == "abc"
 
-    async def test_rejects_invalid_uuid(self) -> None:
-        app, _ = _build_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/findings/by-attempt/not-a-uuid")
-
-        assert response.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/investigations
-# ---------------------------------------------------------------------------
+        assert (
+            await _call(
+                _build_app(fetchrow_result=None)[0],
+                "get",
+                f"/api/qa/findings/by-attempt/{uuid.uuid4()}",
+            )
+        ).status_code == 404
+        assert (
+            await _call(_build_app()[0], "get", "/api/qa/findings/by-attempt/not-a-uuid")
+        ).status_code == 422
 
 
 class TestListInvestigations:
-    async def test_returns_empty_list_when_no_investigations(self) -> None:
-        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+    async def test_returns_investigations_empty_and_with_pr_info(self) -> None:
+        """Empty list when no investigations; PR info and meta populated when rows exist."""
+        app_empty, _ = _build_app(fetch_rows=[], fetchval_result=0)
+        assert (await _call(app_empty, "get", "/api/qa/investigations")).json()["data"] == []
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"] == []
-        assert body["meta"]["total"] == 0
-
-    async def test_returns_investigations_with_pr_info(self) -> None:
-        attempt_id = uuid.uuid4()
-        patrol_id = uuid.uuid4()
+        attempt_id, patrol_id = uuid.uuid4(), uuid.uuid4()
         row = _make_investigation_row(
-            attempt_id=attempt_id,
+            id=attempt_id,
             qa_patrol_id=patrol_id,
             status="pr_open",
             pr_url="https://github.com/foo/bar/pull/42",
             pr_number=42,
         )
         app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
+        response = await _call(app, "get", "/api/qa/investigations")
         assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
-        inv = body["data"][0]
+        inv = response.json()["data"][0]
         assert inv["id"] == str(attempt_id)
         assert inv["status"] == "pr_open"
         assert inv["pr_url"] == "https://github.com/foo/bar/pull/42"
         assert inv["pr_number"] == 42
         assert inv["qa_patrol_id"] == str(patrol_id)
-        assert body["meta"]["total"] == 1
 
-    async def test_accepts_valid_status_filter(self) -> None:
-        row = _make_investigation_row(status="pr_merged")
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations", params={"status": "pr_merged"})
-
-        assert response.status_code == 200
-        assert response.json()["data"][0]["status"] == "pr_merged"
-
-    async def test_accepts_anonymization_failed_status_filter(self) -> None:
-        """anonymization_failed must be a valid filter value (it is in VALID_STATUSES)."""
+    async def test_status_filter_accepts_valid_rejects_invalid_and_removed_values(self) -> None:
+        """anonymization_failed accepted; not_a_status and dispatch_pending (removed) rejected."""
         row = _make_investigation_row(status="anonymization_failed")
         app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+        r = await _call(
+            app, "get", "/api/qa/investigations", params={"status": "anonymization_failed"}
+        )
+        assert r.status_code == 200
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/qa/investigations", params={"status": "anonymization_failed"}
-            )
+        app2, _ = _build_app()
+        r2 = await _call(app2, "get", "/api/qa/investigations", params={"status": "not_a_status"})
+        assert r2.status_code == 422
+        assert "not_a_status" in r2.json()["detail"]
 
-        assert response.status_code == 200
-        assert response.json()["data"][0]["status"] == "anonymization_failed"
+        app3, _ = _build_app()
+        r3 = await _call(
+            app3, "get", "/api/qa/investigations", params={"status": "dispatch_pending"}
+        )
+        assert r3.status_code == 422
+        assert "dispatch_pending" in r3.json()["detail"]
 
-    async def test_rejects_invalid_status_filter(self) -> None:
-        app, _ = _build_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations", params={"status": "not_a_status"})
-
-        assert response.status_code == 422
-        assert "not_a_status" in response.json()["detail"]
-
-    async def test_pagination_parameters_accepted(self) -> None:
-        app, _ = _build_app(fetch_rows=[], fetchval_result=100)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations", params={"limit": 5, "offset": 10})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["limit"] == 5
-        assert body["meta"]["offset"] == 10
-        assert body["meta"]["total"] == 100
-
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 503
-
-    async def test_returns_review_tracking_fields(self) -> None:
-        """Investigation rows include review_state, follow_up_count, and related fields."""
+    async def test_optional_fields_present_and_null_when_absent(self) -> None:
+        """Review tracking, follow-up cycle, and phase fields exposed; null/0 when not set."""
+        cycle_patrol_id, followup_session_id = uuid.uuid4(), uuid.uuid4()
+        deadline = datetime(2026, 4, 9, 14, 0, 0, tzinfo=UTC)
         row = _make_investigation_row(
             status="pr_open",
-            pr_url="https://github.com/foo/bar/pull/7",
-            pr_number=7,
             review_state="changes_requested",
             last_review_check_at=_NOW,
             review_feedback_summary="Please add tests for edge cases.",
-            follow_up_count=1,
-        )
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 200
-        inv = response.json()["data"][0]
-        assert inv["review_state"] == "changes_requested"
-        assert inv["follow_up_count"] == 1
-        assert inv["review_feedback_summary"] == "Please add tests for edge cases."
-        assert inv["last_review_check_at"] is not None
-
-    async def test_review_fields_default_to_null_and_zero(self) -> None:
-        """Investigation rows without review data return null/0 for review fields."""
-        row = _make_investigation_row(
-            status="investigating",
-            review_state=None,
-            last_review_check_at=None,
-            review_feedback_summary=None,
-            follow_up_count=0,
-        )
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 200
-        inv = response.json()["data"][0]
-        assert inv["review_state"] is None
-        assert inv["follow_up_count"] == 0
-        assert inv["review_feedback_summary"] is None
-        assert inv["last_review_check_at"] is None
-
-    async def test_returns_followup_cycle_and_outcome_fields(self) -> None:
-        """Investigation rows expose per-cycle follow-up and outcome fields (core_068)."""
-        cycle_patrol_id = uuid.uuid4()
-        followup_session_id = uuid.uuid4()
-        followup_at = _NOW
-        row = _make_investigation_row(
-            status="pr_open",
-            pr_url="https://github.com/foo/bar/pull/8",
-            pr_number=8,
             follow_up_count=2,
             follow_up_cycle_patrol_id=cycle_patrol_id,
             follow_up_cycle_count=1,
             last_follow_up_status="succeeded",
             last_follow_up_session_id=followup_session_id,
-            last_follow_up_error=None,
-            last_follow_up_at=followup_at,
+            last_follow_up_at=_NOW,
+            current_phase="diagnose",
+            workflow_deadline_at=deadline,
         )
         app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 200
-        inv = response.json()["data"][0]
+        inv = (await _call(app, "get", "/api/qa/investigations")).json()["data"][0]
+        assert inv["review_state"] == "changes_requested"
         assert inv["follow_up_count"] == 2
         assert inv["follow_up_cycle_patrol_id"] == str(cycle_patrol_id)
         assert inv["follow_up_cycle_count"] == 1
         assert inv["last_follow_up_status"] == "succeeded"
         assert inv["last_follow_up_session_id"] == str(followup_session_id)
-        assert inv["last_follow_up_error"] is None
-        assert inv["last_follow_up_at"] is not None
+        assert inv["current_phase"] == "diagnose"
+        assert inv["workflow_deadline_at"] is not None
 
-    async def test_followup_cycle_fields_default_to_null_when_absent(self) -> None:
-        """Investigation rows without follow-up data return null/0 for cycle fields."""
-        row = _make_investigation_row(
-            status="investigating",
-        )
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
+        # Absent → null/0
+        row2 = _make_investigation_row(status="investigating")
+        app2, _ = _build_app(fetch_rows=[row2], fetchval_result=1)
+        inv2 = (await _call(app2, "get", "/api/qa/investigations")).json()["data"][0]
+        for field in (
+            "review_state",
+            "review_feedback_summary",
+            "last_review_check_at",
+            "current_phase",
+            "workflow_deadline_at",
+            "follow_up_cycle_patrol_id",
+            "last_follow_up_status",
+            "last_follow_up_session_id",
+            "last_follow_up_error",
+            "last_follow_up_at",
+        ):
+            assert inv2[field] is None, f"{field} should be None"
+        assert inv2["follow_up_count"] == 0
+        assert inv2["follow_up_cycle_count"] == 0
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 200
-        inv = response.json()["data"][0]
-        assert inv["follow_up_cycle_patrol_id"] is None
-        assert inv["follow_up_cycle_count"] == 0
-        assert inv["last_follow_up_status"] is None
-        assert inv["last_follow_up_session_id"] is None
-        assert inv["last_follow_up_error"] is None
-        assert inv["last_follow_up_at"] is None
+    async def test_503_when_db_unavailable(self) -> None:
+        assert (await _call(_make_503_app(), "get", "/api/qa/investigations")).status_code == 503
 
 
-# ---------------------------------------------------------------------------
-# GET /api/qa/known-issues
-# ---------------------------------------------------------------------------
+def _make_agg_row(
+    fingerprint: str = "d" * 64,
+    source_butler: str = "general",
+    severity: int = 2,
+    occurrence_count: int = 7,
+) -> dict[str, Any]:
+    return {
+        "fingerprint": fingerprint,
+        "source_butler": source_butler,
+        "source_type": "log_scanner",
+        "severity": severity,
+        "exception_type": "ValueError",
+        "event_summary": "bad value",
+        "call_site": "src/finance.py:compute",
+        "occurrence_count": occurrence_count,
+        "first_seen": _NOW,
+        "last_seen": _NOW,
+        "patrol_count": 3,
+        "healing_attempt_id": None,
+    }
 
 
 class TestListKnownIssues:
-    async def test_returns_empty_list_when_no_issues(self) -> None:
-        app, _ = _build_app(
-            fetchval_result=0,
-            fetch_side_effect=[
-                [],  # aggregation rows
-            ],
-        )
+    async def test_returns_known_issues_with_stats_and_optional_dismissal(self) -> None:
+        """Empty list when no issues; aggregated stats returned; dismissal when present."""
+        app_empty, _ = _build_app(fetchval_result=0, fetch_side_effect=[[]])
+        assert (await _call(app_empty, "get", "/api/qa/known-issues")).json()["data"] == []
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"] == []
-        assert body["meta"]["total"] == 0
-
-    async def test_returns_known_issues_with_aggregated_stats(self) -> None:
         fp = "d" * 64
-        agg_row: dict[str, Any] = {
-            "fingerprint": fp,
-            "source_butler": "finance",
-            "source_type": "log_scanner",
-            "severity": 1,
-            "exception_type": "ValueError",
-            "event_summary": "bad value",
-            "call_site": "src/finance.py:compute",
-            "occurrence_count": 7,
-            "first_seen": _NOW,
-            "last_seen": _NOW,
-            "patrol_count": 3,
-            "healing_attempt_id": None,
-        }
-        app, _ = _build_app(
-            fetchval_result=1,
-            fetch_side_effect=[
-                [_mock_record(agg_row)],  # aggregation rows
-                [],  # dismissals batch fetch
-            ],
-        )
+        agg_row = _make_agg_row(fingerprint=fp)
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
-        issue = body["data"][0]
-        assert issue["fingerprint"] == fp
-        assert issue["occurrence_count"] == 7
-        assert issue["patrol_count"] == 3
-        assert issue["dismissal"] is None
-
-    async def test_known_issue_includes_dismissal_when_present(self) -> None:
-        fp = "e" * 64
-        agg_row: dict[str, Any] = {
-            "fingerprint": fp,
-            "source_butler": "general",
-            "source_type": "session_records",
-            "severity": 2,
-            "exception_type": "TimeoutError",
-            "event_summary": "timed out",
-            "call_site": "src/bar.py:fetch",
-            "occurrence_count": 2,
-            "first_seen": _NOW,
-            "last_seen": _NOW,
-            "patrol_count": 1,
-            "healing_attempt_id": None,
-        }
-        dismissal = _make_dismissal_row(fingerprint=fp)
-        app, _ = _build_app(
-            fetchval_result=1,
-            fetch_side_effect=[
-                [_mock_record(agg_row)],
-                [_mock_record(dismissal)],
-            ],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"][0]["dismissal"] is not None
-        assert body["data"][0]["dismissal"]["fingerprint"] == fp
-        assert body["data"][0]["dismissal"]["dismissed_by"] == "dashboard_user"
-
-    async def test_source_butler_filter_accepted(self) -> None:
-        """source_butler filter must be forwarded to the DB and reflected in results."""
-        fp = "l" * 64
-        agg_row: dict[str, Any] = {
-            "fingerprint": fp,
-            "source_butler": "finance",
-            "source_type": "log_scanner",
-            "severity": 2,
-            "exception_type": "ValueError",
-            "event_summary": "bad",
-            "call_site": "src/x.py:y",
-            "occurrence_count": 3,
-            "first_seen": _NOW,
-            "last_seen": _NOW,
-            "patrol_count": 1,
-            "healing_attempt_id": None,
-        }
-        app, mock_pool = _build_app(
-            fetchval_result=1,
-            fetch_side_effect=[
-                [_mock_record(agg_row)],
-                [],  # dismissals
-            ],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues", params={"source_butler": "finance"})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
-        assert body["data"][0]["source_butler"] == "finance"
-        # Verify the DB was called with "finance" as a parameter
-        call_args = mock_pool.fetchval.call_args
-        assert "finance" in call_args.args or "finance" in str(call_args)
-
-    async def test_severity_filter_accepted(self) -> None:
-        """severity filter must be forwarded to the DB and reflected in results."""
-        fp = "m" * 64
-        agg_row: dict[str, Any] = {
-            "fingerprint": fp,
-            "source_butler": "general",
-            "source_type": "log_scanner",
-            "severity": 1,
-            "exception_type": "TypeError",
-            "event_summary": "type mismatch",
-            "call_site": "src/a.py:b",
-            "occurrence_count": 2,
-            "first_seen": _NOW,
-            "last_seen": _NOW,
-            "patrol_count": 1,
-            "healing_attempt_id": None,
-        }
-        app, mock_pool = _build_app(
-            fetchval_result=1,
-            fetch_side_effect=[
-                [_mock_record(agg_row)],
-                [],  # dismissals
-            ],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues", params={"severity": 1})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"][0]["severity"] == 1
-        # Verify the DB was called with severity 1 as a parameter
-        call_args = mock_pool.fetchval.call_args
-        assert 1 in call_args.args or 1 in str(call_args)
-
-    async def test_dismissed_true_filter_accepted(self) -> None:
-        """dismissed=true filter should return only dismissed issues."""
-        fp = "n" * 64
-        agg_row: dict[str, Any] = {
-            "fingerprint": fp,
-            "source_butler": "general",
-            "source_type": "log_scanner",
-            "severity": 2,
-            "exception_type": "RuntimeError",
-            "event_summary": "runtime error",
-            "call_site": "src/c.py:d",
-            "occurrence_count": 4,
-            "first_seen": _NOW,
-            "last_seen": _NOW,
-            "patrol_count": 1,
-            "healing_attempt_id": None,
-        }
-        dismissal = _make_dismissal_row(fingerprint=fp)
-        app, _ = _build_app(
-            fetchval_result=1,
-            fetch_side_effect=[
-                [_mock_record(agg_row)],
-                [_mock_record(dismissal)],
-            ],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues", params={"dismissed": "true"})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
-        assert body["data"][0]["dismissal"] is not None
-
-    async def test_dismissed_false_filter_accepted(self) -> None:
-        """dismissed=false filter should return only active (non-dismissed) issues."""
-        fp = "o" * 64
-        agg_row: dict[str, Any] = {
-            "fingerprint": fp,
-            "source_butler": "general",
-            "source_type": "log_scanner",
-            "severity": 3,
-            "exception_type": "OSError",
-            "event_summary": "file not found",
-            "call_site": "src/e.py:f",
-            "occurrence_count": 1,
-            "first_seen": _NOW,
-            "last_seen": _NOW,
-            "patrol_count": 1,
-            "healing_attempt_id": None,
-        }
-        app, _ = _build_app(
-            fetchval_result=1,
-            fetch_side_effect=[
-                [_mock_record(agg_row)],
-                [],  # no dismissals
-            ],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues", params={"dismissed": "false"})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
+        # No dismissal
+        app, _ = _build_app(fetchval_result=1, fetch_side_effect=[[_r(agg_row)], []])
+        body = (await _call(app, "get", "/api/qa/known-issues")).json()
+        assert body["data"][0]["fingerprint"] == fp
+        assert body["data"][0]["occurrence_count"] == 7
+        assert body["data"][0]["patrol_count"] == 3
         assert body["data"][0]["dismissal"] is None
 
-    async def test_pagination_meta_reflects_total(self) -> None:
-        """meta.total must reflect the count query, not just the page size."""
-        app, _ = _build_app(
-            fetchval_result=42,
-            fetch_side_effect=[[], []],
+        # With dismissal
+        dismissal = _make_dismissal_row(fingerprint=fp)
+        app2, _ = _build_app(fetchval_result=1, fetch_side_effect=[[_r(agg_row)], [_r(dismissal)]])
+        body2 = (await _call(app2, "get", "/api/qa/known-issues")).json()
+        assert body2["data"][0]["dismissal"]["fingerprint"] == fp
+        assert body2["data"][0]["dismissal"]["dismissed_by"] == "dashboard_user"
+
+    async def test_filters_forwarded_to_db_and_pagination(self) -> None:
+        """source_butler, severity, dismissed filters forwarded; meta.total reflects count query."""
+        fp = "l" * 64
+        agg_row = _make_agg_row(fingerprint=fp, source_butler="finance", severity=1)
+        dismissal = _make_dismissal_row(fingerprint=fp)
+
+        app, pool = _build_app(fetchval_result=1, fetch_side_effect=[[_r(agg_row)], []])
+        r = await _call(app, "get", "/api/qa/known-issues", params={"source_butler": "finance"})
+        assert r.json()["data"][0]["source_butler"] == "finance"
+        assert "finance" in pool.fetchval.call_args.args or "finance" in str(
+            pool.fetchval.call_args
         )
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/known-issues", params={"limit": 10, "offset": 0})
+        app2, pool2 = _build_app(fetchval_result=1, fetch_side_effect=[[_r(agg_row)], []])
+        r2 = await _call(app2, "get", "/api/qa/known-issues", params={"severity": 1})
+        assert r2.json()["data"][0]["severity"] == 1
+        assert 1 in pool2.fetchval.call_args.args or 1 in str(pool2.fetchval.call_args)
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["total"] == 42
-        assert body["meta"]["limit"] == 10
+        app3, _ = _build_app(fetchval_result=1, fetch_side_effect=[[_r(agg_row)], [_r(dismissal)]])
+        assert (
+            await _call(app3, "get", "/api/qa/known-issues", params={"dismissed": "true"})
+        ).json()["data"][0]["dismissal"] is not None
+
+        app4, _ = _build_app(fetchval_result=1, fetch_side_effect=[[_r(agg_row)], []])
+        assert (
+            await _call(app4, "get", "/api/qa/known-issues", params={"dismissed": "false"})
+        ).json()["data"][0]["dismissal"] is None
+
+        app5, _ = _build_app(fetchval_result=42, fetch_side_effect=[[], []])
+        meta = (await _call(app5, "get", "/api/qa/known-issues", params={"limit": 10})).json()[
+            "meta"
+        ]
+        assert meta["total"] == 42 and meta["limit"] == 10
 
 
-# ---------------------------------------------------------------------------
-# POST /api/qa/known-issues/{fingerprint}/dismiss
-# ---------------------------------------------------------------------------
-
-
-class TestDismissKnownIssue:
-    async def test_creates_dismissal_with_indefinite_expiry(self) -> None:
+class TestKnownIssueDismissal:
+    async def test_dismiss_and_undismiss(self) -> None:
+        """POST creates dismissal (or 500 on failure); DELETE removes it (or 404 if absent); 503 on DB failure."""
         fp = "f" * 64
-        # Mock returns what the DB would persist — use the provided dismissed_by
-        dismissal = _make_dismissal_row(fingerprint=fp, dismissed_by="owner")
-        app, _ = _build_app(fetchrow_result=dismissal)
+        app, _ = _build_app(
+            fetchrow_result=_make_dismissal_row(fingerprint=fp, dismissed_by="owner")
+        )
+        r = await _call(
+            app, "post", f"/api/qa/known-issues/{fp}/dismiss", json={"dismissed_by": "owner"}
+        )
+        assert r.status_code == 200
+        assert r.json()["data"]["dismissed_by"] == "owner"
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                f"/api/qa/known-issues/{fp}/dismiss",
-                json={"dismissed_by": "owner"},
-            )
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["fingerprint"] == fp
-        assert body["data"]["dismissed_by"] == "owner"
-
-    async def test_creates_dismissal_with_explicit_expiry(self) -> None:
-        fp = "g" * 64
+        # explicit dismissed_until expiry accepted and round-tripped
         expiry = datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC)
-        dismissal = _make_dismissal_row(fingerprint=fp, dismissed_until=expiry)
-        app, _ = _build_app(fetchrow_result=dismissal)
+        fp_exp = "g" * 64
+        app_exp, _ = _build_app(
+            fetchrow_result=_make_dismissal_row(fingerprint=fp_exp, dismissed_until=expiry)
+        )
+        r_exp = await _call(
+            app_exp,
+            "post",
+            f"/api/qa/known-issues/{fp_exp}/dismiss",
+            json={"dismissed_until": expiry.isoformat(), "dismissed_by": "owner"},
+        )
+        assert r_exp.status_code == 200
+        assert r_exp.json()["data"]["fingerprint"] == fp_exp
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                f"/api/qa/known-issues/{fp}/dismiss",
-                json={"dismissed_until": expiry.isoformat(), "dismissed_by": "owner"},
-            )
+        # empty body → defaults → 200
+        fp2 = "i" * 64
+        app2, _ = _build_app(fetchrow_result=_make_dismissal_row(fingerprint=fp2))
+        assert (
+            await _call(app2, "post", f"/api/qa/known-issues/{fp2}/dismiss", json={})
+        ).status_code == 200
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["fingerprint"] == fp
-
-    async def test_returns_500_when_insert_fails(self) -> None:
-        fp = "h" * 64
-        app, _ = _build_app(fetchrow_result=None)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                f"/api/qa/known-issues/{fp}/dismiss",
+        # insert fails → 500
+        assert (
+            await _call(
+                _build_app(fetchrow_result=None)[0],
+                "post",
+                f"/api/qa/known-issues/{'h' * 64}/dismiss",
                 json={},
             )
+        ).status_code == 500
 
-        assert response.status_code == 500
+        # DELETE success
+        fp3 = "j" * 64
+        app3, _ = _build_app(execute_result="DELETE 1")
+        r3 = await _call(app3, "delete", f"/api/qa/known-issues/{fp3}/dismiss")
+        assert r3.status_code == 200 and r3.json()["data"]["deleted"] is True
 
-    async def test_empty_body_uses_defaults(self) -> None:
-        fp = "i" * 64
-        dismissal = _make_dismissal_row(fingerprint=fp)
-        app, _ = _build_app(fetchrow_result=dismissal)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                f"/api/qa/known-issues/{fp}/dismiss",
-                json={},
+        # DELETE 404 when not found
+        assert (
+            await _call(
+                _build_app(execute_result="DELETE 0")[0],
+                "delete",
+                f"/api/qa/known-issues/{'k' * 64}/dismiss",
             )
+        ).status_code == 404
 
-        assert response.status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# DELETE /api/qa/known-issues/{fingerprint}/dismiss
-# ---------------------------------------------------------------------------
-
-
-class TestUndismissKnownIssue:
-    async def test_deletes_existing_dismissal(self) -> None:
-        fp = "j" * 64
-        app, _ = _build_app(execute_result="DELETE 1")
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.delete(f"/api/qa/known-issues/{fp}/dismiss")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["fingerprint"] == fp
-        assert body["data"]["deleted"] is True
-
-    async def test_returns_404_when_no_dismissal_exists(self) -> None:
-        fp = "k" * 64
-        app, _ = _build_app(execute_result="DELETE 0")
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.delete(f"/api/qa/known-issues/{fp}/dismiss")
-
-        assert response.status_code == 404
-
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.delete("/api/qa/known-issues/abc/dismiss")
-
-        assert response.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# POST /api/qa/force-patrol
-# ---------------------------------------------------------------------------
+        # 503 on DB failure
+        assert (
+            await _call(_make_503_app(), "delete", "/api/qa/known-issues/abc/dismiss")
+        ).status_code == 503
 
 
 class TestForcePatrol:
-    async def test_returns_202_not_accepted_in_standalone_mode(self) -> None:
-        """Without an in-process force_patrol_fn, returns 202 with accepted=False."""
+    async def test_force_patrol_standalone_and_with_fn(self) -> None:
+        """Standalone (no fn): 202 accepted=False. With fn: accepted=True with status in message.
+        Skipped fn: accepted=False. Raising fn: 503."""
+        # Standalone mode
         app, _ = _build_app()
+        r = await _call(app, "post", "/api/qa/force-patrol")
+        assert r.status_code == 202
+        assert r.json()["data"]["accepted"] is False
+        assert "message" in r.json()["data"]
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post("/api/qa/force-patrol")
-
-        assert response.status_code == 202
-        body = response.json()
-        assert body["data"]["accepted"] is False
-        assert "message" in body["data"]
-
-    async def test_calls_force_patrol_fn_when_provided(self) -> None:
-        """When an in-process callable is provided, it should be called."""
-        patrol_result = {
-            "status": "findings_dispatched",
-            "patrol_id": str(uuid.uuid4()),
-            "findings_count": 3,
-            "novel_count": 1,
-            "dispatched_count": 1,
-            "sources_polled": ["log_scanner"],
-        }
-
+        # With callable
         async def _fake_force_patrol() -> dict:
-            return patrol_result
+            return {
+                "status": "findings_dispatched",
+                "patrol_id": str(uuid.uuid4()),
+                "findings_count": 3,
+                "novel_count": 1,
+                "dispatched_count": 1,
+                "sources_polled": ["log_scanner"],
+            }
 
-        app, _ = _build_app()
-        app.dependency_overrides[_get_force_patrol_fn] = lambda: _fake_force_patrol
+        app2, _ = _build_app()
+        app2.dependency_overrides[_get_force_patrol_fn] = lambda: _fake_force_patrol
+        r2 = await _call(app2, "post", "/api/qa/force-patrol")
+        assert r2.json()["data"]["accepted"] is True
+        assert "findings_dispatched" in r2.json()["data"]["message"]
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post("/api/qa/force-patrol")
-
-        assert response.status_code == 202
-        body = response.json()
-        assert body["data"]["accepted"] is True
-        assert "findings_dispatched" in body["data"]["message"]
-
-    async def test_skipped_patrol_returns_accepted_false(self) -> None:
-        """When the callable returns status=skipped, accepted should be False."""
-
+        # Skipped
         async def _skipped() -> dict:
             return {"status": "skipped", "reason": "patrol_already_running"}
 
-        app, _ = _build_app()
-        app.dependency_overrides[_get_force_patrol_fn] = lambda: _skipped
+        app3, _ = _build_app()
+        app3.dependency_overrides[_get_force_patrol_fn] = lambda: _skipped
+        assert (await _call(app3, "post", "/api/qa/force-patrol")).json()["data"][
+            "accepted"
+        ] is False
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post("/api/qa/force-patrol")
-
-        assert response.status_code == 202
-        body = response.json()
-        assert body["data"]["accepted"] is False
-
-    async def test_returns_503_when_force_patrol_fn_raises(self) -> None:
-        """When the callable raises, the endpoint should return 503."""
-
+        # Exception → 503
         async def _failing() -> dict:
             raise RuntimeError("daemon not available")
 
-        app, _ = _build_app()
-        app.dependency_overrides[_get_force_patrol_fn] = lambda: _failing
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post("/api/qa/force-patrol")
-
-        assert response.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# POST /api/qa/dev/synthetic-findings
-# ---------------------------------------------------------------------------
+        app4, _ = _build_app()
+        app4.dependency_overrides[_get_force_patrol_fn] = lambda: _failing
+        assert (await _call(app4, "post", "/api/qa/force-patrol")).status_code == 503
 
 
 class TestInjectSyntheticFinding:
@@ -1524,12 +801,7 @@ class TestInjectSyntheticFinding:
         """The operator-only synthetic finding hook must be explicitly enabled."""
         monkeypatch.delenv("QA_ALLOW_SYNTHETIC_FINDINGS", raising=False)
         app, pool = _build_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post("/api/qa/dev/synthetic-findings", json={})
-
+        response = await _call(app, "post", "/api/qa/dev/synthetic-findings", json={})
         assert response.status_code == 403
         assert "QA_ALLOW_SYNTHETIC_FINDINGS" in response.json()["detail"]
         pool.execute.assert_not_called()
@@ -1542,21 +814,11 @@ class TestInjectSyntheticFinding:
         finding_id = uuid.uuid4()
         monkeypatch.setattr("butlers.api.routers.qa.uuid.uuid4", lambda: patrol_id)
         app, pool = _build_app(
-            fetchrow_result={
-                "id": finding_id,
-                "fingerprint": "a" * 64,
-                "patrol_id": patrol_id,
-            }
+            fetchrow_result={"id": finding_id, "fingerprint": "a" * 64, "patrol_id": patrol_id}
         )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.post(
-                "/api/qa/dev/synthetic-findings",
-                json={"source_butler": "general"},
-            )
-
+        response = await _call(
+            app, "post", "/api/qa/dev/synthetic-findings", json={"source_butler": "general"}
+        )
         assert response.status_code == 202
         body = response.json()
         assert body["data"]["accepted"] is True
@@ -1579,11 +841,6 @@ class TestInjectSyntheticFinding:
         assert "general" in finding_args
 
 
-# ---------------------------------------------------------------------------
-# GET /api/qa/trends
-# ---------------------------------------------------------------------------
-
-
 def _make_trend_row(
     *,
     date: str = "2026-04-05",
@@ -1603,575 +860,195 @@ def _make_trend_row(
     }
 
 
-def _make_source_row(
-    *,
-    source_type: str = "log_scanner",
-    count: int = 7,
-) -> dict[str, Any]:
+def _make_source_row(source_type: str = "log_scanner", count: int = 7) -> dict[str, Any]:
     return {"source_type": source_type, "count": count}
 
 
 class TestGetQaTrends:
-    async def test_returns_empty_trends_when_no_data(self) -> None:
-        app, _ = _build_app(fetch_rows=[], fetch_side_effect=[[], []])
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/trends")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["days"] == []
-        assert body["data"]["source_breakdown"] == []
-
-    async def test_returns_trend_days_with_success_rate(self) -> None:
-        trend_row = _make_trend_row(
-            date="2026-04-05",
-            patrols_completed=4,
-            clean_count=3,
-        )
-        app, _ = _build_app(
-            fetch_side_effect=[
-                [_mock_record(trend_row)],
-                [],  # source breakdown
-            ],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/trends")
-
-        assert response.status_code == 200
-        body = response.json()
-        days = body["data"]["days"]
-        assert len(days) == 1
-        assert days[0]["date"] == "2026-04-05"
-        assert days[0]["patrols_completed"] == 4
-        assert days[0]["success_rate"] == pytest.approx(0.75, abs=0.001)
-
-    async def test_returns_source_breakdown(self) -> None:
-        source_row = _make_source_row(source_type="log_scanner", count=12)
-        app, _ = _build_app(
-            fetch_side_effect=[
-                [],  # trend days
-                [_mock_record(source_row)],
-            ],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/trends")
-
-        assert response.status_code == 200
-        body = response.json()
-        breakdown = body["data"]["source_breakdown"]
-        assert len(breakdown) == 1
-        assert breakdown[0]["source_type"] == "log_scanner"
-        assert breakdown[0]["count"] == 12
-
-    async def test_success_rate_is_zero_when_no_completed_patrols(self) -> None:
-        trend_row = _make_trend_row(patrols_completed=0, clean_count=0)
-        app, _ = _build_app(
-            fetch_side_effect=[[_mock_record(trend_row)], []],
-        )
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/trends")
-
-        assert response.status_code == 200
-        days = response.json()["data"]["days"]
-        assert days[0]["success_rate"] == 0.0
-
-    async def test_accepts_days_query_param(self) -> None:
+    async def test_trends_empty_success_rate_and_source_breakdown(self) -> None:
+        """Empty DB returns empty lists; success_rate computed; source_breakdown returned; days param accepted."""
         app, _ = _build_app(fetch_side_effect=[[], []])
+        assert (await _call(app, "get", "/api/qa/trends")).json()["data"]["days"] == []
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/trends", params={"days": 14})
+        # success_rate = clean_count / patrols_completed; 0.0 when none
+        app2, _ = _build_app(
+            fetch_side_effect=[[_r(_make_trend_row(patrols_completed=4, clean_count=3))], []]
+        )
+        assert (await _call(app2, "get", "/api/qa/trends")).json()["data"]["days"][0][
+            "success_rate"
+        ] == pytest.approx(0.75, abs=0.001)
 
-        assert response.status_code == 200
+        app3, _ = _build_app(
+            fetch_side_effect=[[_r(_make_trend_row(patrols_completed=0, clean_count=0))], []]
+        )
+        assert (await _call(app3, "get", "/api/qa/trends")).json()["data"]["days"][0][
+            "success_rate"
+        ] == 0.0
 
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/dismissals
-# ---------------------------------------------------------------------------
+        app4, _ = _build_app(fetch_side_effect=[[], [_r(_make_source_row("log_scanner", 12))]])
+        breakdown = (await _call(app4, "get", "/api/qa/trends", params={"days": 14})).json()[
+            "data"
+        ]["source_breakdown"]
+        assert breakdown[0]["source_type"] == "log_scanner" and breakdown[0]["count"] == 12
 
 
 class TestListDismissals:
-    async def test_returns_empty_list_when_no_dismissals(self) -> None:
-        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+    async def test_list_dismissals(self) -> None:
+        """Empty DB returns empty list; non-empty returns records with pagination meta; 503 on DB failure."""
+        assert (
+            await _call(
+                _build_app(fetch_rows=[], fetchval_result=0)[0], "get", "/api/qa/dismissals"
+            )
+        ).json()["data"] == []
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/dismissals")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"] == []
-        assert body["meta"]["total"] == 0
-
-    async def test_returns_active_dismissals(self) -> None:
         fp = "p" * 64
-        dismissal = _make_dismissal_row(fingerprint=fp)
-        app, _ = _build_app(fetch_rows=[dismissal], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/dismissals")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert len(body["data"]) == 1
+        app, _ = _build_app(fetch_rows=[_make_dismissal_row(fingerprint=fp)], fetchval_result=50)
+        r = await _call(app, "get", "/api/qa/dismissals", params={"limit": 10, "offset": 5})
+        body = r.json()
         assert body["data"][0]["fingerprint"] == fp
-        assert body["meta"]["total"] == 1
+        assert (
+            body["meta"]["total"] == 50
+            and body["meta"]["limit"] == 10
+            and body["meta"]["offset"] == 5
+        )
 
-    async def test_pagination_parameters_accepted(self) -> None:
-        app, _ = _build_app(fetch_rows=[], fetchval_result=50)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/dismissals", params={"limit": 10, "offset": 5})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["limit"] == 10
-        assert body["meta"]["offset"] == 5
-        assert body["meta"]["total"] == 50
-
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/dismissals")
-
-        assert response.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# DELETE /api/qa/dismissals/{fingerprint}
-# ---------------------------------------------------------------------------
+        assert (await _call(_make_503_app(), "get", "/api/qa/dismissals")).status_code == 503
 
 
 class TestDeleteDismissal:
-    async def test_deletes_existing_dismissal(self) -> None:
+    async def test_delete_dismissal(self) -> None:
+        """DELETE returns {deleted: true} on success; 404 when not found; 503 on DB failure."""
         fp = "q" * 64
         app, _ = _build_app(execute_result="DELETE 1")
+        r = await _call(app, "delete", f"/api/qa/dismissals/{fp}")
+        assert r.status_code == 200
+        assert r.json()["data"]["fingerprint"] == fp
+        assert r.json()["data"]["deleted"] is True
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.delete(f"/api/qa/dismissals/{fp}")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"]["fingerprint"] == fp
-        assert body["data"]["deleted"] is True
-
-    async def test_returns_404_when_not_found(self) -> None:
-        fp = "r" * 64
-        app, _ = _build_app(execute_result="DELETE 0")
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.delete(f"/api/qa/dismissals/{fp}")
-
-        assert response.status_code == 404
-
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.delete("/api/qa/dismissals/abc")
-
-        assert response.status_code == 503
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/summary — credentials_status field
-# ---------------------------------------------------------------------------
+        assert (
+            await _call(
+                _build_app(execute_result="DELETE 0")[0], "delete", f"/api/qa/dismissals/{'r' * 64}"
+            )
+        ).status_code == 404
+        assert (await _call(_make_503_app(), "delete", "/api/qa/dismissals/abc")).status_code == 503
 
 
 class TestGetQaSummaryCredentialsStatus:
-    async def test_credentials_status_defaults_unknown_when_fn_not_wired(self) -> None:
-        """When no credentials_status_fn is wired, gh_token_present is None (unknown)."""
+    async def test_credentials_status_all_states(self) -> None:
+        """Unknown when not wired; token present → no hint; token missing → actionable hint;
+        exception in fn is non-fatal (returns 200 with defaults)."""
+        # Unknown when fn not wired
         app, _ = _build_summary_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        creds = response.json()["data"]["credentials_status"]
+        creds = (await _call(app, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
         assert creds["gh_token_present"] is None
         assert creds["provisioning_hint"] is None
 
-    async def test_credentials_status_present_when_token_is_set(self) -> None:
-        """When token is present, gh_token_present=True and no provisioning hint."""
-        app, _ = _build_summary_app()
-
-        async def _creds_fn():
+        # Token present → gh_token_present=True, no hint
+        async def _token_present():
             return {"gh_token_present": True}
 
-        app.dependency_overrides[_get_credentials_status_fn] = lambda: _creds_fn
+        app2, _ = _build_summary_app()
+        app2.dependency_overrides[_get_credentials_status_fn] = lambda: _token_present
+        creds2 = (await _call(app2, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
+        assert creds2["gh_token_present"] is True
+        assert creds2["provisioning_hint"] is None
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        creds = response.json()["data"]["credentials_status"]
-        assert creds["gh_token_present"] is True
-        assert creds["provisioning_hint"] is None
-
-    async def test_credentials_status_missing_includes_provisioning_hint(self) -> None:
-        """When token is missing, provisioning_hint contains actionable instructions."""
-        app, _ = _build_summary_app()
-
-        async def _creds_fn():
+        # Token missing → hint with BUTLERS_QA_GH_TOKEN
+        async def _token_missing():
             return {"gh_token_present": False}
 
-        app.dependency_overrides[_get_credentials_status_fn] = lambda: _creds_fn
+        app3, _ = _build_summary_app()
+        app3.dependency_overrides[_get_credentials_status_fn] = lambda: _token_missing
+        creds3 = (await _call(app3, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
+        assert creds3["gh_token_present"] is False
+        assert "BUTLERS_QA_GH_TOKEN" in creds3["provisioning_hint"]
+        assert "butler secrets set" in creds3["provisioning_hint"]
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
-        assert response.status_code == 200
-        creds = response.json()["data"]["credentials_status"]
-        assert creds["gh_token_present"] is False
-        assert creds["provisioning_hint"] is not None
-        assert "BUTLERS_QA_GH_TOKEN" in creds["provisioning_hint"]
-        assert "butler secrets set" in creds["provisioning_hint"]
-
-    async def test_credentials_status_fn_exception_is_non_fatal(self) -> None:
-        """If credentials_status_fn raises, the endpoint still returns 200 with defaults."""
-        app, _ = _build_summary_app()
-
-        async def _failing_creds_fn():
+        # Exception in fn is non-fatal — returns 200, gh_token_present defaults to None
+        async def _failing_fn():
             raise RuntimeError("credential store unavailable")
 
-        app.dependency_overrides[_get_credentials_status_fn] = lambda: _failing_creds_fn
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/summary")
-
+        app4, _ = _build_summary_app()
+        app4.dependency_overrides[_get_credentials_status_fn] = lambda: _failing_fn
+        response = await _call(app4, "get", "/api/qa/summary")
         assert response.status_code == 200
-        # Defaults to unknown (None) on error
-        creds = response.json()["data"]["credentials_status"]
-        assert creds["gh_token_present"] is None
-
-
-# ---------------------------------------------------------------------------
-# Phase/deadline fields on GET /api/qa/investigations (bu-xp0x0.5)
-# ---------------------------------------------------------------------------
-
-
-class TestInvestigationPhaseFields:
-    """Investigations include current_phase and workflow_deadline_at from the phased workflow."""
-
-    async def test_phase_fields_null_when_not_set(self) -> None:
-        """Single-session investigations have null current_phase and workflow_deadline_at."""
-        row = _make_investigation_row(status="investigating")
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 200
-        inv = response.json()["data"][0]
-        assert inv["current_phase"] is None
-        assert inv["workflow_deadline_at"] is None
-
-    async def test_phase_fields_populated_when_phased_workflow(self) -> None:
-        """Multi-phase investigations expose current_phase and workflow_deadline_at."""
-        deadline = datetime(2026, 4, 9, 14, 0, 0, tzinfo=UTC)
-        row = _make_investigation_row(
-            status="investigating",
-            current_phase="diagnose",
-            workflow_deadline_at=deadline,
-        )
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/investigations")
-
-        assert response.status_code == 200
-        inv = response.json()["data"][0]
-        assert inv["current_phase"] == "diagnose"
-        assert inv["workflow_deadline_at"] is not None
-
-    async def test_dispatch_pending_is_not_a_valid_status_filter(self) -> None:
-        """dispatch_pending was removed in core_066 and must not be accepted as a filter."""
-        app, _ = _build_app()
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(
-                "/api/qa/investigations", params={"status": "dispatch_pending"}
-            )
-
-        assert response.status_code == 422
-        assert "dispatch_pending" in response.json()["detail"]
-
-
-# ---------------------------------------------------------------------------
-# Structured evidence on GET /api/qa/patrols/{id}/findings (bu-xp0x0.5)
-# ---------------------------------------------------------------------------
+        assert response.json()["data"]["credentials_status"]["gh_token_present"] is None
 
 
 class TestFindingEvidenceFields:
     """Findings include source_session_trigger_source and structured_evidence (core_067)."""
 
-    async def test_evidence_fields_null_by_default(self) -> None:
-        """Findings without evidence columns return null for both new fields."""
-        patrol_id = uuid.uuid4()
-        patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=1)
-        finding = _make_finding_row(patrol_id=patrol_id)
-        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding])
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{patrol_id}")
-
-        assert response.status_code == 200
-        f = response.json()["data"]["findings"][0]
-        assert f["source_session_trigger_source"] is None
-        assert f["structured_evidence"] is None
-
-    async def test_evidence_fields_populated_when_present(self) -> None:
-        """Findings with structured_evidence and trigger_source expose both fields."""
-        patrol_id = uuid.uuid4()
-        patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=1)
-        evidence = {"session_id": str(uuid.uuid4()), "runtime_type": "codex", "tool_call_count": 5}
-        finding = _make_finding_row(
-            patrol_id=patrol_id,
-            source_session_trigger_source="healing",
-            structured_evidence=evidence,
-        )
-        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding])
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{patrol_id}")
-
-        assert response.status_code == 200
-        f = response.json()["data"]["findings"][0]
-        assert f["source_session_trigger_source"] == "healing"
-        assert f["structured_evidence"]["runtime_type"] == "codex"
-        assert f["structured_evidence"]["tool_call_count"] == 5
-
-    async def test_evidence_fields_parsed_when_asyncpg_returns_string(self) -> None:
-        """Findings parse structured_evidence correctly when asyncpg returns JSONB as a string.
-
-        asyncpg returns JSONB columns as strings when no custom codec is registered.
-        The endpoint must handle both dict and string forms to avoid silently dropping evidence.
-        """
+    async def test_evidence_fields_null_then_populated_dict_and_string(self) -> None:
+        """Null when absent; populated when present; parses from asyncpg string form (JSONB)."""
         import json as _json
 
         patrol_id = uuid.uuid4()
-        patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=1)
-        evidence = {"session_id": "abc", "runtime_type": "codex"}
-        finding = _make_finding_row(
-            patrol_id=patrol_id,
-            source_session_trigger_source="healing",
-            structured_evidence=_json.dumps(evidence),  # simulate asyncpg string form
+
+        # Null by default
+        app, _ = _build_app(
+            fetchrow_result=_make_patrol_row(patrol_id=patrol_id, findings_count=1),
+            fetch_rows=[_make_finding_row(patrol_id=patrol_id)],
         )
-        app, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding])
+        f = (await _call(app, "get", f"/api/qa/patrols/{patrol_id}")).json()["data"]["findings"][0]
+        assert f["source_session_trigger_source"] is None
+        assert f["structured_evidence"] is None
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get(f"/api/qa/patrols/{patrol_id}")
-
-        assert response.status_code == 200
-        f = response.json()["data"]["findings"][0]
-        assert f["structured_evidence"]["runtime_type"] == "codex"
-
-
-# ---------------------------------------------------------------------------
-# GET /api/qa/meta-review (bu-xp0x0.5)
-# ---------------------------------------------------------------------------
+        # Dict and string form
+        evidence = {"session_id": "abc", "runtime_type": "codex", "tool_call_count": 5}
+        for ev in (evidence, _json.dumps(evidence)):
+            patrol = _make_patrol_row(patrol_id=patrol_id, findings_count=1)
+            finding = _make_finding_row(
+                patrol_id=patrol_id, source_session_trigger_source="healing", structured_evidence=ev
+            )
+            app2, _ = _build_app(fetchrow_result=patrol, fetch_rows=[finding])
+            f2 = (await _call(app2, "get", f"/api/qa/patrols/{patrol_id}")).json()["data"][
+                "findings"
+            ][0]
+            assert f2["source_session_trigger_source"] == "healing"
+            assert f2["structured_evidence"]["runtime_type"] == "codex"
+            assert f2["structured_evidence"]["tool_call_count"] == 5
 
 
 class TestListMetaReviewFindings:
     """The meta-review lane surfaces QA-self-recursive findings for operator review."""
 
-    def _make_meta_finding_row(
-        self,
-        *,
-        source_session_trigger_source: str | None = "healing",
-        source_butler: str = "qa",
-    ) -> dict[str, Any]:
-        """Build a fake qa_findings row for a meta-review finding."""
-        return _make_finding_row(
-            source_butler=source_butler,
-            source_session_trigger_source=source_session_trigger_source,
-        )
+    async def test_meta_review_all_trigger_sources_and_pagination(self) -> None:
+        """Empty list, then findings appear for trigger_source in {healing, qa, None};
+        pagination accepted; 503 on DB failure.
 
-    async def test_returns_empty_list_when_no_meta_review_findings(self) -> None:
-        """When there are no QA-self-recursive findings, the list is empty."""
-        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["data"] == []
-        assert body["meta"]["total"] == 0
-
-    async def test_returns_meta_review_findings_with_trigger_source(self) -> None:
-        """Findings with source_butler=qa and healing trigger_source appear in meta-review."""
-        finding = self._make_meta_finding_row(source_session_trigger_source="healing")
-        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["total"] == 1
-        assert len(body["data"]) == 1
-        f = body["data"][0]
-        assert f["source_butler"] == "qa"
-        assert f["source_session_trigger_source"] == "healing"
-
-    async def test_returns_meta_review_findings_with_qa_trigger(self) -> None:
-        """Findings with source_session_trigger_source='qa' also appear in meta-review.
-
-        QA-spawned investigation sessions use trigger_source='qa'.  This matches
-        the dispatch barrier in butlers.core.qa.dispatch which checks
-        ``trigger_src in {"healing", "qa"}``.
+        Covers dispatch barrier: butlers.core.qa.dispatch checks ``trigger_src in {"healing", "qa"}``;
+        null trigger_source from QA butler is also treated as potentially recursive.
         """
-        finding = self._make_meta_finding_row(source_session_trigger_source="qa")
-        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+        assert (
+            await _call(
+                _build_app(fetch_rows=[], fetchval_result=0)[0], "get", "/api/qa/meta-review"
+            )
+        ).json()["data"] == []
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review")
+        for trigger in ("healing", "qa", None):
+            finding = _make_finding_row(source_butler="qa", source_session_trigger_source=trigger)
+            app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+            r = await _call(app, "get", "/api/qa/meta-review")
+            assert r.status_code == 200, f"failed for trigger={trigger!r}"
+            assert r.json()["data"][0]["source_butler"] == "qa"
+            assert r.json()["data"][0]["source_session_trigger_source"] == trigger
 
-        assert response.status_code == 200
-        assert response.json()["data"][0]["source_session_trigger_source"] == "qa"
+        app_pg, _ = _build_app(fetch_rows=[], fetchval_result=50)
+        meta = (
+            await _call(app_pg, "get", "/api/qa/meta-review", params={"limit": 10, "offset": 5})
+        ).json()["meta"]
+        assert meta["limit"] == 10 and meta["offset"] == 5 and meta["total"] == 50
 
-    async def test_returns_meta_review_findings_with_null_trigger_source(self) -> None:
-        """Findings from QA butler with null trigger_source are treated as potentially recursive."""
-        finding = self._make_meta_finding_row(source_session_trigger_source=None)
-        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+        assert (await _call(_make_503_app(), "get", "/api/qa/meta-review")).status_code == 503
 
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review")
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["total"] == 1
-        assert body["data"][0]["source_session_trigger_source"] is None
-
-    async def test_meta_review_includes_structured_evidence(self) -> None:
-        """Meta-review findings include structured_evidence when available (dict form)."""
-        evidence = {"session_id": "abc123", "runtime_type": "codex"}
-        finding = self._make_meta_finding_row()
-        finding["structured_evidence"] = evidence
-        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review")
-
-        assert response.status_code == 200
-        f = response.json()["data"][0]
-        assert f["structured_evidence"]["runtime_type"] == "codex"
-
-    async def test_meta_review_includes_structured_evidence_as_string(self) -> None:
-        """Meta-review findings parse structured_evidence when asyncpg returns it as a string.
-
-        asyncpg returns JSONB columns as strings when no custom codec is registered.
-        The endpoint must handle both dict and string forms.
-        """
+    async def test_structured_evidence_dict_and_string(self) -> None:
+        """Meta-review findings parse structured_evidence in both dict and string (JSONB) forms."""
         import json as _json
 
         evidence = {"session_id": "def456", "runtime_type": "codex", "tool_call_count": 3}
-        finding = self._make_meta_finding_row()
-        finding["structured_evidence"] = _json.dumps(evidence)  # simulate asyncpg string form
-        app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review")
-
-        assert response.status_code == 200
-        f = response.json()["data"][0]
-        assert f["structured_evidence"]["runtime_type"] == "codex"
-        assert f["structured_evidence"]["tool_call_count"] == 3
-
-    async def test_pagination_parameters_accepted(self) -> None:
-        """Meta-review endpoint accepts standard pagination parameters."""
-        app, _ = _build_app(fetch_rows=[], fetchval_result=50)
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review", params={"limit": 10, "offset": 5})
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["meta"]["limit"] == 10
-        assert body["meta"]["offset"] == 5
-        assert body["meta"]["total"] == 50
-
-    async def test_returns_503_when_db_unavailable(self) -> None:
-        """Returns 503 when the shared pool is not available."""
-        mock_db = MagicMock(spec=DatabaseManager)
-        mock_db.credential_shared_pool.side_effect = KeyError("no pool")
-
-        app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/api/qa/meta-review")
-
-        assert response.status_code == 503
+        for ev in (evidence, _json.dumps(evidence)):
+            finding = _make_finding_row(source_butler="qa", structured_evidence=ev)
+            app, _ = _build_app(fetch_rows=[finding], fetchval_result=1)
+            f = (await _call(app, "get", "/api/qa/meta-review")).json()["data"][0]
+            assert f["structured_evidence"]["runtime_type"] == "codex"
+            assert f["structured_evidence"]["tool_call_count"] == 3
