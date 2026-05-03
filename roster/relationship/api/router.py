@@ -78,6 +78,9 @@ if _models_path.exists():
         EntityLoan = _models_module.EntityLoan
         EntityTimelineItem = _models_module.EntityTimelineItem
         LinkedContactSummary = _models_module.LinkedContactSummary
+        EntityImportantDate = _models_module.EntityImportantDate
+        DunbarTierOverrideRequest = _models_module.DunbarTierOverrideRequest
+        DunbarTierOverrideResponse = _models_module.DunbarTierOverrideResponse
         MessageThreadSummary = _models_module.MessageThreadSummary
 
 logger = logging.getLogger(__name__)
@@ -2806,6 +2809,146 @@ async def list_entity_message_threads(
         )
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/dates — important dates scoped to one entity
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/entities/{entity_id}/dates",
+    response_model=list[EntityImportantDate],
+)
+async def list_entity_important_dates(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntityImportantDate]:
+    """Return all important_dates for the entity's linked contacts.
+
+    Each row carries the next future occurrence of (month, day) in
+    ``upcoming_date``, ordered ascending. Years are preserved when present so
+    callers can render birthdays as "Apr 12 (turning 35 in 22 days)".
+
+    Returns 404 if the entity does not exist.
+    Returns ``[]`` if the entity has no linked contacts or no dates.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    today = date.today()
+    rows = await pool.fetch(
+        """
+        SELECT
+            id.contact_id,
+            c.name AS contact_name,
+            id.label,
+            id.month,
+            id.day,
+            id.year
+        FROM important_dates id
+        JOIN contacts c ON c.id = id.contact_id
+        WHERE c.entity_id = $1
+          AND c.archived_at IS NULL
+        """,
+        entity_id,
+    )
+
+    out: list[EntityImportantDate] = []
+    for r in rows:
+        month = r["month"]
+        day = r["day"]
+        try:
+            this_year = date(today.year, month, day)
+        except ValueError:
+            # Feb 29 in non-leap years etc. — skip rather than error.
+            continue
+
+        if this_year >= today:
+            occurrence = this_year
+        else:
+            try:
+                occurrence = date(today.year + 1, month, day)
+            except ValueError:
+                continue
+
+        out.append(
+            EntityImportantDate(
+                contact_id=r["contact_id"],
+                contact_name=r["contact_name"],
+                label=r["label"],
+                month=month,
+                day=day,
+                year=r["year"],
+                upcoming_date=occurrence,
+            )
+        )
+
+    out.sort(key=lambda d: d.upcoming_date)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# PATCH /entities/{entity_id}/dunbar-tier — pin or clear a Dunbar override
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/entities/{entity_id}/dunbar-tier",
+    response_model=DunbarTierOverrideResponse,
+)
+async def patch_entity_dunbar_tier(
+    entity_id: UUID,
+    body: DunbarTierOverrideRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> DunbarTierOverrideResponse:
+    """Pin or clear an entity's Dunbar tier.
+
+    Accepts ``tier`` ∈ {5, 15, 50, 150, 500, 1500} to pin, or ``null`` to clear.
+    Resolves the entity to any one of its linked contacts, then delegates to
+    the canonical ``dunbar_tier_set`` engine. The override is stored as a fact
+    keyed by entity_id, so the choice of contact is irrelevant beyond
+    satisfying the engine's contract.
+
+    Returns 404 if the entity has no linked contact (override storage requires
+    one for the engine's bookkeeping).
+    """
+    from butlers.tools.relationship import dunbar as _dunbar
+
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    contact_row = await pool.fetchrow(
+        """
+        SELECT id FROM contacts
+        WHERE entity_id = $1 AND archived_at IS NULL
+        ORDER BY id
+        LIMIT 1
+        """,
+        entity_id,
+    )
+    if contact_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Entity '{entity_id}' has no linked contact. "
+                "Link a contact before pinning a Dunbar tier."
+            ),
+        )
+    contact_id = contact_row["id"]
+
+    try:
+        result = await _dunbar.dunbar_tier_set(pool, contact_id, body.tier)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return DunbarTierOverrideResponse(
+        entity_id=entity_id,
+        contact_id=contact_id,
+        tier=result.get("tier"),
+        action=result["action"],
+        message=result["message"],
+    )
 
 
 # ---------------------------------------------------------------------------

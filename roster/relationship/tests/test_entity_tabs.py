@@ -1165,3 +1165,207 @@ class TestEntityMessageThreads:
             limit=500,
         )
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Entity-scoped important dates and Dunbar tier override
+# ---------------------------------------------------------------------------
+
+
+def _make_date_row(**kwargs) -> dict:
+    """Build a dict-like row simulating an important_dates JOIN contacts result."""
+    return {
+        "contact_id": kwargs.get("contact_id", uuid4()),
+        "contact_name": kwargs.get("contact_name", "Alice"),
+        "label": kwargs.get("label", "birthday"),
+        "month": kwargs.get("month", 4),
+        "day": kwargs.get("day", 12),
+        "year": kwargs.get("year"),
+    }
+
+
+class TestEntityImportantDates:
+    """GET /entities/{id}/dates — important_dates scoped to an entity."""
+
+    async def test_returns_404_when_entity_missing(self):
+        app, _ = _app_with_pool(entity_exists=False)
+        resp = await _get(
+            app, f"/api/relationship/entities/{_MISSING_ENT_ID}/dates"
+        )
+        assert resp.status_code == 404
+
+    async def test_returns_empty_when_no_dates(self):
+        app, _ = _app_with_pool(entity_exists=True, fetch_rows=[])
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/dates")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_returns_dates_sorted_by_upcoming(self):
+        contact_id = uuid4()
+        rows = [
+            _make_date_row(
+                contact_id=contact_id,
+                contact_name="Alice",
+                label="birthday",
+                month=12,
+                day=25,
+                year=1990,
+            ),
+            _make_date_row(
+                contact_id=contact_id,
+                contact_name="Alice",
+                label="anniversary",
+                month=2,
+                day=14,
+                year=2015,
+            ),
+        ]
+        app, _ = _app_with_pool(entity_exists=True, fetch_rows=rows)
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/dates")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 2
+        # Sorted ascending by upcoming_date — both rows should appear.
+        labels = [d["label"] for d in body]
+        assert set(labels) == {"birthday", "anniversary"}
+        # Each row carries the canonical fields.
+        for d in body:
+            assert "upcoming_date" in d
+            assert d["month"] in (12, 2)
+            assert "year" in d
+
+
+def _build_app_for_dunbar_patch(
+    *,
+    entity_exists: bool = True,
+    contact_row: dict | None = None,
+    set_result: dict | None = None,
+    set_raises: Exception | None = None,
+) -> tuple[FastAPI, AsyncMock]:
+    """Wire an app for PATCH /entities/{id}/dunbar-tier tests.
+
+    Patches the engine import so the router calls a mocked dunbar_tier_set
+    rather than touching real DB logic.
+    """
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+    pool.fetchrow = AsyncMock(return_value=contact_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+
+    app = create_app()
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+
+    # Patch the engine module the router imports lazily.
+    from butlers.tools.relationship import dunbar as _dunbar_mod
+
+    if set_raises is not None:
+        _dunbar_mod.dunbar_tier_set = AsyncMock(side_effect=set_raises)
+    else:
+        _dunbar_mod.dunbar_tier_set = AsyncMock(
+            return_value=set_result
+            or {
+                "contact_id": "stub",
+                "entity_id": "stub",
+                "action": "cleared",
+                "message": "ok",
+            }
+        )
+
+    return app, pool
+
+
+async def _patch(app: FastAPI, path: str, json_body: dict) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.patch(path, json=json_body)
+
+
+class TestDunbarTierOverride:
+    """PATCH /entities/{id}/dunbar-tier — pin or clear an override."""
+
+    async def test_returns_404_when_entity_missing(self):
+        app, _ = _build_app_for_dunbar_patch(entity_exists=False)
+        resp = await _patch(
+            app,
+            f"/api/relationship/entities/{_MISSING_ENT_ID}/dunbar-tier",
+            {"tier": 15},
+        )
+        assert resp.status_code == 404
+
+    async def test_returns_404_when_no_linked_contact(self):
+        app, _ = _build_app_for_dunbar_patch(
+            entity_exists=True, contact_row=None
+        )
+        resp = await _patch(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/dunbar-tier",
+            {"tier": 50},
+        )
+        assert resp.status_code == 404
+        assert "linked contact" in resp.json()["detail"].lower()
+
+    async def test_pins_tier_successfully(self):
+        contact_id = uuid4()
+        app, _ = _build_app_for_dunbar_patch(
+            entity_exists=True,
+            contact_row={"id": contact_id},
+            set_result={
+                "contact_id": str(contact_id),
+                "entity_id": str(_ENT_ID),
+                "action": "set",
+                "tier": 50,
+                "message": "Dunbar tier override set to 50.",
+            },
+        )
+        resp = await _patch(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/dunbar-tier",
+            {"tier": 50},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["action"] == "set"
+        assert body["tier"] == 50
+
+    async def test_clears_tier_when_null(self):
+        contact_id = uuid4()
+        app, _ = _build_app_for_dunbar_patch(
+            entity_exists=True,
+            contact_row={"id": contact_id},
+            set_result={
+                "contact_id": str(contact_id),
+                "entity_id": str(_ENT_ID),
+                "action": "cleared",
+                "message": "Override cleared.",
+            },
+        )
+        resp = await _patch(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/dunbar-tier",
+            {"tier": None},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["action"] == "cleared"
+        assert body["tier"] is None
+
+    async def test_invalid_tier_returns_422(self):
+        contact_id = uuid4()
+        app, _ = _build_app_for_dunbar_patch(
+            entity_exists=True,
+            contact_row={"id": contact_id},
+            set_raises=ValueError("Invalid tier value 7."),
+        )
+        resp = await _patch(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/dunbar-tier",
+            {"tier": 7},
+        )
+        assert resp.status_code == 422
+        assert "Invalid tier" in resp.json()["detail"]

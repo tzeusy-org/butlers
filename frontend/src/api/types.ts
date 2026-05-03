@@ -3474,6 +3474,32 @@ export interface MessageThreadSummary {
   last_snippet: string | null;
 }
 
+/** An important date for one of an entity's contacts (birthday, anniversary, etc). */
+export interface EntityImportantDate {
+  contact_id: string;
+  contact_name: string;
+  label: string;
+  month: number;
+  day: number;
+  year: number | null;
+  /** ISO date (YYYY-MM-DD) of the next future occurrence of (month, day). */
+  upcoming_date: string;
+}
+
+/** Body for PATCH /entities/{id}/dunbar-tier — null clears the pin. */
+export interface DunbarTierOverrideRequest {
+  tier: number | null;
+}
+
+/** Response envelope for PATCH /entities/{id}/dunbar-tier. */
+export interface DunbarTierOverrideResponse {
+  entity_id: string;
+  contact_id: string;
+  tier: number | null;
+  action: string;
+  message: string;
+}
+
 /**
  * Relationship-scoped entity detail from GET /api/relationship/entities/{id}.
  * Separate from the memory-butler EntityDetail — this surface is activity-focused.

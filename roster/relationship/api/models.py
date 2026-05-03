@@ -462,6 +462,49 @@ class LinkedContactSummary(BaseModel):
     phone: str | None = None
 
 
+class EntityImportantDate(BaseModel):
+    """A row from public.important_dates scoped to one of an entity's contacts.
+
+    ``upcoming_date`` is computed by the API: the next occurrence of (month, day)
+    on or after the request date. Same shape contract as the global
+    ``GET /upcoming-dates`` response.
+    """
+
+    contact_id: UUID
+    contact_name: str
+    label: str
+    month: int
+    day: int
+    year: int | None = None
+    upcoming_date: date
+
+
+class DunbarTierOverrideRequest(BaseModel):
+    """Body for PATCH /entities/{id}/dunbar-tier.
+
+    ``tier`` must be one of the canonical Dunbar layer sizes (5, 15, 50, 150,
+    500, 1500) or ``None`` to clear an existing pin.
+    """
+
+    tier: int | None = Field(
+        default=None,
+        description=(
+            "One of 5, 15, 50, 150, 500, 1500 to pin the entity to that tier, "
+            "or null to clear the pin and revert to rank-based assignment."
+        ),
+    )
+
+
+class DunbarTierOverrideResponse(BaseModel):
+    """Response envelope for PATCH /entities/{id}/dunbar-tier."""
+
+    entity_id: UUID
+    contact_id: UUID
+    tier: int | None = None
+    action: str
+    message: str
+
+
 class MessageThreadSummary(BaseModel):
     """One row of incoming/outgoing message activity for an entity.
 
