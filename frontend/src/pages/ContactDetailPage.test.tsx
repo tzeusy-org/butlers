@@ -170,6 +170,18 @@ describe("ContactDetailPage — rendering", () => {
     expect(html).toContain("test@example.com");
   });
 
+  it("falls back to legacy email when contact_info has no usable email/telegram", () => {
+    setContactState({
+      ...BASE_CONTACT,
+      email: "fallback@example.com",
+      contact_info: [
+        { id: "ci-addr", type: "address", value: "123 Main St", is_primary: true, secured: false, parent_id: null },
+      ],
+    });
+    const html = renderPage();
+    expect(html).toContain("fallback@example.com");
+  });
+
   it("does NOT render PulseStrip when contact has no entity_id", () => {
     setContactState({ ...BASE_CONTACT, entity_id: null });
     const html = renderPage();

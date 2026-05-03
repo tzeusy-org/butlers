@@ -28,8 +28,10 @@ function buildSubtitle(contact: {
 
     if (email?.value) parts.push(email.value);
     if (telegram?.value) parts.push(telegram.value);
-  } else {
-    // Fall back to legacy flat fields
+  }
+
+  // Fall back to legacy flat fields when contact_info has no usable email/telegram
+  if (parts.length === 0) {
     if (contact.email) parts.push(contact.email);
     if (contact.phone) parts.push(contact.phone);
   }
