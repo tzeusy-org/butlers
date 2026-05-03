@@ -1,6 +1,6 @@
 ---
 name: butler-test-condensation
-description: Guide for discovering, analyzing, and pruning the Butlers test suite. Use when working on test condensation beads (epic bu-rhztl), assessing test bloat, identifying pruning targets, or rewriting tests to be contract-driven. Triggers on test reduction, test pruning, test consolidation, or condensation tasks for this project. Also use when a fresh session needs to assess test health, create new condensation beads, or resume in-progress condensation work.
+description: Guide for discovering, analyzing, and pruning the Butlers test suite. Use when working on test condensation beads (Phase 1 epic bu-rhztl closed; Phase 2 epic bu-hg8rl active), assessing test bloat, identifying pruning targets, or rewriting tests to be contract-driven. Triggers on test reduction, test pruning, test consolidation, or condensation tasks for this project. Also use when a fresh session needs to assess test health, create new condensation beads, or resume in-progress condensation work.
 ---
 
 # Butler Test Condensation
@@ -9,14 +9,23 @@ Systematic reduction of the Butlers test suite to ~2,000 contract-driven tests.
 Each surviving test must trace to an architectural invariant, an RFC wire
 contract, or an OpenSpec capability.
 
+## Epic History
+
+- **Phase 1 epic `bu-rhztl`** (2026-04-04 → 2026-04-06, **CLOSED**): condensed
+  13,675 → 2,196 tests across 10 PRs. Three-tier architecture established.
+- **Phase 2 maintenance epic** (2026-05-03 onward): suite has grown to ~3,700
+  with new domains (Chronicles 519 tests) + drift in `tests/api/` (492 vs 200
+  target). See `bd list --parent <phase-2-epic-id>` for current children.
+
 ## Before You Start
 
 1. **Rediscover current state** — never trust hardcoded counts in this skill:
    ```bash
    CURRENT=$(find tests/ -name '*.py' -exec grep -c 'def test_' {} + 2>/dev/null | awk -F: '{sum+=$2} END {print sum}')
-   echo "Current test count: $CURRENT (skill baseline was 13,675 on 2026-04-05)"
+   echo "Current test count: $CURRENT (skill baseline was 3,704 on 2026-05-03; Phase 1 closed at 2,196)"
    ```
-2. **Check epic status**: `bd list --parent bu-rhztl` — see which beads are done/in-progress
+2. **Check Phase 2 epic status**: `bd list --status all` then look for the
+   active "Phase 2" epic — see which beads are open/in-progress
 3. **Read your bead**: `bd show <bead-id>` for targets and acceptance criteria
 4. **Load doctrine**: read `about/heart-and-soul/` for invariants, relevant RFCs in `about/legends-and-lore/`
 5. **Run scoped discovery** on your domain — see [references/discovery.md](references/discovery.md)
@@ -30,7 +39,7 @@ If beads are already in-progress or completed:
 
 ```bash
 # 1. What's done, what's available?
-bd list --parent bu-rhztl
+bd list --parent <epic-id>
 bd ready
 
 # 2. Check predecessor's progress on your domain
@@ -40,7 +49,9 @@ git log --oneline -- tests/YOUR_DOMAIN/ | head -10
 find tests/YOUR_DOMAIN -name '*.py' -exec grep -c 'def test_' {} + 2>/dev/null | awk -F: '{sum+=$2} END {print sum}'
 ```
 
-If bu-zkrix (Phase 1) is NOT completed, **stop** — Phase 1 must finish first.
+Phase 1 (`bu-rhztl`) is closed. For Phase 2 work, the contract-extraction
+backfill bead should generally complete before structural condensation in
+domains that depend on Tier 1 promotion (e.g., chronicler).
 
 ## Three-Tier Test Architecture
 

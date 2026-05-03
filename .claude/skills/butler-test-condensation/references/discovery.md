@@ -6,12 +6,14 @@ staleness check first if resuming from a previous session.
 ## Staleness Check (Run First on Resume)
 
 ```bash
-# Compare actual count against skill baseline (13,675 on 2026-04-05)
+# Compare actual count against current skill baseline.
+# Phase 1 (bu-rhztl) baseline 2026-04-05: 13,675 tests; closed at 2,196.
+# Phase 2 baseline 2026-05-03: 3,704 tests across 416 files.
 CURRENT=$(find tests/ -name '*.py' -exec grep -c 'def test_' {} + 2>/dev/null | awk -F: '{sum+=$2} END {print sum}')
-echo "Current: $CURRENT | Baseline: 13675 | Delta: $((CURRENT - 13675))"
+echo "Current: $CURRENT | Phase 2 baseline (2026-05-03): 3704 | Delta: $((CURRENT - 3704))"
 
-# Check which beads are already closed
-bd list --parent bu-rhztl 2>/dev/null
+# Check which beads are open in the active maintenance epic
+bd list --status all 2>/dev/null | grep -i 'test.*condens\|test.*phase'
 
 # If delta > 10%, update domains.md targets before starting work
 ```

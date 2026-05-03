@@ -1,8 +1,35 @@
-# Beads Epic: Test Suite Condensation
+# Beads Epics: Test Suite Condensation
 
-**Epic**: `bu-rhztl` — Condense test suite from ~13,675 to ~2,000 contract-driven tests
+## Phase 2 (active, opened 2026-05-03)
 
-## Dependency Graph
+**Epic**: `bu-hg8rl` — Test suite maintenance, 3,704 → ~2,500 tests
+
+```
+bu-hg8rl (P1) Phase 2: Test suite maintenance
+  ├── bu-9riic (P1) Backfill Tier 1 architectural-invariant tests (137 → ~200)
+  ├── bu-gg4y1 (P2) Condense tests/api/ (492 → ~160)
+  └── bu-m564i (P2) Condense tests/chronicler/ + promote 13 to contracts/
+                    (519 → ~250 in chronicler + 13 promoted)
+```
+
+bu-9riic should land first or in parallel with the others — the chronicler
+bead promotes 13 tests into tests/contracts/ which collides with the
+backfill bead's structure if mis-coordinated. Workers should claim and
+serialize where edits overlap (e.g., test_chronicler_no_cross_schema.py).
+
+| Bead | Domain | Current | Target | Directory |
+|---|---|--:|--:|---|
+| bu-9riic | Tier 1 contracts | 137 | ~200 | tests/contracts/ |
+| bu-gg4y1 | API tests | 492 | ~160 | tests/api/ |
+| bu-m564i | Chronicler | 519 | ~250 + 13 promoted | tests/chronicler/ |
+
+**Baseline 2026-05-03**: 3,704 tests across 416 files. Always rediscover
+counts before starting work — see [discovery.md](discovery.md) staleness check.
+
+## Phase 1 (closed, archive)
+
+**Epic**: `bu-rhztl` — Condense test suite from ~13,675 to ~2,000
+contract-driven tests. **CLOSED 2026-04-06** at 2,196 tests across 10 PRs.
 
 ```
 bu-zkrix (P1) Extract architectural contracts [PHASE 1 — MUST COMPLETE FIRST]
@@ -19,26 +46,17 @@ bu-zkrix (P1) Extract architectural contracts [PHASE 1 — MUST COMPLETE FIRST]
               └── bu-ud62t (P1) Reconciliation gen-1 [depends on ALL above]
 ```
 
-Phase 1 (`bu-zkrix`) blocks everything. After Phase 1, the six P2 beads can run
-in parallel. The sweep (`bu-s8hn8`) runs after all P2 beads. Reconciliation
-(`bu-ud62t`) runs last.
-
-## Quick Reference
-
-| Bead | Domain | Baseline | Target | Directory |
-|------|--------|--------:|-------:|-----------|
-| bu-zkrix | Contract extraction | 0 | ~200 | tests/contracts/ (new) |
-| bu-v7dn3 | Memory module | 1,544 | ~100 | tests/modules/memory/ |
-| bu-35fm7 | Connectors + root conn files | 2,615 | ~150 | tests/connectors/ + root connector files |
-| bu-eu6jh | Migrations | 749 | ~50 | tests/config/*migration* + tests/migrations/ |
-| bu-egmz6 | API tests | 1,779 | ~200 | tests/api/ |
-| bu-7sd7a | Modules (non-mem) | 2,170 | ~400 | tests/modules/ (excl memory) |
-| bu-l1obx | Core + Daemon | 1,869 | ~400 | tests/core/ + tests/daemon/ |
-| bu-s8hn8 | Unassigned dirs + root + sweep | 3,149 | ~600 | tests/{adapters,jobs,integration,tools,e2e,cli,...} + root |
-| bu-ud62t | Reconciliation | — | — | — |
-
-**Baseline counts are from 2026-04-05.** Always rediscover current counts
-before starting work — see [discovery.md](discovery.md) staleness check.
+| Bead | Domain | Baseline | Target | Closed |
+|------|--------|--------:|-------:|---|
+| bu-zkrix | Contract extraction | 0 | ~200 | ✓ |
+| bu-v7dn3 | Memory module | 1,544 | ~100 | ✓ |
+| bu-35fm7 | Connectors + root conn files | 2,615 | ~150 | ✓ |
+| bu-eu6jh | Migrations | 749 | ~50 | ✓ |
+| bu-egmz6 | API tests | 1,779 | ~200 | ✓ (drifted; see Phase 2) |
+| bu-7sd7a | Modules (non-mem) | 2,170 | ~400 | ✓ |
+| bu-l1obx | Core + Daemon | 1,869 | ~400 | ✓ |
+| bu-s8hn8 | Unassigned + root + sweep | 3,149 | ~600 | ✓ |
+| bu-ud62t | Reconciliation gen-1 | — | — | ✓ |
 
 ## Commands
 
