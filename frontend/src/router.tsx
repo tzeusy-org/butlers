@@ -63,6 +63,15 @@ function RelationshipEntityRedirect() {
   return <Navigate to={`/entities/${entityId ?? ''}`} replace />
 }
 
+// Redirect /butlers/relationship/contacts/:id → /contacts/:contactId
+// The legacy relationship-scoped contact path has been superseded by the
+// canonical contact detail page per the detail-page-archetype spec.
+// eslint-disable-next-line react-refresh/only-export-components
+function RelationshipContactRedirect() {
+  const { id } = useParams()
+  return <Navigate to={`/contacts/${id ?? ''}`} replace />
+}
+
 export const router = createBrowserRouter(
   [
     {
@@ -100,10 +109,14 @@ export const router = createBrowserRouter(
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
         { path: '/education', element: <EducationPage /> },
-        // Relationship butler: legacy activity page redirects into the unified entity detail.
+        // Relationship butler: legacy paths redirect into unified canonical pages.
         {
           path: '/butlers/relationship/entities/:entityId',
           element: <RelationshipEntityRedirect />,
+        },
+        {
+          path: '/butlers/relationship/contacts/:id',
+          element: <RelationshipContactRedirect />,
         },
         // Chronicler routes
         { path: '/chronicles', element: <ChroniclesPage /> },
