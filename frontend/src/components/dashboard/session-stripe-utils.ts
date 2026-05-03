@@ -115,17 +115,41 @@ export function pivotSessionsIntoRows(
 /** Maximum sessions fetched per request — capped at 200 (backend Query constraint). */
 const MAX_SESSIONS_LIMIT = 200
 
-/** Fetch sessions for the given time window, with client-side aggregation. */
-export function useSessionStripeData(window: { from: Date; to: Date }) {
+/** Compute the rolling window boundaries for the given span in hours. */
+function rollingWindow(windowHours: number): { from: Date; to: Date } {
+  const now = Date.now()
+  return {
+    from: new Date(now - windowHours * 60 * 60 * 1000),
+    to: new Date(now),
+  }
+}
+
+/**
+ * Fetch sessions for a rolling window of `windowHours` hours, with
+ * client-side aggregation.
+ *
+ * Window boundaries are recomputed inside `queryFn` on every refetch so the
+ * chart always shows the *current* trailing window, not a closed interval
+ * frozen at mount time.
+ */
+export function useSessionStripeData(windowHours = 24) {
   return useQuery({
-    queryKey: ["session-stripe", window.from.toISOString(), window.to.toISOString()],
-    queryFn: () =>
-      getSessions({
-        since: window.from.toISOString(),
-        until: window.to.toISOString(),
+    // Key on window length only; refetchInterval drives the rolling advance.
+    queryKey: ["session-stripe", windowHours],
+    queryFn: () => {
+      const w = rollingWindow(windowHours)
+      return getSessions({
+        since: w.from.toISOString(),
+        until: w.to.toISOString(),
         limit: MAX_SESSIONS_LIMIT,
         offset: 0,
-      }),
+      })
+    },
     refetchInterval: 60_000,
   })
+}
+
+/** Return the current rolling window boundaries for pivot/display use. */
+export function currentWindow(windowHours = 24): { from: Date; to: Date } {
+  return rollingWindow(windowHours)
 }

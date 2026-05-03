@@ -22,6 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { ButlerSummary } from "@/api/types"
 import {
   bucketUnit,
+  currentWindow,
   formatBucketKey,
   pivotSessionsIntoRows,
   useSessionStripeData,
@@ -144,7 +145,8 @@ function SessionStripeChartSkeleton() {
 // ---------------------------------------------------------------------------
 
 export interface SessionStripeChartProps {
-  window: { from: Date; to: Date }
+  /** Rolling window length in hours. Defaults to 24. */
+  windowHours?: number
   butlers: ButlerSummary[]
 }
 
@@ -152,15 +154,18 @@ export interface SessionStripeChartProps {
 // Main component
 // ---------------------------------------------------------------------------
 
-export function SessionStripeChart({ window, butlers }: SessionStripeChartProps) {
-  const { data, isLoading, isError } = useSessionStripeData(window)
+export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeChartProps) {
+  const { data, isLoading, isError } = useSessionStripeData(windowHours)
 
   const sessions = data?.data ?? []
 
   // Memoize the pivot and name-ordering so they don't rerun on every render.
+  // currentWindow() recomputes on every render so the pivot always aligns with
+  // the rolling window the hook uses on its next refetch.
   const { unit, rows, orderedNames } = useMemo(() => {
-    const u = bucketUnit(window.from, window.to)
-    const r = pivotSessionsIntoRows(sessions, window.from, window.to, u)
+    const w = currentWindow(windowHours)
+    const u = bucketUnit(w.from, w.to)
+    const r = pivotSessionsIntoRows(sessions, w.from, w.to, u)
 
     const present = new Set<string>()
     for (const s of sessions) {
@@ -172,7 +177,7 @@ export function SessionStripeChart({ window, butlers }: SessionStripeChartProps)
       ...Array.from(present).filter((n) => !knownSet.has(n)).sort(),
     ]
     return { unit: u, rows: r, orderedNames: ordered }
-  }, [sessions, window.from, window.to, butlers])
+  }, [sessions, windowHours, butlers])
 
   if (isLoading) {
     return <SessionStripeChartSkeleton />

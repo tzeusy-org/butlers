@@ -76,12 +76,6 @@ function makeButler(name: string): ButlerSummary {
   return { name, status: "ok", port: 41200, type: "butler" }
 }
 
-function makeWindow(hoursBack = 24): { from: Date; to: Date } {
-  const to = new Date("2024-06-15T12:00:00.000Z")
-  const from = new Date(to.getTime() - hoursBack * 60 * 60 * 1000)
-  return { from, to }
-}
-
 function renderChart(props: Parameters<typeof SessionStripeChart>[0]): string {
   return renderToStaticMarkup(<SessionStripeChart {...props} />)
 }
@@ -106,7 +100,7 @@ describe("SessionStripeChart — loading state", () => {
       isError: false,
     } as ReturnType<typeof useQuery>)
 
-    const html = renderChart({ window: makeWindow(), butlers: [] })
+    const html = renderChart({ butlers: [] })
     expect(html).toContain("session-stripe-skeleton")
   })
 
@@ -117,7 +111,7 @@ describe("SessionStripeChart — loading state", () => {
       isError: false,
     } as ReturnType<typeof useQuery>)
 
-    const html = renderChart({ window: makeWindow(), butlers: [] })
+    const html = renderChart({ butlers: [] })
     expect(html).not.toContain("recharts-bar-chart")
   })
 })
@@ -134,7 +128,7 @@ describe("SessionStripeChart — error state", () => {
       isError: true,
     } as ReturnType<typeof useQuery>)
 
-    const html = renderChart({ window: makeWindow(), butlers: [] })
+    const html = renderChart({ butlers: [] })
     expect(html).toContain("session-stripe-error")
   })
 })
@@ -151,7 +145,7 @@ describe("SessionStripeChart — empty data state", () => {
       isError: false,
     } as ReturnType<typeof useQuery>)
 
-    const html = renderChart({ window: makeWindow(), butlers: [] })
+    const html = renderChart({ butlers: [] })
     expect(html).toContain("session-stripe-empty")
   })
 
@@ -162,7 +156,7 @@ describe("SessionStripeChart — empty data state", () => {
       isError: false,
     } as ReturnType<typeof useQuery>)
 
-    const html = renderChart({ window: makeWindow(), butlers: [] })
+    const html = renderChart({ butlers: [] })
     expect(html).not.toContain("recharts-bar-chart")
   })
 })
@@ -182,7 +176,7 @@ describe("SessionStripeChart — renders with data", () => {
       isError: false,
     } as ReturnType<typeof useQuery>)
 
-    const html = renderChart({ window: makeWindow(), butlers: [makeButler("home")] })
+    const html = renderChart({ butlers: [makeButler("home")] })
     expect(html).toContain("session-stripe-chart")
     expect(html).toContain("recharts-bar-chart")
   })
@@ -201,7 +195,6 @@ describe("SessionStripeChart — renders with data", () => {
     } as ReturnType<typeof useQuery>)
 
     const html = renderChart({
-      window: makeWindow(),
       butlers: [makeButler("home"), makeButler("email")],
     })
     expect(html).toContain("recharts-bar-home")

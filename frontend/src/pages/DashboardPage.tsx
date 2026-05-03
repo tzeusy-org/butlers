@@ -1,6 +1,8 @@
 import { Link } from "react-router";
 import { Time } from "@/components/ui/time";
 
+import { RecentMoments } from "@/components/dashboard/RecentMoments";
+import { SessionStripeChart } from "@/components/dashboard/SessionStripeChart";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import IssuesPanel from "@/components/issues/IssuesPanel";
@@ -15,6 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Page } from "@/components/ui/page";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
@@ -149,10 +152,30 @@ export default function DashboardPage() {
   const pendingApprovals = approvalMetricsResponse?.data.total_pending ?? 0;
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
+    <Page archetype="overview" title="Overview">
+      {/* Hero region: session stripe chart (primary visualization) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Sessions</CardTitle>
+          <CardDescription>Butler activity over the past 24 hours</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <SessionStripeChart butlers={butlers} />
+        </CardContent>
+      </Card>
 
-      {/* Ecosystem Topology */}
+      {/* Secondary region: recent moments feed */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent Activity</CardTitle>
+          <CardDescription>Latest butler actions</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <RecentMoments limit={7} />
+        </CardContent>
+      </Card>
+
+      {/* Ecosystem Topology -- demoted below hero regions per spec */}
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="lg:col-span-2">
           <TopologyGraph
@@ -223,6 +246,6 @@ export default function DashboardPage() {
           />
         </div>
       )}
-    </div>
+    </Page>
   );
 }
