@@ -34,16 +34,18 @@
 
 - Implementing bead: bu-v1tt2.3 (PR #1343, 8 files migrated) + bu-azzsf (role/tier tokens added)
 
-**Remaining violations (6 distinct sites):**
+**Remaining violations (4 distinct files, 6 distinct sites):**
 
 | File | Lines | Hex | Should use | Gap |
 |------|-------|-----|------------|-----|
 | `EntitiesPage.tsx` | 105–115 | `#b91c1c`, `#c2410c`, `#92400e`, `#15803d`, `#0369a1`, `#6b7280` | `var(--tier-1..6)` | Tokens exist (bu-azzsf) but code never updated |
 | `EntitiesPage.tsx` | 764 | `#7c3aed` (owner badge) | `var(--role-owner)` | Tokens exist (bu-azzsf) but code never updated |
-| `EntitiesPage.tsx` | 333, 773 | `#ea580c` (unidentified entity) | needs `--state-unidentified` or similar | No token exists |
+| `EntitiesPage.tsx` | 333, 773 | `#ea580c` (unidentified entity) | needs `--state-unidentified` or similar | No token exists yet — token must be added first |
 | `approvals/action-table.tsx` | 43, 45, 47 | `#7c3aed`, `#b45309`, `#0369a1` | `var(--role-owner/admin/default)` | Tokens exist (bu-azzsf) but not applied here |
 | `approvals/action-detail-dialog.tsx` | 37, 39, 41 | same role colors | same role tokens | Same gap |
 | `ConcentricCirclesCanvas.tsx` | 417, 419, 429 | `#7c3aed` (owner SVG marker) | `var(--role-owner)` | Token exists but not applied |
+
+Note: not all remaining violations are straight migrations to existing tokens. Sites 3 (`#ea580c` unidentified entity) require a new token to be added to `index.css` before the migration can land.
 
 **Exempt (chart/visualization configs per bu-v1tt2.3 scope exclusion):**
 - `lane-taxonomy.ts`: chronicle lane colors (passed as data to chart renderers)
@@ -60,7 +62,7 @@
 
 - Implementing bead: bu-v1tt2.4 (PR #1347, 41 files migrated) + bu-fv4vy (compact prop)
 
-**Remaining date render calls in JSX:**
+**Remaining date render calls in JSX (10 sites across 6 files):**
 
 | File | Line | Call | Format needed | Gap |
 |------|------|------|---------------|-----|
@@ -74,6 +76,15 @@
 | `EntityDetailPage.tsx` | 964 | `format(sample, "MMM d")` | axis label helper | `<Time compact precision="day">` could work but is called with synthetic date |
 | `PendingIdentitiesSection.tsx` | 264 | `format(new Date(contact.created_at), "MMM d, yyyy")` | creation date | `<Time mode="absolute">` could work here |
 | `session-stripe-utils.ts` | 77 | `toLocaleDateString("en-US", {month:"short", day:"numeric"})` | stripe label | `<Time compact precision="day">` could handle |
+
+**Additional sites found outside calendar/meals scope (also violations of AC4):**
+
+| File | Line | Call | Gap |
+|------|------|------|-----|
+| `components/approvals/action-detail-dialog.tsx` | 163, 171, 187 | `format(new Date(...), "PPpp")` | requested/expires/decided timestamps |
+| `components/approvals/rules-table.tsx` | 72 | `format(new Date(rule.created_at), "PP")` | rule created date |
+| `components/general/EntityBrowser.tsx` | 246 | `format(new Date(entity.created_at), "MMM d, yyyy")` | entity created date |
+| `components/health/MedicationTracker.tsx` | 117 | `format(new Date(dose.taken_at), "MMM d, yyyy HH:mm")` | dose taken-at time |
 
 **Correctly kept (non-date number formatting — not violations):**
 - `SymptomsPage.tsx` lines 119, 235: `total.toLocaleString()` — number formatting
@@ -103,13 +114,14 @@
 - `CalendarWorkspacePage.tsx:1719`, `1757`: `top: h * HOUR_HEIGHT_PX` grid row positioning
 - `SessionStripeChart.tsx:129`, `AggregateStackedBar.tsx:138`, `CostWidget.tsx:58`: skeleton animation heights (random offsets)
 - `ModelCatalogCard.tsx:206`, `CostBreakdownTable.tsx:105`, `MemoryBrowser.tsx:124`: progress bar widths
-- `GanttSwimlaneInner.tsx`: Gantt lane heights (computed layout)
+- `GanttSwimlaneInner.tsx`: Gantt lane heights (computed layout — `lane.laneHeight` is runtime-computed); note that `style={{ width: LABEL_WIDTH }}` (static 90px) and `style={{ cursor: "pointer" }}` at line 319 are static and should be migrated to Tailwind
 - `TimelineTab.tsx:185`: timeline event positioning (pixel layout)
 
-**Remaining gap — NOT yet migrated:**
-- `ConcentricCirclesDialog.tsx:662`: `style={{ width: "60vw", height: "80vh", display: "flex", flexDirection: "column" }}`
-  - `display: flex` → `flex`, `flexDirection: column` → `flex-col`, `width: 60vw` → `w-[60vw]`, `height: 80vh` → `h-[80vh]` (Tailwind arbitrary values work for static vw/vh)
-- `ConcentricCirclesDialog.tsx` lines 135, 380, 423, 499: `cursor: pointer/grabbing/grab/default` → Tailwind `cursor-*` utilities
+**Remaining gaps — NOT yet migrated:**
+- `ConcentricCirclesCanvas.tsx` lines 66, 371, 410, 491, 519: `cursor: pointer/grabbing/grab/default` inline styles → Tailwind `cursor-*` utilities (these are all static cursor values; the Canvas is the live/active surface as the Dialog is deprecated)
+- `ConcentricCirclesDialog.tsx:662`: `style={{ width: "60vw", height: "80vh", display: "flex", flexDirection: "column" }}` → `w-[60vw] h-[80vh] flex flex-col` (file is deprecated with no active consumers; low priority)
+- `ConcentricCirclesDialog.tsx` lines 135, 380, 423, 499: `cursor: pointer/grabbing/grab/default` → Tailwind `cursor-*` utilities (low priority given deprecation)
+- `GanttSwimlaneInner.tsx:319`: `style={{ cursor: "pointer" }}` on SVG `<g>` (static) → `className="cursor-pointer"`
 
 ### AC6: gen-1 reconciliation closed clean
 
@@ -119,9 +131,7 @@
 
 ## Gap Beads Created
 
-See below sections for IDs after creation.
-
-### Gap 1: Apply --tier-1..6 tokens in EntitiesPage dunbarTierBadgeStyle + owner/unidentified badges (gap from bu-v1tt2.3 + bu-azzsf)
+### Gap 1 (bu-mt0os): Apply --tier-1..6 tokens in EntitiesPage dunbarTierBadgeStyle + owner/unidentified badges (gap from bu-v1tt2.3 + bu-azzsf)
 
 Files: `EntitiesPage.tsx`, `approvals/action-table.tsx`, `approvals/action-detail-dialog.tsx`, `ConcentricCirclesCanvas.tsx`
 
@@ -131,20 +141,29 @@ Files: `EntitiesPage.tsx`, `approvals/action-table.tsx`, `approvals/action-detai
 - Migrate approvals role colors to `var(--role-*)`
 - Migrate ConcentricCirclesCanvas owner marker to `var(--role-owner)`
 
-### Gap 2: Extend `<Time>` for remaining calendar/meals format patterns (or accept as out-of-scope)
+### Gap 2 (bu-5j7p9): Resolve all remaining date-fns format() calls in JSX render paths
 
-Remaining `format()` calls in JSX are blocked by missing `<Time>` capabilities:
+Remaining `format()` / `toLocaleDateString()` calls in JSX span calendar, meals, approvals, entity browser, and health components. Blocked by missing `<Time>` capabilities:
 - 24h time-only ("HH:mm")
 - Weekday name ("EEEE", "EEE")
 - Month+year only ("MMMM yyyy")
 - Date range formatting ("start – end")
+- Full datetime ("PPpp", "PP" date-fns locale formats)
 
-Options: extend `<Time>` with a `format` prop (passthrough), or accept these calendar-specific formats as a named exception under the "calendar layout helpers" category (similar to chart palette exemption).
+Options: extend `<Time>` with a `format` prop (passthrough), or accept a named exception category for calendar-layout helpers (analogous to the chart palette exemption) while migrating non-calendar sites directly.
 
-### Gap 3: Migrate ConcentricCirclesDialog static inline styles to Tailwind
+Note: scope covers all 14 remaining sites listed in AC4 above, not only the calendar/meals subset.
 
-`width: 60vw, height: 80vh, display: flex, flexDirection: column` → Tailwind arbitrary values
-`cursor: pointer/grabbing/grab/default` → Tailwind `cursor-*` utilities
+### Gap 3 (bu-xxym7): Migrate ConcentricCirclesCanvas/Dialog static inline styles to Tailwind
+
+Priority target is `ConcentricCirclesCanvas.tsx` (active, no consumers deprecated):
+- Lines 66, 371, 410, 491, 519: `cursor: pointer/grabbing/grab/default` → Tailwind `cursor-*` utilities
+
+Lower-priority (Dialog is deprecated with no remaining consumers):
+- `ConcentricCirclesDialog.tsx:662`: `width: 60vw, height: 80vh, display: flex, flexDirection: column` → Tailwind arbitrary values
+- `ConcentricCirclesDialog.tsx` lines 135, 380, 423, 499, 587: cursor props → Tailwind `cursor-*`
+
+Additional: `GanttSwimlaneInner.tsx:319` — `style={{ cursor: "pointer" }}` on SVG `<g>` (static, should be `cursor-pointer`).
 
 ---
 
@@ -173,6 +192,6 @@ Frontend dev server was not running at time of reconciliation. TypeScript compil
 
 ## Summary Verdict
 
-Epic is ~85% complete. AC1 and AC2 are fully met. AC3 has 5 files with hex leaks that need migration to existing tokens (the tokens now exist via bu-azzsf but the consumers weren't updated). AC4 has ~7 format() calls in JSX render paths that require `<Time>` format extension or explicit scope exclusion. AC5 is met for the specified layout cases plus one remaining dialog (ConcentricCirclesDialog cursor/display/vw/vh).
+Epic is ~85% complete. AC1 and AC2 are fully met. AC3 has 4 files (6 distinct sites) with hex leaks that need migration — most to existing tokens, but the `#ea580c` unidentified-entity site requires a new token first. AC4 has 14 date render calls across 10 files in JSX render paths that require `<Time>` format extension or explicit scope exclusion. AC5 is substantially met; remaining gaps are cursor inline styles in ConcentricCirclesCanvas (active) and static `cursor: "pointer"` in GanttSwimlaneInner, plus the deprecated ConcentricCirclesDialog.
 
-Two gap beads filed for remaining work.
+Three gap beads filed for remaining work: bu-mt0os (AC3 token migration), bu-5j7p9 (AC4 date render calls), bu-xxym7 (AC5 inline style cleanup).
