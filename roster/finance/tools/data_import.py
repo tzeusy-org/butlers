@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import logging
 import os
 import re
@@ -743,7 +742,7 @@ async def _insert_batch(
                     category,
                     metadata
                 ) VALUES (
-                    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::jsonb
+                    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9
                 )
                 ON CONFLICT DO NOTHING
                 """,
@@ -755,12 +754,10 @@ async def _insert_batch(
                 txn["currency"],
                 txn["direction"],
                 txn["category"],
-                json.dumps(
-                    {
-                        "import_batch_id": import_batch_id,
-                        "raw_merchant": txn.get("raw_merchant", ""),
-                    }
-                ),
+                {
+                    "import_batch_id": import_batch_id,
+                    "raw_merchant": txn.get("raw_merchant", ""),
+                },
             )
             imported += 1
         except asyncpg.UniqueViolationError:

@@ -7,7 +7,6 @@ grouping key.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from typing import Any
@@ -70,7 +69,7 @@ async def _fact_set_spo(
         subject,
         key,
         value,
-        json.dumps({}),
+        {},
         entity_id,
     )
     if row is None:

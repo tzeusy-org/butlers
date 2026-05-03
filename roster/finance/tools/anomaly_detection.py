@@ -268,14 +268,12 @@ async def _persist_baselines_to_memory(
     Uses ``ON CONFLICT (subject, predicate)`` to replace stale baselines.
     Silently skips if the facts table does not exist.
     """
-    import json
-
     try:
         for b in merchant_baselines:
             await memory_pool.execute(
                 """
                 INSERT INTO public.facts (subject, predicate, content, metadata, updated_at)
-                VALUES ($1, 'spending_baseline', $2, $3::jsonb, now())
+                VALUES ($1, 'spending_baseline', $2, $3, now())
                 ON CONFLICT (subject, predicate)
                 DO UPDATE SET
                     content    = EXCLUDED.content,
@@ -284,22 +282,20 @@ async def _persist_baselines_to_memory(
                 """,
                 b["merchant"],
                 f"median={b['median']}, stddev={b['stddev']}, n={b['sample_count']}",
-                json.dumps(
-                    {
-                        "type": "merchant",
-                        "median": b["median"],
-                        "stddev": b["stddev"],
-                        "sample_count": b["sample_count"],
-                        "computed_at": now.isoformat(),
-                    }
-                ),
+                {
+                    "type": "merchant",
+                    "median": b["median"],
+                    "stddev": b["stddev"],
+                    "sample_count": b["sample_count"],
+                    "computed_at": now.isoformat(),
+                },
             )
         for b in category_baselines:
             subject = f"category:{b['category']}"
             await memory_pool.execute(
                 """
                 INSERT INTO public.facts (subject, predicate, content, metadata, updated_at)
-                VALUES ($1, 'spending_baseline', $2, $3::jsonb, now())
+                VALUES ($1, 'spending_baseline', $2, $3, now())
                 ON CONFLICT (subject, predicate)
                 DO UPDATE SET
                     content    = EXCLUDED.content,
@@ -308,14 +304,12 @@ async def _persist_baselines_to_memory(
                 """,
                 subject,
                 f"weekly_velocity={b['weekly_velocity']}, weeks={b['week_count']}",
-                json.dumps(
-                    {
-                        "type": "category",
-                        "weekly_velocity": b["weekly_velocity"],
-                        "week_count": b["week_count"],
-                        "computed_at": now.isoformat(),
-                    }
-                ),
+                {
+                    "type": "category",
+                    "weekly_velocity": b["weekly_velocity"],
+                    "week_count": b["week_count"],
+                    "computed_at": now.isoformat(),
+                },
             )
     except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
         logger.warning("public.facts table unavailable; baselines not persisted to memory")
