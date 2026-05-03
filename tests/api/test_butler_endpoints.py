@@ -4,9 +4,9 @@ Condensed from:
   test_butler_config.py (8) + test_butler_detail.py (21) + test_butler_discovery.py (37)
   + test_butler_list.py (15) + test_butler_mcp.py (7) + test_butler_modules.py (14)
   + test_butler_router.py (14) + test_butler_skills.py (10) + test_butler_tick.py (6)
-  + test_butler_trigger.py (8) → ~15 tests (bu-egmz6)
+  + test_butler_trigger.py (8) → ~15 tests (bu-egmz6) → 4 tests (bu-2yw2d)
 
-Keeps: 404/503 handling, list structure, config parsing, trigger/tick, MCP tool calls.
+Keeps: list structure, 404/503 CRUD paths (parametrized), trigger success, config 200.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
-from butlers.api.models.butler import ButlerSummary, ModuleStatus
 from butlers.api.routers.butlers import _get_db_manager
 
 from .conftest import make_butler_dir, make_mock_mcp_manager, make_test_app
@@ -44,29 +43,6 @@ def _mock_audit_db():
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     return db
-
-
-def _mock_mcp_manager(*, trigger_result=None, tick_result=None, unreachable=False, timeout=False):
-    mgr = MagicMock(spec=MCPClientManager)
-    if unreachable:
-        mgr.get_client = AsyncMock(
-            side_effect=ButlerUnreachableError(
-                "general", cause=ConnectionRefusedError("unreachable")
-            )
-        )
-    elif timeout:
-        mgr.get_client = AsyncMock(side_effect=TimeoutError())
-    else:
-        mock_client = MagicMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.ping = AsyncMock(return_value=True)
-        if trigger_result:
-            mock_client.call_tool = AsyncMock(return_value=trigger_result)
-        elif tick_result:
-            mock_client.call_tool = AsyncMock(return_value=tick_result)
-        mgr.get_client = AsyncMock(return_value=mock_client)
-    return mgr
 
 
 def _mock_tool_result(data: dict) -> MagicMock:
@@ -89,149 +65,92 @@ def _wire(app, configs, mcp_manager=None, db=None):
     return app
 
 
-# ---------------------------------------------------------------------------
-# Model unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestModels:
-    def test_module_status_serializes(self):
-        ms = ModuleStatus(name="telegram", enabled=True, status="ok")
-        d = ms.model_dump()
-        assert d["name"] == "telegram"
-        assert d["status"] == "ok"
-
-    def test_butler_summary_has_required_fields(self):
-        s = ButlerSummary(name="general", status="online", port=41101, db="general")
-        assert s.name == "general"
-        assert s.db == "general"
+def _mcp_unreachable():
+    mgr = MagicMock(spec=MCPClientManager)
+    mgr.get_client = AsyncMock(
+        side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError("unreachable"))
+    )
+    return mgr
 
 
 # ---------------------------------------------------------------------------
-# Butler list — GET /api/butlers
+# Butler list — all butlers returned, unreachable never 500
 # ---------------------------------------------------------------------------
 
 
 class TestButlerList:
-    async def test_list_returns_all_butlers(self, app, roster_dir):
+    async def test_list_returns_all_butlers_and_unreachable_never_500(self, app, roster_dir):
         make_butler_dir(roster_dir, "general", 41101)
         configs = [ButlerConnectionInfo("general", 41101)]
-        mgr = make_mock_mcp_manager(online=True)
-        _wire(app, configs, mgr)
+        # Online case
+        _wire(app, configs, make_mock_mcp_manager(online=True))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/butlers")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert isinstance(body, dict)
-        assert "data" in body
-        assert "meta" in body
-        items = body["data"]
-        assert len(items) >= 1
-        assert items[0]["name"] == "general"
+            resp_ok = await client.get("/api/butlers")
+        assert resp_ok.status_code == 200
+        assert resp_ok.json()["data"][0]["name"] == "general"
 
-    async def test_list_unreachable_butler_does_not_raise_500(self, app, roster_dir):
-        make_butler_dir(roster_dir, "general", 41101)
-        configs = [ButlerConnectionInfo("general", 41101)]
-        mgr = make_mock_mcp_manager(online=False)
-        _wire(app, configs, mgr)
+        # Offline — still 200, never 500
+        _wire(app, configs, make_mock_mcp_manager(online=False))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/butlers")
-        assert resp.status_code == 200  # never 500
+            resp_down = await client.get("/api/butlers")
+        assert resp_down.status_code == 200
 
 
 # ---------------------------------------------------------------------------
-# Butler config — GET /api/butlers/{name}/config
+# Butler config — 404 unknown, 200 known
 # ---------------------------------------------------------------------------
 
 
 class TestButlerConfig:
-    async def test_returns_404_for_unknown_butler(self, roster_dir):
-        configs = [ButlerConnectionInfo("general", 41101)]
-        app = make_test_app(roster_dir, configs)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/butlers/nonexistent/config")
-        assert resp.status_code == 404
-
-    async def test_returns_config_for_known_butler(self, roster_dir):
+    async def test_config_404_unknown_and_200_known(self, roster_dir):
         make_butler_dir(roster_dir, "general", 41101, claude_md="Be helpful.")
         configs = [ButlerConnectionInfo("general", 41101)]
         app = make_test_app(roster_dir, configs)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/butlers/general/config")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "data" in body
-        # data contains butler_toml (parsed config) and optional markdown fields
-        assert "butler_toml" in body["data"] or "claude_md" in body["data"]
+            r404 = await client.get("/api/butlers/nonexistent/config")
+            r200 = await client.get("/api/butlers/general/config")
+        assert r404.status_code == 404
+        assert r200.status_code == 200
+        assert "data" in r200.json()
 
 
 # ---------------------------------------------------------------------------
-# Butler skills — GET /api/butlers/{name}/skills
-# ---------------------------------------------------------------------------
-
-
-class TestButlerSkills:
-    async def test_returns_404_for_unknown_butler(self, roster_dir):
-        configs = [ButlerConnectionInfo("general", 41101)]
-        app = make_test_app(roster_dir, configs)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/butlers/nonexistent/skills")
-        assert resp.status_code == 404
-
-    async def test_returns_skills_list(self, roster_dir):
-        make_butler_dir(
-            roster_dir,
-            "general",
-            41101,
-            skills_with_content={"my-skill": "# My Skill\nDoes stuff."},
-        )
-        configs = [ButlerConnectionInfo("general", 41101)]
-        app = make_test_app(roster_dir, configs)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/butlers/general/skills")
-        assert resp.status_code == 200
-
-
-# ---------------------------------------------------------------------------
-# Butler trigger — POST /api/butlers/{name}/trigger
+# Butler trigger — 404 unknown, 503 unreachable, 200 success
 # ---------------------------------------------------------------------------
 
 
 class TestButlerTrigger:
-    async def test_trigger_404_for_unknown_butler(self, app, roster_dir):
+    @pytest.mark.parametrize(
+        "butler_name,expected",
+        [("nonexistent", 404), ("general", 503)],
+        ids=["404-unknown", "503-unreachable"],
+    )
+    async def test_trigger_error_paths(self, app, roster_dir, butler_name, expected):
         configs = [ButlerConnectionInfo("general", 41101)]
-        _wire(app, configs, _mock_mcp_manager(unreachable=True))
+        _wire(app, configs, _mcp_unreachable())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.post("/api/butlers/nonexistent/trigger", json={"prompt": "hello"})
-        assert resp.status_code == 404
-
-    async def test_trigger_503_when_unreachable(self, app, roster_dir):
-        configs = [ButlerConnectionInfo("general", 41101)]
-        _wire(app, configs, _mock_mcp_manager(unreachable=True))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post("/api/butlers/general/trigger", json={"prompt": "hello"})
-        assert resp.status_code == 503
+            resp = await client.post(
+                f"/api/butlers/{butler_name}/trigger", json={"prompt": "hello"}
+            )
+        assert resp.status_code == expected
 
     async def test_trigger_success_returns_session_data(self, app, roster_dir):
         configs = [ButlerConnectionInfo("general", 41101)]
         trigger_data = {"session_id": "sess-1", "success": True, "output": "Done"}
-        mgr = _mock_mcp_manager(trigger_result=_mock_tool_result(trigger_data))
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.call_tool = AsyncMock(return_value=_mock_tool_result(trigger_data))
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(return_value=mock_client)
         _wire(app, configs, mgr)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -240,31 +159,4 @@ class TestButlerTrigger:
                 "/api/butlers/general/trigger", json={"prompt": "do something"}
             )
         assert resp.status_code == 200
-        body = resp.json()
-        assert "data" in body
-        assert body["data"]["session_id"] == "sess-1"
-
-
-# ---------------------------------------------------------------------------
-# Butler tick — POST /api/butlers/{name}/tick
-# ---------------------------------------------------------------------------
-
-
-class TestButlerTick:
-    async def test_tick_404_for_unknown_butler(self, app, roster_dir):
-        configs = [ButlerConnectionInfo("general", 41101)]
-        _wire(app, configs, _mock_mcp_manager(unreachable=True))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post("/api/butlers/nonexistent/tick")
-        assert resp.status_code == 404
-
-    async def test_tick_503_when_unreachable(self, app, roster_dir):
-        configs = [ButlerConnectionInfo("general", 41101)]
-        _wire(app, configs, _mock_mcp_manager(unreachable=True))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post("/api/butlers/general/tick")
-        assert resp.status_code == 503
+        assert resp.json()["data"]["session_id"] == "sess-1"

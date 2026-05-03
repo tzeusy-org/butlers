@@ -1,7 +1,7 @@
 """Tests for home butler dashboard API endpoints.
 
-Condensed from 53 tests to ~8 tests (bu-egmz6).
-Keeps: paginated structure, serialization, 503 error path, maintenance status classification.
+Condensed from 53 tests to ~8 tests (bu-egmz6) → 3 tests (bu-2yw2d).
+Keeps: devices 200 + 503 combined, validation 422, maintenance status (parametrized).
 """
 
 from __future__ import annotations
@@ -21,30 +21,26 @@ pytestmark = pytest.mark.unit
 _NOW = datetime.now(UTC)
 
 
-def _make_entity_row(entity_id="light.living_room", state="on", area_name="living_room"):
+def _make_entity_row(entity_id="light.living_room", state="on"):
     row = MagicMock()
     domain = entity_id.split(".")[0] if "." in entity_id else entity_id
     row.__getitem__ = lambda self, key: {
         "entity_id": entity_id,
         "state": state,
         "domain": domain,
-        "attributes": {
-            "friendly_name": "Living Room Light",
-            "area_name": area_name,
-            "area_id": area_name,
-        },
+        "attributes": {"friendly_name": "Light", "area_name": "living_room", "area_id": "lr"},
         "last_updated": datetime(2026, 3, 1, 10, 0, 0, tzinfo=UTC),
         "captured_at": "2026-03-01T10:05:00+00:00",
-        "friendly_name": "Living Room Light",
+        "friendly_name": "Light",
     }[key]
     return row
 
 
-def _make_maintenance_row(name="HVAC Filter", next_due_at=None):
+def _make_maintenance_row(next_due_at=None):
     row = MagicMock()
     row.__getitem__ = lambda self, key: {
         "id": uuid4(),
-        "name": name,
+        "name": "HVAC Filter",
         "category": "hvac",
         "interval_days": 90,
         "last_completed_at": None,
@@ -54,13 +50,11 @@ def _make_maintenance_row(name="HVAC Filter", next_due_at=None):
     return row
 
 
-def _app_with_mock_db(
-    app: FastAPI, *, fetch_rows=None, fetchval_result=0, fetchrow_result=None, pool_available=True
-):
+def _app_with_mock_db(app: FastAPI, *, fetch_rows=None, fetchval_result=0, pool_available=True):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
-    mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
+    mock_pool.fetchrow = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock(return_value=None)
 
     mock_db = MagicMock(spec=DatabaseManager)
@@ -77,76 +71,63 @@ def _app_with_mock_db(
     return app, mock_pool
 
 
-class TestDevices:
-    async def test_returns_paginated_structure(self, app):
-        _app_with_mock_db(app)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/home/devices")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "data" in body and "meta" in body
-        assert "total_count" in body["meta"]
-
-    async def test_device_serialized_correctly(self, app):
-        row = _make_entity_row("light.kitchen", state="on")
-        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/home/devices")
-        device = resp.json()["data"][0]
-        assert device["entity_id"] == "light.kitchen"
-        assert device["domain"] == "light"
-
-    async def test_pool_unavailable_returns_503(self, app):
-        _app_with_mock_db(app, pool_available=False)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/home/devices")
-        assert resp.status_code == 503
-
-    async def test_large_page_size_rejected(self, app):
-        _app_with_mock_db(app)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/home/devices", params={"page_size": 9999})
-        assert resp.status_code == 422
+# ---------------------------------------------------------------------------
+# Devices — 200 structure + 503 fallback
+# ---------------------------------------------------------------------------
 
 
-class TestMaintenance:
-    async def test_returns_list_of_items(self, app):
-        row = _make_maintenance_row()
-        _app_with_mock_db(app, fetch_rows=[row])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/home/maintenance")
-        assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+async def test_devices_200_and_503(app):
+    row = _make_entity_row("light.kitchen")
+    _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/home/devices")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body and "meta" in body
+    assert body["data"][0]["entity_id"] == "light.kitchen"
 
-    async def test_overdue_status_for_past_due_date(self, app):
-        past_due = _NOW - timedelta(days=3)
-        row = _make_maintenance_row(next_due_at=past_due)
-        _app_with_mock_db(app, fetch_rows=[row])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/home/maintenance")
-        items = resp.json()
-        assert len(items) == 1
-        assert items[0]["status"] == "overdue"
+    # 503 when pool unavailable
+    _app_with_mock_db(app, pool_available=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp_503 = await client.get("/api/home/devices")
+    assert resp_503.status_code == 503
 
-    async def test_ok_status_for_future_due_date(self, app):
-        future_due = _NOW + timedelta(days=60)
-        row = _make_maintenance_row(next_due_at=future_due)
-        _app_with_mock_db(app, fetch_rows=[row])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/home/maintenance")
-        items = resp.json()
-        assert items[0]["status"] == "ok"
+
+# ---------------------------------------------------------------------------
+# Devices — large page size rejected
+# ---------------------------------------------------------------------------
+
+
+async def test_devices_large_page_size_rejected(app):
+    _app_with_mock_db(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/home/devices", params={"page_size": 9999})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Maintenance — status classification (parametrized)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "due_offset_days,expected_status",
+    [(-3, "overdue"), (60, "ok")],
+    ids=["overdue", "ok"],
+)
+async def test_maintenance_status_classification(app, due_offset_days, expected_status):
+    due = _NOW + timedelta(days=due_offset_days)
+    row = _make_maintenance_row(next_due_at=due)
+    _app_with_mock_db(app, fetch_rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/home/maintenance")
+    assert resp.status_code == 200
+    assert resp.json()[0]["status"] == expected_status

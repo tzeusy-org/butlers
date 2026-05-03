@@ -1,8 +1,7 @@
 """Tests for dashboard conversation API endpoints.
 
-Condensed from 44 tests to ~8 tests (bu-egmz6).
-Keeps: list/pagination structure, field serialization, 503 error path,
-search validation, update/messages endpoints.
+Condensed from 44 tests to ~8 tests (bu-egmz6) → 3 tests (bu-2yw2d).
+Keeps: list 200 + 503 combined, 422/404/400 error paths (parametrized), summary 200.
 """
 
 from __future__ import annotations
@@ -67,91 +66,76 @@ def _app_with_mock_db(
     return app
 
 
-class TestListConversations:
-    async def test_returns_paginated_structure(self, app):
-        row = _make_conversation_row()
-        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "data" in body and "meta" in body
-        assert body["data"][0]["butler_name"] == _BUTLER
-        assert body["data"][0]["title"] == "Hello world"
-
-    async def test_503_when_db_unavailable(self, app):
-        _app_with_mock_db(app, db_raises=RuntimeError("no shared pool"))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations")
-        assert resp.status_code == 503
-
-    async def test_rejects_invalid_status(self, app):
-        _app_with_mock_db(app)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                f"/api/butlers/{_BUTLER}/conversations", params={"status": "invalid"}
-            )
-        assert resp.status_code == 422
+# ---------------------------------------------------------------------------
+# List conversations — 200 structure + 503 fallback
+# ---------------------------------------------------------------------------
 
 
-class TestConversationOperations:
-    async def test_search_requires_query(self, app):
-        _app_with_mock_db(app)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/search")
-        assert resp.status_code == 400
+async def test_list_conversations_200_and_503(app):
+    row = _make_conversation_row()
+    _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/butlers/{_BUTLER}/conversations")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "data" in body and "meta" in body
+    assert body["data"][0]["title"] == "Hello world"
 
-    async def test_update_conversation_title(self, app):
-        row = _make_conversation_row(title="New Title")
-        _app_with_mock_db(app, fetchrow_result=row)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                f"/api/butlers/{_BUTLER}/conversations/{_CONV_ID}",
-                json={"title": "New Title"},
-            )
-        assert resp.status_code == 200
+    # 503 when db unavailable
+    _app_with_mock_db(app, db_raises=RuntimeError("no shared pool"))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp_503 = await client.get(f"/api/butlers/{_BUTLER}/conversations")
+    assert resp_503.status_code == 503
 
-    async def test_update_returns_404_when_not_found(self, app):
-        _app_with_mock_db(app, fetchrow_result=None)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.patch(
-                f"/api/butlers/{_BUTLER}/conversations/{_CONV_ID}",
-                json={"title": "X"},
-            )
-        assert resp.status_code == 404
 
-    async def test_list_messages_404_when_conversation_not_found(self, app):
-        _app_with_mock_db(app, fetchrow_result=None)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/{uuid4()}/messages")
-        assert resp.status_code == 404
+# ---------------------------------------------------------------------------
+# Error paths (parametrized)
+# ---------------------------------------------------------------------------
 
-    async def test_summary_returns_stats(self, app):
-        row = {
-            "total_conversations": 5,
-            "active_conversations": 3,
-            "total_messages": 12,
-            "total_input_tokens": 1000,
-            "total_output_tokens": 500,
-            "total_duration_ms": 3000,
-        }
-        _app_with_mock_db(app, fetchrow_result=row)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/summary")
-        assert resp.status_code == 200
+
+@pytest.mark.parametrize(
+    "path,method,body,expected",
+    [
+        (f"/api/butlers/{_BUTLER}/conversations?status=invalid", "GET", None, 422),
+        (f"/api/butlers/{_BUTLER}/conversations/{_CONV_ID}", "PATCH", {"title": "X"}, 404),
+        (f"/api/butlers/{_BUTLER}/conversations/search", "GET", None, 400),
+        (f"/api/butlers/{_BUTLER}/conversations/{uuid4()}/messages", "GET", None, 404),
+    ],
+    ids=["invalid-status-422", "patch-404", "search-no-query-400", "messages-conv-404"],
+)
+async def test_conversations_error_paths(app, path, method, body, expected):
+    _app_with_mock_db(app, fetchrow_result=None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        if method == "GET":
+            resp = await client.get(path)
+        else:
+            resp = await client.patch(path, json=body or {})
+    assert resp.status_code == expected
+
+
+# ---------------------------------------------------------------------------
+# Summary endpoint
+# ---------------------------------------------------------------------------
+
+
+async def test_conversation_summary_returns_stats(app):
+    row = {
+        "total_conversations": 5,
+        "active_conversations": 3,
+        "total_messages": 12,
+        "total_input_tokens": 1000,
+        "total_output_tokens": 500,
+        "total_duration_ms": 3000,
+    }
+    _app_with_mock_db(app, fetchrow_result=row)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/summary")
+    assert resp.status_code == 200

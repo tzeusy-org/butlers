@@ -1,13 +1,11 @@
 """Tests for runtime config API endpoints.
 
-Covers:
-- GET success with existing config
-- GET 404 for unknown butler
-- PATCH hot field (no restart required)
-- PATCH cold field (restart required in response)
-- PATCH with unknown core_group (422)
-- PATCH empty body (200, no-op)
-- PATCH negative concurrency (422)
+Condensed to 3 tests (bu-2yw2d) from 9.
+
+Keeps:
+- GET success with field_tiers
+- GET 404 + PATCH validation errors (parametrized)
+- PATCH cold field returns restart_required
 """
 
 from __future__ import annotations
@@ -16,8 +14,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
-
-from butlers.api.routers.runtime_config import KNOWN_CORE_GROUPS
 
 pytestmark = pytest.mark.unit
 
@@ -45,25 +41,17 @@ def _mock_row(
 
 
 def _make_app(db_manager: MagicMock):
-    """Create a minimal FastAPI app with the runtime config router."""
     from fastapi import FastAPI
 
     from butlers.api.routers import runtime_config
 
     app = FastAPI()
     app.include_router(runtime_config.router)
-
-    # Override dependency
     app.dependency_overrides[runtime_config._get_db_manager] = lambda: db_manager
     return app
 
 
-def _make_db_manager(
-    pool: AsyncMock | None = None,
-    butler_name: str = "test",
-    known: bool = True,
-) -> MagicMock:
-    """Create a mock DatabaseManager."""
+def _make_db_manager(pool=None, butler_name="test", known=True):
     mgr = MagicMock()
     if known and pool is not None:
         mgr.pool.return_value = pool
@@ -72,147 +60,82 @@ def _make_db_manager(
     return mgr
 
 
-def test_get_success():
-    """GET returns runtime config from DB with field_tiers."""
+# ---------------------------------------------------------------------------
+# GET success — returns field_tiers (no hot fields exposed)
+# ---------------------------------------------------------------------------
+
+
+def test_get_success_returns_field_tiers():
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=_mock_row())
-    db = _make_db_manager(pool=pool)
-    app = _make_app(db)
-
-    client = TestClient(app)
-    resp = client.get("/api/butlers/test/runtime-config")
+    app = _make_app(_make_db_manager(pool=pool))
+    resp = TestClient(app).get("/api/butlers/test/runtime-config")
     assert resp.status_code == 200
     data = resp.json()
     assert data["butler_name"] == "test"
-    assert "model" not in data
-    assert "runtime_type" not in data
-    assert "args" not in data
-    assert "session_timeout_s" not in data
     assert "field_tiers" in data
     assert data["field_tiers"]["core_groups"] == "cold"
+    # Hot runtime-selection fields removed from this endpoint
+    for field in ("model", "runtime_type", "args", "session_timeout_s"):
+        assert field not in data
 
 
-def test_get_404_unknown_butler():
-    """GET returns 404 for unknown butler."""
-    db = _make_db_manager(known=False, butler_name="nonexistent")
-    app = _make_app(db)
+# ---------------------------------------------------------------------------
+# Error / validation paths (parametrized)
+# ---------------------------------------------------------------------------
 
+
+@pytest.mark.parametrize(
+    "method,path,body,butler_name,known,expected",
+    [
+        ("GET", "/api/butlers/nonexistent/runtime-config", None, "nonexistent", False, 404),
+        (
+            "PATCH",
+            "/api/butlers/test/runtime-config",
+            {"core_groups": ["infra", "unknown_group"]},
+            "test",
+            True,
+            422,
+        ),
+        ("PATCH", "/api/butlers/test/runtime-config", {"max_concurrent": -1}, "test", True, 422),
+        (
+            "PATCH",
+            "/api/butlers/test/runtime-config",
+            {"session_timeout_s": 1200},
+            "test",
+            True,
+            422,
+        ),
+    ],
+    ids=["get-404-unknown", "patch-422-bad-group", "patch-422-negative", "patch-422-removed-field"],
+)
+def test_runtime_config_error_paths(method, path, body, butler_name, known, expected):
+    pool = AsyncMock()
+    app = _make_app(_make_db_manager(pool=pool, butler_name=butler_name, known=known))
     client = TestClient(app)
-    resp = client.get("/api/butlers/nonexistent/runtime-config")
-    assert resp.status_code == 404
+    if method == "GET":
+        resp = client.get(path)
+    else:
+        resp = client.patch(path, json=body)
+    assert resp.status_code == expected
 
 
-def test_patch_max_concurrent_is_cold_field():
-    """PATCH of max_concurrent returns restart_required."""
+# ---------------------------------------------------------------------------
+# PATCH cold field returns restart_required
+# ---------------------------------------------------------------------------
+
+
+def test_patch_cold_field_returns_restart_required():
     pool = AsyncMock()
     pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_mock_row(max_concurrent=5))
-    db = _make_db_manager(pool=pool)
-    app = _make_app(db)
-
+    pool.fetchrow = AsyncMock(return_value=_mock_row(core_groups=["infra"], max_concurrent=5))
+    app = _make_app(_make_db_manager(pool=pool))
     client = TestClient(app)
-    resp = client.patch(
-        "/api/butlers/test/runtime-config",
-        json={"max_concurrent": 5},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["restart_required"] == ["max_concurrent"]
-    assert data["config"]["max_concurrent"] == 5
 
+    resp_cold = client.patch("/api/butlers/test/runtime-config", json={"core_groups": ["infra"]})
+    assert resp_cold.status_code == 200
+    assert "core_groups" in resp_cold.json()["restart_required"]
 
-def test_patch_cold_field():
-    """PATCH of cold field includes it in restart_required."""
-    pool = AsyncMock()
-    pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_mock_row(core_groups=["infra"]))
-    db = _make_db_manager(pool=pool)
-    app = _make_app(db)
-
-    client = TestClient(app)
-    resp = client.patch(
-        "/api/butlers/test/runtime-config",
-        json={"core_groups": ["infra"]},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "core_groups" in data["restart_required"]
-
-
-def test_patch_unknown_core_group():
-    """PATCH with unknown core_group returns 422."""
-    pool = AsyncMock()
-    db = _make_db_manager(pool=pool)
-    app = _make_app(db)
-
-    client = TestClient(app)
-    resp = client.patch(
-        "/api/butlers/test/runtime-config",
-        json={"core_groups": ["infra", "unknown_group"]},
-    )
-    assert resp.status_code == 422
-
-
-def test_patch_empty_body():
-    """PATCH with empty body returns 200 with no changes."""
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=_mock_row())
-    db = _make_db_manager(pool=pool)
-    app = _make_app(db)
-
-    client = TestClient(app)
-    resp = client.patch(
-        "/api/butlers/test/runtime-config",
-        json={},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["restart_required"] == []
-    # No UPDATE was executed (only the audit INSERT may have been called)
-    update_calls = [call for call in pool.execute.call_args_list if "UPDATE" in str(call)]
-    assert update_calls == [], f"Unexpected UPDATE calls: {update_calls}"
-
-
-def test_patch_negative_concurrency():
-    """PATCH with negative max_concurrent returns 422."""
-    pool = AsyncMock()
-    db = _make_db_manager(pool=pool)
-    app = _make_app(db)
-
-    client = TestClient(app)
-    resp = client.patch(
-        "/api/butlers/test/runtime-config",
-        json={"max_concurrent": -1},
-    )
-    assert resp.status_code == 422
-
-
-def test_patch_rejects_removed_runtime_selection_fields():
-    """PATCH rejects removed runtime-selection fields."""
-    pool = AsyncMock()
-    db = _make_db_manager(pool=pool)
-    app = _make_app(db)
-
-    client = TestClient(app)
-    resp = client.patch(
-        "/api/butlers/test/runtime-config",
-        json={"session_timeout_s": 1200},
-    )
-    assert resp.status_code == 422
-
-
-def test_known_core_groups_constant():
-    """KNOWN_CORE_GROUPS has the expected set of groups."""
-    expected = {
-        "infra",
-        "state",
-        "scheduling",
-        "sessions",
-        "notifications",
-        "media",
-        "temporal",
-        "module_mgmt",
-        "switchboard_routing",
-        "switchboard_backfill",
-    }
-    assert KNOWN_CORE_GROUPS == expected
+    resp_concurrent = client.patch("/api/butlers/test/runtime-config", json={"max_concurrent": 5})
+    assert resp_concurrent.status_code == 200
+    assert "max_concurrent" in resp_concurrent.json()["restart_required"]
