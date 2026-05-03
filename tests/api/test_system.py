@@ -22,7 +22,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.system import _get_db_manager
+from butlers.api.routers.system import (
+    _get_db_manager,
+    system_backups_reads_total,
+    system_butlers_heartbeat_reads_total,
+    system_database_reads_total,
+    system_egress_reads_total,
+    system_instance_reads_total,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -498,3 +505,101 @@ class TestEgressSpan:
         spans = otel_exporter.get_finished_spans()
         egress_spans = [s for s in spans if s.name == "system.egress.read"]
         assert len(egress_spans) == 2
+
+
+# ---------------------------------------------------------------------------
+# Prometheus counter tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrometheusCounters:
+    """Verify that each /api/system/* endpoint registers a counter and bumps it."""
+
+    def _counter_value(self, counter) -> float:
+        """Read the current value of an unlabelled prometheus_client Counter.
+
+        Uses the public collect() API rather than internal _value so the helper
+        stays compatible across prometheus_client versions and multiprocess mode.
+        The _total sample holds the monotonic counter value.
+        """
+        for metric_family in counter.collect():
+            for sample in metric_family.samples:
+                if sample.name.endswith("_total"):
+                    return sample.value
+        return 0.0
+
+    async def test_instance_counter_exists_and_increments(self):
+        """system_instance_reads_total increments on GET /api/system/instance."""
+        app = create_app()
+        before = self._counter_value(system_instance_reads_total)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/system/instance")
+        assert resp.status_code == 200
+        assert self._counter_value(system_instance_reads_total) == before + 1
+
+    async def test_database_counter_exists_and_increments(self):
+        """system_database_reads_total increments on GET /api/system/database."""
+        mock_db = MagicMock(spec=DatabaseManager)
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=1024)
+        pool.fetch = AsyncMock(return_value=[])
+        mock_db.pool.return_value = pool
+        app = _make_app_with_db(mock_db)
+        before = self._counter_value(system_database_reads_total)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/system/database")
+        assert resp.status_code == 200
+        assert self._counter_value(system_database_reads_total) == before + 1
+
+    async def test_backups_counter_exists_and_increments(self):
+        """system_backups_reads_total increments on GET /api/system/backups."""
+        app = create_app()
+        before = self._counter_value(system_backups_reads_total)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/system/backups")
+        assert resp.status_code == 200
+        assert self._counter_value(system_backups_reads_total) == before + 1
+
+    async def test_egress_counter_exists_and_increments(self):
+        """system_egress_reads_total increments on GET /api/system/egress (even on 403)."""
+        mock_db = MagicMock(spec=DatabaseManager)
+        pool = AsyncMock()
+        # Simulate missing owner -> 403, but counter still bumps
+        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetch = AsyncMock(return_value=[])
+        mock_db.pool.return_value = pool
+        app = _make_app_with_db(mock_db)
+        before = self._counter_value(system_egress_reads_total)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/system/egress")
+        # 403 is expected (no owner), but the counter must still have bumped
+        assert resp.status_code == 403
+        assert self._counter_value(system_egress_reads_total) == before + 1
+
+    async def test_heartbeat_counter_exists_and_increments(self):
+        """system_butlers_heartbeat_reads_total increments on GET /api/system/butlers/heartbeat."""
+        sw_pool = AsyncMock()
+        sw_pool.fetch = AsyncMock(return_value=[])
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.butler_names = []
+
+        def _pool(name: str):
+            return sw_pool
+
+        mock_db.pool.side_effect = _pool
+        app = _make_app_with_db(mock_db)
+        before = self._counter_value(system_butlers_heartbeat_reads_total)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/system/butlers/heartbeat")
+        assert resp.status_code == 200
+        assert self._counter_value(system_butlers_heartbeat_reads_total) == before + 1
