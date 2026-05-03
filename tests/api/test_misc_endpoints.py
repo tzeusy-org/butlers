@@ -57,9 +57,9 @@ async def test_health_returns_ok():
 @pytest.mark.parametrize(
     "api_key,headers,path,expected",
     [
-        ("", {}, "/api/health", 200),           # auth disabled
-        ("secret", {}, "/api/butlers", 401),    # missing key → 401
-        ("secret", {}, "/api/health", 200),     # health bypasses auth
+        ("", {}, "/api/health", 200),  # auth disabled
+        ("secret", {}, "/api/butlers", 401),  # missing key → 401
+        ("secret", {}, "/api/health", 200),  # health bypasses auth
     ],
     ids=["auth-disabled", "missing-key-401", "health-bypasses-auth"],
 )
@@ -90,9 +90,11 @@ async def test_valid_api_key_grants_access_to_protected_endpoint():
 @pytest.mark.parametrize(
     "path,exception,expected",
     [
-        ("/api/test/unreachable",
-         ButlerUnreachableError("atlas", cause=ConnectionRefusedError("conn refused")),
-         (502, 503)),
+        (
+            "/api/test/unreachable",
+            ButlerUnreachableError("atlas", cause=ConnectionRefusedError("conn refused")),
+            (502, 503),
+        ),
         ("/api/test/not-found", ButlerNotFoundError("atlas"), (404, 404)),
     ],
     ids=["unreachable-5xx", "not-found-404"],

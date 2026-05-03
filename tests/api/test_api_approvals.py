@@ -60,11 +60,13 @@ def _app_with_mock_db(
     mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
 
     if has_approvals_tables:
+
         def fetchval_mock(*args, **kwargs):
             sql = args[0] if args else ""
             if "to_regclass" in sql or "EXISTS" in sql:
                 return True
             return fetchval_return
+
         mock_conn.fetchval = AsyncMock(side_effect=fetchval_mock)
     else:
         mock_conn.fetchval = AsyncMock(return_value=fetchval_return)
@@ -72,6 +74,7 @@ def _app_with_mock_db(
     class _MockAcquire:
         async def __aenter__(self):
             return mock_conn
+
         async def __aexit__(self, *a):
             pass
 
@@ -119,7 +122,12 @@ async def test_list_actions_returns_paginated_structure(app):
     [
         (f"/api/approvals/actions/{uuid4()}", "GET", None, 404),
         ("/api/approvals/actions/not-a-uuid", "GET", None, 400),
-        ("/api/approvals/rules", "POST", {"tool_name": "x", "arg_constraints": {}, "description": "test", "max_uses": -1}, 400),
+        (
+            "/api/approvals/rules",
+            "POST",
+            {"tool_name": "x", "arg_constraints": {}, "description": "test", "max_uses": -1},
+            400,
+        ),
         (f"/api/approvals/rules/{uuid4()}/revoke", "POST", None, 404),
     ],
     ids=["action-404", "action-bad-uuid-400", "rule-invalid-max-uses-400", "revoke-rule-404"],
