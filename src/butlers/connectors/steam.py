@@ -1851,7 +1851,7 @@ async def _run() -> None:
     """Main coroutine — create pool, start connector, handle signals."""
     import asyncpg
 
-    from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+    from butlers.db import db_params_from_env, register_jsonb_codec, should_retry_with_ssl_disable
 
     switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL", "").strip()
     if not switchboard_mcp_url:
@@ -1877,6 +1877,7 @@ async def _run() -> None:
     if params.get("ssl"):
         pool_kwargs["ssl"] = params["ssl"]
     pool_kwargs["setup"] = connector_setup_role
+    pool_kwargs["init"] = register_jsonb_codec
 
     try:
         pool = await asyncpg.create_pool(**pool_kwargs)

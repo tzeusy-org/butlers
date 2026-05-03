@@ -1374,7 +1374,7 @@ async def _main() -> None:
     from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
     from butlers.core.logging import configure_logging
     from butlers.credential_store import resolve_owner_entity_info, shared_db_name_from_env
-    from butlers.db import db_params_from_env
+    from butlers.db import db_params_from_env, register_jsonb_codec
 
     configure_logging()
     logger.info("Home Assistant connector starting")
@@ -1400,6 +1400,7 @@ async def _main() -> None:
             max_size=4,
             command_timeout=10,
             setup=connector_setup_role,
+            init=register_jsonb_codec,
         )
     except Exception:
         logger.warning(

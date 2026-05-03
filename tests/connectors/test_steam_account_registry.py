@@ -313,10 +313,11 @@ class TestCreateSteamAccount:
         assert any("entity_info" in c for c in execute_calls)
 
     async def test_metadata_passed_directly_to_jsonb(self) -> None:
-        """The asyncpg JSONB codec is registered on all production pools so metadata
-        must reach the INSERT as a Python dict (not a json.dumps-serialized string).
-        Previously the code called json.dumps + ::jsonb double-encoding; bu-aaacv
-        removed that pattern and now relies on the codec to handle encoding.
+        """Metadata must reach the INSERT as a Python dict, not a json.dumps string.
+
+        bu-aaacv removed the json.dumps + ::jsonb double-encoding pattern.
+        Production pools must register the asyncpg JSONB codec for direct dict
+        binding to work.  This test verifies the call site passes a dict.
         """
         conn = _FakeConn()
         pool = _make_pool(conn)

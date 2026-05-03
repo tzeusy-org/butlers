@@ -2239,7 +2239,7 @@ async def run_google_drive_connector() -> None:
 
     from butlers.connectors.cursor_store import create_cursor_pool_from_env
     from butlers.credential_store import shared_db_name_from_env
-    from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+    from butlers.db import db_params_from_env, register_jsonb_codec, should_retry_with_ssl_disable
 
     db_params = db_params_from_env()
     shared_db_name = shared_db_name_from_env()
@@ -2260,6 +2260,7 @@ async def run_google_drive_connector() -> None:
         if ssl is not None:
             pool_kwargs["ssl"] = ssl
         pool_kwargs["setup"] = connector_setup_role
+        pool_kwargs["init"] = register_jsonb_codec
 
         try:
             shared_pool = await _asyncpg.create_pool(**pool_kwargs)

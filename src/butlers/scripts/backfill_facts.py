@@ -106,11 +106,14 @@ def _embed(text: str) -> str:
 
 async def _create_pool(db_name: str, schema: str) -> asyncpg.Pool:
     """Create an asyncpg pool connected to *db_name* with *schema* search_path."""
+    from butlers.db import register_jsonb_codec
+
     database_url = os.environ.get("DATABASE_URL")
     if database_url:
         pool = await asyncpg.create_pool(
             dsn=database_url,
             server_settings={"search_path": f"{schema},public"},
+            init=register_jsonb_codec,
         )
     else:
         pool = await asyncpg.create_pool(
@@ -120,6 +123,7 @@ async def _create_pool(db_name: str, schema: str) -> asyncpg.Pool:
             password=os.environ.get("POSTGRES_PASSWORD", "butlers"),
             database=db_name,
             server_settings={"search_path": f"{schema},public"},
+            init=register_jsonb_codec,
         )
     assert pool is not None
     return pool
