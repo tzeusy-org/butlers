@@ -52,8 +52,14 @@ def _make_row(data: dict):
 
 
 def _app_with_mock(
-    app, *, fetch_rows=None, fetchrow_result=None, fetchval_result=0,
-    execute_return="UPDATE 1", pool_available=True, fetchrow_side_effects=None,
+    app,
+    *,
+    fetch_rows=None,
+    fetchrow_result=None,
+    fetchval_result=0,
+    execute_return="UPDATE 1",
+    pool_available=True,
+    fetchrow_side_effects=None,
 ):
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
@@ -137,7 +143,9 @@ async def test_heartbeat_active_returns_200(app):
 
 async def test_heartbeat_stale_transitions_to_active_and_logs(app):
     app, mock_pool = _app_with_mock(
-        app, fetchrow_result={"eligibility_state": "stale", "last_seen_at": None}, execute_return="UPDATE 1"
+        app,
+        fetchrow_result={"eligibility_state": "stale", "last_seen_at": None},
+        execute_return="UPDATE 1",
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -187,10 +195,20 @@ async def test_eligibility_no_transitions_single_segment(app):
 async def test_eligibility_transitions_correct_segments(app):
     now = datetime.datetime.now(datetime.UTC)
     app, mock_pool = _app_with_mock(app, fetchrow_result={"eligibility_state": "active"})
-    mock_pool.fetch = AsyncMock(return_value=[
-        {"previous_state": "active", "new_state": "stale", "observed_at": now - datetime.timedelta(hours=12)},
-        {"previous_state": "stale", "new_state": "active", "observed_at": now - datetime.timedelta(hours=6)},
-    ])
+    mock_pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "previous_state": "active",
+                "new_state": "stale",
+                "observed_at": now - datetime.timedelta(hours=12),
+            },
+            {
+                "previous_state": "stale",
+                "new_state": "active",
+                "observed_at": now - datetime.timedelta(hours=6),
+            },
+        ]
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -213,11 +231,18 @@ async def test_eligibility_unknown_butler_404(app):
 # ---------------------------------------------------------------------------
 
 _GLOBAL_RULE = {
-    "id": "11111111-1111-1111-1111-111111111111", "scope": "global",
-    "rule_type": "sender_domain", "condition": {"domain": "chase.com", "match": "exact"},
-    "action": "route_to:finance", "priority": 10, "enabled": True, "name": "Chase routing",
-    "description": None, "created_by": "dashboard",
-    "created_at": "2026-03-08T00:00:00+00:00", "updated_at": "2026-03-08T00:00:00+00:00",
+    "id": "11111111-1111-1111-1111-111111111111",
+    "scope": "global",
+    "rule_type": "sender_domain",
+    "condition": {"domain": "chase.com", "match": "exact"},
+    "action": "route_to:finance",
+    "priority": 10,
+    "enabled": True,
+    "name": "Chase routing",
+    "description": None,
+    "created_by": "dashboard",
+    "created_at": "2026-03-08T00:00:00+00:00",
+    "updated_at": "2026-03-08T00:00:00+00:00",
     "deleted_at": None,
 }
 
@@ -245,27 +270,60 @@ async def test_ingestion_rules_condition_jsonb_decoded(app):
 
 async def test_ingestion_rules_create_global_201(app):
     app, mock_pool = _app_with_mock(app)
-    mock_pool.fetchrow = AsyncMock(side_effect=[_make_row({"name": "finance"}), _make_row(_GLOBAL_RULE)])
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=[_make_row({"name": "finance"}), _make_row(_GLOBAL_RULE)]
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.post(
             "/api/switchboard/ingestion-rules",
-            json={"scope": "global", "rule_type": "sender_domain",
-                  "condition": {"domain": "chase.com", "match": "exact"},
-                  "action": "route_to:finance", "priority": 10},
+            json={
+                "scope": "global",
+                "rule_type": "sender_domain",
+                "condition": {"domain": "chase.com", "match": "exact"},
+                "action": "route_to:finance",
+                "priority": 10,
+            },
         )
     assert resp.status_code == 201
 
 
-@pytest.mark.parametrize("bad_payload,exp_status", [
-    ({"scope": "connector:gmail:gmail:user:dev", "rule_type": "sender_domain",
-      "condition": {"domain": "x.com", "match": "exact"}, "action": "skip", "priority": 10}, 422),
-    ({"scope": "invalid_scope", "rule_type": "sender_domain",
-      "condition": {}, "action": "skip", "priority": 10}, 422),
-    ({"scope": "global", "rule_type": "sender_domain",
-      "condition": {}, "action": "skip", "priority": -1}, 422),
-])
+@pytest.mark.parametrize(
+    "bad_payload,exp_status",
+    [
+        (
+            {
+                "scope": "connector:gmail:gmail:user:dev",
+                "rule_type": "sender_domain",
+                "condition": {"domain": "x.com", "match": "exact"},
+                "action": "skip",
+                "priority": 10,
+            },
+            422,
+        ),
+        (
+            {
+                "scope": "invalid_scope",
+                "rule_type": "sender_domain",
+                "condition": {},
+                "action": "skip",
+                "priority": 10,
+            },
+            422,
+        ),
+        (
+            {
+                "scope": "global",
+                "rule_type": "sender_domain",
+                "condition": {},
+                "action": "skip",
+                "priority": -1,
+            },
+            422,
+        ),
+    ],
+)
 async def test_ingestion_rules_validation_errors(app, bad_payload, exp_status):
     _app_with_mock(app)
     async with httpx.AsyncClient(
@@ -280,7 +338,9 @@ async def test_ingestion_rules_delete_nonexistent_404(app):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.delete("/api/switchboard/ingestion-rules/11111111-1111-1111-1111-111111111112")
+        resp = await client.delete(
+            "/api/switchboard/ingestion-rules/11111111-1111-1111-1111-111111111112"
+        )
     assert resp.status_code == 404
 
 
@@ -290,12 +350,24 @@ async def test_ingestion_rules_delete_nonexistent_404(app):
 
 _JOB_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 _SAMPLE_JOB = {
-    "id": _JOB_ID, "connector_type": "gmail", "endpoint_identity": "user@example.com",
-    "target_categories": ["finance"], "date_from": "2020-01-01", "date_to": "2026-01-01",
-    "rate_limit_per_hour": 100, "daily_cost_cap_cents": 500, "status": "pending",
-    "cursor": None, "rows_processed": 0, "rows_skipped": 0, "cost_spent_cents": 0,
-    "error": None, "created_at": "2026-02-23T10:00:00+00:00", "started_at": None,
-    "completed_at": None, "updated_at": "2026-02-23T10:00:00+00:00",
+    "id": _JOB_ID,
+    "connector_type": "gmail",
+    "endpoint_identity": "user@example.com",
+    "target_categories": ["finance"],
+    "date_from": "2020-01-01",
+    "date_to": "2026-01-01",
+    "rate_limit_per_hour": 100,
+    "daily_cost_cap_cents": 500,
+    "status": "pending",
+    "cursor": None,
+    "rows_processed": 0,
+    "rows_skipped": 0,
+    "cost_spent_cents": 0,
+    "error": None,
+    "created_at": "2026-02-23T10:00:00+00:00",
+    "started_at": None,
+    "completed_at": None,
+    "updated_at": "2026-02-23T10:00:00+00:00",
 }
 
 
@@ -307,8 +379,12 @@ async def test_backfill_create_201(app):
     ) as client:
         resp = await client.post(
             "/api/switchboard/backfill",
-            json={"connector_type": "gmail", "endpoint_identity": "user@example.com",
-                  "date_from": "2020-01-01", "date_to": "2026-01-01"},
+            json={
+                "connector_type": "gmail",
+                "endpoint_identity": "user@example.com",
+                "date_from": "2020-01-01",
+                "date_to": "2026-01-01",
+            },
         )
     assert resp.status_code == 201
     assert "id" in resp.json()["data"]
@@ -338,13 +414,25 @@ async def test_backfill_pause_completed_409(app):
 # ---------------------------------------------------------------------------
 
 _SAMPLE_CONNECTOR = {
-    "connector_type": "telegram_bot", "endpoint_identity": "bot-123", "instance_id": None,
-    "version": "1.0.0", "state": "healthy", "error_message": None, "uptime_s": 3600,
-    "last_heartbeat_at": "2026-02-23T10:00:00+00:00", "first_seen_at": "2026-02-01T00:00:00+00:00",
-    "registered_via": "self", "counter_messages_ingested": 42, "counter_messages_failed": 1,
-    "counter_source_api_calls": 150, "counter_checkpoint_saves": 10, "counter_dedupe_accepted": 0,
-    "today_messages_ingested": 7, "today_messages_failed": 0,
-    "checkpoint_cursor": "update-12345", "checkpoint_updated_at": "2026-02-23T09:55:00+00:00",
+    "connector_type": "telegram_bot",
+    "endpoint_identity": "bot-123",
+    "instance_id": None,
+    "version": "1.0.0",
+    "state": "healthy",
+    "error_message": None,
+    "uptime_s": 3600,
+    "last_heartbeat_at": "2026-02-23T10:00:00+00:00",
+    "first_seen_at": "2026-02-01T00:00:00+00:00",
+    "registered_via": "self",
+    "counter_messages_ingested": 42,
+    "counter_messages_failed": 1,
+    "counter_source_api_calls": 150,
+    "counter_checkpoint_saves": 10,
+    "counter_dedupe_accepted": 0,
+    "today_messages_ingested": 7,
+    "today_messages_failed": 0,
+    "checkpoint_cursor": "update-12345",
+    "checkpoint_updated_at": "2026-02-23T09:55:00+00:00",
 }
 
 
