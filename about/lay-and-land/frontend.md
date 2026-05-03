@@ -472,7 +472,12 @@ interface PageProps {
 **Prop rules:**
 
 - `title` is required. It becomes the page `<h1>` (rendered at
-  `text-3xl font-bold tracking-tight`, matching the majority of existing pages).
+  `text-2xl font-bold tracking-tight`). The detail-page audit picked
+  `text-2xl` as the canonical operator-tool H1 size (see
+  [`detail-page-audit.md`](detail-page-audit.md) section "Section 6:
+  Layout & Style"); `<Page>` matches. Pages currently using `text-3xl`
+  (Butlers, Chronicles, Entities, Symptoms) get demoted during their
+  migration onto `<Page>`.
   It is also used for `<title>` via a `useEffect` if there is no other title
   manager.
 - `description` renders as `text-muted-foreground mt-1` below the title.
@@ -506,7 +511,7 @@ Reference page: `DashboardPage` (line 165 heading, `space-y-6` root div),
 - Content padding: inherited from shell (`p-6`). `<Page>` adds `space-y-6`
   between its internal regions (heading block, children).
 - Heading block: a flex row (`items-start justify-between gap-4`) containing
-  two children: (left) a vertical stack of `<h1 text-3xl font-bold tracking-tight>`
+  two children: (left) a vertical stack of `<h1 text-2xl font-bold tracking-tight>`
   + optional `<p text-muted-foreground mt-1>`, and (right) the `actions` node.
   This is the `EntitiesPage:655-665` canonical pattern -- title and description
   stack vertically inside a `<div>`, not side-by-side with actions.

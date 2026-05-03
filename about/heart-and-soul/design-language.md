@@ -202,10 +202,28 @@ the use case before being treated as binding.
    token does not exist for what the page needs (e.g., severity tiers,
    chart category palettes), the right move is to *add a named token*,
    not to inline a value.
+   - **Exemption: chart palettes.** The five `--chart-*` tokens in
+     `index.css` and recharts color props that consume them are
+     intentionally a separate visual axis (categorical data
+     differentiation). The hex-purge in vertical C does not touch
+     `index.css` chart variables or recharts config; only ad-hoc hex
+     in JSX is a bug.
+   - **Exemption: typed primitives that own one style prop.** A
+     `<Progress value={0.42}/>` whose internal `style={{ width: '42%' }}`
+     is unavoidable does not violate the rule — the ban targets ad-hoc
+     inline styles, not encapsulated dynamic values inside a typed
+     primitive.
 2. **The `Page` is a primitive.** Every route renders inside a
    `<Page>` shell that owns title, description, breadcrumbs, action
    bar, loading state, error state, and empty state. Pages compose
    sections inside it; they do not reinvent the chrome.
+   - **H1 size is `text-2xl font-bold tracking-tight`.** Settled per
+     the detail-page audit and adopted by `<Page>`. Pages currently
+     using `text-3xl` get demoted during their migration.
+   - **Type ratio is 1.2** (product-register override of impeccable's
+     shared `≥1.25` floor). Per `impeccable/reference/product.md`:
+     "tighter scale ratio. 1.125–1.2 between steps is typical for
+     product UI." The dashboard is product, not brand.
 3. **Information density is a deliberate dial, not an accident.**
    Each page declares its archetype (overview, drilldown, workspace,
    feed, log, graph). The archetype determines layout, not the
