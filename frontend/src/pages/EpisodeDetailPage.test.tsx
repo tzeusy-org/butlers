@@ -63,7 +63,7 @@ describe("EpisodeDetailPage — single-H1 contract", () => {
     expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(1);
   });
 
-  it("renders exactly one H1 in loading state", () => {
+  it("renders zero H1s in loading state (skeleton, no heading)", () => {
     vi.mocked(useEpisode).mockReturnValue({
       data: undefined,
       isLoading: true,
@@ -139,6 +139,13 @@ describe("EpisodeDetailPage — content", () => {
     // The full 100-char string is NOT in the title, but appears in the content area
     // The title is capped at 80 chars (77 + ellipsis)
     expect(html).toContain("A".repeat(77) + "…");
+  });
+
+  it("skips leading blank lines when deriving H1 title", () => {
+    setEpisodeState({ ...BASE_EPISODE, content: "\n\n  \nActual content here" });
+    const html = renderPage();
+    // The first non-empty line is used, not the blank first line
+    expect(html.match(/<h1[^>]*>.*?<\/h1>/s)?.[0]).toContain("Actual content here");
   });
 
   it("renders provenance timestamps", () => {

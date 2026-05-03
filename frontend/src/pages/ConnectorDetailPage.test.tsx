@@ -130,7 +130,7 @@ describe("ConnectorDetailPage — single-H1 contract", () => {
     expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(1);
   });
 
-  it("renders exactly one H1 in loading state", () => {
+  it("renders zero H1s in loading state (skeleton, no heading)", () => {
     vi.mocked(useConnectorDetail).mockReturnValue({
       data: undefined,
       isLoading: true,
@@ -271,5 +271,31 @@ describe("ConnectorDetailPage — content", () => {
     } as UseConnectorStatsResult);
     const html = renderPage();
     expect(html).toContain("Period Summary");
+  });
+});
+
+describe("ConnectorDetailPage — error state", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useUpdateConnectorCursor).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as ReturnType<typeof useUpdateConnectorCursor>);
+    vi.mocked(useUpdateConnectorSettings).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as ReturnType<typeof useUpdateConnectorSettings>);
+  });
+
+  it("shows an error region when connector fetch fails", () => {
+    vi.mocked(useConnectorDetail).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("Network error"),
+    } as UseConnectorDetailResult);
+    setStatsState();
+    const html = renderPage();
+    expect(html).toContain("Something went wrong");
+    expect(html).toContain("Network error");
   });
 });

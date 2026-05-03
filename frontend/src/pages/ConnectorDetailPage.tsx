@@ -89,7 +89,7 @@ export default function ConnectorDetailPage() {
     );
   }
 
-  const { data: detailResp, isLoading: detailLoading } = useConnectorDetail(
+  const { data: detailResp, isLoading: detailLoading, error: detailError } = useConnectorDetail(
     connectorType ?? null,
     endpointIdentity ?? null,
   );
@@ -154,14 +154,6 @@ export default function ConnectorDetailPage() {
 
   // Derive record fields for <Page>
   const title = connector?.connector_type ?? connectorType ?? "Connector";
-  const healthSummary = useMemo(() => {
-    if (!connector) return undefined;
-    const parts: string[] = [connector.liveness, connector.state];
-    if (connector.today?.uptime_pct != null) {
-      parts.push(`${connector.today.uptime_pct.toFixed(1)}% uptime`);
-    }
-    return parts.join(" · ");
-  }, [connector]);
 
   const breadcrumbs = useMemo(
     () => [
@@ -176,10 +168,10 @@ export default function ConnectorDetailPage() {
     <Page
       archetype="detail"
       title={title}
-      description={connector?.endpoint_identity ?? endpointIdentity ?? healthSummary}
+      description={connector?.endpoint_identity ?? endpointIdentity}
       breadcrumbs={breadcrumbs}
       loading={detailLoading}
-      error={null}
+      error={detailError ?? null}
     >
       <>
         {/* Primary: status + config */}

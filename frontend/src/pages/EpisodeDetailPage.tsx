@@ -18,11 +18,13 @@ export default function EpisodeDetailPage() {
   const episode = data?.data;
 
   // Derive record fields from the loaded episode (or a loading placeholder).
-  // title  = first non-empty line of content (trimmed), capped at 80 chars
+  // title  = first non-empty line of content (trimmed), capped at 80 chars;
+  //          leading blank lines are skipped so whitespace-padded content
+  //          does not produce a blank title.
   // subtitle = source butler (the "lane")
   const title = useMemo(() => {
     if (!episode) return "Episode";
-    const firstLine = episode.content.split("\n")[0].trim();
+    const firstLine = episode.content.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
     return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine || "Episode";
   }, [episode]);
 
