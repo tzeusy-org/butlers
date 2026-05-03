@@ -20,7 +20,12 @@ function RelationshipContactRedirect() {
 }
 
 function ContactDetailStub() {
-  return <div data-testid="contact-detail-page">contact detail</div>
+  const { contactId } = useParams()
+  return (
+    <div data-testid="contact-detail-page" data-contact-id={contactId}>
+      contact detail
+    </div>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -63,12 +68,16 @@ describe('/butlers/relationship/contacts/:id redirect', () => {
 
   it('navigates to canonical contact page for id=abc-123', () => {
     render('/butlers/relationship/contacts/abc-123')
-    expect(container.querySelector('[data-testid="contact-detail-page"]')).not.toBeNull()
+    const el = container.querySelector('[data-testid="contact-detail-page"]')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-contact-id')).toBe('abc-123')
   })
 
   it('navigates to canonical contact page for a numeric id', () => {
     render('/butlers/relationship/contacts/42')
-    expect(container.querySelector('[data-testid="contact-detail-page"]')).not.toBeNull()
+    const el = container.querySelector('[data-testid="contact-detail-page"]')
+    expect(el).not.toBeNull()
+    expect(el?.getAttribute('data-contact-id')).toBe('42')
   })
 
   it('does not render the contact detail page for an unrelated path', () => {
