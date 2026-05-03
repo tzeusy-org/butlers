@@ -12,7 +12,7 @@
  * - Cold-start empty state when < 5 contacts scored
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { CrosshairIcon, PinIcon } from "lucide-react";
 
@@ -584,26 +584,26 @@ function TierLegend({ tierGroups }: { tierGroups: Record<Tier, DunbarEntry[]> })
 // Public dialog component
 // ---------------------------------------------------------------------------
 
-function useElementSize(ref: React.RefObject<HTMLElement | null>) {
+function useElementSize() {
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const ref = useCallback((node: HTMLElement | null) => setEl(node), []);
   useLayoutEffect(() => {
-    const el = ref.current;
     if (!el) return;
     const measure = () => setSize({ width: el.clientWidth, height: el.clientHeight });
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ref]);
-  return size;
+  }, [el]);
+  return { ref, size };
 }
 
 export function ConcentricCirclesDialog() {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const { data, isLoading, isError } = useDunbarRanking(open);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const stageSize = useElementSize(stageRef);
+  const { ref: stageRef, size: stageSize } = useElementSize();
 
   const entries = data?.entries ?? [];
   const ownerEntityId = data?.owner_entity_id ?? null;
