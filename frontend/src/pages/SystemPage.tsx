@@ -4,11 +4,13 @@
  * Surfaces five ownership-fact domains: software version and uptime, database
  * state, backup state, data egress catalog (owner-only), and per-butler
  * heartbeats.
- *
- * Tile content is rendered as pass-through JSON stubs for now. Sibling beads
- * (e5/e6/e7) will replace each stub with purpose-built tile bodies.
  */
 
+import { BackupTile } from "@/components/system/BackupTile";
+import { DbSizeTile } from "@/components/system/DbSizeTile";
+import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
+import { UptimeTile } from "@/components/system/UptimeTile";
+import { VersionTile } from "@/components/system/VersionTile";
 import TopologyGraph from "@/components/topology/TopologyGraph";
 import {
   Card,
@@ -20,11 +22,7 @@ import { Page } from "@/components/ui/page";
 import { useButlers } from "@/hooks/use-butlers";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import {
-  useBackupFacts,
   useButlerHeartbeats,
-  useDatabaseFacts,
-  useEgressFacts,
-  useInstanceFacts,
 } from "@/hooks/use-system";
 
 // ---------------------------------------------------------------------------
@@ -50,136 +48,8 @@ function SystemTile({ title, action, children }: SystemTileProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Individual tile implementations (stub pass-through for bu-ngfzz.4)
+// HeartbeatTile stub (bu-ngfzz.7)
 // ---------------------------------------------------------------------------
-
-function InstanceTile() {
-  const { data, isLoading, error } = useInstanceFacts();
-
-  if (isLoading) {
-    return (
-      <SystemTile title="Instance">
-        <div className="h-16 animate-pulse rounded bg-muted" />
-      </SystemTile>
-    );
-  }
-
-  if (error) {
-    return (
-      <SystemTile title="Instance">
-        <p className="text-sm text-destructive">Failed to load instance facts.</p>
-      </SystemTile>
-    );
-  }
-
-  return (
-    <SystemTile title="Instance">
-      <pre className="overflow-auto text-xs text-muted-foreground">
-        {JSON.stringify(data?.data, null, 2)}
-      </pre>
-    </SystemTile>
-  );
-}
-
-function DatabaseTile() {
-  const { data, isLoading, error } = useDatabaseFacts();
-
-  if (isLoading) {
-    return (
-      <SystemTile title="Database">
-        <div className="h-16 animate-pulse rounded bg-muted" />
-      </SystemTile>
-    );
-  }
-
-  if (error) {
-    return (
-      <SystemTile title="Database">
-        <p className="text-sm text-destructive">Failed to load database facts.</p>
-      </SystemTile>
-    );
-  }
-
-  return (
-    <SystemTile title="Database">
-      <pre className="overflow-auto text-xs text-muted-foreground">
-        {JSON.stringify(data?.data, null, 2)}
-      </pre>
-    </SystemTile>
-  );
-}
-
-function BackupTile() {
-  const { data, isLoading, error } = useBackupFacts();
-
-  if (isLoading) {
-    return (
-      <SystemTile title="Backups">
-        <div className="h-16 animate-pulse rounded bg-muted" />
-      </SystemTile>
-    );
-  }
-
-  if (error) {
-    return (
-      <SystemTile title="Backups">
-        <p className="text-sm text-destructive">Failed to load backup facts.</p>
-      </SystemTile>
-    );
-  }
-
-  if (data && !data.data.backup_source_reachable) {
-    return (
-      <SystemTile title="Backups">
-        <p className="text-sm text-muted-foreground">Backup status unavailable.</p>
-      </SystemTile>
-    );
-  }
-
-  return (
-    <SystemTile title="Backups">
-      <pre className="overflow-auto text-xs text-muted-foreground">
-        {JSON.stringify(data?.data, null, 2)}
-      </pre>
-    </SystemTile>
-  );
-}
-
-function EgressTile() {
-  const { data, isLoading, error, isForbidden } = useEgressFacts();
-
-  if (isLoading) {
-    return (
-      <SystemTile title="Data Egress">
-        <div className="h-16 animate-pulse rounded bg-muted" />
-      </SystemTile>
-    );
-  }
-
-  if (isForbidden) {
-    return (
-      <SystemTile title="Data Egress">
-        <p className="text-sm text-muted-foreground">Owner only.</p>
-      </SystemTile>
-    );
-  }
-
-  if (error) {
-    return (
-      <SystemTile title="Data Egress">
-        <p className="text-sm text-destructive">Failed to load egress catalog.</p>
-      </SystemTile>
-    );
-  }
-
-  return (
-    <SystemTile title="Data Egress">
-      <pre className="overflow-auto text-xs text-muted-foreground">
-        {JSON.stringify(data?.data, null, 2)}
-      </pre>
-    </SystemTile>
-  );
-}
 
 function HeartbeatTile() {
   const { data, isLoading, error } = useButlerHeartbeats();
@@ -249,10 +119,11 @@ export function SystemPage() {
       description="Your instance, your data, your butlers."
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <InstanceTile />
-        <DatabaseTile />
+        <VersionTile />
+        <UptimeTile />
+        <DbSizeTile />
         <BackupTile />
-        <EgressTile />
+        <EgressCatalogTile />
         <HeartbeatTile />
       </div>
 
