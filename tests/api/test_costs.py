@@ -64,19 +64,25 @@ output_price_per_token = 0.0000225
 
 
 def _flat_pricing():
-    return PricingConfig(models={
-        "claude-sonnet-4-20250514": ModelPricing(0.000003, 0.000015),
-        "claude-haiku-35-20241022": ModelPricing(0.0000008, 0.000004),
-    })
+    return PricingConfig(
+        models={
+            "claude-sonnet-4-20250514": ModelPricing(0.000003, 0.000015),
+            "claude-haiku-35-20241022": ModelPricing(0.0000008, 0.000004),
+        }
+    )
 
 
 def _tiered_pricing():
-    return PricingConfig(models={
-        "gpt-5.4": TieredModelPricing(tiers=(
-            PricingTier(0, 0.0000025, 0.000015, 0.00000025),
-            PricingTier(272_000, 0.000005, 0.0000225, 0.0000005),
-        )),
-    })
+    return PricingConfig(
+        models={
+            "gpt-5.4": TieredModelPricing(
+                tiers=(
+                    PricingTier(0, 0.0000025, 0.000015, 0.00000025),
+                    PricingTier(272_000, 0.000005, 0.0000225, 0.0000005),
+                )
+            ),
+        }
+    )
 
 
 def _make_tool_result(data: dict) -> MagicMock:
@@ -137,11 +143,14 @@ def test_load_pricing_missing_file_raises(tmp_path):
         load_pricing(tmp_path / "nonexistent.toml")
 
 
-@pytest.mark.parametrize("content,match", [
-    ("[models\ngarbage!!!", "Invalid TOML"),
-    ('[models]\n[models."m1"]\ninput_price_per_token = 0.001\n', "Missing required field"),
-    ('[models]\n[models."m"]\ntiers = []\n', "non-empty array"),
-])
+@pytest.mark.parametrize(
+    "content,match",
+    [
+        ("[models\ngarbage!!!", "Invalid TOML"),
+        ('[models]\n[models."m1"]\ninput_price_per_token = 0.001\n', "Missing required field"),
+        ('[models]\n[models."m"]\ntiers = []\n', "non-empty array"),
+    ],
+)
 def test_load_pricing_malformed_content_raises(tmp_path, content, match):
     p = tmp_path / "bad.toml"
     p.write_text(content)
@@ -184,11 +193,22 @@ async def test_cost_summary_zero_butlers(app):
 
 
 async def test_cost_summary_aggregates_multiple_butlers(app):
-    configs = [ButlerConnectionInfo(name="sw", port=41100), ButlerConnectionInfo(name="gen", port=41101)]
-    sw_data = {"total_sessions": 5, "total_input_tokens": 10000, "total_output_tokens": 5000,
-               "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}}}
-    gen_data = {"total_sessions": 3, "total_input_tokens": 8000, "total_output_tokens": 4000,
-                "by_model": {"claude-haiku-35-20241022": {"input_tokens": 8000, "output_tokens": 4000}}}
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="gen", port=41101),
+    ]
+    sw_data = {
+        "total_sessions": 5,
+        "total_input_tokens": 10000,
+        "total_output_tokens": 5000,
+        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 10000, "output_tokens": 5000}},
+    }
+    gen_data = {
+        "total_sessions": 3,
+        "total_input_tokens": 8000,
+        "total_output_tokens": 4000,
+        "by_model": {"claude-haiku-35-20241022": {"input_tokens": 8000, "output_tokens": 4000}},
+    }
     mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "gen": _make_tool_result(gen_data)})
     _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
@@ -201,9 +221,16 @@ async def test_cost_summary_aggregates_multiple_butlers(app):
 
 
 async def test_cost_summary_unreachable_butler_skipped(app):
-    configs = [ButlerConnectionInfo(name="sw", port=41100), ButlerConnectionInfo(name="broken", port=41101)]
-    sw_data = {"total_sessions": 2, "total_input_tokens": 1000, "total_output_tokens": 500,
-               "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}}}
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="broken", port=41101),
+    ]
+    sw_data = {
+        "total_sessions": 2,
+        "total_input_tokens": 1000,
+        "total_output_tokens": 500,
+        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
+    }
     mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")})
     _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
@@ -219,19 +246,33 @@ async def test_cost_summary_tiered_pricing(app):
     configs = [ButlerConnectionInfo(name="t", port=41100)]
 
     def _data(context: int):
-        return {"total_sessions": 1, "total_input_tokens": 1_000_000, "total_output_tokens": 1_000_000,
-                "by_model": {"gpt-5.4": {"input_tokens": 1_000_000, "output_tokens": 1_000_000,
-                                         "cached_input_tokens": 0, "context_tokens": context}}}
+        return {
+            "total_sessions": 1,
+            "total_input_tokens": 1_000_000,
+            "total_output_tokens": 1_000_000,
+            "by_model": {
+                "gpt-5.4": {
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "cached_input_tokens": 0,
+                    "context_tokens": context,
+                }
+            },
+        }
 
     mgr = _mock_mgr({"t": _make_tool_result(_data(100_000))})
     _wire(app, mgr, configs, _tiered_pricing())
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
         resp_low = await c.get("/api/costs/summary")
     assert resp_low.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
 
     mgr2 = _mock_mgr({"t": _make_tool_result(_data(300_000))})
     _wire(app, mgr2, configs, _tiered_pricing())
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
         resp_high = await c.get("/api/costs/summary")
     assert resp_high.json()["data"]["total_cost_usd"] == pytest.approx(27.50, abs=1e-4)
 
@@ -252,16 +293,32 @@ async def test_cost_summary_invalid_period_422(app):
 
 async def test_daily_costs_sorts_by_date(app):
     configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    daily_data = {"days": [
-        {"date": "2026-02-10", "sessions": 1, "input_tokens": 100, "output_tokens": 50, "by_model": {}},
-        {"date": "2026-02-08", "sessions": 2, "input_tokens": 200, "output_tokens": 100, "by_model": {}},
-    ]}
+    daily_data = {
+        "days": [
+            {
+                "date": "2026-02-10",
+                "sessions": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "by_model": {},
+            },
+            {
+                "date": "2026-02-08",
+                "sessions": 2,
+                "input_tokens": 200,
+                "output_tokens": 100,
+                "by_model": {},
+            },
+        ]
+    }
     mgr = _mock_mgr({"sw": _make_tool_result(daily_data)})
     _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/api/costs/daily", params={"from": "2026-02-08", "to": "2026-02-10"})
+        resp = await client.get(
+            "/api/costs/daily", params={"from": "2026-02-08", "to": "2026-02-10"}
+        )
     data = resp.json()["data"]
     assert [d["date"] for d in data] == ["2026-02-08", "2026-02-10"]
 
@@ -273,8 +330,15 @@ async def test_daily_costs_sorts_by_date(app):
 
 async def test_by_schedule_contract_and_zero_division(app):
     configs = [ButlerConnectionInfo(name="sw", port=41100)]
-    sched = {"name": "daily-report", "cron": "0 8 * * *", "model": "claude-sonnet-4-20250514",
-             "total_runs": 30, "total_input_tokens": 30000, "total_output_tokens": 15000, "runs_per_day": 1.0}
+    sched = {
+        "name": "daily-report",
+        "cron": "0 8 * * *",
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 30,
+        "total_input_tokens": 30000,
+        "total_output_tokens": 15000,
+        "runs_per_day": 1.0,
+    }
     zero_sched = {**sched, "total_runs": 0, "total_input_tokens": 0, "total_output_tokens": 0}
     mgr = _mock_mgr({"sw": _make_tool_result({"schedules": [sched, zero_sched]})})
     _wire(app, mgr, configs, _flat_pricing())

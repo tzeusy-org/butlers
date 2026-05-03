@@ -26,18 +26,32 @@ _NOW = datetime.now(tz=UTC)
 
 def _make_row(**kwargs) -> dict:
     base = {
-        "id": uuid4(), "name": "daily_digest", "cron": "0 9 * * *",
-        "dispatch_mode": "prompt", "prompt": "Send a daily digest",
-        "job_name": None, "job_args": None, "timezone": None, "start_at": None,
-        "end_at": None, "until_at": None, "display_title": None, "calendar_event_id": None,
-        "source": "db", "enabled": True, "next_run_at": None, "last_run_at": None,
-        "created_at": _NOW, "updated_at": _NOW,
+        "id": uuid4(),
+        "name": "daily_digest",
+        "cron": "0 9 * * *",
+        "dispatch_mode": "prompt",
+        "prompt": "Send a daily digest",
+        "job_name": None,
+        "job_args": None,
+        "timezone": None,
+        "start_at": None,
+        "end_at": None,
+        "until_at": None,
+        "display_title": None,
+        "calendar_event_id": None,
+        "source": "db",
+        "enabled": True,
+        "next_run_at": None,
+        "last_run_at": None,
+        "created_at": _NOW,
+        "updated_at": _NOW,
     }
     return {**base, **kwargs}
 
 
 def _mock_mcp_result(payload: dict) -> list:
     import json
+
     block = MagicMock()
     block.text = json.dumps(payload)
     return [block]
@@ -70,7 +84,9 @@ def _wire_mcp(app, *, result=None):
 
 def _wire_unreachable(app):
     mock_mgr = AsyncMock(spec=MCPClientManager)
-    mock_mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("atlas", cause=ConnectionRefusedError()))
+    mock_mgr.get_client = AsyncMock(
+        side_effect=ButlerUnreachableError("atlas", cause=ConnectionRefusedError())
+    )
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
     mock_db = MagicMock(spec=DatabaseManager)
@@ -105,12 +121,20 @@ async def test_list_503_when_db_unavailable(app):
     assert resp.status_code == 503
 
 
-@pytest.mark.parametrize("method,path_tpl,body,exp_status", [
-    ("POST", "/api/butlers/atlas/schedules", {"name": "t", "cron": "*/5 * * * *", "prompt": "x"}, 201),
-    ("PUT", "/api/butlers/atlas/schedules/{sid}", {"cron": "0 12 * * *"}, 200),
-    ("DELETE", "/api/butlers/atlas/schedules/{sid}", None, 200),
-    ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", None, 200),
-])
+@pytest.mark.parametrize(
+    "method,path_tpl,body,exp_status",
+    [
+        (
+            "POST",
+            "/api/butlers/atlas/schedules",
+            {"name": "t", "cron": "*/5 * * * *", "prompt": "x"},
+            201,
+        ),
+        ("PUT", "/api/butlers/atlas/schedules/{sid}", {"cron": "0 12 * * *"}, 200),
+        ("DELETE", "/api/butlers/atlas/schedules/{sid}", None, 200),
+        ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", None, 200),
+    ],
+)
 async def test_crud_endpoint_status_codes(app, method, path_tpl, body, exp_status):
     sid = uuid4()
     path = path_tpl.replace("{sid}", str(sid))
@@ -129,12 +153,19 @@ async def test_crud_endpoint_status_codes(app, method, path_tpl, body, exp_statu
     assert resp.status_code == exp_status
 
 
-@pytest.mark.parametrize("method,path_tpl,body", [
-    ("POST", "/api/butlers/atlas/schedules", {"name": "t", "cron": "*/5 * * * *", "prompt": "x"}),
-    ("PUT", "/api/butlers/atlas/schedules/{sid}", {"cron": "0 12 * * *"}),
-    ("DELETE", "/api/butlers/atlas/schedules/{sid}", None),
-    ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", None),
-])
+@pytest.mark.parametrize(
+    "method,path_tpl,body",
+    [
+        (
+            "POST",
+            "/api/butlers/atlas/schedules",
+            {"name": "t", "cron": "*/5 * * * *", "prompt": "x"},
+        ),
+        ("PUT", "/api/butlers/atlas/schedules/{sid}", {"cron": "0 12 * * *"}),
+        ("DELETE", "/api/butlers/atlas/schedules/{sid}", None),
+        ("PATCH", "/api/butlers/atlas/schedules/{sid}/toggle", None),
+    ],
+)
 async def test_crud_503_when_butler_unreachable(app, method, path_tpl, body):
     sid = uuid4()
     path = path_tpl.replace("{sid}", str(sid))
@@ -153,14 +184,22 @@ async def test_crud_503_when_butler_unreachable(app, method, path_tpl, body):
     assert resp.status_code == 503
 
 
-@pytest.mark.parametrize("method,path_tpl", [
-    ("POST", "/api/butlers/atlas/schedules"),
-    ("PUT", "/api/butlers/atlas/schedules/{sid}"),
-])
+@pytest.mark.parametrize(
+    "method,path_tpl",
+    [
+        ("POST", "/api/butlers/atlas/schedules"),
+        ("PUT", "/api/butlers/atlas/schedules/{sid}"),
+    ],
+)
 async def test_naive_datetime_rejected(app, method, path_tpl):
     sid = uuid4()
     path = path_tpl.replace("{sid}", str(sid))
-    naive_body = {"name": "x", "cron": "0 9 * * *", "prompt": "p", "start_at": "2026-03-01T14:00:00"}
+    naive_body = {
+        "name": "x",
+        "cron": "0 9 * * *",
+        "prompt": "p",
+        "start_at": "2026-03-01T14:00:00",
+    }
     _wire_mcp(app)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

@@ -42,7 +42,9 @@ _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 # ---------------------------------------------------------------------------
 
 
-def _make_shared_pool(*, primary_row, last_ingest_at=None, ingest_counts=None, captured_updates=None):
+def _make_shared_pool(
+    *, primary_row, last_ingest_at=None, ingest_counts=None, captured_updates=None
+):
     resolved_counts = ingest_counts or {"sleep_sessions_7d": 0, "daily_summaries_7d": 0}
     conn = AsyncMock()
 
@@ -76,11 +78,20 @@ def _make_shared_pool(*, primary_row, last_ingest_at=None, ingest_counts=None, c
     return pool
 
 
-def _make_db(*, primary_row=None, last_ingest_at=None, ingest_counts=None,
-             heartbeat_row=None, captured_updates=None, shared_available=True):
+def _make_db(
+    *,
+    primary_row=None,
+    last_ingest_at=None,
+    ingest_counts=None,
+    heartbeat_row=None,
+    captured_updates=None,
+    shared_available=True,
+):
     shared_pool = _make_shared_pool(
-        primary_row=primary_row, last_ingest_at=last_ingest_at,
-        ingest_counts=ingest_counts, captured_updates=captured_updates,
+        primary_row=primary_row,
+        last_ingest_at=last_ingest_at,
+        ingest_counts=ingest_counts,
+        captured_updates=captured_updates,
     )
     swb_pool = AsyncMock()
     swb_pool.fetchrow = AsyncMock(return_value=heartbeat_row)
@@ -92,7 +103,9 @@ def _make_db(*, primary_row=None, last_ingest_at=None, ingest_counts=None,
         db.credential_shared_pool.side_effect = KeyError("no shared pool")
         db.butler_names = []
 
-    db.pool.side_effect = lambda name: swb_pool if name == "switchboard" else (_ for _ in ()).throw(KeyError(name))
+    db.pool.side_effect = lambda name: (
+        swb_pool if name == "switchboard" else (_ for _ in ()).throw(KeyError(name))
+    )
     return db
 
 
@@ -119,40 +132,67 @@ def _primary_row(*, granted_scopes=None, metadata=None, last_token_refresh_at=No
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("val,expected", [
-    ({"a": 1}, {"a": 1}),
-    ('{"google_health_test_mode": true}', {"google_health_test_mode": True}),
-    (None, {}),
-    ("not json", {}),
-])
+@pytest.mark.parametrize(
+    "val,expected",
+    [
+        ({"a": 1}, {"a": 1}),
+        ('{"google_health_test_mode": true}', {"google_health_test_mode": True}),
+        (None, {}),
+        ("not json", {}),
+    ],
+)
 def test_parse_jsonb_metadata(val, expected):
     assert _parse_jsonb_metadata(val) == expected
 
 
-@pytest.mark.parametrize("row,expected", [
-    (None, None),
-    ({}, None),
-    ({"metadata": {}}, None),
-    ({"metadata": {"rate_limit_remaining": 7}}, 7),
-    ({"metadata": '{"rate_limit_remaining": 42}'}, 42),
-])
+@pytest.mark.parametrize(
+    "row,expected",
+    [
+        (None, None),
+        ({}, None),
+        ({"metadata": {}}, None),
+        ({"metadata": {"rate_limit_remaining": 7}}, 7),
+        ({"metadata": '{"rate_limit_remaining": 42}'}, 42),
+    ],
+)
 def test_extract_rate_limit_remaining(row, expected):
     assert _extract_rate_limit_remaining(row) == expected
 
 
-@pytest.mark.parametrize("account,granted,heartbeat,exp_state,exp_connected", [
-    (None, [], None, GoogleHealthConnectorState.not_configured, False),
-    ({"id": uuid.uuid4()}, _ALL_HEALTH_SCOPES[:1],
-     {"state": "healthy", "last_heartbeat_at": datetime.now(UTC)},
-     GoogleHealthConnectorState.degraded, False),
-    ({"id": uuid.uuid4()}, _ALL_HEALTH_SCOPES, {"state": "error"},
-     GoogleHealthConnectorState.error, False),
-    ({"id": uuid.uuid4()}, _ALL_HEALTH_SCOPES, None,
-     GoogleHealthConnectorState.degraded, False),
-    ({"id": uuid.uuid4()}, _ALL_HEALTH_SCOPES,
-     {"state": "healthy", "last_heartbeat_at": datetime.now(UTC)},
-     GoogleHealthConnectorState.healthy, True),
-])
+@pytest.mark.parametrize(
+    "account,granted,heartbeat,exp_state,exp_connected",
+    [
+        (None, [], None, GoogleHealthConnectorState.not_configured, False),
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES[:1],
+            {"state": "healthy", "last_heartbeat_at": datetime.now(UTC)},
+            GoogleHealthConnectorState.degraded,
+            False,
+        ),
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES,
+            {"state": "error"},
+            GoogleHealthConnectorState.error,
+            False,
+        ),
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES,
+            None,
+            GoogleHealthConnectorState.degraded,
+            False,
+        ),
+        (
+            {"id": uuid.uuid4()},
+            _ALL_HEALTH_SCOPES,
+            {"state": "healthy", "last_heartbeat_at": datetime.now(UTC)},
+            GoogleHealthConnectorState.healthy,
+            True,
+        ),
+    ],
+)
 def test_derive_state(account, granted, heartbeat, exp_state, exp_connected):
     state, connected = _derive_state(
         account=account, granted_health_scopes=granted, heartbeat=heartbeat
@@ -234,8 +274,11 @@ async def test_status_healthy_full_scopes_and_counts():
             granted_scopes=[_CALENDAR_SCOPE, *_ALL_HEALTH_SCOPES],
             metadata={"google_health_test_mode": True},
         ),
-        heartbeat_row={"state": "healthy", "last_heartbeat_at": now,
-                       "metadata": {"rate_limit_remaining": 123}},
+        heartbeat_row={
+            "state": "healthy",
+            "last_heartbeat_at": now,
+            "metadata": {"rate_limit_remaining": 123},
+        },
         last_ingest_at=now - timedelta(minutes=3),
         ingest_counts={"sleep_sessions_7d": 7, "daily_summaries_7d": 21},
     )
@@ -287,9 +330,13 @@ async def test_disconnect_strips_health_preserves_calendar_drive():
     acct_id = uuid.uuid4()
     db = _make_db(
         primary_row={
-            "id": acct_id, "entity_id": uuid.uuid4(), "email": "owner@example.com",
+            "id": acct_id,
+            "entity_id": uuid.uuid4(),
+            "email": "owner@example.com",
             "granted_scopes": [_CALENDAR_SCOPE, _DRIVE_SCOPE, *_ALL_HEALTH_SCOPES],
-            "status": "active", "last_token_refresh_at": None, "metadata": {},
+            "status": "active",
+            "last_token_refresh_at": None,
+            "metadata": {},
         },
         captured_updates=captured,
     )
@@ -327,9 +374,14 @@ async def test_full_disconnect_revokes_health_as_union(monkeypatch):
 
     acct_id = uuid.uuid4()
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={
-        "id": acct_id, "entity_id": uuid.uuid4(), "is_primary": True, "status": "active",
-    })
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": acct_id,
+            "entity_id": uuid.uuid4(),
+            "is_primary": True,
+            "status": "active",
+        }
+    )
     conn.fetchval = AsyncMock(return_value=None)
     conn.execute = AsyncMock(return_value=None)
 

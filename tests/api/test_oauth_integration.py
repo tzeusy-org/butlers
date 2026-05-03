@@ -61,10 +61,17 @@ def clear_states():
     _clear_state_store()
 
 
-def _make_app(*, db_client_id="test-client-id.apps.googleusercontent.com",
-              db_client_secret="test-client-secret", db_refresh_token=None):
+def _make_app(
+    *,
+    db_client_id="test-client-id.apps.googleusercontent.com",
+    db_client_secret="test-client-secret",
+    db_refresh_token=None,
+):
     app = create_app()
-    secrets = {"GOOGLE_OAUTH_CLIENT_ID": db_client_id, "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret}
+    secrets = {
+        "GOOGLE_OAUTH_CLIENT_ID": db_client_id,
+        "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
+    }
     contact_info = {}
     if db_refresh_token:
         contact_info["google_oauth_refresh"] = db_refresh_token
@@ -137,7 +144,9 @@ async def test_full_oauth_flow_happy_path():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/google/callback", params={"code": "4/code", "state": state})
+            resp = await client.get(
+                "/api/oauth/google/callback", params={"code": "4/code", "state": state}
+            )
     assert resp.status_code == 200
     assert resp.json()["success"] is True
     assert resp.json()["provider"] == "google"
@@ -162,8 +171,12 @@ async def test_state_consumed_after_successful_callback():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp1 = await client.get("/api/oauth/google/callback", params={"code": "4/c1", "state": state})
-            resp2 = await client.get("/api/oauth/google/callback", params={"code": "4/c2", "state": state})
+            resp1 = await client.get(
+                "/api/oauth/google/callback", params={"code": "4/c1", "state": state}
+            )
+            resp2 = await client.get(
+                "/api/oauth/google/callback", params={"code": "4/c2", "state": state}
+            )
     assert resp1.status_code == 200
     assert resp2.status_code == 400
     assert resp2.json()["error_code"] == "invalid_state"
@@ -185,7 +198,9 @@ async def test_flow_fails_expired_code():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/google/callback", params={"code": "4/expired", "state": state})
+            resp = await client.get(
+                "/api/oauth/google/callback", params={"code": "4/expired", "state": state}
+            )
     assert resp.status_code == 400
     assert resp.json()["error_code"] == "token_exchange_failed"
     assert _validate_and_consume_state(state) is None  # state consumed
@@ -208,13 +223,16 @@ async def test_flow_fails_no_refresh_token():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/google/callback", params={"code": "4/code", "state": state})
+            resp = await client.get(
+                "/api/oauth/google/callback", params={"code": "4/code", "state": state}
+            )
     assert resp.status_code == 400
     assert resp.json()["error_code"] == "no_refresh_token"
 
 
 async def test_flow_fails_expired_state():
     import time
+
     app = _make_app()
     state = _generate_state()
     _state_store[state] = _StateEntry(expiry=time.monotonic() - 1)
@@ -222,7 +240,9 @@ async def test_flow_fails_expired_state():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/oauth/google/callback", params={"code": "4/c", "state": state})
+            resp = await client.get(
+                "/api/oauth/google/callback", params={"code": "4/c", "state": state}
+            )
     assert resp.status_code == 400
     assert resp.json()["error_code"] == "invalid_state"
 
