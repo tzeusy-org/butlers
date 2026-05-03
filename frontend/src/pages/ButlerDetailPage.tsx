@@ -1,10 +1,11 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import type { SessionParams, SessionSummary } from "@/api/types";
 import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 import { ChatPanel } from "@/components/chat/ChatPanel";
+import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { SessionTable } from "@/components/sessions/SessionTable";
 import { Badge } from "@/components/ui/badge";
@@ -16,9 +17,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { useButler } from "@/hooks/use-butlers";
 import { useButlerSessions } from "@/hooks/use-sessions";
 import { useUpcomingDates } from "@/hooks/use-contacts";
 
@@ -371,6 +373,7 @@ function ButlerHealthTab({ butlerName }: { butlerName: string }) {
 export default function ButlerDetailPage() {
   const { name = "" } = useParams<{ name: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { data: butlerResponse } = useButler(name);
 
   const tabParam = searchParams.get("tab");
   const activeTab: TabValue = isValidTab(tabParam, name) ? tabParam : "overview";
@@ -388,14 +391,34 @@ export default function ButlerDetailPage() {
 
   const showHealthTab = name === "health";
 
-  return (
-    <div className="space-y-6">
-      <Breadcrumbs items={[{ label: "Overview", href: "/" }, { label: "Butlers", href: "/butlers" }, { label: name }]} />
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">{name}</h1>
-        <ChatPanel butlerName={name} />
-      </div>
+  // Extract description from butler response (the API may include fields beyond ButlerSummary)
+  const description = butlerResponse?.data
+    && "description" in butlerResponse.data
+    && typeof (butlerResponse.data as Record<string, unknown>).description === "string"
+    ? String((butlerResponse.data as Record<string, unknown>).description)
+    : undefined;
 
+  const breadcrumbs = useMemo(
+    () => [
+      { label: "Overview", href: "/" },
+      { label: "Butlers", href: "/butlers" },
+      { label: name },
+    ],
+    [name],
+  );
+
+  return (
+    <Page
+      archetype="detail"
+      title={name}
+      description={description}
+      breadcrumbs={breadcrumbs}
+      actions={<ChatPanel butlerName={name} />}
+    >
+      {/* Pulse: butler health / heartbeat strip */}
+      <ButlerHeartbeatTile />
+
+      {/* Primary: existing Tabs block — tabs remain primary content, not flattened */}
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -497,6 +520,6 @@ export default function ButlerDetailPage() {
           </>
         )}
       </Tabs>
-    </div>
+    </Page>
   );
 }
