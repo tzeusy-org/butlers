@@ -32,7 +32,7 @@ export const TIER_RADIUS_FRACTIONS: Record<Tier, number> = {
 /**
  * Single warm hue (terracotta, h≈35) with chroma + lightness falloff: intimacy
  * reads as saturation. Inner tiers (5/15/50) are pushed to near-maximum chroma
- * for presence; outer tiers (150/500/1500) fade gently. Values tuned 2026-05-03.
+ * for presence; outer tiers (150/500/1500) fade gently.
  * Committed warm-hue strategy -- do NOT introduce a second accent hue.
  */
 export const TIER_RING_COLORS: Record<Tier, string> = {
@@ -48,8 +48,9 @@ export const TIER_RING_COLORS: Record<Tier, string> = {
  * Owner node color: deep graphite-warm in the same h≈35 family.
  * Visually distinct from tier-5 via lightness (darker), not competing hue.
  * This avoids the violet-vs-terracotta complementary clash from the original design.
+ * Uses a CSS custom property so the light/dark theme can each set an appropriate lightness.
  */
-export const OWNER_COLOR = "oklch(0.40 0.10 35)";
+export const OWNER_COLOR = "var(--social-map-owner)";
 
 export function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);

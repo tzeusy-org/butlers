@@ -135,6 +135,9 @@
   --tier-5: oklch(0.529 0.148 237.5);  /* blue        — #0369a1 (Acquaintances)     */
   --tier-6: oklch(0.543 0.012 264.0);  /* gray        — #6b7280 (Recognizable)      */
 
+  /* Social map owner node (terracotta h≈35, same family as tier ramp) */
+  --social-map-owner: oklch(0.40 0.10 35);  /* dark warm — legible on light bg */
+
   /* ---------------------------------------------------------------------------
    * Typography scale
    *
@@ -380,6 +383,9 @@ body {
   --role-owner:   oklch(0.561 0.262 275.1);
   --role-admin:   oklch(0.642 0.170 67.6);
   --role-default: oklch(0.599 0.140 237.5);
+
+  /* Social map owner node — lifted ~0.25 L for legibility on dark backgrounds */
+  --social-map-owner: oklch(0.65 0.10 35);
 
   /* State badges — lifted ~0.07 L for legibility on dark card backgrounds */
   --state-unidentified: oklch(0.678 0.215 50.8);  /* orange (lifted) — #ea580c */
