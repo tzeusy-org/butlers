@@ -45,11 +45,11 @@
 |---|---|---|
 | 1. 5 endpoints return 200 with documented shapes | PASS | Verified in source: /instance, /database, /backups, /egress, /butlers/heartbeat all present |
 | 2. Pydantic models exist in models.py colocated | PARTIAL | Models exist but are embedded in system.py, not a separate models.py (acceptable per project conventions) |
-| 3. Tests exist for each endpoint under tests/api/test_system_router.py | PASS | File is tests/api/test_system.py (655 lines, 28 tests per close reason) |
+| 3. Tests exist for each endpoint under tests/api/test_system_router.py | PASS | File is tests/api/test_system.py (28 tests per close reason) |
 | 4. /opsx validate still passes | UNVERIFIED | No evidence in close reason |
 | 5. Each endpoint emits structured logs with request_id | PARTIAL | Standard FastAPI middleware provides request IDs; no explicit per-endpoint request-id logging in system.py beyond `logger.warning()` calls |
-| 6. /api/system/egress emits OTel span 'system.egress.read' | FAIL | No span emitted anywhere in system.py. No tracer import. No test coverage. **Filed: bu-4tluf (p1)** |
-| 7. Each endpoint registers a Prometheus counter | FAIL | No prometheus_client import in system.py. No Counter defined. Other routers (google_health.py) have the correct pattern. **Filed: bu-vup9h (p2)** |
+| 6. /api/system/egress emits OTel span 'system.egress.read' | FAIL | No span emitted anywhere in system.py. No tracer import. No test coverage. **Filed: bu-4tluf (P1)** |
+| 7. Each endpoint registers a Prometheus counter | FAIL | No prometheus_client import in system.py. No Counter defined. Other routers (google_health.py) have the correct pattern. **Filed: bu-vup9h (P2)** |
 
 ---
 
@@ -72,10 +72,10 @@
 | AC | Status | Finding |
 |---|---|---|
 | 1. SystemPage.tsx renders via `<Page archetype='overview'>` at /system | PASS | `archetype="overview"` confirmed in SystemPage.tsx line 83 |
-| 2. Tile grid sizing differentiated (EgressCatalogTile full-width, BackupTile/ButlerHeartbeatTile 2-col, compact 1-col for others) | FAIL | Grid is uniform `grid-cols-1 md:grid-cols-2 lg:grid-cols-3`, no col-span classes applied per-tile. **Filed: bu-ozbtv (p2)** |
+| 2. Tile grid sizing differentiated (EgressCatalogTile full-width, BackupTile/ButlerHeartbeatTile 2-col, compact 1-col for others) | FAIL | Grid is uniform `grid-cols-1 md:grid-cols-2 lg:grid-cols-3`, no col-span classes applied per-tile. **Filed: bu-ozbtv (P2)** |
 | 3. use-system hooks exist for each /api/system endpoint | PASS | frontend/src/hooks/use-system.ts exists |
 | 4. Visual smoke: page loads, tiles show loading skeletons, then live data | UNVERIFIED — see Live Verification section |
-| breadcrumbs (from bead description) | FAIL | bu-ngfzz.4 description specifies `breadcrumbs: [{label: 'Home', path: '/'}, {label: 'System'}]`. SystemPage.tsx passes no breadcrumbs prop. Page component supports it. **Filed: bu-y30mn (p3)** |
+| breadcrumbs (from bead description) | FAIL | bu-ngfzz.4 description specifies `breadcrumbs: [{label: 'Home', path: '/'}, {label: 'System'}]`. SystemPage.tsx passes no breadcrumbs prop. Page component supports it. **Filed: bu-y30mn (P3)** |
 
 ---
 
@@ -124,15 +124,15 @@
 
 | Bead | Priority | Title | Root Cause |
 |---|---|---|---|
-| bu-4tluf | p1 | Add OTel span 'system.egress.read' to /api/system/egress | AC #6 of bu-ngfzz.2 unmet; privacy auditing depends on this |
-| bu-vup9h | p2 | Add Prometheus counters to /api/system/* endpoints | AC #7 of bu-ngfzz.2 unmet |
-| bu-ozbtv | p2 | Fix SystemPage tile grid sizing to match spec | AC #2 of bu-ngfzz.4 unmet; uniform grid, no differentiated sizing |
-| bu-y30mn | p3 | Add breadcrumbs to SystemPage | bu-ngfzz.4 description requirement unmet |
-| bu-27nof | p2 | Run opsx:sync for system-page-capability | Specs only in changes/ dir, not promoted to openspec/specs/ |
-| bu-t102m | p3 | File backup strategy bead (Q6.3 deferral) | tasks.md Q6.3 directed filing follow-up; not filed |
+| bu-4tluf | P1 | Add OTel span 'system.egress.read' to /api/system/egress | AC #6 of bu-ngfzz.2 unmet; privacy auditing depends on this |
+| bu-vup9h | P2 | Add Prometheus counters to /api/system/* endpoints | AC #7 of bu-ngfzz.2 unmet |
+| bu-ozbtv | P2 | Fix SystemPage tile grid sizing to match spec | AC #2 of bu-ngfzz.4 unmet; uniform grid, no differentiated sizing |
+| bu-y30mn | P3 | Add breadcrumbs to SystemPage | bu-ngfzz.4 description requirement unmet |
+| bu-27nof | P2 | Run opsx:sync for system-page-capability | Specs only in changes/ dir, not promoted to openspec/specs/ |
+| bu-t102m | P3 | File backup strategy bead (Q6.3 deferral) | tasks.md Q6.3 directed filing follow-up; not filed |
 
 Pre-existing open bead (not new):
-- bu-ngfzz.9 (p2): RFC 0007 amendment for /system + /api/system namespaces — already tracked
+- bu-ngfzz.9 (P2): RFC 0007 amendment for /system + /api/system namespaces — already tracked
 
 **Gen-2 reconciliation bead:** bu-k1b0d — blocked by all 6 gap beads + bu-ngfzz.9.
 
@@ -144,7 +144,7 @@ Pre-existing open bead (not new):
 
 Grep for `system.egress.read` in `src/butlers/api/routers/system.py` returns no results. No tracer import (`opentelemetry.trace`) is present in system.py. No test in tests/api/test_system.py references OTel exporters or span names.
 
-This is a p1 gap — privacy auditing (as specified in bu-ngfzz.2 AC #6 and the openspec privacy contract) depends on this span being emitted on every read. Gap bead bu-4tluf filed.
+This is a P1 gap — privacy auditing (as specified in bu-ngfzz.2 AC #6 and the openspec privacy contract) depends on this span being emitted on every read. Gap bead bu-4tluf filed.
 
 ---
 
@@ -168,6 +168,6 @@ Run `/opsx:sync` for the `system-page-capability` change. The delta specs (`syst
 
 ## Final Verdict
 
-**Gen-1 reconciliation is NOT clean.** Six gaps were identified and filed as child beads under the epic. The most critical gap (bu-4tluf: missing OTel egress span) is p1 and directly affects privacy auditing. The epic has a follow-up gen-2 reconciliation bead (bu-k1b0d) that tracks all gap closure.
+**Gen-1 reconciliation is NOT clean.** Six gaps were identified and filed as child beads under the epic. The most critical gap (bu-4tluf: missing OTel egress span) is P1 and directly affects privacy auditing. The epic has a follow-up gen-2 reconciliation bead (bu-k1b0d) that tracks all gap closure.
 
 The epic can close only after bu-k1b0d closes clean.
