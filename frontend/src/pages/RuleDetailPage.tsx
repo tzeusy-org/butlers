@@ -1,16 +1,10 @@
 import { Link, useParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Time } from "@/components/ui/time";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent } from "@/components/ui/card";
 import { permanenceBadge, PercentageProgressBar } from "@/components/memory/badges";
+import { DetailPage } from "@/components/layout/DetailPage";
 import { useRule } from "@/hooks/use-memory";
 
 function maturityBadge(m: string) {
@@ -41,37 +35,26 @@ export default function RuleDetailPage() {
   const { data, isLoading, error } = useRule(ruleId ?? null);
   const rule = data?.data;
 
+  const breadcrumbs = [
+    { label: "Memory", href: "/memory" },
+    { label: "Rules", href: "/memory?tab=rules" },
+    { label: "Rule" },
+  ];
+
+  // Use the rule content as the title; fall back to the ID while loading.
+  const title = rule?.content ?? ruleId ?? "Rule";
+
   return (
-    <div className="space-y-6">
-      <Breadcrumbs
-        items={[
-          { label: "Memory", href: "/memory" },
-          { label: "Rules", href: "/memory?tab=rules" },
-          { label: "Rule" },
-        ]}
-      />
-
-      {isLoading && (
-        <div className="space-y-4">
-          <Skeleton className="h-8 w-64" />
-          <Skeleton className="h-48 w-full" />
-          <Skeleton className="h-64 w-full" />
-        </div>
-      )}
-
-      {error && (
-        <div className="text-destructive py-12 text-center text-sm">
-          Failed to load rule. {(error as Error).message}
-        </div>
-      )}
-
-      {rule && (
-        <>
+    <DetailPage
+      record={{ title, type: "rule" }}
+      breadcrumbs={breadcrumbs}
+      loading={isLoading}
+      error={error ?? null}
+      pulse={null}
+      primary={
+        rule ? (
           <Card>
-            <CardHeader>
-              <CardTitle className="text-2xl">Rule</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-4 pt-6">
               {/* Content */}
               <div>
                 <p className="text-muted-foreground mb-1 text-sm font-medium">
@@ -215,8 +198,11 @@ export default function RuleDetailPage() {
               </div>
             </CardContent>
           </Card>
-        </>
-      )}
-    </div>
+        ) : null
+      }
+      supporting={null}
+      auxiliary={null}
+      practical={null}
+    />
   );
 }
