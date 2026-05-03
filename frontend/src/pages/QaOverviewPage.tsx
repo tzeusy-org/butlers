@@ -24,6 +24,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -67,7 +68,7 @@ function formatDuration(start: string, end: string | null | undefined): string {
 }
 
 // NOTE: formatRelative uses a custom compact format ("just now", "5m ago", "2h ago", "3d ago")
-// that differs from date-fns formatDistanceToNow. Not migrated to <Time> — kept intentionally.
+// that differs from date-fns formatDistanceToNow. Not migrated to <Time> -- kept intentionally.
 function formatRelative(iso: string | null | undefined): string {
   if (!iso) return "--";
   const diff = Date.now() - new Date(iso).getTime();
@@ -676,7 +677,7 @@ function ForcePatrolButton() {
         disabled={mutation.isPending}
         onClick={handleClick}
       >
-        {mutation.isPending ? "Triggering…" : "Force Patrol Now"}
+        {mutation.isPending ? "Triggering..." : "Force Patrol Now"}
       </Button>
       {lastMsg && (
         <p
@@ -726,7 +727,7 @@ function CircuitBreakerButton() {
           disabled={resetMutation.isPending}
           onClick={handleReset}
         >
-          {resetMutation.isPending ? "Resetting\u2026" : "Circuit Breaker: OPEN"}
+          {resetMutation.isPending ? "Resetting..." : "Circuit Breaker: OPEN"}
         </Button>
       ) : (
         <Badge variant="outline" className="border-green-500 text-green-600 px-3 py-1 text-xs">
@@ -744,8 +745,6 @@ function CircuitBreakerButton() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Repo config card
 // ---------------------------------------------------------------------------
 // QaOverviewPage
 // ---------------------------------------------------------------------------
@@ -768,23 +767,21 @@ export default function QaOverviewPage() {
   const totalPages = Math.max(1, Math.ceil(totalPatrols / PAGE_SIZE));
   const trends = trendsResponse?.data;
 
-  return (
-    <div className="space-y-6">
-      {/* Page heading */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">QA Staffer</h1>
-          <p className="text-muted-foreground mt-1">
-            System-wide quality patrol, investigation pipeline, and known issue tracking.
-          </p>
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <CircuitBreakerButton />
-          <ForcePatrolButton />
-        </div>
-      </div>
+  const pageActions = (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <CircuitBreakerButton />
+      <ForcePatrolButton />
+    </div>
+  );
 
-      {/* Status banner — shown when last patrol errored */}
+  return (
+    <Page
+      archetype="overview"
+      title="QA Staffer"
+      description="System-wide quality patrol, investigation pipeline, and known issue tracking."
+      actions={pageActions}
+    >
+      {/* Status banner -- shown when last patrol errored */}
       {summary && <StatusBanner summary={summary} />}
 
       {/* Summary stats */}
@@ -998,6 +995,6 @@ export default function QaOverviewPage() {
           </div>
         </div>
       )}
-    </div>
+    </Page>
   );
 }

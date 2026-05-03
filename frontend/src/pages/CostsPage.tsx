@@ -4,6 +4,7 @@ import CostBreakdownTable from '@/components/costs/CostBreakdownTable'
 import CostChart from '@/components/costs/CostChart'
 import type { Period } from '@/components/costs/CostChart'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Page } from '@/components/ui/page'
 import { useCostSummary, useDailyCosts } from '@/hooks/use-costs'
 
 function formatCost(amount: number): string {
@@ -39,9 +40,11 @@ export default function CostsPage() {
   const dailyData = dailyResponse?.data ?? []
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold tracking-tight">Costs &amp; Usage</h1>
-
+    <Page
+      archetype="overview"
+      title="Costs & Usage"
+      loading={summaryLoading || dailyLoading}
+    >
       {/* Summary Stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {summaryLoading ? (
@@ -89,6 +92,6 @@ export default function CostsPage() {
           />
         </div>
       </div>
-    </div>
+    </Page>
   )
 }
