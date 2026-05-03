@@ -253,7 +253,7 @@ Add to the Frontend Route Map under the Telemetry section:
 |-------|---------|
 | `/system` | System ownership page (instance version, uptime, database size, backup recency, data-egress catalog, per-butler heartbeats) |
 
-This route is registered in `frontend/src/router.tsx` alongside the Telemetry routes (`/traces`, `/timeline`) and appears in `nav-config.ts` under the Telemetry nav section with no butler-presence filter (it is always visible). The page uses the `<Page archetype='overview'>` shell.
+This route is registered in `frontend/src/router.tsx` alongside the Telemetry routes (`/traces`, `/timeline`) and appears in `frontend/src/components/layout/nav-config.ts` under the Telemetry nav section with no butler-presence filter (it is always visible). The page uses the `<Page archetype="overview">` shell.
 
 ### API Surface
 
@@ -261,7 +261,7 @@ Five ownership-fact endpoints are registered under `/api/system/`. Each endpoint
 
 | Endpoint | Response model | Description |
 |----------|----------------|-------------|
-| `GET /api/system/instance` | `ApiResponse<InstanceFacts>` | Software version (`version`), process uptime (`uptime_seconds`), and daemon start time (`started_at`). Version is read from `importlib.metadata`; falls back to `"unknown"` on `PackageNotFoundError`. |
+| `GET /api/system/instance` | `ApiResponse<InstanceFacts>` | Software version (`version`), process uptime (`uptime_seconds`), and daemon start time (`started_at`). Version is read from `importlib.metadata`; on `PackageNotFoundError` falls back to `butlers.__version__`, then to `"unknown"` if that import also fails. |
 | `GET /api/system/database` | `ApiResponse<DatabaseFacts>` | Total database size in bytes (`total_size_bytes`), per-butler-schema size breakdown (`schemas: SchemaSize[]`), and the ten largest tables (`largest_tables: TableSize[]`). `growth_rate_bytes_per_day` is always `null` in v1 (deferred to v2). Derived from PostgreSQL catalog queries (`pg_database_size`, `pg_total_relation_size`, `information_schema.tables`). Returns HTTP 503 if the catalog query fails. |
 | `GET /api/system/backups` | `ApiResponse<BackupFacts>` | Backup recency (`last_backup_at`, `last_backup_size_bytes`), source reachability (`backup_source_reachable: bool`), and recent backup history (`backup_history: BackupEvent[]`). Degrades gracefully: always returns HTTP 200 with `backup_source_reachable: false` and null fields when no backup strategy is configured. |
 | `GET /api/system/egress` | `ApiResponse<EgressCatalog>` | External-actor egress catalog: which external endpoints have received data from this instance, with `last_seen_at` and `total_calls` per actor (`actors: EgressActor[]`). `catalog_covers_from` communicates the oldest audit record used to build the catalog. **Owner-only**: returns HTTP 403 when the owner contact cannot be asserted. |
