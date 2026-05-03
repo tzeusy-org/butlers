@@ -36,9 +36,9 @@ const PAGE_SIZE = 50;
 
 /** Return a color for severity 1-10 scale. */
 function severityColor(severity: number): string {
-  if (severity <= 3) return "#22c55e"; // green
-  if (severity <= 6) return "#f59e0b"; // yellow/amber
-  return "#ef4444"; // red
+  if (severity <= 3) return "var(--severity-low)";
+  if (severity <= 6) return "var(--severity-medium)";
+  return "var(--severity-high)";
 }
 
 // ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ function DoseLog({ medicationId, frequency }: { medicationId: string; frequency:
             style={{
               width: `${adherencePct}%`,
               backgroundColor:
-                adherencePct >= 80 ? "#22c55e" : adherencePct >= 50 ? "#f59e0b" : "#ef4444",
+                adherencePct >= 80 ? "var(--severity-low)" : adherencePct >= 50 ? "var(--severity-medium)" : "var(--severity-high)",
             }}
           />
         </div>

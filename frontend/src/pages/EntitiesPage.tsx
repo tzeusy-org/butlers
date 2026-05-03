@@ -96,19 +96,22 @@ const DUNBAR_TIER_LABELS: Record<number, string> = {
 
 /** Returns inline style colors for a Dunbar tier badge. Inner tiers get warmer colours. */
 function dunbarTierBadgeStyle(tier: number): React.CSSProperties {
+  // Dunbar tier colors are ordinal (innermost = warmest). No category/severity/permanence
+  // token maps to this ordered warm→cool ramp; leaving as-is until a --tier-* token set
+  // is added (follow-up bu-azzsf).
   switch (tier) {
     case 5:
-      return { backgroundColor: "#b91c1c", color: "#fff" }; // deep red
+      return { backgroundColor: "#b91c1c", color: "#fff" }; // red-700   (innermost)
     case 15:
-      return { backgroundColor: "#c2410c", color: "#fff" }; // orange-red
+      return { backgroundColor: "#c2410c", color: "#fff" }; // orange-700
     case 50:
       return { backgroundColor: "#92400e", color: "#fff" }; // amber-800 (~7:1 contrast, WCAG AA)
     case 150:
-      return { backgroundColor: "#15803d", color: "#fff" }; // green
+      return { backgroundColor: "#15803d", color: "#fff" }; // green-700
     case 500:
-      return { backgroundColor: "#0369a1", color: "#fff" }; // blue
+      return { backgroundColor: "#0369a1", color: "#fff" }; // sky-700
     default:
-      return { backgroundColor: "#6b7280", color: "#fff" }; // gray (tier 1500 / cold-start)
+      return { backgroundColor: "#6b7280", color: "#fff" }; // gray-500 (tier 1500 / cold-start)
   }
 }
 
@@ -325,6 +328,7 @@ function UnidentifiedEntitiesSection({
               <CardTitle className="flex items-center gap-2">
                 Unidentified Entities
                 <Badge
+                  // orange-600: unidentified-entity warning state; no existing token fits (follow-up bu-azzsf)
                   style={{ backgroundColor: "#ea580c", color: "#fff" }}
                   className="text-xs"
                 >
@@ -755,6 +759,7 @@ export default function EntitiesPage() {
                             </Link>
                             {entity.roles?.includes("owner") && (
                               <Badge
+                                // violet-700: owner role; no existing token fits (follow-up bu-azzsf)
                                 style={{ backgroundColor: "#7c3aed", color: "#fff" }}
                                 className="text-xs"
                               >
@@ -763,6 +768,7 @@ export default function EntitiesPage() {
                             )}
                             {entity.unidentified && (
                               <Badge
+                                // orange-600: unidentified-entity state; no existing token fits (follow-up bu-azzsf)
                                 style={{ backgroundColor: "#ea580c", color: "#fff" }}
                                 className="text-xs"
                               >

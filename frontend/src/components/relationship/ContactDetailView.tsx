@@ -51,8 +51,8 @@ interface ContactDetailViewProps {
 function labelStyle(label: { color: string | null; name: string }): string {
   if (label.color) return label.color;
   const colors = [
-    "#3b82f6", "#8b5cf6", "#f59e0b", "#14b8a6",
-    "#f43f5e", "#6366f1", "#06b6d4", "#f97316",
+    "var(--category-1)", "var(--category-2)", "var(--category-3)", "var(--category-4)",
+    "var(--category-5)", "var(--category-6)", "var(--category-7)", "var(--category-8)",
   ];
   let hash = 0;
   for (let i = 0; i < label.name.length; i++) {
@@ -65,8 +65,10 @@ function formatDate(iso: string): string {
   return format(new Date(iso), "MMM d, yyyy");
 }
 
-/** Return a Tailwind-friendly color class for a role badge. */
+/** Return inline style properties for a role badge. */
 function roleBadgeStyle(role: string): React.CSSProperties {
+  // Role-specific semantic colors; no category/severity/permanence token fits these.
+  // A future --role-owner/admin/default token set could replace them (see bu-azzsf).
   switch (role.toLowerCase()) {
     case "owner":
       return { backgroundColor: "#7c3aed", color: "#fff" }; // violet-700
