@@ -403,3 +403,319 @@ Chronicles) arrives.
 
 This document covers the dashboard's surface. It is the map an
 `/impeccable` redesign will be drawn over.
+
+---
+
+## `<Page>` Primitive Contract
+
+> Status: **design spec** (written for bead bu-yo4bt.1). No implementation
+> exists yet. This section is the contract for the downstream implementation bead.
+
+### Motivation
+
+Every page today re-invents its heading region, loading skeleton, empty state,
+and error region by hand. The result is documented in the "Inconsistencies
+Worth Tracking" table above: H1 sizes vary (`text-2xl` in `DashboardPage:165`,
+`text-3xl` in `EntitiesPage:657`, `SymptomsPage:108`, `ChroniclesPage:195`),
+action placement varies, and the shared `EmptyState` component is used
+inconsistently. A single `<Page>` wrapper makes these decisions once.
+
+The `<Page>` primitive does not replace the shell (`Shell.tsx`, `PageHeader.tsx`).
+It wraps the `<main>` outlet content only.
+
+---
+
+### Props Contract
+
+```ts
+interface Breadcrumb {
+  label: string;
+  path?: string;         // omit for the current (final) crumb
+}
+
+interface EmptyStateProps {
+  title: string;
+  description: string;
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+}
+
+interface PageProps {
+  // --- identity ---
+  title: string;
+  description?: string;
+  breadcrumbs?: Breadcrumb[];   // if omitted, defer to PageHeader auto-builder
+
+  // --- chrome ---
+  actions?: React.ReactNode;    // action bar: right-aligned, top of page
+
+  // --- async state ---
+  loading?: boolean;            // true = render skeleton for the archetype
+  error?: Error | null;         // non-null = render error region
+  empty?: EmptyStateProps | null; // non-null and !loading = render EmptyState
+
+  // --- layout ---
+  archetype: 'overview' | 'list' | 'detail' | 'workspace' | 'editor';
+
+  children: React.ReactNode;
+}
+```
+
+**Prop rules:**
+
+- `title` is required. It becomes the page `<h1>` (rendered at
+  `text-3xl font-bold tracking-tight`, matching the majority of existing pages).
+  It is also used for `<title>` via a `useEffect` if there is no other title
+  manager.
+- `description` renders as `text-muted-foreground mt-1` below the title.
+- `breadcrumbs`, when supplied, are passed to `PageHeader` instead of the
+  auto-generated crumbs. Open question: whether `<Page>` should write directly
+  to the `PageHeader` slot (requires context or lifting state) or whether it
+  renders a secondary breadcrumb row below the shell header. See "Open
+  Questions" below.
+- `actions` is a `ReactNode` placed at the end of the title row (right-aligned).
+  Buttons here follow the existing pattern: `variant="outline"` for secondary
+  actions, `variant="default"` for the single primary action if one exists.
+- `loading`, `error`, and `empty` are mutually exclusive in intent but not
+  enforced. Priority: `loading` first, then `error`, then `empty`. Children
+  render only when all three are falsy.
+- `archetype` controls max-width, content padding, and skeleton shape. It is a
+  required discriminant. Pages that do not fit the five archetypes are
+  workspaces by default -- see open questions.
+
+---
+
+### Per-Archetype Layout Rules
+
+#### A. Overview (`archetype="overview"`)
+
+Reference page: `DashboardPage` (line 165 heading, `space-y-6` root div),
+`QaOverviewPage`.
+
+- Max content width: unrestricted (fills `<main>` which has `p-6` from the
+  shell). No additional horizontal constraint.
+- Content padding: inherited from shell (`p-6`). `<Page>` adds `space-y-6`
+  between its internal regions (heading block, children).
+- Heading block: `<h1 text-3xl font-bold tracking-tight>` + optional
+  `<p text-muted-foreground mt-1>` + right-aligned `actions`. Flex row,
+  `items-start justify-between gap-4`.
+- Section rhythm: `space-y-6` between sections within `children`. Authors are
+  responsible for their own section spacing inside `children`.
+- Rationale: `DashboardPage` uses `space-y-6` consistently (line 160 root
+  wrapper). `QaOverviewPage` matches. `ChroniclesPage` (line 191) also uses
+  `space-y-6 pb-72` -- the `pb-72` is workspace-specific (floating minimap
+  clearance) and belongs inside children, not in `<Page>`.
+
+#### B. List (`archetype="list"`)
+
+Reference pages: `EntitiesPage` (line 653 root div `space-y-6`),
+`SymptomsPage` (line 106).
+
+- Max content width: unrestricted.
+- Content padding: inherited from shell.
+- Heading block: same as overview. `EntitiesPage` line 655--665 shows the
+  canonical form: title + description left, actions right, `items-start`.
+- Section rhythm: heading block + one `<Card>` containing filters + table +
+  pagination, with `space-y-6` between them. Pagination lives outside the
+  card (both `EntitiesPage:957--982` and `SymptomsPage:231--256` follow this
+  pattern).
+- Filter bar: inside `<CardContent>`, `flex flex-wrap items-center gap-3`
+  before the table. This is the documented position; authors must not move
+  filters into `<CardHeader>`.
+
+#### C. Detail (`archetype="detail"`)
+
+Reference pages: `EntityDetailPage`, `ButlerDetailPage` (tabs pattern).
+
+- Max content width: `max-w-5xl` (80rem). Detail pages benefit from a
+  constrained reading width. This is a new constraint: no existing detail page
+  enforces it today, which is a known drift. The value is a proposal for the
+  reviewer to confirm or adjust.
+- Content padding: inherited from shell.
+- Heading block: title + optional metadata strip (badges, secondary labels)
+  left, actions right. A `<Breadcrumbs>` component (`components/ui/breadcrumbs.tsx`)
+  renders above the `<h1>` when `breadcrumbs` is supplied.
+  (`EntityDetailPage` imports `Breadcrumbs` at line 36 -- it already uses the
+  shared primitive; this archetype formalizes that pattern.)
+- Section rhythm: `space-y-6` between sections. Tab regions (`<Tabs>`) are
+  the canonical body for multi-section details (`ButlerDetailPage` pattern).
+  Tabs live as a direct child, spanning full content width.
+- No nested cards: a detail page uses one level of `<Card>` containers per
+  section. Cards inside tab panels may not contain further `<Card>` wrappers.
+
+#### D. Workspace (`archetype="workspace"`)
+
+Reference page: `ChroniclesPage` (line 191--286), `CalendarWorkspacePage`.
+
+- Max content width: unrestricted. Workspace pages are canvas-grade and own
+  their own internal layout.
+- Content padding: inherited from shell (`p-6`), but workspace pages may
+  override with additional `pb-*` clearance for floating elements (e.g.,
+  `ChroniclesPage` uses `pb-72` for the floating minimap -- this belongs inside
+  `children`, not in `<Page>`).
+- Heading block: same structure as overview, but `description` is typically a
+  single short sentence (see `ChroniclesPage:198--199`: "Retrospective view of
+  lived past time reconstructed from butler evidence.").
+- Section rhythm: workspace pages own their own `<section aria-label="...">` regions.
+  The `<Page>` wrapper provides only the heading block and the `space-y-6` root gap.
+  Workspace `<section>` regions use `rounded-lg border bg-card p-6` as seen in
+  `ChroniclesPage:220,234,255`.
+- `loading` prop renders a single full-width skeleton block; there is no
+  per-widget skeleton at the `<Page>` level for workspaces.
+
+#### E. Editor (`archetype="editor"`)
+
+Reference pages: `SettingsPage`, `SecretsPage`, `ApprovalRulesPage`.
+
+- Max content width: `max-w-2xl` (42rem). Form pages have a narrow optimal
+  reading width.
+- Content padding: inherited from shell.
+- Heading block: same as overview.
+- Section rhythm: `space-y-6` between form sections. Each section is either a
+  `<Card>` with a labeled `<CardHeader>` or a flat `<fieldset>` block. No
+  mixing within one page.
+- The `actions` prop in editors typically holds a single "Save" button
+  (`variant="default"`).
+
+---
+
+### Loading Skeleton Contract
+
+`<Page>` renders a skeleton matched to the archetype when `loading={true}`.
+Authors do not need to write their own skeleton unless they need widget-level
+fidelity inside a workspace.
+
+| Archetype | Skeleton shape |
+|---|---|
+| `overview` | Heading block skeleton (one `h-8 w-48` title bar, one `h-4 w-64` description bar) + `StatsSkeleton` (4-column grid, from `components/skeletons/stats-skeleton.tsx`) + two `CardSkeleton` placeholders |
+| `list` | Heading block skeleton + one `Card` containing `TableSkeleton` (5 rows, column widths proportional to a typical list -- use `TableSkeleton` from `components/skeletons/table-skeleton.tsx`) |
+| `detail` | Heading block skeleton + `CardSkeleton` for the metadata strip + one tab-strip skeleton (`h-10 w-full`) + one content region skeleton |
+| `workspace` | Heading block skeleton + one full-width `h-96 animate-pulse rounded-lg bg-muted` placeholder (workspace internals are too varied for a generic skeleton) |
+| `editor` | Heading block skeleton + `CardSkeleton` per expected form section (authors may pass `skeletonSectionCount?: number` to hint the count; default 2) |
+
+Heading block skeleton (shared across all archetypes):
+```tsx
+<div className="space-y-2">
+  <div className="h-8 w-48 animate-pulse rounded bg-muted" />
+  <div className="h-4 w-64 animate-pulse rounded bg-muted" />
+</div>
+```
+
+---
+
+### Empty / Error Rendering Rules
+
+**Empty state:**
+
+- Rendered when `empty` is non-null and `loading` is false.
+- Uses the shared `EmptyState` component from `components/ui/empty-state.tsx`
+  (already exported: `title`, `description`, `icon?`, `action?`).
+- `<Page>` renders `children` if `empty` is null or if children explicitly
+  bypass it (workspace pages handle their own per-region empty states and
+  should pass `empty={null}` to `<Page>`).
+- For list pages, `empty` should appear inside the `<Card>` body, not as a
+  full-page takeover. This means list pages must pass `empty={null}` to
+  `<Page>` and handle empty inline (as `SymptomsPage:64-70` already does).
+  Open question: whether `<Page>` should support an `emptyInCard` variant.
+  See "Open Questions".
+
+**Error state:**
+
+- Rendered when `error` is non-null and `loading` is false.
+- `<Page>` renders the heading block (so the user knows which page failed)
+  plus an error region: a `<Card>` with `border-destructive` and
+  `text-destructive` copy, a retry `<Button variant="outline">` if the page
+  passes a `onRetry` callback (open question: add `onRetry?: () => void` to
+  `PageProps`).
+- Partial errors (some sections loaded, one failed) are the page's
+  responsibility. Per-section error handling should use the existing inline
+  pattern (`text-destructive text-sm` inside the card body), not the
+  page-level `error` prop.
+- The `ErrorBoundary` in `RootLayout` catches JS errors; the `error` prop is
+  for async query errors only.
+
+**Priority (when multiple props are set):**
+
+```
+loading=true  -> skeleton (always wins)
+error non-null -> error region + heading block
+empty non-null -> EmptyState
+else           -> children
+```
+
+---
+
+### Migration Checklist
+
+For converting an existing page to the `<Page>` primitive:
+
+1. **Identify the archetype.** Match the page to A-E above. If it does not fit,
+   note it as a workspace (D) and document why in a comment.
+2. **Extract the heading block.** Remove the inline `<div className="flex items-start justify-between gap-4">` + `<h1>` + `<p>` group (present in every page). Pass `title`, `description`, `breadcrumbs`, and `actions` as props.
+3. **Thread loading state.** Replace bespoke per-page skeleton with
+   `loading={isLoading}` on `<Page>`. Remove the inline skeleton render block.
+   Exception: workspace pages with widget-level skeletons keep those inside
+   `children`.
+4. **Thread error state.** Replace inline `text-destructive` error banners at
+   the page root with `error={queryError ?? null}`. Keep per-section inline
+   errors where appropriate.
+5. **Thread empty state.** For overview and detail pages, pass
+   `empty={items.length === 0 && !isLoading ? { title: ..., description: ... } : null}`.
+   For list pages, keep empty handling inside the `<Card>` body and pass
+   `empty={null}`.
+6. **Remove `space-y-6` from the page root div.** `<Page>` applies this.
+7. **Verify token discipline.** Migration is the right moment to replace hex
+   literals (see "Token leaks" above) with named tokens or `--chart-*`
+   references.
+8. **Run tests.** Pages with `.test.tsx` files (e.g. `EntityDetailPage.test.tsx`)
+   must pass before the migration commit lands.
+
+Migration order (rough priority by blast radius and visitor frequency):
+1. `SymptomsPage` -- small, clean, easy reference implementation
+2. `EntitiesPage` -- list archetype canonical case
+3. `DashboardPage` -- overview canonical case
+4. Detail pages in dependency order (start with `FactDetailPage`, least tangled)
+5. `ChroniclesPage` last -- workspace archetype needs the least from `<Page>`
+
+---
+
+### Open Questions for Reviewer
+
+1. **`breadcrumbs` wiring.** `PageHeader` lives inside the shell header, above
+   `<main>`. `<Page>` lives inside `<main>`. For `<Page>` to override the
+   breadcrumbs in `PageHeader`, either: (a) a React context must bridge the
+   boundary, or (b) each page continues to own its crumbs via a `useEffect`
+   that sets a context value, or (c) breadcrumbs are rendered as a secondary
+   row inside `<Page>` itself (below the shell header line, above the `<h1>`).
+   Option (c) is the simplest to implement but means two breadcrumb rows could
+   appear if the auto-builder is not disabled. Which approach does the owner
+   prefer?
+
+2. **`max-w-5xl` for detail archetype.** No existing detail page enforces a
+   max width today. Proposing `max-w-5xl` (80rem) as the detail cap. Is this
+   too narrow for `EntityDetailPage` which has wide tab panels? An alternative
+   is `max-w-6xl` or no cap (letting the shell `p-6` + sidebar handle it).
+
+3. **Empty state placement for list pages.** The spec says list pages handle
+   empty inline (inside the `<Card>`). Should `<Page>` expose an
+   `emptyInCard?: EmptyStateProps` prop variant that renders `EmptyState`
+   inside a wrapping `<Card>` automatically? This would let list pages remove
+   their inline empty logic while preserving the card-contained visual.
+
+4. **`onRetry` prop.** Should the error region include a retry callback?
+   If yes, the signature becomes `onRetry?: () => void` on `PageProps`.
+   Pages using TanStack Query would pass `() => query.refetch()`.
+
+5. **Workspace `loading` skeleton.** The proposed full-width `h-96` placeholder
+   is intentionally coarse. Is it acceptable for `ChroniclesPage` during
+   initial load, or should workspace pages always handle their own loading UI
+   and `loading` prop be disallowed (or ignored) for `archetype="workspace"`?
+
+6. **`<title>` management.** The spec proposes a `useEffect` on `<Page>` to
+   set `document.title`. Does the project want this behavior, or is the page
+   title managed elsewhere (e.g. React Router's `<meta>` or a future SEO layer)?
+   If title management is out of scope for `<Page>`, remove the `useEffect`.
+
+7. **`skeletonSectionCount` for editor.** The proposal includes an optional
+   `skeletonSectionCount` hint. If editors are always two sections (e.g.
+   settings + save), hardcode 2 and drop the prop.
