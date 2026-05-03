@@ -253,6 +253,31 @@ async def test_fact_set_reads_from_facts_table(pool):
     assert items[0]["value"] == "blue"
 
 
+async def test_fact_set_metadata_stored_as_dict(pool):
+    """_fact_set_spo writes metadata as a JSONB dict, not a double-encoded string.
+
+    Regression for bu-69p63: json.dumps({}) was passed to a JSONB column that
+    already had the asyncpg JSONB codec registered, causing double-encoding.
+    After the fix, metadata must round-trip as a dict when read back.
+    """
+    from butlers.tools.relationship.facts import fact_set
+
+    contact = await _make_contact(pool, "MetaReg")
+    cid = contact["id"]
+
+    await fact_set(pool, cid, "language", "python")
+
+    row = await pool.fetchrow(
+        "SELECT metadata FROM facts WHERE subject = $1 AND predicate = 'language'",
+        f"contact:{cid}",
+    )
+    assert row is not None
+    # asyncpg JSONB codec returns a dict; a double-encoded value would be a str
+    assert isinstance(row["metadata"], dict), (
+        f"metadata must be a dict, got {type(row['metadata'])}: {row['metadata']!r}"
+    )
+
+
 async def test_fact_set_supersedes_previous(pool):
     """fact_set on same key supersedes the old property fact."""
     from butlers.tools.relationship.facts import fact_list, fact_set

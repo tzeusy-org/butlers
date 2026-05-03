@@ -796,9 +796,9 @@ async def test_contact_info_add_owner_gate_parks_action(pool):
     assert action is not None, "pending_actions row must exist"
     assert action["tool_name"] == "contact_info_add"
     assert action["status"] == "pending"
-    import json as _json
 
-    args = _json.loads(action["tool_args"])
+    # asyncpg JSONB codec returns a Python dict directly; no json.loads needed
+    args = action["tool_args"]
     assert args["value"] == "owner@example.com"
     assert args["type"] == "email"
     assert str(args["contact_id"]) == str(owner["id"])
@@ -922,8 +922,6 @@ async def test_contact_info_update_owner_gate_parks_action(pool):
     assert row["value"] == "old-owner@example.com"
 
     # pending_actions row created
-    import json as _json
-
     action = await pool.fetchrow(
         "SELECT * FROM pending_actions WHERE id = $1::uuid",
         result["action_id"],
@@ -931,7 +929,8 @@ async def test_contact_info_update_owner_gate_parks_action(pool):
     assert action is not None
     assert action["tool_name"] == "contact_info_update"
     assert action["status"] == "pending"
-    args = _json.loads(action["tool_args"])
+    # asyncpg JSONB codec returns a Python dict directly; no json.loads needed
+    args = action["tool_args"]
     assert args["value"] == "new-owner@example.com"
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import uuid
@@ -114,7 +113,7 @@ async def _create_pending_action(
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         action_id,
         tool_name,
-        json.dumps(tool_args),
+        tool_args,
         summary,
         None,  # session_id not available at this layer
         "pending",
