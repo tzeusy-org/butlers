@@ -48,6 +48,7 @@ describe("PulseStrip", () => {
 
   it("shows None for open loops when gifts and loans are empty", () => {
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
-    expect(html).toContain("None");
+    // ">None<" rather than "None" to distinguish from "None recorded" (last interaction)
+    expect(html).toContain(">None<");
   });
 });

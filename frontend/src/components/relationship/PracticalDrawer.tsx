@@ -18,6 +18,8 @@ import { Time } from "@/components/ui/time";
 // ProvenanceFooter
 // ---------------------------------------------------------------------------
 
+const DISPLAY_EXCLUDED = new Set(["source_butler", "source_scope", "unidentified"]);
+
 function ProvenanceFooter({
   entity,
 }: {
@@ -25,13 +27,8 @@ function ProvenanceFooter({
 }) {
   const sourceButler = entity.metadata?.source_butler;
   const sourceScope = entity.metadata?.source_scope;
-  const _DISPLAY_EXCLUDED = new Set([
-    "source_butler",
-    "source_scope",
-    "unidentified",
-  ]);
   const extraMetadata = Object.fromEntries(
-    Object.entries(entity.metadata).filter(([k]) => !_DISPLAY_EXCLUDED.has(k)),
+    Object.entries(entity.metadata).filter(([k]) => !DISPLAY_EXCLUDED.has(k)),
   );
   const hasExtra = Object.keys(extraMetadata).length > 0;
 
