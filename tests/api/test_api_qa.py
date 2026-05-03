@@ -505,10 +505,13 @@ class TestGetFindingByAttempt:
 
 
 class TestListInvestigations:
-    async def test_returns_investigations_empty_and_with_pr_info(self) -> None:
-        """Empty list when no investigations; PR info and meta populated when rows exist."""
-        app_empty, _ = _build_app(fetch_rows=[], fetchval_result=0)
-        assert (await _call(app_empty, "get", "/api/qa/investigations")).json()["data"] == []
+    async def test_returns_investigations_shape_and_filters(self) -> None:
+        """Empty list; PR info populated; status filter: valid accepted, invalid/removed rejected; 503 on DB failure."""
+        assert (
+            await _call(
+                _build_app(fetch_rows=[], fetchval_result=0)[0], "get", "/api/qa/investigations"
+            )
+        ).json()["data"] == []
 
         attempt_id, patrol_id = uuid.uuid4(), uuid.uuid4()
         row = _make_investigation_row(
@@ -519,53 +522,49 @@ class TestListInvestigations:
             pr_number=42,
         )
         app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-        response = await _call(app, "get", "/api/qa/investigations")
-        assert response.status_code == 200
-        inv = response.json()["data"][0]
+        inv = (await _call(app, "get", "/api/qa/investigations")).json()["data"][0]
         assert inv["id"] == str(attempt_id)
         assert inv["status"] == "pr_open"
         assert inv["pr_url"] == "https://github.com/foo/bar/pull/42"
         assert inv["pr_number"] == 42
         assert inv["qa_patrol_id"] == str(patrol_id)
 
-    async def test_status_filter_accepts_valid_rejects_invalid_and_removed_values(self) -> None:
-        """anonymization_failed accepted; not_a_status and dispatch_pending (removed) rejected."""
-        row = _make_investigation_row(status="anonymization_failed")
-        app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
-        r = await _call(
-            app, "get", "/api/qa/investigations", params={"status": "anonymization_failed"}
+        # Status filter: valid accepted
+        r_valid = await _call(
+            _build_app(
+                fetch_rows=[_make_investigation_row(status="anonymization_failed")],
+                fetchval_result=1,
+            )[0],
+            "get",
+            "/api/qa/investigations",
+            params={"status": "anonymization_failed"},
         )
-        assert r.status_code == 200
+        assert r_valid.status_code == 200
 
-        app2, _ = _build_app()
-        r2 = await _call(app2, "get", "/api/qa/investigations", params={"status": "not_a_status"})
-        assert r2.status_code == 422
-        assert "not_a_status" in r2.json()["detail"]
+        # Invalid status and removed status both rejected
+        for bad_status in ("not_a_status", "dispatch_pending"):
+            r_bad = await _call(
+                _build_app()[0], "get", "/api/qa/investigations", params={"status": bad_status}
+            )
+            assert r_bad.status_code == 422
+            assert bad_status in r_bad.json()["detail"]
 
-        app3, _ = _build_app()
-        r3 = await _call(
-            app3, "get", "/api/qa/investigations", params={"status": "dispatch_pending"}
-        )
-        assert r3.status_code == 422
-        assert "dispatch_pending" in r3.json()["detail"]
+        # 503 on DB failure
+        assert (await _call(_make_503_app(), "get", "/api/qa/investigations")).status_code == 503
 
     async def test_optional_fields_present_and_null_when_absent(self) -> None:
         """Review tracking, follow-up cycle, and phase fields exposed; null/0 when not set."""
         cycle_patrol_id, followup_session_id = uuid.uuid4(), uuid.uuid4()
-        deadline = datetime(2026, 4, 9, 14, 0, 0, tzinfo=UTC)
         row = _make_investigation_row(
             status="pr_open",
             review_state="changes_requested",
-            last_review_check_at=_NOW,
-            review_feedback_summary="Please add tests for edge cases.",
             follow_up_count=2,
             follow_up_cycle_patrol_id=cycle_patrol_id,
             follow_up_cycle_count=1,
             last_follow_up_status="succeeded",
             last_follow_up_session_id=followup_session_id,
-            last_follow_up_at=_NOW,
             current_phase="diagnose",
-            workflow_deadline_at=deadline,
+            workflow_deadline_at=datetime(2026, 4, 9, 14, 0, 0, tzinfo=UTC),
         )
         app, _ = _build_app(fetch_rows=[row], fetchval_result=1)
         inv = (await _call(app, "get", "/api/qa/investigations")).json()["data"][0]
@@ -579,10 +578,16 @@ class TestListInvestigations:
         assert inv["workflow_deadline_at"] is not None
 
         # Absent → null/0
-        row2 = _make_investigation_row(status="investigating")
-        app2, _ = _build_app(fetch_rows=[row2], fetchval_result=1)
-        inv2 = (await _call(app2, "get", "/api/qa/investigations")).json()["data"][0]
-        for field in (
+        inv2 = (
+            await _call(
+                _build_app(
+                    fetch_rows=[_make_investigation_row(status="investigating")], fetchval_result=1
+                )[0],
+                "get",
+                "/api/qa/investigations",
+            )
+        ).json()["data"][0]
+        null_fields = (
             "review_state",
             "review_feedback_summary",
             "last_review_check_at",
@@ -593,13 +598,11 @@ class TestListInvestigations:
             "last_follow_up_session_id",
             "last_follow_up_error",
             "last_follow_up_at",
-        ):
+        )
+        for field in null_fields:
             assert inv2[field] is None, f"{field} should be None"
         assert inv2["follow_up_count"] == 0
         assert inv2["follow_up_cycle_count"] == 0
-
-    async def test_503_when_db_unavailable(self) -> None:
-        assert (await _call(_make_503_app(), "get", "/api/qa/investigations")).status_code == 503
 
 
 def _make_agg_row(
