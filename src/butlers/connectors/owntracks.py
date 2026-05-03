@@ -972,8 +972,6 @@ async def persist_location_point(
     Returns:
         True if a new row was inserted; False if a duplicate was skipped.
     """
-    import json as _json
-
     idempotency_key = f"owntracks:{endpoint_identity}:{tst}:location"
     ts = datetime.fromtimestamp(tst, tz=UTC)
 
@@ -988,7 +986,7 @@ async def persist_location_point(
             trigger,
             endpoint_identity,
             raw_payload
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (idempotency_key) DO NOTHING
         RETURNING id
         """,
@@ -999,7 +997,7 @@ async def persist_location_point(
         accuracy,
         trigger,
         endpoint_identity,
-        _json.dumps(raw_payload),
+        raw_payload,
     )
     return result is not None
 

@@ -1325,19 +1325,15 @@ async def persist_ha_history(
         attributes: JSONB snapshot of HA event attributes (may be ``None``).
         recorded_at: Timezone-aware datetime for the ``recorded_at`` column.
     """
-    import json as _json
-
-    attrs_json: str | None = _json.dumps(attributes) if attributes is not None else None
-
     try:
         await pool.execute(
             f"""
             INSERT INTO {_HA_HISTORY_TABLE} (entity_id, state, attributes, recorded_at)
-            VALUES ($1, $2, $3::jsonb, $4)
+            VALUES ($1, $2, $3, $4)
             """,
             entity_id,
             state,
-            attrs_json,
+            attributes,
             recorded_at,
         )
         return True

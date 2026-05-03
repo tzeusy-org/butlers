@@ -1149,17 +1149,15 @@ async def entity_merge(
                 INSERT INTO memory_events (event_type, tenant_id, payload)
                 VALUES ('entity_merge', 'shared', $1)
                 """,
-                (
-                    {
-                        "source_entity_id": source_entity_id,
-                        "target_entity_id": target_entity_id,
-                        "facts_repointed": facts_repointed,
-                        "facts_superseded": facts_superseded,
-                        "edge_facts_repointed": edge_facts_repointed,
-                        "edge_facts_superseded": edge_facts_superseded,
-                        "aliases_added": aliases_added,
-                    }
-                ),
+                {
+                    "source_entity_id": source_entity_id,
+                    "target_entity_id": target_entity_id,
+                    "facts_repointed": facts_repointed,
+                    "facts_superseded": facts_superseded,
+                    "edge_facts_repointed": edge_facts_repointed,
+                    "edge_facts_superseded": edge_facts_superseded,
+                    "aliases_added": aliases_added,
+                },
             )
 
     return {

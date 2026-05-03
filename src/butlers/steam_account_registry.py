@@ -393,7 +393,7 @@ async def create_steam_account(
                     entity_id, steam_id, display_name, profile_url, avatar_url,
                     is_primary, status, metadata
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, 'active', $7::jsonb)
+                VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)
                 RETURNING
                     id, entity_id, steam_id, display_name, profile_url, avatar_url,
                     is_primary, status, connected_at, last_poll_at, metadata
@@ -404,7 +404,7 @@ async def create_steam_account(
                 profile_url,
                 avatar_url,
                 is_primary,
-                json.dumps(account_metadata),
+                account_metadata,
             )
 
             # Persist API key if provided.

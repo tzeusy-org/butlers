@@ -220,16 +220,16 @@ async def session_complete(
     # artefacts), so strip before writing.
     safe_output = _strip_untranslatable_chars(output)
     safe_error = _strip_untranslatable_chars(error)
-    safe_tool_calls = json.dumps(_sanitize_json_value(tool_calls))
-    safe_cost = json.dumps(_sanitize_json_value(cost)) if cost is not None else None
+    safe_tool_calls = _sanitize_json_value(tool_calls)
+    safe_cost = _sanitize_json_value(cost) if cost is not None else None
 
     row = await pool.fetchval(
         """
         UPDATE sessions
         SET result        = $2,
-            tool_calls    = $3::jsonb,
+            tool_calls    = $3,
             duration_ms   = $4,
-            cost          = $5::jsonb,
+            cost          = $5,
             success       = $6,
             error         = $7,
             input_tokens  = $8,

@@ -11,7 +11,6 @@ logging never blocks or breaks the primary operation.
 
 from __future__ import annotations
 
-import json
 import logging
 
 import asyncpg

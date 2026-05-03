@@ -5340,7 +5340,7 @@ class CalendarModule(Module):
                 try:
                     await pool.execute(
                         "UPDATE calendar_event_instances "
-                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb "
+                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1 "
                         "WHERE id = $2",
                         self._encode_jsonb({"notified_at": now.isoformat()}),
                         instance_id,
@@ -5430,7 +5430,7 @@ class CalendarModule(Module):
                 try:
                     await pool.execute(
                         "UPDATE calendar_events "
-                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb "
+                        "SET metadata = COALESCE(metadata, '{}'::jsonb) || $1 "
                         "WHERE id = $2",
                         self._encode_jsonb({"last_notified_at": now.isoformat()}),
                         event_id,
@@ -5505,9 +5505,14 @@ class CalendarModule(Module):
         return value
 
     @classmethod
-    def _encode_jsonb(cls, value: Any) -> str:
-        normalized = cls._jsonify_for_storage(value)
-        return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    def _encode_jsonb(cls, value: Any) -> Any:
+        """Return a JSON-safe Python value for asyncpg JSONB binding.
+
+        Normalises the value via ``_jsonify_for_storage`` and returns a plain
+        Python dict/list/scalar.  The asyncpg JSONB codec registered in
+        ``db.py`` handles encoding automatically — no ``::jsonb`` cast needed.
+        """
+        return cls._jsonify_for_storage(value)
 
     @staticmethod
     def _coerce_datetime(value: Any) -> datetime | None:
@@ -5637,7 +5642,7 @@ class CalendarModule(Module):
                 source_key, source_kind, lane, provider, calendar_id, butler_name,
                 display_name, writable, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (source_key) DO UPDATE SET
                 source_kind = EXCLUDED.source_kind,
                 lane = EXCLUDED.lane,
@@ -5723,7 +5728,7 @@ class CalendarModule(Module):
                 source_id, cursor_name, sync_token, checkpoint, full_sync_required,
                 last_synced_at, last_success_at, last_error_at, last_error
             )
-            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (source_id, cursor_name) DO UPDATE SET
                 sync_token = EXCLUDED.sync_token,
                 checkpoint = EXCLUDED.checkpoint,
@@ -5775,7 +5780,7 @@ class CalendarModule(Module):
                 source_id, event_id, instance_id, origin_ref,
                 action_payload, action_result, error, applied_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (idempotency_key) DO UPDATE SET
                 action_status = EXCLUDED.action_status,
                 source_id = EXCLUDED.source_id,
@@ -5841,7 +5846,7 @@ class CalendarModule(Module):
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, $11, $12, $13,
-                $14, $15, $16::jsonb, $17, $18
+                $14, $15, $16, $17, $18
             )
             ON CONFLICT (source_id, origin_ref) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -5992,7 +5997,7 @@ class CalendarModule(Module):
                 event_id, source_id, origin_instance_ref, timezone, starts_at, ends_at,
                 status, is_exception, origin_updated_at, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (event_id, origin_instance_ref) DO UPDATE SET
                 timezone = EXCLUDED.timezone,
                 starts_at = EXCLUDED.starts_at,

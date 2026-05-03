@@ -367,7 +367,7 @@ async def create_catalog_entry(
                     alias, runtime_type, model_id, extra_args, complexity_tier,
                     enabled, priority, session_timeout_s
                 )
-            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id, alias, runtime_type, model_id, extra_args,
                       complexity_tier, enabled, priority, session_timeout_s
             """,
@@ -423,7 +423,7 @@ async def update_catalog_entry(
 
     for field, value in updates.items():
         if field == "extra_args":
-            set_parts.append(f"extra_args = ${idx}::jsonb")
+            set_parts.append(f"extra_args = ${idx}")
             params.append(value)
         else:
             set_parts.append(f"{field} = ${idx}")

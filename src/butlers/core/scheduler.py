@@ -319,26 +319,33 @@ def _next_run(
     return next_run
 
 
-def _result_to_jsonb(result: Any) -> str | None:
-    """Convert a dispatch result to a JSON string suitable for JSONB storage.
+def _result_to_jsonb(result: Any) -> Any:
+    """Convert a dispatch result to a JSON-safe Python value for JSONB storage.
 
     Handles dataclass-like objects (SpawnerResult) by extracting their __dict__,
-    plain dicts, and falls back to string representation.
+    plain dicts, and falls back to string representation.  Returns a JSON-safe
+    Python object (dict/list/scalar) so the asyncpg JSONB codec can encode it
+    directly without a ``::jsonb`` cast.
     """
     if result is None:
         return None
     if hasattr(result, "__dict__") and not isinstance(result, type):
-        return json.dumps(result.__dict__, default=str)
+        return json.loads(json.dumps(result.__dict__, default=str))
     if isinstance(result, dict):
-        return json.dumps(result, default=str)
-    return json.dumps({"result": str(result)}, default=str)
+        return json.loads(json.dumps(result, default=str))
+    return {"result": str(result)}
 
 
-def _dict_to_jsonb(value: dict[str, Any] | None) -> str | None:
-    """Convert a dict payload to a JSON string suitable for JSONB binding."""
+def _dict_to_jsonb(value: dict[str, Any] | None) -> Any:
+    """Convert a dict payload to a JSON-safe Python value for JSONB binding.
+
+    Returns the value as-is when it contains only JSON-safe types, or round-trips
+    through json.dumps/loads to coerce non-serializable types (e.g. datetimes,
+    UUIDs) to strings.
+    """
     if value is None:
         return None
-    return json.dumps(value, default=str)
+    return json.loads(json.dumps(value, default=str))
 
 
 def _prepend_seasonal_context(prompt: str, active_seasons: list[dict[str, Any]] | None) -> str:
@@ -615,7 +622,7 @@ async def sync_schedules(
                         task_type,
                         target_date,
                         lead_time_days,
-                        json.dumps(alert_thresholds) if alert_thresholds is not None else None,
+                        alert_thresholds,
                     ]
                     if _has_budget:
                         base_args.append(max_token_budget)
@@ -634,7 +641,7 @@ async def sync_schedules(
                             task_type = $9,
                             target_date = $10,
                             lead_time_days = $11,
-                            alert_thresholds = $12::jsonb{_budget_set},
+                            alert_thresholds = $12{_budget_set},
                             updated_at = now()
                         WHERE id = $1
                         """,
@@ -689,7 +696,7 @@ async def sync_schedules(
                     task_type,
                     target_date,
                     lead_time_days,
-                    json.dumps(alert_thresholds) if alert_thresholds is not None else None,
+                    alert_thresholds,
                 ]
                 if _has_budget:
                     base_args.append(max_token_budget)
@@ -712,7 +719,7 @@ async def sync_schedules(
                         alert_thresholds{_budget_col}
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, 'toml', true, $8,
-                            $9, $10, $11, $12::jsonb{_budget_val})
+                            $9, $10, $11, $12{_budget_val})
                     """,
                     *base_args,
                 )
@@ -953,7 +960,7 @@ async def _tick_deadline_pass(
         await pool.execute(
             """
             UPDATE scheduled_tasks
-            SET deadline_status = $2, fired_thresholds = $3::jsonb,
+            SET deadline_status = $2, fired_thresholds = $3,
                 last_run_at = $4, updated_at = now()
             WHERE id = $1
             """,
@@ -1003,7 +1010,7 @@ async def _fire_chain(
                     (name, cron, dispatch_mode, prompt, job_name, job_args,
                      source, next_run_at, until_at, enabled)
                 VALUES
-                    ($1, '* * * * *', $2, $3, $4, $5::jsonb,
+                    ($1, '* * * * *', $2, $3, $4, $5,
                      'chain', $6, $7, true)
                 ON CONFLICT (name) DO NOTHING
                 """,
@@ -1572,7 +1579,7 @@ async def tick(
                     """
                     UPDATE scheduled_tasks
                     SET enabled = false, next_run_at = NULL,
-                        last_run_at = $2, last_result = $3::jsonb,
+                        last_run_at = $2, last_result = $3,
                         updated_at = now()
                     WHERE id = $1
                     """,
@@ -1584,7 +1591,7 @@ async def tick(
                 await pool.execute(
                     """
                     UPDATE scheduled_tasks
-                    SET next_run_at = $2, last_run_at = $3, last_result = $4::jsonb,
+                    SET next_run_at = $2, last_run_at = $3, last_result = $4,
                         updated_at = now()
                     WHERE id = $1
                     """,

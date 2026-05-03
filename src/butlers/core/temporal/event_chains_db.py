@@ -103,14 +103,14 @@ async def event_chain_create(
             """
             INSERT INTO event_chains
                 (name, trigger_type, trigger_reference, actions, butler_name)
-            VALUES ($1, $2, $3, $4::jsonb, $5)
+            VALUES ($1, $2, $3, $4, $5)
             RETURNING id, name, trigger_type, trigger_reference, actions,
                       status, butler_name, created_at, updated_at
             """,
             name,
             trigger_type,
             trigger_reference,
-            json.dumps(actions),
+            actions,
             butler_name,
         )
     except asyncpg.UniqueViolationError:
@@ -202,8 +202,8 @@ async def event_chain_update(
         idx += 1
 
     if actions is not None:
-        set_clauses.append(f"actions = ${idx}::jsonb")
-        params.append(json.dumps(actions))
+        set_clauses.append(f"actions = ${idx}")
+        params.append(actions)
         idx += 1
         # Reset status to 'active' when actions change (unless explicitly overridden)
         if status is None:

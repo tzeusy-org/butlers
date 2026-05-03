@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from asyncpg import Pool
@@ -450,7 +450,7 @@ async def store_episode(
                 search_text=search_text,
                 importance=importance,
                 expires_at=expires_at,
-                meta=meta,
+                meta_json=meta,
                 request_id=request_id,
                 retention_class=retention_class,
                 sensitivity=sensitivity,
@@ -468,7 +468,7 @@ async def store_episode(
             search_text=search_text,
             importance=importance,
             expires_at=expires_at,
-            meta=meta,
+            meta_json=meta,
             tenant_id=tenant_id,
             request_id=request_id,
             retention_class=retention_class,
@@ -509,7 +509,7 @@ async def _insert_episode_record(
     search_text: str,
     importance: float,
     expires_at: datetime,
-    meta: dict,
+    meta_json: Any,
     tenant_id: str,
     request_id: str | None,
     retention_class: str,
@@ -548,7 +548,7 @@ async def _update_episode_record(
     search_text: str,
     importance: float,
     expires_at: datetime,
-    meta: dict,
+    meta_json: Any,
     request_id: str | None,
     retention_class: str,
     sensitivity: str,
@@ -619,7 +619,6 @@ async def _resolve_write_provenance_with_conn(
     placeholder_now = now or datetime.now(UTC)
     ttl_days = _DEFAULT_EPISODE_TTL_DAYS
     expires_at = placeholder_now + timedelta(days=ttl_days)
-    placeholder_metadata: dict = {"provenance_placeholder": True}
     placeholder_embedding = embedding_engine.embed(_RUNTIME_PROVENANCE_PLACEHOLDER)
     placeholder_search_text = preprocess_text(_RUNTIME_PROVENANCE_PLACEHOLDER)
     episode_id = uuid.uuid4()
@@ -633,7 +632,7 @@ async def _resolve_write_provenance_with_conn(
         search_text=placeholder_search_text,
         importance=0.0,
         expires_at=expires_at,
-        meta=placeholder_metadata,
+        meta_json={"provenance_placeholder": True},
         tenant_id=tenant_id,
         request_id=request_id,
         retention_class="transient",
@@ -680,8 +679,8 @@ async def _insert_fact_record(
     supersedes_id: uuid.UUID | None,
     scope: str,
     now: datetime,
-    tags: list,
-    meta: dict,
+    tags_json: Any,
+    meta_json: Any,
     entity_id: uuid.UUID | None,
     object_entity_id: uuid.UUID | None,
     fact_valid_at: datetime | None,
@@ -715,10 +714,8 @@ async def _insert_fact_record(
         scope: Fact scope string (e.g. ``'global'``).
         now: Timestamp used for ``created_at``, ``last_confirmed_at``, and
             ``observed_at``.
-        tags: Tags list (bound directly to JSONB column; the registered codec
-            handles encoding).
-        meta: Metadata dict (bound directly to JSONB column; the registered
-            codec handles encoding).
+        tags_json: Tags list (passed directly to asyncpg JSONB codec).
+        meta_json: Metadata dict (passed directly to asyncpg JSONB codec).
         entity_id: Subject entity UUID, or ``None``.
         object_entity_id: Object entity UUID (edge-facts only), or ``None``.
         fact_valid_at: Temporal validity timestamp, or ``None`` for property facts.
@@ -879,8 +876,8 @@ async def store_fact(
     # valid_at IS NULL means property fact; valid_at IS NOT NULL means temporal fact.
     # Preserve NULL when omitted — do NOT default to now().
     fact_valid_at = valid_at  # None → property fact, datetime → temporal fact
-    tags_value = list(tags) if tags else []
-    meta_value = dict(metadata) if metadata else {}
+    tags_json = tags or []
+    meta_json = metadata or {}
 
     # Lifecycle warning populated inside the transaction block when the predicate
     # is deprecated; included in the return dict after the block exits.
@@ -1474,8 +1471,8 @@ async def store_rule(
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
     now = datetime.now(UTC)
-    tags_value = list(tags) if tags else []
-    meta_value = dict(metadata) if metadata else {}
+    tags_json = tags or []
+    meta_json = metadata or {}
 
     sql = f"""
         INSERT INTO rules (id, content, embedding, search_vector, scope, maturity,
@@ -1911,13 +1908,12 @@ async def _forget_with_correction_provenance(
                     provenance_patch,
                 )
             else:  # rule
-                rule_patch = {"forgotten": True, **provenance_patch}
                 result = await conn.execute(
                     "UPDATE rules "
                     "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
                     memory_id,
-                    rule_patch,
+                    {"forgotten": True, **provenance_patch},
                 )
 
             found = result.endswith("1")

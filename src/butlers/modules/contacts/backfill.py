@@ -279,7 +279,7 @@ class ContactBackfillWriter:
                         name, first_name, last_name, nickname,
                         company, job_title, avatar_url, metadata, entity_id
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     RETURNING id
                     """,
                     display,
@@ -289,7 +289,7 @@ class ContactBackfillWriter:
                     company,
                     job_title,
                     avatar_url,
-                    json.dumps(metadata),
+                    metadata,
                     entity_id,
                 )
             except asyncpg.UndefinedColumnError:
@@ -302,7 +302,7 @@ class ContactBackfillWriter:
                     name, first_name, last_name, nickname,
                     company, job_title, avatar_url, metadata
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
                 """,
                 display,
@@ -312,7 +312,7 @@ class ContactBackfillWriter:
                 company,
                 job_title,
                 avatar_url,
-                json.dumps(metadata),
+                metadata,
             )
 
         contact_id = uuid.UUID(str(row["id"]))
@@ -472,8 +472,8 @@ class ContactBackfillWriter:
                     set_clauses.append("updated_at = now()")
                     continue
                 if col == "metadata":
-                    set_clauses.append(f"{col} = ${idx}::jsonb")
-                    params.append(json.dumps(val))
+                    set_clauses.append(f"{col} = ${idx}")
+                    params.append(val)
                 else:
                     set_clauses.append(f"{col} = ${idx}")
                     params.append(val)

@@ -29,11 +29,13 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
-def _jsonb_encode(value: Any) -> str | None:
-    """Encode a Python value to a JSON string for JSONB binding."""
-    if value is None:
-        return None
-    return json.dumps(value, default=str)
+def _jsonb_encode(value: Any) -> Any:
+    """Return the value as-is for JSONB binding.
+
+    The asyncpg JSONB codec registered in ``db.py`` handles encoding automatically.
+    This function is retained for call-site clarity and None passthrough.
+    """
+    return value
 
 
 def _jsonb_decode(value: Any) -> Any:
@@ -150,7 +152,7 @@ async def deadline_create(
             )
             VALUES (
                 $1, $2, 'prompt', $3, 'db', true, $4,
-                'deadline', $5, $6, $7::jsonb, $8, '[]'::jsonb, $9::jsonb
+                'deadline', $5, $6, $7, $8, '[]'::jsonb, $9
             )
             RETURNING id
             """,
@@ -245,8 +247,8 @@ async def deadline_update(
         params.append(target_date)
         idx += 1
         # Reset fired thresholds on date change
-        set_clauses.append(f"fired_thresholds = ${idx}::jsonb")
-        params.append("[]")
+        set_clauses.append(f"fired_thresholds = ${idx}")
+        params.append([])
         idx += 1
         # Reset status unless caller provides explicit status
         if deadline_status is None:
@@ -260,12 +262,12 @@ async def deadline_update(
         idx += 1
 
     if alert_thresholds is not None:
-        set_clauses.append(f"alert_thresholds = ${idx}::jsonb")
+        set_clauses.append(f"alert_thresholds = ${idx}")
         params.append(_jsonb_encode(alert_thresholds))
         idx += 1
 
     if depends_on is not None:
-        set_clauses.append(f"depends_on = ${idx}::jsonb")
+        set_clauses.append(f"depends_on = ${idx}")
         params.append(_jsonb_encode(depends_on))
         idx += 1
 

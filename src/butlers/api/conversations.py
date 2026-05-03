@@ -387,15 +387,13 @@ async def message_create(
     """Insert a new message row.  Returns the full message dict."""
     msg_id = _generate_uuid7()
     now = datetime.now(UTC)
-    tool_calls_json = json.dumps(tool_calls) if tool_calls is not None else None
-
     await pool.execute(
         """
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
              duration_ms, tool_calls, error, request_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         """,
         msg_id,
         conversation_id,
@@ -407,7 +405,7 @@ async def message_create(
         input_tokens,
         output_tokens,
         duration_ms,
-        tool_calls_json,
+        tool_calls,
         error,
         request_id,
     )

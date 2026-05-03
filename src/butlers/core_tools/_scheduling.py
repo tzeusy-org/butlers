@@ -263,34 +263,33 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
 
                 # Serialize dispatch result for JSONB storage
                 if result is None:
-                    result_json = None
+                    result_val = None
                 elif hasattr(result, "__dict__") and not isinstance(result, type):
-                    result_json = json.dumps(result.__dict__, default=str)
+                    result_val = json.loads(json.dumps(result.__dict__, default=str))
                 elif isinstance(result, dict):
-                    result_json = json.dumps(result, default=str)
+                    result_val = json.loads(json.dumps(result, default=str))
                 else:
-                    result_json = json.dumps({"result": str(result)}, default=str)
+                    result_val = {"result": str(result)}
                 await pool.execute(
                     "UPDATE scheduled_tasks "
-                    "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
+                    "SET last_run_at = $2, last_result = $3, updated_at = now() "
                     "WHERE id = $1",
                     task_uuid,
                     now,
-                    result_json,
+                    result_val,
                 )
                 return {"id": resolved_id, "status": "triggered", "name": name}
             except Exception as exc:
                 import logging
 
                 logging.getLogger(__name__).exception("Manual trigger failed for schedule %s", name)
-                error_json = json.dumps({"error": str(exc)})
                 await pool.execute(
                     "UPDATE scheduled_tasks "
-                    "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
+                    "SET last_run_at = $2, last_result = $3, updated_at = now() "
                     "WHERE id = $1",
                     task_uuid,
                     now,
-                    error_json,
+                    {"error": str(exc)},
                 )
                 return {"id": resolved_id, "status": "error", "error": str(exc)}
 

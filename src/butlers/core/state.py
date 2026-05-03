@@ -87,7 +87,7 @@ async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
     new_version: int = await pool.fetchval(
         """
         INSERT INTO state (key, value, updated_at, version)
-        VALUES ($1, $2::jsonb, now(), 1)
+        VALUES ($1, $2, now(), 1)
         ON CONFLICT (key) DO UPDATE
             SET value = EXCLUDED.value,
                 updated_at = now(),
@@ -129,7 +129,7 @@ async def state_compare_and_set(
     row = await pool.fetchrow(
         """
         UPDATE state
-        SET value = $3::jsonb,
+        SET value = $3,
             updated_at = now(),
             version = version + 1
         WHERE key = $1 AND version = $2
