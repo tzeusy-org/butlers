@@ -48,8 +48,8 @@ router = APIRouter(prefix="/api/system", tags=["system"])
 # ---------------------------------------------------------------------------
 # Prometheus counters — one per endpoint so Grafana can track request load
 # per system tile. Module-scoped so the registry stays consistent across
-# hot-reloads in dev. Naming follows the same convention as google_health.py:
-# dashboard_<domain>_requests_total.
+# hot-reloads in dev. Counter names follow the pattern:
+# system_<domain>_reads_total (e.g. system_instance_reads_total).
 # ---------------------------------------------------------------------------
 
 system_instance_reads_total = Counter(
