@@ -186,12 +186,13 @@ class TestGetPreferences:
         assert isinstance(entry["effective_confidence"], float)
 
     async def test_filter_by_predicate(self, app):
-        """?predicate=<name> returns only the matching row."""
+        """?predicate=<name> passes the exact value to pool.fetch and the SQL filters to one row."""
+        # The mock pool returns only the row that matches the requested predicate,
+        # simulating what the DB would do with the exact-match WHERE clause.
         rows = [
             _make_pref_row("preferences:general_timezone", "UTC", "global"),
-            _make_pref_row("preferences:general_language", "English", "global"),
         ]
-        _app_with_pool(app, pref_rows=rows)
+        _, mock_pool, _ = _app_with_pool(app, pref_rows=rows)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -201,9 +202,18 @@ class TestGetPreferences:
             )
 
         assert resp.status_code == 200
-        # The mock returns all rows regardless; we verify the query param is passed.
-        # The actual DB filtering is tested at the unit level in MCP tool tests.
-        assert isinstance(resp.json()["data"], list)
+        data = resp.json()["data"]
+        assert len(data) == 1
+        assert data[0]["predicate"] == "preferences:general_timezone"
+
+        # Verify pool.fetch was called with the exact predicate string as the
+        # second positional parameter (the SQL $2 bind), confirming the endpoint
+        # uses exact-match filtering rather than a LIKE pattern.
+        fetch_call_args = mock_pool.fetch.call_args
+        assert fetch_call_args is not None
+        positional_args = fetch_call_args[0]
+        # positional_args: (sql, owner_entity_id, predicate_value)
+        assert positional_args[2] == "preferences:general_timezone"
 
     async def test_no_owner_returns_empty_list(self, app):
         """When no owner entity exists, returns 200 with empty list (not an error)."""

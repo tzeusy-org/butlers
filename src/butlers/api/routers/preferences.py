@@ -50,50 +50,42 @@ class PreferenceEntry(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Pool selection helper
+# Pool helpers
 # ---------------------------------------------------------------------------
 
 
-def _any_pool(db: DatabaseManager) -> Any:
-    """Return any available butler pool.
+def _all_pools(db: DatabaseManager) -> list[Any]:
+    """Return all available butler pools, skipping missing ones.
 
-    Preference facts live in per-butler facts tables, but the owner entity is
-    resolved via ``public.contacts`` / ``public.entities``, which are
-    accessible from every butler pool. We just need one working connection.
-
-    Raises HTTPException(503) when no pool is available.
+    Raises HTTPException(503) when no pool is available at all.
     """
+    pools = []
     for name in sorted(db.butler_names):
         try:
-            return db.pool(name)
+            pools.append(db.pool(name))
         except KeyError:
             continue
-    raise HTTPException(status_code=503, detail="No database pools available")
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+    return pools
 
 
 # ---------------------------------------------------------------------------
-# Core query — mirrors get_preferences MCP tool
+# Owner resolution — mirrors _resolve_owner in the MCP tool
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_preferences(
-    pool: Any,
-    *,
-    predicate: str | None,
-) -> list[dict[str, Any]]:
-    """Query active preference facts for the owner entity.
+async def _resolve_owner_entity_id(pool: Any) -> str | None:
+    """Resolve the owner entity_id from a single pool.
 
-    Args:
-        pool: asyncpg connection pool (any butler pool).
-        predicate: Optional exact predicate filter
-            (e.g. ``"preferences:general_timezone"``).
+    Mirrors the two-step fallback in the memory module's ``_resolve_owner``:
+    1. ``public.contacts JOIN public.entities`` (primary path).
+    2. ``public.entities`` directly (fallback for installs where the owner
+       entity exists without a contact row, e.g. early bootstrap states).
 
-    Returns:
-        List of preference dicts ordered by ``predicate ASC``.
-        Returns empty list when no owner entity is found.
+    Returns the entity_id string, or ``None`` when the owner cannot be found.
     """
-    # Resolve owner entity_id via public schema (accessible from any pool).
-    owner_row = await pool.fetchrow(
+    row = await pool.fetchrow(
         """
         SELECT e.id
         FROM public.contacts c
@@ -103,10 +95,48 @@ async def _fetch_preferences(
         LIMIT 1
         """
     )
-    if owner_row is None:
-        return []
+    if row is not None:
+        return row["id"]
 
-    owner_entity_id = owner_row["id"]
+    # Fallback: entities with owner role but no contact row yet.
+    row = await pool.fetchrow(
+        """
+        SELECT id
+        FROM public.entities
+        WHERE 'owner' = ANY(roles)
+        LIMIT 1
+        """
+    )
+    return row["id"] if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Core query — mirrors get_preferences MCP tool
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_preferences(
+    db: DatabaseManager,
+    *,
+    predicate: str | None,
+) -> list[dict[str, Any]]:
+    """Query active preference facts for the owner entity.
+
+    Tries each available pool in turn, skipping pools that lack the memory
+    ``facts`` table (matching the fan-out behaviour of the memory router).
+    Owner resolution uses the same two-step fallback as the MCP tool.
+
+    Args:
+        db: DatabaseManager providing access to all butler pools.
+        predicate: Optional exact predicate filter
+            (e.g. ``"preferences:general_timezone"``).
+
+    Returns:
+        List of preference dicts ordered by ``predicate ASC``.
+        Returns empty list when no owner entity or no matching preferences are
+        found across all available pools.
+    """
+    pools = _all_pools(db)
 
     predicate_pattern = predicate if predicate is not None else "preferences:%"
 
@@ -125,11 +155,9 @@ async def _fetch_preferences(
             FROM facts f
             WHERE f.entity_id = $1
               AND f.validity = 'active'
-              AND f.predicate LIKE $2
-              AND f.predicate = $3
+              AND f.predicate = $2
             ORDER BY f.predicate ASC
         """
-        rows = await pool.fetch(sql, owner_entity_id, predicate_pattern, predicate)
     else:
         sql = """
             SELECT
@@ -148,41 +176,67 @@ async def _fetch_preferences(
               AND f.predicate LIKE $2
             ORDER BY f.predicate ASC
         """
-        rows = await pool.fetch(sql, owner_entity_id, predicate_pattern)
 
-    now = datetime.now(UTC)
-    results: list[dict[str, Any]] = []
-    for row in rows:
-        d = dict(row)
+    for pool in pools:
+        # Resolve owner from this pool's shared public schema.
+        try:
+            owner_entity_id = await _resolve_owner_entity_id(pool)
+        except Exception:
+            logger.debug("Failed to resolve owner entity from pool; skipping", exc_info=True)
+            continue
 
-        confidence_raw = d.get("confidence")
-        confidence = float(confidence_raw) if confidence_raw is not None else 1.0
-        decay_rate_raw = d.get("decay_rate")
-        decay_rate = float(decay_rate_raw) if decay_rate_raw is not None else 0.0
-        last_confirmed_at = d.get("last_confirmed_at") or d.get("updated_at")
+        if owner_entity_id is None:
+            return []
 
-        if last_confirmed_at is not None and decay_rate > 0.0:
-            if last_confirmed_at.tzinfo is None:
-                last_confirmed_at = last_confirmed_at.replace(tzinfo=UTC)
-            days_elapsed = max(0.0, (now - last_confirmed_at).total_seconds() / 86400.0)
-            effective_confidence = round(confidence * math.exp(-decay_rate * days_elapsed), 4)
-        else:
-            effective_confidence = round(confidence, 4)
+        # Query facts from this pool's per-butler schema.
+        try:
+            if predicate is not None:
+                rows = await pool.fetch(sql, owner_entity_id, predicate)
+            else:
+                rows = await pool.fetch(sql, owner_entity_id, predicate_pattern)
+        except Exception:
+            logger.debug(
+                "Skipping pool for preferences query (pool may lack facts table)",
+                exc_info=True,
+            )
+            continue
 
-        updated_at = d.get("updated_at")
-        results.append(
-            {
-                "predicate": d["predicate"],
-                "value": d["value"],
-                "scope": d["scope"],
-                "importance": float(d["importance"]),
-                "permanence": d["permanence"],
-                "updated_at": updated_at.isoformat() if updated_at else None,
-                "effective_confidence": effective_confidence,
-            }
-        )
+        now = datetime.now(UTC)
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
 
-    return results
+            confidence_raw = d.get("confidence")
+            confidence = float(confidence_raw) if confidence_raw is not None else 1.0
+            decay_rate_raw = d.get("decay_rate")
+            decay_rate = float(decay_rate_raw) if decay_rate_raw is not None else 0.0
+            last_confirmed_at = d.get("last_confirmed_at") or d.get("updated_at")
+
+            if last_confirmed_at is not None and decay_rate > 0.0:
+                if last_confirmed_at.tzinfo is None:
+                    last_confirmed_at = last_confirmed_at.replace(tzinfo=UTC)
+                days_elapsed = max(0.0, (now - last_confirmed_at).total_seconds() / 86400.0)
+                effective_confidence = round(confidence * math.exp(-decay_rate * days_elapsed), 4)
+            else:
+                effective_confidence = round(confidence, 4)
+
+            updated_at = d.get("updated_at")
+            results.append(
+                {
+                    "predicate": d["predicate"],
+                    "value": d["value"],
+                    "scope": d["scope"],
+                    "importance": float(d["importance"]),
+                    "permanence": d["permanence"],
+                    "updated_at": updated_at.isoformat() if updated_at else None,
+                    "effective_confidence": effective_confidence,
+                }
+            )
+
+        return results
+
+    # No pool had a queryable facts table.
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -206,12 +260,13 @@ async def get_preferences(
 
     Queries the memory module's ``facts`` table for rows where
     ``predicate LIKE 'preferences:%'`` and ``validity = 'active'``, scoped
-    to the owner entity resolved from ``public.contacts``.
+    to the owner entity resolved from ``public.contacts`` (or
+    ``public.entities`` directly as a fallback). Skips pools that lack the
+    memory schema, matching the fan-out behaviour of the memory router.
 
     Returns 503 when no database pool is available.
     Returns an empty list when the owner has no recorded preferences.
     """
-    pool = _any_pool(db)
-    rows = await _fetch_preferences(pool, predicate=predicate)
+    rows = await _fetch_preferences(db, predicate=predicate)
     entries = [PreferenceEntry(**row) for row in rows]
     return ApiResponse[list[PreferenceEntry]](data=entries)
