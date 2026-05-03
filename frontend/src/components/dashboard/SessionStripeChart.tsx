@@ -20,6 +20,7 @@ import {
 
 import { ChartSkeleton } from "@/components/skeletons"
 import type { ButlerSummary } from "@/api/types"
+import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import {
   bucketUnit,
   currentWindow,
@@ -122,7 +123,8 @@ export interface SessionStripeChartProps {
 // ---------------------------------------------------------------------------
 
 export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeChartProps) {
-  const { data, isLoading, isError } = useSessionStripeData(windowHours)
+  const { refetchInterval } = useAutoRefresh(60_000)
+  const { data, isLoading, isError } = useSessionStripeData(windowHours, refetchInterval)
 
   const sessions = data?.data ?? []
 
