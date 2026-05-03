@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from opentelemetry import trace
+from prometheus_client import Counter
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
@@ -42,6 +43,40 @@ from butlers.api.models import ApiResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+# ---------------------------------------------------------------------------
+# Prometheus counters — one per endpoint so Grafana can track request load
+# per system tile. Module-scoped so the registry stays consistent across
+# hot-reloads in dev. Naming follows the same convention as google_health.py:
+# dashboard_<domain>_requests_total.
+# ---------------------------------------------------------------------------
+
+system_instance_reads_total = Counter(
+    "system_instance_reads_total",
+    "Number of GET /api/system/instance requests.",
+)
+
+system_database_reads_total = Counter(
+    "system_database_reads_total",
+    "Number of GET /api/system/database requests.",
+)
+
+system_backups_reads_total = Counter(
+    "system_backups_reads_total",
+    "Number of GET /api/system/backups requests.",
+)
+
+system_egress_reads_total = Counter(
+    "system_egress_reads_total",
+    "Number of GET /api/system/egress requests.",
+)
+
+system_butlers_heartbeat_reads_total = Counter(
+    "system_butlers_heartbeat_reads_total",
+    "Number of GET /api/system/butlers/heartbeat requests.",
+)
+
 
 # Module-level start time recorded when this module is first imported.
 # The lifespan startup imports all routers, so this approximates the
