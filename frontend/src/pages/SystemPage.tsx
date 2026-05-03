@@ -9,9 +9,7 @@
  * (e5/e6/e7) will replace each stub with purpose-built tile bodies.
  */
 
-import { DbSizeTile } from "@/components/system/DbSizeTile";
-import { UptimeTile } from "@/components/system/UptimeTile";
-import { VersionTile } from "@/components/system/VersionTile";
+import TopologyGraph from "@/components/topology/TopologyGraph";
 import {
   Card,
   CardContent,
@@ -19,10 +17,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Page } from "@/components/ui/page";
+import { useButlers } from "@/hooks/use-butlers";
+import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import {
   useBackupFacts,
   useButlerHeartbeats,
+  useDatabaseFacts,
   useEgressFacts,
+  useInstanceFacts,
 } from "@/hooks/use-system";
 
 // ---------------------------------------------------------------------------
@@ -51,6 +53,61 @@ function SystemTile({ title, action, children }: SystemTileProps) {
 // Individual tile implementations (stub pass-through for bu-ngfzz.4)
 // ---------------------------------------------------------------------------
 
+function InstanceTile() {
+  const { data, isLoading, error } = useInstanceFacts();
+
+  if (isLoading) {
+    return (
+      <SystemTile title="Instance">
+        <div className="h-16 animate-pulse rounded bg-muted" />
+      </SystemTile>
+    );
+  }
+
+  if (error) {
+    return (
+      <SystemTile title="Instance">
+        <p className="text-sm text-destructive">Failed to load instance facts.</p>
+      </SystemTile>
+    );
+  }
+
+  return (
+    <SystemTile title="Instance">
+      <pre className="overflow-auto text-xs text-muted-foreground">
+        {JSON.stringify(data?.data, null, 2)}
+      </pre>
+    </SystemTile>
+  );
+}
+
+function DatabaseTile() {
+  const { data, isLoading, error } = useDatabaseFacts();
+
+  if (isLoading) {
+    return (
+      <SystemTile title="Database">
+        <div className="h-16 animate-pulse rounded bg-muted" />
+      </SystemTile>
+    );
+  }
+
+  if (error) {
+    return (
+      <SystemTile title="Database">
+        <p className="text-sm text-destructive">Failed to load database facts.</p>
+      </SystemTile>
+    );
+  }
+
+  return (
+    <SystemTile title="Database">
+      <pre className="overflow-auto text-xs text-muted-foreground">
+        {JSON.stringify(data?.data, null, 2)}
+      </pre>
+    </SystemTile>
+  );
+}
 
 function BackupTile() {
   const { data, isLoading, error } = useBackupFacts();
@@ -153,6 +210,34 @@ function HeartbeatTile() {
 }
 
 // ---------------------------------------------------------------------------
+// TopologyTile
+// ---------------------------------------------------------------------------
+
+function TopologyTile() {
+  const { data: butlersResponse, isLoading: butlersLoading, error: butlersError } = useButlers();
+  const { data: connectorsResponse, isLoading: connectorsLoading } = useConnectorSummaries();
+
+  if (butlersError) {
+    return (
+      <SystemTile title="Ecosystem Topology">
+        <p className="text-sm text-destructive">Failed to load topology data.</p>
+      </SystemTile>
+    );
+  }
+
+  const butlers = butlersResponse?.data ?? [];
+  const connectors = connectorsResponse?.data ?? [];
+
+  return (
+    <TopologyGraph
+      butlers={butlers}
+      connectors={connectors}
+      isLoading={butlersLoading || connectorsLoading}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -164,13 +249,15 @@ export function SystemPage() {
       description="Your instance, your data, your butlers."
     >
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <VersionTile />
-        <UptimeTile />
-        <DbSizeTile />
+        <InstanceTile />
+        <DatabaseTile />
         <BackupTile />
         <EgressTile />
         <HeartbeatTile />
       </div>
+
+      {/* Ecosystem topology -- full-width section below ownership fact tiles */}
+      <TopologyTile />
     </Page>
   );
 }

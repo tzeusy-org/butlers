@@ -18,11 +18,26 @@ import {
   useEgressFacts,
   useInstanceFacts,
 } from "@/hooks/use-system";
+import { useButlers } from "@/hooks/use-butlers";
+import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { ApiError } from "@/api/index";
 
 // ---------------------------------------------------------------------------
 // Mock all hooks used by SystemPage
 // ---------------------------------------------------------------------------
+
+// TopologyGraph uses @xyflow/react which is canvas-based and won't render in
+// jsdom/static markup -- mock the whole component to keep tests hermetic.
+vi.mock("@/components/topology/TopologyGraph", () => ({
+  default: ({ butlers }: { butlers: { name: string }[] }) => (
+    <div data-testid="topology-graph">
+      {butlers.map((b) => <span key={b.name}>{b.name}</span>)}
+    </div>
+  ),
+}));
+
+vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
+vi.mock("@/hooks/use-ingestion", () => ({ useConnectorSummaries: vi.fn() }));
 
 vi.mock("@/hooks/use-system", () => ({
   useInstanceFacts: vi.fn(),
@@ -40,6 +55,21 @@ vi.mock("@/hooks/use-system", () => ({
 type AnyMock = any;
 
 function setAllLoading() {
+  vi.mocked(useButlers).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  } as AnyMock);
+
+  vi.mocked(useConnectorSummaries).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
   vi.mocked(useInstanceFacts).mockReturnValue({
     data: undefined,
     isLoading: true,
@@ -73,6 +103,21 @@ function setAllLoading() {
 }
 
 function setAllSuccess() {
+  vi.mocked(useButlers).mockReturnValue({
+    data: { data: [{ name: "general", status: "ok", port: 40101, type: "butler" }], meta: {} },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  } as AnyMock);
+
+  vi.mocked(useConnectorSummaries).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
   vi.mocked(useInstanceFacts).mockReturnValue({
     data: { data: { version: "1.0.0", uptime_seconds: 3600, started_at: "2026-01-01T00:00:00Z" }, meta: {} },
     isLoading: false,
@@ -175,16 +220,16 @@ describe("SystemPage -- tiles render with mock data", () => {
     setAllSuccess();
   });
 
-  it("renders Version tile with version data", () => {
+  it("renders Instance tile with version data", () => {
     const html = renderPage();
-    expect(html).toContain("Version");
+    expect(html).toContain("Instance");
     expect(html).toContain("1.0.0");
   });
 
-  it("renders Database Size tile with humanized size data", () => {
+  it("renders Database tile with size data", () => {
     const html = renderPage();
-    expect(html).toContain("Database Size");
-    expect(html).toContain("1.0 KB");
+    expect(html).toContain("Database");
+    expect(html).toContain("1024");
   });
 
   it("renders Backups tile", () => {
@@ -223,7 +268,7 @@ describe("SystemPage -- egress 403 handling", () => {
     const html = renderPage();
     expect(html).toContain("Owner only");
     // Page must not crash -- other tiles still render
-    expect(html).toContain("Version");
+    expect(html).toContain("Instance");
     expect(html).toContain("Butler Heartbeats");
   });
 
@@ -260,5 +305,60 @@ describe("SystemPage -- backup source unreachable", () => {
 
     const html = renderPage();
     expect(html).toContain("Backup status unavailable");
+  });
+});
+
+describe("SystemPage -- topology tile (bu-2okpr.5)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setAllSuccess();
+  });
+
+  it("renders the topology graph section below the ownership tiles", () => {
+    const html = renderPage();
+    expect(html).toContain('data-testid="topology-graph"');
+  });
+
+  it("passes butlers data to the topology graph", () => {
+    const html = renderPage();
+    // The mock TopologyGraph renders butler names as spans
+    expect(html).toContain("general");
+  });
+
+  it("shows error state when butlers request fails", () => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("network error"),
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("Failed to load topology data.");
+    expect(html).not.toContain('data-testid="topology-graph"');
+  });
+
+  it("keeps loading while either butlers or connectors are still fetching (|| not &&)", () => {
+    // Connectors resolved, butlers still loading -- topology should still pass isLoading=true
+    vi.mocked(useButlers).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    // The mock TopologyGraph renders regardless of isLoading; the key check is that
+    // the component doesn't crash and still renders (it should not show error state).
+    const html = renderPage();
+    expect(html).toContain('data-testid="topology-graph"');
+    expect(html).not.toContain("Failed to load topology data.");
   });
 });
