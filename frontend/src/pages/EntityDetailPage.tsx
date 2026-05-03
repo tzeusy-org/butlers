@@ -4,8 +4,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  ExternalLink,
   Loader2,
+  Lock,
   Pencil,
   Plus,
   Trash2,
@@ -18,6 +18,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   ContactSummary,
   EntityGift,
+  EntityImportantDate,
   EntityInfoEntry,
   EntityLoan,
   EntityTimelineItem,
@@ -40,6 +41,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -52,437 +60,33 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
 import {
+  useEntityDates,
   useEntityGifts,
   useEntityLinkedContacts,
   useEntityLoans,
   useEntityMessageThreads,
   useEntityTimeline,
+  useUpdateEntityDunbarTier,
 } from "@/hooks/use-entities";
 import {
-  useCreateEntityInfo,
-  useDeleteEntityInfo,
   useEntity,
   usePromoteEntity,
   useRevealEntitySecret,
   useSetLinkedContact,
   useUnlinkContact,
   useUpdateEntity,
-  useUpdateEntityInfo,
 } from "@/hooks/use-memory";
 
-// ---------------------------------------------------------------------------
-// Entity info type helpers
-// ---------------------------------------------------------------------------
-
-import {
-  ENTITY_INFO_TYPES,
-  SECURED_USER_TYPES as SECURED_TYPES,
-  entityInfoTypeLabel,
-} from "@/lib/user-secret-templates";
-
 const FACTS_PAGE_SIZE = 20;
+// Profile snapshot pulls predicates from recent_facts; profile-relevant facts
+// (birthday, lives_in, works_at, family) are often old and would fall outside
+// a 20-row window. Load a wider initial slice so the snapshot has data to work
+// with; the user can still page further via "Load more facts".
+const FACTS_INITIAL_LIMIT = 200;
 
 function sessionDetailHref(sessionId: string, butler: string | null): string {
   const query = butler ? `?butler=${encodeURIComponent(butler)}` : "";
   return `/sessions/${encodeURIComponent(sessionId)}${query}`;
-}
-
-// ---------------------------------------------------------------------------
-// SecuredInfoEntry — masked value with click-to-reveal
-// ---------------------------------------------------------------------------
-
-function SecuredInfoEntry({
-  entry,
-  entityId,
-}: {
-  entry: EntityInfoEntry;
-  entityId: string;
-}) {
-  const [revealed, setRevealed] = useState<string | null>(null);
-  const [isRevealing, setIsRevealing] = useState(false);
-  const revealMutation = useRevealEntitySecret();
-
-  const displayValue = revealed ?? entry.value;
-
-  async function handleReveal() {
-    if (isRevealing || revealed !== null) return;
-    setIsRevealing(true);
-    revealMutation.mutate(
-      { entityId, infoId: entry.id },
-      {
-        onSuccess: (data) => {
-          setRevealed(data.value ?? "");
-          setIsRevealing(false);
-        },
-        onError: () => {
-          setIsRevealing(false);
-        },
-      },
-    );
-  }
-
-  if (!entry.secured) {
-    return (
-      <span className="text-sm">
-        {displayValue ?? <span className="text-muted-foreground italic">&mdash;</span>}
-      </span>
-    );
-  }
-
-  return (
-    <span className="inline-flex items-center gap-2">
-      {displayValue !== null ? (
-        <span className="text-sm font-mono">{displayValue}</span>
-      ) : (
-        <span className="text-muted-foreground text-sm font-mono tracking-widest">
-          ••••••••
-        </span>
-      )}
-      {revealed === null && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-6 px-2 text-xs"
-          onClick={handleReveal}
-          disabled={isRevealing}
-        >
-          {isRevealing ? "Revealing..." : "Reveal"}
-        </Button>
-      )}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Editable entity_info row
-// ---------------------------------------------------------------------------
-
-function EntityInfoRow({
-  entry,
-  entityId,
-}: {
-  entry: EntityInfoEntry;
-  entityId: string;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(entry.value ?? "");
-  const deleteInfo = useDeleteEntityInfo();
-  const updateInfo = useUpdateEntityInfo();
-
-  function handleDelete() {
-    if (!window.confirm(`Delete this ${entityInfoTypeLabel(entry.type)} entry?`)) return;
-    deleteInfo.mutate(
-      { entityId, infoId: entry.id },
-      {
-        onSuccess: () => toast.success(`Removed ${entityInfoTypeLabel(entry.type)} entry.`),
-        onError: (err) =>
-          toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`),
-      },
-    );
-  }
-
-  function handleSaveEdit() {
-    const trimmed = editValue.trim();
-    if (!trimmed) {
-      toast.error("Value cannot be empty.");
-      return;
-    }
-    if (trimmed === entry.value) {
-      setEditing(false);
-      return;
-    }
-    updateInfo.mutate(
-      { entityId, infoId: entry.id, request: { value: trimmed } },
-      {
-        onSuccess: () => {
-          toast.success(`Updated ${entityInfoTypeLabel(entry.type)} entry.`);
-          setEditing(false);
-        },
-        onError: (err) =>
-          toast.error(`Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`),
-      },
-    );
-  }
-
-  return (
-    <div className="flex gap-2 items-center group">
-      <span className="text-muted-foreground text-sm w-36 shrink-0 capitalize">
-        {entry.label ?? entityInfoTypeLabel(entry.type)}
-        {entry.is_primary && (
-          <span className="ml-1 text-xs text-blue-500">(primary)</span>
-        )}
-      </span>
-      {editing ? (
-        <div className="flex items-center gap-1 flex-1">
-          <Input
-            className="h-7 text-sm flex-1"
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            disabled={updateInfo.isPending}
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleSaveEdit();
-              if (e.key === "Escape") setEditing(false);
-            }}
-          />
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
-            onClick={handleSaveEdit}
-            disabled={updateInfo.isPending}
-          >
-            <Check className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
-            onClick={() => {
-              setEditValue(entry.value ?? "");
-              setEditing(false);
-            }}
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      ) : (
-        <>
-          <span className="flex-1">
-            <SecuredInfoEntry entry={entry} entityId={entityId} />
-          </span>
-          <span className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            {!entry.secured && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0"
-                onClick={() => {
-                  setEditValue(entry.value ?? "");
-                  setEditing(true);
-                }}
-                title="Edit"
-              >
-                <Pencil className="h-3 w-3" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 w-6 p-0 text-destructive hover:text-destructive"
-              onClick={handleDelete}
-              disabled={deleteInfo.isPending}
-              title="Delete"
-            >
-              <Trash2 className="h-3 w-3" />
-            </Button>
-          </span>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Add entity_info inline form
-// ---------------------------------------------------------------------------
-
-function AddEntityInfoForm({
-  entityId,
-  onDone,
-  isOwner = false,
-}: {
-  entityId: string;
-  onDone: () => void;
-  isOwner?: boolean;
-}) {
-  const createInfo = useCreateEntityInfo();
-  const [type, setType] = useState<string>("api_key");
-  const [value, setValue] = useState("");
-  const [label, setLabel] = useState("");
-  const [isPrimary, setIsPrimary] = useState(false);
-
-  // Owner entities do not store google_oauth_refresh — those live on companion entities.
-  const availableTypes = isOwner
-    ? ENTITY_INFO_TYPES.filter((t) => t !== "google_oauth_refresh")
-    : ENTITY_INFO_TYPES;
-
-  const isSecured = SECURED_TYPES.has(type);
-
-  async function handleSubmit() {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      toast.error("Value cannot be empty.");
-      return;
-    }
-    try {
-      await createInfo.mutateAsync({
-        entityId,
-        request: {
-          type,
-          value: trimmed,
-          label: label.trim() || undefined,
-          is_primary: isPrimary,
-          ...(isSecured ? { secured: true } : {}),
-        },
-      });
-      toast.success(`Added ${entityInfoTypeLabel(type)} entry.`);
-      onDone();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      toast.error(`Failed to add: ${msg}`);
-    }
-  }
-
-  return (
-    <div className="flex items-end gap-2 pt-2 border-t mt-2 flex-wrap">
-      <div className="space-y-1">
-        <Label className="text-xs">Type</Label>
-        <Select value={type} onValueChange={(v) => { setType(v); setValue(""); }}>
-          <SelectTrigger className="h-8 w-32 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {availableTypes.map((t) => (
-              <SelectItem key={t} value={t} className="text-xs">
-                {entityInfoTypeLabel(t)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="space-y-1">
-        <Label className="text-xs">Label</Label>
-        <Input
-          className="h-8 w-28 text-sm"
-          placeholder="Optional"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          disabled={createInfo.isPending}
-        />
-      </div>
-      <div className="flex-1 space-y-1">
-        <Label className="text-xs">Value</Label>
-        <Input
-          className="h-8 text-sm"
-          type={isSecured ? "password" : "text"}
-          placeholder={isSecured ? "••••••••" : ""}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          disabled={createInfo.isPending}
-          autoFocus
-        />
-      </div>
-      {!isSecured && (
-        <label className="flex items-center gap-1 text-xs text-muted-foreground pb-0.5">
-          <input
-            type="checkbox"
-            checked={isPrimary}
-            onChange={(e) => setIsPrimary(e.target.checked)}
-            className="accent-primary"
-          />
-          Primary
-        </label>
-      )}
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-8 w-8 p-0"
-        onClick={handleSubmit}
-        disabled={createInfo.isPending}
-      >
-        <Check className="h-4 w-4" />
-      </Button>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-8 w-8 p-0"
-        onClick={onDone}
-        disabled={createInfo.isPending}
-      >
-        <X className="h-4 w-4" />
-      </Button>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Entity info section
-// ---------------------------------------------------------------------------
-
-function EntityInfoSection({
-  entityId,
-  entries,
-  isOwner = false,
-}: {
-  entityId: string;
-  entries: EntityInfoEntry[];
-  isOwner?: boolean;
-}) {
-  const [addingInfo, setAddingInfo] = useState(false);
-
-  // Owner entities do not store google_oauth_refresh — those live on companion
-  // entities. Filter them out so the owner entity view stays clean.
-  const visibleEntries = isOwner
-    ? entries.filter((e) => e.type !== "google_oauth_refresh")
-    : entries;
-
-  const hasHiddenOAuthRows = isOwner && entries.some((e) => e.type === "google_oauth_refresh");
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>Credentials &amp; Info</CardTitle>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {visibleEntries.length === 0 && !addingInfo ? (
-          <p className="text-muted-foreground py-2 text-center text-sm">
-            No entity info entries yet.
-          </p>
-        ) : (
-          <div className="space-y-1.5">
-            {visibleEntries.map((entry) => (
-              <EntityInfoRow key={entry.id} entry={entry} entityId={entityId} />
-            ))}
-          </div>
-        )}
-        {isOwner && (
-          <div className="mt-3 flex items-center gap-1.5 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-            <ExternalLink className="h-3 w-3 shrink-0" />
-            <span>
-              Google OAuth tokens are managed on companion Google account entities.
-              {hasHiddenOAuthRows
-                ? " Existing token rows are hidden here — manage them at "
-                : " To manage Google accounts, go to "}
-              <Link to="/settings" className="text-primary hover:underline">
-                Settings → Google OAuth
-              </Link>
-              .
-            </span>
-          </div>
-        )}
-        {addingInfo ? (
-          <AddEntityInfoForm
-            entityId={entityId}
-            onDone={() => setAddingInfo(false)}
-            isOwner={isOwner}
-          />
-        ) : (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mt-2 h-7 text-xs text-muted-foreground"
-            onClick={() => setAddingInfo(true)}
-          >
-            <Plus className="mr-1 h-3 w-3" />
-            Add entity info
-          </Button>
-        )}
-      </CardContent>
-    </Card>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,13 +660,20 @@ function LinkedContactSection({
 // Pulse strip — three derived stat tiles surfaced at the top of the page
 // ---------------------------------------------------------------------------
 
-const _DUNBAR_LABEL: Record<number, string> = {
-  1: "Inner 5",
-  2: "Close 15",
-  3: "Sympathy 50",
-  4: "Active 150",
-  5: "Acquaintance",
-};
+// Canonical Dunbar layer sizes — tier values returned by the engine are the
+// layer sizes themselves, not 1-indexed positions. Order matters for the menu.
+const DUNBAR_TIERS: { tier: number; label: string; description: string }[] = [
+  { tier: 5, label: "Support 5", description: "Closest support clique" },
+  { tier: 15, label: "Sympathy 15", description: "Sympathy group" },
+  { tier: 50, label: "Friends 50", description: "Good friends" },
+  { tier: 150, label: "Network 150", description: "Meaningful contacts" },
+  { tier: 500, label: "Acquaintances 500", description: "Acquaintances" },
+  { tier: 1500, label: "Recognized 1500", description: "Recognizable" },
+];
+
+const _DUNBAR_LABEL: Record<number, string> = Object.fromEntries(
+  DUNBAR_TIERS.map((t) => [t.tier, t.label]),
+);
 
 function dunbarLabel(tier: number | null | undefined): string | null {
   if (tier == null) return null;
@@ -1072,9 +683,11 @@ function dunbarLabel(tier: number | null | undefined): string | null {
 function PulseStrip({
   entityId,
   dunbarTier,
+  isPinned,
 }: {
   entityId: string;
   dunbarTier: number | null;
+  isPinned: boolean;
 }) {
   const { data: timelineItems, isLoading: timelineLoading } =
     useEntityTimeline(entityId);
@@ -1114,15 +727,14 @@ function PulseStrip({
     return giftOpen + loanOpen;
   }, [gifts, loans]);
 
-  const tierLabel = dunbarLabel(dunbarTier);
   const isLoading = timelineLoading;
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <PulseTile
-        label="Dunbar tier"
-        value={tierLabel ?? "Unranked"}
-        muted={tierLabel === null}
+      <DunbarTile
+        entityId={entityId}
+        currentTier={dunbarTier}
+        isPinned={isPinned}
       />
       <PulseTile
         label="Last interaction"
@@ -1164,6 +776,111 @@ function PulseStrip({
   );
 }
 
+// Dunbar tile — clickable; opens a tier-picker menu. The lock glyph indicates
+// a manual pin (override). Auto = clear pin → revert to rank-based assignment.
+function DunbarTile({
+  entityId,
+  currentTier,
+  isPinned,
+}: {
+  entityId: string;
+  currentTier: number | null;
+  isPinned: boolean;
+}) {
+  const updateTier = useUpdateEntityDunbarTier();
+  const tierLabel = dunbarLabel(currentTier);
+
+  function handleSet(tier: number | null) {
+    updateTier.mutate(
+      { entityId, tier },
+      {
+        onSuccess: (data) => {
+          toast.success(
+            tier == null
+              ? "Dunbar tier pin cleared."
+              : `Pinned to ${dunbarLabel(tier) ?? `tier ${tier}`}.`,
+            { description: data.message },
+          );
+        },
+        onError: (err) =>
+          toast.error(
+            `Failed to update tier: ${err instanceof Error ? err.message : "Unknown"}`,
+          ),
+      },
+    );
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={
+            "group rounded-md border px-3 py-2.5 text-left transition-colors " +
+            "hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring " +
+            (isPinned ? "border-foreground/30" : "border-border")
+          }
+          disabled={updateTier.isPending}
+        >
+          <p className="text-muted-foreground text-[11px] uppercase tracking-wide flex items-center gap-1">
+            <span>Dunbar tier</span>
+            {isPinned && (
+              <Lock
+                className="h-2.5 w-2.5"
+                aria-label="Pinned"
+              />
+            )}
+          </p>
+          <p
+            className={
+              "mt-1 text-sm font-medium leading-tight flex items-center gap-1.5 " +
+              (tierLabel ? "text-foreground" : "text-muted-foreground")
+            }
+          >
+            {updateTier.isPending ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : null}
+            <span>{tierLabel ?? "Unranked"}</span>
+            <ChevronDown className="h-3 w-3 opacity-50 group-hover:opacity-100 transition-opacity ml-auto" />
+          </p>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        {DUNBAR_TIERS.map((opt) => {
+          const selected = currentTier === opt.tier;
+          return (
+            <DropdownMenuItem
+              key={opt.tier}
+              onSelect={() => handleSet(opt.tier)}
+              disabled={updateTier.isPending}
+              className="flex flex-col items-start gap-0.5"
+            >
+              <div className="flex w-full items-center justify-between">
+                <span className="text-sm font-medium">{opt.label}</span>
+                {selected && <Check className="h-3.5 w-3.5" />}
+              </div>
+              <span className="text-muted-foreground text-xs">
+                {opt.description}
+              </span>
+            </DropdownMenuItem>
+          );
+        })}
+        {isPinned && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => handleSet(null)}
+              disabled={updateTier.isPending}
+            >
+              <span className="text-sm">Clear pin (auto)</span>
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function PulseTile({
   label,
   value,
@@ -1194,6 +911,343 @@ function PulseTile({
         {value}
       </p>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Profile snapshot — birthday, place, work, family, upcoming dates
+// ---------------------------------------------------------------------------
+
+const _PLACE_PREDICATES = new Set([
+  "lives_in",
+  "home_address",
+  "address",
+  "from",
+  "born_in",
+]);
+
+const _WORK_PREDICATES = new Set(["works_at", "employer"]);
+
+const _ROLE_PREDICATES = new Set(["role", "title", "job_title"]);
+
+const _FAMILY_PREDICATES = new Set([
+  "married_to",
+  "partner",
+  "spouse",
+  "parent_of",
+  "child_of",
+  "sibling_of",
+]);
+
+interface FamilyEntry {
+  label: string;
+  name: string;
+  entityId: string | null;
+}
+
+function _firstActiveFact(facts: Fact[], predicates: Set<string>): Fact | null {
+  for (const f of facts) {
+    if (f.validity === "active" && predicates.has(f.predicate)) return f;
+  }
+  return null;
+}
+
+function _ageOnNextBirthday(birthYear: number, occurrence: Date): number {
+  return occurrence.getFullYear() - birthYear;
+}
+
+function _formatMonthDay(month: number, day: number): string {
+  // Use a stable date so locale-formatting is consistent regardless of year.
+  const sample = new Date(2000, month - 1, day);
+  return format(sample, "MMM d");
+}
+
+function _formatCountdown(target: Date, now: Date): string {
+  const diffMs = target.getTime() - now.getTime();
+  const days = Math.round(diffMs / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days < 30) return `in ${days} days`;
+  return `in ${formatDistanceToNow(target)}`;
+}
+
+function _familyFromFacts(
+  facts: Fact[],
+  entityId: string,
+): { incoming: FamilyEntry[]; outgoing: FamilyEntry[] } {
+  const incoming: FamilyEntry[] = [];
+  const outgoing: FamilyEntry[] = [];
+  for (const f of facts) {
+    if (f.validity !== "active") continue;
+    if (!_FAMILY_PREDICATES.has(f.predicate)) continue;
+    const isIncoming =
+      f.object_entity_id === entityId && f.entity_id !== entityId;
+    if (isIncoming) {
+      // This entity is the object — invert the predicate label conceptually
+      // for display.  Don't try to invert parent/child here; just label as
+      // "<name> <predicate> this".
+      const inversion: Record<string, string> = {
+        parent_of: "Child of",
+        child_of: "Parent of",
+        married_to: "Married to",
+        partner: "Partner of",
+        spouse: "Spouse of",
+        sibling_of: "Sibling of",
+      };
+      incoming.push({
+        label: inversion[f.predicate] ?? f.predicate.replaceAll("_", " "),
+        name: f.entity_name ?? f.subject,
+        entityId: f.entity_id,
+      });
+    } else {
+      const labelMap: Record<string, string> = {
+        parent_of: "Parent of",
+        child_of: "Child of",
+        married_to: "Married to",
+        partner: "Partner",
+        spouse: "Spouse",
+        sibling_of: "Sibling of",
+      };
+      outgoing.push({
+        label: labelMap[f.predicate] ?? f.predicate.replaceAll("_", " "),
+        name: f.object_entity_name ?? f.content,
+        entityId: f.object_entity_id,
+      });
+    }
+  }
+  return { incoming, outgoing };
+}
+
+function ProfileSnapshot({
+  entityId,
+  facts,
+}: {
+  entityId: string;
+  facts: Fact[];
+}) {
+  const { data: dates, isLoading: datesLoading } = useEntityDates(entityId);
+  const [today] = useState(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  });
+
+  const birthday = useMemo(
+    () => (dates ?? []).find((d) => d.label.toLowerCase() === "birthday") ?? null,
+    [dates],
+  );
+
+  const otherUpcoming = useMemo(() => {
+    const list = (dates ?? []).filter(
+      (d) => d.label.toLowerCase() !== "birthday",
+    );
+    // Soft cap to the next two non-birthday dates.
+    return list.slice(0, 2);
+  }, [dates]);
+
+  const placeFact = useMemo(() => _firstActiveFact(facts, _PLACE_PREDICATES), [facts]);
+  const workFact = useMemo(() => _firstActiveFact(facts, _WORK_PREDICATES), [facts]);
+  const roleFact = useMemo(() => _firstActiveFact(facts, _ROLE_PREDICATES), [facts]);
+  const family = useMemo(() => _familyFromFacts(facts, entityId), [facts, entityId]);
+
+  const hasBirthday = !!birthday;
+  const hasPlace = !!placeFact;
+  const hasWork = !!workFact || !!roleFact;
+  const hasFamily =
+    family.outgoing.length > 0 || family.incoming.length > 0;
+  const hasUpcoming = otherUpcoming.length > 0;
+
+  if (
+    !hasBirthday &&
+    !hasPlace &&
+    !hasWork &&
+    !hasFamily &&
+    !hasUpcoming &&
+    !datesLoading
+  ) {
+    return null;
+  }
+
+  return (
+    <section className="space-y-3">
+      <h2 className="text-lg font-semibold">Profile</h2>
+      <dl className="divide-y divide-border border-y">
+        {hasBirthday && (
+          <ProfileRow label="Birthday">
+            <BirthdayValue date={birthday} today={today} />
+          </ProfileRow>
+        )}
+        {hasPlace && placeFact && (
+          <ProfileRow label="Lives in">
+            <span>{placeFact.content}</span>
+          </ProfileRow>
+        )}
+        {hasWork && (
+          <ProfileRow label="Works at">
+            <WorkValue work={workFact} role={roleFact} />
+          </ProfileRow>
+        )}
+        {hasFamily && (
+          <ProfileRow label="Family">
+            <FamilyValue family={family} />
+          </ProfileRow>
+        )}
+        {hasUpcoming && (
+          <ProfileRow label="Upcoming">
+            <UpcomingValue dates={otherUpcoming} today={today} />
+          </ProfileRow>
+        )}
+      </dl>
+    </section>
+  );
+}
+
+function ProfileRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[8rem_1fr] items-baseline gap-3 py-2.5">
+      <dt className="text-muted-foreground text-xs uppercase tracking-wide">
+        {label}
+      </dt>
+      <dd className="text-sm">{children}</dd>
+    </div>
+  );
+}
+
+function BirthdayValue({
+  date,
+  today,
+}: {
+  date: EntityImportantDate;
+  today: Date;
+}) {
+  const occurrence = new Date(date.upcoming_date);
+  const monthDay = _formatMonthDay(date.month, date.day);
+  const countdown = _formatCountdown(occurrence, today);
+  if (date.year) {
+    const age = _ageOnNextBirthday(date.year, occurrence);
+    return (
+      <span>
+        {monthDay}
+        <span className="text-muted-foreground"> · turns {age} {countdown}</span>
+      </span>
+    );
+  }
+  return (
+    <span>
+      {monthDay}
+      <span className="text-muted-foreground"> · {countdown}</span>
+    </span>
+  );
+}
+
+function WorkValue({
+  work,
+  role,
+}: {
+  work: Fact | null;
+  role: Fact | null;
+}) {
+  // Prefer metadata.role on the works_at fact when present; fall back to a
+  // standalone role/title fact.
+  const inlineRole =
+    work && typeof work.metadata?.role === "string"
+      ? (work.metadata.role as string)
+      : null;
+  const fallbackRole = role?.content ?? null;
+  const roleText = inlineRole ?? fallbackRole;
+
+  if (!work) {
+    return <span>{roleText ?? "—"}</span>;
+  }
+
+  const employerNode = work.object_entity_id ? (
+    <Link
+      to={`/entities/${work.object_entity_id}`}
+      className="text-primary hover:underline"
+    >
+      {work.object_entity_name ?? work.content}
+    </Link>
+  ) : (
+    <span>{work.content}</span>
+  );
+
+  return (
+    <span>
+      {employerNode}
+      {roleText && (
+        <span className="text-muted-foreground"> — {roleText}</span>
+      )}
+    </span>
+  );
+}
+
+function FamilyValue({
+  family,
+}: {
+  family: { incoming: FamilyEntry[]; outgoing: FamilyEntry[] };
+}) {
+  // Group by relation label so multiple parents/children collapse into a
+  // single row with comma-separated names.
+  const groups = new Map<string, FamilyEntry[]>();
+  for (const e of [...family.outgoing, ...family.incoming]) {
+    const list = groups.get(e.label) ?? [];
+    list.push(e);
+    groups.set(e.label, list);
+  }
+  return (
+    <ul className="space-y-1">
+      {Array.from(groups.entries()).map(([label, entries]) => (
+        <li key={label}>
+          <span className="text-muted-foreground text-xs">{label}:</span>{" "}
+          {entries.map((e, i) => (
+            <span key={`${label}-${i}`}>
+              {i > 0 && ", "}
+              {e.entityId ? (
+                <Link
+                  to={`/entities/${e.entityId}`}
+                  className="text-primary hover:underline"
+                >
+                  {e.name}
+                </Link>
+              ) : (
+                <span>{e.name}</span>
+              )}
+            </span>
+          ))}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function UpcomingValue({
+  dates,
+  today,
+}: {
+  dates: EntityImportantDate[];
+  today: Date;
+}) {
+  return (
+    <ul className="space-y-1">
+      {dates.map((d) => {
+        const occurrence = new Date(d.upcoming_date);
+        return (
+          <li key={`${d.contact_id}-${d.label}-${d.month}-${d.day}`}>
+            <span className="capitalize">{d.label}</span>
+            <span className="text-muted-foreground">
+              {" "}
+              · {_formatMonthDay(d.month, d.day)} ({_formatCountdown(occurrence, today)})
+            </span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -1820,7 +1874,7 @@ function ProvenanceFooter({
 
 export default function EntityDetailPage() {
   const { entityId } = useParams<{ entityId: string }>();
-  const [factsLimit, setFactsLimit] = useState(FACTS_PAGE_SIZE);
+  const [factsLimit, setFactsLimit] = useState(FACTS_INITIAL_LIMIT);
   const { data, isLoading, isFetching, error } = useEntity(entityId, {
     facts_limit: factsLimit,
   });
@@ -1923,6 +1977,10 @@ export default function EntityDetailPage() {
 
   const isOwner = entity?.roles?.includes("owner") ?? false;
   const ownerNeedsSetup = isOwner && entity ? !entity.linked_contact_id : false;
+  const dunbarPinned =
+    entity?.recent_facts?.some(
+      (f) => f.predicate === "dunbar_tier_override" && f.validity === "active",
+    ) ?? false;
 
   return (
     <div className="space-y-8">
@@ -2187,8 +2245,15 @@ export default function EntityDetailPage() {
             </div>
 
             {/* Pulse strip — closeness + open loops at-a-glance */}
-            <PulseStrip entityId={entityId} dunbarTier={entity.dunbar_tier ?? null} />
+            <PulseStrip
+              entityId={entityId}
+              dunbarTier={entity.dunbar_tier ?? null}
+              isPinned={dunbarPinned}
+            />
           </section>
+
+          {/* Profile snapshot — birthday, place, work, family, upcoming */}
+          <ProfileSnapshot entityId={entityId} facts={entity.recent_facts} />
 
           {/* Activity timeline — primary content */}
           <ActivityTimeline entityId={entityId} />
@@ -2221,11 +2286,20 @@ export default function EntityDetailPage() {
           <PracticalDrawer entity={entity} forceOpen={ownerNeedsSetup}>
             <OwnerSetupBanner entity={entity} />
             <LinkedContactSection entityId={entity.id} entity={entity} />
-            <EntityInfoSection
-              entityId={entity.id}
-              entries={entity.entity_info ?? []}
-              isOwner={isOwner}
-            />
+
+            {/* Credentials moved to the User tab of /secrets — link only. */}
+            <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+              <span className="text-muted-foreground">
+                Credentials and identity-bound secrets are managed in{" "}
+              </span>
+              <Link to="/secrets" className="text-primary font-medium hover:underline">
+                Secrets → User
+              </Link>
+              <span className="text-muted-foreground">
+                . Switch identity there to view this entity's credentials.
+              </span>
+            </div>
+
             {isOwner && (
               <TelegramSessionSetup
                 entityId={entity.id}

@@ -30,7 +30,11 @@ export function useOwnerEntityInfo() {
   });
 }
 
-/** Create an entity_info entry on the owner entity. */
+// The mutations below are entity-agnostic despite the legacy "Owner" naming —
+// they accept any entityId and additionally invalidate the per-entity memory
+// cache so the Entity detail page reflects credential changes immediately.
+
+/** Create an entity_info entry on any entity. */
 export function useCreateOwnerEntityInfo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -41,14 +45,15 @@ export function useCreateOwnerEntityInfo() {
       entityId: string;
       request: CreateEntityInfoRequest;
     }) => createEntityInfo(entityId, request),
-    onSuccess: () => {
+    onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ownerSecretsKeys.all });
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
     },
   });
 }
 
-/** Update an entity_info entry on the owner entity. */
+/** Update an entity_info entry on any entity. */
 export function useUpdateOwnerEntityInfo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -61,22 +66,24 @@ export function useUpdateOwnerEntityInfo() {
       infoId: string;
       request: UpdateEntityInfoRequest;
     }) => updateEntityInfo(entityId, infoId, request),
-    onSuccess: () => {
+    onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ownerSecretsKeys.all });
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
     },
   });
 }
 
-/** Delete an entity_info entry on the owner entity. */
+/** Delete an entity_info entry on any entity. */
 export function useDeleteOwnerEntityInfo() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ entityId, infoId }: { entityId: string; infoId: string }) =>
       deleteEntityInfo(entityId, infoId),
-    onSuccess: () => {
+    onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ownerSecretsKeys.all });
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
     },
   });
 }

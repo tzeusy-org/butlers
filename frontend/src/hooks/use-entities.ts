@@ -7,9 +7,10 @@
  * activity view (notes, interactions, gifts, loans, timeline).
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  getEntityDates,
   getEntityGifts,
   getEntityInteractions,
   getEntityLinkedContacts,
@@ -17,6 +18,7 @@ import {
   getEntityMessageThreads,
   getEntityNotes,
   getEntityTimeline,
+  updateEntityDunbarTier,
 } from "@/api/index.ts";
 
 /** Fetch all contacts linked to a relationship entity. */
@@ -79,5 +81,27 @@ export function useEntityMessageThreads(entityId: string | undefined) {
     queryKey: ["entity-message-threads", entityId],
     queryFn: () => getEntityMessageThreads(entityId!),
     enabled: !!entityId,
+  });
+}
+
+/** Fetch important dates (birthdays, anniversaries) scoped to one entity. */
+export function useEntityDates(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-dates", entityId],
+    queryFn: () => getEntityDates(entityId!),
+    enabled: !!entityId,
+  });
+}
+
+/** Pin or clear the Dunbar tier on an entity. */
+export function useUpdateEntityDunbarTier() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId, tier }: { entityId: string; tier: number | null }) =>
+      updateEntityDunbarTier(entityId, tier),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["dunbar-ranking"] });
+    },
   });
 }

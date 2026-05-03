@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-import type { SecretEntry } from "@/api/index.ts";
+import type { EntitySummary, SecretEntry } from "@/api/index.ts";
 import { revealEntitySecret } from "@/api/index.ts";
 import type { SecretDisplayRow } from "@/lib/secrets-rows";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -31,6 +32,7 @@ import { OwnTracksSection } from "@/components/settings/OwnTracksSetupCard";
 import { SteamSection } from "@/components/settings/SteamSetupCard";
 import { WhatsAppSection } from "@/components/settings/WhatsAppSetupCard";
 import { useButlers } from "@/hooks/use-butlers";
+import { useEntities, useEntity } from "@/hooks/use-memory";
 import { useSecrets } from "@/hooks/use-secrets";
 import {
   useOwnerEntityInfo,
@@ -168,26 +170,152 @@ function SystemSecretsSection() {
 // User secrets section (entity_info on owner entity)
 // ---------------------------------------------------------------------------
 
+// Lightweight searchable entity picker for the User tab. Defaults to the
+// owner entity; switching loads that entity's credentials.
+function EntityPicker({
+  ownerId,
+  ownerName,
+  selectedId,
+  selectedName,
+  onSelect,
+}: {
+  ownerId: string | null;
+  ownerName: string | null;
+  selectedId: string;
+  selectedName: string | null;
+  onSelect: (id: string, name: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const { data } = useEntities(
+    open ? { q: search || undefined, entity_type: "person", limit: 25 } : undefined,
+  );
+  const entities: EntitySummary[] = data?.data ?? [];
+
+  const isOwnerSelected = ownerId !== null && selectedId === ownerId;
+  const displayName = isOwnerSelected
+    ? `${ownerName ?? "Owner"} (you)`
+    : (selectedName ?? "Select identity");
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={
+          "border-input bg-background hover:bg-accent flex h-9 w-full items-center " +
+          "justify-between gap-2 rounded-md border px-3 text-left text-sm " +
+          "transition-colors focus:outline-none focus:ring-2 focus:ring-ring sm:w-72"
+        }
+      >
+        <span className="truncate font-medium">{displayName}</span>
+        <span className="text-muted-foreground text-xs">change</span>
+      </button>
+
+      {open && (
+        <div className="bg-popover absolute z-20 mt-1 w-full max-w-md rounded-md border p-2 shadow-md sm:w-96">
+          <Input
+            autoFocus
+            placeholder="Search identities..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="mb-2 h-8 text-sm"
+          />
+          {ownerId && !isOwnerSelected && (
+            <button
+              type="button"
+              onClick={() => {
+                onSelect(ownerId, ownerName);
+                setOpen(false);
+                setSearch("");
+              }}
+              className="hover:bg-muted block w-full rounded px-2 py-1.5 text-left text-sm"
+            >
+              <span className="font-medium">{ownerName ?? "Owner"}</span>
+              <span className="text-muted-foreground"> (you)</span>
+            </button>
+          )}
+          <div className="max-h-64 overflow-y-auto">
+            {entities
+              .filter((e) => e.id !== ownerId)
+              .map((e) => (
+                <button
+                  key={e.id}
+                  type="button"
+                  onClick={() => {
+                    onSelect(e.id, e.canonical_name);
+                    setOpen(false);
+                    setSearch("");
+                  }}
+                  className="hover:bg-muted block w-full rounded px-2 py-1.5 text-left text-sm"
+                >
+                  <span className="font-medium">{e.canonical_name}</span>
+                  {e.dunbar_tier != null && (
+                    <span className="text-muted-foreground text-xs">
+                      {" "}· tier {e.dunbar_tier}
+                    </span>
+                  )}
+                </button>
+              ))}
+            {entities.filter((e) => e.id !== ownerId).length === 0 && search && (
+              <p className="text-muted-foreground px-2 py-2 text-xs">
+                No matches.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UserSecretsSection() {
-  const { data: ownerData, isLoading, isError, error } = useOwnerEntityInfo();
+  const { data: ownerData, isError: ownerError } = useOwnerEntityInfo();
   const deleteMutation = useDeleteOwnerEntityInfo();
+
+  const ownerId = ownerData?.entity_id ?? null;
+  const ownerName = ownerData?.entity_name ?? null;
+
+  // Override is null until the user explicitly picks a non-owner identity.
+  // Effective selection falls back to the owner — no useEffect needed for the
+  // default-to-owner behavior, which is what react-hooks/set-state-in-effect
+  // is rightly cranky about.
+  const [override, setOverride] = useState<{ id: string; name: string | null } | null>(
+    null,
+  );
+  const selectedId = override?.id ?? ownerId ?? "";
+  const selectedName = override?.name ?? ownerName ?? null;
+
+  const {
+    data: entityResp,
+    isLoading: entityLoading,
+    isError: entityError,
+    error,
+  } = useEntity(selectedId || undefined, { facts_limit: 1 });
+  const entity = entityResp?.data ?? null;
+  const userRows = useMemo(
+    () => buildUserSecretRows(entity?.entity_info ?? []),
+    [entity?.entity_info],
+  );
 
   const [editRow, setEditRow] = useState<SecretDisplayRow | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
-  const entityId = ownerData?.entity_id ?? "";
-  const entries = ownerData?.entries ?? [];
-  const userRows = buildUserSecretRows(entries);
+  const isOwner = !!ownerId && selectedId === ownerId;
+  const displayName = entity?.canonical_name ?? selectedName ?? "—";
 
   async function handleRevealEntry(row: SecretDisplayRow): Promise<string | null> {
-    if (!row.entityInfoEntry || !entityId) return null;
-    const resp = await revealEntitySecret(entityId, row.entityInfoEntry.id);
+    if (!row.entityInfoEntry || !selectedId) return null;
+    const resp = await revealEntitySecret(selectedId, row.entityInfoEntry.id);
     return resp.value ?? null;
   }
 
   async function handleDeleteRow(row: SecretDisplayRow): Promise<void> {
-    if (!row.entityInfoEntry || !entityId) return;
-    await deleteMutation.mutateAsync({ entityId, infoId: row.entityInfoEntry.id });
+    if (!row.entityInfoEntry || !selectedId) return;
+    await deleteMutation.mutateAsync({
+      entityId: selectedId,
+      infoId: row.entityInfoEntry.id,
+    });
   }
 
   function handleEditRow(row: SecretDisplayRow) {
@@ -197,69 +325,86 @@ function UserSecretsSection() {
   return (
     <div className="space-y-6">
       {/* ------------------------------------------------------------------ */}
-      {/* Integrations section                                                */}
+      {/* Integrations section — owner-only; only renders for the owner       */}
+      {/* identity since the underlying providers bind to the owner record.   */}
       {/* ------------------------------------------------------------------ */}
-      <div>
-        <h2 className="text-lg font-semibold mb-1">Integrations</h2>
-        <p className="text-sm text-muted-foreground mb-4">
-          Account-login integrations that bind external services to your identity.
-        </p>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="divide-y">
-              <div className="pb-6 space-y-4">
-                <GoogleOAuthSection />
-                {/*
-                  Status card renders only when the primary Google account
-                  has the three Google Health scopes granted — otherwise the
-                  scope-set picker inside GoogleOAuthSection surfaces the
-                  CTA. See "Health-card state when scopes absent" scenario.
-                */}
-                <GoogleHealthStatusCard />
+      {isOwner && (
+        <div>
+          <h2 className="text-lg font-semibold mb-1">Integrations</h2>
+          <p className="text-sm text-muted-foreground mb-4">
+            Account-login integrations that bind external services to your identity.
+          </p>
+          <Card>
+            <CardContent className="pt-6">
+              <div className="divide-y">
+                <div className="pb-6 space-y-4">
+                  <GoogleOAuthSection />
+                  <GoogleHealthStatusCard />
+                </div>
+                <div className="py-6">
+                  <SpotifySection />
+                </div>
+                <div className="py-6">
+                  <HomeAssistantSection />
+                </div>
+                <div className="py-6">
+                  <WhatsAppSection />
+                </div>
+                <div className="py-6">
+                  <OwnTracksSection />
+                </div>
+                <div className="pt-6">
+                  <SteamSection />
+                </div>
               </div>
-              <div className="py-6">
-                <SpotifySection />
-              </div>
-              <div className="py-6">
-                <HomeAssistantSection />
-              </div>
-              <div className="py-6">
-                <WhatsAppSection />
-              </div>
-              <div className="py-6">
-                <OwnTracksSection />
-              </div>
-              <div className="pt-6">
-                <SteamSection />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* ------------------------------------------------------------------ */}
       {/* Credentials section                                                  */}
       {/* ------------------------------------------------------------------ */}
       <div>
-        <h2 className="text-lg font-semibold mb-1">
-          Credentials
-          {ownerData?.entity_name ? (
-            <span className="text-muted-foreground font-normal text-base ml-2">
-              ({ownerData.entity_name})
-            </span>
-          ) : null}
-        </h2>
-        <p className="text-sm text-muted-foreground mb-4">
-          Identity-bound credentials on the owner entity.
-          Telegram API keys, Home Assistant tokens, and other personal credentials.
-        </p>
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold">Credentials</h2>
+            <p className="text-sm text-muted-foreground">
+              Identity-bound credentials. API keys, tokens, and other secrets
+              attached to a specific person's entity record.
+            </p>
+          </div>
+          <EntityPicker
+            ownerId={ownerId}
+            ownerName={ownerName}
+            selectedId={selectedId}
+            selectedName={selectedName}
+            onSelect={(id, name) => {
+              // Reset override when picking the owner so future owner-name
+              // changes from useOwnerEntityInfo flow through.
+              if (id === ownerId) {
+                setOverride(null);
+              } else {
+                setOverride({ id, name });
+              }
+            }}
+          />
+        </div>
+
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <CardTitle className="text-base">Stored Credentials</CardTitle>
+                <CardTitle className="text-base">
+                  {displayName}
+                  {isOwner && (
+                    <span className="text-muted-foreground ml-2 text-sm font-normal">
+                      (you)
+                    </span>
+                  )}
+                </CardTitle>
                 <CardDescription>
-                  Raw credential entries managed on the owner entity record.
+                  Raw credential entries managed on this entity's record.
                 </CardDescription>
               </div>
               <Button
@@ -268,18 +413,20 @@ function UserSecretsSection() {
                   setEditRow(null);
                   setAddOpen(true);
                 }}
-                disabled={!entityId}
+                disabled={!selectedId}
               >
                 Add Credential
               </Button>
             </div>
           </CardHeader>
           <CardContent>
-            {isError ? (
+            {ownerError && !selectedId ? (
               <p className="text-sm text-destructive">
-                {(error as Error)?.message?.includes("404")
-                  ? "No owner entity found. Create one in the Entities page first."
-                  : "Failed to load user credentials."}
+                No owner entity found. Create one in the Entities page first.
+              </p>
+            ) : entityError ? (
+              <p className="text-sm text-destructive">
+                Failed to load credentials. {(error as Error)?.message ?? ""}
               </p>
             ) : (
               <SecretsTable
@@ -287,7 +434,7 @@ function UserSecretsSection() {
                 butlerName=""
                 secrets={[]}
                 userRows={userRows}
-                isLoading={isLoading}
+                isLoading={entityLoading}
                 isError={false}
                 onEdit={() => {}}
                 onCreateOverride={() => {}}
@@ -303,7 +450,7 @@ function UserSecretsSection() {
 
       {/* Add modal */}
       <UserSecretFormModal
-        entityId={entityId}
+        entityId={selectedId}
         open={addOpen}
         onOpenChange={(open) => {
           setAddOpen(open);
@@ -312,7 +459,7 @@ function UserSecretsSection() {
 
       {/* Edit modal */}
       <UserSecretFormModal
-        entityId={entityId}
+        entityId={selectedId}
         editRow={editRow}
         open={!!editRow}
         onOpenChange={(open) => {

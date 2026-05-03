@@ -33,6 +33,8 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
+  useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 vi.mock("@/hooks/use-contacts", () => ({
@@ -114,14 +116,28 @@ describe("EntityDetailPage — identity hero", () => {
   });
 });
 
-describe("EntityDetailPage — google_oauth_refresh visibility (owner)", () => {
+describe("EntityDetailPage — credentials moved to /secrets", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  // Owner with no linked_contact_id forces the practical drawer open,
-  // so the EntityInfoSection inside it is rendered and assertable.
-  it("hides google_oauth_refresh entries for owner entities", () => {
+  // Credentials & Info management has moved to the User tab of /secrets.
+  // The entity page only carries a link to that surface.
+  it("renders a link to /secrets in the practical drawer for owners with no linked contact", () => {
+    setEntityState({
+      ...BASE_ENTITY,
+      roles: ["owner"],
+      linked_contact_id: null,
+      entity_info: [],
+    });
+
+    const html = renderPage();
+
+    expect(html).toContain("/secrets");
+    expect(html).toContain("Secrets");
+  });
+
+  it("does not render the legacy Credentials & Info section", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
@@ -129,14 +145,6 @@ describe("EntityDetailPage — google_oauth_refresh visibility (owner)", () => {
       entity_info: [
         {
           id: "info-1",
-          type: "google_oauth_refresh",
-          value: null,
-          label: null,
-          is_primary: false,
-          secured: true,
-        },
-        {
-          id: "info-2",
           type: "telegram",
           value: "@ownerhandle",
           label: null,
@@ -148,22 +156,10 @@ describe("EntityDetailPage — google_oauth_refresh visibility (owner)", () => {
 
     const html = renderPage();
 
-    expect(html).not.toContain("Google OAuth Refresh");
-    expect(html).toContain("@ownerhandle");
-  });
-
-  it("shows the settings link note for owner entities with the drawer open", () => {
-    setEntityState({
-      ...BASE_ENTITY,
-      roles: ["owner"],
-      linked_contact_id: null,
-      entity_info: [],
-    });
-
-    const html = renderPage();
-
-    expect(html).toContain("/settings");
-    expect(html).toContain("Google OAuth");
+    // The on-page credentials list is gone — value is no longer rendered here.
+    expect(html).not.toContain("@ownerhandle");
+    // And the old "Credentials & Info" card title is gone too.
+    expect(html).not.toContain("Credentials &amp; Info");
   });
 });
 

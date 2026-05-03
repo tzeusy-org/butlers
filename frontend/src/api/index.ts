@@ -62,6 +62,8 @@ export {
   getEntityLoans,
   getEntityTimeline,
   getEntityMessageThreads,
+  getEntityDates,
+  updateEntityDunbarTier,
   getEpisode,
   getEpisodes,
   getFact,

@@ -232,7 +232,9 @@ import type {
   EntityInteraction,
   EntityGift,
   EntityLoan,
+  EntityImportantDate,
   EntityTimelineItem,
+  DunbarTierOverrideResponse,
   LinkedContactSummary,
   MessageThreadSummary,
   RelationshipEntityDetail,
@@ -1487,6 +1489,24 @@ export function getEntityMessageThreads(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/message-threads?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/message-threads`;
   return apiFetch<MessageThreadSummary[]>(path);
+}
+
+/** Fetch important dates (birthdays, anniversaries, etc.) for an entity. */
+export function getEntityDates(entityId: string): Promise<EntityImportantDate[]> {
+  return apiFetch<EntityImportantDate[]>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/dates`,
+  );
+}
+
+/** Pin or clear an entity's Dunbar tier. tier=null clears the pin. */
+export function updateEntityDunbarTier(
+  entityId: string,
+  tier: number | null,
+): Promise<DunbarTierOverrideResponse> {
+  return apiFetch<DunbarTierOverrideResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/dunbar-tier`,
+    { method: "PATCH", body: JSON.stringify({ tier }) },
+  );
 }
 
 /** Link a contact to an entity. */
