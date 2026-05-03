@@ -1,45 +1,31 @@
-"""CI guardrail: _apply_chronicler_schema DDL must stay in sync with Alembic migrations.
+"""Contract: chronicler schema-drift guardrails (RFC 0014 §D5, bu-pylew).
 
-This test catches drift between the inline DDL helper used by the
-``roster/chronicler/tests/test_storage_integration.py`` fixture and the
-canonical Alembic migration chain for the chronicler butler.
+Guards two related drift surfaces:
 
-Background
-----------
-Two near-misses in one PR cycle showed that the manual-duplication pattern is
-fragile:
-- ``watermark_id`` was missing from the inline DDL after migration 005 landed.
-- ``carryover`` was missing after migration 006 landed.
+1. **Inline DDL drift** — ``BUTLER_SESSIONS_COLUMNS`` in
+   ``roster/chronicler/tests/_inline_ddl.py`` must not reference columns
+   absent from the canonical production ``core.sessions`` migration.
+   (Promoted from tests/chronicler/test_inline_ddl_drift.py [bu-m564i])
 
-A short-term docstring warning was added in PR #1222.  This test is the
-durable long-term fix: CI catches drift automatically instead of relying on
-reviewer attention.
+2. **Alembic migration drift** — The inline DDL applied by
+   ``_apply_chronicler_schema`` must stay in column-sync with the full
+   Alembic chronicler migration chain.
+   (Promoted from tests/chronicler/test_schema_drift.py [bu-m564i])
 
-Mechanism
----------
-1. Apply the inline DDL (``_apply_chronicler_schema``) to a fresh DB (DB-A).
-2. Apply the full Alembic chronicler migration chain to a second fresh DB (DB-B).
-3. Query ``information_schema.columns`` for every BASE TABLE in the ``public``
-   schema of each DB.
-4. Report any table in DB-A that is absent from DB-B (unexpected gap).
-5. For every table that is common to both DBs, compare column sets.
-6. Fail with a clear diff message if any column is present in one DB but not
-   the other.
-
-Note: the inline DDL deliberately omits ``tier2_cache`` (migration 004) and
-other tables it does not need for storage integration testing.  Tables present
-only in DB-B (the migration chain) are ignored — only the tables the inline
-DDL creates are checked.
-
-Requires Docker.  Marked ``integration`` and skip-guarded in ``roster/conftest.py``.
+Background — both tests guard against the same class of failure:
+PR #1222 (bu-fkqv0 / bu-8orvr cycle) hit two near-misses where manual DDL
+duplication silently diverged from the migration chain (missing
+``watermark_id`` after migration 005, missing ``carryover`` after 006).
 """
 
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import uuid
 from collections import defaultdict
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -48,22 +34,159 @@ from sqlalchemy import create_engine, text
 from butlers.testing.migration import create_migration_db
 
 # ---------------------------------------------------------------------------
-# Constants
+# Paths
 # ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The canonical production migration that creates core.sessions
+_FOUNDATION_MIGRATION = _REPO_ROOT / "alembic" / "versions" / "core" / "core_001_foundation.py"
+
+# The _inline_ddl module (imported as Python to avoid parsing overhead)
+_INLINE_DDL_MODULE = _REPO_ROOT / "roster" / "chronicler" / "tests" / "_inline_ddl.py"
 
 _CHRONICLER_MIGRATION_CHAIN = "chronicler"
 
 docker_available = shutil.which("docker") is not None
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
-]
+pytestmark = pytest.mark.contract
+
+# ---------------------------------------------------------------------------
+# ── Part 1: BUTLER_SESSIONS_COLUMNS vs production core.sessions ─────────────
+# ---------------------------------------------------------------------------
+
+
+def _parse_production_sessions_columns() -> frozenset[str]:
+    """Extract the column names from the CREATE TABLE sessions statement.
+
+    Parses ``core_001_foundation.py`` to find the canonical list of columns
+    defined for ``core.sessions``.  Uses parenthesis-depth tracking so the
+    parser is not confused by column-level DEFAULT expressions containing ``(``.
+
+    Returns:
+        Frozenset of lowercase column names defined in the production schema.
+
+    Raises:
+        ValueError: If the CREATE TABLE sessions block cannot be found.
+    """
+    source = _FOUNDATION_MIGRATION.read_text(encoding="utf-8")
+
+    needle = "CREATE TABLE IF NOT EXISTS sessions ("
+    start = source.find(needle)
+    if start == -1:
+        raise ValueError(
+            f"Could not locate 'CREATE TABLE IF NOT EXISTS sessions (' in "
+            f"{_FOUNDATION_MIGRATION}.  Has the migration been renamed?"
+        )
+
+    # Advance to the opening paren of the column list.
+    paren_pos = start + len(needle) - 1  # position of the '(' in the needle
+    depth = 1
+    i = paren_pos + 1
+    while i < len(source) and depth > 0:
+        if source[i] == "(":
+            depth += 1
+        elif source[i] == ")":
+            depth -= 1
+        i += 1
+
+    ddl_body = source[paren_pos + 1 : i - 1]
+
+    # Each non-blank, non-constraint line starts with the column name.
+    _CONSTRAINT_KEYWORDS = frozenset({"primary", "foreign", "unique", "check", "constraint"})
+    columns: list[str] = []
+    for raw_line in ddl_body.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        m = re.match(r"^([a-z_][a-z0-9_]*)", line, re.IGNORECASE)
+        if m and m.group(1).lower() not in _CONSTRAINT_KEYWORDS:
+            columns.append(m.group(1).lower())
+
+    return frozenset(columns)
+
+
+def test_butler_sessions_columns_is_subset_of_production_schema() -> None:
+    """BUTLER_SESSIONS_COLUMNS must not reference columns absent from production.
+
+    Parses the canonical column list from ``core_001_foundation.py`` and
+    verifies that every entry in ``BUTLER_SESSIONS_COLUMNS`` exists in
+    production.
+
+    The fake table is an intentional subset — production may have more columns
+    than the fake table, and that is fine.  Only phantom columns (present in
+    fake but absent from production) cause a failure.
+
+    FAILS when a column is removed from the production migration but still
+    listed in ``BUTLER_SESSIONS_COLUMNS``.
+
+    To fix: remove the phantom column from both ``BUTLER_SESSIONS_COLUMNS`` and
+    the DDL returned by ``make_sessions_table_ddl()`` in
+    ``roster/chronicler/tests/_inline_ddl.py``.
+    """
+    # Import the constant directly; keeps the test independent of sys.path tricks.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_inline_ddl", _INLINE_DDL_MODULE)
+    assert spec is not None and spec.loader is not None, (
+        f"Could not locate _inline_ddl module at {_INLINE_DDL_MODULE}"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+
+    butler_columns: tuple[str, ...] = module.BUTLER_SESSIONS_COLUMNS
+
+    production_columns = _parse_production_sessions_columns()
+
+    phantom_columns = sorted(col for col in butler_columns if col.lower() not in production_columns)
+
+    if phantom_columns:
+        raise AssertionError(
+            "BUTLER_SESSIONS_COLUMNS contains column(s) that do NOT exist in the "
+            "production core.sessions migration:\n"
+            + "".join(f"  - {col}\n" for col in phantom_columns)
+            + "\n"
+            "These are phantom columns that would silently break if the fake "
+            "sessions table DDL were used against a real DB.\n"
+            "\n"
+            "Fix: remove phantom columns from BUTLER_SESSIONS_COLUMNS and from "
+            "make_sessions_table_ddl() in "
+            "roster/chronicler/tests/_inline_ddl.py, or add them to the "
+            "production migration (core_001_foundation.py) if they are genuinely "
+            "new columns."
+        )
+
+
+def test_production_sessions_columns_parseable() -> None:
+    """Sanity-check: the production column parser returns a non-empty result.
+
+    Guards against silent parser failures that would make the drift detector
+    vacuously pass (empty production set = no phantom columns reported).
+
+    Verifies that the mandatory core columns are present in the parsed result.
+    """
+    production_columns = _parse_production_sessions_columns()
+
+    # These columns must always be present in the production schema.
+    _MANDATORY_COLUMNS = frozenset(
+        {"id", "prompt", "trigger_source", "started_at", "completed_at", "request_id"}
+    )
+    missing_mandatory = sorted(_MANDATORY_COLUMNS - production_columns)
+    assert not missing_mandatory, (
+        "Production sessions column parser returned incomplete results; "
+        f"missing expected columns: {missing_mandatory!r}.  "
+        "This likely means the parser is broken — check "
+        f"{_FOUNDATION_MIGRATION}."
+    )
+
+    assert len(production_columns) >= len(_MANDATORY_COLUMNS), (
+        f"Production sessions column parser returned only {len(production_columns)} "
+        f"columns; expected at least {len(_MANDATORY_COLUMNS)}.  Parser may be broken."
+    )
 
 
 # ---------------------------------------------------------------------------
-# Inline DDL — copied verbatim from
-# roster/chronicler/tests/test_storage_integration.py _apply_chronicler_schema
+# ── Part 2: inline DDL vs Alembic migration chain (requires Docker) ──────────
 # ---------------------------------------------------------------------------
 
 
@@ -195,11 +318,6 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
     """)
 
 
-# ---------------------------------------------------------------------------
-# Schema introspection helpers
-# ---------------------------------------------------------------------------
-
-
 def _get_table_columns(db_url: str) -> dict[str, frozenset[str]]:
     """Return {table_name: frozenset(column_names)} for all BASE TABLEs in public schema."""
     engine = create_engine(db_url)
@@ -227,11 +345,17 @@ def _get_table_columns(db_url: str) -> dict[str, frozenset[str]]:
     return {t: frozenset(cols) for t, cols in table_cols.items()}
 
 
-# ---------------------------------------------------------------------------
-# Test
-# ---------------------------------------------------------------------------
+async def _run_inline_ddl(dsn: str) -> None:
+    """Connect to the target DB via DSN and apply the inline chronicler DDL."""
+    conn = await asyncpg.connect(dsn=dsn)
+    try:
+        await _apply_inline_ddl(conn)
+    finally:
+        await conn.close()
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_inline_ddl_matches_alembic_migration_chain(postgres_container: object) -> None:
     """Column sets for shared tables must match between inline DDL and migration chain.
 
@@ -247,6 +371,7 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: object) 
     identifies the exact table and missing column so the fix is unambiguous.
     """
     from alembic import command as alembic_command
+
     from butlers.migrations import _build_alembic_config
 
     # ── Provision DB-A: inline DDL ────────────────────────────────────────
@@ -306,17 +431,3 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: object) 
             "_apply_chronicler_schema to match the migration chain.\n"
             "Drift detected:\n" + "\n".join(drift_lines)
         )
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
-
-
-async def _run_inline_ddl(dsn: str) -> None:
-    """Connect to the target DB via DSN and apply the inline chronicler DDL."""
-    conn = await asyncpg.connect(dsn=dsn)
-    try:
-        await _apply_inline_ddl(conn)
-    finally:
-        await conn.close()
