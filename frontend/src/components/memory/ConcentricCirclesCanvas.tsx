@@ -24,6 +24,7 @@ import {
   easeOutExpo,
   getInitials,
   matchesSearch,
+  OWNER_COLOR,
   TIER_BADGE_ANGLES,
   TIER_NAMES,
   TIER_RADIUS_FRACTIONS,
@@ -388,18 +389,19 @@ export function ConcentricCirclesCanvas({
                 cy={cy}
                 r={r}
                 fill={color}
-                fillOpacity={0.04}
+                fillOpacity={0.07}
                 stroke={color}
                 strokeWidth={0.75}
-                strokeOpacity={0.4}
+                strokeOpacity={0.6}
               />
               <text
                 x={cx}
                 y={cy - r + 12}
                 textAnchor="middle"
                 fontSize={9}
+                fontWeight="700"
                 fill={color}
-                opacity={0.7}
+                opacity={1.0}
               >
                 {TIER_NAMES[tier]} ({count})
               </text>
@@ -415,9 +417,9 @@ export function ConcentricCirclesCanvas({
             cx={cx}
             cy={cy}
             r={maxR * 0.07}
-            fill="var(--role-owner)"
+            fill={OWNER_COLOR}
             fillOpacity={0.2}
-            stroke="var(--role-owner)"
+            stroke={OWNER_COLOR}
             strokeWidth={1.5}
           />
           <text
@@ -427,7 +429,7 @@ export function ConcentricCirclesCanvas({
             dominantBaseline="central"
             fontSize={9}
             fontWeight="700"
-            fill="var(--role-owner)"
+            fill={OWNER_COLOR}
           >
             {getInitials(ownerName)}
           </text>
@@ -437,8 +439,8 @@ export function ConcentricCirclesCanvas({
             textAnchor="middle"
             dominantBaseline="hanging"
             fontSize={8}
-            fill="currentColor"
-            opacity={0.7}
+            fill={OWNER_COLOR}
+            opacity={0.85}
           >
             You
           </text>
