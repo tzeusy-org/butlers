@@ -14,6 +14,7 @@ scope arguments, and feature debates. When in doubt, start here.
 | 3 | [v1.md](v1.md) | What ships in v1 and what gets deferred |
 | 4 | [security.md](security.md) | Trust model and threat boundaries |
 | 5 | [development.md](development.md) | How work gets done on this project |
+| 6 | [design-language.md](design-language.md) | What the dashboard's design language is, what is drifting, and the doctrine for an `/impeccable` redesign |
 
 ## How to Use These
 
@@ -22,6 +23,7 @@ scope arguments, and feature debates. When in doubt, start here.
 - **Worried about security?** Check `security.md` for the trust model.
 - **Starting development?** Check `development.md` for workflow principles.
 - **Arguing about scope?** `v1.md` is the boundary. If it is not listed, it waits.
+- **Touching the dashboard?** Read `design-language.md` before adding chrome, tokens, or page archetypes.
 
 ## What These Are Not
 
