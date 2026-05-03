@@ -73,7 +73,9 @@ def _make_db_endpoint_mock(*, fail_at=None, schema_rows=None, table_rows=None):
         {"schema_name": "general", "size_bytes": 512 * 1024, "table_count": 5},
         {"schema_name": "health", "size_bytes": 256 * 1024, "table_count": 3},
     ]
-    table_rows = table_rows or [{"schema_name": "general", "table_name": "sessions", "size_bytes": 400 * 1024}]
+    table_rows = table_rows or [
+        {"schema_name": "general", "table_name": "sessions", "size_bytes": 400 * 1024}
+    ]
     pool = AsyncMock()
 
     async def _fetchval(sql, *args):
@@ -143,7 +145,14 @@ async def test_backups_always_200_with_degraded_payload():
 
 def _make_egress_db(*, has_owner=True, audit_rows=None, owner_fails=False, audit_fails=False):
     if audit_rows is None and has_owner:
-        audit_rows = [{"operation": "llm_api_call", "last_seen_at": _NOW, "total_calls": 42, "first_seen_at": _NOW}]
+        audit_rows = [
+            {
+                "operation": "llm_api_call",
+                "last_seen_at": _NOW,
+                "total_calls": 42,
+                "first_seen_at": _NOW,
+            }
+        ]
     elif audit_rows is None:
         audit_rows = []
 
@@ -194,9 +203,24 @@ async def test_egress_403_when_owner_query_fails():
 async def test_egress_happy_path_actor_mapping_and_aggregation():
     """llm_api_call maps to anthropic.claude; duplicate rows aggregate total_calls."""
     audit_rows = [
-        {"operation": "llm_api_call", "last_seen_at": _NOW, "total_calls": 5, "first_seen_at": _NOW},
-        {"operation": "llm_api_call", "last_seen_at": _NOW, "total_calls": 3, "first_seen_at": _NOW},
-        {"operation": "some_exotic_op", "last_seen_at": _NOW, "total_calls": 1, "first_seen_at": _NOW},
+        {
+            "operation": "llm_api_call",
+            "last_seen_at": _NOW,
+            "total_calls": 5,
+            "first_seen_at": _NOW,
+        },
+        {
+            "operation": "llm_api_call",
+            "last_seen_at": _NOW,
+            "total_calls": 3,
+            "first_seen_at": _NOW,
+        },
+        {
+            "operation": "some_exotic_op",
+            "last_seen_at": _NOW,
+            "total_calls": 1,
+            "first_seen_at": _NOW,
+        },
     ]
     mock_db = _make_egress_db(has_owner=True, audit_rows=audit_rows)
     async with httpx.AsyncClient(
@@ -214,7 +238,14 @@ async def test_egress_happy_path_actor_mapping_and_aggregation():
 
 async def test_egress_catalog_covers_from_oldest():
     earliest = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
-    audit_rows = [{"operation": "llm_api_call", "last_seen_at": _NOW, "total_calls": 1, "first_seen_at": earliest}]
+    audit_rows = [
+        {
+            "operation": "llm_api_call",
+            "last_seen_at": _NOW,
+            "total_calls": 1,
+            "first_seen_at": earliest,
+        }
+    ]
     mock_db = _make_egress_db(has_owner=True, audit_rows=audit_rows)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
@@ -237,8 +268,14 @@ async def test_egress_503_when_audit_fails():
 # ---------------------------------------------------------------------------
 
 
-def _make_heartbeat_db(*, registry_rows=None, butler_names=None, active_count=0,
-                       registry_fails=False, session_fails=False):
+def _make_heartbeat_db(
+    *,
+    registry_rows=None,
+    butler_names=None,
+    active_count=0,
+    registry_fails=False,
+    session_fails=False,
+):
     registry_rows = registry_rows or [{"name": "general", "last_seen_at": _NOW}]
     butler_names = butler_names or ["general"]
 
@@ -282,7 +319,12 @@ async def test_heartbeat_happy_path_fields():
     general = next(b for b in butlers if b["name"] == "general")
     assert general["active_session_count"] == 3
     assert general["heartbeat_age_seconds"] >= 0
-    for field in ("last_heartbeat_at", "last_session_at", "active_session_count", "heartbeat_age_seconds"):
+    for field in (
+        "last_heartbeat_at",
+        "last_session_at",
+        "active_session_count",
+        "heartbeat_age_seconds",
+    ):
         assert field in general
 
 

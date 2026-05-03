@@ -24,13 +24,19 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("body,expected_redacted,expected_kept", [
-    ({"type": "email", "value": "secret@example.com", "password": "x", "token": "t"},
-     ["value", "password", "token"], ["type"]),
-    ({"name": "Alice", "is_primary": False}, [], ["name", "is_primary"]),
-    ({}, [], []),
-    ({"Password": "abc", "API_KEY": "key"}, ["Password", "API_KEY"], []),
-])
+@pytest.mark.parametrize(
+    "body,expected_redacted,expected_kept",
+    [
+        (
+            {"type": "email", "value": "secret@example.com", "password": "x", "token": "t"},
+            ["value", "password", "token"],
+            ["type"],
+        ),
+        ({"name": "Alice", "is_primary": False}, [], ["name", "is_primary"]),
+        ({}, [], []),
+        ({"Password": "abc", "API_KEY": "key"}, ["Password", "API_KEY"], []),
+    ],
+)
 def test_redact_body(body, expected_redacted, expected_kept):
     result = redact_body(body)
     for k in expected_redacted:

@@ -261,7 +261,11 @@ async def test_scope_widening_unions_granted_scopes(app):
         ) as client:
             resp = await client.get(
                 "/api/oauth/google/start",
-                params={"redirect": "false", "scope_set": "health", "account_hint": "u@example.com"},
+                params={
+                    "redirect": "false",
+                    "scope_set": "health",
+                    "account_hint": "u@example.com",
+                },
             )
     assert resp.status_code == 200
     scopes = set(_extract_scope_param(resp.json()["authorization_url"]))
@@ -353,22 +357,34 @@ async def test_oauth_status_returns_google_structure(app):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("val,expected", [
-    ("1", True), ("true", True), ("TRUE", True), ("yes", True),
-    ("0", False), ("false", False), ("no", False), ("", False),
-])
+@pytest.mark.parametrize(
+    "val,expected",
+    [
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("", False),
+    ],
+)
 def test_is_google_health_test_mode(monkeypatch, val, expected):
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_TEST_MODE", val)
     assert _is_google_health_test_mode() is expected
 
 
-@pytest.mark.parametrize("scope,expected", [
-    ("https://www.googleapis.com/auth/googlehealth.readings", True),
-    ("https://www.googleapis.com/auth/fitness.activity.read", True),
-    ("https://www.googleapis.com/auth/gmail.readonly openid email", False),
-    (None, False),
-    ("", False),
-])
+@pytest.mark.parametrize(
+    "scope,expected",
+    [
+        ("https://www.googleapis.com/auth/googlehealth.readings", True),
+        ("https://www.googleapis.com/auth/fitness.activity.read", True),
+        ("https://www.googleapis.com/auth/gmail.readonly openid email", False),
+        (None, False),
+        ("", False),
+    ],
+)
 def test_has_health_scope(scope, expected):
     assert _has_health_scope(scope) is expected
 
