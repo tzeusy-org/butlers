@@ -3463,6 +3463,17 @@ export interface LinkedContactSummary {
   phone: string | null;
 }
 
+/** One row of message activity for an entity, grouped by channel + thread. */
+export interface MessageThreadSummary {
+  source_channel: string | null;
+  thread_identity: string | null;
+  sender_identity: string | null;
+  message_count: number;
+  last_received_at: string | null;
+  last_direction: string | null;
+  last_snippet: string | null;
+}
+
 /**
  * Relationship-scoped entity detail from GET /api/relationship/entities/{id}.
  * Separate from the memory-butler EntityDetail — this surface is activity-focused.

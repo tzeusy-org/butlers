@@ -14,19 +14,10 @@ import {
   getEntityInteractions,
   getEntityLinkedContacts,
   getEntityLoans,
+  getEntityMessageThreads,
   getEntityNotes,
   getEntityTimeline,
-  getRelationshipEntity,
 } from "@/api/index.ts";
-
-/** Fetch a relationship entity by ID (aliases, roles, metadata). */
-export function useRelationshipEntity(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["relationship-entity", entityId],
-    queryFn: () => getRelationshipEntity(entityId!),
-    enabled: !!entityId,
-  });
-}
 
 /** Fetch all contacts linked to a relationship entity. */
 export function useEntityLinkedContacts(entityId: string | undefined) {
@@ -78,6 +69,15 @@ export function useEntityTimeline(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-timeline", entityId],
     queryFn: () => getEntityTimeline(entityId!),
+    enabled: !!entityId,
+  });
+}
+
+/** Fetch grouped message thread summaries for a relationship entity. */
+export function useEntityMessageThreads(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["entity-message-threads", entityId],
+    queryFn: () => getEntityMessageThreads(entityId!),
     enabled: !!entityId,
   });
 }

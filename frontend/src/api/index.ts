@@ -61,6 +61,7 @@ export {
   getEntityGifts,
   getEntityLoans,
   getEntityTimeline,
+  getEntityMessageThreads,
   getEpisode,
   getEpisodes,
   getFact,

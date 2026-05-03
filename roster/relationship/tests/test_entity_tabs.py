@@ -1032,3 +1032,136 @@ class TestTimelineJsonbMetadata:
         # Defensive fallback: string metadata is rendered as null per the spec's
         # "sparse metadata renders as null" rule rather than crashing.
         assert resp.json()[0]["metadata"] is None
+
+
+# ---------------------------------------------------------------------------
+# Message threads endpoint (bu-message-threads)
+# ---------------------------------------------------------------------------
+#
+# GET /api/relationship/entities/{entity_id}/message-threads aggregates
+# switchboard.message_inbox rows whose source_sender_identity matches one of
+# the entity's contact identifiers. The endpoint must:
+#   - 404 when the entity is missing
+#   - return [] when no contact identifiers are reachable
+#   - return [] when the switchboard pool is not registered (graceful)
+#   - return grouped summaries when threads match
+# ---------------------------------------------------------------------------
+
+
+def _build_app_with_dual_pools(
+    *,
+    entity_exists: bool = True,
+    identifier_rows: list | None = None,
+    thread_rows: list | None = None,
+    switchboard_available: bool = True,
+) -> tuple[FastAPI, AsyncMock, AsyncMock]:
+    """Wire an app with separate relationship and switchboard pools.
+
+    Returns the app plus the two pools so tests can assert on either.
+    """
+    rel_pool = AsyncMock()
+    rel_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+    rel_pool.fetch = AsyncMock(return_value=identifier_rows or [])
+
+    sw_pool = AsyncMock()
+    sw_pool.fetch = AsyncMock(return_value=thread_rows or [])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+
+    def _pool_lookup(name: str):
+        if name == "switchboard":
+            if not switchboard_available:
+                raise KeyError("switchboard")
+            return sw_pool
+        return rel_pool
+
+    mock_db.pool.side_effect = _pool_lookup
+
+    app = create_app()
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
+
+    return app, rel_pool, sw_pool
+
+
+class TestEntityMessageThreads:
+    """GET /entities/{id}/message-threads — aggregated switchboard activity."""
+
+    async def test_returns_404_when_entity_missing(self):
+        app, _, _ = _build_app_with_dual_pools(entity_exists=False)
+        resp = await _get(app, f"/api/relationship/entities/{_MISSING_ENT_ID}/message-threads")
+        assert resp.status_code == 404
+
+    async def test_returns_empty_when_no_identifiers(self):
+        app, _, _ = _build_app_with_dual_pools(entity_exists=True, identifier_rows=[])
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/message-threads")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_returns_empty_when_switchboard_pool_unavailable(self):
+        # Identifiers exist but switchboard pool is not registered. Endpoint
+        # must degrade gracefully to an empty list, not 500.
+        identifier_rows = [{"value": "alice@example.com"}]
+        app, _, _ = _build_app_with_dual_pools(
+            entity_exists=True,
+            identifier_rows=identifier_rows,
+            switchboard_available=False,
+        )
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/message-threads")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_returns_summaries_when_threads_match(self):
+        identifier_rows = [{"value": "alice@example.com"}, {"value": "12345"}]
+        thread_rows = [
+            {
+                "source_channel": "telegram",
+                "thread_identity": "chat-99",
+                "sender_identity": "12345",
+                "last_direction": "inbound",
+                "last_received_at": _NOW,
+                "last_snippet": "see you tomorrow",
+                "message_count": 7,
+            },
+            {
+                "source_channel": "email",
+                "thread_identity": None,
+                "sender_identity": "alice@example.com",
+                "last_direction": "outbound",
+                "last_received_at": _EARLIER,
+                "last_snippet": None,
+                "message_count": 1,
+            },
+        ]
+        app, _, sw_pool = _build_app_with_dual_pools(
+            entity_exists=True,
+            identifier_rows=identifier_rows,
+            thread_rows=thread_rows,
+        )
+        resp = await _get(app, f"/api/relationship/entities/{_ENT_ID}/message-threads")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 2
+        assert body[0]["source_channel"] == "telegram"
+        assert body[0]["message_count"] == 7
+        assert body[0]["last_snippet"] == "see you tomorrow"
+        assert body[1]["source_channel"] == "email"
+        assert body[1]["last_snippet"] is None
+
+        # Verify candidates were forwarded to the switchboard query.
+        sw_call = sw_pool.fetch.call_args
+        sw_candidates = sw_call[0][1]
+        assert "alice@example.com" in sw_candidates
+        assert "12345" in sw_candidates
+
+    async def test_limit_clamped_to_100(self):
+        app, _, _ = _build_app_with_dual_pools(entity_exists=True)
+        resp = await _get(
+            app,
+            f"/api/relationship/entities/{_ENT_ID}/message-threads",
+            limit=500,
+        )
+        assert resp.status_code == 422

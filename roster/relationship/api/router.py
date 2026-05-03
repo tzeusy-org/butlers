@@ -78,6 +78,7 @@ if _models_path.exists():
         EntityLoan = _models_module.EntityLoan
         EntityTimelineItem = _models_module.EntityTimelineItem
         LinkedContactSummary = _models_module.LinkedContactSummary
+        MessageThreadSummary = _models_module.MessageThreadSummary
 
 logger = logging.getLogger(__name__)
 
@@ -2675,6 +2676,133 @@ async def list_entity_linked_contacts(
             full_name=r["full_name"],
             email=r["email"],
             phone=r["phone"],
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/message-threads
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/entities/{entity_id}/message-threads",
+    response_model=list[MessageThreadSummary],
+)
+async def list_entity_message_threads(
+    entity_id: UUID,
+    limit: int = Query(20, ge=1, le=100),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[MessageThreadSummary]:
+    """Aggregate message activity for an entity, grouped by channel + thread.
+
+    Resolves the entity's linked contacts → their ``public.contact_info``
+    identifiers → matches against ``request_context ->> 'source_sender_identity'``
+    in ``switchboard.message_inbox``. Groups by (source_channel, thread_identity)
+    ordered by recency.
+
+    Returns ``[]`` when:
+    - the entity has no linked contacts with reachable identifiers,
+    - the switchboard pool is not registered (cross-pool access unavailable),
+    - or no message_inbox rows match.
+
+    Returns 404 if the entity does not exist.
+    """
+    pool = _pool(db)
+    await _assert_entity_exists(pool, entity_id)
+
+    # Collect candidate sender identifiers from linked contacts' contact_info
+    # plus the entity's own entity_info (some channels store sender identity
+    # there for owner-attached accounts).
+    identifiers = await pool.fetch(
+        """
+        SELECT DISTINCT ci.value
+        FROM public.contact_info ci
+        JOIN public.contacts c ON c.id = ci.contact_id
+        WHERE c.entity_id = $1
+          AND c.archived_at IS NULL
+          AND ci.value IS NOT NULL
+          AND ci.secured = false
+        UNION
+        SELECT DISTINCT ei.value
+        FROM public.entity_info ei
+        WHERE ei.entity_id = $1
+          AND ei.value IS NOT NULL
+          AND ei.secured = false
+        """,
+        entity_id,
+    )
+    candidates = [r["value"] for r in identifiers if r["value"]]
+    if not candidates:
+        return []
+
+    try:
+        sw_pool = db.pool("switchboard")
+    except KeyError:
+        # Switchboard pool unregistered (e.g. dev without ingestion). Graceful empty.
+        return []
+
+    try:
+        rows = await sw_pool.fetch(
+            """
+            WITH matches AS (
+                SELECT
+                    request_context ->> 'source_channel'        AS source_channel,
+                    request_context ->> 'source_thread_identity' AS thread_identity,
+                    request_context ->> 'source_sender_identity' AS sender_identity,
+                    direction,
+                    received_at,
+                    normalized_text
+                FROM message_inbox
+                WHERE request_context ->> 'source_sender_identity' = ANY($1::text[])
+            ),
+            ranked AS (
+                SELECT
+                    source_channel,
+                    thread_identity,
+                    sender_identity,
+                    direction,
+                    received_at,
+                    normalized_text,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY source_channel, thread_identity
+                        ORDER BY received_at DESC
+                    ) AS rn,
+                    COUNT(*) OVER (
+                        PARTITION BY source_channel, thread_identity
+                    ) AS message_count
+                FROM matches
+            )
+            SELECT
+                source_channel,
+                thread_identity,
+                sender_identity,
+                direction       AS last_direction,
+                received_at     AS last_received_at,
+                normalized_text AS last_snippet,
+                message_count
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY last_received_at DESC NULLS LAST
+            LIMIT $2
+            """,
+            candidates,
+            limit,
+        )
+    except asyncpg.PostgresError as exc:
+        logger.warning("message-threads lookup failed for entity %s: %s", entity_id, exc)
+        return []
+
+    return [
+        MessageThreadSummary(
+            source_channel=r["source_channel"],
+            thread_identity=r["thread_identity"],
+            sender_identity=r["sender_identity"],
+            message_count=int(r["message_count"]),
+            last_received_at=r["last_received_at"],
+            last_direction=r["last_direction"],
+            last_snippet=(r["last_snippet"] or None),
         )
         for r in rows
     ]

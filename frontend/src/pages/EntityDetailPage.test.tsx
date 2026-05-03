@@ -26,6 +26,15 @@ vi.mock("@/hooks/use-memory", () => ({
   useUnlinkContact: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
+// Relationship-scoped hooks consumed by the consolidated page
+vi.mock("@/hooks/use-entities", () => ({
+  useEntityTimeline: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityGifts: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityLoans: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityMessageThreads: vi.fn(() => ({ data: [], isLoading: false })),
+  useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
+}));
+
 vi.mock("@/hooks/use-contacts", () => ({
   useContacts: vi.fn(() => ({ data: { contacts: [] } })),
 }));
@@ -84,46 +93,39 @@ function renderPage(): string {
   );
 }
 
-describe("EntityDetailPage — relationship activity link", () => {
+describe("EntityDetailPage — identity hero", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
-  it("renders the relationship activity link for entity_type='person'", () => {
-    setEntityState({ ...BASE_ENTITY, entity_type: "person" });
+  it("renders the canonical name and Dunbar pulse tile", () => {
+    setEntityState({ ...BASE_ENTITY, canonical_name: "Alice Example" });
     const html = renderPage();
-    expect(html).toContain("View relationship activity");
-    expect(html).toContain("/butlers/relationship/entities/entity-001");
+    expect(html).toContain("Alice Example");
+    // Pulse strip is always shown
+    expect(html).toContain("Dunbar tier");
+    expect(html).toContain("Last interaction");
   });
 
-  it("does not render the relationship activity link for entity_type='organization'", () => {
-    setEntityState({ ...BASE_ENTITY, entity_type: "organization" });
+  it("renders the activity section heading", () => {
+    setEntityState(BASE_ENTITY);
     const html = renderPage();
-    expect(html).not.toContain("View relationship activity");
-  });
-
-  it("does not render the relationship activity link for entity_type='place'", () => {
-    setEntityState({ ...BASE_ENTITY, entity_type: "place" });
-    const html = renderPage();
-    expect(html).not.toContain("View relationship activity");
-  });
-
-  it("does not render the relationship activity link for entity_type='other'", () => {
-    setEntityState({ ...BASE_ENTITY, entity_type: "other" });
-    const html = renderPage();
-    expect(html).not.toContain("View relationship activity");
+    expect(html).toContain("Activity");
   });
 });
 
-describe("EntityDetailPage — google_oauth_refresh visibility", () => {
+describe("EntityDetailPage — google_oauth_refresh visibility (owner)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
 
+  // Owner with no linked_contact_id forces the practical drawer open,
+  // so the EntityInfoSection inside it is rendered and assertable.
   it("hides google_oauth_refresh entries for owner entities", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
+      linked_contact_id: null,
       entity_info: [
         {
           id: "info-1",
@@ -146,54 +148,31 @@ describe("EntityDetailPage — google_oauth_refresh visibility", () => {
 
     const html = renderPage();
 
-    // google_oauth_refresh row should not appear
     expect(html).not.toContain("Google OAuth Refresh");
-    // non-filtered entries still appear
     expect(html).toContain("@ownerhandle");
   });
 
-  it("shows google_oauth_refresh entries for non-owner entities", () => {
+  it("shows the settings link note for owner entities with the drawer open", () => {
     setEntityState({
       ...BASE_ENTITY,
-      roles: [],
-      entity_info: [
-        {
-          id: "info-1",
-          type: "google_oauth_refresh",
-          value: null,
-          label: null,
-          is_primary: false,
-          secured: true,
-        },
-      ],
+      roles: ["owner"],
+      linked_contact_id: null,
+      entity_info: [],
     });
 
     const html = renderPage();
 
-    // The label for the type should appear in the row
-    expect(html).toContain("Google OAuth Refresh");
-  });
-
-  it("shows settings link note for owner entities", () => {
-    setEntityState({ ...BASE_ENTITY, roles: ["owner"], entity_info: [] });
-
-    const html = renderPage();
-
-    // Note directing to /settings should be present
     expect(html).toContain("/settings");
     expect(html).toContain("Google OAuth");
   });
+});
 
-  it("does not show settings link note for non-owner entities", () => {
-    setEntityState({ ...BASE_ENTITY, roles: [], entity_info: [] });
-
-    const html = renderPage();
-
-    // The Google OAuth note should not appear for plain entities
-    expect(html).not.toContain("Google OAuth tokens are managed on companion");
+describe("EntityDetailPage — facts section", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
   });
 
-  it("shows fact provenance columns, session link, and load-more affordance", () => {
+  it("renders fact content with a session link and a load-more control", () => {
     setEntityState({
       ...BASE_ENTITY,
       fact_count: 2,
@@ -232,11 +211,10 @@ describe("EntityDetailPage — google_oauth_refresh visibility", () => {
 
     const html = renderPage();
 
-    expect(html).toContain("Source Butler");
-    expect(html).toContain("Session");
-    expect(html).toContain("general");
+    expect(html).toContain("Facts");
+    expect(html).toContain("coffee");
     expect(html).toContain("/sessions/2e513477-a432-4d68-952b-b95226df0aa1?butler=general");
-    expect(html).toContain("Load more");
-    expect(html).toContain("Showing 1 of 2");
+    expect(html).toContain("Load more facts");
+    expect(html).toContain("1 of 2");
   });
 });

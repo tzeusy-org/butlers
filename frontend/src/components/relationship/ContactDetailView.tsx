@@ -905,10 +905,10 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
           {contact.entity_id ? (
             <div className="flex gap-2 items-center mt-3">
               <Link
-                to={`/butlers/relationship/entities/${contact.entity_id}`}
+                to={`/entities/${contact.entity_id}`}
                 className="text-primary text-sm font-medium hover:underline"
               >
-                View entity activity →
+                View entity →
               </Link>
               <Button
                 variant="ghost"

@@ -460,3 +460,24 @@ class LinkedContactSummary(BaseModel):
     full_name: str
     email: str | None = None
     phone: str | None = None
+
+
+class MessageThreadSummary(BaseModel):
+    """One row of incoming/outgoing message activity for an entity.
+
+    Aggregates rows from ``switchboard.message_inbox`` whose
+    ``request_context ->> 'source_sender_identity'`` matches one of the
+    contact identifiers (email, phone, telegram chat id) attached to the
+    entity's linked contacts. One row per ``(source_channel, thread_identity)``.
+
+    Returns an empty list when the switchboard pool is not registered, or
+    when no identifiers match — graceful degrade.
+    """
+
+    source_channel: str | None = None
+    thread_identity: str | None = None
+    sender_identity: str | None = None
+    message_count: int
+    last_received_at: datetime | None = None
+    last_direction: str | None = None
+    last_snippet: str | None = None

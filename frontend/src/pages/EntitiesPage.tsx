@@ -850,7 +850,7 @@ export default function EntitiesPage() {
                                     variant="ghost"
                                     size="icon-xs"
                                     onClick={() =>
-                                      navigate(`/butlers/relationship/entities/${entity.id}`)
+                                      navigate(`/entities/${entity.id}`)
                                     }
                                   >
                                     <Activity />

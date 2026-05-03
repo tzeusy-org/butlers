@@ -300,7 +300,7 @@ describe("EntitiesPage Activity button", () => {
     },
   );
 
-  it("clicking enabled Activity button navigates to /butlers/relationship/entities/<id>", async () => {
+  it("clicking enabled Activity button navigates to /entities/<id>", async () => {
     renderWith(PERSON_ENTITY);
     const btn = getActivityButton(PERSON_ENTITY);
     expect(btn).toBeDefined();
@@ -310,9 +310,7 @@ describe("EntitiesPage Activity button", () => {
       await flush();
     });
 
-    expect(mockNavigate).toHaveBeenCalledWith(
-      `/butlers/relationship/entities/${PERSON_ENTITY.id}`,
-    );
+    expect(mockNavigate).toHaveBeenCalledWith(`/entities/${PERSON_ENTITY.id}`);
   });
 
   it.each(["organization", "place", "other"] as const)(
@@ -328,9 +326,7 @@ describe("EntitiesPage Activity button", () => {
         await flush();
       });
 
-      expect(mockNavigate).not.toHaveBeenCalledWith(
-        expect.stringContaining("/butlers/relationship/entities/"),
-      );
+      expect(mockNavigate).not.toHaveBeenCalled();
     },
   );
 });

@@ -38,8 +38,6 @@ import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
 import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
 import QaInvestigationsPage from './pages/QaInvestigationsPage.tsx'
 import ChroniclesPage from './pages/ChroniclesPage.tsx'
-import RelationshipEntityDetailPage from './pages/RelationshipEntityDetailPage.tsx'
-
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
 // Redirect /connectors/:connectorType/:endpointIdentity
@@ -52,6 +50,15 @@ function ConnectorDetailRedirect() {
   const qs = searchParams.toString()
   const target = `/ingestion/connectors/${connectorType}/${endpointIdentity}${qs ? `?${qs}` : ''}`
   return <Navigate to={target} replace />
+}
+
+// Redirect /butlers/relationship/entities/:entityId → /entities/:entityId
+// The relationship-scoped activity view has been folded into the unified
+// entity detail page.
+// eslint-disable-next-line react-refresh/only-export-components
+function RelationshipEntityRedirect() {
+  const { entityId } = useParams()
+  return <Navigate to={`/entities/${entityId ?? ''}`} replace />
 }
 
 export const router = createBrowserRouter(
@@ -90,10 +97,10 @@ export const router = createBrowserRouter(
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
         { path: '/education', element: <EducationPage /> },
-        // Relationship butler: entity activity page
+        // Relationship butler: legacy activity page redirects into the unified entity detail.
         {
           path: '/butlers/relationship/entities/:entityId',
-          element: <RelationshipEntityDetailPage />,
+          element: <RelationshipEntityRedirect />,
         },
         // Chronicler routes
         { path: '/chronicles', element: <ChroniclesPage /> },

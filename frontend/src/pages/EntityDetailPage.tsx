@@ -1,10 +1,30 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router";
-import { Check, ExternalLink, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Loader2,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
+import { format, formatDistanceToNow } from "date-fns";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-import type { ContactSummary, EntityInfoEntry } from "@/api/types";
+import type {
+  ContactSummary,
+  EntityGift,
+  EntityInfoEntry,
+  EntityLoan,
+  EntityTimelineItem,
+  Fact,
+  LinkedContactSummary,
+  MessageThreadSummary,
+} from "@/api/types";
 import {
   getTelegramSessionStatus,
   telegramSendCode,
@@ -31,6 +51,13 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useContacts } from "@/hooks/use-contacts";
+import {
+  useEntityGifts,
+  useEntityLinkedContacts,
+  useEntityLoans,
+  useEntityMessageThreads,
+  useEntityTimeline,
+} from "@/hooks/use-entities";
 import {
   useCreateEntityInfo,
   useDeleteEntityInfo,
@@ -1026,6 +1053,768 @@ function LinkedContactSection({
 }
 
 // ---------------------------------------------------------------------------
+// Pulse strip — three derived stat tiles surfaced at the top of the page
+// ---------------------------------------------------------------------------
+
+const _DUNBAR_LABEL: Record<number, string> = {
+  1: "Inner 5",
+  2: "Close 15",
+  3: "Sympathy 50",
+  4: "Active 150",
+  5: "Acquaintance",
+};
+
+function dunbarLabel(tier: number | null | undefined): string | null {
+  if (tier == null) return null;
+  return _DUNBAR_LABEL[tier] ?? `Tier ${tier}`;
+}
+
+function PulseStrip({
+  entityId,
+  dunbarTier,
+}: {
+  entityId: string;
+  dunbarTier: number | null;
+}) {
+  const { data: timelineItems, isLoading: timelineLoading } =
+    useEntityTimeline(entityId);
+  const { data: gifts } = useEntityGifts(entityId);
+  const { data: loans } = useEntityLoans(entityId);
+
+  const lastInteraction = useMemo(() => {
+    if (!timelineItems) return null;
+    return timelineItems.find(
+      (it: EntityTimelineItem) => it.kind === "interaction" && it.valid_at,
+    );
+  }, [timelineItems]);
+
+  // `now` is captured once at mount via lazy state init — Date.now() is impure
+  // and would trip react-hooks/purity inside useMemo. The cadence window only
+  // needs to be approximate, so a per-mount snapshot is fine.
+  const [mountedAt] = useState(() => Date.now());
+  const cadence30d = useMemo(() => {
+    if (!timelineItems) return null;
+    const cutoff = mountedAt - 30 * 24 * 60 * 60 * 1000;
+    return timelineItems.filter(
+      (it: EntityTimelineItem) =>
+        it.kind === "interaction" &&
+        it.valid_at &&
+        new Date(it.valid_at).getTime() >= cutoff,
+    ).length;
+  }, [timelineItems, mountedAt]);
+
+  const openLoops = useMemo(() => {
+    const giftOpen = (gifts ?? []).filter(
+      (g: EntityGift) =>
+        g.status && g.status !== "given" && g.status !== "thanked",
+    ).length;
+    const loanOpen = (loans ?? []).filter(
+      (l: EntityLoan) => l.settled !== "true",
+    ).length;
+    return giftOpen + loanOpen;
+  }, [gifts, loans]);
+
+  const tierLabel = dunbarLabel(dunbarTier);
+  const isLoading = timelineLoading;
+
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <PulseTile
+        label="Dunbar tier"
+        value={tierLabel ?? "Unranked"}
+        muted={tierLabel === null}
+      />
+      <PulseTile
+        label="Last interaction"
+        value={
+          isLoading
+            ? "..."
+            : lastInteraction?.valid_at
+              ? formatDistanceToNow(new Date(lastInteraction.valid_at), {
+                  addSuffix: true,
+                })
+              : "None recorded"
+        }
+        muted={!lastInteraction}
+      />
+      <PulseTile
+        label="Last 30 days"
+        value={
+          isLoading
+            ? "..."
+            : cadence30d === null || cadence30d === 0
+              ? "Quiet"
+              : `${cadence30d} interaction${cadence30d === 1 ? "" : "s"}`
+        }
+        muted={cadence30d === 0}
+      />
+      <PulseTile
+        label="Open loops"
+        value={
+          isLoading
+            ? "..."
+            : openLoops === 0
+              ? "None"
+              : `${openLoops} unresolved`
+        }
+        muted={openLoops === 0}
+        emphasis={openLoops > 0}
+      />
+    </div>
+  );
+}
+
+function PulseTile({
+  label,
+  value,
+  muted = false,
+  emphasis = false,
+}: {
+  label: string;
+  value: string;
+  muted?: boolean;
+  emphasis?: boolean;
+}) {
+  return (
+    <div
+      className={
+        "rounded-md border px-3 py-2.5 " +
+        (emphasis ? "bg-accent" : "bg-card")
+      }
+    >
+      <p className="text-muted-foreground text-[11px] uppercase tracking-wide">
+        {label}
+      </p>
+      <p
+        className={
+          "mt-1 text-sm font-medium leading-tight " +
+          (muted ? "text-muted-foreground" : "text-foreground")
+        }
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Activity timeline — single feed with filter pills, replaces the tabbed view
+// ---------------------------------------------------------------------------
+
+type TimelineFilter = "all" | "interaction" | "note" | "gift" | "loan" | "life_event";
+
+const _TIMELINE_FILTERS: { id: TimelineFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "interaction", label: "Interactions" },
+  { id: "note", label: "Notes" },
+  { id: "gift", label: "Gifts" },
+  { id: "loan", label: "Loans" },
+  { id: "life_event", label: "Life events" },
+];
+
+function timelineKindGlyph(kind: string): string {
+  switch (kind) {
+    case "interaction":
+      return "·";
+    case "note":
+      return "✎";
+    case "gift":
+      return "◇";
+    case "loan":
+      return "↻";
+    case "life_event":
+      return "★";
+    case "dunbar_tier_override":
+      return "○";
+    default:
+      return "•";
+  }
+}
+
+function ActivityTimeline({ entityId }: { entityId: string }) {
+  const { data: items, isLoading } = useEntityTimeline(entityId);
+  const [filter, setFilter] = useState<TimelineFilter>("all");
+
+  const counts = useMemo(() => {
+    const acc: Record<TimelineFilter, number> = {
+      all: items?.length ?? 0,
+      interaction: 0,
+      note: 0,
+      gift: 0,
+      loan: 0,
+      life_event: 0,
+    };
+    for (const it of items ?? []) {
+      if (it.kind in acc) {
+        acc[it.kind as TimelineFilter] += 1;
+      }
+    }
+    return acc;
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    if (!items) return [];
+    if (filter === "all") return items;
+    return items.filter((it) => it.kind === filter);
+  }, [items, filter]);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-lg font-semibold">Activity</h2>
+        <span className="text-muted-foreground text-xs">
+          {items ? `${items.length} entries` : ""}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {_TIMELINE_FILTERS.map((f) => {
+          const active = f.id === filter;
+          const count = counts[f.id];
+          const disabled = count === 0 && f.id !== "all";
+          return (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => setFilter(f.id)}
+              disabled={disabled}
+              className={
+                "rounded-full border px-3 py-1 text-xs transition-colors " +
+                (active
+                  ? "border-foreground bg-foreground text-background"
+                  : disabled
+                    ? "border-border text-muted-foreground/60 cursor-not-allowed"
+                    : "border-border text-muted-foreground hover:text-foreground hover:border-foreground")
+              }
+            >
+              {f.label}
+              {count > 0 && (
+                <span className={"ml-1.5 tabular-nums " + (active ? "" : "text-muted-foreground")}>
+                  {count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2 py-2">
+          {Array.from({ length: 4 }, (_, i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
+        <p className="text-muted-foreground py-8 text-center text-sm">
+          {filter === "all"
+            ? "No activity recorded yet."
+            : `No ${_TIMELINE_FILTERS.find((f) => f.id === filter)?.label.toLowerCase()} yet.`}
+        </p>
+      ) : (
+        <ul className="divide-y divide-border border-y">
+          {filtered.map((item) => (
+            <TimelineRow key={item.id} item={item} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function TimelineRow({ item }: { item: EntityTimelineItem }) {
+  const date = item.valid_at ? new Date(item.valid_at) : null;
+  const subtitle = item.predicate.startsWith("interaction_")
+    ? item.predicate.slice("interaction_".length).replaceAll("_", " ")
+    : item.predicate.replaceAll("_", " ");
+
+  return (
+    <li className="flex items-start gap-3 py-2.5">
+      <span
+        aria-hidden
+        className="text-muted-foreground mt-0.5 w-4 shrink-0 text-center text-sm"
+        title={item.kind}
+      >
+        {timelineKindGlyph(item.kind)}
+      </span>
+      <div className="min-w-0 flex-1">
+        {item.content && (
+          <p className="text-sm leading-snug">{item.content}</p>
+        )}
+        <p className="text-muted-foreground mt-0.5 text-xs capitalize">
+          {subtitle}
+        </p>
+      </div>
+      <span
+        className="text-muted-foreground shrink-0 text-xs tabular-nums"
+        title={date?.toLocaleString() ?? undefined}
+      >
+        {date ? formatDistanceToNow(date, { addSuffix: true }) : "—"}
+      </span>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Gifts and loans — structured panels, only render when non-empty
+// ---------------------------------------------------------------------------
+
+function GiftsPanel({ entityId }: { entityId: string }) {
+  const { data: gifts, isLoading } = useEntityGifts(entityId);
+  if (isLoading || !gifts || gifts.length === 0) return null;
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wide">
+          Gifts
+        </h3>
+        <span className="text-muted-foreground text-xs">{gifts.length}</span>
+      </div>
+      <ul className="space-y-1.5">
+        {gifts.map((gift) => (
+          <li
+            key={gift.id}
+            className="flex items-baseline gap-3 text-sm"
+          >
+            <span className="flex-1 truncate">{gift.description ?? "Unnamed gift"}</span>
+            {gift.occasion && (
+              <span className="text-muted-foreground text-xs">{gift.occasion}</span>
+            )}
+            {gift.status && (
+              <Badge variant="outline" className="text-[10px] capitalize">
+                {gift.status}
+              </Badge>
+            )}
+            {gift.created_at && (
+              <span className="text-muted-foreground text-xs tabular-nums">
+                {format(new Date(gift.created_at), "MMM d, yyyy")}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function LoansPanel({ entityId }: { entityId: string }) {
+  const { data: loans, isLoading } = useEntityLoans(entityId);
+  if (isLoading || !loans || loans.length === 0) return null;
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-baseline gap-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wide">
+          Loans
+        </h3>
+        <span className="text-muted-foreground text-xs">{loans.length}</span>
+      </div>
+      <ul className="space-y-1.5">
+        {loans.map((loan) => {
+          const settled = loan.settled === "true";
+          return (
+            <li
+              key={loan.id}
+              className="flex items-baseline gap-3 text-sm"
+            >
+              <span className="flex-1 truncate">
+                {loan.description ?? "Unspecified loan"}
+              </span>
+              {loan.direction && (
+                <span className="text-muted-foreground text-xs capitalize">
+                  {loan.direction}
+                </span>
+              )}
+              {loan.amount_cents && (
+                <span className="tabular-nums text-xs">
+                  {loan.currency ?? ""} {loan.amount_cents}
+                </span>
+              )}
+              <Badge
+                variant={settled ? "outline" : "secondary"}
+                className="text-[10px]"
+              >
+                {settled ? "settled" : "active"}
+              </Badge>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Message threads — grouped by channel + thread
+// ---------------------------------------------------------------------------
+
+function channelLabel(channel: string | null): string {
+  if (!channel) return "Unknown channel";
+  return channel.charAt(0).toUpperCase() + channel.slice(1);
+}
+
+function MessageThreadsSection({ entityId }: { entityId: string }) {
+  const { data: threads, isLoading } = useEntityMessageThreads(entityId);
+  if (isLoading) return null;
+  if (!threads || threads.length === 0) return null;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-lg font-semibold">Message threads</h2>
+        <span className="text-muted-foreground text-xs">
+          {threads.length}
+        </span>
+      </div>
+      <ul className="divide-y divide-border border-y">
+        {threads.map((t) => (
+          <MessageThreadRow key={`${t.source_channel}:${t.thread_identity}`} thread={t} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function MessageThreadRow({ thread }: { thread: MessageThreadSummary }) {
+  const date = thread.last_received_at
+    ? new Date(thread.last_received_at)
+    : null;
+  return (
+    <li className="flex items-start gap-3 py-2.5">
+      <Badge variant="outline" className="mt-0.5 shrink-0 text-[10px]">
+        {channelLabel(thread.source_channel)}
+      </Badge>
+      <div className="min-w-0 flex-1">
+        {thread.last_snippet && (
+          <p className="text-sm leading-snug line-clamp-2">
+            {thread.last_snippet}
+          </p>
+        )}
+        <p className="text-muted-foreground mt-0.5 text-xs">
+          {thread.message_count} message
+          {thread.message_count === 1 ? "" : "s"}
+          {thread.last_direction && ` · last ${thread.last_direction}`}
+          {thread.thread_identity && ` · thread ${thread.thread_identity}`}
+        </p>
+      </div>
+      <span
+        className="text-muted-foreground shrink-0 text-xs tabular-nums"
+        title={date?.toLocaleString() ?? undefined}
+      >
+        {date ? formatDistanceToNow(date, { addSuffix: true }) : ""}
+      </span>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Linked contacts (relationship butler) — surfaces other contacts on this entity
+// ---------------------------------------------------------------------------
+
+function LinkedContactsList({ entityId }: { entityId: string }) {
+  const { data: contacts, isLoading } = useEntityLinkedContacts(entityId);
+  if (isLoading || !contacts || contacts.length === 0) return null;
+
+  return (
+    <section className="space-y-2">
+      <h3 className="text-sm font-semibold uppercase tracking-wide">
+        Linked contacts
+      </h3>
+      <ul className="space-y-1.5">
+        {contacts.map((contact: LinkedContactSummary) => (
+          <li key={contact.id} className="flex items-baseline gap-3 text-sm">
+            <Link
+              to={`/contacts/${contact.id}`}
+              className="text-primary truncate font-medium hover:underline"
+            >
+              {contact.full_name}
+            </Link>
+            <span className="text-muted-foreground flex flex-1 gap-3 text-xs">
+              {contact.email && <span className="truncate">{contact.email}</span>}
+              {contact.phone && <span className="truncate">{contact.phone}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Facts section — grouped, lighter than the previous full-table layout
+// ---------------------------------------------------------------------------
+
+function _factGroupForPredicate(predicate: string): string {
+  if (predicate.startsWith("interaction_")) return "Interactions";
+  if (predicate.startsWith("preference_") || predicate === "preference") {
+    return "Preferences";
+  }
+  if (
+    predicate === "works_at" ||
+    predicate === "role" ||
+    predicate === "title" ||
+    predicate.startsWith("work_")
+  ) {
+    return "Work";
+  }
+  if (
+    predicate === "lives_in" ||
+    predicate === "born_in" ||
+    predicate === "from"
+  ) {
+    return "Place";
+  }
+  if (
+    predicate === "married_to" ||
+    predicate === "parent_of" ||
+    predicate === "child_of" ||
+    predicate === "sibling_of" ||
+    predicate === "friend_of" ||
+    predicate.startsWith("relationship_")
+  ) {
+    return "Relationships";
+  }
+  if (predicate === "contact_note" || predicate === "note") return "Notes";
+  if (predicate === "life_event") return "Life events";
+  if (predicate === "gift") return "Gifts";
+  if (predicate === "loan") return "Loans";
+  return "Other";
+}
+
+const _FACT_GROUP_ORDER = [
+  "Relationships",
+  "Work",
+  "Place",
+  "Preferences",
+  "Life events",
+  "Notes",
+  "Interactions",
+  "Gifts",
+  "Loans",
+  "Other",
+];
+
+function FactsSection({
+  entityId,
+  facts,
+  total,
+  hasMore,
+  isFetching,
+  onLoadMore,
+}: {
+  entityId: string;
+  facts: Fact[];
+  total: number;
+  hasMore: boolean;
+  isFetching: boolean;
+  onLoadMore: () => void;
+}) {
+  const grouped = useMemo(() => {
+    const map = new Map<string, Fact[]>();
+    for (const fact of facts) {
+      const group = _factGroupForPredicate(fact.predicate);
+      const list = map.get(group) ?? [];
+      list.push(fact);
+      map.set(group, list);
+    }
+    return _FACT_GROUP_ORDER
+      .map((g) => [g, map.get(g) ?? []] as const)
+      .filter(([, list]) => list.length > 0);
+  }, [facts]);
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="text-lg font-semibold">Facts</h2>
+        <span className="text-muted-foreground text-xs">
+          {facts.length} of {total}
+        </span>
+      </div>
+
+      {facts.length === 0 ? (
+        <p className="text-muted-foreground py-6 text-center text-sm">
+          No facts linked to this entity.
+        </p>
+      ) : (
+        <div className="space-y-5">
+          {grouped.map(([group, list]) => (
+            <div key={group} className="space-y-1.5">
+              <h3 className="text-muted-foreground text-xs font-medium uppercase tracking-wide">
+                {group}
+              </h3>
+              <ul className="divide-y divide-border border-y">
+                {list.map((fact) => (
+                  <FactRow key={fact.id} fact={fact} entityId={entityId} />
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {hasMore && (
+        <div className="flex justify-center pt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onLoadMore}
+            disabled={isFetching}
+          >
+            {isFetching ? "Loading..." : "Load more facts"}
+          </Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FactRow({ fact, entityId }: { fact: Fact; entityId: string }) {
+  const isIncoming =
+    fact.object_entity_id === entityId && fact.entity_id !== entityId;
+  const created = new Date(fact.created_at);
+
+  return (
+    <li className="grid grid-cols-[auto_1fr_auto] items-baseline gap-3 py-2 text-sm">
+      <span className="text-muted-foreground text-xs capitalize">
+        {fact.predicate.replaceAll("_", " ")}
+      </span>
+      <span className="min-w-0 truncate">
+        {isIncoming ? (
+          <>
+            <Link
+              to={`/entities/${fact.entity_id}`}
+              className="text-primary hover:underline"
+            >
+              {fact.entity_name ?? fact.subject}
+            </Link>
+            <span className="text-muted-foreground"> → this entity</span>
+          </>
+        ) : fact.object_entity_id ? (
+          <Link
+            to={`/entities/${fact.object_entity_id}`}
+            className="text-primary hover:underline"
+          >
+            {fact.object_entity_name ?? fact.content}
+          </Link>
+        ) : (
+          fact.content
+        )}
+      </span>
+      <span
+        className="text-muted-foreground shrink-0 text-xs tabular-nums"
+        title={created.toLocaleString()}
+      >
+        {format(created, "MMM d, yyyy")}
+        {fact.session_id && (
+          <Link
+            to={sessionDetailHref(fact.session_id, fact.source_butler)}
+            className="text-primary ml-2 hover:underline"
+            title={fact.session_id}
+          >
+            session
+          </Link>
+        )}
+      </span>
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Practical drawer — collapsed by default, holds admin-only sections
+// ---------------------------------------------------------------------------
+
+function PracticalDrawer({
+  entity,
+  forceOpen,
+  children,
+}: {
+  entity: { metadata: Record<string, unknown>; created_at: string; updated_at: string };
+  forceOpen: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(forceOpen);
+
+  return (
+    <section className="rounded-md border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="hover:bg-muted/40 flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors"
+      >
+        <span className="text-sm font-medium">
+          Practical details
+          {forceOpen && (
+            <span className="text-muted-foreground ml-2 text-xs">
+              (action needed)
+            </span>
+          )}
+        </span>
+        {open ? (
+          <ChevronDown className="text-muted-foreground h-4 w-4" />
+        ) : (
+          <ChevronRight className="text-muted-foreground h-4 w-4" />
+        )}
+      </button>
+      {open && (
+        <div className="space-y-4 border-t px-4 py-4">
+          {children}
+          <ProvenanceFooter entity={entity} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProvenanceFooter({
+  entity,
+}: {
+  entity: { metadata: Record<string, unknown>; created_at: string; updated_at: string };
+}) {
+  const sourceButler = entity.metadata?.source_butler;
+  const sourceScope = entity.metadata?.source_scope;
+  const _DISPLAY_EXCLUDED = new Set([
+    "source_butler",
+    "source_scope",
+    "unidentified",
+  ]);
+  const extraMetadata = Object.fromEntries(
+    Object.entries(entity.metadata).filter(([k]) => !_DISPLAY_EXCLUDED.has(k)),
+  );
+  const hasExtra = Object.keys(extraMetadata).length > 0;
+
+  return (
+    <div className="text-muted-foreground space-y-2 border-t pt-3 text-xs">
+      <div className="flex flex-wrap gap-x-6 gap-y-1">
+        {!!sourceButler && (
+          <span>
+            Source butler:{" "}
+            <span className="text-foreground font-medium">{String(sourceButler)}</span>
+          </span>
+        )}
+        {!!sourceScope && (
+          <span>
+            Scope:{" "}
+            <span className="text-foreground font-medium">{String(sourceScope)}</span>
+          </span>
+        )}
+        <span>Created {format(new Date(entity.created_at), "MMM d, yyyy")}</span>
+        <span>Updated {format(new Date(entity.updated_at), "MMM d, yyyy")}</span>
+      </div>
+      {hasExtra && (
+        <details>
+          <summary className="cursor-pointer text-xs hover:text-foreground">
+            Raw metadata
+          </summary>
+          <pre className="bg-muted mt-2 overflow-x-auto rounded p-3 text-[11px]">
+            {JSON.stringify(extraMetadata, null, 2)}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // EntityDetailPage
 // ---------------------------------------------------------------------------
 
@@ -1132,9 +1921,11 @@ export default function EntityDetailPage() {
     );
   };
 
+  const isOwner = entity?.roles?.includes("owner") ?? false;
+  const ownerNeedsSetup = isOwner && entity ? !entity.linked_contact_id : false;
+
   return (
-    <div className="space-y-6">
-      {/* Breadcrumbs */}
+    <div className="space-y-8">
       <Breadcrumbs
         items={[
           { label: "Entities", href: "/entities" },
@@ -1142,128 +1933,142 @@ export default function EntityDetailPage() {
         ]}
       />
 
-      {/* Loading */}
       {isLoading && (
         <div className="space-y-4">
           <Skeleton className="h-8 w-64" />
-          <Skeleton className="h-48 w-full" />
+          <Skeleton className="h-24 w-full" />
           <Skeleton className="h-64 w-full" />
         </div>
       )}
 
-      {/* Error */}
       {error && (
         <div className="text-destructive py-12 text-center text-sm">
           Failed to load entity. {(error as Error).message}
         </div>
       )}
 
-      {/* Content */}
-      {entity && (
+      {entity && entityId && (
         <>
-          {/* Header card */}
-          <Card>
-            <CardHeader>
-              <div className="flex flex-wrap items-center gap-3">
-                {editingName ? (
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={draftName}
-                      onChange={(e) => setDraftName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleSaveName();
-                        if (e.key === "Escape") setEditingName(false);
-                      }}
-                      className="h-9 w-64 text-lg font-semibold"
-                      autoFocus
-                    />
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={handleSaveName}
-                      disabled={updateEntity.isPending}
-                    >
-                      <Check className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => setEditingName(false)}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <CardTitle className="text-2xl">
-                      {entity.canonical_name}
-                    </CardTitle>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      onClick={handleStartEditName}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                )}
-                <Select
-                  value={entity.entity_type}
-                  onValueChange={(val) => {
-                    if (!entityId || val === entity.entity_type) return;
-                    updateEntity.mutate(
-                      { entityId, request: { entity_type: val } },
-                      {
-                        onSuccess: () => toast.success(`Type changed to ${val}`),
-                        onError: (err) =>
-                          toast.error(`Failed: ${(err as Error).message}`),
-                      },
-                    );
+          {/* Identity hero — name, type, badges, aliases, roles */}
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              {editingName ? (
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSaveName();
+                      if (e.key === "Escape") setEditingName(false);
+                    }}
+                    className="h-10 w-72 text-2xl font-semibold"
+                    autoFocus
+                  />
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={handleSaveName}
+                    disabled={updateEntity.isPending}
+                  >
+                    <Check className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => setEditingName(false)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-semibold leading-tight">
+                    {entity.canonical_name}
+                  </h1>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    onClick={handleStartEditName}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )}
+              <Select
+                value={entity.entity_type}
+                onValueChange={(val) => {
+                  if (!entityId || val === entity.entity_type) return;
+                  updateEntity.mutate(
+                    { entityId, request: { entity_type: val } },
+                    {
+                      onSuccess: () => toast.success(`Type changed to ${val}`),
+                      onError: (err) =>
+                        toast.error(`Failed: ${(err as Error).message}`),
+                    },
+                  );
+                }}
+              >
+                <SelectTrigger className="h-7 w-auto gap-1 rounded-full border-none bg-secondary px-2.5 py-0.5 text-xs font-medium">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {["person", "organization", "place", "other"].map((t) => (
+                    <SelectItem key={t} value={t} className="text-xs capitalize">
+                      {t}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {isOwner && (
+                <Badge variant="outline" className="text-xs">
+                  Owner
+                </Badge>
+              )}
+              {entity.unidentified && (
+                <Badge variant="outline" className="text-xs">
+                  Unidentified
+                </Badge>
+              )}
+              {entity.unidentified && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={promoteEntity.isPending}
+                  onClick={() => {
+                    if (!entityId) return;
+                    promoteEntity.mutate(entityId, {
+                      onSuccess: () => toast.success("Entity marked as confirmed."),
+                      onError: (err) =>
+                        toast.error(
+                          `Failed to confirm: ${err instanceof Error ? err.message : "Unknown error"}`,
+                        ),
+                    });
                   }}
                 >
-                  <SelectTrigger className="h-7 w-auto gap-1 text-xs font-medium border-none bg-secondary px-2.5 py-0.5 rounded-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {["person", "organization", "place", "other"].map((t) => (
-                      <SelectItem key={t} value={t} className="text-xs capitalize">
-                        {t}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {entity.roles?.includes("owner") && (
-                  <Badge
-                    style={{ backgroundColor: "#7c3aed", color: "#fff" }}
-                    className="text-xs"
-                  >
-                    Owner
-                  </Badge>
-                )}
-                {entity.unidentified && (
-                  <Badge
-                    style={{ backgroundColor: "#f59e0b", color: "#fff" }}
-                    className="text-xs"
-                  >
-                    Unidentified
-                  </Badge>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {/* Aliases */}
-              <div>
-                <p className="text-muted-foreground mb-1 text-sm font-medium">
+                  <Check className="mr-1 h-3.5 w-3.5" />
+                  {promoteEntity.isPending ? "Confirming..." : "Mark confirmed"}
+                </Button>
+              )}
+            </div>
+
+            {/* Aliases + roles in one tight row */}
+            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2">
+              <div className="flex items-baseline gap-2">
+                <span className="text-muted-foreground text-xs uppercase tracking-wide">
                   Aliases
-                </p>
-                <div className="flex flex-wrap gap-1.5 items-center">
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {entity.aliases.length === 0 && !addingAlias && (
+                    <span className="text-muted-foreground text-xs italic">none</span>
+                  )}
                   {entity.aliases.map((alias) => (
                     <Badge key={alias} variant="secondary" className="group/alias">
                       {alias}
                       <button
                         type="button"
-                        className="ml-1 opacity-0 group-hover/alias:opacity-100 transition-opacity"
+                        className="ml-1 opacity-0 transition-opacity group-hover/alias:opacity-100"
                         onClick={() => handleRemoveAlias(alias)}
                         title="Remove alias"
                       >
@@ -1305,7 +2110,7 @@ export default function EntityDetailPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-6 text-xs text-muted-foreground"
+                      className="text-muted-foreground h-6 text-xs"
                       onClick={() => setAddingAlias(true)}
                     >
                       <Plus className="mr-0.5 h-3 w-3" />
@@ -1315,18 +2120,20 @@ export default function EntityDetailPage() {
                 </div>
               </div>
 
-              {/* Roles */}
-              <div>
-                <p className="text-muted-foreground mb-1 text-sm font-medium">
+              <div className="flex items-baseline gap-2">
+                <span className="text-muted-foreground text-xs uppercase tracking-wide">
                   Roles
-                </p>
-                <div className="flex flex-wrap gap-1.5 items-center">
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {(entity.roles ?? []).length === 0 && !addingRole && (
+                    <span className="text-muted-foreground text-xs italic">none</span>
+                  )}
                   {(entity.roles ?? []).map((role) => (
                     <Badge key={role} variant="outline" className="group/role">
                       {role}
                       <button
                         type="button"
-                        className="ml-1 opacity-0 group-hover/role:opacity-100 transition-opacity"
+                        className="ml-1 opacity-0 transition-opacity group-hover/role:opacity-100"
                         onClick={() => handleRemoveRole(role)}
                         title="Remove role"
                       >
@@ -1368,7 +2175,7 @@ export default function EntityDetailPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-6 text-xs text-muted-foreground"
+                      className="text-muted-foreground h-6 text-xs"
                       onClick={() => setAddingRole(true)}
                     >
                       <Plus className="mr-0.5 h-3 w-3" />
@@ -1377,247 +2184,55 @@ export default function EntityDetailPage() {
                   )}
                 </div>
               </div>
+            </div>
 
-              {/* Relationship activity link — person entities only */}
-              {entity.entity_type === "person" && (
-                <Link
-                  to={`/butlers/relationship/entities/${entity.id}`}
-                  className="text-primary text-sm font-medium hover:underline"
-                >
-                  View relationship activity →
-                </Link>
-              )}
+            {/* Pulse strip — closeness + open loops at-a-glance */}
+            <PulseStrip entityId={entityId} dunbarTier={entity.dunbar_tier ?? null} />
+          </section>
 
-              {/* Source provenance */}
-              {!!(entity.metadata?.source_butler || entity.metadata?.source_scope) && (
-                <div>
-                  <p className="text-muted-foreground mb-1 text-sm font-medium">
-                    Source Provenance
-                  </p>
-                  <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
-                    {!!entity.metadata.source_butler && (
-                      <span>
-                        Butler:{" "}
-                        <span className="text-foreground font-medium">
-                          {String(entity.metadata.source_butler)}
-                        </span>
-                      </span>
-                    )}
-                    {!!entity.metadata.source_scope && (
-                      <span>
-                        Scope:{" "}
-                        <span className="text-foreground font-medium">
-                          {String(entity.metadata.source_scope)}
-                        </span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
+          {/* Activity timeline — primary content */}
+          <ActivityTimeline entityId={entityId} />
 
-              {/* Metadata — exclude keys already shown in dedicated sections */}
-              {(() => {
-                const _DISPLAY_EXCLUDED = new Set([
-                  "source_butler",
-                  "source_scope",
-                  "unidentified",
-                ]);
-                const displayMetadata = Object.fromEntries(
-                  Object.entries(entity.metadata).filter(
-                    ([k]) => !_DISPLAY_EXCLUDED.has(k),
-                  ),
-                );
-                return Object.keys(displayMetadata).length > 0 ? (
-                  <div>
-                    <p className="text-muted-foreground mb-1 text-sm font-medium">
-                      Metadata
-                    </p>
-                    <pre className="rounded-md bg-muted p-3 text-xs overflow-x-auto">
-                      {JSON.stringify(displayMetadata, null, 2)}
-                    </pre>
-                  </div>
-                ) : null;
-              })()}
+          {/* Gifts and loans — structured panels, hidden when empty */}
+          <div className="grid gap-6 sm:grid-cols-2">
+            <GiftsPanel entityId={entityId} />
+            <LoansPanel entityId={entityId} />
+          </div>
 
-              {/* Timestamps */}
-              <div className="flex gap-6 text-xs text-muted-foreground">
-                <span>
-                  Created: {new Date(entity.created_at).toLocaleString()}
-                </span>
-                <span>
-                  Updated: {new Date(entity.updated_at).toLocaleString()}
-                </span>
-              </div>
+          {/* Message threads — only when matches exist */}
+          <MessageThreadsSection entityId={entityId} />
 
-              {/* Promotion action */}
-              {entity.unidentified && (
-                <div className="pt-1 border-t">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-xs"
-                    disabled={promoteEntity.isPending}
-                    onClick={() => {
-                      if (!entityId) return;
-                      promoteEntity.mutate(entityId, {
-                        onSuccess: () => toast.success("Entity marked as confirmed."),
-                        onError: (err) =>
-                          toast.error(
-                            `Failed to confirm: ${err instanceof Error ? err.message : "Unknown error"}`,
-                          ),
-                      });
-                    }}
-                  >
-                    <Check className="mr-1 h-3.5 w-3.5" />
-                    {promoteEntity.isPending ? "Confirming..." : "Mark as confirmed"}
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Linked contacts — only when contacts exist */}
+          <LinkedContactsList entityId={entityId} />
 
-          {/* Owner setup banner — shown when identity not fully configured */}
-          <OwnerSetupBanner entity={entity} />
-
-          {/* Entity info (credentials) */}
-          <EntityInfoSection
+          {/* Facts — grouped by predicate family */}
+          <FactsSection
             entityId={entity.id}
-            entries={entity.entity_info ?? []}
-            isOwner={entity.roles?.includes("owner") ?? false}
+            facts={entity.recent_facts}
+            total={entity.recent_facts_total}
+            hasMore={entity.recent_facts_has_more}
+            isFetching={isFetching}
+            onLoadMore={() =>
+              setFactsLimit((current) => current + FACTS_PAGE_SIZE)
+            }
           />
 
-          {/* Telegram session setup — owner only */}
-          {entity.roles?.includes("owner") && (
-            <TelegramSessionSetup entityId={entity.id} entries={entity.entity_info ?? []} />
-          )}
-
-          {/* Facts tab */}
-          <Card>
-            <CardHeader>
-              <CardTitle>
-                Facts ({entity.fact_count})
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {entity.recent_facts.length === 0 ? (
-                <p className="text-muted-foreground py-4 text-center text-sm">
-                  No facts linked to this entity.
-                </p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-left text-muted-foreground">
-                        <th className="pb-2 pr-4 font-medium">Scope</th>
-                        <th className="pb-2 pr-4 font-medium">Predicate</th>
-                        <th className="pb-2 pr-4 font-medium">Content</th>
-                        <th className="pb-2 pr-4 font-medium">Source Butler</th>
-                        <th className="pb-2 pr-4 font-medium">Session</th>
-                        <th className="pb-2 pr-4 font-medium text-right">
-                          Confidence
-                        </th>
-                        <th className="pb-2 font-medium">Created</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {entity.recent_facts.map((fact) => {
-                        // Incoming fact: this entity is the object, not the subject.
-                        const isIncoming =
-                          fact.object_entity_id === entity.id &&
-                          fact.entity_id !== entity.id;
-                        const createdAt = new Date(fact.created_at);
-                        const createdDate = createdAt.toLocaleDateString();
-                        const createdTimestamp = createdAt.toLocaleString();
-                        return (
-                        <tr
-                          key={fact.id}
-                          className="border-b last:border-0 hover:bg-muted/50"
-                        >
-                          <td className="py-2 pr-4 font-medium">
-                            {fact.scope}
-                          </td>
-                          <td className="py-2 pr-4 text-muted-foreground">
-                            {isIncoming ? (
-                              <span title="Incoming relationship">
-                                <Link
-                                  to={`/entities/${fact.entity_id}`}
-                                  className="text-primary hover:underline"
-                                >
-                                  {fact.entity_name ?? fact.subject}
-                                </Link>
-                                {" "}
-                                {fact.predicate}
-                              </span>
-                            ) : (
-                              fact.predicate
-                            )}
-                          </td>
-                          <td className="py-2 pr-4 max-w-md truncate">
-                            {isIncoming ? (
-                              <span className="text-muted-foreground italic">this entity</span>
-                            ) : fact.object_entity_id ? (
-                              <Link
-                                to={`/entities/${fact.object_entity_id}`}
-                                className="text-primary hover:underline"
-                              >
-                                {fact.object_entity_name ?? fact.content}
-                              </Link>
-                            ) : (
-                              fact.content
-                            )}
-                          </td>
-                          <td className="py-2 pr-4 text-muted-foreground">
-                            {fact.source_butler ?? <span className="italic">—</span>}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {fact.session_id ? (
-                              <Link
-                                to={sessionDetailHref(fact.session_id, fact.source_butler)}
-                                className="text-primary hover:underline"
-                                title={fact.session_id}
-                              >
-                                {fact.session_id.slice(0, 8)}
-                              </Link>
-                            ) : (
-                              <span className="text-muted-foreground italic">—</span>
-                            )}
-                          </td>
-                          <td className="py-2 pr-4 text-right tabular-nums">
-                            {(fact.confidence * 100).toFixed(0)}%
-                          </td>
-                          <td
-                            className="py-2 text-muted-foreground"
-                            title={createdTimestamp}
-                          >
-                            {createdDate}
-                          </td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <div className="mt-4 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                <span>
-                  Showing {entity.recent_facts.length} of {entity.recent_facts_total}
-                </span>
-                {entity.recent_facts_has_more && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setFactsLimit((current) => current + FACTS_PAGE_SIZE)}
-                    disabled={isFetching}
-                  >
-                    {isFetching ? "Loading..." : "Load more"}
-                  </Button>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Contact link */}
-          <LinkedContactSection entityId={entity.id} entity={entity} />
+          {/* Practical drawer — collapsed by default, owner setup forces it open */}
+          <PracticalDrawer entity={entity} forceOpen={ownerNeedsSetup}>
+            <OwnerSetupBanner entity={entity} />
+            <LinkedContactSection entityId={entity.id} entity={entity} />
+            <EntityInfoSection
+              entityId={entity.id}
+              entries={entity.entity_info ?? []}
+              isOwner={isOwner}
+            />
+            {isOwner && (
+              <TelegramSessionSetup
+                entityId={entity.id}
+                entries={entity.entity_info ?? []}
+              />
+            )}
+          </PracticalDrawer>
         </>
       )}
     </div>

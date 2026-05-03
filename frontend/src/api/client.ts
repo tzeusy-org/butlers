@@ -234,6 +234,7 @@ import type {
   EntityLoan,
   EntityTimelineItem,
   LinkedContactSummary,
+  MessageThreadSummary,
   RelationshipEntityDetail,
 } from "./types.ts";
 
@@ -1473,6 +1474,19 @@ export function getEntityTimeline(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/timeline?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/timeline`;
   return apiFetch<EntityTimelineItem[]>(path);
+}
+
+/** Fetch message thread summaries for a relationship entity. */
+export function getEntityMessageThreads(
+  entityId: string,
+  params?: { limit?: number },
+): Promise<MessageThreadSummary[]> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/message-threads?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/message-threads`;
+  return apiFetch<MessageThreadSummary[]>(path);
 }
 
 /** Link a contact to an entity. */
