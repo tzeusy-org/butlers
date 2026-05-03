@@ -33,8 +33,10 @@
       `TimezoneProvider` reads `useGeneralSettings()`, applies the three-step fallback
       chain (`?tz=` URL param → general settings timezone → `"UTC"`), and injects the
       resolved value via `TimezoneContext.Provider`.
-- [ ] 3.4 Validate `?tz=` URL param: check against `Intl.supportedValuesOf('timeZone')`;
-      treat invalid values as absent.
+- [ ] 3.4 Validate `?tz=` URL param: check against `Intl.supportedValuesOf('timeZone')` if
+      available (the API is optional — treat absence as if `supportedValuesOf` returned an
+      empty set and fall through to Step 2). If available and the param is not in the list,
+      treat the param as absent. Do NOT crash on browsers that lack `supportedValuesOf`.
 - [ ] 3.5 Mount `TimezoneProvider` in `frontend/src/App.tsx` inside `QueryClientProvider`
       and outside `RouterProvider`.
 

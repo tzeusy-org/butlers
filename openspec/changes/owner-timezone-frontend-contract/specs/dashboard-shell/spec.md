@@ -12,7 +12,9 @@ because the shell spec owns the provider hierarchy and all shell-level infrastru
 - **THEN** `TimezoneProvider` (from `frontend/src/lib/timezone-context.tsx`) is mounted
   inside `QueryClientProvider` and outside `RouterProvider`
 - **AND** every route in the application can call `useTimezone()` without any per-page setup
-- **AND** the timezone context is initialized before any route renders
+- **AND** the timezone context value (`"UTC"` pending) is available synchronously before any
+  route renders; the resolved owner timezone is available once `GET /api/settings/general`
+  completes (async, within the same mount cycle)
 
 #### Scenario: Provider hierarchy with timezone context
 

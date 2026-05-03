@@ -12,8 +12,8 @@ accidental.
 ## What Changes
 
 - **New capability**: `owner-timezone-context` — a dashboard-wide React context
-  (`TimezoneContext`) and `useTimezone()` hook, placed under `frontend/src/lib/` or
-  `frontend/src/components/ui/`, mirroring the shape of the existing
+  (`TimezoneContext`) and `useTimezone()` hook, placed under `frontend/src/lib/` (see
+  Design Decision 4), mirroring the shape of the existing
   `ChroniclesTimezoneProvider` / `useChroniclesTimezone()` pair but elevated to shell scope.
 - **Modified capability**: `dashboard-shell` — the shell spec gains a new cross-cutting
   contract section documenting how all pages read the owner's timezone: the provider placement
@@ -50,8 +50,10 @@ accidental.
 - **New files**: `openspec/changes/owner-timezone-frontend-contract/specs/owner-timezone-context/spec.md`
 - **Delta file**: `openspec/changes/owner-timezone-frontend-contract/specs/dashboard-shell/spec.md`
   (delta to the existing `openspec/specs/dashboard-shell/spec.md`)
-- **Frontend** (implementation bead bu-v1tt2.2, already closed): `<Time>` acceptance
-  criteria updated via `bd update bu-v1tt2.2 --append-notes` to reference this contract.
+- **Frontend** (implementation bead bu-v1tt2.2): `<Time>` acceptance criteria will be
+  updated via `bd update bu-v1tt2.2 --append-notes` to reference this contract (see task 4.3).
+  Note: `frontend/src/components/ui/time.tsx` currently uses `useChroniclesTimezone()`;
+  the wiring to `useTimezone()` is tracked in bu-v1tt2.2 as forthcoming implementation work.
 - **No backend API changes** required if `GET /api/settings/general` already exists (it does;
   see `frontend/src/api/client.ts:3211`). The `user-preferences` general_timezone path is
   documented as the future source of truth; a follow-up bead tracks endpoint readiness.

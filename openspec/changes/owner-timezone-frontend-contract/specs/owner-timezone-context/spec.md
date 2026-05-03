@@ -9,7 +9,7 @@ timezone, and not a hardcoded fallback chosen by the component author.
 This spec defines the **dashboard-wide timezone contract**: one React context, one hook, one
 fallback chain, and one consumption pattern that all pages and components follow.
 
-Non-Negotiable Rule #4 from `about/heart-and-soul/design-language.md` is explicit:
+Non-negotiable (proposed) Rule #4 from `about/heart-and-soul/design-language.md` is explicit:
 
 > **Time is a typed primitive.** All timestamps render via a single `<Time>` component that
 > knows the user's timezone, the butler's timezone, the desired precision, and the
@@ -51,7 +51,8 @@ every page renders within a single timezone context without per-page setup.
 
 - **WHEN** any page route renders
 - **THEN** `useTimezone()` returns the resolved timezone without any per-page provider setup
-- **AND** the timezone value is fetched once per session (not once per page navigation)
+- **AND** the timezone value is cached and not refetched per route navigation (TanStack Query
+  may refetch after `staleTime: 60_000` expires or on window focus, but never on route change)
 
 ### Requirement: Three-step fallback chain
 
