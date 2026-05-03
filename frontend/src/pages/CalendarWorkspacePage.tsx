@@ -1709,7 +1709,7 @@ export default function CalendarWorkspacePage() {
                   ref={timeGridRef}
                   className="flex-1 min-h-0 overflow-y-auto"
                 >
-                  <div className={cn("grid", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")} style={{ height: 24 * HOUR_HEIGHT_PX }}>
+                  <div className={cn("grid h-[var(--calendar-grid-height)]", range === "week" ? "grid-cols-[3rem_repeat(7,1fr)]" : "grid-cols-[3rem_1fr]")}>
                     {/* Y-axis hour labels */}
                     <div className="relative">
                       {HOURS.map((h) => (

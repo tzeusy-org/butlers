@@ -148,6 +148,15 @@
   --text-3xl:  2.074rem;
 
   /* ---------------------------------------------------------------------------
+   * Calendar layout tokens
+   *
+   * --calendar-grid-height  Total pixel height of the 24-hour time grid.
+   *                         Derived from HOUR_HEIGHT_PX (60px) * 24 hours = 1440px.
+   *                         Consumed by CalendarWorkspacePage time-grid container.
+   * ---------------------------------------------------------------------------*/
+  --calendar-grid-height: 1440px;
+
+  /* ---------------------------------------------------------------------------
    * Spacing scale
    *
    * Base unit: 0.25rem (4px). Linear steps 1–12.
