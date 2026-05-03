@@ -8,16 +8,16 @@ behaviors that the codebase no longer supports:
    explicit `breadcrumbs` prop is supplied, `PageHeader` auto-generates crumbs
    from the URL pathname. The shipped code retains this fallback, but any page
    that has adopted `<Page breadcrumbs=...>` suppresses the auto-builder via a
-   `BreadcrumbsContext` (or `hideBreadcrumbs` sentinel on `PageHeader`). The
-   normative path is now page-owned breadcrumbs; the URL-segment auto-builder is
-   a degraded fallback for un-migrated pages only.
+   `BreadcrumbsControlProvider` / `useBreadcrumbsControl`
+   (`frontend/src/components/ui/breadcrumbs-control.tsx`). The normative path is
+   now page-owned breadcrumbs; the URL-segment auto-builder is a legacy fallback
+   for un-migrated pages only.
 
 2. **`PageHeader.title` and per-page H1 size.** The spec says an explicit
    `title` prop renders an `<h1>` with `text-lg font-semibold`. That slot is
    dead code — `RootLayout` mounts `<PageHeader />` with no props. Per-page H1s
-   are now owned by `<Page>` and are normatively `text-2xl font-bold
-   tracking-tight` (settled by the detail-page audit, confirmed in
-   `design-language.md` non-negotiable #2).
+   are now owned by `<Page>` and rendered as `text-3xl font-bold tracking-tight`
+   (as shipped in `frontend/src/components/ui/page.tsx`).
 
 Leaving these stale requirements in the spec creates silent drift: a future
 implementer reading the spec would build a `PageHeader.title` slot and an
@@ -31,11 +31,12 @@ actually shipped.
 
 - **Modified capability**: `dashboard-shell` — the "Page Header with
   Breadcrumbs" requirement is updated to reflect the shipped `<Page>` primitive:
-  - The H1 size is `text-2xl font-bold tracking-tight`, owned by `<Page>`, not
+  - The H1 size is `text-3xl font-bold tracking-tight`, owned by `<Page>`, not
     by `PageHeader`.
   - Breadcrumbs are owned by individual pages via `<Page breadcrumbs=...>`.
-    `PageHeader` renders the breadcrumbs strip it receives from `<Page>` via
-    context; it does not auto-generate crumbs.
+    `<Page>` renders them inside `<main>` and signals `BreadcrumbsControlProvider`
+    so `PageHeader` suppresses its URL-segment auto-builder. `PageHeader` retains
+    the auto-builder as a legacy fallback for un-migrated pages only.
   - `PageHeader` scope is narrowed to: breadcrumbs strip + command palette
     trigger + theme toggle. The `title` prop and H1 rendering are removed from
     its contract.

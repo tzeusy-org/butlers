@@ -4,7 +4,7 @@
       "Page Header with Breadcrumbs" requirement with normative `<Page>`-aligned
       statements.
 - [x] 1.2 Confirm the delta covers all three stale items:
-      - H1 size is `text-2xl font-bold tracking-tight`
+      - H1 size is `text-3xl font-bold tracking-tight` (as shipped in `page.tsx`)
       - Breadcrumbs are owned by individual pages via `<Page breadcrumbs=...>`
       - `PageHeader` scope is breadcrumbs strip + command palette + theme toggle only
 - [x] 1.3 Confirm `PageHeader.title` and `buildBreadcrumbs()` are marked as
