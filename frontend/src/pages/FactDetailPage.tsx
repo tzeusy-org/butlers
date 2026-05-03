@@ -1,7 +1,6 @@
 import { Link, useParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Time } from "@/components/ui/time";
 import {
   Card,
@@ -9,8 +8,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import { permanenceBadge, PercentageProgressBar } from "@/components/memory/badges";
+import { DetailPage } from "@/components/layout/DetailPage";
 import { useFact } from "@/hooks/use-memory";
 
 function validityBadge(v: string) {
@@ -41,36 +40,31 @@ export default function FactDetailPage() {
   const { data, isLoading, error } = useFact(factId ?? null);
   const fact = data?.data;
 
+  const breadcrumbs = [
+    { label: "Memory", href: "/memory" },
+    { label: "Facts", href: "/memory?tab=facts" },
+    { label: fact?.entity_name ?? fact?.subject ?? factId ?? "Fact" },
+  ];
+
+  const title = fact?.content ?? factId ?? "Fact";
+  const subtitle = fact
+    ? fact.entity_name
+      ? `${fact.entity_name} · ${fact.predicate}`
+      : fact.predicate
+    : undefined;
+
   return (
-    <div className="space-y-6">
-      <Breadcrumbs
-        items={[
-          { label: "Memory", href: "/memory" },
-          { label: "Facts", href: "/memory?tab=facts" },
-          { label: fact?.entity_name ?? fact?.subject ?? factId ?? "Fact" },
-        ]}
-      />
-
-      {isLoading && (
-        <div className="space-y-4">
-          <Skeleton className="h-8 w-64" />
-          <Skeleton className="h-48 w-full" />
-          <Skeleton className="h-64 w-full" />
-        </div>
-      )}
-
-      {error && (
-        <div className="text-destructive py-12 text-center text-sm">
-          Failed to load fact. {(error as Error).message}
-        </div>
-      )}
-
-      {fact && (
-        <>
-          {/* Header */}
+    <DetailPage
+      record={{ title, subtitle, type: "fact" }}
+      breadcrumbs={breadcrumbs}
+      loading={isLoading}
+      error={error ?? null}
+      pulse={null}
+      primary={
+        fact ? (
           <Card>
             <CardHeader>
-              <CardTitle className="text-2xl">
+              <CardTitle>
                 {fact.entity_id ? (
                   <Link
                     to={`/entities/${fact.entity_id}`}
@@ -108,13 +102,6 @@ export default function FactDetailPage() {
 
               {/* Status row */}
               <div className="flex flex-wrap items-center gap-4">
-                <PercentageProgressBar value={fact.confidence} label="Confidence" />
-                <div>
-                  <p className="text-muted-foreground mb-1 text-xs font-medium">
-                    Permanence
-                  </p>
-                  {permanenceBadge(fact.permanence)}
-                </div>
                 <div>
                   <p className="text-muted-foreground mb-1 text-xs font-medium">
                     Validity
@@ -241,8 +228,32 @@ export default function FactDetailPage() {
               </div>
             </CardContent>
           </Card>
-        </>
-      )}
-    </div>
+        ) : null
+      }
+      supporting={
+        fact ? (
+          <>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Confidence</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <PercentageProgressBar value={fact.confidence} label="Confidence" />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Permanence</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {permanenceBadge(fact.permanence)}
+              </CardContent>
+            </Card>
+          </>
+        ) : null
+      }
+      auxiliary={null}
+      practical={null}
+    />
   );
 }
