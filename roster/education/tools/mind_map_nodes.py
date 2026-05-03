@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import asyncpg
@@ -70,12 +69,12 @@ async def mind_map_node_create(
         A dict with keys ``node_id`` (UUID str) and ``entity_id`` (UUID str).
     """
     effective_depth = depth if depth is not None else 0
-    effective_metadata = json.dumps(metadata or {})
+    effective_metadata = metadata or {}
     row = await pool.fetchrow(
         """
         INSERT INTO education.mind_map_nodes
             (mind_map_id, label, description, depth, effort_minutes, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
         """,
         mind_map_id,
@@ -95,13 +94,11 @@ async def mind_map_node_create(
     map_title = map_row["title"] if map_row is not None else mind_map_id
     canonical_name = f"{map_title} > {label}"
 
-    entity_metadata = json.dumps(
-        {
-            "source_butler": "education",
-            "source_scope": "education",
-            "mind_map_id": mind_map_id,
-        }
-    )
+    entity_metadata = {
+        "source_butler": "education",
+        "source_scope": "education",
+        "mind_map_id": mind_map_id,
+    }
 
     # Attempt to create the entity; ON CONFLICT DO NOTHING handles duplicates gracefully.
     # We then SELECT the canonical live row to get the ID in all cases.
@@ -109,7 +106,7 @@ async def mind_map_node_create(
         """
         INSERT INTO public.entities
             (canonical_name, entity_type, aliases, metadata)
-        VALUES ($1, 'other', '{}', $2::jsonb)
+        VALUES ($1, 'other', '{}', $2)
         ON CONFLICT DO NOTHING
         """,
         canonical_name,
@@ -278,12 +275,8 @@ async def mind_map_node_update(
     param_idx = 1
 
     for key, val in updates.items():
-        if key == "metadata":
-            set_parts.append(f"metadata = ${param_idx}::jsonb")
-            values.append(json.dumps(val) if isinstance(val, dict) else val)
-        else:
-            set_parts.append(f"{key} = ${param_idx}")
-            values.append(val)
+        set_parts.append(f"{key} = ${param_idx}")
+        values.append(val)
         param_idx += 1
 
     # Always update updated_at

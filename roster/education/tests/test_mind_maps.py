@@ -421,6 +421,44 @@ class TestMindMapNodeCreate:
         assert entity_id in str(update_call)
         assert node_id in str(update_call)
 
+    async def test_metadata_bound_as_dict_not_string(self) -> None:
+        """node metadata must reach asyncpg as a dict, never a pre-serialized string."""
+        from butlers.tools.education import mind_map_node_create
+
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        meta = {"difficulty": "hard", "tags": ["python"]}
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Closures", metadata=meta)
+        # First fetchrow = INSERT INTO mind_map_nodes; metadata is 6th positional arg
+        insert_args = pool.fetchrow.call_args_list[0].args
+        # Insert: (sql, mind_map_id, label, description, depth, effort_minutes, metadata)
+        # metadata is the last non-SQL argument
+        bound_meta = insert_args[-1]
+        assert isinstance(bound_meta, dict), (
+            f"expected dict, got {type(bound_meta)}: {bound_meta!r}"
+        )
+        assert bound_meta == meta
+
+    async def test_entity_metadata_bound_as_dict_not_string(self) -> None:
+        """entity_metadata for public.entities must reach asyncpg as a dict, not a JSON string."""
+        from butlers.tools.education import mind_map_node_create
+
+        node_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+        entity_id = str(uuid.uuid4())
+        pool = _make_node_create_pool(node_id, map_id, entity_id)
+        await mind_map_node_create(pool, mind_map_id=map_id, label="Generators")
+        # First execute = INSERT INTO public.entities; 2nd arg is entity_metadata
+        entity_insert_args = pool.execute.call_args_list[0].args
+        # entity_insert_args: (sql, canonical_name, entity_metadata)
+        bound_entity_meta = entity_insert_args[2]
+        assert isinstance(bound_entity_meta, dict), (
+            f"expected dict, got {type(bound_entity_meta)}: {bound_entity_meta!r}"
+        )
+        assert bound_entity_meta.get("source_butler") == "education"
+
 
 # ---------------------------------------------------------------------------
 # Tests: mind_map_node_get
@@ -662,6 +700,32 @@ class TestMasteryStateMachine:
         # 'label' should not appear in the SET clause
         sql_call = pool.execute.call_args.args[0]
         assert "label" not in sql_call
+
+    async def test_metadata_update_bound_as_dict_not_string(self) -> None:
+        """metadata in mind_map_node_update must reach asyncpg as a dict, never a JSON string."""
+        from butlers.tools.education import mind_map_node_update
+
+        nid = str(uuid.uuid4())
+        mid = str(uuid.uuid4())
+        current_row = _make_row({"mastery_status": "learning", "mind_map_id": mid})
+        pool = _make_pool(
+            fetchrow_returns=[current_row],
+            execute_returns=["UPDATE 1"],
+            fetchval_returns=[1],
+        )
+        meta = {"custom_field": "some_value", "level": 3}
+        await mind_map_node_update(pool, nid, metadata=meta)
+        assert pool.execute.called
+        # execute args: (sql, *values, node_id) — metadata is the first value param
+        execute_args = pool.execute.call_args.args
+        # args[0] is the SQL string; the metadata value precedes node_id (last arg)
+        bound_values = list(execute_args[1:])
+        # node_id is the last positional arg; metadata is the one before it
+        bound_meta = bound_values[-2]
+        assert isinstance(bound_meta, dict), (
+            f"expected dict, got {type(bound_meta)}: {bound_meta!r}"
+        )
+        assert bound_meta == meta
 
 
 # ---------------------------------------------------------------------------

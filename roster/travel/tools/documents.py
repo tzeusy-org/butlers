@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime
 from typing import Any
 
@@ -82,14 +81,13 @@ async def add_document(
         raise ValueError(f"add_document: trip {trip_id!r} not found")
 
     expiry = _normalize_date(expiry_date)
-    meta_json = json.dumps(metadata or {})
 
     row = await pool.fetchrow(
         """
         INSERT INTO travel.documents (
             trip_id, type, blob_ref, expiry_date, metadata
         ) VALUES (
-            $1::uuid, $2, $3, $4, $5::jsonb
+            $1::uuid, $2, $3, $4, $5
         )
         RETURNING *
         """,
@@ -97,7 +95,7 @@ async def add_document(
         type,
         blob_ref,
         expiry,
-        meta_json,
+        metadata or {},
     )
 
     result = _row_to_dict(row)

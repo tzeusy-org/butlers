@@ -383,7 +383,7 @@ async def backfill_spo_transactions(
                         metadata
                     )
                     SELECT
-                        $1, $4, $2, $8, $3, $7, $9, $10, $11, $6::uuid, $12, $5, $13::jsonb
+                        $1, $4, $2, $8, $3, $7, $9, $10, $11, $6::uuid, $12, $5, $13
                     WHERE {_check_existing_transaction_sql()}
                     RETURNING id
                     """,
@@ -399,7 +399,7 @@ async def backfill_spo_transactions(
                     category,  # $10
                     payment_method,  # $11
                     receipt_url,  # $12
-                    json.dumps(extra_meta),  # $13
+                    extra_meta,  # $13
                 )
                 if row_inserted is not None:
                     result.inserted += 1
