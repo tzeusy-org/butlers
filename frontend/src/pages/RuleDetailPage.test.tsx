@@ -89,6 +89,22 @@ describe("RuleDetailPage — layout", () => {
     expect(html).toContain("/memory");
     expect(html).toContain("Rules");
   });
+
+  it("truncates rule title to 80 chars with ellipsis", () => {
+    const longContent = "a".repeat(100); // 100 chars, longer than 80
+    setRuleState({ ...BASE_RULE, content: longContent });
+    const html = renderPage();
+    // Should contain the truncated title in the H1 (79 chars + ellipsis)
+    expect(html).toContain("<h1" + " class=\"text-3xl font-bold tracking-tight\">" + "a".repeat(79) + "…</h1>");
+  });
+
+  it("does not truncate rule title under 80 chars", () => {
+    const shortContent = "Keep this content as-is";
+    setRuleState({ ...BASE_RULE, content: shortContent });
+    const html = renderPage();
+    // Should contain the untruncated content in the H1
+    expect(html).toContain("<h1" + " class=\"text-3xl font-bold tracking-tight\">" + "Keep this content as-is</h1>");
+  });
 });
 
 describe("RuleDetailPage — body content", () => {
