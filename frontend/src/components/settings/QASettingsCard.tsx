@@ -321,7 +321,7 @@ export function QASettingsCard() {
                   Syncing...
                 </>
               ) : (
-                "Sync Now"
+                "Sync now"
               )}
             </Button>
           </div>

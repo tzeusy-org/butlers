@@ -16,6 +16,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
 import { useApprovalMetrics } from "@/hooks/use-approvals";
 import { useButlers } from "@/hooks/use-butlers";
@@ -193,9 +194,10 @@ export default function DashboardPage() {
             {failedLoading ? (
               <NotificationTableSkeleton rows={5} />
             ) : failedNotifications.length === 0 ? (
-              <div className="text-muted-foreground flex flex-col items-center justify-center py-8 text-sm">
-                <p>No failed notifications. All systems healthy.</p>
-              </div>
+              <EmptyState
+                title="No failed notifications."
+                description="All systems healthy."
+              />
             ) : (
               <NotificationFeed notifications={failedNotifications} isLoading={false} />
             )}

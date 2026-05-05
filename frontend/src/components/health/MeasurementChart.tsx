@@ -13,6 +13,7 @@ import {
 import type { Measurement, MeasurementParams } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -95,9 +96,10 @@ function ChartSkeleton() {
 
 function EmptyState() {
   return (
-    <div className="text-muted-foreground flex flex-col items-center justify-center py-16 text-sm">
-      <p>No measurements found for this type and date range.</p>
-    </div>
+    <EmptyStateUI
+      title="No measurements found."
+      description="No data available for this type and date range."
+    />
   );
 }
 

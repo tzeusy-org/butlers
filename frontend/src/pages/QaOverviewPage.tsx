@@ -679,7 +679,7 @@ function ForcePatrolButton() {
         disabled={mutation.isPending}
         onClick={handleClick}
       >
-        {mutation.isPending ? "Triggering..." : "Force Patrol Now"}
+        {mutation.isPending ? "Triggering..." : "Run patrol"}
       </Button>
       {lastMsg && (
         <p
