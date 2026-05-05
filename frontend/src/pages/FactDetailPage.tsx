@@ -43,7 +43,7 @@ export default function FactDetailPage() {
   const breadcrumbs = [
     { label: "Memory", href: "/memory" },
     { label: "Facts", href: "/memory?tab=facts" },
-    { label: fact?.entity_name ?? fact?.subject ?? factId ?? "Fact" },
+    { label: fact?.subject ?? factId ?? "Fact" },
   ];
 
   const title = fact?.subject ?? factId ?? "Fact";
