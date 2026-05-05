@@ -80,8 +80,8 @@ describe("FactDetailPage — layout", () => {
   it("renders the fact subject as the page title (spec: title=fact.subject)", () => {
     setFactState(BASE_FACT);
     const html = renderPage();
-    // subject "Alice" must appear in the H1 (page title)
-    expect(html).toContain("Alice");
+    // subject "Alice" must appear in the H1 (page title) — use regex to pin to the tag
+    expect(html).toMatch(/<h1[^>]*>Alice<\/h1>/);
   });
 
   it("renders the predicate as subtitle below the H1", () => {
