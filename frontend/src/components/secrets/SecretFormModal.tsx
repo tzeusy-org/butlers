@@ -186,7 +186,7 @@ export function SecretFormModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>{isEditing ? "Edit Secret" : "Add Secret"}</DialogTitle>
+          <DialogTitle>{isEditing ? "Edit secret" : "Add secret"}</DialogTitle>
           <DialogDescription>
             {isEditing
               ? `Update the value or metadata for ${editSecret?.key}.`

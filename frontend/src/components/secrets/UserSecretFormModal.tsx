@@ -149,7 +149,7 @@ export function UserSecretFormModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>{isEditing ? "Edit Credential" : "Add Credential"}</DialogTitle>
+          <DialogTitle>{isEditing ? "Edit credential" : "Add credential"}</DialogTitle>
           <DialogDescription>
             {isEditing
               ? `Update the value for ${entityInfoTypeLabel(entry?.type ?? "")}.`

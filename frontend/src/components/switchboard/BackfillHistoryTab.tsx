@@ -344,7 +344,7 @@ function CreateJobDialog({ open, onOpenChange, connectors }: CreateJobDialogProp
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Create Backfill Job</DialogTitle>
+          <DialogTitle>Create backfill job</DialogTitle>
           <DialogDescription>
             Start a historical replay for a connector. Only online connectors are listed.
           </DialogDescription>

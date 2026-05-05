@@ -252,7 +252,7 @@ The approvals dashboard page at `/approvals` SHALL include a new "Autonomy Sugge
   - The human-readable scope description (e.g., "Auto-approve send_telegram when chat_id = 'mom_123' AND text = 'Good morning'")
   - The number of times this exact action was manually approved
   - Approval velocity indicator (fast/normal)
-  - "Confirm" and "Dismiss" action buttons
+  - "Confirm rule" and "Dismiss" action buttons
 - **AND** the card MUST visually emphasize that the rule scope is exact-match only
 
 #### Scenario: Demotion suggestion card displayed
@@ -261,7 +261,7 @@ The approvals dashboard page at `/approvals` SHALL include a new "Autonomy Sugge
 - **THEN** the dashboard MUST display a warning card for each demotion containing:
   - The tool name and rule description
   - The execution error summary
-  - "Revoke Rule" and "Keep Rule" action buttons
+  - "Revoke rule" and "Keep rule" action buttons
 - **AND** the card MUST use a warning/alert visual style
 
 #### Scenario: No pending suggestions hides section
@@ -271,7 +271,7 @@ The approvals dashboard page at `/approvals` SHALL include a new "Autonomy Sugge
 
 #### Scenario: Confirm suggestion from card
 
-- **WHEN** a user clicks "Confirm" on a promotion suggestion card
+- **WHEN** a user clicks "Confirm rule" on a promotion suggestion card
 - **THEN** the dashboard MUST call `POST /api/approvals/suggestions/{id}/confirm`
 - **AND** the card MUST be removed from the suggestions section on success
 - **AND** a success toast MUST indicate the new standing rule was created

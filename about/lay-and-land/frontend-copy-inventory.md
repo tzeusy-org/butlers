@@ -7,8 +7,8 @@ Do **not** edit manually — re-run the script to refresh.
 
 - Approval Rules
 - Manage standing approval rules for automatic action approval.
-- Create Rule
-- Back to Actions
+- Create rule
+- Back to actions
 - Filter Rules
 - Tool Name
 - Status
@@ -30,7 +30,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Status
 - Butler
 - Clear
-- Expire Stale
+- Expire stale
 - Loading...
 - Previous
 - Next
@@ -89,20 +89,21 @@ Do **not** edit manually — re-run the script to refresh.
 - Status
 - Port
 - Open details
-- No butlers found. Check daemon status and try again.
 - Total Agents
 - Healthy
 - Butlers
 - Staffers
 - Infrastructure services that support butler operations.
 - Browse all registered butlers and jump directly to detail views.
+- No butlers found.
+- Check daemon status and try again.
 
 ## `frontend/src/pages/CalendarWorkspacePage.tsx`
 
 - Calendar Workspace
 - Unified user and butler calendar surface backed by workspace APIs.
-- Create Butler Event
-- Create Event
+- Create butler event
+- Create event
 - View
 - Range
 - Prev
@@ -113,7 +114,6 @@ Do **not** edit manually — re-run the script to refresh.
 - Source
 - All sources
 - Loading calendar workspace...
-- No butler lanes found.
 - Add event
 - No events in this lane.
 - Time
@@ -166,6 +166,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Previous range
 - Jump to today
 - Next range
+- No butler lanes found.
+- Butler lanes appear when a butler has scheduled events.
 - e.g. Daily medication
 
 ## `frontend/src/pages/ChroniclesPage.tsx`
@@ -188,8 +190,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Updated
 - Previous
 - Next
-- No conditions found
-- Health conditions will appear here as they are tracked by the Health butler.
+- No conditions found.
+- Health conditions appear as the Health butler tracks them.
 
 ## `frontend/src/pages/ConnectorDetailPage.tsx`
 
@@ -220,11 +222,12 @@ Do **not** edit manually — re-run the script to refresh.
 - Show archived
 - Previous
 - Next
-- Sync From Telegram
-- Sync From Google
+- Sync from Telegram
+- Sync from Google
 
 ## `frontend/src/pages/CostsPage.tsx`
 
+- Spending Over Time
 - Costs & Usage
 - Total Cost
 - Total Sessions
@@ -246,7 +249,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Recent Activity
 - Latest butler actions
 - Recent notification delivery failures across all butlers
-- View all notifications
+- View all
 - No failed notifications. All systems healthy.
 - Loading stats
 - Overview
@@ -258,12 +261,13 @@ Do **not** edit manually — re-run the script to refresh.
 
 - Education
 - Loading...
-- Request New Curriculum
-- No curriculums yet. Request one to get started with adaptive learning.
-- Adaptive learning dashboard — track mastery, review schedules, and curriculum progress.
+- Request curriculum
+- Adaptive learning dashboard: track mastery, review schedules, and curriculum progress.
 - Curriculum
 - Reviews
 - Analytics
+- No curriculums yet.
+- Request one to start adaptive learning.
 - Select a curriculum
 
 ## `frontend/src/pages/EntitiesPage.tsx`
@@ -288,7 +292,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Delete entity?
 - This will soft-delete
 - Entities
-- Browse the knowledge graph — people, organizations, places, and more.
+- Browse the knowledge graph: people, organizations, places, and more.
 - Social Map
 - All Entities
 - Show archived
@@ -301,6 +305,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Next
 - Search by name or ID...
 - Select all
+- Entities appear as the butler builds the knowledge graph.
 
 ## `frontend/src/pages/EntityDetailPage.tsx`
 
@@ -389,13 +394,13 @@ Do **not** edit manually — re-run the script to refresh.
 - Created
 - Previous
 - Next
-- No groups found
-- Groups will appear here as you organize contacts into categories.
+- No groups found.
+- Groups appear as you organize contacts into categories.
 
 ## `frontend/src/pages/IngestionPage.tsx`
 
 - Ingestion
-- Unified ingestion control surface — source visibility, routing policy, and historical replay.
+- Unified ingestion control surface: source visibility, routing policy, and historical replay.
 - Timeline
 - Connectors
 - Filters
@@ -422,8 +427,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Notes
 - Previous
 - Next
-- No meals found
-- Meals will appear here as they are logged with nutrition data and eating patterns.
+- No meals found.
+- Meals appear as they are logged with nutrition data and eating patterns.
 
 ## `frontend/src/pages/MeasurementsPage.tsx`
 
@@ -498,7 +503,6 @@ Do **not** edit manually — re-run the script to refresh.
 - Status
 - Clear filter
 - Failed to load investigations.
-- No investigations found.
 - ID
 - Severity
 - Butler
@@ -507,10 +511,11 @@ Do **not** edit manually — re-run the script to refresh.
 - Created
 - Previous
 - Next
+- No investigations found.
+- Patrol cycles dispatch investigations when novel issues are detected.
 
 ## `frontend/src/pages/QaOverviewPage.tsx`
 
-- No patrol cycles recorded yet.
 - Started
 - Duration
 - Status
@@ -533,7 +538,6 @@ Do **not** edit manually — re-run the script to refresh.
 - Last patrol
 - Sources:
 - View patrol
-- No patrol cycles recorded. The QA staffer may not be running yet.
 - Investigation Pipeline
 - Active and recent investigations grouped by pipeline status.
 - Success Rate (7d)
@@ -548,8 +552,14 @@ Do **not** edit manually — re-run the script to refresh.
 - Failed to load patrols.
 - Previous
 - Next
+- No patrol cycles recorded yet.
+- The QA staffer records a cycle each time it runs.
+- No investigations found.
+- Patrol cycles dispatch investigations when novel issues are detected.
 - QA Staffer
 - System-wide quality patrol, investigation pipeline, and known issue tracking.
+- No patrol cycles recorded.
+- The QA staffer may not be running yet.
 - Patrols (24h)
 - Findings (24h)
 - Dispatched (24h)
@@ -597,8 +607,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Link
 - Previous
 - Next
-- No research found
-- Research notes will appear here as the Health butler tracks articles and references.
+- No research found.
+- Research notes appear as the Health butler tracks articles and references.
 - Search research...
 
 ## `frontend/src/pages/RuleDetailPage.tsx`
@@ -622,7 +632,7 @@ Do **not** edit manually — re-run the script to refresh.
 ## `frontend/src/pages/SecretsPage.tsx`
 
 - System Secrets
-- Add Secret
+- Add secret
 - No secret target available. Check dashboard DB configuration.
 - (you)
 - No matches.
@@ -630,7 +640,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Account-login integrations that bind external services to your identity.
 - Credentials
 - Raw credential entries managed on this entity's record.
-- Add Credential
+- Add credential
 - No owner entity found. Create one in the Entities page first.
 - Secrets
 - Manage system-wide and user-specific credentials.
@@ -751,8 +761,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Condition
 - Previous
 - Next
-- No symptoms found
-- Symptoms will appear here as they are logged with severity ratings and occurrence dates.
+- No symptoms found.
+- Symptoms appear as they are logged with severity ratings and occurrence dates.
 - Filter by name...
 
 ## `frontend/src/pages/SystemPage.tsx`
@@ -822,7 +832,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Reject
 - Approve
 - Close
-- Retry Dispatch
+- Retry dispatch
 - Enter reason for rejection...
 
 ## `frontend/src/components/approvals/action-table.tsx`
@@ -847,18 +857,18 @@ Do **not** edit manually — re-run the script to refresh.
 ## `frontend/src/components/approvals/autonomy-suggestions-banner.tsx`
 
 - Fast
-- Promote to Standing Rule
-- Confirm Rule
+- Promote to standing rule
+- Confirm rule
 - Dismiss
 - Review Standing Rule
 - Execution failed
-- Revoke Rule
-- Keep Rule
+- Revoke rule
+- Keep rule
 - Autonomy Suggestions
 
 ## `frontend/src/components/approvals/create-rule-dialog.tsx`
 
-- Create Standing Rule
+- Create standing rule
 - Auto-approve matching tool calls without manual review.
 - Tool Name
 - Description
@@ -898,7 +908,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Expires At
 - Use Count
 - Created From Action
-- Revoke Rule
+- Revoke rule
 - Close
 
 ## `frontend/src/components/approvals/rules-table.tsx`
@@ -922,8 +932,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Request:
 - User Context:
 - Error:
-- No audit entries found
-- Audit log entries will appear here as butlers perform operations.
+- No audit entries found.
+- Audit log entries appear as butlers perform operations.
 
 ## `frontend/src/components/butler-detail/ButlerConfigTab.tsx`
 
@@ -973,7 +983,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Failed to load model overrides.
 - Per-Butler Overrides
 - Override specific catalog entries for this butler.
-- Add Override
+- Add override
 - Remove Override?
 - Select a model...
 
@@ -1011,7 +1021,7 @@ Do **not** edit manually — re-run the script to refresh.
 
 - Schedules
 - Scheduled tasks for this butler
-- Add Schedule
+- Add schedule
 - Delete Schedule
 - Cancel
 
@@ -1072,7 +1082,7 @@ Do **not** edit manually — re-run the script to refresh.
 - New conversation
 - Search...
 - Clear search
-- No conversations yet
+- No conversations yet.
 
 ## `frontend/src/components/chat/MessageInput.tsx`
 
@@ -1181,8 +1191,8 @@ Do **not** edit manually — re-run the script to refresh.
 - OpenStreetMap
 - contributors &copy;
 - CARTO
-- No activity recorded for this window
-- Location points will appear here when the chronicler detects travel or place events in the current window.
+- No activity recorded for this window.
+- Location points appear when the chronicler detects travel or place events.
 - Location map
 
 ## `frontend/src/components/chronicles/SourceStateBadgeStrip.tsx`
@@ -1210,6 +1220,12 @@ Do **not** edit manually — re-run the script to refresh.
 - Spending Over Time
 - No cost data available
 
+## `frontend/src/components/costs/CostStripeChart.tsx`
+
+- Total
+- Failed to load cost data.
+- No cost data for the selected period
+
 ## `frontend/src/components/costs/CostWidget.tsx`
 
 - Cost Today
@@ -1228,8 +1244,9 @@ Do **not** edit manually — re-run the script to refresh.
 
 ## `frontend/src/components/dashboard/RecentMoments.tsx`
 
-- No recent activity yet.
 - Could not load recent activity.
+- No recent activity.
+- Sessions appear here as butlers process triggers.
 - View session details
 
 ## `frontend/src/components/dashboard/SessionStripeChart.tsx`
@@ -1259,7 +1276,7 @@ Do **not** edit manually — re-run the script to refresh.
 
 - Concept Map
 - Loading...
-- This curriculum has no concepts yet — the butler is still building it
+- This curriculum has no concepts yet. The butler is still building it.
 
 ## `frontend/src/components/education/NodeDetailPanel.tsx`
 
@@ -1279,7 +1296,7 @@ Do **not** edit manually — re-run the script to refresh.
 
 ## `frontend/src/components/education/RequestCurriculumDialog.tsx`
 
-- Request New Curriculum
+- Request curriculum
 - Topic
 - Goal (optional)
 - Cancel
@@ -1288,7 +1305,7 @@ Do **not** edit manually — re-run the script to refresh.
 
 ## `frontend/src/components/education/ReviewTimeline.tsx`
 
-- No reviews scheduled — keep learning and reviews will appear here.
+- No reviews scheduled. Keep learning and reviews will appear here.
 
 ## `frontend/src/components/education/StrugglingNodesCard.tsx`
 
@@ -1303,8 +1320,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Tags
 - Data
 - Created
-- No entities found
-- Entities will appear here as the General butler stores structured data.
+- No entities found.
+- Entities appear as the General butler stores structured data.
 - Search entities...
 
 ## `frontend/src/components/health/MeasurementChart.tsx`
@@ -1361,7 +1378,7 @@ Do **not** edit manually — re-run the script to refresh.
 ## `frontend/src/components/ingestion/ConnectorRulesSection.tsx`
 
 - Ingestion Rules
-- Add Rule
+- Add rule
 - Failed to load ingestion rules.
 - Priority
 - Rule
@@ -1425,7 +1442,7 @@ Do **not** edit manually — re-run the script to refresh.
 ## `frontend/src/components/ingestion/FiltersTabContent.tsx`
 
 - Filters
-- Deterministic ingestion policy — triage rules, thread affinity, and label filters.
+- Deterministic ingestion policy: triage rules, thread affinity, and label filters.
 - Filter controls will be implemented in a follow-up task.
 
 ## `frontend/src/components/ingestion/IngestionStatRow.tsx`
@@ -1469,8 +1486,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Tokens Out
 - Cost
 - Action
-- No ingestion events
-- Events will appear here once the system receives incoming messages.
+- No ingestion events.
+- Events appear once the system receives incoming messages.
 
 ## `frontend/src/components/ingestion/VolumeTrendChart.tsx`
 
@@ -1480,9 +1497,10 @@ Do **not** edit manually — re-run the script to refresh.
 ## `frontend/src/components/issues/IssuesPanel.tsx`
 
 - Issues
-- No issues recorded
 - View
 - Dismiss
+- No issues recorded.
+- Issues appear when butlers report errors or warnings.
 
 ## `frontend/src/components/layout/CommandPalette.tsx`
 
@@ -1578,11 +1596,11 @@ Do **not** edit manually — re-run the script to refresh.
 
 - Memory stats unavailable.
 - Episodes
-- Eden tier — raw session memories
+- Eden tier: raw session memories
 - Facts
-- Mid-term tier — consolidated knowledge
+- Mid-term tier: consolidated knowledge
 - Rules
-- Long-term tier — behavioral patterns
+- Long-term tier: behavioral patterns
 
 ## `frontend/src/components/notifications/notification-feed.tsx`
 
@@ -1596,7 +1614,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Channel
 - Message
 - Time
-- No notifications found
+- No notifications found.
 
 ## `frontend/src/components/notifications/notification-stats-bar.tsx`
 
@@ -1658,16 +1676,16 @@ Do **not** edit manually — re-run the script to refresh.
 - Archive
 - Delete
 - Delete contact?
-- No contacts found
-- Contacts will appear here as they are added through the Relationship butler.
+- No contacts found.
+- Contacts appear as they are added through the Relationship butler.
 - Search by name or ID...
 - Search contacts...
 
 ## `frontend/src/components/relationship/OwnerSetupBanner.tsx`
 
 - Owner identity incomplete
-- Set Up Identity
-- Set Up Owner Identity
+- Set up identity
+- Set up owner identity
 - Name
 - Telegram handle
 - Telegram chat ID
@@ -1695,7 +1713,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Detected
 - Actions
 - &mdash;
-- Confirm as New
+- Confirm as new
 - Archive
 - Type a name or email...
 
@@ -1731,7 +1749,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Best Match
 - Actions
 - &mdash;
-- Create New
+- Create new
 - Archive
 - Previous
 - Next
@@ -1758,8 +1776,6 @@ Do **not** edit manually — re-run the script to refresh.
 
 ## `frontend/src/components/schedules/ScheduleTable.tsx`
 
-- No schedules found.
-- Create one to get started.
 - Name
 - Cron
 - Mode
@@ -1776,6 +1792,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Off
 - Edit
 - Delete
+- No schedules found.
+- Add a schedule to run this butler on a recurring basis.
 
 ## `frontend/src/components/secrets/SecretFormModal.tsx`
 
@@ -1811,7 +1829,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Missing (null)
 - Edit secret
 - Delete secret
-- No secrets available
+- No secrets available.
 - No secret templates or configured values were found.
 
 ## `frontend/src/components/secrets/UserSecretFormModal.tsx`
@@ -1872,8 +1890,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Status
 - Tokens
 - &mdash;
-- No sessions found
-- Sessions will appear here as butlers process triggers and scheduled tasks.
+- No sessions found.
+- Sessions appear as butlers process triggers and scheduled tasks.
 
 ## `frontend/src/components/sessions/ToolCallTimeline.tsx`
 
@@ -2066,7 +2084,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Last sync
 - Re-authorization required
 - Disconnect
-- Set Client ID
+- Set client ID
 - 32-character hex string
 - Connect Spotify
 - Re-authorize
@@ -2107,7 +2125,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Scan this QR code
 - WhatsApp paired successfully!
 - Pairing timed out. The QR code was not scanned within 2 minutes.
-- Try Again
+- Try again
 - Retry
 - Link WhatsApp Account
 - Scan the QR code with your phone to connect your WhatsApp account.
@@ -2153,7 +2171,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Started:
 - Completed:
 - Connector is offline. Start/resume actions are disabled.
-- Create Backfill Job
+- Create backfill job
 - Start a historical replay for a connector. Only online connectors are listed.
 - Connector
 - Select a connector…
@@ -2167,8 +2185,8 @@ Do **not** edit manually — re-run the script to refresh.
 - (comma-separated, optional)
 - Cancel
 - Backfill History
-- Historical replay jobs — start, track, pause, or cancel per-connector backfills.
-- New Backfill Job
+- Historical replay jobs: start, track, pause, or cancel per-connector backfills.
+- New backfill job
 - Jobs
 - Failed to load backfill jobs. Check your connection and try again.
 - ID
@@ -2178,7 +2196,7 @@ Do **not** edit manually — re-run the script to refresh.
 - Cost / Cap
 - Created
 - Actions
-- No backfill jobs found. Click "New Backfill Job" to get started.
+- No backfill jobs found. Click "New backfill job" to get started.
 - Previous
 - Next
 - Pause job
@@ -2269,16 +2287,16 @@ Do **not** edit manually — re-run the script to refresh.
 
 ## `frontend/src/components/switchboard/RegistryTable.tsx`
 
-- No butlers registered in the switchboard.
 - Name
 - Endpoint
 - Modules
 - Description
 - Last Seen
+- No butlers registered in the switchboard.
+- Butlers appear here when they connect to the switchboard.
 
 ## `frontend/src/components/switchboard/RoutingLogTable.tsx`
 
-- No routing log entries found.
 - Clear filters
 - Timestamp
 - Source
@@ -2289,6 +2307,8 @@ Do **not** edit manually — re-run the script to refresh.
 - Error
 - Previous
 - Next
+- No routing log entries found.
+- Entries appear as inter-butler requests pass through the switchboard.
 - Source butler...
 - Target butler...
 
@@ -2352,9 +2372,9 @@ Do **not** edit manually — re-run the script to refresh.
 
 ## `frontend/src/components/timeline/UnifiedTimeline.tsx`
 
-- Load More
-- No events found
-- Events will appear here as butlers process sessions and tasks.
+- Load more
+- No events found.
+- Events appear as butlers process sessions and tasks.
 
 ## `frontend/src/components/topology/TopologyGraph.tsx`
 
@@ -2394,7 +2414,6 @@ Do **not** edit manually — re-run the script to refresh.
 
 ## `frontend/src/components/workspace/Scrubber.tsx`
 
-- No location points
 - Timeline scrubber
 
 ## `frontend/src/components/workspace/TimeWindowPicker.tsx`
@@ -2407,4 +2426,4 @@ Do **not** edit manually — re-run the script to refresh.
 - Preset windows
 
 ---
-*Total strings: 1887*
+*Total strings: 1903*

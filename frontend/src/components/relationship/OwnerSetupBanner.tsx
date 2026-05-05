@@ -233,7 +233,7 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
           </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Set Up Owner Identity</DialogTitle>
+              <DialogTitle>Set up owner identity</DialogTitle>
               <DialogDescription>
                 Fill in your real name and contact details so butlers can recognise you
                 across channels and syncs match correctly.

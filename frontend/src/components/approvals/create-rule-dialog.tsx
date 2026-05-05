@@ -85,7 +85,7 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
     >
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>Create Standing Rule</DialogTitle>
+          <DialogTitle>Create standing rule</DialogTitle>
           <DialogDescription>
             Auto-approve matching tool calls without manual review.
           </DialogDescription>
@@ -187,7 +187,7 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
             onClick={handleSubmit}
             disabled={!isValid || createMutation.isPending}
           >
-            {createMutation.isPending ? "Creating..." : "Create Rule"}
+            {createMutation.isPending ? "Creating..." : "Create rule"}
           </Button>
         </DialogFooter>
       </DialogContent>
