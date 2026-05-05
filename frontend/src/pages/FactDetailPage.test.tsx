@@ -108,6 +108,13 @@ describe("FactDetailPage — layout", () => {
     expect(html).toContain("/memory");
     expect(html).toContain("Facts");
   });
+
+  it("renders breadcrumb with fact subject (spec: Memory > Facts > {subject})", () => {
+    setFactState(BASE_FACT);
+    const html = renderPage();
+    // Third breadcrumb should show the fact subject "Alice", not entity_name "Alice Example"
+    expect(html).toMatch(/Facts.*Alice.*<\/nav>/);
+  });
 });
 
 describe("FactDetailPage — body content", () => {
