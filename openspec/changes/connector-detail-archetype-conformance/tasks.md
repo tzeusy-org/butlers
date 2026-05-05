@@ -1,16 +1,16 @@
 ## 1. Spec Authoring
 
 - [x] 1.1 Decide ConnectorDetailPage spec home (connector-base-spec chosen; see proposal.md).
-- [x] 1.2 Write delta spec: `delta-specs/connector-base-spec/spec-delta.md` with
+- [x] 1.2 Write delta spec: `specs/connector-base-spec/spec.md` with
       archetype conformance requirement and slot mappings.
-- [ ] 1.3 Run `openspec validate connector-detail-archetype-conformance` and confirm pass.
+- [x] 1.3 Run `openspec validate connector-detail-archetype-conformance` and confirm pass.
 
 ## 2. Verification
 
-- [ ] 2.1 Verify `frontend/src/pages/ConnectorDetailPage.tsx` uses `<DetailPage>` with
+- [x] 2.1 Verify `frontend/src/pages/ConnectorDetailPage.tsx` uses `<DetailPage>` with
       `pulse`, `primary`, and `auxiliary` slots matching the delta spec (code-only check,
       no implementation change needed).
-- [ ] 2.2 Confirm `openspec/specs/connector-base-spec/spec.md` does not already contain
+- [x] 2.2 Confirm `openspec/specs/connector-base-spec/spec.md` does not already contain
       an archetype conformance requirement (it does not as of the commit that merges this
       change).
 

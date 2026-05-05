@@ -2,7 +2,7 @@
 
 ### Requirement: ConnectorDetailPage conforms to the detail-page archetype
 
-The `ConnectorDetailPage` at `/ingestion/connectors/:connectorType/:endpointIdentity` SHALL conform to the detail-page archetype defined in the `detail-page-archetype` spec. The page MUST use the `<DetailPage>` shell (from `@/components/layout/DetailPage`) which wraps `<Page archetype="detail">` and enforces the six-tier body-slot contract.
+The `ConnectorDetailPage` at `/ingestion/connectors/:connectorType/:endpointIdentity` SHALL conform to the detail-page archetype defined in the `detail-page-archetype` spec. The page MUST conform to the six-tier body-slot contract, implemented via `<DetailPage>` (from `@/components/layout/DetailPage`) or direct use of `<Page archetype="detail">` with equivalent slot wiring.
 
 **This requirement is a companion to `§Requirement: Dashboard Connector Page`.**
 That requirement specifies what data to display; this requirement specifies how the
@@ -18,25 +18,27 @@ The six archetype tiers map to ConnectorDetailPage as follows:
 
 | Tier | Slot | ConnectorDetailPage content |
 |---|---|---|
-| 1 | Header-hero (shell-owned) | `record.title` = `connector_type` (titleized); `record.subtitle` = `endpoint_identity`; breadcrumbs = Ingestion → Connectors → {connector_type} |
+| 1 | Header-hero (shell-owned) | `record.title` = `connector_type` (raw, e.g., `"gmail"`, `"telegram_bot"`); `record.subtitle` = `endpoint_identity`; breadcrumbs = Ingestion → Connectors → {connector_type} |
 | 2 | Pulse (optional) | Ingest health strip: liveness badge, last heartbeat age, today's ingestion count. Currently `null`; a future `<PulseStrip>` implementation is the target. |
 | 3 | Primary (required) | Events feed surface: Status card (liveness, uptime, last seen, first seen, registered via), Lifetime Counters card, Discretion Settings card, Batch Settings card (conditional), Period Summary card, Volume Trend chart, Connector-scoped Ingestion Rules section. |
 | 4 | Supporting (omitted) | Not applicable. ConnectorDetailPage has no natural two-column supporting panels. |
 | 5 | Auxiliary (optional) | Checkpoint Cursor card — a dangerous operator action (resets replay position on next restart). Rendered below the primary stack. Omitted when connector data is not loaded. |
-| 6 | Practical drawer (reserved) | Reset / delete actions (destructive operator controls). Currently not implemented. MUST use `<PracticalDrawer>` when added. |
+| 6 | Practical drawer (reserved) | Reset / delete actions (destructive operator controls). Currently not implemented. MUST use a collapsible practical drawer in the `practical` slot when added. |
 
 #### Shell adoption
 
 1. **`<Page archetype="detail">` adoption via `<DetailPage>`.**
-   The page MUST use `<DetailPage record={...} breadcrumbs={...} loading={...} error={...} pulse={...} primary={...} auxiliary={...} practical={...} />`.
+   The preferred implementation is `<DetailPage record={...} breadcrumbs={...} loading={...} error={...} pulse={...} primary={...} auxiliary={...} practical={...} />`.
    The `<DetailPage>` wrapper forwards all props to `<Page archetype="detail">` and
    enforces the slot layout. Direct use of `<Page archetype="detail">` without the
-   `<DetailPage>` wrapper is also acceptable if the slot contract is preserved.
+   `<DetailPage>` wrapper is also acceptable when the full slot contract is preserved.
 
 2. **Title — record-identity.** The `record.title` prop MUST be the connector's own
-   `connector_type` field (e.g., `"gmail"`, `"telegram_bot"`). It MUST NOT be the
-   generic string `"Connector"`. When the connector record is not yet loaded, the
-   `connectorType` URL parameter MAY be used as a fallback.
+   `connector_type` field (e.g., `"gmail"`, `"telegram_bot"`). When the connector record
+   is not yet loaded, the `connectorType` URL parameter MUST be used as a fallback.
+   The static string `"Connector"` MUST NOT be used as a meaningful title; it is only
+   acceptable as a last-resort guard when the URL parameter is also absent (which
+   indicates a routing error).
 
 3. **Subtitle.** The `record.subtitle` prop MUST be the connector's `endpoint_identity`
    (e.g., `"gmail:user:alice@gmail.com"`). This uniquely identifies the connector
@@ -64,8 +66,11 @@ The six archetype tiers map to ConnectorDetailPage as follows:
 
 9. **Practical slot (reserved).** Reset and delete actions MUST NOT be placed inside the
    `primary` or `auxiliary` slots when implemented. They MUST be placed inside the
-   `practical` slot using `<PracticalDrawer>`, collapsed by default. The drawer label
-   MUST clearly communicate that it contains destructive operations.
+   `practical` slot using a collapsible drawer component, collapsed by default. The drawer
+   label MUST clearly communicate that it contains destructive operations. Note: the
+   existing `<PracticalDrawer>` at `@/components/relationship/PracticalDrawer` is
+   entity-specific; a connector-appropriate drawer component must be created or extracted
+   when this slot is implemented.
 
 #### Scenario: ConnectorDetailPage uses shell loading state
 
@@ -84,8 +89,8 @@ The six archetype tiers map to ConnectorDetailPage as follows:
 #### Scenario: ConnectorDetailPage title shows connector type
 
 - **WHEN** the connector has `connector_type = "gmail"`
-- **THEN** the `<h1>` rendered by the shell MUST read "gmail" (or titleized: "Gmail")
-- **AND** it MUST NOT read "Connector" or "Connector Detail"
+- **THEN** the `<h1>` rendered by the shell MUST read `"gmail"` (the raw `connector_type` value)
+- **AND** it MUST NOT read `"Connector"` or `"Connector Detail"`
 
 #### Scenario: Endpoint identity shown as subtitle
 
@@ -108,10 +113,9 @@ The six archetype tiers map to ConnectorDetailPage as follows:
 #### Scenario: Destructive actions use practical drawer
 
 - **WHEN** reset or delete connector actions are added to ConnectorDetailPage
-- **THEN** they MUST be placed inside the `practical` slot using `<PracticalDrawer>`
+- **THEN** they MUST be placed inside the `practical` slot using a collapsible drawer component
 - **AND** the drawer MUST be collapsed by default
-- **AND** the drawer MUST NOT place destructive actions inside the `primary` or
-  `auxiliary` slots
+- **AND** destructive actions MUST NOT be placed inside the `primary` or `auxiliary` slots
 
 ## Source References
 
