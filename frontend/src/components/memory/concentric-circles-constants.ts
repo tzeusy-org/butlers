@@ -60,10 +60,12 @@ export function getInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-/** Case-insensitive substring match against the entry's canonical_name. */
+/** Case-insensitive substring match against the entry's canonical_name or any alias. */
 export function matchesSearch(entry: DunbarEntry, query: string): boolean {
   if (!query) return true;
-  return entry.canonical_name.toLowerCase().includes(query.toLowerCase());
+  const q = query.toLowerCase();
+  if (entry.canonical_name.toLowerCase().includes(q)) return true;
+  return (entry.aliases ?? []).some((alias) => alias.toLowerCase().includes(q));
 }
 
 /** Place N nodes evenly around a circle of radius r, centered at cx,cy. */

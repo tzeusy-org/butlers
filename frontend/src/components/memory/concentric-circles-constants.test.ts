@@ -8,7 +8,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { truncateGraphemes } from "@/components/memory/concentric-circles-constants";
+import { matchesSearch, truncateGraphemes } from "@/components/memory/concentric-circles-constants";
+import type { DunbarEntry } from "@/api/types";
 
 describe("truncateGraphemes", () => {
   it("returns the string unchanged when it is within the limit", () => {
@@ -71,5 +72,77 @@ describe("truncateGraphemes", () => {
     // Graphemes 0-4: H, i, " ", 🎉, " " → "Hi 🎉 …"
     expect(result).toBe("Hi 🎉 …");
     expect(result).not.toContain("�");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchesSearch
+// ---------------------------------------------------------------------------
+
+function makeEntry(overrides: Partial<DunbarEntry> = {}): DunbarEntry {
+  return {
+    contact_id: "c-1",
+    entity_id: "e-1",
+    canonical_name: "Alice Nguyen",
+    dunbar_tier: 15,
+    dunbar_score: 0.7,
+    dunbar_tier_override: false,
+    ...overrides,
+  };
+}
+
+describe("matchesSearch", () => {
+  it("returns true for empty query", () => {
+    expect(matchesSearch(makeEntry(), "")).toBe(true);
+  });
+
+  it("matches by canonical_name (case-insensitive)", () => {
+    const entry = makeEntry({ canonical_name: "Alice Nguyen" });
+    expect(matchesSearch(entry, "alice")).toBe(true);
+    expect(matchesSearch(entry, "NGUYEN")).toBe(true);
+    expect(matchesSearch(entry, "ali")).toBe(true);
+  });
+
+  it("returns false when query matches neither canonical_name nor aliases", () => {
+    const entry = makeEntry({ canonical_name: "Alice Nguyen", aliases: ["Ally"] });
+    expect(matchesSearch(entry, "bob")).toBe(false);
+  });
+
+  it("matches by alias (alias-only match, canonical_name does not match)", () => {
+    const entry = makeEntry({
+      canonical_name: "Alice Nguyen",
+      aliases: ["Ally", "Allie N"],
+    });
+    expect(matchesSearch(entry, "ally")).toBe(true);
+    expect(matchesSearch(entry, "Allie")).toBe(true);
+  });
+
+  it("alias match is case-insensitive", () => {
+    const entry = makeEntry({
+      canonical_name: "Alice Nguyen",
+      aliases: ["ALLY"],
+    });
+    expect(matchesSearch(entry, "ally")).toBe(true);
+    expect(matchesSearch(entry, "ALLY")).toBe(true);
+  });
+
+  it("matches partial alias substring", () => {
+    const entry = makeEntry({
+      canonical_name: "Robert Smith",
+      aliases: ["Bobby"],
+    });
+    expect(matchesSearch(entry, "obb")).toBe(true);
+  });
+
+  it("returns true when aliases is undefined", () => {
+    const entry = makeEntry({ canonical_name: "Alice Nguyen", aliases: undefined });
+    expect(matchesSearch(entry, "alice")).toBe(true);
+    expect(matchesSearch(entry, "bob")).toBe(false);
+  });
+
+  it("returns true when aliases is an empty array", () => {
+    const entry = makeEntry({ canonical_name: "Alice Nguyen", aliases: [] });
+    expect(matchesSearch(entry, "alice")).toBe(true);
+    expect(matchesSearch(entry, "bob")).toBe(false);
   });
 });

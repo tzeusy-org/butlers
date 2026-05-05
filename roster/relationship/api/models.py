@@ -359,6 +359,7 @@ class DunbarEntry(BaseModel):
     dunbar_score: float
     dunbar_tier_override: bool
     avatar_url: str | None = None
+    aliases: list[str] = Field(default_factory=list)
 
 
 class DunbarRankingResponse(BaseModel):

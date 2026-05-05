@@ -2982,7 +2982,7 @@ async def get_dunbar_ranking(
     entity_name_rows, avatar_rows, owner_row = await asyncio.gather(
         pool.fetch(
             """
-            SELECT e.id, e.canonical_name
+            SELECT e.id, e.canonical_name, e.aliases
             FROM public.entities e
             WHERE e.id = ANY($1::uuid[])
             """,
@@ -3006,6 +3006,9 @@ async def get_dunbar_ranking(
     )
 
     entity_names: dict[UUID, str] = {row["id"]: row["canonical_name"] for row in entity_name_rows}
+    entity_aliases: dict[UUID, list[str]] = {
+        row["id"]: list(row["aliases"]) if row["aliases"] else [] for row in entity_name_rows
+    }
     contact_avatars: dict[UUID, str | None] = {row["id"]: row["avatar_url"] for row in avatar_rows}
 
     entries: list[DunbarEntry] = [
@@ -3017,6 +3020,7 @@ async def get_dunbar_ranking(
             dunbar_score=r["dunbar_score"],
             dunbar_tier_override=r.get("dunbar_tier_override", False),
             avatar_url=contact_avatars.get(r["contact_id"]),
+            aliases=entity_aliases.get(r["entity_id"], []),
         )
         for r in ranked
         if r["entity_id"] is not None
