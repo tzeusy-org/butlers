@@ -16,7 +16,6 @@ Coverage:
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -194,15 +193,16 @@ class TestDiagnosticStart:
         nodes = _node_inventory_rows()
         # Pool operations order:
         # 1. fetchrow — verify mind map exists
-        # 2. fetchval — state_get (KV lookup); returns None or JSON-encoded flow
+        # 2. fetchval — state_get (KV lookup); returns None or flow dict (codec-decoded)
         # 3. fetch    — get all nodes
         # 4. fetchval — state_set (KV upsert, RETURNING version); returns int
         pool = MagicMock()
         pool.fetchrow = AsyncMock(return_value=_make_row({"id": MAP_ID}))
 
-        flow_json = json.dumps(existing_flow) if existing_flow else None
+        # With the JSONB codec registered, asyncpg decodes JSONB columns to Python
+        # objects on read — the mock therefore provides the dict directly (not JSON-encoded).
         # Two fetchval calls: first is state_get, second is state_set RETURNING version
-        pool.fetchval = AsyncMock(side_effect=[flow_json, 1])
+        pool.fetchval = AsyncMock(side_effect=[existing_flow, 1])
         pool.fetch = AsyncMock(return_value=nodes)
         return pool, nodes
 
@@ -225,7 +225,7 @@ class TestDiagnosticStart:
         pool, _nodes = await self._make_start_pool()
         await diagnostic_start(pool, MAP_ID)
 
-        # The second fetchval call (state_set RETURNING version) carries the stored JSON
+        # The second fetchval call (state_set RETURNING version) carries the stored dict
         # as the third positional argument.
         assert pool.fetchval.await_count == 2
         state_set_call_args = pool.fetchval.call_args_list[1][0]
@@ -314,7 +314,7 @@ def _make_record_probe_pool(
     Build a pool for diagnostic_record_probe.
 
     Pool direct calls (in order):
-    - fetchval[0]: state_get — returns JSON-encoded flow_state
+    - fetchval[0]: state_get — returns flow dict (codec-decoded, not JSON-encoded)
     - fetchval[1]: state_set RETURNING version — returns int
 
     Pool.acquire() → conn:
@@ -330,11 +330,12 @@ def _make_record_probe_pool(
         "concept_inventory": [],
     }
     stored_flow = flow_state if flow_state is not None else default_flow
-    flow_json = json.dumps(stored_flow)
 
     pool = MagicMock()
-    # Two fetchval calls: state_get returns flow JSON, state_set returns version int
-    pool.fetchval = AsyncMock(side_effect=[flow_json, 1])
+    # With the JSONB codec registered, asyncpg decodes JSONB columns to Python
+    # objects on read — the mock therefore provides the dict directly (not JSON-encoded).
+    # Two fetchval calls: state_get returns flow dict, state_set returns version int
+    pool.fetchval = AsyncMock(side_effect=[stored_flow, 1])
 
     # Connection inside acquire() context manager
     conn = _make_conn_with_transaction(
@@ -387,7 +388,7 @@ class TestDiagnosticRecordProbe:
         from butlers.tools.education.diagnostic import diagnostic_record_probe
 
         pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=json.dumps({"status": "planning"}))
+        pool.fetchval = AsyncMock(return_value={"status": "planning"})
 
         with pytest.raises(ValueError, match="diagnosing"):
             await diagnostic_record_probe(pool, MAP_ID, NODE_ID_A, quality=3, inferred_mastery=0.5)
@@ -666,7 +667,7 @@ def _make_complete_pool(
     Build a pool for diagnostic_complete.
 
     Pool direct calls (in order):
-    - fetchval[0]: state_get — returns JSON-encoded flow_state
+    - fetchval[0]: state_get — returns flow dict (codec-decoded, not JSON-encoded)
     - fetch:       SELECT mastery_status for probed nodes
     - fetchval[1]: state_set RETURNING version — returns int
     """
@@ -698,8 +699,10 @@ def _make_complete_pool(
     rows = node_status_rows if node_status_rows is not None else default_node_rows
 
     pool = MagicMock()
-    # Two fetchval calls: state_get returns flow JSON, state_set returns version int
-    pool.fetchval = AsyncMock(side_effect=[json.dumps(stored_flow), 1])
+    # With the JSONB codec registered, asyncpg decodes JSONB columns to Python
+    # objects on read — the mock therefore provides the dict directly (not JSON-encoded).
+    # Two fetchval calls: state_get returns flow dict, state_set returns version int
+    pool.fetchval = AsyncMock(side_effect=[stored_flow, 1])
     pool.fetch = AsyncMock(return_value=rows)
     return pool
 
@@ -713,7 +716,7 @@ class TestDiagnosticComplete:
         pool = _make_complete_pool()
         await diagnostic_complete(pool, MAP_ID)
 
-        # The second fetchval call (state_set RETURNING version) carries the stored JSON
+        # The second fetchval call (state_set RETURNING version) carries the stored dict
         # as the third positional argument.
         assert pool.fetchval.await_count == 2
         state_set_call_args = pool.fetchval.call_args_list[1][0]

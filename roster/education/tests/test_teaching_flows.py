@@ -246,17 +246,15 @@ class TestValidateStateInvariants:
 
 
 class TestGetStateWithVersion:
-    async def test_double_encoded_jsonb_returns_dict(self) -> None:
-        """_get_state_with_version handles double-encoded JSONB (str wrapping JSON text)."""
-        import json
-
+    async def test_dict_value_returns_dict(self) -> None:
+        """_get_state_with_version returns a dict when the asyncpg codec delivers a dict."""
         from butlers.tools.education.teaching_flows import _get_state_with_version
 
         map_id = str(uuid.uuid4())
         state = _pending_state(map_id)
-        # Simulate double-encoded JSONB: value column is a string containing JSON text
-        double_encoded = json.dumps(json.dumps(state))
-        pool = _make_pool(fetchrow_returns=[_make_row({"value": double_encoded, "version": 1})])
+        # With the JSONB codec registered, asyncpg decodes JSONB columns to Python
+        # objects on read — the mock therefore provides a dict directly.
+        pool = _make_pool(fetchrow_returns=[_make_row({"value": state, "version": 1})])
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}"
@@ -264,15 +262,13 @@ class TestGetStateWithVersion:
         assert result["mind_map_id"] == map_id
         assert version == 1
 
-    async def test_single_encoded_jsonb_returns_dict(self) -> None:
-        """_get_state_with_version handles normal single-encoded JSONB."""
-        import json
-
+    async def test_decoded_jsonb_preserves_fields(self) -> None:
+        """_get_state_with_version correctly passes through all state fields."""
         from butlers.tools.education.teaching_flows import _get_state_with_version
 
         map_id = str(uuid.uuid4())
         state = _pending_state(map_id)
-        pool = _make_pool(fetchrow_returns=[_make_row({"value": json.dumps(state), "version": 2})])
+        pool = _make_pool(fetchrow_returns=[_make_row({"value": state, "version": 2})])
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict)
