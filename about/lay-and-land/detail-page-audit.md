@@ -1,4 +1,4 @@
-# Detail Page Audit — Picking the Canonical Drilldown Layout
+# Detail Page Audit: Picking the Canonical Drilldown Layout
 
 > Status: **maintainability decision**. Inventories the seven (currently
 > shipping) detail pages in the dashboard, scores them against Butlers'
@@ -11,7 +11,7 @@
 > [`frontend.md`](frontend.md) Page Archetype C, "Detail / drilldown".
 > Engineering bar: [`about/craft-and-care/engineering-bar.md`](../craft-and-care/engineering-bar.md).
 
-The seven pages do the same job — render one record — and they do it
+The seven pages do the same job (render one record) and they do it
 seven different ways. This document picks one, justifies it, and lists
 what the others have to absorb before they can be migrated to it.
 
@@ -39,19 +39,19 @@ its body composes, what actions it offers, whether it uses tabs.
 - **Actions:** `ChatPanel` (chat with this butler) is the only top-level
   action; everything else lives inside individual tabs.
 - **Loading / error / empty states:** there is no top-level loading
-  guard — each tab handles its own. Sub-components (e.g.
+  guard; each tab handles its own. Sub-components (e.g.
   `ButlerSessionsTab`) build their own pagination, drawer, and empty
   states inline (lines 119–193).
-- **Tabs:** yes — central to the layout.
+- **Tabs:** yes: central to the layout.
 
 ### 1.2 `ContactDetailPage.tsx` (44 lines)
 
 `frontend/src/pages/ContactDetailPage.tsx`
 
 - **Header:** breadcrumbs only (lines 19–24). The page itself owns
-  *no* H1 or status — it delegates entirely to `ContactDetailView` in
+  *no* H1 or status; it delegates entirely to `ContactDetailView` in
   `components/relationship/ContactDetailView.tsx`.
-- **Body:** `<ContactDetailView contact={contact} />` (line 41) — a
+- **Body:** `<ContactDetailView contact={contact} />` (line 41), a
   952-line component that renders one `Card` with the contact's full
   name as `CardTitle`, info rows, role badges, preferred-channel row,
   and the entity-link row.
@@ -63,7 +63,7 @@ its body composes, what actions it offers, whether it uses tabs.
   block (lines 35–39).
 - **Tabs:** no.
 
-This is the **thinnest** page in the seven — and the one that does the
+This is the **thinnest** page in the seven, and the one that does the
 most by composition. Its only original sin is that the delegated view
 has hex literals (`#7c3aed`, `#b45309`, `#0369a1`, plus an eight-color
 hash palette) at lines 53–62 and 69–77 of `ContactDetailView.tsx`.
@@ -87,7 +87,7 @@ hash palette) at lines 53–62 and 69–77 of `ContactDetailView.tsx`.
   child components.
 - **Loading / error:** page-level skeleton (3 blocks) + destructive
   text block (lines 1936–1948).
-- **Tabs:** no — chosen over tabs deliberately. Sections are
+- **Tabs:** no: chosen over tabs deliberately. Sections are
   vertical and stateful, with `PracticalDrawer` providing the only
   fold.
 
@@ -101,14 +101,14 @@ is now the most semantically clean of the heavyweights.
 `frontend/src/pages/EpisodeDetailPage.tsx`
 
 - **Header:** breadcrumbs (lines 21–27). No H1. The "title" is
-  literally `<CardTitle className="text-2xl">Episode</CardTitle>` —
+  literally `<CardTitle className="text-2xl">Episode</CardTitle>`:
   generic, not the record's own name.
 - **Body:** one `Card` containing content, status row (Importance /
   Consolidated), details row (session id / refs / expires), metadata
   JSON, timestamps (lines 43–142).
 - **Actions:** none. Read-only.
 - **Loading / error:** page-level three-skeleton stack and
-  destructive text (lines 29–41) — **identical shape** to
+  destructive text (lines 29–41), **identical shape** to
   ContactDetailPage and FactDetailPage.
 - **Tabs:** no.
 
@@ -118,7 +118,7 @@ is now the most semantically clean of the heavyweights.
 
 - **Header:** breadcrumbs (lines 78–84). No H1; the `CardTitle` at
   line 105 *does* render the record's identity (entity link / subject)
-  with the predicate as a sub-line — closer to a real header than
+  with the predicate as a sub-line, closer to a real header than
   Episode's.
 - **Body:** one `Card` with sections for Content, Status row
   (Confidence / Permanence / Validity / Scope), Metrics, Provenance,
@@ -129,7 +129,7 @@ is now the most semantically clean of the heavyweights.
 - **Tabs:** no.
 
 The flagged inline `style={{ width: \`${pct}%\` }}` is real and
-load-bearing at line 64 — the confidence progress bar. This is
+load-bearing at line 64 (the confidence progress bar). This is
 unavoidable in stock Tailwind without an arbitrary value or a
 `<Progress>` primitive.
 
@@ -138,7 +138,7 @@ unavoidable in stock Tailwind without an arbitrary value or a
 `frontend/src/pages/RuleDetailPage.tsx`
 
 - **Header:** breadcrumbs (lines 81–87). No H1; `CardTitle` reads
-  literally `Rule` (line 107) — same generic-title problem as Episode.
+  literally `Rule` (line 107): same generic-title problem as Episode.
 - **Body:** one `Card` with Content, Status row (Maturity / Scope /
   Permanence), Effectiveness row (with progress bar + applied /
   successes / harmful counts), Confidence row, Provenance, Tags,
@@ -148,18 +148,18 @@ unavoidable in stock Tailwind without an arbitrary value or a
   block.
 - **Tabs:** no.
 
-The flagged inline `style={{ width }}` at line 65 is real — same
+The flagged inline `style={{ width }}` at line 65 is real, same
 progress-bar pattern as FactDetailPage. The `permanenceBadge` helper
 (lines 37–54) is **duplicated verbatim** between this file and
 `FactDetailPage.tsx` (lines 14–31). Two names, one shape, two code
-paths — exactly the smell the interfaces-and-dependencies rule names.
+paths, exactly the smell the interfaces-and-dependencies rule names.
 
 ### 1.7 `ConnectorDetailPage.tsx` (569 lines)
 
 `frontend/src/pages/ConnectorDetailPage.tsx`
 
 - **Header:** an explicit `<Button asChild>` "Back to Connectors"
-  link (lines 172–179) **instead of** breadcrumbs — and an
+  link (lines 172–179) **instead of** breadcrumbs, and an
   ad-hoc title block at lines 181–200 with `connector_type` as H1 and
   `endpoint_identity` as a font-mono sub-line. The only one of the
   seven without breadcrumbs.
@@ -195,7 +195,7 @@ Scale: 1 (worst) – 5 (best). Five axes, weighted equally.
 
 Comparison-only (not scored, but noted): **`QaInvestigationDetailPage`
 (score-equivalent ~21)** invented something better than any of the
-seven — see §3.5 for why it almost won.
+seven (see §3.5 for why it almost won).
 
 ### Axis-by-axis evidence
 
@@ -228,7 +228,7 @@ seven — see §3.5 for why it almost won.
   inline duplication of badge or layout helpers at the page layer.
 - **EntityDetailPage (4).** Inside its 2,240-line file, sub-components
   are reused thoroughly. *Outside* the file, `SecuredInfoEntry` is
-  near-identically replicated in `ContactDetailView.tsx` lines 84–144 —
+  near-identically replicated in `ContactDetailView.tsx` lines 84–144:
   but that is a contact-vs-entity duplication, not a detail-page-shape
   one.
 - **EpisodeDetailPage (2).** Doesn't duplicate code itself, but it
@@ -240,7 +240,7 @@ seven — see §3.5 for why it almost won.
   `style={{...}}`, all colors via semantic tokens
   (`text-muted-foreground`, `bg-muted/30`, `bg-emerald-600`). The lone
   named-color violation is `bg-emerald-600 text-white` on the
-  Consolidated badge (line 80) — a Tailwind palette name, not a hex.
+  Consolidated badge (line 80): a Tailwind palette name, not a hex.
 - **ConnectorDetailPage (5).** Likewise zero hex / zero inline style.
   All status color comes from a delegated `LivenessBadge` component
   and `bg-destructive/10`.
@@ -249,7 +249,7 @@ seven — see §3.5 for why it almost won.
   call-outs that the brief flagged. The page does still rely on
   `bg-emerald-600`-style Tailwind palette names in child components.
 - **FactDetailPage / RuleDetailPage (3).** Real inline
-  `style={{ width: \`${pct}%\` }}` for progress bars — the only
+  `style={{ width: \`${pct}%\` }}` for progress bars, the only
   inline-style violations in the seven. `bg-blue-600` /
   `bg-amber-500` / etc. live inside their badge helpers.
 - **ContactDetailPage (2).** The delegated view has the worst leak:
@@ -265,8 +265,8 @@ seven — see §3.5 for why it almost won.
 
 - **EpisodeDetailPage / FactDetailPage / RuleDetailPage /
   ContactDetailPage (4 each).** All four use the *same three-line
-  skeleton stack* and the *same destructive-text-center error block*
-  — verbatim. This is the most consistent pattern in the
+  skeleton stack* and the *same destructive-text-center error block*,
+  verbatim. This is the most consistent pattern in the
   detail-page family, and any canonical shell should adopt it
   literally:
 
@@ -305,11 +305,11 @@ seven — see §3.5 for why it almost won.
 - **ButlerDetailPage (4).** Adding a tab is "add an entry to
   `BASE_TABS`, add a `TabsTrigger`, add a `TabsContent`, optionally
   lazy-load the body." Mechanical, slightly verbose.
-- **ConnectorDetailPage (4).** Same additive-card pattern — drop a
+- **ConnectorDetailPage (4).** Same additive-card pattern: drop a
   new `<Card>` in the stack.
 - **EpisodeDetailPage / FactDetailPage / RuleDetailPage (3 each).**
   Single-card structure means a "new section" *inside* the record is a
-  new sibling div in `CardContent` — fine for one or two more rows,
+  new sibling div in `CardContent`, fine for one or two more rows,
   but the card grows unwieldy fast and there is no boundary between
   "metadata" and "actions".
 - **ContactDetailPage (3).** The page itself is trivially extensible
@@ -338,7 +338,7 @@ The doctrine in `design-language.md` says (lines 197–212):
 >    Each page declares its archetype.
 
 EpisodeDetailPage scores well only because it is *trivial*. It has no
-record-specific title (`<CardTitle>Episode</CardTitle>` line 48 — the
+record-specific title (`<CardTitle>Episode</CardTitle>` line 48, the
 title is the *type*, not the *record*), no mutation, no progressive
 disclosure, no actions, no nested sections. Propagating that shape
 would force every drilldown back to a single-card flatland. That
@@ -364,7 +364,7 @@ EntityDetailPage is the only page in the seven that:
    its own data hook. The page itself, lines 1927–2238, reads top-to-
    bottom as a layout outline. *That* is the readable, explicit page.
 4. **Hides power, not policy.** The hex-literal call-outs the brief
-   flagged at lines 313/316 are gone — the file now has zero hex
+   flagged at lines 313/316 are gone; the file now has zero hex
    literals and zero inline `style={{...}}` (verified by `grep -nE
    "#[0-9a-fA-F]{6}"` returning nothing). It is the only large detail
    page that has earned this.
@@ -427,13 +427,13 @@ JSX.
   481–485, with `<StatusBadge>` and `<SeverityBadge>` adjacent to the
   H1).
 - **Conditional auxiliaries.** `MessageThreadsSection` and
-  `LinkedContactsList` *render nothing* if their data is empty — they
+  `LinkedContactsList` *render nothing* if their data is empty; they
   internalize the empty check (verify via `grep`). This is the
   "hide when empty" rule that QA pages also follow (e.g.
   `TriggeringSessionsCard` returns `null` at line 231 of
   `QaInvestigationDetailPage.tsx`). Fact / Rule / Episode pages keep
   empty rows visible, leaving "No provenance data." stub copy
-  (FactDetailPage line 226) — chatty, not honest.
+  (FactDetailPage line 226): chatty, not honest.
 - **Practical drawer.** A collapsed-by-default fold for credentials
   and integrations is the cleanest answer to "I have settings-y
   fields that don't belong on the primary read surface". The
@@ -448,7 +448,7 @@ because the file is huge and crammed with feature-specific code
 provenance, message threads). The *layout pattern* is excellent, but
 the *file* is doing too much.
 
-The fix is not to redesign — it is to **extract the layout pattern**.
+The fix is not to redesign; it is to **extract the layout pattern**.
 Lines 1927–2238 are the canonical shell; the rest of the file is
 "things one entity page happens to need." A `<DetailPage>` shell that
 owns lines 1929–1948 (breadcrumbs + L/E states) and exposes slots for
@@ -461,7 +461,7 @@ remaining 2,000 lines collapse into named child components.
 cards" detail page in the dashboard. Its strengths:
 
 - **Page-level loading** via `<PageSkeleton />` (lines 401–417,
-  invoked at line 448) — a *named* skeleton, not an inline three-stack.
+  invoked at line 448): a *named* skeleton, not an inline three-stack.
 - **Status badges adjacent to H1** (lines 481–485):
   `<h1 className="text-2xl font-bold tracking-tight">Investigation
   Detail</h1> <StatusBadge> <SeverityBadge>`.
@@ -474,17 +474,17 @@ cards" detail page in the dashboard. Its strengths:
   (e.g. `TriggeringSessionsCard` line 231, `PrCard` line 264). Honest
   empty handling.
 - **Page skeleton sized to match the page.** Two cards in the
-  skeleton matches three cards in the page — close enough that the
+  skeleton matches three cards in the page, close enough that the
   layout doesn't shift.
 
 It loses to Entity on **two narrow but load-bearing axes**:
 
 1. The H1 reads "Investigation Detail," not the record's identity.
-   Every page in the codebase that does this — Episode, Rule,
-   Investigation, Patrol, Session — is failing the doctrine's
+   Every page in the codebase that does this (Episode, Rule,
+   Investigation, Patrol, Session) is failing the doctrine's
    "owner-direct" voice rule. The H1 must be the *thing*, not the
    *type-of-thing*.
-2. No real composition primitive — it is a hand-rolled stack of
+2. No real composition primitive: it is a hand-rolled stack of
    cards. Adding a section is "paste another `<Card>` block." Entity
    has named child sections that compose; QA Investigation has
    inline JSX that doesn't.
@@ -495,7 +495,7 @@ section composition as the canonical body.**
 
 ---
 
-## 4. Canonical Gaps — What Entity Is Missing
+## 4. Canonical Gaps: What Entity Is Missing
 
 Entity wins, but it is missing real things the other pages do better:
 
@@ -520,7 +520,7 @@ strip should default to the `<dl>` form for consistency.
 
 ### 4.3 Action-bar position
 
-Entity has no top-level action bar — actions are scattered (rename
+Entity has no top-level action bar; actions are scattered (rename
 on the H1, "Mark confirmed" mid-row, delete-info inside child
 sections). **ContactDetailPage's delegated view** puts edit + delete
 adjacent to the title in the header card (`ContactDetailView.tsx`
@@ -532,7 +532,7 @@ and primary-secondary-destructive ordered.
 ### 4.4 Status-badge slot adjacent to H1
 
 Entity has Owner / Unidentified badges adjacent to the H1 but
-**doesn't expose this as a slot** — it's hand-built in the identity
+**doesn't expose this as a slot**; it's hand-built in the identity
 hero. **QA pages** standardize the `flex items-center gap-4`
 H1 + StatusBadge + SeverityBadge pattern
 (QaInvestigationDetailPage line 481, QaPatrolDetailPage line 272,
@@ -542,7 +542,7 @@ first-class `status` slot.
 ### 4.5 Breadcrumbs
 
 Entity uses `<Breadcrumbs>` correctly (lines 1929–1934). **Connector
-does not** — it uses a back-link button instead (lines 172–179). The
+does not**; it uses a back-link button instead (lines 172–179). The
 back-link is friendlier for one-off cases but is inconsistent with
 the rest of the dashboard. Canonical should default to breadcrumbs;
 the back-link can be a configuration of breadcrumbs.
@@ -555,7 +555,7 @@ fields and bare `format(...)` for others; Connector mixes
 hardcoded `"en-US"` (line 162); Episode/Fact/Rule use bare
 `new Date(x).toLocaleString()` (e.g. EpisodeDetailPage lines 111,
 132, 137). **No detail page is doctrine-compliant on time.** The
-canonical should not solve this directly — but it should *not entrench
+canonical should not solve this directly, but it should *not entrench
 the inconsistency by accepting raw strings*. Force consumers to
 pass typed `Date` or ISO strings; render via a future `<Time>`
 primitive that doesn't exist yet. (Frontend topology §"Token leaks"
@@ -567,14 +567,14 @@ The `permanenceBadge` and `maturityBadge` helpers in `RuleDetailPage`
 (lines 14–54) and `permanenceBadge` in `FactDetailPage` (lines 14–31)
 are duplicated verbatim and should be extracted to
 `components/memory/badges.tsx` or similar. This is not a `<DetailPage>`
-concern — it is a "delete one of the duplicates before migrating"
+concern: it is a "delete one of the duplicates before migrating"
 concern. List it in the migration order, §6.
 
 ---
 
 ## 5. Proposed `<DetailPage>` Contract
 
-**Not** an implementation. A contract — the props that must exist for
+**Not** an implementation. A contract: the props that must exist for
 the canonical pattern to be reused without each consumer reinventing it.
 
 ```tsx
@@ -697,7 +697,7 @@ export function DetailPage(props: DetailPageProps): JSX.Element;
 **Defaults the contract bakes in.** Outer `space-y-6`. Breadcrumbs
 mounted first, *always*. Title row is `flex items-center gap-4`.
 Title typography is `text-2xl font-bold tracking-tight` (the modal
-H1 size in the codebase — DashboardPage and Costs use `text-2xl`,
+H1 size in the codebase: DashboardPage and Costs use `text-2xl`,
 ButlersPage and Chronicles use `text-3xl`; pick the smaller, more
 operator-toned one). Skeleton is a named, page-shaped block, not a
 trio of arbitrary sizes. Error and empty states route through shared
@@ -715,12 +715,12 @@ components; consumers do not paste destructive-text divs.
 
 ---
 
-## 6. Migration Order — Easiest First
+## 6. Migration Order: Easiest First
 
 Six pages to migrate (Entity itself becomes the canonical, so the
 shell wraps but does not change its body).
 
-### 6.1 `EpisodeDetailPage` — easiest
+### 6.1 `EpisodeDetailPage` (easiest)
 
 - Single card, no actions, no nested sections. Lift the H1 from
   `<CardTitle>Episode</CardTitle>` (line 48) to a real
@@ -730,7 +730,7 @@ shell wraps but does not change its body).
   into a `<dl>` matching QaInvestigationDetailPage lines 496–525.
 - Move metadata-JSON `<pre>` and timestamps into the auxiliary
   slot.
-- Drop the inline three-skeleton — let the shell render
+- Drop the inline three-skeleton; let the shell render
   `<DetailPageSkeleton>`.
 - Estimated change: ~50 net lines deleted.
 
@@ -739,8 +739,8 @@ shell wraps but does not change its body).
 - Same shape as Episode, plus a Provenance block and a confidence
   progress bar.
 - **Before migration:** delete `permanenceBadge` from this file
-  (lines 14–31) and import the shared one (must be created — see
-  §4.7). Same for the `confidenceBar` helper (lines 56–69) — extract
+  (lines 14–31) and import the shared one (must be created; see
+  §4.7). Same for the `confidenceBar` helper (lines 56–69); extract
   to a shared `<ConfidenceBar>` primitive.
 - Use the `subtitle` slot for `fact.predicate`.
 - Use the `actions` slot for the entity-link / object-link Links.
@@ -753,13 +753,13 @@ shell wraps but does not change its body).
   shared helpers (`permanenceBadge`, progress bar) are already
   extracted.
 - The "Effectiveness" + "Confidence" rows become a `<MetricsRow>`
-  helper or stay inline — either is fine.
+  helper or stay inline. Either is fine.
 - Estimated change: ~60 net lines deleted (after sharing the
   helpers).
 
 ### 6.4 `ContactDetailPage`
 
-- The page itself is already 44 lines and barely needs a shell —
+- The page itself is already 44 lines and barely needs a shell:
   but the *delegated* `ContactDetailView` is the real migration
   target. The view must:
   - **Delete the hex-color palettes** at `ContactDetailView.tsx`
@@ -777,7 +777,7 @@ shell wraps but does not change its body).
 - Replace the back-link button (lines 172–179) with proper
   `<Breadcrumbs>` (consistent with the other six).
 - Hoist the cursor-edit flow (lines 270–319) into a generic
-  `<InlineEditField>` — the same pattern is in EntityDetailPage's
+  `<InlineEditField>` (the same pattern is in EntityDetailPage's
   name-edit block (lines 1955–1996). One implementation, two
   consumers.
 - Move "Discretion Settings" + "Batch Settings" into the `drawer`
@@ -787,7 +787,7 @@ shell wraps but does not change its body).
 - Estimated change: ~100 net lines deleted across the page +
   shared inline-edit primitive.
 
-### 6.6 `EntityDetailPage` — last (the canonical itself)
+### 6.6 `EntityDetailPage`: last (the canonical itself)
 
 - This page becomes the **reference consumer** of `<DetailPage>`,
   not a migration. The body is already correct.
@@ -796,7 +796,7 @@ shell wraps but does not change its body).
   `components/ui/practical-drawer.tsx` so other pages (Connector,
   Butler) can adopt it.
 - Required cleanup: extract `PulseStrip` and `PulseTile` (lines
-  1072–1213) — they are entity-specific in name, but the pattern
+  1072–1213); they are entity-specific in name, but the pattern
   ("at-a-glance status row") is exactly what a Connector / Butler
   detail page wants too.
 - Estimated change: file shrinks from 2,240 to ~1,400 lines after
@@ -809,8 +809,8 @@ the seven that legitimately needs a workspace shape: butlers have
 truly orthogonal sub-domains (config vs. sessions vs. memory vs.
 state vs. routing-log) and the Tabs primitive is already the right
 answer. Migrating its outer chrome to `<DetailPage>` would be a
-clean win — `title={name}`, `actions={<ChatPanel ... />}`,
-`primary={<Tabs ... />}` — but the *internal* tab pattern is its
+clean win: `title={name}`, `actions={<ChatPanel ... />}`,
+`primary={<Tabs ... />}`, but the *internal* tab pattern is its
 own consolidation problem and belongs in a separate audit of the
 butler-detail tab family.
 

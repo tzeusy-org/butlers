@@ -98,14 +98,14 @@ explicit owner confirmation before proceeding.
 Credentials follow a **three-tier authority model**. Each credential has exactly
 one authoritative storage location:
 
-### Tier 0 — Bootstrap (Environment Variables)
+### Tier 0: Bootstrap (Environment Variables)
 
 Infrastructure credentials required before the database is available:
 `POSTGRES_HOST/PORT/USER/PASSWORD`, `SWITCHBOARD_MCP_URL`,
 `OTEL_EXPORTER_OTLP_ENDPOINT`, OAuth redirect URIs, and connector
 configuration (`CONNECTOR_*` ports, intervals, etc.).
 
-### Tier 1 — System (butler_secrets)
+### Tier 1: System (butler_secrets)
 
 Ecosystem-wide credentials not bound to a specific user identity. Managed via
 the **System tab** on the dashboard `/secrets` page. Examples:
@@ -114,7 +114,7 @@ the **System tab** on the dashboard `/secrets` page. Examples:
 
 Accessed at runtime via `CredentialStore.resolve()` or `CredentialStore.load()`.
 
-### Tier 2 — User (entity_info on owner entity)
+### Tier 2: User (entity_info on owner entity)
 
 Identity-bound credentials tied to the owner's personal accounts. Managed via
 the **User tab** on the dashboard `/secrets` page. Examples:
@@ -251,7 +251,7 @@ Only variables explicitly declared in `environment:` or `env_file:` are visible.
 
 The spawner's `_build_env()` is even more restrictive: LLM runtime subprocesses
 receive only `PATH` plus explicitly declared credentials resolved from the
-credential store. `HOME` is NOT included by default — adapters that need it
+credential store. `HOME` is NOT included by default; adapters that need it
 (e.g. CodexAdapter) set it explicitly per invocation, pointing to an isolated
 temp directory containing session-specific config.
 
