@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addDays,
   addMonths,
@@ -576,10 +576,13 @@ export default function CalendarWorkspacePage() {
   const selectedCalendarId = searchParams.get("calendar") ?? "all";
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const { start, end } = useMemo(() => computeWindow(range, anchor), [range, anchorParam]);
+  const { start, end } = useMemo(() => computeWindow(range, anchor), [range, anchor]);
 
   const metaQuery = useCalendarWorkspaceMeta();
-  const connectedSources = metaQuery.data?.data.connected_sources ?? [];
+  const connectedSources = useMemo(
+    () => metaQuery.data?.data.connected_sources ?? [],
+    [metaQuery.data?.data.connected_sources],
+  );
   const writableCalendars = metaQuery.data?.data.writable_calendars ?? [];
   const defaultTimezone = metaQuery.data?.data.default_timezone || timezone;
   const primaryCalendarId = metaQuery.data?.data.primary_calendar_id ?? null;
@@ -694,6 +697,41 @@ export default function CalendarWorkspacePage() {
     }
   }, [anchorParam, range, searchParams, setSearchParams, view]);
 
+  const updateQuery = useCallback(
+    (nextValues: {
+      view?: CalendarWorkspaceView;
+      range?: CalendarRange;
+      anchor?: Date;
+      source?: string;
+      calendar?: string;
+    }) => {
+      const next = new URLSearchParams(searchParams);
+
+      if (nextValues.view) next.set("view", nextValues.view);
+      if (nextValues.range) next.set("range", nextValues.range);
+      if (nextValues.anchor) next.set("anchor", serializeAnchor(nextValues.anchor));
+
+      if (nextValues.source !== undefined) {
+        if (!nextValues.source || nextValues.source === "all") {
+          next.delete("source");
+        } else {
+          next.set("source", nextValues.source);
+        }
+      }
+
+      if (nextValues.calendar !== undefined) {
+        if (!nextValues.calendar || nextValues.calendar === "all") {
+          next.delete("calendar");
+        } else {
+          next.set("calendar", nextValues.calendar);
+        }
+      }
+
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
   useEffect(() => {
     if (view !== "user") {
       return;
@@ -720,7 +758,7 @@ export default function CalendarWorkspacePage() {
         updateQuery({ source: "all" });
       }
     }
-  }, [selectedCalendarId, selectedSourceKey, userSources, view]);
+  }, [selectedCalendarId, selectedSourceKey, updateQuery, userSources, view]);
 
   // Scroll time grid to default hour when it mounts or the range/anchor changes
   useEffect(() => {
@@ -742,10 +780,13 @@ export default function CalendarWorkspacePage() {
     return lookup;
   }, [connectedSources]);
 
-  const lanes =
-    workspaceQuery.data?.data.lanes.length
-      ? workspaceQuery.data.data.lanes
-      : (metaQuery.data?.data.lane_definitions ?? []);
+  const lanes = useMemo(
+    () =>
+      workspaceQuery.data?.data.lanes.length
+        ? workspaceQuery.data.data.lanes
+        : (metaQuery.data?.data.lane_definitions ?? []),
+    [workspaceQuery.data?.data.lanes, metaQuery.data?.data.lane_definitions],
+  );
 
   const entriesByDay = useMemo(() => {
     const buckets = new Map<string, UnifiedCalendarEntry[]>();
@@ -855,38 +896,6 @@ export default function CalendarWorkspacePage() {
     });
     return [...names].sort((a, b) => a.localeCompare(b));
   }, [butlerLaneRows, connectedSources]);
-
-  function updateQuery(nextValues: {
-    view?: CalendarWorkspaceView;
-    range?: CalendarRange;
-    anchor?: Date;
-    source?: string;
-    calendar?: string;
-  }) {
-    const next = new URLSearchParams(searchParams);
-
-    if (nextValues.view) next.set("view", nextValues.view);
-    if (nextValues.range) next.set("range", nextValues.range);
-    if (nextValues.anchor) next.set("anchor", serializeAnchor(nextValues.anchor));
-
-    if (nextValues.source !== undefined) {
-      if (!nextValues.source || nextValues.source === "all") {
-        next.delete("source");
-      } else {
-        next.set("source", nextValues.source);
-      }
-    }
-
-    if (nextValues.calendar !== undefined) {
-      if (!nextValues.calendar || nextValues.calendar === "all") {
-        next.delete("calendar");
-      } else {
-        next.set("calendar", nextValues.calendar);
-      }
-    }
-
-    setSearchParams(next, { replace: true });
-  }
 
   function resolveSourceForForm(sourceKey: string): CalendarWorkspaceWritableCalendar | undefined {
     return writableCalendars.find((calendar) => calendar.source_key === sourceKey);

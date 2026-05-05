@@ -14,7 +14,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { Scrubber, snapToNearest } from "./Scrubber";
+import { Scrubber } from "./Scrubber"
+import { snapToNearest } from "./scrubber-utils";
 
 // ---------------------------------------------------------------------------
 // Window bounds shared across tests
