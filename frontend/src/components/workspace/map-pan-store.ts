@@ -1,16 +1,10 @@
 // ---------------------------------------------------------------------------
 // Map pan store — bu-ig72b.24 / extracted to workspace as part of bu-e8b5w.2
 //
-// Provides a lightweight React context that decouples a map pan trigger (e.g.
-// a Gantt click handler) from the MapWidget imperative API.  The component
-// that owns the map registers its flyTo function via useRegisterMapPan(); any
-// other component in the tree requests a pan via useMapPanTo().
-//
-// Design constraints (from design.md §D12 / Open Questions):
-//   - Calendar episode click → pan map if location parses as "lat,lng".
-//   - No geocoding service.  Unparseable locations are a silent no-op.
-//   - This store MUST NOT conflict with the bu-ig72b.23 playhead store; it
-//     lives in a separate context and separate file.
+// Provides a lightweight React context that decouples a map pan trigger from
+// the MapWidget imperative API. The component that owns the map registers its
+// flyTo function via useRegisterMapPan(); any other component in the tree
+// requests a pan via useMapPanTo().
 //
 // Performance note (bu-bhuk7): useMapPanContextValue() wraps the returned
 // object in useMemo so that MapPanContext.Provider receives a stable reference
@@ -20,6 +14,13 @@
 // ---------------------------------------------------------------------------
 
 import { createContext, useCallback, useContext, useMemo, useRef } from "react"
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Static no-op function; provides a stable reference for hooks with no provider. */
+const NO_OP = () => {}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -82,13 +83,13 @@ export function useMapPanContextValue(): MapPanContextValue {
 export function useRegisterMapPan(): (fn: MapPanFn) => void {
   const ctx = useContext(MapPanContext)
   // Return a no-op if there is no provider (e.g. in tests / standalone usage).
-  return ctx?.register ?? (() => {})
+  return ctx?.register ?? NO_OP
 }
 
 /** Used by any consumer to request a map pan. */
 export function useMapPanTo(): (lat: number, lng: number) => void {
   const ctx = useContext(MapPanContext)
-  return ctx?.panTo ?? (() => {})
+  return ctx?.panTo ?? NO_OP
 }
 
 // ---------------------------------------------------------------------------
