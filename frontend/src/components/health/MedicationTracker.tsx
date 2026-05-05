@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -46,9 +47,10 @@ function MedicationSkeleton() {
 
 function EmptyState() {
   return (
-    <div className="text-muted-foreground flex flex-col items-center justify-center py-16 text-sm">
-      <p>No medications found.</p>
-    </div>
+    <EmptyStateUI
+      title="No medications found."
+      description="Medications appear here once they are added to your health record."
+    />
   );
 }
 

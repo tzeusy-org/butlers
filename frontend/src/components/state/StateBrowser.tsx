@@ -137,7 +137,7 @@ function EditStateDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{editKey ? "Edit State" : "Set Value"}</DialogTitle>
+          <DialogTitle>{editKey ? "Edit State" : "Set value"}</DialogTitle>
           <DialogDescription>
             {editKey
               ? `Edit the value for key "${editKey}"`
@@ -311,7 +311,7 @@ export default function StateBrowser({
         <div className="flex items-center justify-center rounded-md border border-dashed py-12">
           <p className="text-sm text-muted-foreground">
             {entries.length === 0
-              ? "No state entries. Use \"Set Value\" to create one."
+              ? "No state entries. Use \"Set value\" to create one."
               : "No entries match the current filter."}
           </p>
         </div>

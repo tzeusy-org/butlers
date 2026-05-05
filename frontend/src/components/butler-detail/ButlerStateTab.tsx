@@ -1,7 +1,7 @@
 /**
  * ButlerStateTab — state store tab for the butler detail page.
  *
- * Renders the StateBrowser with a "Set Value" button to create new entries.
+ * Renders the StateBrowser with a "Set value" button to create new entries.
  * Uses useButlerState, useSetState, and useDeleteState hooks for data fetching
  * and mutations.
  */
@@ -80,7 +80,7 @@ function SetValueDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Set Value</DialogTitle>
+          <DialogTitle>Set value</DialogTitle>
           <DialogDescription>
             Create or overwrite a key-value pair in the state store
           </DialogDescription>
@@ -181,7 +181,7 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
               Key-value state entries for this butler ({entries.length} entries)
             </CardDescription>
           </div>
-          <Button onClick={() => setSetDialogOpen(true)}>Set Value</Button>
+          <Button onClick={() => setSetDialogOpen(true)}>Set value</Button>
         </CardHeader>
         <CardContent>
           <StateBrowser
