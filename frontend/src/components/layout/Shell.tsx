@@ -6,6 +6,11 @@ import {
   SheetTitle,
 } from '../ui/sheet'
 
+// Collapse strategy: the aside width switches INSTANTLY (no transition-[width])
+// so no layout property is animated. The Sidebar's internal content (text
+// labels, brand text) fades via opacity-only transitions — see Sidebar.tsx.
+// This satisfies the motion contract AC#5.
+
 interface ShellProps {
   header: ReactNode
   children: ReactNode
@@ -25,9 +30,11 @@ export default function Shell({ header, children }: ShellProps) {
         </SheetContent>
       </Sheet>
 
-      {/* Desktop sidebar — hidden below md */}
+      {/* Desktop sidebar — width switches instantly (no transition) so no
+          layout property is animated. Content fades are handled inside
+          Sidebar.tsx via transition-opacity. */}
       <aside
-        className={`hidden md:flex md:flex-col border-r border-border transition-[width] duration-base ease-out-quart ${
+        className={`hidden md:flex md:flex-col border-r border-border ${
           desktopCollapsed ? 'md:w-16' : 'md:w-64'
         }`}
       >

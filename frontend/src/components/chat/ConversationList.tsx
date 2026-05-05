@@ -138,10 +138,13 @@ export function ConversationList({
     : (conversationsData?.data ?? []);
   const loading = isSearchActive ? isSearching : isLoading;
 
+  // Collapse strategy: width switches INSTANTLY (no width transition) so no
+  // layout property is animated. Expandable content (search, list labels) fades
+  // via opacity-only transitions. This satisfies the motion contract AC#5.
   return (
     <div
       className={cn(
-        "flex flex-col border-r bg-muted/20 transition-all duration-200",
+        "flex flex-col border-r bg-muted/20",
         collapsed ? "w-12" : "w-[200px]",
       )}
     >
