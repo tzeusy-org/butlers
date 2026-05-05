@@ -125,7 +125,7 @@ frontend/src/components/workspace/
   TimeWindowPicker.test.tsx # Tests for TimeWindowPicker
 ```
 
-No index barrel file — correct per project convention (no `index.ts` pattern; named imports only).
+No index barrel file — correct for this subtree (`components/workspace/` uses named imports only, no barrel; barrel files do exist elsewhere in the repo, e.g. `api/index.ts`).
 
 ---
 
