@@ -112,8 +112,16 @@ export function pivotSessionsIntoRows(
 // Data fetch hook
 // ---------------------------------------------------------------------------
 
-/** Maximum sessions fetched per request — capped at 200 (backend Query constraint). */
-const MAX_SESSIONS_LIMIT = 200
+/** Maximum sessions fetched in a single request — also the hard cap. */
+export const SESSIONS_HARD_CAP = 1000
+
+/** Shape returned by useSessionStripeData — extends PaginatedResponse with backpressure flag. */
+export interface SessionStripeResult {
+  data: Array<{ butler?: string; started_at: string }>
+  meta: { total: number; offset: number; limit: number; has_more: boolean }
+  /** True when the backend total exceeds SESSIONS_HARD_CAP and results are truncated. */
+  truncated: boolean
+}
 
 /** Compute the rolling window boundaries for the given span in hours. */
 function rollingWindow(windowHours: number): { from: Date; to: Date } {
@@ -125,8 +133,13 @@ function rollingWindow(windowHours: number): { from: Date; to: Date } {
 }
 
 /**
- * Fetch sessions for a rolling window of `windowHours` hours, with
- * client-side aggregation.
+ * Fetch sessions for a rolling window of `windowHours` hours in a single request
+ * capped at SESSIONS_HARD_CAP rows.
+ *
+ * When the backend total exceeds SESSIONS_HARD_CAP, the result is marked
+ * `truncated: true` (derived from `meta.has_more`) so the UI can surface a
+ * backpressure warning. Using a single request avoids repeated fan-out work on
+ * the backend for every additional page.
  *
  * Window boundaries are recomputed inside `queryFn` on every refetch so the
  * chart always shows the *current* trailing window, not a closed interval
@@ -135,19 +148,28 @@ function rollingWindow(windowHours: number): { from: Date; to: Date } {
  * Pass `refetchInterval` from `useAutoRefresh()` so the user's auto-refresh
  * preference is honoured. Use `false` to disable polling entirely.
  */
+async function fetchAllSessionsForWindow(windowHours: number): Promise<SessionStripeResult> {
+  const w = rollingWindow(windowHours)
+  const page = await getSessions({
+    since: w.from.toISOString(),
+    until: w.to.toISOString(),
+    limit: SESSIONS_HARD_CAP,
+    offset: 0,
+  })
+
+  return {
+    data: page.data,
+    meta: page.meta,
+    // has_more is true only when backend total > SESSIONS_HARD_CAP
+    truncated: page.meta.has_more,
+  }
+}
+
 export function useSessionStripeData(windowHours = 24, refetchInterval: number | false = 60_000) {
   return useQuery({
     // Key on window length only; refetchInterval drives the rolling advance.
     queryKey: ["session-stripe", windowHours],
-    queryFn: () => {
-      const w = rollingWindow(windowHours)
-      return getSessions({
-        since: w.from.toISOString(),
-        until: w.to.toISOString(),
-        limit: MAX_SESSIONS_LIMIT,
-        offset: 0,
-      })
-    },
+    queryFn: () => fetchAllSessionsForWindow(windowHours),
     refetchInterval,
   })
 }
