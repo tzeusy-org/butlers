@@ -129,7 +129,7 @@ vi.mock("@/components/chronicles/ManualRefreshButton", () => ({
     return <span data-testid="manual-refresh-button-stub">Refresh</span>;
   },
 }));
-vi.mock("@/components/chronicles/Scrubber", () => ({
+vi.mock("@/components/workspace/Scrubber", () => ({
   Scrubber: () => null,
 }));
 vi.mock("@/components/chronicles/MapWidget", () => ({

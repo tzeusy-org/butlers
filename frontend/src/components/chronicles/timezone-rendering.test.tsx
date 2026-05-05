@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
 import { GanttSwimlaneInner } from "./GanttSwimlaneInner"
-import { Scrubber } from "./Scrubber"
+import { Scrubber } from "@/components/workspace/Scrubber"
 import { ChroniclesTimezoneProvider } from "./timezone-context"
 import type { ChroniclerEpisode } from "@/api/types"
 
@@ -145,14 +145,13 @@ describe("GanttSwimlane timezone rendering (bu-k18cm)", () => {
 describe("Scrubber timezone rendering (bu-k18cm)", () => {
   it("renders window-start label in owner tz with tz abbreviation", () => {
     const html = renderToStaticMarkup(
-      <ChroniclesTimezoneProvider timezone="Asia/Singapore">
-        <Scrubber
-          windowStart={WINDOW_START}
-          windowEnd={WINDOW_END}
-          pointEvents={[]}
-          onScrub={() => {}}
-        />
-      </ChroniclesTimezoneProvider>,
+      <Scrubber
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+        pointEvents={[]}
+        tz="Asia/Singapore"
+        onScrub={() => {}}
+      />,
     )
 
     // 2026-04-30T00:00:00Z → 08:00 SGT
@@ -164,14 +163,13 @@ describe("Scrubber timezone rendering (bu-k18cm)", () => {
 
   it("renders in America/Los_Angeles tz, not in SGT", () => {
     const html = renderToStaticMarkup(
-      <ChroniclesTimezoneProvider timezone="America/Los_Angeles">
-        <Scrubber
-          windowStart={WINDOW_START}
-          windowEnd={WINDOW_END}
-          pointEvents={[]}
-          onScrub={() => {}}
-        />
-      </ChroniclesTimezoneProvider>,
+      <Scrubber
+        windowStart={WINDOW_START}
+        windowEnd={WINDOW_END}
+        pointEvents={[]}
+        tz="America/Los_Angeles"
+        onScrub={() => {}}
+      />,
     )
 
     // 2026-04-30T00:00:00Z → 17:00 PDT on 2026-04-29 (LA)
