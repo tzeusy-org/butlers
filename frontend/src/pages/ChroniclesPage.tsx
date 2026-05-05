@@ -40,7 +40,7 @@ import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton"
 import type { ChroniclerEventsParams } from "@/api/types"
-import { MapPanContext, useMapPanContextValue } from "@/components/chronicles/map-pan-store"
+import { MapPanContext, useMapPanContextValue } from "@/components/workspace/map-pan-store"
 import { useTimezone } from "@/components/ui/timezone-context"
 import {
   interpolatePlayhead,

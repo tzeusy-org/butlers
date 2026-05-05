@@ -42,7 +42,7 @@ import {
 import type { Category } from "./lane-taxonomy"
 import { categoryForSource, LANE_TAXONOMY } from "./lane-taxonomy"
 import { parseLatLng } from "./location-utils"
-import { useMapPanTo } from "./map-pan-store"
+import { useMapPanTo } from "@/components/workspace/map-pan-store"
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
 import { formatTimeInTz, formatGanttTickLabel } from "./tz-format"
 

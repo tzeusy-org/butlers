@@ -22,7 +22,7 @@ import { useEffect, useMemo, useRef } from "react"
 
 import { EmptyState } from "@/components/ui/empty-state"
 import { useDarkMode } from "@/hooks/useDarkMode"
-import { useRegisterMapPan } from "./map-pan-store"
+import { useRegisterMapPan } from "@/components/workspace/map-pan-store"
 import { buildTrailGeoJSON } from "./trail-geojson"
 import { buildHexHeatmap, type HexFeatureCollection } from "./hex-heatmap"
 
