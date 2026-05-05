@@ -35,7 +35,7 @@ grep -rn 'archetype="detail"' frontend/src/pages/
 
 | Page | `<DetailPage>` | `pulse` | `primary` | `supporting` | `auxiliary` | `practical` | `actions` |
 |---|---|---|---|---|---|---|---|
-| FactDetailPage | YES | `null` | Card with content/metrics/etc | Card with provenance | `null` | `null` | — |
+| FactDetailPage | YES | `null` | Card with content/metrics/etc | Confidence + Permanence cards | `null` | `null` | — |
 | RuleDetailPage | YES | `null` | Card with content/effectiveness/etc | `null` | `null` | `null` | — |
 | ContactDetailPage | YES | PulseStrip (entity-linked only) | ContactDetailView | — | — | — | — |
 | ButlerDetailPage | YES | ButlerHeartbeatTile | Tabs block | — | — | — | ChatPanel |
@@ -70,12 +70,16 @@ The following ACs are drawn from the now-canonical specs in `openspec/specs/`.
 All 6 pages import and render `<DetailPage>` from `components/layout/DetailPage.tsx`. Zero migration-target pages use `<Page archetype="detail">` directly.
 
 ### AC2 — Fact title = subject field
-**Status: PASS**
-`FactDetailPage` sets `record={{ title: fact.subject, subtitle: fact.predicate }}`. Subject field lifted to H1 via shell. Predicate rendered as subtitle below H1.
+**Status: PARTIAL GAP**
+`FactDetailPage` sets `record={{ title: fact?.content ?? factId ?? "Fact", subtitle: fact.entity_name ? \`${fact.entity_name} · ${fact.predicate}\` : fact.predicate }}`. The shell title is derived from `fact.content` (the object value), NOT `fact.subject`. Provenance content (subject, entity link) is rendered inside the primary card body. The synced spec (`dashboard-domain-pages`) specifies `title = fact.subject`; the current implementation uses `fact.content` instead.
+
+**Severity:** Low — `fact.content` is the most user-visible string (the fact's object value), so the chosen approach is likely more informative. However, the spec contract explicitly names `fact.subject` as the H1 field, and the implementation diverges from it.
 
 ### AC3 — Rule title = content summary (not "Rule")
-**Status: PASS**
-`RuleDetailPage` derives title as `rule.content` (first 80 chars with ellipsis truncation). "Rule" as literal title is not used.
+**Status: PARTIAL GAP**
+`RuleDetailPage` derives title as `rule?.content ?? ruleId ?? "Rule"`. The title does avoid a generic "Rule" string when content is available, which satisfies the spec's primary intent. However, there is no 80-character truncation: long rule content is passed to the shell H1 untruncated. The synced spec (`dashboard-domain-pages`) specifies the title should be the first 80 chars of content with ellipsis — this truncation logic is absent.
+
+**Severity:** Low — omitting truncation is a cosmetic difference (potentially very long H1 titles). The spec's primary intent (no literal "Rule" title) is met. Truncation is a detail the spec mandates but the implementation omits.
 
 ### AC4 — Episode title = session_id (or content-derived fallback)
 **Status: PARTIAL GAP**
@@ -133,6 +137,8 @@ Both files remain at `components/relationship/PracticalDrawer.tsx` and `componen
 
 | # | AC | Severity | Finding |
 |---|---|---|---|
+| Gap A | Fact title = subject field (AC2) | Low | Spec says title = `fact.subject`; code uses `fact.content` (the object value). More descriptive in practice but diverges from spec contract. |
+| Gap B | Rule title truncation (AC3) | Low | Spec mandates first 80 chars with ellipsis; code uses `rule.content` untruncated. Literal "Rule" fallback avoided, but truncation is absent. |
 | Gap C | Episode title spec contract (AC4) | Low | Spec says `session_id`-first; code uses content-first. Both avoid generic "Episode" string but diverge from explicit spec language. |
 | Gap D | Contact nickname in title (AC5) | Low | `full_name` used without appending `(nickname)` when nickname is non-null. |
 | Gap E | Contact edit/delete in `actions` prop (AC6) | Medium | Edit/delete buttons remain inside ContactDetailView card body, not migrated to page header `actions` slot. |
@@ -146,12 +152,13 @@ Both files remain at `components/relationship/PracticalDrawer.tsx` and `componen
 **The primary structural goal of bu-rqfil is achieved:** All 6 migration-target pages (Fact, Rule, Contact, Butler, Episode, Connector) render via `<DetailPage>`. The four-tier slot contract is enforced across all pages. The "no two code paths" doctrine is met at the shell level. The OpenSpec is synced and the detail-page-archetype capability is canonicalized.
 
 **Remaining gaps are polish-tier and spec-precision items.** They do not represent unimplemented features — the pages function correctly. The gaps are:
+- Two title-field divergences (Fact uses content not subject; Rule omits 80-char truncation)
 - Two title-display refinements (episode session_id priority, contact nickname appendix)
 - One action-button placement (contact edit/delete still inside card body)
 - One status pill placement (rule maturity badge not on title row)
 - One documentation gap (no explicit connector conformance requirement in any spec)
 
-**Recommendation:** The epic bu-rqfil may be closed with the remaining items filed as follow-up beads at priority 3 (low). The structural consolidation is complete.
+**Recommendation:** The epic bu-rqfil may be closed with the remaining items filed as follow-up beads at their designated priority levels (2–3). The structural consolidation is complete.
 
 ---
 
@@ -168,6 +175,8 @@ Both files remain at `components/relationship/PracticalDrawer.tsx` and `componen
 
 | Gap | Suggested Title | Type | Priority | Notes |
 |---|---|---|---|---|
+| Gap A | FactDetailPage: use fact.subject as shell title (per synced spec, not fact.content) | task | 3 | Simple one-liner; may be intentionally content-first — requires product decision |
+| Gap B | RuleDetailPage: truncate rule.content to 80 chars with ellipsis in shell title | task | 3 | Simple useMemo addition; prevents overly long H1 on verbose rules |
 | Gap C | EpisodeDetailPage: use session_id as title when non-null (per synced spec) | task | 3 | Low friction — simple useMemo change; content-first approach already avoids "Episode" |
 | Gap D | ContactDetailPage: append nickname in parentheses to title when present | task | 3 | One-liner in title computation |
 | Gap E | ContactDetailPage: migrate edit/delete buttons from ContactDetailView card to `actions` prop | task | 2 | Medium effort — requires props threading from ContactDetailPage → ContactDetailView or lifting state |
