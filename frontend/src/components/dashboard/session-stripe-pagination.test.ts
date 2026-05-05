@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // session-stripe-pagination.test.ts — bu-51str
 //
-// Tests the paginated fetch logic in session-stripe-utils:
-// - Multiple pages are fetched when has_more=true
-// - Fetching stops when has_more=false
-// - Fetching stops at SESSIONS_HARD_CAP and sets truncated=true
+// Tests the single-request fetch logic in session-stripe-utils:
+// - A single request is issued with limit=SESSIONS_HARD_CAP
+// - truncated=true when backend has_more=true (total > SESSIONS_HARD_CAP)
 // - truncated=false when all sessions fit within SESSIONS_HARD_CAP
+// - truncated=false when total equals exactly SESSIONS_HARD_CAP (has_more=false)
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, beforeEach } from "vitest"
@@ -45,12 +45,9 @@ function makePage(
 }
 
 // ---------------------------------------------------------------------------
-// Directly invoke the internal paginated fetch by dynamically importing the
-// module and calling useSessionStripeData's queryFn via the mocked useQuery.
-// ---------------------------------------------------------------------------
-
-// We test the pagination logic by mocking @tanstack/react-query and inspecting
+// We test the fetch logic by mocking @tanstack/react-query and inspecting
 // what queryFn does when called directly.
+// ---------------------------------------------------------------------------
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const original = await importOriginal<typeof import("@tanstack/react-query")>()
@@ -72,7 +69,7 @@ import { useSessionStripeData } from "./session-stripe-utils"
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  vi.resetAllMocks()
+  vi.clearAllMocks()
   mockGetSessions.mockReset()
   // Trigger registration of the queryFn
   useSessionStripeData(24, false)
@@ -88,97 +85,62 @@ async function invokeQueryFn() {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("session-stripe paginated fetch — stops when has_more=false", () => {
-  it("fetches a single page when there are no more pages", async () => {
+describe("session-stripe fetch — single request semantics", () => {
+  it("issues exactly one request with limit=SESSIONS_HARD_CAP", async () => {
     const sessions = Array.from({ length: 10 }, () => makeSession())
-    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 10, 0, 200))
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 10, 0, SESSIONS_HARD_CAP))
+
+    await invokeQueryFn()
+
+    expect(mockGetSessions).toHaveBeenCalledTimes(1)
+    expect(mockGetSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: SESSIONS_HARD_CAP, offset: 0 }),
+    )
+  })
+
+  it("returns all sessions and truncated=false when total < SESSIONS_HARD_CAP", async () => {
+    const sessions = Array.from({ length: 10 }, () => makeSession())
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 10, 0, SESSIONS_HARD_CAP))
 
     const result = await invokeQueryFn()
 
-    expect(mockGetSessions).toHaveBeenCalledTimes(1)
     expect(result.data).toHaveLength(10)
     expect(result.truncated).toBe(false)
   })
 
-  it("fetches multiple pages until has_more=false", async () => {
-    const page1 = Array.from({ length: 200 }, () => makeSession())
-    const page2 = Array.from({ length: 150 }, () => makeSession())
-
-    mockGetSessions
-      .mockResolvedValueOnce(makePage(page1, 350, 0, 200))
-      .mockResolvedValueOnce(makePage(page2, 350, 200, 200))
+  it("sets truncated=true when backend has_more=true (total > SESSIONS_HARD_CAP)", async () => {
+    // Simulate backend with 1200 total sessions; limit=1000 leaves 200 beyond the cap
+    const sessions = Array.from({ length: SESSIONS_HARD_CAP }, () => makeSession())
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 1200, 0, SESSIONS_HARD_CAP))
 
     const result = await invokeQueryFn()
 
-    expect(mockGetSessions).toHaveBeenCalledTimes(2)
-    expect(result.data).toHaveLength(350)
-    expect(result.truncated).toBe(false)
-    // Second call should use offset=200
-    expect(mockGetSessions).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ offset: 200 }),
-    )
-  })
-})
-
-describe("session-stripe paginated fetch — hard cap enforcement", () => {
-  it("stops at SESSIONS_HARD_CAP and sets truncated=true", async () => {
-    // Simulate a backend with 1200 total sessions (5 pages of 200 + remainder)
-    const totalSessions = 1200
-
-    let callCount = 0
-    mockGetSessions.mockImplementation(({ offset }: { offset: number }) => {
-      callCount++
-      const remaining = totalSessions - offset
-      const pageSize = Math.min(200, remaining)
-      const sessions = Array.from({ length: pageSize }, () => makeSession())
-      return Promise.resolve(makePage(sessions, totalSessions, offset, 200))
-    })
-
-    const result = await invokeQueryFn()
-
-    // Should stop at exactly SESSIONS_HARD_CAP
     expect(result.data).toHaveLength(SESSIONS_HARD_CAP)
     expect(result.truncated).toBe(true)
-    // Should have fetched exactly SESSIONS_HARD_CAP / 200 pages
-    expect(callCount).toBe(SESSIONS_HARD_CAP / 200)
   })
 
   it("does NOT set truncated when total equals exactly SESSIONS_HARD_CAP", async () => {
-    // Simulate exactly 1000 sessions across 5 pages of 200
-    const totalSessions = SESSIONS_HARD_CAP
-
-    let offset = 0
-    mockGetSessions.mockImplementation(() => {
-      const pageSize = 200
-      const sessions = Array.from({ length: pageSize }, () => makeSession())
-      const page = makePage(sessions, totalSessions, offset, pageSize)
-      offset += pageSize
-      return Promise.resolve(page)
-    })
+    // Exactly 1000 sessions — has_more=false because offset(0)+limit(1000) == total(1000)
+    const sessions = Array.from({ length: SESSIONS_HARD_CAP }, () => makeSession())
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, SESSIONS_HARD_CAP, 0, SESSIONS_HARD_CAP))
 
     const result = await invokeQueryFn()
 
-    // 1000 sessions fetched across 5 pages — hits cap but all sessions are valid
     expect(result.data).toHaveLength(SESSIONS_HARD_CAP)
-    // The cap check fires when length >= SESSIONS_HARD_CAP, so truncated=true
-    // even when the total happens to equal the cap exactly. This is acceptable
-    // behavior since we cannot distinguish "cap == total" from "cap < total"
-    // without an extra check (which would add complexity for a rare edge case).
-    expect(typeof result.truncated).toBe("boolean")
+    expect(result.truncated).toBe(false)
   })
 })
 
-describe("session-stripe paginated fetch — correct query parameters", () => {
+describe("session-stripe fetch — correct query parameters", () => {
   it("passes since/until/limit/offset to getSessions correctly", async () => {
     const sessions = Array.from({ length: 5 }, () => makeSession())
-    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 5, 0, 200))
+    mockGetSessions.mockResolvedValueOnce(makePage(sessions, 5, 0, SESSIONS_HARD_CAP))
 
     await invokeQueryFn()
 
     const call = mockGetSessions.mock.calls[0][0]
     expect(call).toMatchObject({
-      limit: 200,
+      limit: SESSIONS_HARD_CAP,
       offset: 0,
     })
     expect(typeof call.since).toBe("string")
