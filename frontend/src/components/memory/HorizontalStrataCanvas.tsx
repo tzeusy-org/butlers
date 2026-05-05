@@ -96,6 +96,7 @@ function StrataNode({ entry, tier, dimmed, onNavigate }: StrataNodeProps) {
             width={NODE_DIAMETER}
             height={NODE_DIAMETER}
             viewBox={`0 0 ${NODE_DIAMETER} ${NODE_DIAMETER}`}
+            overflow="visible"
             role="img"
             aria-hidden="true"
           >
@@ -106,8 +107,7 @@ function StrataNode({ entry, tier, dimmed, onNavigate }: StrataNodeProps) {
               fill={color}
               fillOpacity={0.15}
               stroke={color}
-              strokeWidth={entry.dunbar_tier_override ? 2 : 1}
-              strokeDasharray={entry.dunbar_tier_override ? "3,2" : undefined}
+              strokeWidth={1}
             />
             <text
               x={NODE_RADIUS}
@@ -120,6 +120,20 @@ function StrataNode({ entry, tier, dimmed, onNavigate }: StrataNodeProps) {
             >
               {initials}
             </text>
+            {entry.dunbar_tier_override && (
+              // Pin override: dashed ring at radius*1.2, outside the node
+              // boundary. Matches ConcentricCirclesCanvas. overflow="visible"
+              // on the SVG lets the ring extend beyond the fixed viewBox.
+              <circle
+                cx={NODE_RADIUS}
+                cy={NODE_RADIUS}
+                r={NODE_RADIUS * 1.2}
+                fill="none"
+                stroke={color}
+                strokeWidth={1.5}
+                strokeDasharray="4,3"
+              />
+            )}
           </svg>
         </button>
       </TooltipTrigger>
