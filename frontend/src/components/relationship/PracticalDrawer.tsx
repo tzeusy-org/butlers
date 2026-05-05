@@ -9,7 +9,7 @@
  * owner entity still needs setup (no linked contact).
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { Time } from "@/components/ui/time";
@@ -76,12 +76,15 @@ export interface PracticalDrawerProps {
 
 export function PracticalDrawer({ entity, forceOpen, children }: PracticalDrawerProps) {
   const [open, setOpen] = useState(forceOpen);
+  const panelId = useId();
 
   return (
     <section className="rounded-md border">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={panelId}
         className="hover:bg-muted/40 flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors"
       >
         <span className="text-sm font-medium">
@@ -98,12 +101,16 @@ export function PracticalDrawer({ entity, forceOpen, children }: PracticalDrawer
           <ChevronRight className="text-muted-foreground h-4 w-4" />
         )}
       </button>
-      {open && (
-        <div className="space-y-4 border-t px-4 py-4">
-          {children}
-          <ProvenanceFooter entity={entity} />
-        </div>
-      )}
+      <div
+        id={panelId}
+        role="region"
+        aria-label="Practical details"
+        hidden={!open}
+        className="space-y-4 border-t px-4 py-4"
+      >
+        {children}
+        <ProvenanceFooter entity={entity} />
+      </div>
     </section>
   );
 }
