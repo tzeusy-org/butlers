@@ -270,7 +270,7 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
                 })
               : "None recorded"
         }
-        muted={!lastInteraction}
+        muted={!isLoading && !lastInteraction}
       />
       <PulseTile
         label="Last 30 days"
@@ -292,7 +292,7 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
               ? "None"
               : `${openLoops} unresolved`
         }
-        muted={openLoops === 0}
+        muted={!isLoading && openLoops === 0}
         emphasis={openLoops > 0}
       />
     </div>

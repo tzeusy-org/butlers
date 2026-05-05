@@ -67,7 +67,7 @@ describe("PulseStrip", () => {
     );
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
     // The Open loops tile must show the loading placeholder, not "None"
-    expect(html).toContain("...");
+    expect(html).toContain(">...<");
     expect(html).not.toContain(">None<");
   });
 
@@ -80,7 +80,7 @@ describe("PulseStrip", () => {
       { data: undefined, isLoading: true } as unknown as ReturnType<typeof useEntities.useEntityLoans>,
     );
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
-    expect(html).toContain("...");
+    expect(html).toContain(">...<");
     expect(html).not.toContain(">None<");
   });
 });
