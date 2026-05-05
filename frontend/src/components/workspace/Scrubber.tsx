@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Scrubber — shared time-scrubber for the Chronicles page (bu-ig72b.23)
+// Scrubber — shared time-scrubber for workspace-pattern pages (bu-ig72b.23)
 //
 // Owns the shared playhead timestamp that drives both the Gantt cursor and the
 // map playhead. The scrubber position snaps to the nearest OwnTracks point
@@ -10,7 +10,7 @@
 //   - snappedMs:  nearest point event ms (or null if no point events exist)
 //
 // Both values are emitted upward via onScrub(scrubberMs, snappedMs) so that
-// ChroniclesPage can pass them down to GanttSwimlane and MapWidget.
+// the parent page can pass them down to GanttSwimlane and MapWidget.
 //
 // Reset behavior:
 //   - The parent passes `key={windowKey}` so that the component is remounted
@@ -31,8 +31,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import type { ChroniclerPointEvent } from "@/api/types"
-import { useChroniclesTimezone } from "./use-chronicles-timezone"
-import { formatScrubberLabel } from "./tz-format"
+import { DEFAULT_TZ, formatScrubberLabel } from "@/components/chronicles/tz-format"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,7 +75,13 @@ export interface ScrubberProps {
   /** Point events to snap to. May be empty (shows scrubber without snapping). */
   pointEvents: ChroniclerPointEvent[]
   /**
-   * Called when the scrubber position changes (debounced 60 ms).
+   * IANA timezone for label formatting. Defaults to Asia/Singapore.
+   * Pass the owner's configured timezone here.
+   */
+  tz?: string
+  /**
+   * Called synchronously when the scrubber position changes.
+   * The parent can use interpolation to smooth the map playhead between ticks.
    * @param scrubberMs - raw slider position in epoch ms
    * @param snappedMs  - nearest point event ms, or null if no point events
    */
@@ -89,21 +94,19 @@ export interface ScrubberProps {
 
 /**
  * Single time-scrubber that emits a shared timestamp for the Gantt cursor and
- * map playhead. Snaps to the nearest point event; debounces onScrub 60 ms for
- * smooth map rendering.
+ * map playhead. Snaps to the nearest point event; emits onScrub synchronously
+ * on each slider change so the parent can interpolate the map playhead smoothly
+ * (see MapWidget playhead interpolation).
  *
  * Renders an HTML range input. No new npm dependencies.
  *
  * The parent MUST pass `key={windowKey}` so that the component remounts when
  * the time window changes, which resets the scrubber to the window start.
  */
-export function Scrubber({ windowStart, windowEnd, pointEvents, onScrub }: ScrubberProps) {
+export function Scrubber({ windowStart, windowEnd, pointEvents, tz = DEFAULT_TZ, onScrub }: ScrubberProps) {
   const windowStartMs = windowStart.getTime()
   const windowEndMs = windowEnd.getTime()
   const windowDurationMs = Math.max(1, windowEndMs - windowStartMs)
-
-  // Owner timezone from context (default: Asia/Singapore).
-  const tz = useChroniclesTimezone()
 
   // Initialized once per mount (parent resets via key prop when window changes).
   const [scrubberMs, setScrubberMs] = useState<number>(windowStartMs)

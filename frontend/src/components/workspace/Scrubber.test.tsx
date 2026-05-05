@@ -6,10 +6,9 @@
  * Tests cover:
  * 1. snapToNearest helper — snap logic with one, multiple, and no point events.
  * 2. Scrubber renders — slider visible, labels, no-events hint.
- * 3. onScrub callback — called with correct snappedMs (via debounce flush).
+ * 3. Default timezone — tz prop defaults to DEFAULT_TZ if omitted.
  *
- * Strategy: renderToStaticMarkup for structure tests (no effects); we test
- * the snap helper directly since effects (debounce) require async timers.
+ * Strategy: renderToStaticMarkup for structure tests (no effects).
  */
 
 import { describe, expect, it, vi } from "vitest";

@@ -30,7 +30,7 @@ import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { FloatingMapMinimap } from "@/components/chronicles/FloatingMapMinimap"
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
 import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer"
-import { Scrubber } from "@/components/chronicles/Scrubber"
+import { Scrubber } from "@/components/workspace/Scrubber"
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip"
 import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar"
 import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart"
@@ -45,7 +45,7 @@ import { useTimezone } from "@/components/ui/timezone-context"
 import {
   interpolatePlayhead,
   type TimedTrailPoint,
-} from "@/components/chronicles/playhead-interp"
+} from "@/components/workspace/playhead-interp"
 
 // ---------------------------------------------------------------------------
 // Page
@@ -220,6 +220,7 @@ export default function ChroniclesPage() {
           windowStart={timeWindow.from}
           windowEnd={timeWindow.to}
           pointEvents={pointEvents}
+          tz={ownerTz}
           onScrub={handleScrub}
         />
       </section>
