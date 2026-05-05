@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
-// Map pan store — bu-ig72b.24
+// Map pan store — bu-ig72b.24 / extracted to workspace as part of bu-e8b5w.2
 //
-// Provides a lightweight React context that decouples the Gantt click handler
-// from the MapWidget imperative API.  The MapWidgetInner registers its flyTo
-// function via useRegisterMapPan(); any other component in the tree reads it
-// via useMapPanTo().
+// Provides a lightweight React context that decouples a map pan trigger (e.g.
+// a Gantt click handler) from the MapWidget imperative API.  The component
+// that owns the map registers its flyTo function via useRegisterMapPan(); any
+// other component in the tree requests a pan via useMapPanTo().
 //
 // Design constraints (from design.md §D12 / Open Questions):
 //   - Calendar episode click → pan map if location parses as "lat,lng".
@@ -25,13 +25,13 @@ import { createContext, useCallback, useContext, useMemo, useRef } from "react"
 // Types
 // ---------------------------------------------------------------------------
 
-/** Callback signature registered by MapWidgetInner. */
+/** Callback signature registered by the map widget. */
 export type MapPanFn = (lat: number, lng: number) => void
 
 interface MapPanContextValue {
-  /** Called by MapWidgetInner on mount to register its flyTo implementation. */
+  /** Called by the map widget on mount to register its flyTo implementation. */
   register: (fn: MapPanFn) => void
-  /** Called by any consumer (e.g. Gantt click handler) to request a pan. */
+  /** Called by any consumer to request a pan. */
   panTo: (lat: number, lng: number) => void
 }
 
@@ -49,8 +49,8 @@ MapPanContext.displayName = "MapPanContext"
 /**
  * Returns props for the MapPanContext.Provider value.
  *
- * Call this once in the parent component that owns both the Gantt and Map
- * widgets, then spread the result into <MapPanContext.Provider value={...}>.
+ * Call this once in the parent component that owns both the trigger and the
+ * map widget, then spread the result into <MapPanContext.Provider value={...}>.
  *
  * Example:
  *   const mapPanValue = useMapPanContextValue()
@@ -78,14 +78,14 @@ export function useMapPanContextValue(): MapPanContextValue {
 // Consumer hooks
 // ---------------------------------------------------------------------------
 
-/** Used by MapWidgetInner to register its flyTo function with the store. */
+/** Used by the map widget to register its flyTo function with the store. */
 export function useRegisterMapPan(): (fn: MapPanFn) => void {
   const ctx = useContext(MapPanContext)
   // Return a no-op if there is no provider (e.g. in tests / standalone usage).
   return ctx?.register ?? (() => {})
 }
 
-/** Used by GanttSwimlaneInner to request a map pan on episode click. */
+/** Used by any consumer to request a map pan. */
 export function useMapPanTo(): (lat: number, lng: number) => void {
   const ctx = useContext(MapPanContext)
   return ctx?.panTo ?? (() => {})
