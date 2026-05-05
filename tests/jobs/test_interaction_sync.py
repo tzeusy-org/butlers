@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -281,7 +282,7 @@ async def test_missing_calendar_table_is_skipped_without_error():
     mock_log.assert_not_called()
 
 
-async def test_checkpoint_read_failure_uses_default_window_without_raising():
+async def test_checkpoint_read_failure_uses_default_window_without_raising(caplog):
     """Checkpoint read failures are reported in stats instead of escaping to scheduler."""
     pool = _make_pool()
     pool.fetch = AsyncMock(side_effect=[[], []])
@@ -309,7 +310,8 @@ async def test_checkpoint_read_failure_uses_default_window_without_raising():
                 return _NOW.replace(tzinfo=tz) if tz else _NOW
 
         with patch.object(mod, "datetime", _FixedDatetime):
-            stats = await run_fn(pool)
+            with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+                stats = await run_fn(pool)
 
     # On read failure the job falls back to the module's max-lookback window,
     # so derive the expected start from _NOW and the constant rather than
@@ -317,13 +319,15 @@ async def test_checkpoint_read_failure_uses_default_window_without_raising():
     expected_start = _NOW - timedelta(days=_rjobs_attr("_INTERACTION_SYNC_MAX_WINDOW_DAYS"))
     assert stats["errors"] == 1
     assert stats["scan_window_start"] == expected_start.isoformat()
+    assert any("failed to read checkpoint" in record.message for record in caplog.records)
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
     mock_state_set.assert_awaited_once_with(
         pool, _rjobs_attr("_INTERACTION_SYNC_STATE_KEY"), _NOW.isoformat()
     )
     mock_log.assert_not_called()
 
 
-async def test_checkpoint_write_failure_returns_error_stats_without_raising():
+async def test_checkpoint_write_failure_returns_error_stats_without_raising(caplog):
     """Checkpoint write failures do not make deterministic dispatch fail."""
     pool = _make_pool()
     pool.fetch = AsyncMock(side_effect=[[], []])
@@ -351,9 +355,12 @@ async def test_checkpoint_write_failure_returns_error_stats_without_raising():
                 return _NOW.replace(tzinfo=tz) if tz else _NOW
 
         with patch.object(mod, "datetime", _FixedDatetime):
-            stats = await run_fn(pool)
+            with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+                stats = await run_fn(pool)
 
     assert stats["errors"] == 1
+    assert any("failed to write checkpoint" in record.message for record in caplog.records)
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
     mock_state_set.assert_awaited_once_with(
         pool, _rjobs_attr("_INTERACTION_SYNC_STATE_KEY"), _NOW.isoformat()
     )

@@ -719,15 +719,17 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # Fail-open on checkpoint I/O: this is a periodic job whose 30-day max_lookback
     # bounds the cost of a missed checkpoint, and interaction_log() already dedups
     # re-scanned windows; raising would trigger scheduler retry storms and hide the
-    # work the job did complete. Failures are surfaced via stats["errors"] + logs.
+    # work the job did complete. Failures are surfaced via stats["errors"] and
+    # WARNING logs because the scan can still complete using the bounded fallback.
     checkpoint_errors = 0
     try:
         last_scan_at_raw = await state_get(db_pool, _INTERACTION_SYNC_STATE_KEY)
     except Exception:
-        logger.exception(
+        logger.warning(
             "interaction_sync: failed to read checkpoint key=%s; falling back to %d-day lookback",
             _INTERACTION_SYNC_STATE_KEY,
             _INTERACTION_SYNC_MAX_WINDOW_DAYS,
+            exc_info=True,
         )
         last_scan_at_raw = None
         checkpoint_errors += 1
@@ -1288,16 +1290,18 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
     # Persist the end of this scan window as the next checkpoint. Fail-open for
     # the same reasons as the read above (interaction_log() dedups, scheduler
-    # storm avoidance). Surface via stats["errors"] + logs so monitoring catches
-    # recurring write failures.
+    # storm avoidance). Surface via stats["errors"] + WARNING logs so monitoring
+    # catches recurring write failures without turning a completed fallback scan
+    # into an ERROR-level job failure.
     next_checkpoint = scan_window_end.isoformat()
     try:
         await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
     except Exception:
-        logger.exception(
+        logger.warning(
             "interaction_sync: failed to write checkpoint key=%s value=%s",
             _INTERACTION_SYNC_STATE_KEY,
             next_checkpoint,
+            exc_info=True,
         )
         stats["errors"] += 1
 
