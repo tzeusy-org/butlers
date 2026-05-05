@@ -1,7 +1,16 @@
 # dashboard-overview Specification
 
 ## Purpose
-TBD - created by archiving change dashboard-hero-contract. Update Purpose after archive.
+
+Defines the information hierarchy and content contract for the Butlers dashboard home
+page at `/`. The home page is the owner's primary health-at-a-glance view: it answers
+"is the system working right now?" rather than structural questions ("what is connected?").
+This spec establishes what regions the page renders, their visual priority order, and the
+data sources and component boundaries each region must satisfy. It does not specify visual
+design tokens, pixel-level layout, or API implementation details; those are governed by
+`about/heart-and-soul/design-language.md`, `dashboard-api`, and the `<Page>` archetype
+contract respectively.
+
 ## Requirements
 ### Requirement: Home Page Information Hierarchy
 
@@ -72,7 +81,7 @@ The chart shows how many butler sessions occurred in each time bucket over the p
 
 - **WHEN** the chart fetches its data
 - **THEN** it SHALL query `GET /api/sessions` with `since` set to 24 hours ago and
-  a `limit` sufficient to cover the expected daily session volume (minimum 500)
+  a `limit` of 200 (the backend maximum) to cover the expected daily session volume
 - **AND** time bucketing SHALL be performed client-side on the returned session records
   using each record's `started_at` timestamp
 - **AND** no new backend endpoint SHALL be required for this requirement
