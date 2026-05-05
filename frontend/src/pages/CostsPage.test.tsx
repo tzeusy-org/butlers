@@ -23,10 +23,14 @@ import CostsPage from "@/pages/CostsPage";
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/use-costs", () => ({
-  useCostSummary: vi.fn(),
-  useDailyCosts: vi.fn(),
-}));
+vi.mock("@/hooks/use-costs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-costs")>();
+  return {
+    ...actual,
+    useCostSummary: vi.fn(),
+    useDailyCosts: vi.fn(),
+  };
+});
 
 // Mock CostStripeChart — avoids recharts SSR complexity
 vi.mock("@/components/costs/CostStripeChart", () => ({
