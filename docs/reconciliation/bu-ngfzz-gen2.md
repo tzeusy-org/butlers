@@ -38,7 +38,7 @@ All 5 endpoints are present in `src/butlers/api/routers/system.py`:
 - `GET /api/system/egress` → `ApiResponse<EgressCatalog>` (owner-only, HTTP 403 on non-owner)
 - `GET /api/system/butlers/heartbeat` → `ApiResponse<HeartbeatFacts>`
 
-28 tests covering endpoint contracts exist in `tests/api/test_system.py`.
+12 tests covering endpoint contracts exist in `tests/api/test_system.py`.
 
 **OTel span (gen-1 gap bu-4tluf):** RESOLVED
 
