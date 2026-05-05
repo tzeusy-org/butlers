@@ -78,7 +78,7 @@ function ActiveBadge({ row }: SourceBadgeProps) {
           >
             {Icon && <Icon aria-hidden />}
             {label}
-            <span className="sr-only"> — has recent error</span>
+            <span className="sr-only">: has recent error</span>
           </Badge>
         </TooltipTrigger>
         <TooltipContent className="max-w-xs whitespace-pre-line text-left">
@@ -115,7 +115,7 @@ function InactiveBadge({ row }: SourceBadgeProps) {
         >
           {Icon && <Icon aria-hidden />}
           {label}
-          <span className="sr-only"> — no recent data</span>
+          <span className="sr-only">: no recent data</span>
         </Badge>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs whitespace-pre-line text-left">
