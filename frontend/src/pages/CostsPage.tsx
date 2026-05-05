@@ -12,7 +12,7 @@
 //   - Secondary: CostBreakdownTable (per-butler) + per-day stat cards
 // ---------------------------------------------------------------------------
 
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useMemo, useRef } from "react"
 
 import CostBreakdownTable from "@/components/costs/CostBreakdownTable"
 import { CostStripeChart } from "@/components/costs/CostStripeChart"
@@ -20,9 +20,8 @@ import { Scrubber } from "@/components/workspace/Scrubber"
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Page } from "@/components/ui/page"
-import { useCostSummary, useDailyCosts } from "@/hooks/use-costs"
+import { useCostSummary, useDailyCosts, formatCostDate } from "@/hooks/use-costs"
 import { useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
-import { format } from "date-fns"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -39,10 +38,7 @@ function formatTokens(n: number): string {
   return String(n)
 }
 
-/** Format a Date as YYYY-MM-DD for the cost API. */
-function fmtDate(d: Date): string {
-  return format(d, "yyyy-MM-dd")
-}
+// fmtDate is provided by formatCostDate from @/hooks/use-costs (tz-aware).
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -69,8 +65,8 @@ export default function CostsPage() {
   // Time window state — drives the picker and data hooks.
   const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT)
 
-  const fromStr = fmtDate(timeWindow.from)
-  const toStr = fmtDate(timeWindow.to)
+  const fromStr = formatCostDate(timeWindow.from, OWNER_TZ_DEFAULT)
+  const toStr = formatCostDate(timeWindow.to, OWNER_TZ_DEFAULT)
 
   // Map the date window to the period format the summary API expects.
   // summary uses "today" | "7d" | "30d"; fall back to "30d" for wider windows.
@@ -96,10 +92,11 @@ export default function CostsPage() {
   const summary = summaryResponse?.data
   const dailyData = dailyResponse?.data ?? []
 
-  // Scrubber state — tracks position over the cost chart.
-  const [, setScrubberMs] = useState<number | null>(null)
+  // Scrubber position — stored in a ref to avoid re-renders on every tick.
+  // Promote to state when a dependent chart highlight is wired in.
+  const scrubberMsRef = useRef<number | null>(null)
   const handleScrub = useCallback((ms: number) => {
-    setScrubberMs(ms)
+    scrubberMsRef.current = ms
   }, [])
 
   // Snap points: midday (UTC noon) of each day in the daily cost series.

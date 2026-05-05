@@ -5,7 +5,8 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getCostSummary, getDailyCosts, getTopSessions } from "@/api/index.ts";
-import { format } from "date-fns";
+import { formatInTimeZone } from "date-fns-tz";
+import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 
 // ---------------------------------------------------------------------------
 // Format helper
@@ -13,9 +14,14 @@ import { format } from "date-fns";
 
 const DATE_FMT = "yyyy-MM-dd";
 
-/** Format a Date as YYYY-MM-DD for cost API query params. */
-export function formatCostDate(d: Date): string {
-  return format(d, DATE_FMT);
+/**
+ * Format a Date as YYYY-MM-DD for cost API query params.
+ * Uses the owner timezone so that day boundaries match the window anchor —
+ * dates from useTimeWindow are UTC instants representing owner-tz midnight,
+ * and formatting them in local browser time would give the wrong date string.
+ */
+export function formatCostDate(d: Date, tz: string = OWNER_TZ_DEFAULT): string {
+  return formatInTimeZone(d, tz, DATE_FMT);
 }
 
 // ---------------------------------------------------------------------------

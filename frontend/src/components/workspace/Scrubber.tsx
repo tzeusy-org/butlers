@@ -35,8 +35,10 @@ import { DEFAULT_TZ, formatScrubberLabel } from "@/components/chronicles/tz-form
 /**
  * Snap `valueMs` to the nearest timestamp in the snapMs array.
  * Returns null if snapMs is empty.
+ *
+ * Exported for direct unit testing.
  */
-function snapToNearest(valueMs: number, snapMs: number[]): number | null {
+export function snapToNearest(valueMs: number, snapMs: number[]): number | null {
   if (snapMs.length === 0) return null
 
   let best = snapMs[0]

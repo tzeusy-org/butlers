@@ -14,7 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { Scrubber } from "./Scrubber";
+import { Scrubber, snapToNearest } from "./Scrubber";
 
 // ---------------------------------------------------------------------------
 // Window bounds shared across tests
@@ -150,5 +150,55 @@ describe("snapMs behaviour (via label)", () => {
 
     expect(html).toContain('data-testid="scrubber"');
     expect(html).toContain('data-testid="scrubber-label"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// snapToNearest unit tests — core logic for the snapMs contract
+// ---------------------------------------------------------------------------
+
+describe("snapToNearest", () => {
+  const T0 = new Date("2026-04-25T12:00:00Z").getTime(); // noon
+  const T1 = new Date("2026-04-25T15:00:00Z").getTime(); // 3 pm
+  const T2 = new Date("2026-04-25T18:00:00Z").getTime(); // 6 pm
+
+  it("returns null for empty snap array", () => {
+    expect(snapToNearest(T0, [])).toBeNull();
+  });
+
+  it("returns the only point when one snap point is given", () => {
+    expect(snapToNearest(T0, [T1])).toBe(T1);
+  });
+
+  it("snaps to the nearest of two points — closer to first", () => {
+    // Midpoint between T0 and T1 is at T0+90min. We query T0+60min → closer to T0.
+    const query = T0 + 60 * 60 * 1000;
+    expect(snapToNearest(query, [T0, T1])).toBe(T0);
+  });
+
+  it("snaps to the nearest of two points — closer to second", () => {
+    // T0+120min is exactly half-way; T0+121min is marginally closer to T1.
+    const query = T0 + 121 * 60 * 1000;
+    expect(snapToNearest(query, [T0, T1])).toBe(T1);
+  });
+
+  it("snaps to nearest among three points", () => {
+    // Query is between T1 and T2 but closer to T2.
+    const query = T2 - 30 * 60 * 1000; // 30 min before T2
+    expect(snapToNearest(query, [T0, T1, T2])).toBe(T2);
+  });
+
+  it("returns exact match when value equals a snap point", () => {
+    expect(snapToNearest(T1, [T0, T1, T2])).toBe(T1);
+  });
+
+  it("returns first snap point when query is before the window", () => {
+    const before = T0 - 1_000_000;
+    expect(snapToNearest(before, [T0, T1, T2])).toBe(T0);
+  });
+
+  it("returns last snap point when query is after the window", () => {
+    const after = T2 + 1_000_000;
+    expect(snapToNearest(after, [T0, T1, T2])).toBe(T2);
   });
 });
