@@ -57,7 +57,11 @@ export function getInitials(name: string): string {
   if (parts.length >= 2) {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   }
-  return name.slice(0, 2).toUpperCase();
+  // For single-word names, use grapheme-aware extraction to safely handle
+  // emoji and multi-codepoint characters. Intl.Segmenter splits on grapheme
+  // cluster boundaries, preventing surrogate-pair corruption.
+  const graphemes = [..._segmenter.segment(name)].map((g) => g.segment);
+  return graphemes.slice(0, 2).join("").toUpperCase();
 }
 
 /** Case-insensitive substring match against the entry's canonical_name or any alias. */
