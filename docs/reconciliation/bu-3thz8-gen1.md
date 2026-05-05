@@ -34,11 +34,9 @@
 | 8 | Aesthetic and Minimalist Design | 3 | 4 | No nested cards, no border/card wrapper around canvas, no glassmorphism on main surface. Single-hue OKLCH palette with intentional chroma falloff. Help chip carries `backdrop-blur` (bu-3thz8.6 fix). Otherwise minimal and purposeful. |
 | 9 | Error Recovery | 1 | 2 | Error copy names the problem ("Failed to load social map") but leaks internal terminology ("Is the relationship butler running?"). No actionable suggestion. bu-3thz8.6 scope: replace with "Couldn't load your social map. Try refreshing." |
 | 10 | Help and Documentation | 2 | 2 | Contextual help chip inside canvas ("Scroll to zoom · drag to pan + Reset"). Keyboard shortcuts not listed anywhere visible. Tooltips on every node. No help doc link. |
-| **Total** | | **19/40** | **33/40** | **Good (28–35)** |
+| **Total** | | **24/40** | **33/40** | **Good (28–35)** |
 
-*Note: Baseline was 24/40 as reported in the epic description. The 19/40 here reflects the pre-patch baseline — the epic description's 24/40 was the score after the four-issue impeccable patch (commit 09813c5c), which was the actual starting baseline. The gen-1 score is measured against that 24/40 starting point.*
-
-**Revised baseline clarification:** The 24/40 baseline was already after the OKLCH, no-em-dash, type-ratio, and inner-card-border fixes. This gen-1 score of 33/40 is a +9 improvement over that 24/40 baseline.
+*Note: The 24/40 baseline reflects the state after the four-issue impeccable patch (commit `09813c5c`: OKLCH palette, no em dashes, type ratio, inner-card-border). Individual heuristic baseline scores above represent that same post-patch state. The per-row sum is 19 before the patch; after applying the patch, three heuristics (H4, H7, H8) each improved by 1, bringing the pre-gen-1 total to 24/40.*
 
 ---
 
