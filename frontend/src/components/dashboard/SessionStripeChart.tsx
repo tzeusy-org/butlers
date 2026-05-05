@@ -169,7 +169,7 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
         className="flex h-[200px] items-center justify-center text-sm text-muted-foreground"
         data-testid="session-stripe-empty"
       >
-        No sessions in this window.
+        No sessions in the past 24 hours
       </div>
     )
   }
