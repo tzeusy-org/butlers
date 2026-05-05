@@ -434,7 +434,6 @@ export function ConcentricCirclesCanvas({
   // to the top of the SVG for all avatar clip-paths.
   type TierLayout = {
     tier: Tier;
-    tierEntries: DunbarEntry[];
     displayEntries: DunbarEntry[];
     hiddenCount: number;
     nodeRadius: number;
@@ -458,10 +457,12 @@ export function ConcentricCirclesCanvas({
     const isExpanded = tier <= 15 || expandedTiers.has(tier);
     const showAll = isExpanded || searchQuery.length > 0;
     const displayEntries = showAll ? tierEntries : tierEntries.slice(0, 5);
-    const hiddenCount = showAll ? 0 : tierEntries.length - 5;
+    // Clamp to 0: when a tier has fewer than 5 entries and is collapsed,
+    // the difference would be negative but there is nothing hidden.
+    const hiddenCount = showAll ? 0 : Math.max(0, tierEntries.length - 5);
     const positions = circlePositions(displayEntries.length, ringR, cx, cy);
     const color = TIER_RING_COLORS[tier];
-    return { tier, tierEntries, displayEntries, hiddenCount, nodeRadius, ringR, positions, showName, color };
+    return { tier, displayEntries, hiddenCount, nodeRadius, ringR, positions, showName, color };
   });
 
   // Collect avatar clip-path definitions from all visible nodes into a single

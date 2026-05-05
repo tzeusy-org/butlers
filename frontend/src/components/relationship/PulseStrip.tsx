@@ -41,7 +41,7 @@ const DUNBAR_TIERS: { tier: number; label: string; description: string }[] = [
   { tier: 50, label: "Friends 50", description: "Good friends" },
   { tier: 150, label: "Network 150", description: "Meaningful contacts" },
   { tier: 500, label: "Acquaintances 500", description: "Acquaintances" },
-  { tier: 1500, label: "Recognized 1500", description: "Recognizable" },
+  { tier: 1500, label: "Familiar 1500", description: "Familiar Faces" },
 ];
 
 const _DUNBAR_LABEL: Record<number, string> = Object.fromEntries(

@@ -92,7 +92,7 @@ const DUNBAR_TIER_LABELS: Record<number, string> = {
   50: "Good Friends",
   150: "Meaningful",
   500: "Acquaintances",
-  1500: "Recognizable",
+  1500: "Familiar Faces",
 };
 
 /** Returns inline style colors for a Dunbar tier badge. Inner tiers get warmer colours. */
@@ -109,7 +109,7 @@ function dunbarTierBadgeStyle(tier: number): React.CSSProperties {
     case 500:
       return { backgroundColor: "var(--tier-5)", color: "#fff" }; // Acquaintances
     default:
-      return { backgroundColor: "var(--tier-6)", color: "#fff" }; // Recognizable (tier 1500 / cold-start)
+      return { backgroundColor: "var(--tier-6)", color: "#fff" }; // Familiar Faces (tier 1500 / cold-start)
   }
 }
 

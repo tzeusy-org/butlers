@@ -105,6 +105,10 @@ export function easeOutExpo(t: number): number {
   return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
 }
 
+// Module-level Segmenter instance -- reused across all truncateGraphemes calls
+// to avoid the constructor overhead on every render tick.
+const _segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 /**
  * Truncate a string to at most `maxGraphemes` grapheme clusters, appending "…"
  * if truncated. Uses Intl.Segmenter to avoid splitting surrogate pairs (emoji,
@@ -112,8 +116,8 @@ export function easeOutExpo(t: number): number {
  * produce replacement characters (U+FFFD) for names like "Ana 🌸".
  */
 export function truncateGraphemes(s: string, maxGraphemes: number): string {
-  const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-  const graphemes = [...seg.segment(s)];
+  if (maxGraphemes <= 0) return "";
+  const graphemes = [..._segmenter.segment(s)];
   if (graphemes.length <= maxGraphemes) return s;
   return graphemes.slice(0, maxGraphemes - 1).map((g) => g.segment).join("") + "…";
 }

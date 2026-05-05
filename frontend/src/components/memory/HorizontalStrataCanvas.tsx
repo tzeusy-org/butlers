@@ -120,12 +120,13 @@ function StrataNode({ entry, tier, dimmed, onNavigate }: StrataNodeProps) {
               {initials}
             </text>
             {entry.dunbar_tier_override && (
-              // Pin override: dashed ring at slightly larger radius, clearly
-              // visible regardless of node size.
+              // Pin override: dashed ring. r=NODE_RADIUS-1.25 keeps the outer
+              // stroke edge (r + strokeWidth/2 = 18.75+0.75=19.5) inside the
+              // viewBox boundary at 20px from center, preventing clipping.
               <circle
                 cx={NODE_RADIUS}
                 cy={NODE_RADIUS}
-                r={NODE_RADIUS - 0.5}
+                r={NODE_RADIUS - 1.25}
                 fill="none"
                 stroke={color}
                 strokeWidth={1.5}

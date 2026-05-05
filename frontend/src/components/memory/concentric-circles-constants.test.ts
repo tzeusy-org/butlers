@@ -61,6 +61,10 @@ describe("truncateGraphemes", () => {
     expect(truncateGraphemes("Hello", 1)).toBe("…");
   });
 
+  it("handles maxGraphemes of 0 by returning an empty string", () => {
+    expect(truncateGraphemes("Hello", 0)).toBe("");
+  });
+
   it("mixed ASCII and emoji: no replacement characters at boundary", () => {
     const result = truncateGraphemes("Hi 🎉 there", 6);
     // "Hi 🎉 there" has 11 graphemes; maxGraphemes=6 → keep 5 + "…"
