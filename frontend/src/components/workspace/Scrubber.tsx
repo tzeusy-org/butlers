@@ -80,7 +80,8 @@ export interface ScrubberProps {
    */
   tz?: string
   /**
-   * Called when the scrubber position changes (debounced 60 ms).
+   * Called synchronously when the scrubber position changes.
+   * The parent can use interpolation to smooth the map playhead between ticks.
    * @param scrubberMs - raw slider position in epoch ms
    * @param snappedMs  - nearest point event ms, or null if no point events
    */
@@ -93,8 +94,9 @@ export interface ScrubberProps {
 
 /**
  * Single time-scrubber that emits a shared timestamp for the Gantt cursor and
- * map playhead. Snaps to the nearest point event; debounces onScrub 60 ms for
- * smooth map rendering.
+ * map playhead. Snaps to the nearest point event; emits onScrub synchronously
+ * on each slider change so the parent can interpolate the map playhead smoothly
+ * (see MapWidget playhead interpolation).
  *
  * Renders an HTML range input. No new npm dependencies.
  *

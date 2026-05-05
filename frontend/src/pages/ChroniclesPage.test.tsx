@@ -48,6 +48,8 @@ let _lastDefaultInterval: number | undefined;
 let _mockPointEvents: ChroniclerPointEvent[] = [];
 // Captured trailPoints passed to MapWidget (for trail derivation tests)
 let _capturedMapWidgetTrailPoints: Array<{ lng: number; lat: number }> | undefined = undefined;
+// Captured Scrubber tz prop to verify ownerTz is forwarded (bu-e8b5w.1)
+let _capturedScrubberTz: string | undefined = undefined;
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -130,7 +132,10 @@ vi.mock("@/components/chronicles/ManualRefreshButton", () => ({
   },
 }));
 vi.mock("@/components/workspace/Scrubber", () => ({
-  Scrubber: () => null,
+  Scrubber: (props: Record<string, unknown>) => {
+    _capturedScrubberTz = props.tz as string | undefined;
+    return null;
+  },
 }));
 vi.mock("@/components/chronicles/MapWidget", () => ({
   MapWidget: (props: Record<string, unknown>) => {
@@ -232,6 +237,15 @@ describe("ChroniclesPage", () => {
     _pollingDisabled = false;
     const html = renderChroniclesPage();
     expect(html).toContain("Aggregations area");
+  });
+
+  it("forwards ownerTz to Scrubber as tz prop (bu-e8b5w.1)", () => {
+    _pollingDisabled = false;
+    _capturedScrubberTz = undefined;
+    renderChroniclesPage();
+    // Scrubber should receive tz prop equal to the mocked default (Asia/Singapore)
+    expect(_capturedScrubberTz).toBeDefined();
+    expect(_capturedScrubberTz).toEqual("Asia/Singapore");
   });
 });
 
