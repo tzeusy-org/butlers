@@ -68,17 +68,14 @@ export default function CostsPage() {
   const fromStr = formatCostDate(timeWindow.from, OWNER_TZ_DEFAULT)
   const toStr = formatCostDate(timeWindow.to, OWNER_TZ_DEFAULT)
 
-  // Map the date window to the period format the summary API expects.
-  // summary uses "today" | "7d" | "30d"; fall back to "30d" for wider windows.
-  const period = useMemo(() => {
-    const diffDays =
-      Math.round((timeWindow.to.getTime() - timeWindow.from.getTime()) / (24 * 60 * 60 * 1000))
-    if (diffDays <= 1) return "today"
-    if (diffDays <= 7) return "7d"
-    return "30d"
-  }, [timeWindow.from, timeWindow.to])
-
-  const { data: summaryResponse, isLoading: summaryLoading } = useCostSummary(period)
+  // Pass the explicit date range to the summary endpoint so summary cards
+  // always reflect the same window as the chart. The period param is omitted
+  // because from/to takes precedence on the server.
+  const { data: summaryResponse, isLoading: summaryLoading } = useCostSummary(
+    undefined,
+    timeWindow.from,
+    timeWindow.to,
+  )
   const {
     data: dailyResponse,
     isLoading: dailyLoading,

@@ -28,11 +28,20 @@ export function formatCostDate(d: Date, tz: string = OWNER_TZ_DEFAULT): string {
 // Hooks
 // ---------------------------------------------------------------------------
 
-/** Fetch aggregate cost summary with auto-refresh. */
-export function useCostSummary(period?: string) {
+/** Fetch aggregate cost summary with auto-refresh.
+ *
+ * When `from` and `to` are provided they override `period` and the server
+ * computes the summary over the custom [from, to] date range. Dates are
+ * formatted in the owner timezone via `formatCostDate` so day boundaries
+ * are consistent with the time window anchor.
+ */
+export function useCostSummary(period?: string, from?: Date, to?: Date) {
+  const fromStr = from ? formatCostDate(from) : undefined;
+  const toStr = to ? formatCostDate(to) : undefined;
+
   return useQuery({
-    queryKey: ["cost-summary", period],
-    queryFn: () => getCostSummary(period),
+    queryKey: ["cost-summary", period, fromStr, toStr],
+    queryFn: () => getCostSummary(period, fromStr, toStr),
     refetchInterval: 60_000,
   });
 }

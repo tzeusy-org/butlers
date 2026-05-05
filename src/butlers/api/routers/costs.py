@@ -13,7 +13,7 @@ import logging
 from datetime import date, timedelta
 
 import anyio
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -40,7 +40,7 @@ async def _get_butler_session_stats(
     pricing: PricingConfig,
     period: str,
 ) -> tuple[str, float, int, int, int, dict[str, float]]:
-    """Query a butler for session cost stats.
+    """Query a butler for session cost stats via the ``sessions_summary`` MCP tool.
 
     Returns (name, cost, sessions, input_tokens, output_tokens, by_model).
     """
@@ -104,15 +104,116 @@ async def _get_butler_session_stats(
     return (info.name, 0.0, 0, 0, 0, {})
 
 
+async def _get_butler_session_stats_for_range(
+    mgr: MCPClientManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    from_date: date,
+    to_date: date,
+) -> tuple[str, float, int, int, int, dict[str, float]]:
+    """Query a butler for session cost stats over a custom date range.
+
+    Uses ``sessions_daily`` and aggregates totals across [from_date, to_date].
+    Returns (name, cost, sessions, input_tokens, output_tokens, by_model).
+    """
+    try:
+        client = await asyncio.wait_for(mgr.get_client(info.name), timeout=_STATUS_TIMEOUT_S)
+        result = await asyncio.wait_for(
+            client.call_tool(
+                "sessions_daily",
+                {"from_date": from_date.isoformat(), "to_date": to_date.isoformat()},
+            ),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+        if result.content:
+            text = result.content[0].text if hasattr(result.content[0], "text") else ""
+            if text:
+                data = json.loads(text)
+                total_cost = 0.0
+                total_sessions = 0
+                total_input = 0
+                total_output = 0
+                by_model: dict[str, float] = {}
+                for day_entry in data.get("days", []):
+                    total_sessions += day_entry.get("sessions", 0)
+                    total_input += day_entry.get("input_tokens", 0)
+                    total_output += day_entry.get("output_tokens", 0)
+                    for model_id, stats in day_entry.get("by_model", {}).items():
+                        cost = estimate_session_cost(
+                            pricing,
+                            model_id,
+                            stats.get("input_tokens", 0),
+                            stats.get("output_tokens", 0),
+                            cached_input_tokens=stats.get("cached_input_tokens", 0),
+                            context_tokens=stats.get("context_tokens"),
+                        )
+                        total_cost += cost
+                        by_model[model_id] = by_model.get(model_id, 0.0) + cost
+                return (info.name, total_cost, total_sessions, total_input, total_output, by_model)
+    except (
+        ButlerUnreachableError,
+        TimeoutError,
+        anyio.ClosedResourceError,
+        anyio.BrokenResourceError,
+    ):
+        logger.debug(
+            "Cost summary for date range unavailable for butler %s via sessions_daily",
+            info.name,
+        )
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Invalid JSON from butler %s via sessions_daily: %s",
+            info.name,
+            exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Cost summary (date range) tool call failed for butler %s via sessions_daily (%s: %s)",
+            info.name,
+            type(exc).__name__,
+            exc,
+        )
+    return (info.name, 0.0, 0, 0, 0, {})
+
+
 @router.get("/summary", response_model=ApiResponse[CostSummary])
 async def get_cost_summary(
     period: str = Query("today", pattern="^(today|7d|30d)$"),
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[CostSummary]:
-    """Return aggregate cost summary across all butlers."""
-    tasks = [_get_butler_session_stats(mgr, info, pricing, period) for info in configs]
+    """Return aggregate cost summary across all butlers.
+
+    When ``from`` and ``to`` query params are provided (ISO 8601 date strings,
+    e.g. ``2026-01-01``), the summary covers that custom date range and the
+    ``period`` param is ignored.  When omitted, the ``period`` preset
+    (``today`` / ``7d`` / ``30d``) is used.
+
+    Validation: both ``from`` and ``to`` must be provided together, and
+    ``from`` must not be later than ``to``.
+    """
+    if (from_date is None) != (to_date is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Both 'from' and 'to' must be provided together, or both omitted.",
+        )
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise HTTPException(
+            status_code=422,
+            detail="'from' must not be later than 'to'.",
+        )
+    if from_date is not None and to_date is not None:
+        tasks = [
+            _get_butler_session_stats_for_range(mgr, info, pricing, from_date, to_date)
+            for info in configs
+        ]
+        period_label = f"{from_date.isoformat()}/{to_date.isoformat()}"
+    else:
+        tasks = [_get_butler_session_stats(mgr, info, pricing, period) for info in configs]
+        period_label = period
     results = await asyncio.gather(*tasks)
 
     total_cost = 0.0
@@ -133,7 +234,7 @@ async def get_cost_summary(
             by_model[model_id] = by_model.get(model_id, 0.0) + model_cost
 
     summary = CostSummary(
-        period=period,
+        period=period_label,
         total_cost_usd=round(total_cost, 6),
         total_sessions=total_sessions,
         total_input_tokens=total_input,

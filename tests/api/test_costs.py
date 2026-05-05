@@ -324,6 +324,138 @@ async def test_daily_costs_sorts_by_date(app):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/costs/summary — date-range params (from/to)
+# ---------------------------------------------------------------------------
+
+
+async def test_cost_summary_date_range_aggregates_sessions_daily(app):
+    """When from/to are provided, summary is computed from sessions_daily, not sessions_summary."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    daily_data = {
+        "days": [
+            {
+                "date": "2026-03-01",
+                "sessions": 3,
+                "input_tokens": 6000,
+                "output_tokens": 3000,
+                "by_model": {
+                    "claude-sonnet-4-20250514": {
+                        "input_tokens": 6000,
+                        "output_tokens": 3000,
+                        "cached_input_tokens": 0,
+                    }
+                },
+            },
+            {
+                "date": "2026-03-02",
+                "sessions": 2,
+                "input_tokens": 4000,
+                "output_tokens": 2000,
+                "by_model": {
+                    "claude-sonnet-4-20250514": {
+                        "input_tokens": 4000,
+                        "output_tokens": 2000,
+                        "cached_input_tokens": 0,
+                    }
+                },
+            },
+        ]
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result(daily_data)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/costs/summary", params={"from": "2026-03-01", "to": "2026-03-02"}
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total_sessions"] == 5
+    assert data["total_input_tokens"] == 10000
+    assert data["total_output_tokens"] == 5000
+    # period label reflects the custom range
+    assert data["period"] == "2026-03-01/2026-03-02"
+    # by_model includes aggregated costs
+    assert "claude-sonnet-4-20250514" in data["by_model"]
+    CostSummary.model_validate(data)
+
+
+async def test_cost_summary_date_range_multi_butler(app):
+    """Date-range summary aggregates across multiple butlers."""
+    configs = [
+        ButlerConnectionInfo(name="a", port=41100),
+        ButlerConnectionInfo(name="b", port=41101),
+    ]
+    day_a = {
+        "days": [
+            {
+                "date": "2026-04-01",
+                "sessions": 1,
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "by_model": {
+                    "claude-haiku-35-20241022": {"input_tokens": 1000, "output_tokens": 500}
+                },
+            }
+        ]
+    }
+    day_b = {
+        "days": [
+            {
+                "date": "2026-04-01",
+                "sessions": 2,
+                "input_tokens": 2000,
+                "output_tokens": 1000,
+                "by_model": {
+                    "claude-haiku-35-20241022": {"input_tokens": 2000, "output_tokens": 1000}
+                },
+            }
+        ]
+    }
+    mgr = _mock_mgr({"a": _make_tool_result(day_a), "b": _make_tool_result(day_b)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/costs/summary", params={"from": "2026-04-01", "to": "2026-04-01"}
+        )
+    data = resp.json()["data"]
+    assert data["total_sessions"] == 3
+    assert data["total_input_tokens"] == 3000
+    assert data["by_butler"]["a"] > 0
+    assert data["by_butler"]["b"] > 0
+    CostSummary.model_validate(data)
+
+
+async def test_cost_summary_date_range_only_from_returns_422(app):
+    """Providing only 'from' without 'to' returns 422."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    mgr = _mock_mgr({})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/costs/summary", params={"from": "2026-03-01"})
+    assert resp.status_code == 422
+
+
+async def test_cost_summary_date_range_inverted_returns_422(app):
+    """Providing 'from' > 'to' returns 422."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    mgr = _mock_mgr({})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/costs/summary", params={"from": "2026-04-30", "to": "2026-04-01"}
+        )
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # GET /api/costs/by-schedule
 # ---------------------------------------------------------------------------
 

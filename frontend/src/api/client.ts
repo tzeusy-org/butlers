@@ -466,10 +466,27 @@ export function getIssues(): Promise<ApiResponse<Issue[]>> {
 // Costs
 // ---------------------------------------------------------------------------
 
-/** Fetch aggregate cost summary, optionally scoped to a time period. */
-export function getCostSummary(period?: string): Promise<ApiResponse<CostSummary>> {
-  const params = period ? `?period=${period}` : "";
-  return apiFetch<ApiResponse<CostSummary>>(`/costs/summary${params}`);
+/** Fetch aggregate cost summary, optionally scoped to a time period or custom date range.
+ *
+ * When `from` and `to` are provided (YYYY-MM-DD strings) they take precedence
+ * over `period` and the server computes the summary over [from, to] inclusive.
+ * Callers are responsible for formatting dates in the intended timezone before
+ * passing them here.
+ */
+export function getCostSummary(
+  period?: string,
+  from?: string,
+  to?: string,
+): Promise<ApiResponse<CostSummary>> {
+  const sp = new URLSearchParams();
+  if (from && to) {
+    sp.set("from", from);
+    sp.set("to", to);
+  } else if (period) {
+    sp.set("period", period);
+  }
+  const qs = sp.toString() ? `?${sp.toString()}` : "";
+  return apiFetch<ApiResponse<CostSummary>>(`/costs/summary${qs}`);
 }
 
 /** Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD). */
