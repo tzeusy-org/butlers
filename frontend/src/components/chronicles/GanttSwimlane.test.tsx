@@ -481,8 +481,8 @@ describe("GanttSwimlaneInner calendar location pan click handler", () => {
       />,
     )
     expect(html).toContain("gantt-bar-ep-cal-coord")
-    // Bar has cursor:pointer indicating clickability
-    expect(html).toContain('style="cursor:pointer"')
+    // Bar has cursor-pointer class indicating clickability
+    expect(html).toContain('class="cursor-pointer"')
   })
 
   it("renders a calendar bar when payload has an unparseable location string", () => {
