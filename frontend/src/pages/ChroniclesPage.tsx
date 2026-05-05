@@ -41,9 +41,7 @@ import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton"
 import type { ChroniclerEventsParams } from "@/api/types"
 import { MapPanContext, useMapPanContextValue } from "@/components/chronicles/map-pan-store"
-import { ChroniclesTimezoneProvider } from "@/components/chronicles/timezone-context"
-import { DEFAULT_TZ } from "@/components/chronicles/tz-format"
-import { useGeneralSettings } from "@/hooks/use-general-settings"
+import { useTimezone } from "@/components/ui/timezone-context"
 import {
   interpolatePlayhead,
   type TimedTrailPoint,
@@ -54,10 +52,9 @@ import {
 // ---------------------------------------------------------------------------
 
 export default function ChroniclesPage() {
-  // Resolve owner timezone before other hooks so day-boundary computations
-  // are tz-aware from the first render. Falls back to DEFAULT_TZ while loading.
-  const { data: generalSettings } = useGeneralSettings()
-  const ownerTz = generalSettings?.data?.timezone ?? DEFAULT_TZ
+  // Owner timezone is provided by AppTimezoneProvider at App level (bu-ldj6y).
+  // useTimezone() reads from that context directly — no per-page fetch needed.
+  const ownerTz = useTimezone()
 
   const timeWindow = useTimeWindow(ownerTz)
   const autoRefreshControl = useAutoRefresh(30_000)
@@ -185,9 +182,8 @@ export default function ChroniclesPage() {
   function handleByCategoryRetry() { void byCategory.refetch() }
 
   return (
-    <ChroniclesTimezoneProvider timezone={ownerTz}>
-    {/* pb-72 leaves room below the last section so the floating minimap
-        does not permanently obscure aggregation content when scrolled. */}
+    // pb-72 leaves room below the last section so the floating minimap
+    // does not permanently obscure aggregation content when scrolled.
     <div className="space-y-6 pb-72">
       {/* Page heading */}
       <div className="flex items-center justify-between">
@@ -281,7 +277,6 @@ export default function ChroniclesPage() {
         onClose={handleDrawerClose}
       />
     </div>
-    </ChroniclesTimezoneProvider>
   )
 }
 

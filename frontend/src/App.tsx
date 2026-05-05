@@ -3,12 +3,34 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { RouterProvider } from 'react-router'
 import { queryClient } from './lib/query-client'
 import { router } from './router.tsx'
+import { AppTimezoneProvider } from '@/components/ui/timezone-context'
+import { DEFAULT_TZ } from '@/components/chronicles/tz-format'
+import { useGeneralSettings } from '@/hooks/use-general-settings'
+
+// ---------------------------------------------------------------------------
+// Inner component — reads owner timezone after QueryClientProvider is mounted
+// ---------------------------------------------------------------------------
+
+function AppWithTimezone() {
+  const { data: generalSettings } = useGeneralSettings()
+  const ownerTz = generalSettings?.data?.timezone ?? DEFAULT_TZ
+
+  return (
+    <AppTimezoneProvider timezone={ownerTz}>
+      <RouterProvider router={router} />
+      <ReactQueryDevtools initialIsOpen={false} />
+    </AppTimezoneProvider>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// App root — QueryClientProvider must wrap the hook consumer
+// ---------------------------------------------------------------------------
 
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-      <ReactQueryDevtools initialIsOpen={false} />
+      <AppWithTimezone />
     </QueryClientProvider>
   )
 }
