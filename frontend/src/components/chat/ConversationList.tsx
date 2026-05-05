@@ -139,8 +139,8 @@ export function ConversationList({
   const loading = isSearchActive ? isSearching : isLoading;
 
   // Collapse strategy: width switches INSTANTLY (no width transition) so no
-  // layout property is animated. Expandable content (search, list labels) fades
-  // via opacity-only transitions. This satisfies the motion contract AC#5.
+  // layout property is animated. Expandable content (search, list labels) is
+  // conditionally rendered (instant show/hide). This satisfies AC#5.
   return (
     <div
       className={cn(
