@@ -49,13 +49,16 @@ describe("PracticalDrawer", () => {
     expect(html).toContain("child-content");
   });
 
-  it("does not render children when forceOpen is false (drawer closed)", () => {
+  it("renders children inside hidden panel when forceOpen is false (ARIA-always-present)", () => {
+    // The panel div is always present in the SSR markup (so aria-controls always
+    // points to an existing element). The div is hidden via hidden={true}, but the
+    // children content is still rendered inside it.
     const html = render({
       entity: BASE_ENTITY,
       forceOpen: false,
       children: <span>child-content</span>,
     });
-    expect(html).not.toContain("child-content");
+    expect(html).toContain("child-content");
   });
 
   it("renders provenance metadata in the footer when drawer is open", () => {
