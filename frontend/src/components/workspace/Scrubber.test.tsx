@@ -4,8 +4,8 @@
  * Tests for the Scrubber component (bu-ig72b.23).
  *
  * Tests cover:
- * 1. snapToNearest helper — snap logic with one, multiple, and no point events.
- * 2. Scrubber renders — slider visible, labels, no-events hint.
+ * 1. snapToNearest helper — snap logic with one, multiple, and no snap points.
+ * 2. Scrubber renders — slider visible, labels.
  * 3. Default timezone — tz prop defaults to DEFAULT_TZ if omitted.
  *
  * Strategy: renderToStaticMarkup for structure tests (no effects).
@@ -14,35 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import type { ChroniclerPointEvent } from "@/api/types";
-import { Scrubber } from "./Scrubber";
-
-// ---------------------------------------------------------------------------
-// Minimal point event factory
-// ---------------------------------------------------------------------------
-
-function makeEvent(id: string, canonical_occurred_at: string): ChroniclerPointEvent {
-  return {
-    id,
-    source_name: "owntracks",
-    source_ref: `ref:${id}`,
-    event_type: "location",
-    occurred_at: canonical_occurred_at,
-    precision: "exact",
-    title: null,
-    payload: { lat: 1.3, lon: 103.8 },
-    privacy: "sensitive",
-    retention_days: 30,
-    tombstone_at: null,
-    canonical_occurred_at,
-    canonical_title: null,
-    canonical_privacy: "sensitive",
-    corrected_at: null,
-    correction_note: null,
-    created_at: canonical_occurred_at,
-    updated_at: canonical_occurred_at,
-  };
-}
+import { Scrubber, snapToNearest } from "./Scrubber";
 
 // ---------------------------------------------------------------------------
 // Window bounds shared across tests
@@ -52,8 +24,7 @@ const WINDOW_START = new Date("2026-04-25T08:00:00Z");
 const WINDOW_END = new Date("2026-04-25T20:00:00Z");
 
 // ---------------------------------------------------------------------------
-// snapToNearest helper — tested indirectly through the component render.
-// We test the snap outputs by verifying the label shown to the user.
+// Scrubber rendering
 // ---------------------------------------------------------------------------
 
 describe("Scrubber rendering", () => {
@@ -62,7 +33,7 @@ describe("Scrubber rendering", () => {
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
+        snapMs={[]}
         onScrub={vi.fn()}
       />,
     );
@@ -71,29 +42,16 @@ describe("Scrubber rendering", () => {
     expect(html).toContain('data-testid="scrubber-input"');
   });
 
-  it("shows no-location-points hint when pointEvents is empty", () => {
+  it("renders without snapMs prop (optional)", () => {
     const html = renderToStaticMarkup(
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
         onScrub={vi.fn()}
       />,
     );
-    expect(html).toContain("No location points");
-  });
-
-  it("does NOT show no-location-points hint when point events exist", () => {
-    const events = [makeEvent("ev1", "2026-04-25T10:00:00Z")];
-    const html = renderToStaticMarkup(
-      <Scrubber
-        windowStart={WINDOW_START}
-        windowEnd={WINDOW_END}
-        pointEvents={events}
-        onScrub={vi.fn()}
-      />,
-    );
-    expect(html).not.toContain("No location points");
+    expect(html).toContain('type="range"');
+    expect(html).toContain('data-testid="scrubber"');
   });
 
   it("slider min equals windowStartMs", () => {
@@ -101,7 +59,7 @@ describe("Scrubber rendering", () => {
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
+        snapMs={[]}
         onScrub={vi.fn()}
       />,
     );
@@ -113,7 +71,7 @@ describe("Scrubber rendering", () => {
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
+        snapMs={[]}
         onScrub={vi.fn()}
       />,
     );
@@ -125,7 +83,7 @@ describe("Scrubber rendering", () => {
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
+        snapMs={[]}
         onScrub={vi.fn()}
       />,
     );
@@ -137,7 +95,7 @@ describe("Scrubber rendering", () => {
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
+        snapMs={[]}
         onScrub={vi.fn()}
       />,
     );
@@ -146,58 +104,101 @@ describe("Scrubber rendering", () => {
 });
 
 // ---------------------------------------------------------------------------
-// snapToNearest — unit tests for the snapping logic
+// snapMs behaviour
 // ---------------------------------------------------------------------------
 
-/**
- * Access the snap helper through the Scrubber output.
- *
- * We verify snapping indirectly: with a single event at a specific time, the
- * scrubber label should reflect that event's timestamp when the slider is
- * anywhere in the window (because the nearest = only event).
- *
- * For these tests we parse the label from the HTML output.
- * The label is the time string shown next to the slider (formatted HH:MM).
- */
-describe("snapToNearest behaviour (via label)", () => {
-  it("snaps to the only event regardless of slider position", () => {
-    const eventTime = "2026-04-25T14:30:00Z";
-    const events = [makeEvent("ev1", eventTime)];
-
-    // With a single event, snap always resolves to that event's time.
-    const html = renderToStaticMarkup(
-      <Scrubber
-        // key forces fresh mount at window start
-        key="test-snap"
-        windowStart={WINDOW_START}
-        windowEnd={WINDOW_END}
-        pointEvents={events}
-        onScrub={vi.fn()}
-      />,
-    );
-
-    // The label element exists — content will be the snapped time (locale-formatted).
-    // We verify the data-testid is present; exact time format is locale-dependent.
-    expect(html).toContain('data-testid="scrubber-label"');
-  });
-
-  it("renders with multiple events without error", () => {
-    const events = [
-      makeEvent("ev1", "2026-04-25T09:00:00Z"),
-      makeEvent("ev2", "2026-04-25T12:00:00Z"),
-      makeEvent("ev3", "2026-04-25T18:00:00Z"),
+describe("snapMs behaviour (via label)", () => {
+  it("renders with multiple snap points without error", () => {
+    const snapMs = [
+      new Date("2026-04-25T09:00:00Z").getTime(),
+      new Date("2026-04-25T12:00:00Z").getTime(),
+      new Date("2026-04-25T18:00:00Z").getTime(),
     ];
 
     const html = renderToStaticMarkup(
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={events}
+        snapMs={snapMs}
         onScrub={vi.fn()}
       />,
     );
 
     expect(html).toContain('type="range"');
-    expect(html).not.toContain("No location points");
+  });
+
+  it("renders with epoch-ms snap points matching daily cost midpoints", () => {
+    // Verify that the generalized snapMs contract works for cost data.
+    // Daily cost snap points are midday timestamps for each day.
+    const middays = [
+      new Date("2026-04-23T12:00:00Z").getTime(),
+      new Date("2026-04-24T12:00:00Z").getTime(),
+      new Date("2026-04-25T12:00:00Z").getTime(),
+    ];
+
+    const windowStart = new Date("2026-04-23T00:00:00Z");
+    const windowEnd = new Date("2026-04-25T23:59:59Z");
+
+    const html = renderToStaticMarkup(
+      <Scrubber
+        windowStart={windowStart}
+        windowEnd={windowEnd}
+        snapMs={middays}
+        onScrub={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('data-testid="scrubber"');
+    expect(html).toContain('data-testid="scrubber-label"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// snapToNearest unit tests — core logic for the snapMs contract
+// ---------------------------------------------------------------------------
+
+describe("snapToNearest", () => {
+  const T0 = new Date("2026-04-25T12:00:00Z").getTime(); // noon
+  const T1 = new Date("2026-04-25T15:00:00Z").getTime(); // 3 pm
+  const T2 = new Date("2026-04-25T18:00:00Z").getTime(); // 6 pm
+
+  it("returns null for empty snap array", () => {
+    expect(snapToNearest(T0, [])).toBeNull();
+  });
+
+  it("returns the only point when one snap point is given", () => {
+    expect(snapToNearest(T0, [T1])).toBe(T1);
+  });
+
+  it("snaps to the nearest of two points — closer to first", () => {
+    // Midpoint between T0 and T1 is at T0+90min. We query T0+60min → closer to T0.
+    const query = T0 + 60 * 60 * 1000;
+    expect(snapToNearest(query, [T0, T1])).toBe(T0);
+  });
+
+  it("snaps to the nearest of two points — closer to second", () => {
+    // T0+120min is exactly half-way; T0+121min is marginally closer to T1.
+    const query = T0 + 121 * 60 * 1000;
+    expect(snapToNearest(query, [T0, T1])).toBe(T1);
+  });
+
+  it("snaps to nearest among three points", () => {
+    // Query is between T1 and T2 but closer to T2.
+    const query = T2 - 30 * 60 * 1000; // 30 min before T2
+    expect(snapToNearest(query, [T0, T1, T2])).toBe(T2);
+  });
+
+  it("returns exact match when value equals a snap point", () => {
+    expect(snapToNearest(T1, [T0, T1, T2])).toBe(T1);
+  });
+
+  it("returns first snap point when query is before the window", () => {
+    const before = T0 - 1_000_000;
+    expect(snapToNearest(before, [T0, T1, T2])).toBe(T0);
+  });
+
+  it("returns last snap point when query is after the window", () => {
+    const after = T2 + 1_000_000;
+    expect(snapToNearest(after, [T0, T1, T2])).toBe(T2);
   });
 });

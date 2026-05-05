@@ -148,7 +148,7 @@ describe("Scrubber timezone rendering (bu-k18cm)", () => {
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
+        snapMs={[]}
         tz="Asia/Singapore"
         onScrub={() => {}}
       />,
@@ -166,7 +166,7 @@ describe("Scrubber timezone rendering (bu-k18cm)", () => {
       <Scrubber
         windowStart={WINDOW_START}
         windowEnd={WINDOW_END}
-        pointEvents={[]}
+        snapMs={[]}
         tz="America/Los_Angeles"
         onScrub={() => {}}
       />,

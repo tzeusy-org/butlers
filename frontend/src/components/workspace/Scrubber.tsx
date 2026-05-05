@@ -1,16 +1,16 @@
 // ---------------------------------------------------------------------------
 // Scrubber — shared time-scrubber for workspace-pattern pages (bu-ig72b.23)
 //
-// Owns the shared playhead timestamp that drives both the Gantt cursor and the
-// map playhead. The scrubber position snaps to the nearest OwnTracks point
-// event in the current window (no smoothing, v1 per D12).
+// Owns the shared playhead timestamp. The scrubber position snaps to the
+// nearest timestamp in `snapMs` (if provided). When no snap points are given
+// the slider still works; `snappedMs` is null and callers decide how to handle
+// that (e.g. show the raw position, or skip the snap indicator).
 //
 // State model:
 //   - scrubberMs: raw slider value in epoch ms (controlled by the range input)
-//   - snappedMs:  nearest point event ms (or null if no point events exist)
+//   - snappedMs:  nearest snap point ms (or null if no snap points exist)
 //
-// Both values are emitted upward via onScrub(scrubberMs, snappedMs) so that
-// the parent page can pass them down to GanttSwimlane and MapWidget.
+// Both values are emitted upward via onScrub(scrubberMs, snappedMs).
 //
 // Reset behavior:
 //   - The parent passes `key={windowKey}` so that the component is remounted
@@ -18,19 +18,14 @@
 //
 // Empty-state:
 //   - The slider is always visible when the window is valid.
-//   - When there are no point events, `snappedMs` is null and the map shows
-//     its own empty state (no playhead marker).
+//   - When there are no snap points, `snappedMs` is null.
 //
 // Update cadence:
-//   - onScrub fires synchronously on every slider input change. The map
-//     marker uses interpolation between trail samples, so the parent can
-//     update the playhead position smoothly as scrubberMs changes; there is
-//     no per-tick map repaint to debounce.
+//   - onScrub fires synchronously on every slider input change.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-import type { ChroniclerPointEvent } from "@/api/types"
 import { DEFAULT_TZ, formatScrubberLabel } from "@/components/chronicles/tz-format"
 
 // ---------------------------------------------------------------------------
@@ -38,28 +33,26 @@ import { DEFAULT_TZ, formatScrubberLabel } from "@/components/chronicles/tz-form
 // ---------------------------------------------------------------------------
 
 /**
- * Snap `valueMs` to the nearest point event timestamp.
- * Returns null if pointEvents is empty.
+ * Snap `valueMs` to the nearest timestamp in the snapMs array.
+ * Returns null if snapMs is empty.
+ *
+ * Exported for direct unit testing.
  */
-function snapToNearest(valueMs: number, pointEvents: ChroniclerPointEvent[]): number | null {
-  if (pointEvents.length === 0) return null
+export function snapToNearest(valueMs: number, snapMs: number[]): number | null {
+  if (snapMs.length === 0) return null
 
-  let best: ChroniclerPointEvent = pointEvents[0]
-  let bestDelta = Math.abs(
-    new Date(pointEvents[0].canonical_occurred_at).getTime() - valueMs,
-  )
+  let best = snapMs[0]
+  let bestDelta = Math.abs(snapMs[0] - valueMs)
 
-  for (let i = 1; i < pointEvents.length; i++) {
-    const delta = Math.abs(
-      new Date(pointEvents[i].canonical_occurred_at).getTime() - valueMs,
-    )
+  for (let i = 1; i < snapMs.length; i++) {
+    const delta = Math.abs(snapMs[i] - valueMs)
     if (delta < bestDelta) {
       bestDelta = delta
-      best = pointEvents[i]
+      best = snapMs[i]
     }
   }
 
-  return new Date(best.canonical_occurred_at).getTime()
+  return best
 }
 
 
@@ -72,8 +65,12 @@ export interface ScrubberProps {
   windowStart: Date
   /** Window end (inclusive). */
   windowEnd: Date
-  /** Point events to snap to. May be empty (shows scrubber without snapping). */
-  pointEvents: ChroniclerPointEvent[]
+  /**
+   * Epoch-millisecond timestamps to snap to. May be empty (scrubber still
+   * renders, snappedMs emitted as null). Pass an empty array when there are
+   * no discrete snap points (e.g. continuous cost data).
+   */
+  snapMs?: number[]
   /**
    * IANA timezone for label formatting. Defaults to Asia/Singapore.
    * Pass the owner's configured timezone here.
@@ -81,9 +78,8 @@ export interface ScrubberProps {
   tz?: string
   /**
    * Called synchronously when the scrubber position changes.
-   * The parent can use interpolation to smooth the map playhead between ticks.
    * @param scrubberMs - raw slider position in epoch ms
-   * @param snappedMs  - nearest point event ms, or null if no point events
+   * @param snappedMs  - nearest snap point ms, or null if no snap points
    */
   onScrub: (scrubberMs: number, snappedMs: number | null) => void
 }
@@ -93,17 +89,22 @@ export interface ScrubberProps {
 // ---------------------------------------------------------------------------
 
 /**
- * Single time-scrubber that emits a shared timestamp for the Gantt cursor and
- * map playhead. Snaps to the nearest point event; emits onScrub synchronously
- * on each slider change so the parent can interpolate the map playhead smoothly
- * (see MapWidget playhead interpolation).
+ * Single time-scrubber that emits a shared timestamp for driving domain
+ * visualisations. Snaps to the nearest point in `snapMs` when provided;
+ * otherwise emits the raw slider position with snappedMs=null.
  *
  * Renders an HTML range input. No new npm dependencies.
  *
  * The parent MUST pass `key={windowKey}` so that the component remounts when
  * the time window changes, which resets the scrubber to the window start.
  */
-export function Scrubber({ windowStart, windowEnd, pointEvents, tz = DEFAULT_TZ, onScrub }: ScrubberProps) {
+export function Scrubber({
+  windowStart,
+  windowEnd,
+  snapMs = [],
+  tz = DEFAULT_TZ,
+  onScrub,
+}: ScrubberProps) {
   const windowStartMs = windowStart.getTime()
   const windowEndMs = windowEnd.getTime()
   const windowDurationMs = Math.max(1, windowEndMs - windowStartMs)
@@ -111,15 +112,13 @@ export function Scrubber({ windowStart, windowEnd, pointEvents, tz = DEFAULT_TZ,
   // Initialized once per mount (parent resets via key prop when window changes).
   const [scrubberMs, setScrubberMs] = useState<number>(windowStartMs)
 
-  // Snap to nearest point event — recomputed only when inputs change.
+  // Snap to nearest snap point — recomputed only when inputs change.
   const snappedMs = useMemo(
-    () => snapToNearest(scrubberMs, pointEvents),
-    [scrubberMs, pointEvents],
+    () => snapToNearest(scrubberMs, snapMs),
+    [scrubberMs, snapMs],
   )
 
-  // Emit synchronously whenever scrubberMs or snappedMs changes. The map
-  // marker is driven by raw scrubberMs (with interpolation) so the parent
-  // wants every tick — no debouncing.
+  // Emit synchronously whenever scrubberMs or snappedMs changes.
   useEffect(() => {
     onScrub(scrubberMs, snappedMs)
   }, [scrubberMs, snappedMs, onScrub])
@@ -166,13 +165,6 @@ export function Scrubber({ windowStart, windowEnd, pointEvents, tz = DEFAULT_TZ,
       >
         {label}
       </span>
-
-      {/* No-events hint */}
-      {pointEvents.length === 0 && (
-        <span className="shrink-0 text-xs text-muted-foreground italic">
-          No location points
-        </span>
-      )}
     </div>
   )
 }
