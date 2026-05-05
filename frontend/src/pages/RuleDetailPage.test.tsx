@@ -95,7 +95,7 @@ describe("RuleDetailPage — layout", () => {
     setRuleState({ ...BASE_RULE, content: longContent });
     const html = renderPage();
     // Should contain the truncated title in the H1 (79 chars + ellipsis)
-    expect(html).toContain("<h1" + " class=\"text-3xl font-bold tracking-tight\">" + "a".repeat(79) + "…</h1>");
+    expect(html).toMatch(new RegExp("<h1[^>]*>" + "a".repeat(79) + "…</h1>"));
   });
 
   it("does not truncate rule title under 80 chars", () => {
@@ -103,7 +103,7 @@ describe("RuleDetailPage — layout", () => {
     setRuleState({ ...BASE_RULE, content: shortContent });
     const html = renderPage();
     // Should contain the untruncated content in the H1
-    expect(html).toContain("<h1" + " class=\"text-3xl font-bold tracking-tight\">" + "Keep this content as-is</h1>");
+    expect(html).toMatch(new RegExp("<h1[^>]*>Keep this content as-is</h1>"));
   });
 });
 
