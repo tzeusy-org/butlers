@@ -16,7 +16,7 @@
 | 3 | Every button label in the dashboard follows sentence case + owner-direct verb (auditable via grep) | bu-scahb.3 | CLOSED (PR #1451) | PARTIAL GAP — ~30 button labels fixed in 21 files; but 3 non-compliant labels remain: `"Force Patrol Now"` (QaOverviewPage.tsx:682), `"Sync Now"` (QASettingsCard.tsx:324), `"Set Value"` (ButlerStateTab.tsx:184 + StateBrowser.tsx:140) |
 | 4 | Every empty-state in src/pages renders via shared `<EmptyState>`; no inline empty markup remains | bu-scahb.4 | CLOSED (PR #1450) | PARTIAL GAP — 18 empty-states refit; inline empty-state markup still present in components (`MedicationTracker.tsx`, `MeasurementChart.tsx`, `AggregatePieChart.tsx`) and in pages (`DashboardPage.tsx`, `EntityDetailPage.tsx`); some are contextually distinct but a few are true empty states not using the shared primitive |
 | 5 | Zero em-dashes in user-facing strings under frontend/src/pages and frontend/src/components | bu-scahb.5 | CLOSED (PR #1446) | NEAR-PASS — 35 em-dashes replaced in 22 files; 2 remaining em-dashes are in `sr-only` spans in `SourceStateBadgeStrip.tsx` (screen-reader text: `" — has recent error"`, `" — no recent data"`); these are accessibility-only and not rendered visually, but still appear in the ARIA tree |
-| 6 | gen-1 reconciliation closed clean | bu-scahb.6 | IN PROGRESS | This bead. 2 gap beads filed below. |
+| 6 | gen-1 reconciliation closed clean | bu-scahb.6 | IN PROGRESS | This bead. 3 beads filed below: 2 gap beads (bu-65j6j, bu-77sy5) + 1 gen-2 reconciliation bead (bu-jj1ts). |
 
 **Additional AC from bu-scahb.7 (subsumed G1):**
 
@@ -130,7 +130,7 @@
 - Line 1200: `- — has recent error` (mirror of SourceStateBadgeStrip.tsx sr-only text)
 - Line 1201: `- — no recent data` (mirror of SourceStateBadgeStrip.tsx sr-only text)
 
-The inventory header itself uses an em-dash in prose (`— re-run the script`). The script ac requires exit 0, which blocks CI/pre-commit adoption.
+The inventory header itself uses an em-dash in prose (`— re-run the script`). The script AC requires exit 0, which blocks CI/pre-commit adoption.
 
 **Fix options:**
 1. Rewrite inventory header to use a colon: `Do **not** edit manually: re-run the script to refresh.`
@@ -169,7 +169,7 @@ The epic **bu-scahb is NOT closeable** at gen-1. The following AC items are unre
 - AC #5 (soft): sr-only em-dashes in SourceStateBadgeStrip.tsx
 - AC (G7): `check-no-em-dashes.py` exits 1 (blocks CI wiring)
 
-A gen-2 reconciliation bead (bu-scahb.10) should be filed once gap beads bu-scahb.8 and bu-scahb.9 are closed.
+A gen-2 reconciliation bead (bu-jj1ts) should be filed once gap beads bu-65j6j and bu-77sy5 are closed.
 
 ---
 
