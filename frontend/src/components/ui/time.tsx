@@ -35,9 +35,10 @@
 //   "YYYY-MM-DD")` parses as UTC midnight and can show the previous local day
 //   for timezones west of UTC.
 //
-// Timezone is read from ChroniclesTimezoneContext via useChroniclesTimezone().
+// Timezone is read from AppTimezoneContext via useTimezone(). The provider is
+// mounted at App level so all pages share the owner timezone automatically.
 // An explicit `timezone` prop overrides the context value — useful for
-// isolated rendering outside a ChroniclesTimezoneProvider.
+// isolated rendering outside an AppTimezoneProvider.
 //
 // Smart-mode threshold is 24 h. If it needs to be configurable in the future,
 // thread a `smartThresholdMs` prop through; the logic is isolated in one place.
@@ -45,7 +46,7 @@
 
 import { formatDistanceToNow } from "date-fns"
 import { formatInTimeZone } from "date-fns-tz"
-import { useChroniclesTimezone } from "@/components/chronicles/use-chronicles-timezone"
+import { useTimezone } from "@/components/ui/timezone-context"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,7 +91,7 @@ export interface TimeProps {
   compact?: boolean
   /**
    * IANA timezone name override.
-   * Defaults to the owner timezone from ChroniclesTimezoneContext.
+   * Defaults to the owner timezone from AppTimezoneContext.
    */
   timezone?: string
   /**
@@ -224,7 +225,7 @@ export function Time({
   showTitle = true,
   className,
 }: TimeProps) {
-  const contextTz = useChroniclesTimezone()
+  const contextTz = useTimezone()
   const tz = timezone ?? contextTz
 
   const date = toDate(value)
