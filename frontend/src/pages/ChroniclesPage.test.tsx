@@ -115,7 +115,7 @@ vi.mock("@/components/ui/auto-refresh-toggle", () => ({
   },
 }));
 
-vi.mock("@/components/chronicles/TimeWindowPicker", () => ({
+vi.mock("@/components/workspace/TimeWindowPicker", () => ({
   TimeWindowPicker: () => null,
 }));
 

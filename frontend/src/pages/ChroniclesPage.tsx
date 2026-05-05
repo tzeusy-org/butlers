@@ -26,7 +26,7 @@
 
 import { useCallback, useMemo, useState } from "react"
 import { useTimeWindow } from "@/hooks/use-time-window"
-import { TimeWindowPicker } from "@/components/chronicles/TimeWindowPicker"
+import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { FloatingMapMinimap } from "@/components/chronicles/FloatingMapMinimap"
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane"
 import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer"
