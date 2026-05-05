@@ -206,13 +206,14 @@ panning a map, adjusting a time window. Examples: `ChroniclesPage`
 
 **Reference implementation:** `ChroniclesPage`.
 
-**Required primitives:** `<Page archetype='workspace'>`, `<Scrubber>`,
-`<TimeWindowPicker>`, `<MapPanContext>` (when geographic exploration applies),
+**Required primitives:** `<Page archetype="workspace">`, `<Scrubber>`,
+`<TimeWindowPicker>`, `MapPanContext.Provider` (when geographic exploration applies),
 aggregation chart slot.
 
 **When to use:** Pages where the user explores time and state interactively.
-Current examples: Chronicles, future candidates include Costs (if upgraded with
-timeline scrubbing), Sessions (if upgraded to show butler activity timelines).
+Current examples: ChroniclesPage, CalendarWorkspacePage; future candidates include
+CostsPage (if upgraded with timeline scrubbing), SessionsPage (if upgraded to show
+butler activity timelines).
 
 These are *de facto* their own design language. The Chronicles page
 in particular reads like a separate product.
