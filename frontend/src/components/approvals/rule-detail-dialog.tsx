@@ -1,4 +1,3 @@
-import { format } from "date-fns";
 import type { ApprovalRule } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Time } from "@/components/ui/time";
 import { useRevokeRule } from "@/hooks/use-approvals";
 
 interface RuleDetailDialogProps {
@@ -85,7 +85,7 @@ export function RuleDetailDialog({
             <div>
               <Label className="text-muted-foreground">Created At</Label>
               <p className="mt-1 text-sm">
-                {format(new Date(rule.created_at), "PPpp")}
+                <Time value={rule.created_at} mode="absolute" precision="minute" />
               </p>
             </div>
 
@@ -93,7 +93,7 @@ export function RuleDetailDialog({
               <div>
                 <Label className="text-muted-foreground">Expires At</Label>
                 <p className="mt-1 text-sm">
-                  {format(new Date(rule.expires_at), "PPpp")}
+                  <Time value={rule.expires_at} mode="absolute" precision="minute" />
                 </p>
               </div>
             )}
