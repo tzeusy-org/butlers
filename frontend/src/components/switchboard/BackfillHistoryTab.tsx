@@ -344,7 +344,7 @@ function CreateJobDialog({ open, onOpenChange, connectors }: CreateJobDialogProp
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Create Backfill Job</DialogTitle>
+          <DialogTitle>Create backfill job</DialogTitle>
           <DialogDescription>
             Start a historical replay for a connector. Only online connectors are listed.
           </DialogDescription>
@@ -563,7 +563,7 @@ export function BackfillHistoryTab() {
         </div>
         <Button onClick={() => setCreateOpen(true)} data-testid="create-backfill-btn">
           <Plus className="mr-2 h-4 w-4" />
-          New Backfill Job
+          New backfill job
         </Button>
       </div>
 
@@ -603,7 +603,7 @@ export function BackfillHistoryTab() {
                       colSpan={8}
                       className="py-12 text-center text-sm text-muted-foreground"
                     >
-                      No backfill jobs found. Click "New Backfill Job" to get started.
+                      No backfill jobs found. Click "New backfill job" to get started.
                     </TableCell>
                   </TableRow>
                 ) : (

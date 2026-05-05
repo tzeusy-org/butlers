@@ -80,7 +80,7 @@ export default function EducationPage() {
           </p>
         </div>
         <Button onClick={() => setRequestDialogOpen(true)}>
-          Request New Curriculum
+          Request curriculum
         </Button>
       </div>
 

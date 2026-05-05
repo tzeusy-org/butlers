@@ -106,7 +106,7 @@ Below the mind map graph, the Curriculum tab SHALL display management actions fo
 - An "Abandon" button (visible when status is `active`) that calls `PUT /mind-maps/{id}/status` with `{"status": "abandoned"}`
 - A "Re-activate" button (visible when status is `abandoned`) that calls `PUT /mind-maps/{id}/status` with `{"status": "active"}`
 
-Above the mind map selector, a "Request New Curriculum" button SHALL open a dialog with fields for topic (required) and goal (optional). Submitting the dialog SHALL call `POST /curriculum-requests`. On 202 success, the dialog SHALL close and a toast notification SHALL confirm the request. On 409 conflict, the dialog SHALL display an error that a request is already pending.
+Above the mind map selector, a "Request curriculum" button SHALL open a dialog with fields for topic (required) and goal (optional). Submitting the dialog SHALL call `POST /curriculum-requests`. On 202 success, the dialog SHALL close and a toast notification SHALL confirm the request. On 409 conflict, the dialog SHALL display an error that a request is already pending.
 
 After a successful status change, the mind map list query cache SHALL be invalidated to reflect the new status.
 
@@ -120,7 +120,7 @@ After a successful status change, the mind map list query cache SHALL be invalid
 
 #### Scenario: Request a new curriculum
 
-- **WHEN** the user clicks "Request New Curriculum"
+- **WHEN** the user clicks "Request curriculum"
 - **AND** enters topic "Rust" and goal "Systems programming basics"
 - **AND** submits the form
 - **THEN** the system SHALL call `POST /curriculum-requests`

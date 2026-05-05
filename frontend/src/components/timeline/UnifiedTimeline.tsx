@@ -278,7 +278,7 @@ export default function UnifiedTimeline({
       {onLoadMore && hasMore && (
         <div className="flex justify-center mt-6">
           <Button variant="outline" size="sm" onClick={onLoadMore}>
-            Load More
+            Load more
           </Button>
         </div>
       )}

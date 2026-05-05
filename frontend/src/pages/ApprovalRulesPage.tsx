@@ -90,9 +90,9 @@ export default function ApprovalRulesPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button onClick={() => setCreateOpen(true)}>Create Rule</Button>
+          <Button onClick={() => setCreateOpen(true)}>Create rule</Button>
           <Button variant="outline" asChild>
-            <Link to="/approvals">Back to Actions</Link>
+            <Link to="/approvals">Back to actions</Link>
           </Button>
         </div>
       </div>

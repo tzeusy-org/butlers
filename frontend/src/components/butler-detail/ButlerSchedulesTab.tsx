@@ -181,7 +181,7 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
             <CardTitle>Schedules</CardTitle>
             <CardDescription>Scheduled tasks for this butler</CardDescription>
           </div>
-          <Button onClick={handleAddClick}>Add Schedule</Button>
+          <Button onClick={handleAddClick}>Add schedule</Button>
         </CardHeader>
         <CardContent>
           <ScheduleTable

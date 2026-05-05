@@ -366,7 +366,7 @@ export function SpotifySection() {
           )}
           {displayState === "not_configured" && !showClientIdInput && (
             <Button size="sm" variant="outline" onClick={() => setShowClientIdInput(true)}>
-              Set Client ID
+              Set client ID
             </Button>
           )}
           {(displayState === "not_configured" || displayState === "needs_auth" || displayState === "disconnected") && (
@@ -545,7 +545,7 @@ export function SpotifySetupCard() {
 
             {displayState === "not_configured" && !showClientIdInput && (
               <Button size="sm" variant="outline" onClick={() => setShowClientIdInput(true)}>
-                Set Client ID
+                Set client ID
               </Button>
             )}
 

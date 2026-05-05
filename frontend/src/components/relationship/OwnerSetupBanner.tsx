@@ -228,12 +228,12 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
               variant="outline"
               className="shrink-0 border-amber-400 text-amber-900 hover:bg-amber-100 dark:border-amber-600 dark:text-amber-100"
             >
-              Set Up Identity
+              Set up identity
             </Button>
           </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Set Up Owner Identity</DialogTitle>
+              <DialogTitle>Set up owner identity</DialogTitle>
               <DialogDescription>
                 Fill in your real name and contact details so butlers can recognise you
                 across channels and syncs match correctly.

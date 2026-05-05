@@ -161,7 +161,7 @@ The `useMedicationDoses` hook MUST be conditionally enabled (`enabled: !!medicat
 The dashboard SHALL render a Contacts page at `/contacts` displaying contacts in a searchable, label-filterable, paginated table with a Google sync action.
 
 The page MUST contain:
-- A heading area with title "Contacts", description, and a "Sync From Google" button that triggers incremental Google Contacts sync. The button MUST be disabled while syncing and display "Syncing..." during the operation.
+- A heading area with title "Contacts", description, and a "Sync from Google" button that triggers incremental Google Contacts sync. The button MUST be disabled while syncing and display "Syncing..." during the operation.
 - On successful sync, a toast MUST display the sync summary (created, updated, skipped, errors counts). On failure, a toast MUST display the error message.
 - A `ContactTable` component with: search input (placeholder "Search contacts..."), label filter badges (All + one per label, with deterministic hash-based coloring for labels without explicit colors), and a table with columns: Name (with optional nickname in parentheses), Email, Phone, Labels (colored badges), Last Interaction (relative time via `formatDistanceToNow`).
 - Each contact row MUST be clickable, navigating to `/contacts/:id`.
@@ -175,7 +175,7 @@ The page MUST contain:
 
 #### Scenario: Google sync with mixed results
 
-- **WHEN** the user clicks "Sync From Google" and the sync returns `{created: 5, updated: 12, skipped: 3, errors: 1}`
+- **WHEN** the user clicks "Sync from Google" and the sync returns `{created: 5, updated: 12, skipped: 3, errors: 1}`
 - **THEN** a success toast MUST display "Google sync complete: 5 created, 12 updated, 3 skipped, 1 errors"
 
 ---
@@ -286,7 +286,7 @@ The page MUST support two views controlled by URL search parameters:
 URL parameters MUST include: `view` (user/butler), `range` (month/week/day/list), `anchor` (ISO date), `source` (source key filter), `calendar` (calendar ID filter). All parameters MUST be persisted in the URL and synchronized via `useSearchParams`.
 
 The page MUST contain:
-- A header with title "Calendar Workspace", timezone badge, entry count badge, "Sync now" button, and context-appropriate create buttons ("Create Event" in user view, "Create Butler Event" in butler view).
+- A header with title "Calendar Workspace", timezone badge, entry count badge, "Sync now" button, and context-appropriate create buttons ("Create event" in user view, "Create butler event" in butler view).
 - A toolbar card with: View toggle (User/Butler), Range selector (Month/Week/Day/List), navigation controls (Prev/Today/Next), and calendar/source filter dropdowns (user view only).
 - A main content area rendering the appropriate view mode.
 

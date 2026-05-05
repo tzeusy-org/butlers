@@ -204,7 +204,7 @@ export function ConnectorRulesSection({
             data-testid="add-rule-btn"
           >
             <Plus className="mr-1 h-4 w-4" />
-            Add Rule
+            Add rule
           </Button>
         </div>
       </CardHeader>

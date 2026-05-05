@@ -793,7 +793,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
                   disabled={isLoading}
                 >
                   {isLoading ? <Loader2 className="size-3 animate-spin mr-1" /> : null}
-                  Load More
+                  Load more
                 </Button>
               )}
             </div>
