@@ -49,7 +49,7 @@ The gen-1 violations in non-chart files (`EntitiesPage.tsx`, `approvals/action-t
 
 Command: `grep -rn 'format(' frontend/src/pages frontend/src/components --include='*.tsx' | grep -v 'API|param|key|number'`
 
-Remaining hits (28 total lines). All fall into one of three resolved categories:
+Remaining hits (28 total lines). All fall into one of four categories (A–C accepted/exempt; D contains the remaining violation):
 
 #### Category A — Internal utility / key-building helpers (not JSX render, not AC4 violations)
 
@@ -250,7 +250,7 @@ accepted under scope exclusion; only `rule-detail-dialog.tsx` (2 sites) not migr
 **AC5** is substantially met — dynamic inline styles legitimately retained; ConcentricCirclesDialog
 deleted; static cursor items remain (low priority).
 
-Two remaining minor gaps (rule-detail-dialog format() calls, 3 static cursor styles) do not
+Two remaining minor gaps (rule-detail-dialog format() calls, 2 static cursor styles) do not
 block epic closure — they are cleanup-level items suitable for follow-up micro-beads.
 
 **Recommended: Close epic bu-v1tt2.**
