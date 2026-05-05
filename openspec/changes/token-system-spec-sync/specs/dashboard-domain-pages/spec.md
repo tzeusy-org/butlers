@@ -26,7 +26,7 @@ All other sub-requirements for this requirement remain unchanged.
 - **AND** there are measurements with `value` containing `systolic` and
   `diastolic` keys
 - **THEN** the chart MUST render two lines: systolic colored with
-  `var(--category-1)` and diastolic colored with `var(--category-5)`
+  `var(--category-1)` (blue) and diastolic colored with `var(--category-5)` (rose)
 - **AND** the chart tooltip MUST label them "Systolic" and "Diastolic"
 
 ---
@@ -34,8 +34,8 @@ All other sub-requirements for this requirement remain unchanged.
 ### Requirement: Symptoms page with severity visualization
 
 Severity visualization MUST use a 16px-wide progress bar colored with named
-CSS tokens: `var(--severity-low)` for severity 1–3, `var(--severity-medium)`
-for 4–6, and `var(--severity-high)` for 7–10.
+CSS tokens: `var(--severity-low)` (green) for severity 1–3, `var(--severity-medium)` (amber)
+for 4–6, and `var(--severity-high)` (red) for 7–10.
 
 #### Scenario: Severity color mapping
 

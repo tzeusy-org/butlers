@@ -1,13 +1,13 @@
 ## Why
 
-Vertical C (bu-v1tt2) migrated all hex color literals to named CSS custom
-properties in `frontend/src/index.css`:
+Vertical C (bu-v1tt2) migrated ad-hoc hex color literals in JSX to named CSS custom
+properties in `frontend/src/index.css`, introducing these palettes:
 
 - `--severity-low` / `--severity-medium` / `--severity-high` (health symptom
   severity bands)
 - `--category-1` through `--category-8` (categorical label/group palette)
-- `--permanence-*` tokens (memory tier permanence levels, covered by a separate
-  exemption for chart-* tokens)
+- `--permanence-*` tokens (memory tier permanence levels; these are out of scope
+  for this spec delta because they do not appear in `dashboard-domain-pages`)
 
 The `dashboard-domain-pages` spec was not updated during that migration. It
 still carries raw `#RRGGBB` hex literals in three places:
@@ -59,6 +59,6 @@ None. This is a spec-alignment delta only. No new code is required.
 
 ## Source References
 
-- Non-Negotiable Rule 2: "The `Page` is a primitive." (`about/heart-and-soul/design-language.md`)
+- Non-Negotiable Rule 1: "One token system or none." (`about/heart-and-soul/design-language.md`)
 - `frontend/src/index.css` — `--severity-*`, `--category-1..8` token definitions (Vertical C)
 - Epic bu-v1tt2 (Vertical C) — token system migration
