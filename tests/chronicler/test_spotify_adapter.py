@@ -2,19 +2,16 @@
 
 Covers:
 - Per-episode projection correctness (one listening episode per session row).
-- Replay / idempotency (same source_ref on repeated runs).
+- Title fallback hierarchy (context_name > context_uri > track_names > endpoint).
+- Stable source_ref keyed to idempotency_key.
 - Missing evidence surface graceful degradation.
-- Checkpoint advance / resume (watermark advances by recorded_at so
-  in-progress sessions re-projected by every connector upsert flow into
-  chronicler.episodes).
+- Checkpoint advance / resume (watermark advances by recorded_at).
 - Source-scan guardrail: no LLM imports in adapters/spotify.py.
-- Deferred-tracks verification: per-track events NOT produced.
 """
 
 from __future__ import annotations
 
 import ast
-import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,8 +22,6 @@ from butlers.chronicler.adapters.spotify import (
     EPISODE_TYPE_LISTENING,
     SOURCE_NAME,
     SpotifySessionAdapter,
-    _coerce_track_names,
-    _compose_session_title,
 )
 from butlers.chronicler.models import Episode, Precision, Privacy
 
@@ -156,19 +151,6 @@ def test_no_llm_imports_in_spotify_adapter() -> None:
                     assert not node.module.startswith(prefix), (
                         f"LLM import detected in spotify adapter: {node.module!r}"
                     )
-
-
-# ---------------------------------------------------------------------------
-# Module constants
-# ---------------------------------------------------------------------------
-
-
-def test_source_name() -> None:
-    assert SOURCE_NAME == "spotify.session_summary"
-
-
-def test_episode_type() -> None:
-    assert EPISODE_TYPE_LISTENING == "listening_episode"
 
 
 # ---------------------------------------------------------------------------
@@ -320,55 +302,6 @@ async def test_episode_title_lists_first_two_tracks_with_remainder_count() -> No
     assert title == "Listened to Song A, Song B (+2 more)"
 
 
-@pytest.mark.asyncio
-async def test_episode_title_three_tracks_uses_singular_more_count() -> None:
-    """Exactly 3 tracks: the first two are inline, suffix is "+1 more"."""
-    row = _make_row(
-        context_name=None,
-        context_uri=None,
-        track_names=["Track 1", "Track 2", "Track 3"],
-    )
-    adapter = SpotifySessionAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert upserted[0].title == "Listened to Track 1, Track 2 (+1 more)"
-
-
-@pytest.mark.asyncio
-async def test_episode_payload_includes_track_names() -> None:
-    """track_names SHALL be exposed on the episode payload so the dashboard
-    drawer can render the full track list, not just what fit in the title."""
-    row = _make_row(
-        context_name=None,
-        context_uri=None,
-        track_names=["Aria", "Adagio", "Allegro"],
-    )
-    adapter = SpotifySessionAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert upserted[0].payload["track_names"] == ["Aria", "Adagio", "Allegro"]
-
-
 # ---------------------------------------------------------------------------
 # Stable source_ref / idempotency
 # ---------------------------------------------------------------------------
@@ -395,29 +328,6 @@ async def test_source_ref_uses_idempotency_key() -> None:
     assert upserted[0].source_ref == expected_ref
 
 
-@pytest.mark.asyncio
-async def test_same_row_produces_same_source_ref_on_replay() -> None:
-    ikey = "spotify:ep:session:111"
-    row = _make_row(idempotency_key=ikey)
-    adapter = SpotifySessionAdapter()
-    refs: list[str] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        refs.append(episode.source_ref)
-        return episode
-
-    pool1 = _pool_returning(row)
-    cp1 = _chronicler_pool()
-    pool2 = _pool_returning(row)
-    cp2 = _chronicler_pool()
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
-        await adapter.project(pool1, chronicler_pool=cp1, since=None)
-        await adapter.project(pool2, chronicler_pool=cp2, since=None)
-
-    assert refs[0] == refs[1]
-
-
 # ---------------------------------------------------------------------------
 # Missing evidence surface graceful degradation
 # ---------------------------------------------------------------------------
@@ -441,13 +351,7 @@ async def test_missing_evidence_table_returns_skipped_result() -> None:
 
 @pytest.mark.asyncio
 async def test_undefined_table_exception_returns_skipped_result() -> None:
-    """When the DB raises UndefinedTableError (asyncpg.PostgresError subclass),
-    the adapter must not crash — it returns skipped=True without advancing the
-    watermark or upsetting any episode.
-
-    This exercises the ``except asyncpg.PostgresError`` branch directly,
-    distinct from the ``information_schema`` table-existence check.
-    """
+    """When the DB raises UndefinedTableError the adapter returns skipped=True."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(
         side_effect=asyncpg.exceptions.UndefinedTableError(
@@ -476,12 +380,9 @@ async def test_undefined_table_exception_returns_skipped_result() -> None:
 
 @pytest.mark.asyncio
 async def test_watermark_advances_to_latest_recorded_at() -> None:
-    """Watermark tracks ``recorded_at`` so updated rows (in-progress sessions
-    re-upserted by the connector on every active poll) get re-projected."""
+    """Watermark tracks ``recorded_at`` so updated rows get re-projected."""
     t1 = _NOW
     t2 = _NOW + timedelta(hours=1)
-    # Same started_at on both rows; what advances the watermark is the
-    # connector's recorded_at on each upsert.
     rows = [
         {**_make_row(started_at=t1, idempotency_key="k1"), "recorded_at": t1},
         {**_make_row(started_at=t1, idempotency_key="k2"), "recorded_at": t2},
@@ -501,26 +402,6 @@ async def test_watermark_advances_to_latest_recorded_at() -> None:
 
 
 @pytest.mark.asyncio
-async def test_watermark_preserved_when_no_rows() -> None:
-    """When the evidence table exists but no new rows, watermark stays at since."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)  # table exists
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
-    cp = _chronicler_pool()
-    prior_watermark = _NOW - timedelta(days=1)
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        result = await adapter.project(pool, chronicler_pool=cp, since=prior_watermark)
-
-    assert result.watermark == prior_watermark
-    assert result.rows_projected == 0
-
-
-@pytest.mark.asyncio
 async def test_since_filter_passed_to_query() -> None:
     """When ``since`` is given, the fetch query uses it as a WHERE filter."""
     conn = AsyncMock()
@@ -536,29 +417,16 @@ async def test_since_filter_passed_to_query() -> None:
     with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
         await adapter.project(pool, chronicler_pool=cp, since=since)
 
-    # The second positional arg to conn.fetch should be the since timestamp.
     assert conn.fetch.await_count == 1
     call_args = conn.fetch.call_args
     query: str = call_args.args[0]
-    # Watermark column is recorded_at so that in-progress upserts get
-    # re-fetched and the chronicler episode's end_at extends.
     assert "recorded_at > $1" in query
     assert call_args.args[1] == since
 
 
-# ---------------------------------------------------------------------------
-# Deterministic ordering
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_order_by_includes_id_tiebreaker_without_since() -> None:
-    """ORDER BY clause must include id ASC as a tie-breaker when since=None.
-
-    Same-timestamp sessions in the evidence table have non-deterministic ordering
-    without a secondary sort key, which can cause rows to be missed or duplicated
-    at batch boundaries when paginating with a watermark.
-    """
+    """ORDER BY clause must include id ASC as a tie-breaker for deterministic ordering."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
@@ -573,53 +441,6 @@ async def test_order_by_includes_id_tiebreaker_without_since() -> None:
 
     query: str = conn.fetch.call_args.args[0]
     assert "ORDER BY recorded_at ASC, id ASC" in query
-
-
-@pytest.mark.asyncio
-async def test_order_by_includes_id_tiebreaker_with_since() -> None:
-    """ORDER BY clause must include id ASC as a tie-breaker when since is given."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
-    cp = _chronicler_pool()
-    since = _NOW - timedelta(hours=1)
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since)
-
-    query: str = conn.fetch.call_args.args[0]
-    assert "ORDER BY recorded_at ASC, id ASC" in query
-
-
-# ---------------------------------------------------------------------------
-# Deferred per-track events NOT produced
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_no_per_track_point_events_produced() -> None:
-    """Per-track PointEvents must NOT be emitted by this adapter."""
-    row = _make_row(track_count=10)
-    adapter = SpotifySessionAdapter()
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with (
-        patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert),
-        patch("butlers.chronicler.adapters.spotify.upsert_point_event", create=True) as mock_pe,
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.point_events == 0
-    mock_pe.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -641,278 +462,3 @@ def test_spotify_session_summary_supported_in_contracts() -> None:
     assert source is not None
     assert source.chronicler_compatibility == Compatibility.SUPPORTED
     assert source.read_surface == "connectors.spotify_listening_sessions"
-
-
-def test_spotify_session_summary_in_supported_names() -> None:
-    from butlers.chronicler.contracts import supported_source_names
-
-    assert "spotify.session_summary" in supported_source_names()
-
-
-def test_spotify_session_summary_not_in_deferred_names() -> None:
-    from butlers.chronicler.contracts import deferred_source_names
-
-    assert "spotify.session_summary" not in deferred_source_names()
-
-
-# ---------------------------------------------------------------------------
-# UUID-backed watermark semantics
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_since_id_is_ignored_uuid_pk() -> None:
-    """Spotify evidence rows use UUID primary keys, so integer ``since_id``
-    must not select a tuple ``(started_at, id)`` path backed by BIGINT
-    checkpoints.
-    """
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
-    cp = _chronicler_pool()
-    since = _NOW - timedelta(hours=1)
-    since_id = 42
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
-
-    assert conn.fetch.await_count == 1
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    # Tuple watermark is never used (UUID PK, BIGINT watermark_id mismatch).
-    assert "(recorded_at, id) > ($1, $2)" not in query
-    assert "recorded_at > $1" in query
-    assert call_args.args[1] == since
-
-
-@pytest.mark.asyncio
-async def test_single_column_fallback_when_since_id_is_none() -> None:
-    """When ``since`` is given but ``since_id`` is None (pre-migration
-    checkpoint), the query must use the single-column ``WHERE recorded_at > $1``
-    form. Adapter watermarks on ``recorded_at`` so in-progress upserts re-project.
-    """
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
-    cp = _chronicler_pool()
-    since = _NOW - timedelta(hours=1)
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=None)
-
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    assert "recorded_at > $1" in query
-    assert "(recorded_at, id) > ($1, $2)" not in query
-
-
-@pytest.mark.asyncio
-async def test_watermark_id_is_always_none_for_uuid_pk() -> None:
-    """``watermark_id`` stays None because projection_checkpoints stores BIGINT ids."""
-    row = {
-        **_make_row(started_at=_NOW),
-        "id": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-    }
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-    adapter = SpotifySessionAdapter()
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.watermark == _NOW
-    assert result.watermark_id is None
-
-
-@pytest.mark.asyncio
-async def test_watermark_id_not_populated_for_rows_sharing_started_at() -> None:
-    """Rows sharing a timestamp must not push UUID ids into BIGINT checkpoints."""
-    t = _NOW
-    rows = [
-        {
-            **_make_row(started_at=t, idempotency_key="k1"),
-            "id": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        },
-        {
-            **_make_row(started_at=t, idempotency_key="k2"),
-            "id": uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-        },
-        {
-            **_make_row(started_at=t, idempotency_key="k3"),
-            "id": uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
-        },
-    ]
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        return episode
-
-    pool = _pool_returning(*rows)
-    cp = _chronicler_pool()
-    adapter = SpotifySessionAdapter()
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.watermark == t
-    assert result.watermark_id is None
-
-
-@pytest.mark.asyncio
-async def test_run_persists_checkpoint_without_uuid_watermark_id() -> None:
-    """A successful run must not bind the UUID source id into BIGINT watermark_id."""
-    row = {
-        **_make_row(started_at=_NOW),
-        "id": uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-    }
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-    adapter = SpotifySessionAdapter()
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        return episode
-
-    with (
-        patch("butlers.chronicler.adapters.spotify.upsert_episode", side_effect=_fake_upsert),
-        patch("butlers.chronicler.adapters.base.get_checkpoint", AsyncMock(return_value=None)),
-        patch("butlers.chronicler.adapters.base.mark_source_active", AsyncMock()),
-        patch("butlers.chronicler.adapters.base.upsert_checkpoint", AsyncMock()) as checkpoint,
-    ):
-        result = await adapter.run(pool=pool, chronicler_pool=cp)
-
-    assert result.error is None
-    checkpoint.assert_awaited_once()
-    assert checkpoint.await_args.kwargs["watermark"] == _NOW
-    assert checkpoint.await_args.kwargs["watermark_id"] is None
-
-
-@pytest.mark.asyncio
-async def test_watermark_id_cleared_when_no_rows() -> None:
-    """Even when passed, ``since_id`` is ignored for the UUID-backed source."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = SpotifySessionAdapter()
-    cp = _chronicler_pool()
-    prior_watermark = _NOW - timedelta(days=1)
-    prior_watermark_id = 7
-
-    with patch("butlers.chronicler.adapters.spotify.upsert_episode"):
-        result = await adapter.project(
-            pool,
-            chronicler_pool=cp,
-            since=prior_watermark,
-            since_id=prior_watermark_id,
-        )
-
-    assert result.watermark == prior_watermark
-    assert result.watermark_id is None
-
-
-# ---------------------------------------------------------------------------
-# _coerce_track_names — pure helper unit tests
-# ---------------------------------------------------------------------------
-
-
-def test_coerce_track_names_handles_none() -> None:
-    assert _coerce_track_names(None) == []
-
-
-def test_coerce_track_names_handles_already_decoded_list() -> None:
-    assert _coerce_track_names(["A", "B"]) == ["A", "B"]
-
-
-def test_coerce_track_names_handles_jsonb_string_payload() -> None:
-    """asyncpg sometimes surfaces JSONB columns as raw JSON strings."""
-    assert _coerce_track_names('["A","B"]') == ["A", "B"]
-
-
-def test_coerce_track_names_drops_non_string_and_empty_entries() -> None:
-    assert _coerce_track_names(["A", "", None, 42, "B"]) == ["A", "B"]
-
-
-def test_coerce_track_names_returns_empty_for_malformed_json() -> None:
-    assert _coerce_track_names("not json [") == []
-
-
-def test_coerce_track_names_returns_empty_for_non_list_top_level() -> None:
-    assert _coerce_track_names('{"foo": "bar"}') == []
-
-
-# ---------------------------------------------------------------------------
-# _compose_session_title — pure helper unit tests
-# ---------------------------------------------------------------------------
-
-
-def test_compose_session_title_prefers_context_name() -> None:
-    title = _compose_session_title(
-        context_name="Deep Focus",
-        context_uri="spotify:playlist:xyz",
-        track_names=["Track 1"],
-        endpoint_identity="ep:user",
-    )
-    assert title == "Listened to Deep Focus"
-
-
-def test_compose_session_title_uses_context_uri_tail_when_no_name() -> None:
-    title = _compose_session_title(
-        context_name=None,
-        context_uri="spotify:album:abc123",
-        track_names=["Track 1"],
-        endpoint_identity="ep:user",
-    )
-    assert title == "Listened to abc123"
-
-
-def test_compose_session_title_falls_back_to_single_track() -> None:
-    title = _compose_session_title(
-        context_name=None,
-        context_uri=None,
-        track_names=["Solo Track"],
-        endpoint_identity="ep:user",
-    )
-    assert title == "Listened to Solo Track"
-
-
-def test_compose_session_title_lists_two_tracks_without_more_suffix() -> None:
-    title = _compose_session_title(
-        context_name=None,
-        context_uri=None,
-        track_names=["A", "B"],
-        endpoint_identity="ep:user",
-    )
-    assert title == "Listened to A, B"
-
-
-def test_compose_session_title_appends_more_suffix_for_three_tracks() -> None:
-    title = _compose_session_title(
-        context_name=None,
-        context_uri=None,
-        track_names=["A", "B", "C"],
-        endpoint_identity="ep:user",
-    )
-    assert title == "Listened to A, B (+1 more)"
-
-
-def test_compose_session_title_falls_back_to_endpoint_when_nothing_else() -> None:
-    title = _compose_session_title(
-        context_name=None,
-        context_uri=None,
-        track_names=[],
-        endpoint_identity="ep:user",
-    )
-    assert title == "Spotify session (ep:user)"

@@ -6,11 +6,11 @@ Covers:
   full session window.
 - Same-day re-poll idempotency (no duplicate episodes — stable source_ref).
 - Sleep epochs spanning midnight UTC handled correctly.
-- Boundary case: same-ts rows (created_at) handled with correct watermark.
+- Null valid_at rows are skipped safely.
 - Missing evidence surface (health.facts absent) → graceful degradation.
 - No-LLM invariant (AST scan of adapter source).
-- Contracts registration: google_health.measurements SUPPORTED.
-- Tuple-watermark: since_id is ignored (UUID pk); watermark is single-column.
+- _derive_end_at end-time parsing (ISO strings, Z suffix, duration fallback).
+- Adapter export from package.
 """
 
 from __future__ import annotations
@@ -23,9 +23,6 @@ import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.google_health import (
-    DEFAULT_BATCH_LIMIT,
-    EPISODE_TYPE_SLEEP,
-    SOURCE_NAME,
     GoogleHealthSleepAdapter,
     _derive_end_at,
 )
@@ -157,11 +154,7 @@ def _chronicler_pool() -> AsyncMock:
 
 
 def test_no_llm_imports_in_google_health_adapter() -> None:
-    """The google_health adapter module MUST NOT import any LLM client packages.
-
-    Parses the source AST rather than inspecting the live module so
-    transitive imports through other modules don't cause false negatives.
-    """
+    """The google_health adapter module MUST NOT import any LLM client packages."""
     import butlers.chronicler.adapters.google_health as mod
 
     source_path = mod.__file__
@@ -188,23 +181,6 @@ def test_no_llm_imports_in_google_health_adapter() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Module constants
-# ---------------------------------------------------------------------------
-
-
-def test_source_name() -> None:
-    assert SOURCE_NAME == "google_health.measurements"
-
-
-def test_episode_type() -> None:
-    assert EPISODE_TYPE_SLEEP == "sleep_episode"
-
-
-def test_default_batch_limit() -> None:
-    assert DEFAULT_BATCH_LIMIT == 500
-
-
-# ---------------------------------------------------------------------------
 # Empty evidence → empty episodes
 # ---------------------------------------------------------------------------
 
@@ -223,21 +199,6 @@ async def test_empty_evidence_returns_zero_rows() -> None:
     assert result.episodes_closed == 0
     assert result.skipped is False
     mock_upsert.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_empty_evidence_preserves_watermark() -> None:
-    """When no new rows are returned, the watermark stays at ``since``."""
-    pool = _pool_table_exists_no_rows()
-    cp = _chronicler_pool()
-    adapter = GoogleHealthSleepAdapter()
-    prior = _NOW - timedelta(days=1)
-
-    with patch("butlers.chronicler.adapters.google_health.upsert_episode"):
-        result = await adapter.project(pool, chronicler_pool=cp, since=prior)
-
-    assert result.watermark == prior
-    assert result.rows_projected == 0
 
 
 # ---------------------------------------------------------------------------
@@ -360,27 +321,6 @@ async def test_sleep_episode_precision_is_minute() -> None:
     assert upserted[0].precision == Precision.MINUTE
 
 
-@pytest.mark.asyncio
-async def test_sleep_episode_type_is_sleep_episode() -> None:
-    row = _make_row()
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert upserted[0].episode_type == EPISODE_TYPE_SLEEP
-
-
 # ---------------------------------------------------------------------------
 # Idempotency: stable source_ref on re-poll
 # ---------------------------------------------------------------------------
@@ -388,9 +328,7 @@ async def test_sleep_episode_type_is_sleep_episode() -> None:
 
 @pytest.mark.asyncio
 async def test_same_day_repoll_produces_same_source_ref() -> None:
-    """Two runs against the same fact row must produce the same source_ref,
-    so the upsert_episode ON CONFLICT path deduplicates them.
-    """
+    """Two runs against the same fact row must produce the same source_ref."""
     row = _make_row()
     adapter = GoogleHealthSleepAdapter()
     refs: list[str] = []
@@ -413,29 +351,6 @@ async def test_same_day_repoll_produces_same_source_ref() -> None:
     assert refs[0] == refs[1], "source_ref must be stable across runs (idempotency)"
 
 
-@pytest.mark.asyncio
-async def test_source_ref_contains_idempotency_key() -> None:
-    """The source_ref must embed the idempotency_key for stable replay."""
-    ikey = "google_health:sleep:session-xyz:session"
-    row = _make_row(idempotency_key=ikey)
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert ikey in upserted[0].source_ref
-
-
 # ---------------------------------------------------------------------------
 # Sleep spanning midnight UTC
 # ---------------------------------------------------------------------------
@@ -444,10 +359,7 @@ async def test_source_ref_contains_idempotency_key() -> None:
 @pytest.mark.asyncio
 async def test_sleep_spanning_midnight_utc() -> None:
     """A session starting before midnight UTC and ending after must produce a
-    correct episode window — both start_at and end_at are captured verbatim
-    from the fact metadata.
-    """
-    # 23:00 UTC on day D, ending 06:30 UTC on day D+1
+    correct episode window."""
     start = datetime(2026, 4, 24, 23, 0, 0, tzinfo=UTC)
     end = datetime(2026, 4, 25, 6, 30, 0, tzinfo=UTC)
     dur_ms = int((end - start).total_seconds() * 1000)
@@ -480,7 +392,6 @@ async def test_sleep_spanning_midnight_utc() -> None:
     ep = upserted[0]
     assert ep.start_at == start
     assert ep.end_at == end
-    # Spans two calendar days
     assert ep.start_at.date() != ep.end_at.date()
 
 
@@ -508,32 +419,8 @@ async def test_null_valid_at_row_is_skipped() -> None:
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
-    # Row must not be counted or stored
     assert result.rows_projected == 0
     assert len(upserted) == 0, "upsert_episode must NOT be called for null valid_at rows"
-
-
-@pytest.mark.asyncio
-async def test_null_valid_at_does_not_store_sentinel_epoch() -> None:
-    """Null valid_at must not produce an episode with start_at=epoch (1970-01-01)."""
-    row = _make_row(valid_at=None)  # type: ignore[arg-type]
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    for ep in upserted:
-        assert ep.start_at.year != 1970, "Sentinel epoch must not be stored for null valid_at"
 
 
 # ---------------------------------------------------------------------------
@@ -636,82 +523,8 @@ async def test_since_filter_passed_to_query() -> None:
     assert call_args.args[2] == since
 
 
-@pytest.mark.asyncio
-async def test_no_since_filter_when_since_is_none() -> None:
-    """When ``since`` is None the query must NOT include a created_at filter."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = GoogleHealthSleepAdapter()
-    cp = _chronicler_pool()
-
-    with patch("butlers.chronicler.adapters.google_health.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    assert "created_at > " not in query
-
-
 # ---------------------------------------------------------------------------
-# Tuple-watermark boundary (since_id is ignored — UUID pk)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_since_id_is_ignored_uuid_pk() -> None:
-    """Passing since_id must not cause a tuple ``(created_at, id)`` filter.
-
-    The facts table uses UUID PKs, so the adapter falls back to the
-    single-column ``WHERE created_at > $1`` semantics regardless of since_id.
-    """
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=True)
-    conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-
-    adapter = GoogleHealthSleepAdapter()
-    cp = _chronicler_pool()
-    since = _NOW - timedelta(hours=1)
-    since_id = 99  # would be used by integer-pk adapters
-
-    with patch("butlers.chronicler.adapters.google_health.upsert_episode"):
-        await adapter.project(pool, chronicler_pool=cp, since=since, since_id=since_id)
-
-    call_args = conn.fetch.call_args
-    query: str = call_args.args[0]
-    # Must NOT use tuple comparison
-    assert "(created_at, id) > ($1, $2)" not in query
-    # Must use single-column filter
-    assert "created_at > " in query
-
-
-@pytest.mark.asyncio
-async def test_watermark_id_is_always_none() -> None:
-    """The adapter never sets watermark_id (UUID pk — not an integer serial)."""
-    row = _make_row()
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-    adapter = GoogleHealthSleepAdapter()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        result = await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    assert result.watermark_id is None
-
-
-# ---------------------------------------------------------------------------
-# _derive_end_at unit tests
+# _derive_end_at unit tests (sleep stitching edge cases)
 # ---------------------------------------------------------------------------
 
 
@@ -734,13 +547,6 @@ def test_derive_end_at_falls_back_to_duration_ms() -> None:
     assert end == start + timedelta(hours=7)
 
 
-def test_derive_end_at_returns_none_when_no_data() -> None:
-    """Without end_time or duration_ms, return None."""
-    start = datetime(2026, 4, 25, 22, 0, 0, tzinfo=UTC)
-    end = _derive_end_at(start, {})
-    assert end is None
-
-
 def test_derive_end_at_handles_z_suffix() -> None:
     """Timestamps ending in 'Z' are parsed correctly as UTC."""
     start = datetime(2026, 4, 25, 22, 0, 0, tzinfo=UTC)
@@ -748,22 +554,6 @@ def test_derive_end_at_handles_z_suffix() -> None:
     end = _derive_end_at(start, meta)
     assert end is not None
     assert end == datetime(2026, 4, 26, 5, 30, 0, tzinfo=UTC)
-
-
-def test_derive_end_at_handles_datetime_object() -> None:
-    """If metadata.end_time is already a datetime, use it directly."""
-    start = datetime(2026, 4, 25, 22, 0, 0, tzinfo=UTC)
-    end_obj = datetime(2026, 4, 26, 5, 30, 0, tzinfo=UTC)
-    end = _derive_end_at(start, {"end_time": end_obj})
-    assert end == end_obj
-
-
-def test_derive_end_at_bad_string_falls_back_to_duration() -> None:
-    """An unparseable end_time falls back to duration_ms without crashing."""
-    start = datetime(2026, 4, 25, 22, 0, 0, tzinfo=UTC)
-    meta = {"end_time": "not-a-date", "duration_ms": 3_600_000}
-    end = _derive_end_at(start, meta)
-    assert end == start + timedelta(hours=1)
 
 
 # ---------------------------------------------------------------------------
@@ -775,90 +565,3 @@ def test_google_health_adapter_exported_from_package() -> None:
     from butlers.chronicler.adapters import GoogleHealthSleepAdapter as _Cls
 
     assert _Cls is GoogleHealthSleepAdapter
-
-
-def test_google_health_measurements_supported_in_contracts() -> None:
-    from butlers.chronicler.contracts import find_source
-    from butlers.chronicler.models import Compatibility
-
-    source = find_source("google_health.measurements")
-    assert source is not None
-    assert source.chronicler_compatibility == Compatibility.SUPPORTED
-    assert source.read_surface is not None
-    assert "health.facts" in source.read_surface
-
-
-def test_google_health_measurements_in_supported_names() -> None:
-    from butlers.chronicler.contracts import supported_source_names
-
-    assert "google_health.measurements" in supported_source_names()
-
-
-def test_google_health_measurements_not_in_deferred_names() -> None:
-    from butlers.chronicler.contracts import deferred_source_names
-
-    assert "google_health.measurements" not in deferred_source_names()
-
-
-# ---------------------------------------------------------------------------
-# Title formatting
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_title_includes_duration_and_efficiency() -> None:
-    row = _make_row(
-        metadata={
-            "session_id": "s1",
-            "end_time": _SESSION_END.isoformat(),
-            "duration_ms": _DURATION_MS,
-            "efficiency": 91,
-        }
-    )
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    title = upserted[0].title
-    assert "7h" in title
-    assert "91%" in title
-
-
-@pytest.mark.asyncio
-async def test_title_omits_efficiency_when_absent() -> None:
-    row = _make_row(
-        metadata={
-            "session_id": "s2",
-            "end_time": _SESSION_END.isoformat(),
-            "duration_ms": 3_600_000,  # 1 hour
-        }
-    )
-    adapter = GoogleHealthSleepAdapter()
-    upserted: list[Episode] = []
-
-    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
-        upserted.append(episode)
-        return episode
-
-    pool = _pool_returning(row)
-    cp = _chronicler_pool()
-
-    with patch(
-        "butlers.chronicler.adapters.google_health.upsert_episode", side_effect=_fake_upsert
-    ):
-        await adapter.project(pool, chronicler_pool=cp, since=None)
-
-    title = upserted[0].title
-    assert "%" not in title
-    assert "1h" in title

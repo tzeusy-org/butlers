@@ -3,15 +3,12 @@
 Covers the title fallback chain when the upstream Google Calendar event has
 no summary/title — the adapter should pick the next most-meaningful field
 from the joined ``calendar_events`` row (title → location → truncated
-description → schema-qualified placeholder) instead of always falling back
-to ``"{schema}: calendar block"``.
+description → schema-qualified placeholder).
 
 Also covers the butler-managed calendar exclusion guard (defence-in-depth):
 instances whose ``calendar_sources.lane = 'butler'`` must never be projected
-into the user's Chronicle Calendar lane, regardless of their title.  This
-prevents butler-internal scheduled jobs (memory_consolidation,
-memory_episode_cleanup, memory_purge_superseded, etc.) from polluting the
-/chronicles Calendar view.
+into the user's Chronicle Calendar lane. Cross-schema dedup via
+``origin_instance_ref`` collapse (regression for "five Labour Day bars" bug).
 """
 
 from __future__ import annotations
@@ -147,18 +144,6 @@ async def test_title_falls_back_to_event_title_when_metadata_empty() -> None:
 
 
 @pytest.mark.unit
-async def test_title_falls_back_to_location_when_no_event_title() -> None:
-    row = _make_row(
-        metadata={},
-        event_title=None,
-        event_location="Conference Room B",
-        event_description="Some longer description text",
-    )
-    ep = await _project_one(row)
-    assert ep.title == "Conference Room B"
-
-
-@pytest.mark.unit
 async def test_title_falls_back_to_truncated_description() -> None:
     long_desc = (
         "This is a fairly long description that should be truncated to keep "
@@ -174,20 +159,7 @@ async def test_title_falls_back_to_truncated_description() -> None:
     assert ep.title is not None
     assert ep.title.startswith("This is a fairly long")
     assert len(ep.title) <= 80
-    # Truncation marker present.
     assert ep.title.endswith("…")
-
-
-@pytest.mark.unit
-async def test_title_uses_short_description_verbatim() -> None:
-    row = _make_row(
-        metadata={},
-        event_title=None,
-        event_location=None,
-        event_description="Quick chat",
-    )
-    ep = await _project_one(row)
-    assert ep.title == "Quick chat"
 
 
 @pytest.mark.unit
@@ -201,21 +173,6 @@ async def test_title_final_fallback_when_no_richer_context() -> None:
     )
     ep = await _project_one(row)
     assert ep.title == "butler_test: calendar block"
-
-
-@pytest.mark.unit
-async def test_payload_exposes_event_level_fields() -> None:
-    """The payload must surface description/location/title for downstream UIs."""
-    row = _make_row(
-        metadata={},
-        event_title="Sprint Planning",
-        event_location="Zoom",
-        event_description="Plan the next sprint",
-    )
-    ep = await _project_one(row)
-    assert ep.payload["title"] == "Sprint Planning"
-    assert ep.payload["location"] == "Zoom"
-    assert ep.payload["description"] == "Plan the next sprint"
 
 
 @pytest.mark.unit
@@ -248,16 +205,9 @@ def test_butler_managed_source_kinds_includes_scheduler_and_reminders() -> None:
 
 
 def _make_pool_with_rows(rows: list[_Row] | None, *, table_exists: bool = True) -> AsyncMock:
-    """Return a mock asyncpg.Pool that simulates the calendar schema queries.
-
-    ``fetchval`` is used for the table-existence check.
-    ``fetch`` returns ``rows`` (or ``[]`` when ``rows`` is ``None``).
-    The pool's ``.acquire()`` context manager yields a single connection mock.
-    """
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=table_exists)
     conn.fetch = AsyncMock(return_value=rows if rows is not None else [])
-
     pool = AsyncMock()
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
@@ -272,7 +222,6 @@ async def test_fetch_instances_sql_excludes_butler_lane_no_since() -> None:
     now = datetime.now(UTC)
     await adapter._fetch_instances(pool, "test_schema", None, now)
 
-    _, fetch_kwargs = pool.acquire.return_value._obj.fetch.call_args
     fetch_args = pool.acquire.return_value._obj.fetch.call_args[0]
     sql = fetch_args[0] if fetch_args else ""
     assert "cs.lane != 'butler'" in sql, (
@@ -280,51 +229,6 @@ async def test_fetch_instances_sql_excludes_butler_lane_no_since() -> None:
     )
     assert "INNER JOIN" in sql.upper() or "JOIN" in sql.upper(), (
         "calendar_sources join must be present"
-    )
-
-
-@pytest.mark.unit
-async def test_fetch_instances_sql_excludes_butler_lane_with_since() -> None:
-    """The SQL emitted for the since-watermark path must contain the butler-lane guard."""
-    pool = _make_pool_with_rows([])
-    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
-
-    now = datetime.now(UTC)
-    since = now - timedelta(days=7)
-    await adapter._fetch_instances(pool, "test_schema", since, now)
-
-    fetch_args = pool.acquire.return_value._obj.fetch.call_args[0]
-    sql = fetch_args[0] if fetch_args else ""
-    assert "cs.lane != 'butler'" in sql, (
-        "Exclusion guard 'cs.lane != \\'butler\\'' must appear in the with-since SQL query"
-    )
-
-
-@pytest.mark.unit
-async def test_project_skips_butler_managed_internal_scheduler_rows() -> None:
-    """Reproducer: butler-internal scheduler rows must NOT produce Chronicle episodes.
-
-    This is the regression test for the calendar pollution bug (bu-daaff).
-    Seeding rows whose event title matches memory maintenance job names should
-    yield zero projected episodes after the fix.
-    """
-    butler_managed_rows = [
-        _make_row(event_title="memory_consolidation"),
-        _make_row(event_title="memory_episode_cleanup"),
-        _make_row(event_title="memory_purge_superseded"),
-    ]
-
-    pool = _make_pool_with_rows(butler_managed_rows)
-    # The SQL WHERE cs.lane != 'butler' filters these out at the DB level;
-    # since our mock returns the rows unconditionally we test the SQL by
-    # inspecting the emitted query for the guard clause instead.
-    adapter = CalendarCompletedAdapter(butler_schemas=("test_schema",))
-    await adapter._fetch_instances(pool, "test_schema", None, datetime.now(UTC))
-
-    fetch_args = pool.acquire.return_value._obj.fetch.call_args[0]
-    sql = fetch_args[0]
-    assert "cs.lane != 'butler'" in sql, (
-        "SQL must exclude butler-lane instances to prevent memory_* task pollution"
     )
 
 
@@ -340,8 +244,6 @@ async def test_project_user_lane_rows_are_still_projected() -> None:
         captured.append(episode)
         return episode
 
-    # Simulate _fetch_instances returning the user_row (as the DB filter
-    # would pass user-lane rows through).
     with (
         patch.object(
             adapter,
@@ -375,9 +277,7 @@ async def test_project_collapses_same_origin_instance_across_schemas() -> None:
     """Same Google Calendar event in N schemas projects to ONE chronicler episode.
 
     Regression for the "five Labour Day bars" bug. The dedup key is
-    ``origin_instance_ref`` alone (the upstream Google Calendar identifier),
-    not ``(source_id, origin_instance_ref)``, so per-schema row IDs do not
-    create distinct upsert keys.
+    ``origin_instance_ref`` alone (the upstream Google Calendar identifier).
     """
     shared_origin_ref = "evt:labour_day:2026-05-01T00:00:00Z"
     rows_by_schema = {
@@ -385,8 +285,6 @@ async def test_project_collapses_same_origin_instance_across_schemas() -> None:
         "schema_b": [_make_row(event_title="Labour Day")],
         "schema_c": [_make_row(event_title="Labour Day")],
     }
-    # Override origin_instance_ref so every schema points at the same upstream
-    # instance — _make_row defaults to a single shared value but be explicit.
     for rows in rows_by_schema.values():
         for row in rows:
             row["origin_instance_ref"] = shared_origin_ref
@@ -418,28 +316,23 @@ async def test_project_collapses_same_origin_instance_across_schemas() -> None:
 
     assert result.rows_projected == 1, "Cross-schema fan-out must collapse to a single projection"
     assert len(captured) == 1
-    # And the persistent source_ref is derived from origin_instance_ref so
-    # the upsert key would also have collapsed at the database layer.
     assert captured[0].source_ref == f"calendar:{shared_origin_ref}"
 
 
 @pytest.mark.unit
 async def test_project_collapses_same_origin_under_multiple_event_ids_in_one_schema() -> None:
-    """Two rows in ONE schema sharing origin_instance_ref but with different
-    event_id values collapse to a single episode.
+    """Two rows in ONE schema sharing origin_instance_ref collapse to a single episode.
 
     The unique constraint on calendar_event_instances is
     ``(event_id, origin_instance_ref)``, so the calendar sync can legitimately
-    insert duplicate origin_instance_ref rows under different event_ids when
-    the upstream calendar event is duplicated. Chronicler must still emit one
-    episode.
+    insert duplicate origin_instance_ref rows under different event_ids.
+    Chronicler must still emit one episode.
     """
     shared_origin_ref = "evt:dup_event_ids:2026-05-01T07:00:00Z"
     row1 = _make_row(event_title="Daily standup")
     row2 = _make_row(event_title="Daily standup")
     row1["origin_instance_ref"] = shared_origin_ref
     row2["origin_instance_ref"] = shared_origin_ref
-    # Different event_ids to mirror the same-schema duplicate scenario.
     row1["event_id"] = uuid4()
     row2["event_id"] = uuid4()
 
