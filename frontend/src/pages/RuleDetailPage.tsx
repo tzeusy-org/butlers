@@ -42,7 +42,12 @@ export default function RuleDetailPage() {
   ];
 
   // Use the rule content as the title; fall back to the ID while loading.
-  const title = rule?.content ?? ruleId ?? "Rule";
+  // Truncate to 80 chars with ellipsis per shell title spec.
+  const truncateTitle = (content: string | undefined): string => {
+    if (content == null) return ruleId ?? "Rule";
+    return content.length > 80 ? content.slice(0, 79) + "…" : content;
+  };
+  const title = truncateTitle(rule?.content);
 
   return (
     <DetailPage
