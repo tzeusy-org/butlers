@@ -46,12 +46,8 @@ export default function FactDetailPage() {
     { label: fact?.entity_name ?? fact?.subject ?? factId ?? "Fact" },
   ];
 
-  const title = fact?.content ?? factId ?? "Fact";
-  const subtitle = fact
-    ? fact.entity_name
-      ? `${fact.entity_name} · ${fact.predicate}`
-      : fact.predicate
-    : undefined;
+  const title = fact?.subject ?? factId ?? "Fact";
+  const subtitle = fact?.predicate;
 
   return (
     <DetailPage
