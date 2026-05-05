@@ -36,6 +36,9 @@ its body composes, what actions it offers, whether it uses tabs.
   for specific butlers (lines 399–419). Each tab body is its own
   component under `components/butler-detail/`, eight of them
   `lazy()`-loaded with a per-tab `<TabFallback />` (lines 29–58, 107–113).
+  The sessions tab renders a timeline of butler invocations; this is a
+  candidate for upgrade to the workspace archetype (see `frontend.md`
+  §D) to enable time-based scrubbing and activity exploration.
 - **Actions:** `ChatPanel` (chat with this butler) is the only top-level
   action; everything else lives inside individual tabs.
 - **Loading / error / empty states:** there is no top-level loading
@@ -813,6 +816,12 @@ clean win: `title={name}`, `actions={<ChatPanel ... />}`,
 `primary={<Tabs ... />}`, but the *internal* tab pattern is its
 own consolidation problem and belongs in a separate audit of the
 butler-detail tab family.
+
+**Note on sessions timeline:** The sessions tab is a future candidate for
+migration to the workspace archetype (see `frontend.md` §D, "Workspace / canvas").
+If a future design adds time-based scrubbing and event-exploration affordances
+to the sessions view, adopting the workspace archetype would enable scrubber +
+timeline + aggregation panels that match the Chronicles pattern.
 
 ---
 

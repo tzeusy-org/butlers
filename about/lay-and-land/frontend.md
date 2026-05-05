@@ -197,9 +197,22 @@ flatten everything into stacked cards; some rely on side-drawer
 context.
 
 ### D. Workspace / canvas
-Heavy, persistent, stateful. Examples: `ChroniclesPage` (scrubber +
-Gantt + map + aggregates with `MapPanContext`),
+Stateful, time-aware, multi-region surface that combines a primary
+visualization with scrubber/control affordances and secondary aggregations.
+The user explores time and state interactively: scrubbing a timeline,
+panning a map, adjusting a time window. Examples: `ChroniclesPage`
+(scrubber + Gantt + map + aggregates with `MapPanContext`),
 `CalendarWorkspacePage` (custom hour-grid via inline `style={height}`).
+
+**Reference implementation:** `ChroniclesPage`.
+
+**Required primitives:** `<Page archetype='workspace'>`, `<Scrubber>`,
+`<TimeWindowPicker>`, `<MapPanContext>` (when geographic exploration applies),
+aggregation chart slot.
+
+**When to use:** Pages where the user explores time and state interactively.
+Current examples: Chronicles, future candidates include Costs (if upgraded with
+timeline scrubbing), Sessions (if upgraded to show butler activity timelines).
 
 These are *de facto* their own design language. The Chronicles page
 in particular reads like a separate product.
