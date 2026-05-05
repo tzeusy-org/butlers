@@ -122,10 +122,13 @@ class TestTriageRuleEvaluation:
         assert "id ASC" in order_clause, "id must be tie-breaking sort (RFC 0003)"
 
     def test_triage_rule_types_and_actions_complete(self):
-        """RFC 0003: Four rule types and five actions define the full triage vocabulary.
+        """RFC 0003: Triage vocabulary contains at least the four core rule types and four global actions.
 
-        rule_type values: sender_domain, sender_address, header_condition, mime_type
-        action values: skip, metadata_only, low_priority_queue, pass_through, route_to:<butler>
+        The production _KNOWN_RULE_TYPES set must include at least:
+          sender_domain, sender_address, header_condition, mime_type
+        The production _VALID_GLOBAL_ACTIONS set must include at least:
+          skip, metadata_only, low_priority_queue, pass_through
+        The route_to:<butler> prefix form is handled separately via _ROUTE_TO_PREFIX.
         """
         from butlers.ingestion_policy import _KNOWN_RULE_TYPES, _VALID_GLOBAL_ACTIONS
 
@@ -172,8 +175,13 @@ class TestTriageRuleEvaluation:
             "pass_through must be in _VALID_GLOBAL_ACTIONS (RFC 0003)"
         )
 
-        # Verify the fail-open comment is in the evaluator source
-        src = inspect.getsource(IngestionPolicyEvaluator)
-        assert "fail-open" in src.lower() or "fail_open" in src.lower() or "pass_through" in src, (
-            "IngestionPolicyEvaluator must implement fail-open on DB error (RFC 0003)"
+        # Verify fail-open behavior directly: an evaluator with no rules loaded must return
+        # pass_through for any envelope (no match -> pass_through is the fail-open action).
+        from butlers.ingestion_policy import IngestionEnvelope
+
+        evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+        decision = evaluator.evaluate(IngestionEnvelope())
+        assert decision.action == "pass_through", (
+            f"IngestionPolicyEvaluator must fail-open to pass_through when no rules are loaded "
+            f"(RFC 0003); got action={decision.action!r}"
         )

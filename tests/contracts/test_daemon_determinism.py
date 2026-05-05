@@ -82,11 +82,13 @@ class TestRouteInboxAndConcurrency:
         assert STATE_ERRORED == "errored", "errored state value must be 'errored'"
 
         # replay_pending is a connector filtered_events state — verify it exists in that module
+        import asyncio
+
         from butlers.connectors.filtered_event_buffer import drain_replay_pending
 
-        assert callable(drain_replay_pending), (
-            "drain_replay_pending must be importable from filtered_event_buffer "
-            "(handles 'replay_pending' rows in connectors.filtered_events)"
+        assert asyncio.iscoroutinefunction(drain_replay_pending), (
+            "drain_replay_pending must be an async coroutine function importable from "
+            "filtered_event_buffer (handles 'replay_pending' rows in connectors.filtered_events)"
         )
 
     def test_spawner_concurrency_controls(self):

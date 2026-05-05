@@ -380,7 +380,7 @@ class TestToolBudgetDiscipline:
             spec = __import__("importlib.util").util.find_spec(_modname)
             if spec is None or spec.origin is None:
                 continue
-            src_text = Path(spec.origin).read_text()
+            src_text = Path(spec.origin).read_text(encoding="utf-8")
             try:
                 tree = ast.parse(src_text)
             except SyntaxError:
