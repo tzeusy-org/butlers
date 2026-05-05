@@ -564,7 +564,7 @@ class ButlerDaemon:
             host="0.0.0.0",
             port=self.config.port,
             log_level="warning",
-            timeout_graceful_shutdown=0,
+            timeout_graceful_shutdown=self.config.shutdown_timeout_s,
         )
         # Pre-create the socket with SO_REUSEADDR so that a previously bound socket
         # in TIME_WAIT (e.g. after SIGKILL) does not block re-binding.  Raising the

@@ -712,6 +712,10 @@ async def test_start_mcp_server_waits_until_uvicorn_reports_started(butler_dir: 
 
     assert daemon._server is not None
     assert daemon._server.started is True
+    assert daemon._server.config.kwargs["timeout_graceful_shutdown"] == (
+        daemon.config.shutdown_timeout_s
+    )
+    assert daemon._server.config.kwargs["timeout_graceful_shutdown"] > 0
     assert daemon._server_task is not None
     assert daemon._mcp_socket is not None
 
