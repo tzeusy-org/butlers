@@ -438,7 +438,7 @@ async def upsert_point_event(
             source_name, source_ref, event_type, occurred_at, precision,
             title, payload, privacy, retention_days, tombstone_at, tombstone_reason
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             event_type = EXCLUDED.event_type,
             occurred_at = EXCLUDED.occurred_at,
@@ -458,7 +458,7 @@ async def upsert_point_event(
         event.occurred_at,
         event.precision.value,
         event.title,
-        json.dumps(event.payload),
+        event.payload,
         event.privacy.value,
         event.retention_days,
         event.tombstone_at,
@@ -485,7 +485,7 @@ async def upsert_episode(
             source_name, source_ref, episode_type, start_at, end_at,
             precision, title, payload, privacy, retention_days, tombstone_at, tombstone_reason
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (source_name, source_ref) DO UPDATE SET
             episode_type = EXCLUDED.episode_type,
             start_at = EXCLUDED.start_at,
@@ -507,7 +507,7 @@ async def upsert_episode(
         episode.end_at,
         episode.precision.value,
         episode.title,
-        json.dumps(episode.payload),
+        episode.payload,
         episode.privacy.value,
         episode.retention_days,
         episode.tombstone_at,
@@ -822,12 +822,11 @@ async def upsert_tier2_cache(
         cache_built_at: Override for the build timestamp (defaults to ``now()``
             inside the DB, useful for testing).
     """
-    refs_json = json.dumps(provenance_refs)
     await conn.execute(
         """
         INSERT INTO tier2_cache
             (cache_key, start_at, end_at, prose, provenance_refs, cache_built_at)
-        VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6, now()))
+        VALUES ($1, $2, $3, $4, $5, COALESCE($6, now()))
         ON CONFLICT (cache_key) DO UPDATE
             SET prose            = EXCLUDED.prose,
                 start_at         = EXCLUDED.start_at,
@@ -840,7 +839,7 @@ async def upsert_tier2_cache(
         start_at,
         end_at,
         prose,
-        refs_json,
+        provenance_refs,
         cache_built_at,
     )
 
@@ -897,12 +896,12 @@ async def save_carryover(
         await conn.execute(
             """
             INSERT INTO projection_checkpoints (source_name, subsource, carryover)
-            VALUES ($1, '', $2::jsonb)
+            VALUES ($1, '', $2)
             ON CONFLICT (source_name, subsource) DO UPDATE
             SET carryover = EXCLUDED.carryover
             """,
             source_name,
-            json.dumps(carryover),
+            carryover,
         )
     except asyncpg.PostgresError:
         return

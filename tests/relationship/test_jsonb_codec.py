@@ -252,7 +252,6 @@ class TestEntityMetadataRoundtrip:
             assert result["source"] == "call-transcript"
 
 
-# ---------------------------------------------------------------------------
 # End-to-end regression: store_fact writes must survive metadata->>'key' filters
 # ---------------------------------------------------------------------------
 
@@ -404,3 +403,106 @@ class TestStoreFactDoubleEncodingRegression:
             assert isinstance(row["metadata"], dict)
             assert row["metadata"]["direction"] == "incoming"
             assert row["metadata"]["category"] == "groceries"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: no double-encoding (bu-aaacv)
+# ---------------------------------------------------------------------------
+
+
+class TestNoDoubleEncoding:
+    """Verify that dict values written to JSONB columns are not double-encoded.
+
+    Double-encoding occurs when json.dumps() is called at the write site AND the
+    asyncpg JSONB codec also runs (because the parameter is typed as JSONB).
+    The symptom is that the stored JSONB value is a JSON-encoded string rather
+    than a plain dict, so a read-back returns a str not a dict.
+    """
+
+    async def test_dict_written_without_cast_roundtrips_as_dict(self, provisioned_postgres_pool):
+        """Writing a dict directly (no ::jsonb cast) stores a JSON object, not a string."""
+        async with provisioned_postgres_pool() as pool:
+            await pool.execute("""
+                CREATE TEMP TABLE _no_double_enc_test (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    payload JSONB NOT NULL
+                )
+            """)
+            payload = {"key": "value", "count": 42, "nested": {"a": 1}}
+            # Pass dict directly — asyncpg codec encodes it once.
+            await pool.execute("INSERT INTO _no_double_enc_test (payload) VALUES ($1)", payload)
+            row = await pool.fetchrow("SELECT payload FROM _no_double_enc_test LIMIT 1")
+            result = row["payload"]
+            assert isinstance(result, dict), (
+                f"Expected dict but got {type(result).__name__!r}: {result!r}. "
+                "JSONB value may have been double-encoded (stored as a JSON string)."
+            )
+            assert result["key"] == "value"
+            assert result["count"] == 42
+            assert result["nested"]["a"] == 1
+
+    async def test_json_string_roundtrips_as_string_not_dict(self, provisioned_postgres_pool):
+        """A json.dumps() string written to a JSONB column gets double-encoded by the codec.
+
+        This is the old pre-codec pattern.  With the JSONB codec registered, asyncpg
+        treats any Python value passed to a JSONB parameter as already-decoded — so a
+        str like '{"k": 1}' is encoded to JSON again, producing '"{\\"k\\": 1}"' in
+        the DB.  The round-trip then returns a str (not a dict).
+
+        This test locks in that behavior so a reintroduction of json.dumps() at
+        production call sites is caught immediately.
+        """
+        import json
+
+        async with provisioned_postgres_pool() as pool:
+            await pool.execute("""
+                CREATE TEMP TABLE _str_roundtrip_test (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    payload JSONB NOT NULL
+                )
+            """)
+            original = {"writer": "test", "value": 99}
+            # Pass dict directly: codec encodes once → stored as JSON object.
+            await pool.execute("INSERT INTO _str_roundtrip_test (payload) VALUES ($1)", original)
+            row = await pool.fetchrow("SELECT payload FROM _str_roundtrip_test LIMIT 1")
+            result = row["payload"]
+            assert isinstance(result, dict), (
+                f"Expected dict from direct dict write but got {type(result).__name__!r}. "
+                "Check that the JSONB codec is active and no double-encoding occurred."
+            )
+            assert result["writer"] == "test"
+            assert result["value"] == 99
+
+            # Now demonstrate the double-encoding trap: passing json.dumps output
+            # as a string to a codec-backed pool causes the string itself to be
+            # JSON-encoded, so the DB stores a JSON string value (not an object).
+            await pool.execute("DELETE FROM _str_roundtrip_test")
+            json_str = json.dumps(original)
+            await pool.execute("INSERT INTO _str_roundtrip_test (payload) VALUES ($1)", json_str)
+            str_row = await pool.fetchrow("SELECT payload FROM _str_roundtrip_test LIMIT 1")
+            str_result = str_row["payload"]
+            # The round-trip returns a str, not a dict — proving double-encoding occurred.
+            assert isinstance(str_result, str), (
+                f"Expected str from json.dumps write (double-encoding) but got "
+                f"{type(str_result).__name__!r}. "
+                "This confirms the codec does NOT accept pre-serialized strings."
+            )
+
+    async def test_list_written_directly_roundtrips_as_list(self, provisioned_postgres_pool):
+        """A Python list written directly to a JSONB column roundtrips as a list."""
+        async with provisioned_postgres_pool() as pool:
+            await pool.execute("""
+                CREATE TEMP TABLE _list_jsonb_test (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tags JSONB NOT NULL
+                )
+            """)
+            tags = ["alpha", "beta", "gamma"]
+            await pool.execute("INSERT INTO _list_jsonb_test (tags) VALUES ($1)", tags)
+            row = await pool.fetchrow("SELECT tags FROM _list_jsonb_test LIMIT 1")
+            result = row["tags"]
+            assert isinstance(result, list), (
+                f"Expected list but got {type(result).__name__!r}: {result!r}. "
+                "List JSONB write may have double-encoded."
+            )
+            assert result == tags

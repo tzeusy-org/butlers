@@ -27,7 +27,6 @@ Schema reference (public.qa_findings):
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 
@@ -76,10 +75,6 @@ async def insert_finding(
     uuid.UUID
         The ``id`` of the newly inserted row.
     """
-    structured_evidence_json: str | None = None
-    if finding.structured_evidence is not None:
-        structured_evidence_json = json.dumps(finding.structured_evidence)
-
     row_id = await pool.fetchval(
         """
         INSERT INTO public.qa_findings (
@@ -89,7 +84,7 @@ async def insert_finding(
             dedup_reason, healing_attempt_id,
             source_session_trigger_source, structured_evidence
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         RETURNING id
         """,
         patrol_id,
@@ -106,7 +101,7 @@ async def insert_finding(
         dedup_reason,
         str(healing_attempt_id) if healing_attempt_id is not None else None,
         finding.source_session_trigger_source,
-        structured_evidence_json,
+        finding.structured_evidence,
     )
     return row_id
 

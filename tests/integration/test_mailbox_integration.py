@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from butlers.db import register_jsonb_codec
+
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -110,8 +112,6 @@ async def mailbox_pool(postgres_container):
     finally:
         await admin_conn.close()
 
-    from butlers.db import register_jsonb_codec
-
     pool = await asyncpg.create_pool(
         host=postgres_container.get_container_host_ip(),
         port=int(postgres_container.get_exposed_port(5432)),
@@ -145,8 +145,6 @@ async def switchboard_pool(postgres_container):
         await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
     finally:
         await admin_conn.close()
-
-    from butlers.db import register_jsonb_codec
 
     pool = await asyncpg.create_pool(
         host=postgres_container.get_container_host_ip(),

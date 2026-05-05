@@ -1325,19 +1325,15 @@ async def persist_ha_history(
         attributes: JSONB snapshot of HA event attributes (may be ``None``).
         recorded_at: Timezone-aware datetime for the ``recorded_at`` column.
     """
-    import json as _json
-
-    attrs_json: str | None = _json.dumps(attributes) if attributes is not None else None
-
     try:
         await pool.execute(
             f"""
             INSERT INTO {_HA_HISTORY_TABLE} (entity_id, state, attributes, recorded_at)
-            VALUES ($1, $2, $3::jsonb, $4)
+            VALUES ($1, $2, $3, $4)
             """,
             entity_id,
             state,
-            attrs_json,
+            attributes,
             recorded_at,
         )
         return True
@@ -1378,7 +1374,7 @@ async def _main() -> None:
     from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
     from butlers.core.logging import configure_logging
     from butlers.credential_store import resolve_owner_entity_info, shared_db_name_from_env
-    from butlers.db import db_params_from_env
+    from butlers.db import db_params_from_env, register_jsonb_codec
 
     configure_logging()
     logger.info("Home Assistant connector starting")
@@ -1404,6 +1400,7 @@ async def _main() -> None:
             max_size=4,
             command_timeout=10,
             setup=connector_setup_role,
+            init=register_jsonb_codec,
         )
     except Exception:
         logger.warning(

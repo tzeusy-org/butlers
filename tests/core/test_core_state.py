@@ -8,6 +8,7 @@ import shutil
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -35,8 +36,6 @@ async def pool(migrated_db_url: str):
     Register the JSONB codec so writes match production behaviour
     (``state_set`` passes Python dicts/lists, not pre-serialized JSON strings).
     """
-    from butlers.db import register_jsonb_codec
-
     p = await asyncpg.create_pool(
         migrated_db_url,
         min_size=1,
@@ -154,24 +153,24 @@ class TestDecodeJsonb:
         "input_val,expected",
         [
             ({"key": "val"}, {"key": "val"}),  # dict passthrough
-            ('{"key": "val"}', {"key": "val"}),  # JSON string decoded
+            ('{"key": "val"}', '{"key": "val"}'),  # string passthrough (codec decodes JSONB)
             (42, 42),  # int passthrough
             (None, None),  # None passthrough
             ([1, 2], [1, 2]),  # list passthrough
         ],
     )
     def test_decode_jsonb(self, input_val, expected):
+        """decode_jsonb is a pass-through since the asyncpg JSONB codec handles decoding."""
         from butlers.core.state import decode_jsonb
 
         assert decode_jsonb(input_val) == expected
 
     def test_string_value_passthrough(self):
+        """All values are returned as-is; the JSONB codec has already decoded them."""
         from butlers.core.state import decode_jsonb
 
-        # A JSON-encoded string (a valid JSON value) is decoded
-        result = decode_jsonb('"plain string"')
-        assert result == "plain string"
-
-        # Non-string values pass through unchanged
+        # With the JSONB codec, asyncpg returns Python objects directly.
+        # decode_jsonb is now a no-op pass-through.
+        assert decode_jsonb("any string") == "any string"
         assert decode_jsonb(42) == 42
         assert decode_jsonb(None) is None

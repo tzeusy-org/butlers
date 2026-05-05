@@ -29,6 +29,7 @@ from butlers.context_bus import (
     is_user_in_context,
     set_context,
 )
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -145,7 +146,9 @@ class TestContextBusIntegration:
     @pytest.fixture
     async def pool(self, migrated_db_url: str):
         """Return an asyncpg pool with user_context table cleared between tests."""
-        p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=5)
+        p = await asyncpg.create_pool(
+            migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
+        )
         await p.execute("TRUNCATE public.user_context CASCADE")
         yield p
         await p.close()

@@ -7,7 +7,6 @@ run_device_health_check, and daemon registry.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -103,7 +102,8 @@ def _make_entity_row(
 
 def _make_health_pool(*, state_value=None, entity_rows=None) -> MagicMock:
     pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=json.dumps(state_value) if state_value else None)
+    # The asyncpg JSONB codec returns Python objects directly (no JSON string).
+    pool.fetchval = AsyncMock(return_value=state_value)
     pool.fetch = AsyncMock(return_value=entity_rows or [])
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)

@@ -37,6 +37,15 @@ def _dumps(obj: Any) -> str:
     return json.dumps(obj, default=_json_default)
 
 
+def _json_safe(obj: Any) -> Any:
+    """Convert *obj* to a JSON-safe Python value (dicts, lists, scalars).
+
+    Handles UUIDs and datetimes by converting them to strings so the result
+    can be passed directly to asyncpg's JSONB codec without a ``::jsonb`` cast.
+    """
+    return json.loads(_dumps(obj))
+
+
 # ---------------------------------------------------------------------------
 # Canonical tool description (spec § "Canonical Tool Description Text")
 # ---------------------------------------------------------------------------
@@ -282,8 +291,8 @@ async def create_correction(
     correction_id = uuid.uuid4()
     table = f"{schema}.corrections" if schema else "corrections"
 
-    snapshot_json = _dumps(original_data_snapshot) if original_data_snapshot is not None else None
-    details_json = _dumps(correction_details) if correction_details is not None else None
+    snapshot = _json_safe(original_data_snapshot) if original_data_snapshot is not None else None
+    details = _json_safe(correction_details) if correction_details is not None else None
 
     await pool.execute(
         f"""
@@ -298,7 +307,7 @@ async def create_correction(
             original_data_snapshot,
             correction_details,
             created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         """,
         correction_id,
         correction_type.value if isinstance(correction_type, CorrectionType) else correction_type,
@@ -307,8 +316,8 @@ async def create_correction(
         description,
         status,
         summary,
-        snapshot_json,
-        details_json,
+        snapshot,
+        details,
         datetime.now(UTC),
     )
     return correction_id
@@ -717,8 +726,8 @@ async def handle_data_correction(
     # Apply the correction (update state)
     now = datetime.now(UTC)
     await effective_pool.execute(
-        f"UPDATE {state_table} SET value = $1::jsonb, updated_at = $2 WHERE key = $3",
-        json.dumps(corrected_value),
+        f"UPDATE {state_table} SET value = $1, updated_at = $2 WHERE key = $3",
+        corrected_value,
         now,
         state_key,
     )

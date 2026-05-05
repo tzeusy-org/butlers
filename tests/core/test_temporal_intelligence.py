@@ -24,6 +24,8 @@ from typing import Any
 
 import pytest
 
+from butlers.db import register_jsonb_codec
+
 pytestmark = [pytest.mark.unit]
 
 docker_available = shutil.which("docker") is not None
@@ -615,6 +617,7 @@ class TestTickIntegration:
             database=db_name,
             min_size=1,
             max_size=3,
+            init=register_jsonb_codec,
         )
         await p.execute(self._SCHEDULED_TASKS_DDL)
         await p.execute(self._EVENT_CHAINS_DDL)

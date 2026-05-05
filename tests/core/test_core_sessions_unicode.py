@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import uuid
 
 import pytest
@@ -57,13 +56,12 @@ async def test_session_complete_sanitizes_jsonb_and_text_payloads() -> None:
     assert pool.fetchval_calls
     _query, args = pool.fetchval_calls[0]
     assert args[1] == "done"
-    assert args[2] == json.dumps(
-        [
-            {
-                "name": "tool",
-                "arguments": {"value": "badtext", "items": ["ok", ""]},
-            }
-        ]
-    )
-    assert args[4] == json.dumps({"raw": "cost"})
+    # tool_calls and cost are passed as Python objects (asyncpg JSONB codec handles encoding)
+    assert args[2] == [
+        {
+            "name": "tool",
+            "arguments": {"value": "badtext", "items": ["ok", ""]},
+        }
+    ]
+    assert args[4] == {"raw": "cost"}
     assert args[6] == "boom"

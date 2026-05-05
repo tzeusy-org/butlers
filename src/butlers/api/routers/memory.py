@@ -1091,7 +1091,7 @@ async def update_entity(
             # Pass the dict directly — the asyncpg JSONB codec handles encoding.
             # json.dumps() here would double-encode and store a JSONB string scalar,
             # which the || operator then arrayifies, corrupting the column.
-            sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${idx}::jsonb")
+            sets.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${idx}")
             args.append(allowed_metadata)
             idx += 1
 
@@ -1360,7 +1360,7 @@ async def delete_entity(
     deleted_at = datetime.now(UTC).isoformat()
     await pool.execute(
         "UPDATE public.entities"
-        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,"
+        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
         " updated_at = now()"
         " WHERE id = $1",
         eid,
@@ -1414,7 +1414,7 @@ async def archive_entity(
     archived_at = datetime.now(UTC).isoformat()
     await pool.execute(
         "UPDATE public.entities"
-        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,"
+        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
         " updated_at = now()"
         " WHERE id = $1",
         eid,

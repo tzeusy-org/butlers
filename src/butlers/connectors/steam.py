@@ -354,7 +354,7 @@ async def _upsert_play_history(
 _CURSOR_UPSERT_SQL = f"""
 INSERT INTO {_CURSOR_SCHEMA}.{_CURSOR_TABLE}
     (endpoint_identity, data_type, last_poll_at, state_hash, state_snapshot, updated_at)
-VALUES ($1, $2, $3, $4, $5::jsonb, now())
+VALUES ($1, $2, $3, $4, $5, now())
 ON CONFLICT (endpoint_identity, data_type)
 DO UPDATE SET
     last_poll_at    = EXCLUDED.last_poll_at,
@@ -372,7 +372,6 @@ WHERE endpoint_identity = $1
 
 async def _save_steam_cursor(pool: asyncpg.Pool, cursor: SteamCursor) -> None:
     """Upsert a Steam cursor row."""
-    snapshot_json = json.dumps(cursor.state_snapshot) if cursor.state_snapshot is not None else None
     try:
         async with pool.acquire() as conn:
             await conn.execute(
@@ -381,7 +380,7 @@ async def _save_steam_cursor(pool: asyncpg.Pool, cursor: SteamCursor) -> None:
                 cursor.data_type,
                 cursor.last_poll_at,
                 cursor.state_hash,
-                snapshot_json,
+                cursor.state_snapshot,
             )
     except Exception:
         logger.warning(
@@ -1852,7 +1851,7 @@ async def _run() -> None:
     """Main coroutine — create pool, start connector, handle signals."""
     import asyncpg
 
-    from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+    from butlers.db import db_params_from_env, register_jsonb_codec, should_retry_with_ssl_disable
 
     switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL", "").strip()
     if not switchboard_mcp_url:
@@ -1878,6 +1877,7 @@ async def _run() -> None:
     if params.get("ssl"):
         pool_kwargs["ssl"] = params["ssl"]
     pool_kwargs["setup"] = connector_setup_role
+    pool_kwargs["init"] = register_jsonb_codec
 
     try:
         pool = await asyncpg.create_pool(**pool_kwargs)

@@ -6,38 +6,23 @@ its own database, so keys are globally unique within a butler.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 import asyncpg
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # retained for potential future use
 
 
 def decode_jsonb(val: Any) -> Any:
-    """Decode a JSONB value, handling absent codec and legacy double-encoding.
+    """Return a JSONB value as a Python object.
 
-    With the asyncpg JSONB codec registered (production), JSONB columns come
-    back as native Python types — pass through.  Without the codec, asyncpg
-    returns the column as a Python ``str`` (text representation); call
-    ``json.loads`` once.  If the result is still a ``str`` it could be either
-    (a) a legitimate JSONB string scalar (e.g. ``"failure"``) or (b) legacy
-    double-encoded data from the pre-codec era.  Try one more decode pass —
-    if it parses, return the inner value; if not, return the string as-is.
+    The asyncpg JSONB codec (registered via ``butlers.db.register_jsonb_codec``)
+    decodes all JSONB columns to Python objects on read, so no manual
+    ``json.loads`` is needed.  This function is kept as a pass-through to
+    preserve the call-sites and ease future migration if the codec is removed.
     """
-    if not isinstance(val, str):
-        return val
-    try:
-        decoded = json.loads(val)
-    except (json.JSONDecodeError, ValueError):
-        return val
-    if isinstance(decoded, str):
-        try:
-            return json.loads(decoded)
-        except (json.JSONDecodeError, ValueError):
-            return decoded
-    return decoded
+    return val
 
 
 class CASConflictError(Exception):
@@ -87,7 +72,7 @@ async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
     new_version: int = await pool.fetchval(
         """
         INSERT INTO state (key, value, updated_at, version)
-        VALUES ($1, $2::jsonb, now(), 1)
+        VALUES ($1, $2, now(), 1)
         ON CONFLICT (key) DO UPDATE
             SET value = EXCLUDED.value,
                 updated_at = now(),
@@ -129,7 +114,7 @@ async def state_compare_and_set(
     row = await pool.fetchrow(
         """
         UPDATE state
-        SET value = $3::jsonb,
+        SET value = $3,
             updated_at = now(),
             version = version + 1
         WHERE key = $1 AND version = $2

@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -48,7 +49,9 @@ def migrated_db_url(postgres_container) -> str:
 @pytest.fixture
 async def pool(migrated_db_url: str):
     """Return an asyncpg pool with scheduler table cleared between tests."""
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
     await p.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
     yield p
     await p.close()

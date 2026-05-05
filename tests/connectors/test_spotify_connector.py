@@ -519,8 +519,6 @@ def _make_closed_session(
 @pytest.mark.asyncio
 async def test_persist_session_summary_upserts_row() -> None:
     """persist_session_summary executes the expected INSERT … ON CONFLICT DO UPDATE."""
-    import json
-
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value="some-uuid")
 
@@ -549,15 +547,17 @@ async def test_persist_session_summary_upserts_row() -> None:
 
     # Positional args: idempotency_key, endpoint_identity, spotify_user_id,
     #                  started_at, ended_at, duration_seconds, track_count,
-    #                  track_names (json), context_uri, context_name
+    #                  track_names (jsonb), context_uri, context_name
     positional = call_args.args[1:]
     idempotency_key = positional[0]
     assert idempotency_key.startswith("spotify:")
     assert _ENDPOINT in idempotency_key
 
-    track_names_json = positional[7]
-    assert isinstance(track_names_json, str)
-    assert json.loads(track_names_json) == ["Song A", "Song B"]
+    # The asyncpg JSONB codec is registered on the pool, so track_names is
+    # passed as a Python list directly (no json.dumps pre-serialization needed).
+    track_names = positional[7]
+    assert isinstance(track_names, list)
+    assert track_names == ["Song A", "Song B"]
 
 
 @pytest.mark.asyncio

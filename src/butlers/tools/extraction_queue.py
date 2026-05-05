@@ -62,12 +62,12 @@ async def extraction_queue_add(
         """
         INSERT INTO extraction_queue
             (source_message, extraction_type, extraction_data, confidence, ttl_days)
-        VALUES ($1, $2, $3::jsonb, $4, $5)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING *
         """,
         source_message,
         extraction_type,
-        json.dumps(extraction_data),
+        extraction_data,
         confidence,
         ttl_days,
     )

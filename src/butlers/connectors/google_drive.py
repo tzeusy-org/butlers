@@ -1173,23 +1173,22 @@ class GDriveAccountLoop:
                     "shared": entry.shared,
                     "modified_time": entry.modified_time,
                 }
-            metadata_cache_json = json.dumps(cache_data)
             async with self._cursor_pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO switchboard.connector_registry
                         (connector_type, endpoint_identity, settings)
-                    VALUES ($1, $2, jsonb_set('{}'::jsonb, '{metadata_cache}', $3::jsonb))
+                    VALUES ($1, $2, jsonb_set('{}'::jsonb, '{metadata_cache}', $3))
                     ON CONFLICT (connector_type, endpoint_identity)
                     DO UPDATE SET settings = jsonb_set(
                         COALESCE(connector_registry.settings, '{}'::jsonb),
                         '{metadata_cache}',
-                        $3::jsonb
+                        $3
                     )
                     """,
                     _CONNECTOR_TYPE,
                     self._config.cursor_key,
-                    metadata_cache_json,
+                    cache_data,
                 )
             logger.debug(
                 "Drive: saved metadata cache for email=%s entries=%d",
@@ -2240,7 +2239,7 @@ async def run_google_drive_connector() -> None:
 
     from butlers.connectors.cursor_store import create_cursor_pool_from_env
     from butlers.credential_store import shared_db_name_from_env
-    from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+    from butlers.db import db_params_from_env, register_jsonb_codec, should_retry_with_ssl_disable
 
     db_params = db_params_from_env()
     shared_db_name = shared_db_name_from_env()
@@ -2261,6 +2260,7 @@ async def run_google_drive_connector() -> None:
         if ssl is not None:
             pool_kwargs["ssl"] = ssl
         pool_kwargs["setup"] = connector_setup_role
+        pool_kwargs["init"] = register_jsonb_codec
 
         try:
             shared_pool = await _asyncpg.create_pool(**pool_kwargs)

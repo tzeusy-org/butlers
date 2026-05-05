@@ -22,6 +22,7 @@ import pytest
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner, SpawnerResult
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # Skip integration tests if Docker is not available
@@ -143,7 +144,9 @@ def migrated_db_url(postgres_container) -> str:
 @pytest.fixture
 async def pool(migrated_db_url: str):
     """Return an asyncpg pool with sessions table cleared between tests."""
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
     await p.execute("TRUNCATE TABLE sessions CASCADE")
     yield p
     await p.close()
