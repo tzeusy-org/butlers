@@ -25,9 +25,11 @@ export default function Shell({ header, children }: ShellProps) {
         </SheetContent>
       </Sheet>
 
-      {/* Desktop sidebar — hidden below md */}
+      {/* Desktop sidebar — width switches instantly (no transition) so no
+          layout property is animated. Brand text fades via transition-opacity
+          in Sidebar.tsx; nav labels use conditional rendering. */}
       <aside
-        className={`hidden md:flex md:flex-col border-r border-border transition-[width] duration-base ease-out-quart ${
+        className={`hidden md:flex md:flex-col border-r border-border ${
           desktopCollapsed ? 'md:w-16' : 'md:w-64'
         }`}
       >
