@@ -623,7 +623,7 @@ export function ConcentricCirclesCanvas({
                 const by = cy + ringR * Math.sin(badgeAngle);
                 return (
                   <g
-                    style={{ cursor: "pointer" }}
+                    className="cursor-pointer"
                     role="button"
                     tabIndex={0}
                     onClick={() => onTierExpand(tier)}
