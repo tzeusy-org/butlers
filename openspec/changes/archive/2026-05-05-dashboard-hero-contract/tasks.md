@@ -59,7 +59,7 @@
 
 ## 7. Spec Sync and Reconciliation (bu-2okpr.7)
 
-- [ ] 7.1 Run `openspec sync dashboard-hero-contract` to merge delta specs into the
+- [x] 7.1 Run `openspec sync dashboard-hero-contract` to merge delta specs into the
       authoritative spec tree.
 - [ ] 7.2 Verify all acceptance criteria in the parent epic (bu-2okpr) against the
       delivered implementation.
