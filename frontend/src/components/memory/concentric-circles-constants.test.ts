@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { matchesSearch, truncateGraphemes } from "@/components/memory/concentric-circles-constants";
+import { matchesSearch, truncateGraphemes, getInitials } from "@/components/memory/concentric-circles-constants";
 import type { DunbarEntry } from "@/api/types";
 
 describe("truncateGraphemes", () => {
@@ -144,5 +144,57 @@ describe("matchesSearch", () => {
     const entry = makeEntry({ canonical_name: "Alice Nguyen", aliases: [] });
     expect(matchesSearch(entry, "alice")).toBe(true);
     expect(matchesSearch(entry, "bob")).toBe(false);
+  });
+});
+
+describe("getInitials", () => {
+  it("returns first and last initials for multi-word names", () => {
+    expect(getInitials("John Doe")).toBe("JD");
+  });
+
+  it("returns uppercase initials", () => {
+    expect(getInitials("alice bob")).toBe("AB");
+  });
+
+  it("single-word name with leading emoji: returns emoji + first letter", () => {
+    // "🌸blossom" has graphemes: 🌸, b, l, o, s, s, o, m
+    // Taking first 2 graphemes → "🌸b"
+    const result = getInitials("🌸blossom");
+    expect(result).toBe("🌸B");
+    expect(result).not.toContain("�");
+  });
+
+  it("single-word name with family emoji (ZWJ sequence) as single grapheme", () => {
+    // Family emoji like 👨‍👩‍👧 is a single grapheme cluster even though it contains ZWJ joiners.
+    // Taking first 2 graphemes should give the full emoji (1st) + any following char (if exists)
+    // For a 1-grapheme emoji with no following text, result should be just that emoji, uppercased.
+    const result = getInitials("👨‍👩‍👧");
+    expect(result).toBe("👨‍👩‍👧");
+    expect(result).not.toContain("�");
+  });
+
+  it("CJK characters: returns first two characters", () => {
+    // "日本人" → first 2 graphemes: 日, 本 → "日本"
+    const result = getInitials("日本人");
+    expect(result).toBe("日本");
+    expect(result).not.toContain("�");
+  });
+
+  it("single character name", () => {
+    const result = getInitials("A");
+    expect(result).toBe("A");
+  });
+
+  it("handles leading/trailing whitespace in multi-word names", () => {
+    expect(getInitials("  john doe  ")).toBe("JD");
+  });
+
+  it("handles multiple spaces between words", () => {
+    expect(getInitials("john    doe")).toBe("JD");
+  });
+
+  it("handles leading/trailing whitespace in single-word names", () => {
+    const result = getInitials("  alice  ");
+    expect(result).toBe("AL");
   });
 });
