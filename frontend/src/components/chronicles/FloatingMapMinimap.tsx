@@ -59,13 +59,14 @@ export function FloatingMapMinimap({
   return (
     <div
       className={cn(
+        // Fixed at expanded dimensions; scale-down to "open" size via transform.
+        // Animating transform instead of width/height avoids layout reflow
+        // (motion contract AC #5: no width/height/top/left/margin transitions).
+        // transform-origin: bottom-right keeps the corner anchor stable.
         "fixed bottom-4 right-4 z-30 flex flex-col rounded-lg border bg-card shadow-lg overflow-hidden",
-        // Smooth transition between sizes — not a layout-thrash because the
-        // map element below uses h-full and reflows automatically.
-        "transition-[width,height] duration-200 ease-out",
-        isExpanded
-          ? "w-[min(720px,90vw)] h-[min(540px,70vh)]"
-          : "w-[min(360px,90vw)] h-[min(260px,40vh)]",
+        "w-[min(720px,90vw)] h-[min(540px,70vh)]",
+        "transition-transform duration-200 ease-out origin-bottom-right",
+        !isExpanded && "scale-50",
       )}
       data-testid="map-minimap"
       data-mode={mode}
