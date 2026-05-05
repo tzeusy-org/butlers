@@ -101,17 +101,16 @@ export function PracticalDrawer({ entity, forceOpen, children }: PracticalDrawer
           <ChevronRight className="text-muted-foreground h-4 w-4" />
         )}
       </button>
-      {open && (
-        <div
-          id={panelId}
-          role="region"
-          aria-label="Practical details"
-          className="space-y-4 border-t px-4 py-4"
-        >
-          {children}
-          <ProvenanceFooter entity={entity} />
-        </div>
-      )}
+      <div
+        id={panelId}
+        role="region"
+        aria-label="Practical details"
+        hidden={!open}
+        className="space-y-4 border-t px-4 py-4"
+      >
+        {children}
+        <ProvenanceFooter entity={entity} />
+      </div>
     </section>
   );
 }

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { act } from "react";
+import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -97,10 +98,16 @@ describe("PracticalDrawer", () => {
 // ARIA disclosure pattern (bu-sewk9)
 // ---------------------------------------------------------------------------
 
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+type GlobalWithActEnv = typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 
 describe("PracticalDrawer ARIA disclosure pattern", () => {
+  beforeAll(() => {
+    (globalThis as GlobalWithActEnv).IS_REACT_ACT_ENVIRONMENT = true;
+  });
+
+  afterAll(() => {
+    delete (globalThis as GlobalWithActEnv).IS_REACT_ACT_ENVIRONMENT;
+  });
   let container: HTMLDivElement;
   let root: Root;
 
@@ -120,7 +127,7 @@ describe("PracticalDrawer ARIA disclosure pattern", () => {
   function renderInDom(props: {
     entity: typeof BASE_ENTITY;
     forceOpen: boolean;
-    children?: React.ReactNode;
+    children?: ReactNode;
   }) {
     act(() => {
       root.render(
