@@ -1,10 +1,13 @@
 # Dashboard Design Language
 
-> Status: **observational draft** — written by a design consultant on first
+> Status: **observational draft**, written by a design consultant on first
 > contact with the codebase. This document captures what the dashboard's
 > design language *appears to be today* (de facto), names what is working,
 > names what is drifting, and proposes the doctrine that a future
 > `/impeccable` redesign should defend or replace.
+>
+> **Note:** This document itself is subject to the voice rules it establishes.
+> Em-dashes in older sections predate the ban and are being migrated incrementally.
 
 The Butlers dashboard is the human window into a system that mostly runs
 without humans watching. It is read first, controlled second. The design
@@ -13,7 +16,7 @@ language must respect that.
 This document does **not** specify components, tokens, or pages. Those belong
 in [`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md) (where
 things are) and in capability specs (what they do). This document is
-**WHY** — the principles a Butlers dashboard must satisfy regardless of
+**WHY**: the principles a Butlers dashboard must satisfy regardless of
 which framework or visual style we land on.
 
 ---
@@ -26,8 +29,8 @@ multi-agent system**. It exists so the owner can:
 1. Trust that butlers are alive and behaving.
 2. Investigate when one of them isn't.
 3. Override or correct behavior when needed.
-4. Understand what the system *did with their data* — episodes, contacts,
-   memory facts, notifications, costs.
+4. Understand what the system *did with their data* (episodes, contacts,
+   memory facts, notifications, costs).
 
 Every screen is in service of one of those four jobs. If a screen does not
 serve them, it does not belong.
@@ -41,7 +44,7 @@ that assumes multi-user SaaS conventions (avatars in nav, role badges,
 
 - **Not a control plane for end users.** The end user of a butler is the
   owner, but their channel is messaging, not the dashboard. The dashboard
-  is the *operator's* surface — the same person, but in a different mode.
+  is the *operator's* surface (the same person, but in a different mode).
 - **Not a chat app.** Conversational flows belong in the messaging layer.
   The dashboard's job is to *show what happened*, not to *be the place
   things happen*.
@@ -50,7 +53,7 @@ that assumes multi-user SaaS conventions (avatars in nav, role badges,
   persona. Patterns like "user management → roles → permissions" do not
   apply.
 - **Not a marketing surface.** Hero illustrations, gradient banners,
-  "delight" microinteractions for their own sake — none of these earn
+  "delight" microinteractions for their own sake. None of these earn
   their pixels here.
 - **Not a uniform information feed.** Different butlers produce
   fundamentally different data shapes (timelines, graphs, episodes,
@@ -89,7 +92,7 @@ inconsistently applied**. Naming it makes it easier to reason about.
 
 ### Composition
 - **Shell** (`components/layout/Shell.tsx`): fixed-height, full-bleed,
-  three-zone — left rail (sidebar), top bar (PageHeader, 56px), main
+  three-zone: left rail (sidebar), top bar (PageHeader, 56px), main
   scroll region (24px padding). Mobile collapses the rail into a Sheet.
 - **PageHeader** (`components/layout/PageHeader.tsx`): auto-generated
   breadcrumbs from URL segments, optional injected title, command-palette
@@ -112,9 +115,8 @@ It treats the user as a sysadmin who already understands the domain.
 Examples: "Retrospective view of lived past time reconstructed from butler
 evidence." "All systems healthy." "QA Staffer not active."
 
-This is the right register for the audience. The drift is mechanical —
-sentence-case vs Title Case, "Loading…" vs "Loading butlers…" — not
-tonal.
+This is the right register for the audience. The drift is mechanical,
+not tonal: sentence-case vs Title Case, "Loading…" vs "Loading butlers…".
 
 ---
 
@@ -129,7 +131,7 @@ tonal.
    default. The chrome gets out of the way.
 3. **Component primitives are consistent.** One `Button`, one `Card`,
    one `Dialog`, one `Sheet`. There are no parallel implementations of
-   the same primitive — the divergence is at the page level, not the
+   the same primitive. The divergence is at the page level, not the
    component level.
 4. **Navigation is configuration-driven.** `nav-config.ts` is a single
    declarative source of truth, and butler-presence filtering means the
@@ -147,7 +149,7 @@ tonal.
    no canonical position. There is no `<Page>` / `<PageHeader>`
    container component to hold the shape.
 2. **The token system leaks.** Several pages reach for raw hex when
-   they need a non-semantic color — `EntitiesPage.tsx` lines 102–113 hard-code
+   they need a non-semantic color: `EntitiesPage.tsx` lines 102–113 hard-code
    six tier colors; `EntityDetailPage.tsx` lines 313/316 inline
    `#7c3aed` and `#f59e0b`; `SymptomsPage.tsx` does the same for
    severity; `GroupsPage.tsx` line 121 keeps a hex palette array. The
@@ -167,7 +169,7 @@ tonal.
    `@xyflow/react` for topology, `maplibre-gl` for the chronicles map,
    and ad-hoc inline SVG / styled `<div>` widths for everything else
    (progress bars, calendar grid heights). Nothing wrong with three
-   libraries — but the seams are visible.
+   libraries, but the seams are visible.
 6. **Tone is mostly consistent but capitalization is not.** "Force
    Patrol Now" sits next to "Sync now" sits next to "View all
    notifications." Empty-state copy ranges from terse ("No butlers
@@ -175,7 +177,7 @@ tonal.
    when novel issues are detected"). Each is fine in isolation; together
    they read like four people writing.
 7. **`PageHeader` does too little to claim its name.** It generates
-   breadcrumbs from the URL and renders an optional title — but it is
+   breadcrumbs from the URL and renders an optional title, but it is
    *invoked once* in `RootLayout` with no title, so every page
    re-implements its own H1. The component name suggests a contract it
    does not deliver.
@@ -210,7 +212,7 @@ the use case before being treated as binding.
      in JSX is a bug.
    - **Exemption: typed primitives that own one style prop.** A
      `<Progress value={0.42}/>` whose internal `style={{ width: '42%' }}`
-     is unavoidable does not violate the rule — the ban targets ad-hoc
+     is unavoidable does not violate the rule. The ban targets ad-hoc
      inline styles, not encapsulated dynamic values inside a typed
      primitive.
 2. **The `Page` is a primitive.** Every route renders inside a
@@ -244,6 +246,17 @@ the use case before being treated as binding.
 5. **Voice is owner-direct.** Sentence case for everything except
    proper nouns and product names. Active verbs in buttons. No
    chatty marketing language. No empty enthusiasm.
+   Full rules are in the [Voice and Copy](#voice-and-copy) section
+   under Settled Direction.
+6. **No em-dashes in prose.** The em-dash (`—`) is banned from all
+   copy written for the dashboard and from all doctrine documents.
+   Replacements: a comma, a colon, or parentheses, depending on
+   the relationship the dash was carrying. This rule applies to
+   JSX strings, `description` props, `CardDescription`, `EmptyState`
+   descriptions, toast messages, and doc prose. It does not apply
+   to code inside code blocks or to strings used as data values
+   (e.g., a null-display fallback `"—"` is acceptable as a
+   typographic convention, not prohibited prose).
 
 ### Worth debating
 
@@ -271,10 +284,10 @@ These were open questions in the first draft. The owner has answered.
    extension to close family members later. There is no team, no
    permission tier. **Both** calm-morning monitoring and incident
    investigation are valid use cases. Calm-morning is more frequent;
-   incident is higher-stakes. The design must hold both — never
+   incident is higher-stakes. The design must hold both, never
    sacrificing the second to optimize the first.
 2. **Chronicles is the reference implementation.** Every page should
-   eventually deliver Chronicles-grade feature richness — a real
+   eventually deliver Chronicles-grade feature richness: a real
    primary visualization, scrubber/control affordances where time
    applies, secondary aggregations, drill-down drawers. The "table
    of rows" archetype is acceptable as a transitional state, not as
@@ -288,14 +301,220 @@ These were open questions in the first draft. The owner has answered.
    page, not a sprinkle.
 4. **Hero metric: butler sessions.** The single number that tells
    the owner whether their system is doing its job today is
-   **sessions** — how many times butlers spun up to act on the
+   **sessions**: how many times butlers spun up to act on the
    owner's behalf. Cost, health, and pending approvals stay on the
    home page as supporting context, but session count is the one
    that gets visual primacy.
 
+## Voice and Copy
+
+> Status: **settled** (bu-scahb.7).
+
+The dashboard is an operator tool. Its copy must be legible,
+direct, and unadorned. The rules below govern every string rendered
+in JSX (descriptions, labels, empty states, toasts, error messages)
+and every prose sentence written in doctrine documents.
+
+### Register
+
+Technical, terse, slightly formal, owner-direct. The owner is a
+sysadmin who already knows the domain. Do not explain things they
+already know. Do not soften things that are just facts.
+
+| What you want to say | Write this |
+|---|---|
+| The butler has not synced recently | "Last sync: 3 hours ago." |
+| Nothing to show yet | "No sessions today." |
+| A dangerous operation | "This will delete the connector and all its history." |
+
+### Capitalization
+
+Sentence case for everything except proper nouns and product names.
+
+- Page titles: sentence case. "Knowledge graph", not "Knowledge Graph".
+- Section headings: sentence case. "Token leaks", not "Token Leaks".
+- Button labels: sentence case. "Sync now", not "Sync Now".
+- Proper nouns and product names are always capitalized: Claude,
+  Telegram, PostgreSQL, Tailwind.
+
+### Buttons
+
+Active verbs. No marketing language. No punctuation.
+
+| Bad | Good |
+|---|---|
+| "Force Patrol Now" | "Run patrol" |
+| "Enable Smart Sync!" | "Enable sync" |
+| "Request New Curriculum" | "Request curriculum" |
+| "View All Notifications" | "View all" |
+| "Load More Data" | "Load more" |
+
+Destructive buttons are plain: "Delete", not "Delete forever" or
+"Remove permanently". The `variant="destructive"` signals danger;
+the copy does not need to amplify it.
+
+### Empty states
+
+State the fact, then offer the next action. Avoid prose sentences
+that describe what the user could do if they were not there.
+
+Pattern: `{Noun} + verb phrase` as the title. One short sentence of
+context if needed. A single action button.
+
+| Bad | Good |
+|---|---|
+| "No butlers found. Butlers are long-running agents that act on your behalf. Add one to get started!" | Title: "No butlers active." Action: "Open setup guide" |
+| "Patrol cycles will dispatch investigations when novel issues are detected." | "No active investigations." |
+| `"Browse the knowledge graph — people, organizations, places, and more."` | "Knowledge graph is empty." |
+
+Empty states do not get exclamation marks. They do not use em-dashes.
+They do not editorialize.
+
+### Errors
+
+Passive voice for system-side failures. Never blame the user.
+Describe what failed, not who failed.
+
+| Bad | Good |
+|---|---|
+| "You provided an invalid token." | "Authentication failed. Check the token in Settings." |
+| "Your request failed." | "Failed to load sessions." |
+| `"This butler isn't authenticated — please re-authenticate."` | "{Butler} is not authenticated. Re-authenticate in Settings." |
+
+Error copy ends with a period. If there is an action to take, offer
+it as a button or a link, not inline instructions.
+
+### Bans
+
+The following are banned in all dashboard copy and doctrine prose:
+
+1. **Em-dashes (`—`).** Use a comma, colon, or parentheses instead.
+   See non-negotiable rule 6.
+2. **Exclamation marks.** The owner is not excited by dashboard
+   notifications. If something is urgent, the visual treatment
+   (destructive color, alert badge) carries that weight.
+3. **Emoji** (unless the owner explicitly requests one in a
+   specific context). Emoji in UI copy reads as consumer-product
+   informality. This is an operator tool.
+4. **"Please".** Do not apologize for the system's behavior. State
+   what happened and what to do.
+5. **Ellipsis as decoration.** Loading states may use "Loading..."
+   as a terminal state indicator, but ellipsis is not a substitute
+   for a complete sentence.
+
+### Before/after examples from the codebase
+
+The following examples are drawn from `frontend/src/pages/` as of
+the bu-scahb.7 audit. They are documentation artifacts only. The
+actual code is migrated downstream (bu-scahb.5).
+
+**Example 1: Page description with em-dash (IngestionPage.tsx:50)**
+
+Before:
+```
+Unified ingestion control surface — source visibility, routing policy, and historical replay.
+```
+
+After:
+```
+Unified ingestion control: source visibility, routing policy, and historical replay.
+```
+
+**Example 2: CardDescription with em-dash (QaInvestigationDetailPage.tsx:233)**
+
+Before:
+```
+Butler sessions whose failures produced this fingerprint — open one to see the original traceback in context.
+```
+
+After:
+```
+Butler sessions whose failures produced this fingerprint. Open one to see the original traceback in context.
+```
+
+**Example 3: Page description with em-dash (EntitiesPage.tsx:659)**
+
+Before:
+```
+Browse the knowledge graph — people, organizations, places, and more.
+```
+
+After:
+```
+Browse the knowledge graph: people, organizations, places, and more.
+```
+
+**Example 4: Page description with em-dash (EducationPage.tsx:79)**
+
+Before:
+```
+Adaptive learning dashboard — track mastery, review schedules, and curriculum progress.
+```
+
+After:
+```
+Adaptive learning dashboard. Track mastery, review schedules, and curriculum progress.
+```
+
+**Example 5: Inline string with em-dash as separator (EntityDetailPage.tsx:916)**
+
+Before:
+```tsx
+<span className="text-muted-foreground"> — {roleText}</span>
+```
+
+After:
+```tsx
+<span className="text-muted-foreground"> ({roleText})</span>
+```
+
+**Example 6: Interpolated string with em-dash (SettingsPage.tsx:745)**
+
+Before:
+```tsx
+? ` — ${problematic[0].health_detail}`
+```
+
+After:
+```tsx
+? `: ${problematic[0].health_detail}`
+```
+
+**Example 7: Title attribute with em-dash (CalendarWorkspacePage.tsx:1774)**
+
+Before:
+```tsx
+title={`${formatEntryWindow(entry)} — ${entry.title}`}
+```
+
+After:
+```tsx
+title={`${formatEntryWindow(entry)}: ${entry.title}`}
+```
+
+**Example 8: Button label using title case and excessive words**
+
+Before: `"Force Patrol Now"`
+
+After: `"Run patrol"`
+
+**Example 9: Button label with marketing capitalization**
+
+Before: `"Request New Curriculum"`
+
+After: `"Request curriculum"`
+
+**Example 10: Empty-state description as prose sentence**
+
+Before: `"Patrol cycles will dispatch investigations when novel issues are detected."`
+
+After (EmptyState title): `"No active investigations."`
+
+---
+
 ## Motion
 
-> Status: **settled** — owner-confirmed contract for all interactive components.
+> Status: **settled** (owner-confirmed contract for all interactive components).
 
 ### The Contract
 
@@ -313,12 +532,12 @@ Every interactive state transition in the dashboard must honor these rules:
 - Ease-out exponential family only. Applied via the `ease-out-quart` Tailwind utility.
 - No bounce, no elastic, no ease-in-out for state changes.
 
-**Animated properties** — only these are permitted:
+**Animated properties** (only these are permitted):
 - `transform` (translate, scale, rotate)
 - `opacity`
 - `color`, `background-color`, `border-color`, `box-shadow` (paint-only)
 
-**Banned animated properties** — these cause layout reflow and are forbidden:
+**Banned animated properties** (these cause layout reflow and are forbidden):
 - `width`, `height`, `max-height` (use transform or opacity instead)
 - `top`, `left`, `right`, `bottom` (use `translate` instead)
 - `margin`, `padding`
@@ -384,7 +603,7 @@ own header, metadata strip, body composition, and action placement.
 Their content is legitimately different; their bones should not be.
 
 A `craft-and-care` audit is selecting the cleanest existing
-implementation as the canonical template — see
+implementation as the canonical template. See
 [`about/lay-and-land/detail-page-audit.md`](../lay-and-land/detail-page-audit.md)
 for the analysis, the chosen winner, and the migration order. Once
 elected, the winner becomes the body of a shared `<DetailPage>`
@@ -396,7 +615,7 @@ shell and the other six pages migrate onto it.
 
 - **Adding a page or component?** Read this first. If your work
   contradicts a non-negotiable rule, either fix the work or argue
-  here for the rule to change — both are legitimate moves, but
+  here for the rule to change. Both are legitimate moves, but
   don't do neither.
 - **Doing an `/impeccable` redesign?** Treat this as the
   pre-existing constraint set. Open with the open questions, not
@@ -404,6 +623,6 @@ shell and the other six pages migrate onto it.
 - **Reviewing a PR?** "Does this drift the design language?" is a
   fair review comment, and this doc is what you point to.
 
-The companion topology document — [`frontend.md`](../lay-and-land/frontend.md)
-— inventories *where* the language is currently embodied so the redesign
+The companion topology document [`frontend.md`](../lay-and-land/frontend.md)
+inventories *where* the language is currently embodied so the redesign
 knows what it is replacing.

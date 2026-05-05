@@ -241,7 +241,7 @@ Source: `src/butlers/core/healing/`
 
 The relationship butler computes Dunbar social tiers (5/15/50/150/500/1500)
 dynamically from interaction facts using exponential decay scoring. Tiers are
-**not** manually assigned — they emerge from communication frequency.
+**not** manually assigned; they emerge from communication frequency.
 
 ### Scoring engine
 
@@ -313,7 +313,7 @@ Operational tuning (core_groups, concurrency) follows a seed-and-manage
 pattern. The toml is the seed source; the DB table is the runtime source of
 truth; the dashboard is the mutation interface. Model identity, runtime type,
 per-session timeouts, and CLI args are owned by `public.model_catalog`
-(resolved per spawn) — not by `runtime_config`.
+(resolved per spawn), not by `runtime_config`.
 
 ```
 butler.toml [butler.runtime_seed]

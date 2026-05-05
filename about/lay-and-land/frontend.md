@@ -1,6 +1,6 @@
 # Frontend Topology
 
-> Status: **observational draft** — first-contact audit by a design
+> Status: **observational draft**, first-contact audit by a design
 > consultant. This document inventories *where* the dashboard's design
 > language is physically embodied today: the shell, the routing
 > surface, the page archetypes, the component domains, and the
@@ -55,7 +55,7 @@ their `Outlet` rectangle.
 ### PageHeader (`components/layout/PageHeader.tsx`)
 - Auto-generates breadcrumbs by splitting `location.pathname` on `/`
   and naive title-casing each segment (`Home / Qa / Investigations`).
-- Optional `title` prop renders an h1 *but is never passed today* —
+- Optional `title` prop renders an h1 *but is never passed today*:
   `RootLayout` mounts `<PageHeader />` with no props. **Result:** every
   page renders its own H1 inline below the chrome, and the
   `PageHeader.title` slot is dead code.
@@ -66,11 +66,11 @@ their `Outlet` rectangle.
 ### Sidebar (`components/layout/Sidebar.tsx`)
 - Brand: "Butlers" (collapses to "B")
 - Three sections, declared in `nav-config.ts`:
-  - **Main** — Overview, Butlers, QA (badge), Ingestion, Approvals,
+  - **Main**: Overview, Butlers, QA (badge), Ingestion, Approvals,
     Memory, Entities, Secrets, Settings
-  - **Dedicated Butlers** — Relationships group (Contacts, Groups),
+  - **Dedicated Butlers**: Relationships group (Contacts, Groups),
     Education, Health, Calendar, Chronicles
-  - **Telemetry** — Timeline, Notifications, Issues, Sessions, Audit
+  - **Telemetry**: Timeline, Notifications, Issues, Sessions, Audit
     Log (collapsed by default)
 - Items support a `butler` filter so absent butlers hide their nav
   entries (`useFilteredNavSections`).
@@ -115,14 +115,14 @@ nested layouts.
 | Legacy | `/connectors`, `/connectors/:type/:identity` | redirects to `/ingestion` |
 
 **Observed orphans:**
-- `/sessions/:id` (`SessionDetailPage`) — not in `nav-config.ts`; only
+- `/sessions/:id` (`SessionDetailPage`): not in `nav-config.ts`; only
   reachable from inline links and the SessionDetailDrawer.
-- `/butlers/relationship/entities/:entityId` (`RelationshipEntityDetailPage`)
-  — under-namespaced; not in nav.
-- `/health/research` (`ResearchPage`) — exists in router but no nav
+- `/butlers/relationship/entities/:entityId` (`RelationshipEntityDetailPage`):
+  under-namespaced; not in nav.
+- `/health/research` (`ResearchPage`): exists in router but no nav
   entry; the Health group only links to `/health/measurements`.
 
-**Stability:** the routing surface is **Maturing** — paths are settling,
+**Stability:** the routing surface is **Maturing**, paths are settling,
 but there is unresolved namespace drift between
 `/butlers/relationship/entities/:id` and `/entities/:id`, and the
 `/connectors → /ingestion` redirect indicates an unfinished move.
@@ -169,7 +169,7 @@ Post-vertical-D pattern in code (`DashboardPage`, shipped PRs
 
 `StatItem` (defined inline in `DashboardPage`) replaces the old
 `StatsCard` boilerplate. It uses `text-sm font-medium tabular-nums`
-for the value and `text-xs text-muted-foreground` for the label —
+for the value and `text-xs text-muted-foreground` for the label,
 no `Card` wrapper, intentionally demoted visual weight.
 The topology graph previously shown on `/` has been relocated to
 `/system`.
@@ -218,7 +218,7 @@ There is no shared form layout. Forms compose `Input`, `Label`,
 Components are organized by domain under `frontend/src/components/`,
 with `ui/` for shadcn primitives and `layout/` for the shell.
 
-### Primitives — `components/ui/` (shadcn)
+### Primitives: `components/ui/` (shadcn)
 | Component | File |
 |---|---|
 | AlertDialog | `alert-dialog.tsx` |
@@ -251,20 +251,20 @@ The Button has six variants (`default`, `destructive`, `outline`,
 tertiary**, but no rule is documented and the choice is page-author
 discretion.
 
-Stability: **Stable** — shadcn primitives are well-tested upstream;
+Stability: **Stable**. Shadcn primitives are well-tested upstream;
 local additions (`empty-state`, `auto-refresh-toggle`,
 `shortcut-hints`) are small.
 
-### Shell — `components/layout/`
-- `Shell.tsx` — outer frame
-- `Sidebar.tsx` + `nav-config.ts` — left rail
-- `PageHeader.tsx` — top-bar contents
-- `CommandPalette.tsx` — Cmd/Ctrl+K palette (cmdk)
+### Shell: `components/layout/`
+- `Shell.tsx`: outer frame
+- `Sidebar.tsx` + `nav-config.ts`: left rail
+- `PageHeader.tsx`: top-bar contents
+- `CommandPalette.tsx`: Cmd/Ctrl+K palette (cmdk)
 
 Stability: **Stable** for the shell, **Evolving** for nav config (new
 butlers add entries here regularly).
 
-### Domain components — by butler / surface
+### Domain components by butler and surface
 | Domain | Folder | Notable components |
 |---|---|---|
 | Butlers detail | `butler-detail/` | 13+ tab components |
@@ -327,20 +327,20 @@ graph LR
   class, never used).
 - Dark-mode toggling is handled by a hand-rolled
   `hooks/useDarkMode.ts`, not `next-themes` (despite `next-themes`
-  being a declared dependency — it is unused).
+  being a declared dependency; it is unused).
 
 ### Token leaks (specific evidence)
-- `pages/EntitiesPage.tsx:102-113` — six hex codes for entity tier
+- `pages/EntitiesPage.tsx:102-113`: six hex codes for entity tier
   colors.
-- `pages/EntityDetailPage.tsx:313,316` — `#7c3aed`, `#f59e0b` inline.
-- `pages/SymptomsPage.tsx` — three hex codes for severity.
-- `pages/GroupsPage.tsx:121` — array of hex codes used as a category
+- `pages/EntityDetailPage.tsx:313,316`: `#7c3aed`, `#f59e0b` inline.
+- `pages/SymptomsPage.tsx`: three hex codes for severity.
+- `pages/GroupsPage.tsx:121`: array of hex codes used as a category
   palette.
-- `pages/FactDetailPage.tsx:101`, `pages/RuleDetailPage.tsx:97` —
+- `pages/FactDetailPage.tsx:101`, `pages/RuleDetailPage.tsx:97`:
   inline `style={{ width: \`${pct}%\` }}` for progress bars.
-- `pages/CalendarWorkspacePage.tsx:188` —
+- `pages/CalendarWorkspacePage.tsx:188`:
   `style={{ height: 24 * HOUR_HEIGHT_PX }}` for the day grid.
-- `pages/memory/ConcentricCirclesDialog.tsx` — multiple inline
+- `pages/memory/ConcentricCirclesDialog.tsx`: multiple inline
   `style={{ ... }}` for cursor and visibility (could be tailwind
   classes).
 
@@ -404,7 +404,7 @@ not literals.
 | `PageHeader.title` slot is dead code | `RootLayout.tsx:15` mounts with no title | Either use it or remove the prop |
 | Breadcrumb autobuilder mangles names | `/qa` → "Qa", `/audit-log` → "Audit-log" | Either fix or have pages own crumbs |
 
-Stability of the design language overall: **Maturing** — every part
+Stability of the design language overall: **Maturing**. Every part
 works, several parts disagree, none of the disagreements are
 load-bearing yet. The right time to consolidate is *before* the next
 major surface (e.g. another butler with workspace-grade UI like
@@ -414,11 +414,11 @@ Chronicles) arrives.
 
 ## What This Document Does Not Cover
 
-- **Backend topology** — see [`components.md`](components.md) and
+- **Backend topology**: see [`components.md`](components.md) and
   [`integration.md`](integration.md).
-- **Capability requirements** — see `openspec/`.
-- **API contracts** — see `about/legends-and-lore/rfcs/`.
-- **Engineering standards** — see `about/craft-and-care/` (when it
+- **Capability requirements**: see `openspec/`.
+- **API contracts**: see `about/legends-and-lore/rfcs/`.
+- **Engineering standards**: see `about/craft-and-care/` (when it
   exists).
 
 This document covers the dashboard's surface. It is the map an
@@ -497,8 +497,8 @@ interface PageProps {
 - `title` is required. It becomes the page `<h1>` (rendered at
   `text-3xl font-bold tracking-tight`). This was confirmed during the
   bu-yo4bt.9 spec sync and PR #1373 review: `text-3xl` is the canonical
-  operator-tool H1 size — not `text-2xl` as the pre-D detail-page audit
-  had proposed. The shipped `<Page>` `HeadingBlock` uses `text-3xl`.
+  operator-tool H1 size (not `text-2xl` as the pre-D detail-page audit
+  had proposed). The shipped `<Page>` `HeadingBlock` uses `text-3xl`.
   Pages not yet migrated to `<Page>` that use `text-2xl` (e.g. `CostsPage`)
   will adopt `text-3xl` when they migrate.
   It is also used for `<title>` via a `useEffect` if there is no other title
@@ -541,15 +541,15 @@ Reference page: `DashboardPage` (post-vertical-D, uses `<Page archetype="overvie
 - Section rhythm: `space-y-6` between sections within `children`. Authors are
   responsible for their own section spacing inside `children`.
 - Post-vertical-D region order for `DashboardPage` (canonical overview):
-  1. **Hero** — `SessionStripeChart` inside a `<Card>` (recharts stacked BarChart,
+  1. **Hero**: `SessionStripeChart` inside a `<Card>` (recharts stacked BarChart,
      butler-colored via `--category-N` deterministic CSS tokens)
-  2. **Above-the-fold feed** — `RecentMoments` inside a `<Card>` (`<Time mode="relative">`
+  2. **Above-the-fold feed**: `RecentMoments` inside a `<Card>` (`<Time mode="relative">`
      + butler glyph + prompt summary + session detail link)
-  3. **Secondary cards** — `grid gap-6 lg:grid-cols-2` of `<Card>` widgets
+  3. **Secondary cards**: `grid gap-6 lg:grid-cols-2` of `<Card>` widgets
      (Failed Notifications + IssuesPanel)
-  4. **QA widget** — standalone `<QaWidget>` `<Card>` (approval metrics + active
+  4. **QA widget**: standalone `<QaWidget>` `<Card>` (approval metrics + active
      investigations summary)
-  5. **Demoted stat strip** — `flex flex-wrap border-t border-border pt-3` row of
+  5. **Demoted stat strip**: `flex flex-wrap border-t border-border pt-3` row of
      `<StatItem>` entries (`text-sm font-medium tabular-nums`); no `<Card>` wrapper
 - Rationale: `DashboardPage` was migrated to `<Page>` (PRs #1345–#1361).
   The topology graph previously on `/` is now at `/system`.
