@@ -364,23 +364,46 @@ class TestToolBudgetDiscipline:
         This allows butlers to stay within the 30-50 tool target.
         NULL means all groups are registered (backward compatibility).
         """
-        # Known core groups per RFC 0002
-        core_groups = {
-            "infra",
-            "state",
-            "scheduling",
-            "sessions",
-            "notifications",
-            "media",
-            "temporal",
-            "module_mgmt",
-            "switchboard_routing",
-            "switchboard_backfill",
-        }
-        assert len(core_groups) >= 8, "RFC 0002 defines at least 8 core groups"
-        assert "infra" in core_groups, "infra group must be defined (RFC 0002)"
-        assert "state" in core_groups, "state group must be defined (RFC 0002)"
-        assert "scheduling" in core_groups, "scheduling group must be defined (RFC 0002)"
+        import ast
+        import pkgutil
+        from pathlib import Path
+
+        import butlers.core_tools as _ct_pkg
+
+        # Discover core groups by parsing _core_tool("...") calls in the package source.
+        # This catches any new groups added to the codebase automatically.
+        core_groups: set[str] = set()
+        for _finder, _modname, _ispkg in pkgutil.walk_packages(
+            path=_ct_pkg.__path__,
+            prefix=_ct_pkg.__name__ + ".",
+        ):
+            spec = __import__("importlib.util").util.find_spec(_modname)
+            if spec is None or spec.origin is None:
+                continue
+            src_text = Path(spec.origin).read_text(encoding="utf-8")
+            try:
+                tree = ast.parse(src_text)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_core_tool"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    core_groups.add(node.args[0].value)
+
+        assert len(core_groups) >= 8, (
+            f"RFC 0002 defines at least 8 core groups; found {sorted(core_groups)!r}"
+        )
+        for required_group in ("infra", "state", "scheduling"):
+            assert required_group in core_groups, (
+                f"'{required_group}' group must be defined in core_tools (RFC 0002); "
+                f"found {sorted(core_groups)!r}"
+            )
 
     def test_route_execute_always_registered_regardless_of_core_groups(self):
         """RFC 0002: route.execute is ALWAYS registered regardless of core_groups setting.
