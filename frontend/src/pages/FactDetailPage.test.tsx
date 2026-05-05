@@ -77,17 +77,23 @@ describe("FactDetailPage — layout", () => {
     expect(h1Matches.length).toBe(1);
   });
 
-  it("renders the fact content as the page title", () => {
+  it("renders the fact subject as the page title (spec: title=fact.subject)", () => {
+    setFactState(BASE_FACT);
+    const html = renderPage();
+    // subject "Alice" must appear in the H1 (page title) — use regex to pin to the tag
+    expect(html).toMatch(/<h1[^>]*>Alice<\/h1>/);
+  });
+
+  it("renders the predicate as subtitle below the H1", () => {
+    setFactState(BASE_FACT);
+    const html = renderPage();
+    expect(html).toContain("prefers");
+  });
+
+  it("renders the fact content in the body card (not as page title)", () => {
     setFactState(BASE_FACT);
     const html = renderPage();
     expect(html).toContain("dark chocolate over milk chocolate");
-  });
-
-  it("renders the entity name and predicate as subtitle", () => {
-    setFactState(BASE_FACT);
-    const html = renderPage();
-    expect(html).toContain("Alice Example");
-    expect(html).toContain("prefers");
   });
 
   it("renders the type pill with 'fact'", () => {
