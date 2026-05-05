@@ -14,7 +14,7 @@
  * - POST /api/ingestion/events/{id}/replay   (Replay/Retry action)
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { Loader2, RotateCw } from "lucide-react";
@@ -596,7 +596,7 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
     { enabled: isActive },
   );
 
-  const rawPageEvents = eventsResp?.data ?? [];
+  const rawPageEvents = useMemo(() => eventsResp?.data ?? [], [eventsResp?.data]);
   const totalCount = eventsResp?.meta?.total ?? 0;
   const hasMore = eventsResp?.meta?.has_more ?? false;
 
