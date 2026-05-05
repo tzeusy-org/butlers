@@ -3,10 +3,10 @@
 ## Purpose
 Defines what a "butler" is as an architectural primitive, the shared conventions all butlers follow, and the extensible module system that allows new domain-specialist butlers to be added. This is the foundational spec — individual butler role specs (`butler-{name}/spec.md`) describe each role's domain-specific behavior.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Butler as Architectural Primitive
-A butler is a long-lived MCP server daemon backed by a dedicated PostgreSQL schema. When triggered, it spawns an ephemeral LLM CLI session wired exclusively to itself via a locked-down MCP config. The butler is the unit of deployment, isolation, and capability composition. Butlers are one of two agent types in the ecosystem; the other is staffers (see `staffer-archetype` spec).
+A butler SHALL be a long-lived MCP server daemon backed by a dedicated PostgreSQL schema. When triggered, it SHALL spawn an ephemeral LLM CLI session wired exclusively to itself via a locked-down MCP config. The butler SHALL be the unit of deployment, isolation, and capability composition. Butlers SHALL be one of two agent types in the ecosystem; the other is staffers (see `staffer-archetype` spec).
 
 #### Scenario: Butler identity contract
 - **WHEN** a butler daemon starts
@@ -45,7 +45,7 @@ A butler is a long-lived MCP server daemon backed by a dedicated PostgreSQL sche
 - **AND** closes the database connection pool
 
 ### Requirement: Tool Composition Model
-A butler's tool surface is composed from three layers: core tools (always present), module tools (opt-in per butler), and butler-specific tools (unique to one role). Tools are registered during startup and immutable at runtime.
+A butler's tool surface SHALL be composed from three layers: core tools (always present), module tools (opt-in per butler), and butler-specific tools (unique to one role). Tools SHALL be registered during startup and immutable at runtime.
 
 #### Scenario: Core tools (always present)
 - **WHEN** the butler daemon starts
@@ -82,7 +82,7 @@ A butler's tool surface is composed from three layers: core tools (always presen
 - **AND** tool calls are captured in the session's `tool_calls` audit log
 
 ### Requirement: Module System
-Modules are pluggable units that add domain-specific MCP tools and database tables to a butler. They follow an abstract base class contract and are resolved via topological dependency sort.
+Modules SHALL be pluggable units that add domain-specific MCP tools and database tables to a butler. They SHALL follow an abstract base class contract and be resolved via topological dependency sort.
 
 #### Scenario: Module ABC contract
 - **WHEN** a module is implemented
@@ -113,7 +113,7 @@ Modules are pluggable units that add domain-specific MCP tools and database tabl
 - **AND** roster modules typically need only an empty `[modules.{butler-name}]` section in `butler.toml`
 
 ### Requirement: Skills System
-Skills are structured behavioral guides (per agentskills.io spec) that are loaded into runtime sessions to provide domain expertise, workflows, and decision frameworks. They are documentation-as-configuration — not executable code within the daemon.
+Skills SHALL be structured behavioral guides (per agentskills.io spec) that are loaded into runtime sessions to provide domain expertise, workflows, and decision frameworks. They SHALL be documentation-as-configuration — not executable code within the daemon.
 
 #### Scenario: Skill file format
 - **WHEN** a skill is defined
@@ -151,7 +151,7 @@ Skills are structured behavioral guides (per agentskills.io spec) that are loade
 - **AND** the skill documents both the action path (when there is work to report) and the no-op path (when there is nothing to report)
 
 ### Requirement: Database Isolation Model
-All butlers share a single PostgreSQL database (`butlers`) with per-butler schema isolation. The `public` schema provides cross-butler data access. Inter-butler communication is MCP-only through the Switchboard.
+All butlers SHALL share a single PostgreSQL database (`butlers`) with per-butler schema isolation. The `public` schema SHALL provide cross-butler data access. Inter-butler communication SHALL be MCP-only through the Switchboard.
 
 #### Scenario: Per-butler schema isolation (MODIFIED)
 - **WHEN** a butler connects to the database
@@ -198,7 +198,7 @@ All butlers share a single PostgreSQL database (`butlers`) with per-butler schem
 - **AND** the `public` schema is reserved for truly shared reference data, not for passing messages between butlers
 
 ### Requirement: Staffers vs Domain Butlers
-The roster contains two categories of butlers: staffers that provide essential infrastructure services and must always be present (configured with `type = "staffer"`), and domain butlers that provide specialist capabilities and can be added or removed.
+The roster SHALL contain two categories of butlers: staffers that provide essential infrastructure services and must always be present (configured with `type = "staffer"`), and domain butlers that provide specialist capabilities and can be added or removed.
 
 #### Scenario: Staffer — Switchboard
 - **WHEN** the system is running
@@ -226,7 +226,7 @@ The roster contains two categories of butlers: staffers that provide essential i
 - **AND** current domain butlers include: General (41101, catch-all), Relationship (41102, personal CRM), Health (41103, health tracking), Finance (41105, personal finance), Travel (41106, trip logistics)
 
 ### Requirement: Spawner and Runtime Adapters
-The spawner generates ephemeral MCP configurations and invokes LLM CLI runtimes as subprocesses. Each runtime adapter translates the common invocation contract into adapter-specific CLI arguments.
+The spawner SHALL generate ephemeral MCP configurations and invoke LLM CLI runtimes as subprocesses. Each runtime adapter SHALL translate the common invocation contract into adapter-specific CLI arguments.
 
 #### Scenario: Ephemeral MCP config generation
 - **WHEN** a session is triggered
@@ -254,7 +254,7 @@ The spawner generates ephemeral MCP configurations and invokes LLM CLI runtimes 
 - **AND** queue overflow triggers are rejected with a capacity error
 
 ### Requirement: Roster Directory Structure Convention
-Every butler lives in `roster/{butler-name}/` and follows a fixed directory layout. The roster is the single source of truth for butler identity, personality, and configuration. Files are git-versioned and loaded at daemon startup.
+Every butler SHALL live in `roster/{butler-name}/` and follow a fixed directory layout. The roster SHALL be the single source of truth for butler identity, personality, and configuration. Files SHALL be git-versioned and loaded at daemon startup.
 
 #### Scenario: Required config files
 - **WHEN** a new butler directory is created under `roster/`
@@ -274,7 +274,7 @@ Every butler lives in `roster/{butler-name}/` and follows a fixed directory layo
 - **AND** no `__init__.py` is required in `api/`; auto-discovery handles registration via `src/butlers/api/router_discovery.py`
 
 ### Requirement: butler.toml Configuration Schema
-The `butler.toml` file declares butler identity, runtime, database, modules, schedules, switchboard registration, and buffer configuration. All agents (butlers and staffers) share the same schema with agent-specific values.
+The `butler.toml` file SHALL declare butler identity, runtime, database, modules, schedules, switchboard registration, and buffer configuration. All agents (butlers and staffers) SHALL share the same schema with agent-specific values.
 
 #### Scenario: Identity section
 - **WHEN** `butler.toml` is loaded
@@ -319,7 +319,7 @@ The `butler.toml` file declares butler identity, runtime, database, modules, sch
 - **THEN** it configures the durable ingestion buffer: `queue_capacity` (bounded in-memory queue size), `worker_count` (concurrent dispatch workers), `scanner_interval_s` (cold-path DB recovery scan interval), `scanner_grace_s` (minimum age before scanner reclaims), `scanner_batch_size` (max items per scan)
 
 ### Requirement: Scheduled Task Companion Skills
-Scheduled tasks declared in `butler.toml` with `dispatch_mode = "prompt"` should have corresponding skills that document the complete tool sequence and decision logic the runtime should follow.
+Scheduled tasks declared in `butler.toml` with `dispatch_mode = "prompt"` SHALL have corresponding skills that document the complete tool sequence and decision logic the runtime should follow.
 
 #### Scenario: Prompt-dispatched scheduled task has a companion skill
 - **WHEN** a `[[butler.schedule]]` entry uses `dispatch_mode = "prompt"`
@@ -332,7 +332,7 @@ Scheduled tasks declared in `butler.toml` with `dispatch_mode = "prompt"` should
 - **THEN** no companion skill is required because the job executes native Python code without spawning a runtime session
 
 ### Requirement: MANIFESTO.md as Public Identity
-Each butler has a `MANIFESTO.md` that defines its value proposition, target user persona, and feature scope. Staffers have a `MANIFESTO.md` with infrastructure-contract framing (SLAs, responsibilities, failure modes). The manifesto/contract is the governing document for scope decisions.
+Each butler SHALL have a `MANIFESTO.md` that defines its value proposition, target user persona, and feature scope. Staffers SHALL have a `MANIFESTO.md` with infrastructure-contract framing (SLAs, responsibilities, failure modes). The manifesto/contract SHALL be the governing document for scope decisions.
 
 #### Scenario: Manifesto-driven scope governance (butlers)
 - **WHEN** a new feature or tool is proposed for a butler
@@ -345,7 +345,7 @@ Each butler has a `MANIFESTO.md` that defines its value proposition, target user
 - **AND** capabilities outside the contract's scope require a contract amendment
 
 ### Requirement: CLAUDE.md as System Prompt Entry Point
-Each butler's `CLAUDE.md` is loaded as the system prompt for every runtime instance spawned by that butler. In practice, `CLAUDE.md` delegates to `AGENTS.md` via an `@AGENTS.md` file reference, and `AGENTS.md` in turn pulls shared instructions via `@../shared/AGENTS.md`. This indirection chain allows butler-specific and shared content to be maintained independently while composing into a single system prompt at runtime.
+Each butler's `CLAUDE.md` SHALL be loaded as the system prompt for every runtime instance spawned by that butler. In practice, `CLAUDE.md` delegates to `AGENTS.md` via an `@AGENTS.md` file reference, and `AGENTS.md` in turn pulls shared instructions via `@../shared/AGENTS.md`. This indirection chain SHALL allow butler-specific and shared content to be maintained independently while composing into a single system prompt at runtime.
 
 #### Scenario: System prompt composition
 - **WHEN** the spawner invokes a runtime instance
@@ -370,7 +370,7 @@ Each butler's `CLAUDE.md` is loaded as the system prompt for every runtime insta
 - **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles
 
 ### Requirement: AGENTS.md Content Principles
-AGENTS.md is loaded into every runtime session via the CLAUDE.md indirection chain. Because it contributes to every session's context window, it must contain only general-purpose butler information. Detailed workflows, multi-step procedures, and extensive examples belong in skills, which are loaded on demand.
+AGENTS.md SHALL be loaded into every runtime session via the CLAUDE.md indirection chain. Because it contributes to every session's context window, it SHALL contain only general-purpose butler information. Detailed workflows, multi-step procedures, and extensive examples SHALL belong in skills, which are loaded on demand.
 
 #### Scenario: AGENTS.md contains only general-purpose information
 - **WHEN** a butler's AGENTS.md is authored or updated
@@ -395,7 +395,7 @@ AGENTS.md is loaded into every runtime session via the CLAUDE.md indirection cha
 - **AND** this minimizes context window usage for sessions that only need a subset of the butler's capabilities
 
 ### Requirement: Credential Resolution
-Butler credentials follow a layered resolution strategy: database-first from the `shared.secrets` table, with environment variable fallback.
+Butler credentials SHALL follow a layered resolution strategy: database-first from the `shared.secrets` table, with environment variable fallback.
 
 #### Scenario: Credential resolution order
 - **WHEN** a butler or module needs a credential (API key, OAuth token, etc.)
@@ -409,7 +409,7 @@ Butler credentials follow a layered resolution strategy: database-first from the
 - **AND** this prevents runtime sessions from accessing credentials they were not granted
 
 ### Requirement: Port Assignment Convention
-Butlers use a contiguous port range starting at 41100, with the dashboard API cleanly separated.
+Butlers SHALL use a contiguous port range starting at 41100, with the dashboard API cleanly separated.
 
 #### Scenario: Butler port assignments
 - **WHEN** butlers are running
@@ -418,7 +418,7 @@ Butlers use a contiguous port range starting at 41100, with the dashboard API cl
 - **AND** new butlers are assigned the next available port in the 401xx range
 
 ### Requirement: Module Runtime State
-Each module's health is tracked at runtime, enabling graceful degradation without butler-wide failure.
+Each module's health SHALL be tracked at runtime, enabling graceful degradation without butler-wide failure.
 
 #### Scenario: Module health states
 - **WHEN** a module is loaded during butler startup
