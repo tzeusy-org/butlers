@@ -56,8 +56,20 @@ class _McpSseDisconnectGuard:
         return session_id or None
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        response_started = False
+        response_complete = False
+
+        async def _send_with_response_state(message: dict[str, Any]) -> None:
+            nonlocal response_started, response_complete
+            message_type = message.get("type")
+            await send(message)
+            if message_type == "http.response.start":
+                response_started = True
+            elif message_type == "http.response.body" and not message.get("more_body", False):
+                response_complete = True
+
         try:
-            await self._app(scope, receive, send)
+            await self._app(scope, receive, _send_with_response_state)
         except ClientDisconnect:
             if not self._is_messages_post(scope):
                 raise
@@ -72,14 +84,16 @@ class _McpSseDisconnectGuard:
             )
 
             try:
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 202,
-                        "headers": [(b"content-length", b"0")],
-                    }
-                )
-                await send({"type": "http.response.body", "body": b""})
+                if not response_started:
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 202,
+                            "headers": [(b"content-length", b"0")],
+                        }
+                    )
+                if not response_complete:
+                    await send({"type": "http.response.body", "body": b""})
             except Exception:
                 logger.debug("MCP SSE disconnect response not sent; client already disconnected")
 
