@@ -192,25 +192,21 @@ describe("SystemPage -- breadcrumbs", () => {
     setAllLoading();
   });
 
-  it("does not render an inline Breadcrumb nav (PageHeader handles navigation)", () => {
+  it("renders breadcrumbs per spec [bu-ngfzz.4]", () => {
     const html = renderPage();
-    // SystemPage does not pass breadcrumbs to <Page> — the shell's PageHeader
-    // auto-builds the breadcrumb row from the route path, so there must be no
-    // inline aria-label="Breadcrumb" nav inside the page content.
-    const occurrences = (html.match(/aria-label="Breadcrumb"/g) ?? []).length;
-    expect(occurrences).toBe(0);
+    // Breadcrumbs are rendered via the Page component with explicit prop
+    expect(html).toContain('aria-label="Breadcrumb"');
   });
 
-  it("renders no inline breadcrumb links (shell header carries navigation)", () => {
+  it("renders Home breadcrumb link with correct href", () => {
     const html = renderPage();
-    // No aria-label="Breadcrumb" nav in the page body; shell PageHeader owns that.
-    expect(html).not.toContain('aria-label="Breadcrumb"');
+    expect(html).toContain('href="/"');
+    expect(html).toContain(">Home<");
   });
 
-  it("does not render a Home link inside the page body", () => {
+  it("renders System breadcrumb without href (current page)", () => {
     const html = renderPage();
-    // Without an explicit breadcrumbs prop, the Page primitive renders no crumb links.
-    expect(html).not.toMatch(/href="\/"\s*[^>]*>Home/);
+    expect(html).toContain(">System<");
   });
 });
 
