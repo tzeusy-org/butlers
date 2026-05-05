@@ -51,8 +51,8 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No groups found"
-      description="Groups will appear here as you organize contacts into categories."
+      title="No groups found."
+      description="Groups appear as you organize contacts into categories."
     />
   );
 }

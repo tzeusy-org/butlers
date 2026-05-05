@@ -79,7 +79,7 @@ describe("MapWidgetInner empty state", () => {
 
   it("renders the descriptive empty-state text when points is empty", () => {
     const html = renderToStaticMarkup(<MapWidgetInner points={[]} />)
-    expect(html).toContain("Location points will appear here")
+    expect(html).toContain("Location points appear when the chronicler")
   })
 
   it("does NOT render a map container when points is empty", () => {

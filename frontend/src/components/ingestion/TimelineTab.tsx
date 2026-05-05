@@ -760,8 +760,8 @@ export function TimelineTab({ isActive, defaultStatuses }: TimelineTabProps) {
                   <TableRow>
                     <TableCell colSpan={11}>
                       <EmptyState
-                        title="No ingestion events"
-                        description="Events will appear here once the system receives incoming messages."
+                        title="No ingestion events."
+                        description="Events appear once the system receives incoming messages."
                       />
                     </TableCell>
                   </TableRow>

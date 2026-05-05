@@ -8,6 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { useMindMaps } from "@/hooks/use-education";
 import MindMapGraph from "@/components/education/MindMapGraph";
 import NodeDetailPanel from "@/components/education/NodeDetailPanel";
@@ -54,14 +55,18 @@ export default function EducationPage() {
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold tracking-tight">Education</h1>
           <Button onClick={() => setRequestDialogOpen(true)}>
-            Request New Curriculum
+            Request curriculum
           </Button>
         </div>
-        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed p-12">
-          <p className="text-muted-foreground text-center">
-            No curriculums yet. Request one to get started with adaptive learning.
-          </p>
-        </div>
+        <EmptyState
+          title="No curriculums yet."
+          description="Request one to start adaptive learning."
+          action={
+            <Button onClick={() => setRequestDialogOpen(true)}>
+              Request curriculum
+            </Button>
+          }
+        />
         <RequestCurriculumDialog
           open={requestDialogOpen}
           onOpenChange={setRequestDialogOpen}

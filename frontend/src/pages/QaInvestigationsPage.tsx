@@ -8,6 +8,7 @@ import {
   Card,
   CardContent,
 } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Select,
   SelectContent,
@@ -274,9 +275,10 @@ export default function QaInvestigationsPage() {
               Failed to load investigations.
             </p>
           ) : investigations.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8">
-              No investigations found.
-            </p>
+            <EmptyState
+              title="No investigations found."
+              description="Patrol cycles dispatch investigations when novel issues are detected."
+            />
           ) : (
             <Table>
               <TableHeader>

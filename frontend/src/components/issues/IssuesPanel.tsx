@@ -4,6 +4,7 @@ import { Time } from '@/components/ui/time'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { EmptyState } from '../ui/empty-state'
 import type { Issue } from '../../api/types'
 
 const DISMISSED_KEY = 'butlers-dismissed-issues'
@@ -60,7 +61,10 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
           <CardTitle>Issues</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">No issues recorded</p>
+          <EmptyState
+            title="No issues recorded."
+            description="Issues appear when butlers report errors or warnings."
+          />
         </CardContent>
       </Card>
     )

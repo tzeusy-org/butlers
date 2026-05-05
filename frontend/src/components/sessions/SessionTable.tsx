@@ -150,8 +150,8 @@ function SkeletonRows({
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No sessions found"
-      description="Sessions will appear here as butlers process triggers and scheduled tasks."
+      title="No sessions found."
+      description="Sessions appear as butlers process triggers and scheduled tasks."
     />
   );
 }

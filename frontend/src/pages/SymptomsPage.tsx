@@ -64,8 +64,8 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No symptoms found"
-      description="Symptoms will appear here as they are logged with severity ratings and occurrence dates."
+      title="No symptoms found."
+      description="Symptoms appear as they are logged with severity ratings and occurrence dates."
     />
   );
 }

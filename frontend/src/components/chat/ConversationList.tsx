@@ -233,11 +233,11 @@ export function ConversationList({
         ) : conversations.length === 0 ? (
           collapsed ? null : (
             <EmptyState
-              title="No conversations yet"
+              title="No conversations yet."
               description={
                 isSearchActive
                   ? "No results found."
-                  : "Start a conversation to get started."
+                  : "Start a conversation below."
               }
               action={
                 !isSearchActive ? (

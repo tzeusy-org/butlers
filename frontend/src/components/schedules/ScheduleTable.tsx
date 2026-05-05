@@ -4,6 +4,7 @@ import type { Schedule, ScheduleDispatchMode } from "@/api/types.ts";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -83,12 +84,12 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 // Empty state
 // ---------------------------------------------------------------------------
 
-function EmptyState() {
+function EmptyScheduleState() {
   return (
-    <div className="text-muted-foreground flex flex-col items-center justify-center py-12 text-sm">
-      <p>No schedules found.</p>
-      <p className="mt-1 text-xs">Create one to get started.</p>
-    </div>
+    <EmptyState
+      title="No schedules found."
+      description="Add a schedule to run this butler on a recurring basis."
+    />
   );
 }
 
@@ -106,7 +107,7 @@ export function ScheduleTable({
   triggeringId,
 }: ScheduleTableProps) {
   if (!isLoading && schedules.length === 0) {
-    return <EmptyState />;
+    return <EmptyScheduleState />;
   }
 
   return (

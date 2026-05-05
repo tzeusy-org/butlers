@@ -14,6 +14,7 @@ import type { RoutingLogParams } from "@/api/types.ts";
 import { Time } from "@/components/ui/time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -54,11 +55,12 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
   );
 }
 
-function EmptyState() {
+function EmptyRoutingLogState() {
   return (
-    <div className="flex flex-col items-center justify-center py-12 text-sm text-muted-foreground">
-      <p>No routing log entries found.</p>
-    </div>
+    <EmptyState
+      title="No routing log entries found."
+      description="Entries appear as inter-butler requests pass through the switchboard."
+    />
   );
 }
 
@@ -126,7 +128,7 @@ export default function RoutingLogTable() {
 
       {/* Table or empty state */}
       {!isLoading && entries.length === 0 ? (
-        <EmptyState />
+        <EmptyRoutingLogState />
       ) : (
         <Table>
           <TableHeader>

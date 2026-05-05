@@ -239,8 +239,8 @@ function TimelineSkeleton() {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No events found"
-      description="Events will appear here as butlers process sessions and tasks."
+      title="No events found."
+      description="Events appear as butlers process sessions and tasks."
     />
   );
 }

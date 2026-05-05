@@ -15,6 +15,7 @@ import { Link } from "react-router"
 import { ArrowRightIcon } from "lucide-react"
 
 import type { SessionSummary } from "@/api/types"
+import { EmptyState } from "@/components/ui/empty-state"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useSessions } from "@/hooks/use-sessions"
@@ -100,11 +101,12 @@ function SkeletonRow() {
 // Empty state
 // ---------------------------------------------------------------------------
 
-function EmptyState() {
+function EmptyMomentsState() {
   return (
-    <p className="py-4 text-sm text-muted-foreground">
-      No recent activity yet.
-    </p>
+    <EmptyState
+      title="No recent activity."
+      description="Sessions appear here as butlers process triggers."
+    />
   )
 }
 
@@ -218,7 +220,7 @@ export function RecentMoments({ limit = 7 }: RecentMomentsProps) {
   const sessions = data?.data ?? []
 
   if (sessions.length === 0) {
-    return <EmptyState />
+    return <EmptyMomentsState />
   }
 
   return (
