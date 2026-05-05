@@ -198,7 +198,7 @@ All butlers SHALL share a single PostgreSQL database (`butlers`) with per-butler
 - **AND** the `public` schema is reserved for truly shared reference data, not for passing messages between butlers
 
 ### Requirement: Staffers vs Domain Butlers
-The roster SHALL contain two categories of butlers: staffers that provide essential infrastructure services and must always be present (configured with `type = "staffer"`), and domain butlers that provide specialist capabilities and can be added or removed.
+The roster SHALL contain two categories of butlers: staffers that provide essential infrastructure services and SHALL always be present (configured with `type = "staffer"`), and domain butlers that provide specialist capabilities and can be added or removed.
 
 #### Scenario: Staffer — Switchboard
 - **WHEN** the system is running
@@ -415,7 +415,7 @@ Butlers SHALL use a contiguous port range starting at 41100, with the dashboard 
 - **WHEN** butlers are running
 - **THEN** ports are assigned as: switchboard=41100, general=41101, relationship=41102, health=41103, messenger=41104, finance=41105, travel=41106
 - **AND** the dashboard API runs at port 41200, cleanly separated from the butler MCP port range
-- **AND** new butlers are assigned the next available port in the 401xx range
+- **AND** new butlers are assigned the next available port in the 411xx range
 
 ### Requirement: Module Runtime State
 Each module's health SHALL be tracked at runtime, enabling graceful degradation without butler-wide failure.
