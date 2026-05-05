@@ -412,7 +412,7 @@ export default function SocialMapPage() {
         )}
         {isError && (
           <div className="absolute inset-0 flex items-center justify-center text-destructive text-sm">
-            Failed to load social map. Is the relationship butler running?
+            Couldn't load your social map. Try refreshing.
           </div>
         )}
         {!isLoading && !isError && stageSize.width > 0 && stageSize.height > 0 && (

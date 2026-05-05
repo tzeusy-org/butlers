@@ -178,7 +178,7 @@ describe("SocialMapPage", () => {
     // In jsdom, ResizeObserver never fires so stageSize is {0,0}.
     // The page shows "Sizing canvas..." until dimensions are known.
     // Verify that the data state is not an error/loading state.
-    expect(container.textContent).not.toContain("Failed to load social map");
+    expect(container.textContent).not.toContain("Couldn't load your social map");
     expect(container.textContent).not.toContain("Loading social map");
   });
 
@@ -205,7 +205,7 @@ describe("SocialMapPage", () => {
     renderPage();
     await act(async () => { await flush(); });
 
-    expect(container.textContent).toContain("Failed to load social map");
+    expect(container.textContent).toContain("Couldn't load your social map");
   });
 
   it("renders no error or loading state when entries array is empty", async () => {
@@ -214,7 +214,7 @@ describe("SocialMapPage", () => {
     await act(async () => { await flush(); });
 
     // No error or loading message -- cold-start shows the actionable EmptyStatePanel instead
-    expect(container.textContent).not.toContain("Failed to load social map");
+    expect(container.textContent).not.toContain("Couldn't load your social map");
     expect(container.textContent).not.toContain("Loading social map");
   });
 
