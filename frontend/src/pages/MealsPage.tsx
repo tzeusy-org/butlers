@@ -56,8 +56,8 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No meals found"
-      description="Meals will appear here as they are logged with nutrition data and eating patterns."
+      title="No meals found."
+      description="Meals appear as they are logged with nutrition data and eating patterns."
     />
   );
 }

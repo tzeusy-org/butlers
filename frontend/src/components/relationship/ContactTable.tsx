@@ -108,8 +108,8 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No contacts found"
-      description="Contacts will appear here as they are added through the Relationship butler."
+      title="No contacts found."
+      description="Contacts appear as they are added through the Relationship butler."
     />
   );
 }

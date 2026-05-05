@@ -61,6 +61,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 
 type CalendarRange = "month" | "week" | "day" | "list";
@@ -1508,7 +1509,10 @@ export default function CalendarWorkspacePage() {
             ) : view === "butler" ? (
               <div className="space-y-4">
                 {butlerLaneRows.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No butler lanes found.</p>
+                  <EmptyState
+                    title="No butler lanes found."
+                    description="Butler lanes appear when a butler has scheduled events."
+                  />
                 ) : (
                   butlerLaneRows.map((lane) => (
                     <div key={lane.laneId} className="rounded-md border border-border p-3">

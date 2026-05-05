@@ -7,6 +7,7 @@
  */
 
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Time } from "@/components/ui/time";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -39,11 +40,12 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
   );
 }
 
-function EmptyState() {
+function EmptyRegistryState() {
   return (
-    <div className="flex flex-col items-center justify-center py-12 text-sm text-muted-foreground">
-      <p>No butlers registered in the switchboard.</p>
-    </div>
+    <EmptyState
+      title="No butlers registered in the switchboard."
+      description="Butlers appear here when they connect to the switchboard."
+    />
   );
 }
 
@@ -99,7 +101,7 @@ export default function RegistryTable() {
   return (
     <div className="space-y-4">
       {!isLoading && entries.length === 0 ? (
-        <EmptyState />
+        <EmptyRegistryState />
       ) : (
         <Table>
           <TableHeader>

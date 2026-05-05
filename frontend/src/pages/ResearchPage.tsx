@@ -52,8 +52,8 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No research found"
-      description="Research notes will appear here as the Health butler tracks articles and references."
+      title="No research found."
+      description="Research notes appear as the Health butler tracks articles and references."
     />
   );
 }

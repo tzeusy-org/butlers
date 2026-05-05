@@ -24,6 +24,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -174,9 +175,10 @@ function StatsCard({
 function RecentPatrolsTable({ patrols }: { patrols: QaPatrolSummary[] }) {
   if (patrols.length === 0) {
     return (
-      <div className="text-muted-foreground py-8 text-center text-sm">
-        No patrol cycles recorded yet.
-      </div>
+      <EmptyState
+        title="No patrol cycles recorded yet."
+        description="The QA staffer records a cycle each time it runs."
+      />
     );
   }
 
@@ -475,10 +477,10 @@ function InvestigationPipeline() {
 
   if (investigations.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground text-center py-8">
-        No investigations found. Patrol cycles will dispatch investigations when novel issues are
-        detected.
-      </p>
+      <EmptyState
+        title="No investigations found."
+        description="Patrol cycles dispatch investigations when novel issues are detected."
+      />
     );
   }
 
@@ -840,13 +842,10 @@ export default function QaOverviewPage() {
           )}
 
           {!summary?.last_patrol && !summaryLoading && (
-            <Card>
-              <CardContent className="py-8 text-center">
-                <p className="text-muted-foreground text-sm">
-                  No patrol cycles recorded. The QA staffer may not be running yet.
-                </p>
-              </CardContent>
-            </Card>
+            <EmptyState
+              title="No patrol cycles recorded."
+              description="The QA staffer may not be running yet."
+            />
           )}
 
           {/* 24h stats */}

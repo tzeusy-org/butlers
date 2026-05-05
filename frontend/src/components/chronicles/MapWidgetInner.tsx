@@ -387,8 +387,8 @@ export function MapWidgetInner({
         data-testid="map-empty"
       >
         <EmptyState
-          title="No activity recorded for this window"
-          description="Location points will appear here when the chronicler detects travel or place events in the current window."
+          title="No activity recorded for this window."
+          description="Location points appear when the chronicler detects travel or place events."
           icon={<MapPin />}
         />
       </div>

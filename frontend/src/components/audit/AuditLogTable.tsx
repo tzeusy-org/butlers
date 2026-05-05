@@ -56,8 +56,8 @@ export default function AuditLogTable({ entries, isLoading }: AuditLogTableProps
   if (!isLoading && entries.length === 0) {
     return (
       <EmptyState
-        title="No audit entries found"
-        description="Audit log entries will appear here as butlers perform operations."
+        title="No audit entries found."
+        description="Audit log entries appear as butlers perform operations."
       />
     );
   }

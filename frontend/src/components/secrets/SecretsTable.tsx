@@ -626,7 +626,7 @@ export function SecretsTable({
   if (rows.length === 0) {
     return (
       <EmptyState
-        title="No secrets available"
+        title="No secrets available."
         description="No secret templates or configured values were found."
         icon={
           <svg

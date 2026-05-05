@@ -57,8 +57,8 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No conditions found"
-      description="Health conditions will appear here as they are tracked by the Health butler."
+      title="No conditions found."
+      description="Health conditions appear as the Health butler tracks them."
     />
   );
 }

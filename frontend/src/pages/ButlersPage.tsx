@@ -13,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Page } from "@/components/ui/page";
 
 function statusBadge(status: string) {
@@ -120,13 +121,10 @@ export default function ButlersPage() {
 
       {/* Empty state (no data at all, no error) */}
       {!isError && !hasData && (
-        <Card>
-          <CardContent className="py-6">
-            <p className="text-sm text-muted-foreground">
-              No butlers found. Check daemon status and try again.
-            </p>
-          </CardContent>
-        </Card>
+        <EmptyState
+          title="No butlers found."
+          description="Check daemon status and try again."
+        />
       )}
 
       {hasData && (

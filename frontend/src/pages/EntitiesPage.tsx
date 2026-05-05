@@ -44,6 +44,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
@@ -723,9 +724,10 @@ export default function EntitiesPage() {
               ))}
             </div>
           ) : entities.length === 0 ? (
-            <p className="text-muted-foreground py-8 text-center text-sm">
-              No entities found.
-            </p>
+            <EmptyState
+              title="No entities found."
+              description="Entities appear as the butler builds the knowledge graph."
+            />
           ) : (
             <TooltipProvider>
               <div className="overflow-x-auto">

@@ -90,8 +90,8 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyState() {
   return (
     <EmptyStateUI
-      title="No entities found"
-      description="Entities will appear here as the General butler stores structured data."
+      title="No entities found."
+      description="Entities appear as the General butler stores structured data."
     />
   );
 }
