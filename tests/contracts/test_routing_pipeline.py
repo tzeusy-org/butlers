@@ -127,16 +127,25 @@ class TestTriageRuleEvaluation:
         rule_type values: sender_domain, sender_address, header_condition, mime_type
         action values: skip, metadata_only, low_priority_queue, pass_through, route_to:<butler>
         """
-        rule_types = {"sender_domain", "sender_address", "header_condition", "mime_type"}
-        assert len(rule_types) == 4, "RFC 0003 defines exactly 4 triage rule types"
+        from butlers.ingestion_policy import _KNOWN_RULE_TYPES, _VALID_GLOBAL_ACTIONS
 
-        # Actions: pass_through is the cache fail-open action
-        actions = {"skip", "metadata_only", "low_priority_queue", "pass_through", "route_to"}
-        assert "pass_through" in actions, (
+        # RFC 0003 requires these four core rule types to be recognised
+        for expected_type in ("sender_domain", "sender_address", "header_condition", "mime_type"):
+            assert expected_type in _KNOWN_RULE_TYPES, (
+                f"RFC 0003 rule type '{expected_type}' must be in production _KNOWN_RULE_TYPES"
+            )
+
+        # RFC 0003 global actions (not counting route_to: prefix form)
+        for expected_action in ("skip", "metadata_only", "low_priority_queue", "pass_through"):
+            assert expected_action in _VALID_GLOBAL_ACTIONS, (
+                f"RFC 0003 action '{expected_action}' must be in production _VALID_GLOBAL_ACTIONS"
+            )
+
+        # pass_through is the cache fail-open action
+        assert "pass_through" in _VALID_GLOBAL_ACTIONS, (
             "pass_through must be a valid action — cache fails open to pass_through (RFC 0003)"
         )
-        assert "skip" in actions, "skip must be a valid action (RFC 0003)"
-        assert len(actions) == 5, "RFC 0003 defines exactly 5 triage actions"
+        assert "skip" in _VALID_GLOBAL_ACTIONS, "skip must be a valid action (RFC 0003)"
 
     def test_triage_cache_refreshes_and_fails_open(self):
         """RFC 0003: Triage rule cache refreshes every 60s and fails open on error.
@@ -145,13 +154,26 @@ class TestTriageRuleEvaluation:
         On failure, the cache fails open (pass_through) to ensure message delivery
         is not blocked by a stale or errored rule cache.
         """
-        # Cache behavior documented in RFC 0003
-        cache_refresh_interval_s = 60
-        fail_open_action = "pass_through"
+        import inspect
 
-        assert cache_refresh_interval_s == 60, (
-            "Triage rule cache must refresh every 60 seconds (RFC 0003)"
+        from butlers.ingestion_policy import _VALID_GLOBAL_ACTIONS, IngestionPolicyEvaluator
+
+        # Verify the default refresh interval is 60s by inspecting the production signature
+        sig = inspect.signature(IngestionPolicyEvaluator.__init__)
+        default_refresh_interval = sig.parameters["refresh_interval_s"].default
+        assert default_refresh_interval == 60, (
+            f"Triage rule cache must refresh every 60 seconds (RFC 0003); "
+            f"got {default_refresh_interval!r}"
         )
-        assert fail_open_action == "pass_through", (
-            "Cache failure must default to pass_through (RFC 0003)"
+
+        # Fail-open action must be pass_through — it's in the valid global actions set
+        assert "pass_through" in _VALID_GLOBAL_ACTIONS, (
+            "Cache failure must default to pass_through — "
+            "pass_through must be in _VALID_GLOBAL_ACTIONS (RFC 0003)"
+        )
+
+        # Verify the fail-open comment is in the evaluator source
+        src = inspect.getsource(IngestionPolicyEvaluator)
+        assert "fail-open" in src.lower() or "fail_open" in src.lower() or "pass_through" in src, (
+            "IngestionPolicyEvaluator must implement fail-open on DB error (RFC 0003)"
         )

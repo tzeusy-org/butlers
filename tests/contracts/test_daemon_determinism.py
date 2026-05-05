@@ -67,12 +67,27 @@ class TestRouteInboxAndConcurrency:
 
     def test_route_inbox_states(self):
         """Route inbox has accepted/processing/processed/errored states."""
-        route_states = {"accepted", "processing", "processed", "errored"}
-        assert len(route_states) == 4
+        from butlers.core.route_inbox import (
+            STATE_ACCEPTED,
+            STATE_ERRORED,
+            STATE_PROCESSED,
+            STATE_PROCESSING,
+        )
 
-        # replay_pending for crash recovery
-        ingestion_statuses = {"pending", "processing", "processed", "failed", "replay_pending"}
-        assert "replay_pending" in ingestion_statuses
+        route_states = {STATE_ACCEPTED, STATE_PROCESSING, STATE_PROCESSED, STATE_ERRORED}
+        assert len(route_states) == 4, "route_inbox must have exactly 4 lifecycle states (RFC 0001)"
+        assert STATE_ACCEPTED == "accepted", "accepted state value must be 'accepted'"
+        assert STATE_PROCESSING == "processing", "processing state value must be 'processing'"
+        assert STATE_PROCESSED == "processed", "processed state value must be 'processed'"
+        assert STATE_ERRORED == "errored", "errored state value must be 'errored'"
+
+        # replay_pending is a connector filtered_events state — verify it exists in that module
+        from butlers.connectors.filtered_event_buffer import drain_replay_pending
+
+        assert callable(drain_replay_pending), (
+            "drain_replay_pending must be importable from filtered_event_buffer "
+            "(handles 'replay_pending' rows in connectors.filtered_events)"
+        )
 
     def test_spawner_concurrency_controls(self):
         from butlers.core.spawner import Spawner
