@@ -219,7 +219,7 @@ export default function ChroniclesPage() {
           key={`${windowFrom}-${windowTo}`}
           windowStart={timeWindow.from}
           windowEnd={timeWindow.to}
-          pointEvents={pointEvents}
+          snapMs={pointEvents.map((e) => new Date(e.canonical_occurred_at).getTime())}
           tz={ownerTz}
           onScrub={handleScrub}
         />

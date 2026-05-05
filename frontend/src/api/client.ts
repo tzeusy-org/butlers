@@ -472,9 +472,13 @@ export function getCostSummary(period?: string): Promise<ApiResponse<CostSummary
   return apiFetch<ApiResponse<CostSummary>>(`/costs/summary${params}`);
 }
 
-/** Fetch daily cost breakdown. */
-export function getDailyCosts(): Promise<ApiResponse<DailyCost[]>> {
-  return apiFetch<ApiResponse<DailyCost[]>>("/costs/daily");
+/** Fetch daily cost breakdown, optionally scoped to a date range (YYYY-MM-DD). */
+export function getDailyCosts(from?: string, to?: string): Promise<ApiResponse<DailyCost[]>> {
+  const params = new URLSearchParams()
+  if (from) params.set("from", from)
+  if (to) params.set("to", to)
+  const query = params.toString() ? `?${params.toString()}` : ""
+  return apiFetch<ApiResponse<DailyCost[]>>(`/costs/daily${query}`);
 }
 
 /** Fetch most expensive sessions. */
