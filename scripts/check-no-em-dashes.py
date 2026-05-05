@@ -11,7 +11,6 @@ Directories checked:
   about/craft-and-care/
 
 Usage:
-  python3 scripts/check-no-em-dashes.py [--fix]   # --fix not yet implemented
   python3 scripts/check-no-em-dashes.py            # check only
 
 Exit codes:
@@ -72,7 +71,7 @@ def main() -> int:
     for directory in args.paths:
         search_root = repo_root / directory
         if not search_root.exists():
-            # Silently skip directories that don't exist yet (e.g. craft-and-care)
+            # Silently skip directories that don't exist yet
             continue
 
         for md_file in sorted(search_root.rglob("*.md")):

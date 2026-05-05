@@ -1,4 +1,4 @@
-# Detail Page Audit : Picking the Canonical Drilldown Layout
+# Detail Page Audit: Picking the Canonical Drilldown Layout
 
 > Status: **maintainability decision**. Inventories the seven (currently
 > shipping) detail pages in the dashboard, scores them against Butlers'
@@ -49,7 +49,7 @@ its body composes, what actions it offers, whether it uses tabs.
 `frontend/src/pages/ContactDetailPage.tsx`
 
 - **Header:** breadcrumbs only (lines 19–24). The page itself owns
-  *no* H1 or status ; it delegates entirely to `ContactDetailView` in
+  *no* H1 or status; it delegates entirely to `ContactDetailView` in
   `components/relationship/ContactDetailView.tsx`.
 - **Body:** `<ContactDetailView contact={contact} />` (line 41), a
   952-line component that renders one `Card` with the contact's full
@@ -265,8 +265,8 @@ seven (see §3.5 for why it almost won).
 
 - **EpisodeDetailPage / FactDetailPage / RuleDetailPage /
   ContactDetailPage (4 each).** All four use the *same three-line
-  skeleton stack* and the *same destructive-text-center error block*
-  , verbatim. This is the most consistent pattern in the
+  skeleton stack* and the *same destructive-text-center error block*,
+  verbatim. This is the most consistent pattern in the
   detail-page family, and any canonical shell should adopt it
   literally:
 

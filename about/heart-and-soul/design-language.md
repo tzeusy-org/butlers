@@ -7,7 +7,8 @@
 > `/impeccable` redesign should defend or replace.
 >
 > **Note:** This document itself is subject to the voice rules it establishes.
-> Em-dashes in older sections predate the ban and are being migrated incrementally.
+> Em-dashes remaining in this file appear only inside fenced code blocks or
+> inline code spans, which are exempt from the ban.
 
 The Butlers dashboard is the human window into a system that mostly runs
 without humans watching. It is read first, controlled second. The design
