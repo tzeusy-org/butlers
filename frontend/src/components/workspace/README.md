@@ -25,9 +25,7 @@ function MyPage() {
 
 ### `AutoRefreshToggle` (primitive — `@/components/ui/auto-refresh-toggle`)
 
-A controlled toggle that shows a **Live** badge when enabled, a refresh-interval
-`<Select>`, and a Pause/Resume button. Lives in `components/ui/` as a generic UI
-primitive with no domain knowledge.
+A controlled toggle that shows a **Live** badge when enabled, a refresh-interval `<Select>`, and a Pause/Resume button. Lives in `components/ui/` as a generic UI primitive with no domain knowledge.
 
 Props: `enabled`, `interval`, `onToggle`, `onIntervalChange`.
 
@@ -58,7 +56,7 @@ Key fields:
 | `from` | `Date` | Window start (start-of-day in owner tz) |
 | `to` | `Date` | Window end (end-of-day in owner tz) |
 | `preset` | `"today" \| "week" \| "custom"` | Which preset is active |
-| `pollingDisabled` | `boolean` | True when `to` is >= 24 h before now |
+| `pollingDisabled` | `boolean` | True when `to` is at least 24 hours in the past |
 | `setPreset` | `(p) => void` | Switch to a named preset |
 | `setCustomRange` | `(from, to) => void` | Set an arbitrary range |
 

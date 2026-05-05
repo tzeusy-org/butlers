@@ -25,9 +25,17 @@ export type { TimeWindow, UseTimeWindowResult } from "@/hooks/use-time-window"
 interface TimeWindowPickerProps {
   /** Result of useTimeWindow() hoisted to the parent. */
   window: UseTimeWindowResult
+  /** ID for the "from" date input. Defaults to "tw-from". */
+  fromInputId?: string
+  /** ID for the "to" date input. Defaults to "tw-to". */
+  toInputId?: string
 }
 
-export function TimeWindowPicker({ window: tw }: TimeWindowPickerProps) {
+export function TimeWindowPicker({
+  window: tw,
+  fromInputId = "tw-from",
+  toInputId = "tw-to",
+}: TimeWindowPickerProps) {
   return (
     <div
       className="flex flex-wrap items-end gap-3"
@@ -56,11 +64,11 @@ export function TimeWindowPicker({ window: tw }: TimeWindowPickerProps) {
       {/* Custom date inputs */}
       <div className="flex items-end gap-2">
         <div className="flex flex-col gap-1">
-          <Label htmlFor="chronicles-from" className="text-xs text-muted-foreground">
+          <Label htmlFor={fromInputId} className="text-xs text-muted-foreground">
             From
           </Label>
           <Input
-            id="chronicles-from"
+            id={fromInputId}
             type="date"
             className="h-8 w-36 text-xs"
             value={formatWindowDate(tw.from)}
@@ -74,11 +82,11 @@ export function TimeWindowPicker({ window: tw }: TimeWindowPickerProps) {
           />
         </div>
         <div className="flex flex-col gap-1">
-          <Label htmlFor="chronicles-to" className="text-xs text-muted-foreground">
+          <Label htmlFor={toInputId} className="text-xs text-muted-foreground">
             To
           </Label>
           <Input
-            id="chronicles-to"
+            id={toInputId}
             type="date"
             className="h-8 w-36 text-xs"
             value={formatWindowDate(tw.to)}
