@@ -60,7 +60,7 @@ export function getInitials(name: string): string {
   // For single-word names, use grapheme-aware extraction to safely handle
   // emoji and multi-codepoint characters. Intl.Segmenter splits on grapheme
   // cluster boundaries, preventing surrogate-pair corruption.
-  const graphemes = [..._segmenter.segment(name)].map((g) => g.segment);
+  const graphemes = [..._segmenter.segment(parts[0])].map((g) => g.segment);
   return graphemes.slice(0, 2).join("").toUpperCase();
 }
 

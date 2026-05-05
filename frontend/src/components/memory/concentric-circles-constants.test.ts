@@ -185,7 +185,7 @@ describe("getInitials", () => {
     expect(result).toBe("A");
   });
 
-  it("handles leading/trailing whitespace", () => {
+  it("handles leading/trailing whitespace in multi-word names", () => {
     expect(getInitials("  john doe  ")).toBe("JD");
   });
 
