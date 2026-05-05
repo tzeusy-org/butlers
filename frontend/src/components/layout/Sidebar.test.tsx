@@ -448,4 +448,112 @@ describe("Sidebar", () => {
       expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Accessibility: inert + brand dedup (bu-n7whz)
+  // -------------------------------------------------------------------------
+
+  describe("a11y — inert and brand dedup", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          meta: {},
+        },
+      });
+    });
+
+    it("brand: only one brand span is in the accessibility tree when expanded", () => {
+      render();
+
+      // Brand area identified by stable test hook
+      const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
+      expect(brandDiv).toBeTruthy();
+
+      const spans = Array.from(brandDiv!.querySelectorAll("span"));
+      // Both brand spans are always rendered
+      expect(spans.length).toBe(2);
+
+      // "Butlers" span must NOT be aria-hidden when expanded
+      const butlersSpan = spans.find((s) => s.textContent === "Butlers");
+      expect(butlersSpan).toBeTruthy();
+      expect(butlersSpan!.getAttribute("aria-hidden")).not.toBe("true");
+
+      // "B" span must be aria-hidden when expanded
+      const bSpan = spans.find((s) => s.textContent === "B");
+      expect(bSpan).toBeTruthy();
+      expect(bSpan!.getAttribute("aria-hidden")).toBe("true");
+    });
+
+    it("brand: only one brand span is in the accessibility tree when collapsed", () => {
+      act(() => {
+        root.render(
+          <MemoryRouter initialEntries={["/"]}>
+            <Sidebar collapsed={true} />
+          </MemoryRouter>,
+        );
+      });
+
+      const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
+      expect(brandDiv).toBeTruthy();
+
+      const spans = Array.from(brandDiv!.querySelectorAll("span"));
+      expect(spans.length).toBe(2);
+
+      // "Butlers" span must be aria-hidden when collapsed
+      const butlersSpan = spans.find((s) => s.textContent === "Butlers");
+      expect(butlersSpan).toBeTruthy();
+      expect(butlersSpan!.getAttribute("aria-hidden")).toBe("true");
+
+      // "B" span must NOT be aria-hidden when collapsed
+      const bSpan = spans.find((s) => s.textContent === "B");
+      expect(bSpan).toBeTruthy();
+      expect(bSpan!.getAttribute("aria-hidden")).not.toBe("true");
+    });
+
+    it("NavGroup: collapsed children container has inert attribute", () => {
+      render();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.textContent?.includes("Relationships"),
+      );
+      expect(groupButton).toBeTruthy();
+
+      const childrenContainer = groupButton!.parentElement?.querySelector(
+        "[aria-hidden]",
+      ) as HTMLElement | null;
+      expect(childrenContainer).toBeTruthy();
+      // Should have inert attribute when collapsed
+      expect(childrenContainer!.hasAttribute("inert")).toBe(true);
+
+      // Expand: inert should be removed
+      act(() => {
+        groupButton!.click();
+      });
+      expect(childrenContainer!.hasAttribute("inert")).toBe(false);
+    });
+
+    it("NavSectionGroup: collapsed section items container has inert attribute", () => {
+      render();
+
+      const headings = container.querySelectorAll("h3");
+      const telemetryHeading = Array.from(headings).find(
+        (h) => h.textContent === "Telemetry",
+      );
+      expect(telemetryHeading).toBeTruthy();
+
+      const telemetryButton = telemetryHeading!.closest("button")!;
+      const sectionContainer = telemetryButton.parentElement;
+      // Telemetry starts collapsed — its items div should have inert
+      const itemsDiv = sectionContainer?.querySelector("[aria-hidden]") as HTMLElement | null;
+      expect(itemsDiv).toBeTruthy();
+      expect(itemsDiv!.hasAttribute("inert")).toBe(true);
+
+      // Expand: inert should be removed
+      act(() => {
+        telemetryButton.click();
+      });
+      expect(itemsDiv!.hasAttribute("inert")).toBe(false);
+    });
+  });
 });

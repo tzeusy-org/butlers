@@ -187,6 +187,7 @@ function NavGroup({
 
       {/* Children (with smooth height transition) */}
       <div
+        inert={!expanded ? '' : undefined}
         aria-hidden={!expanded}
         className={`overflow-hidden transition-all duration-base ease-out-quart ${
           expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
@@ -281,6 +282,7 @@ function NavSectionGroup({
       )}
       {/* Items */}
       <div
+        inert={!collapsed && !expanded ? '' : undefined}
         aria-hidden={!collapsed && !expanded}
         className={
           collapsed
@@ -353,17 +355,23 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClic
   return (
     <div className="flex h-full flex-col">
       {/* Brand */}
-      <div className="flex h-14 items-center border-b border-border px-4">
+      <div data-testid="sidebar-brand" className="flex h-14 items-center border-b border-border px-4">
         <span
+          aria-hidden={collapsed}
           className={`text-lg font-semibold transition-opacity duration-base ease-out-quart ${
             collapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'
           }`}
         >
           Butlers
         </span>
-        {collapsed && (
-          <span className="text-lg font-semibold">B</span>
-        )}
+        <span
+          aria-hidden={!collapsed}
+          className={`text-lg font-semibold transition-opacity duration-base ease-out-quart ${
+            collapsed ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden'
+          }`}
+        >
+          B
+        </span>
       </div>
 
       {/* Navigation */}
