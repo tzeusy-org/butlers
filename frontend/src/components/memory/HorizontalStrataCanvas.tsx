@@ -106,8 +106,7 @@ function StrataNode({ entry, tier, dimmed, onNavigate }: StrataNodeProps) {
               fill={color}
               fillOpacity={0.15}
               stroke={color}
-              strokeWidth={entry.dunbar_tier_override ? 2 : 1}
-              strokeDasharray={entry.dunbar_tier_override ? "3,2" : undefined}
+              strokeWidth={1}
             />
             <text
               x={NODE_RADIUS}
@@ -120,6 +119,19 @@ function StrataNode({ entry, tier, dimmed, onNavigate }: StrataNodeProps) {
             >
               {initials}
             </text>
+            {entry.dunbar_tier_override && (
+              // Pin override: dashed ring at slightly larger radius, clearly
+              // visible regardless of node size.
+              <circle
+                cx={NODE_RADIUS}
+                cy={NODE_RADIUS}
+                r={NODE_RADIUS - 0.5}
+                fill="none"
+                stroke={color}
+                strokeWidth={1.5}
+                strokeDasharray="4,3"
+              />
+            )}
           </svg>
         </button>
       </TooltipTrigger>

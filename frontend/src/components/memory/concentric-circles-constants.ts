@@ -15,7 +15,7 @@ export const TIER_NAMES: Record<Tier, string> = {
   50: "Good Friends",
   150: "Dunbar's Number",
   500: "Acquaintances",
-  1500: "Recognizable",
+  1500: "Familiar Faces",
 };
 
 // Ring radii as fractions of the total radius (0 = center, 1 = edge).
@@ -103,4 +103,17 @@ export const TIER_BADGE_ANGLES: Partial<Record<Tier, number>> = {
 /** ease-out-expo easing for jump-to-tier animation. */
 export function easeOutExpo(t: number): number {
   return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+}
+
+/**
+ * Truncate a string to at most `maxGraphemes` grapheme clusters, appending "…"
+ * if truncated. Uses Intl.Segmenter to avoid splitting surrogate pairs (emoji,
+ * CJK) mid-codepoint — plain `slice()` operates on UTF-16 code units and can
+ * produce replacement characters (U+FFFD) for names like "Ana 🌸".
+ */
+export function truncateGraphemes(s: string, maxGraphemes: number): string {
+  const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const graphemes = [...seg.segment(s)];
+  if (graphemes.length <= maxGraphemes) return s;
+  return graphemes.slice(0, maxGraphemes - 1).map((g) => g.segment).join("") + "…";
 }

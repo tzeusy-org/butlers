@@ -30,6 +30,7 @@ import {
   TIER_RADIUS_FRACTIONS,
   TIER_RING_COLORS,
   TIERS,
+  truncateGraphemes,
   type Tier,
 } from "./concentric-circles-constants";
 
@@ -68,13 +69,6 @@ function TierNode({ entry, x, y, tier, showName, radius, dimmed, onNavigate }: T
           style={{ cursor: "pointer", opacity: dimmed ? 0.3 : 1, transition: "opacity 150ms ease" }}
           onClick={() => onNavigate(entry.entity_id)}
         >
-            {showAvatar && (
-              <defs>
-                <clipPath id={clipId}>
-                  <circle cx={x} cy={y} r={radius} />
-                </clipPath>
-              </defs>
-            )}
             <circle
               cx={x}
               cy={y}
@@ -82,8 +76,7 @@ function TierNode({ entry, x, y, tier, showName, radius, dimmed, onNavigate }: T
               fill={color}
               fillOpacity={0.15}
               stroke={color}
-              strokeWidth={entry.dunbar_tier_override ? 2 : 1}
-              strokeDasharray={entry.dunbar_tier_override ? "3,2" : undefined}
+              strokeWidth={1}
             />
             <text
               x={x}
@@ -108,11 +101,17 @@ function TierNode({ entry, x, y, tier, showName, radius, dimmed, onNavigate }: T
               />
             )}
             {entry.dunbar_tier_override && (
+              // Pin override: dashed ring at radius*1.2, clearly visible at any tier size.
+              // This replaces the old corner dot (radius*0.4) which was invisible
+              // on tier-150+ nodes (radius ≤ 12px).
               <circle
-                cx={x + radius * 0.7}
-                cy={y - radius * 0.7}
-                r={radius * 0.4}
-                fill={color}
+                cx={x}
+                cy={y}
+                r={radius * 1.2}
+                fill="none"
+                stroke={color}
+                strokeWidth={1.5}
+                strokeDasharray="4,3"
               />
             )}
             {showName && (
@@ -125,9 +124,7 @@ function TierNode({ entry, x, y, tier, showName, radius, dimmed, onNavigate }: T
                 fill="currentColor"
                 opacity={0.85}
               >
-                {entry.canonical_name.length > 12
-                  ? entry.canonical_name.slice(0, 11) + "…"
-                  : entry.canonical_name}
+                {truncateGraphemes(entry.canonical_name, 12)}
               </text>
             )}
           </g>
@@ -433,10 +430,55 @@ export function ConcentricCirclesCanvas({
     onNavigate(id);
   };
 
+  // Pre-compute per-tier node geometry so we can hoist a single <defs> block
+  // to the top of the SVG for all avatar clip-paths.
+  type TierLayout = {
+    tier: Tier;
+    tierEntries: DunbarEntry[];
+    displayEntries: DunbarEntry[];
+    hiddenCount: number;
+    nodeRadius: number;
+    ringR: number;
+    positions: Array<{ x: number; y: number }>;
+    showName: boolean;
+    color: string;
+  };
+
+  const tierLayouts: TierLayout[] = TIERS.map((tier) => {
+    const tierEntries = tierGroups[tier];
+    const tierR = maxR * TIER_RADIUS_FRACTIONS[tier];
+    const prevTierIdx = TIERS.indexOf(tier) - 1;
+    const prevR = prevTierIdx >= 0
+      ? maxR * TIER_RADIUS_FRACTIONS[TIERS[prevTierIdx]]
+      : maxR * 0.07;
+    const nodeR = (tierR - prevR) / 2;
+    const nodeRadius = Math.max(4, Math.min(nodeR * 0.65, tier <= 15 ? 18 : 12));
+    const ringR = prevR + nodeR;
+    const showName = tier <= 15;
+    const isExpanded = tier <= 15 || expandedTiers.has(tier);
+    const showAll = isExpanded || searchQuery.length > 0;
+    const displayEntries = showAll ? tierEntries : tierEntries.slice(0, 5);
+    const hiddenCount = showAll ? 0 : tierEntries.length - 5;
+    const positions = circlePositions(displayEntries.length, ringR, cx, cy);
+    const color = TIER_RING_COLORS[tier];
+    return { tier, tierEntries, displayEntries, hiddenCount, nodeRadius, ringR, positions, showName, color };
+  });
+
+  // Collect avatar clip-path definitions from all visible nodes into a single
+  // <defs> block. This replaces the per-node <defs> which created N <defs>
+  // elements in the DOM (one per avatar-bearing node).
+  const avatarClipPaths = tierLayouts.flatMap(({ displayEntries, showName, positions, nodeRadius }) =>
+    showName
+      ? displayEntries
+          .map((entry, i) => ({ entry, pos: positions[i], radius: nodeRadius }))
+          .filter(({ entry }) => !!entry.avatar_url)
+      : []
+  );
+
   return (
     <TooltipProvider>
     <div className="relative w-full h-full">
-      <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 rounded-md border bg-background/80 backdrop-blur px-2 py-1 text-xs text-muted-foreground shadow-sm">
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5 rounded-md border bg-muted px-2 py-1 text-xs text-muted-foreground shadow-sm">
         <span>Scroll to zoom &middot; drag to pan</span>
         <button
           type="button"
@@ -472,6 +514,18 @@ export function ConcentricCirclesCanvas({
         role="img"
         aria-label="Dunbar social map -- concentric rings of contacts"
       >
+        {/* Single shared <defs> for all avatar clip-paths. One block per SVG
+            instead of one block per TierNode eliminates DOM clutter. */}
+        {avatarClipPaths.length > 0 && (
+          <defs>
+            {avatarClipPaths.map(({ entry, pos, radius }) => (
+              <clipPath key={entry.entity_id} id={`avatar-clip-${entry.entity_id}`}>
+                <circle cx={pos.x} cy={pos.y} r={radius} />
+              </clipPath>
+            ))}
+          </defs>
+        )}
+
         {[...TIERS].reverse().map((tier) => {
           const r = maxR * TIER_RADIUS_FRACTIONS[tier];
           const color = TIER_RING_COLORS[tier];
@@ -540,29 +594,8 @@ export function ConcentricCirclesCanvas({
           </text>
         </g>
 
-        {TIERS.map((tier) => {
-          const tierEntries = tierGroups[tier];
-          if (tierEntries.length === 0) return null;
-
-          const tierR = maxR * TIER_RADIUS_FRACTIONS[tier];
-          const prevTierIdx = TIERS.indexOf(tier) - 1;
-          const prevR = prevTierIdx >= 0
-            ? maxR * TIER_RADIUS_FRACTIONS[TIERS[prevTierIdx]]
-            : maxR * 0.07;
-          const nodeR = (tierR - prevR) / 2;
-          const nodeRadius = Math.max(4, Math.min(nodeR * 0.65, tier <= 15 ? 18 : 12));
-          const ringR = prevR + nodeR;
-
-          const showName = tier <= 15;
-          // Always show all entries when a search is active so matches in
-          // collapsed outer rings are not hidden from the user.
-          const isExpanded = tier <= 15 || expandedTiers.has(tier);
-          const showAll = isExpanded || searchQuery.length > 0;
-          const displayEntries = showAll ? tierEntries : tierEntries.slice(0, 5);
-          const hiddenCount = showAll ? 0 : tierEntries.length - 5;
-
-          const positions = circlePositions(displayEntries.length, ringR, cx, cy);
-          const color = TIER_RING_COLORS[tier];
+        {tierLayouts.map(({ tier, displayEntries, hiddenCount, nodeRadius, ringR, positions, showName, color }) => {
+          if (displayEntries.length === 0 && hiddenCount === 0) return null;
 
           return (
             <g key={tier}>
