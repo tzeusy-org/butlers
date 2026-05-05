@@ -10,7 +10,7 @@
  *   ?q={search}       — raw search string
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { DunbarEntry } from "@/api/types";
 import {
@@ -204,6 +204,14 @@ export function ConcentricCirclesCanvas({
   } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
+  // ---------------------------------------------------------------------------
+  // Two-finger pointer-event state (pinch-zoom + two-finger pan)
+  // One-finger touch does NOT pan/zoom so native scrolling is preserved.
+  // ---------------------------------------------------------------------------
+  const pointerCacheRef = useRef<Map<number, PointerEvent>>(new Map());
+  const lastPinchDistRef = useRef<number | null>(null);
+  const lastPinchMidRef = useRef<{ x: number; y: number } | null>(null);
+
   const animFrameRef = useRef<number | null>(null);
 
   // Derived geometry
@@ -321,6 +329,88 @@ export function ConcentricCirclesCanvas({
     setViewBox({ x: 0, y: 0, w: width, h: height });
   }
 
+  // ---------------------------------------------------------------------------
+  // Two-finger pointer events -- pinch zoom + pan
+  // These are attached to the SVG via React props so they are passive-friendly.
+  // One-finger touch falls through untouched so native page scrolling works.
+  // ---------------------------------------------------------------------------
+
+  const handlePointerDown = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
+    // Track this pointer
+    pointerCacheRef.current.set(e.pointerId, e.nativeEvent);
+    if (pointerCacheRef.current.size !== 2) return;
+
+    // Two fingers active: capture all pointers so moves route here
+    try { (e.currentTarget as SVGSVGElement).setPointerCapture(e.pointerId); } catch { /* no-op */ }
+    const pts = [...pointerCacheRef.current.values()];
+    const dx = pts[1].clientX - pts[0].clientX;
+    const dy = pts[1].clientY - pts[0].clientY;
+    lastPinchDistRef.current = Math.hypot(dx, dy);
+    lastPinchMidRef.current = {
+      x: (pts[0].clientX + pts[1].clientX) / 2,
+      y: (pts[0].clientY + pts[1].clientY) / 2,
+    };
+  }, []);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
+    pointerCacheRef.current.set(e.pointerId, e.nativeEvent);
+    if (pointerCacheRef.current.size !== 2) return;
+
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
+    const pts = [...pointerCacheRef.current.values()];
+    const dx = pts[1].clientX - pts[0].clientX;
+    const dy = pts[1].clientY - pts[0].clientY;
+    const newDist = Math.hypot(dx, dy);
+    const newMid = {
+      x: (pts[0].clientX + pts[1].clientX) / 2,
+      y: (pts[0].clientY + pts[1].clientY) / 2,
+    };
+
+    const prevDist = lastPinchDistRef.current;
+    const prevMid = lastPinchMidRef.current;
+
+    if (prevDist !== null && prevMid !== null) {
+      setViewBox((vb) => {
+        // Pinch zoom -- direct ratio (no exponential easing; should feel tactile)
+        const pinchRatio = prevDist > 0 ? newDist / prevDist : 1;
+        const currentScale = width / vb.w;
+        const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE, currentScale * pinchRatio));
+        const newW = width / target;
+        const newH = height / target;
+
+        // Zoom anchored to midpoint
+        const midSvgX = vb.x + ((newMid.x - rect.left) / rect.width) * vb.w;
+        const midSvgY = vb.y + ((newMid.y - rect.top) / rect.height) * vb.h;
+        let newX = midSvgX - ((newMid.x - rect.left) / rect.width) * newW;
+        let newY = midSvgY - ((newMid.y - rect.top) / rect.height) * newH;
+
+        // Two-finger pan -- 1:1 with finger delta
+        const panDx = ((newMid.x - prevMid.x) * newW) / rect.width;
+        const panDy = ((newMid.y - prevMid.y) * newH) / rect.height;
+        newX -= panDx;
+        newY -= panDy;
+
+        return { x: newX, y: newY, w: newW, h: newH };
+      });
+    }
+
+    lastPinchDistRef.current = newDist;
+    lastPinchMidRef.current = newMid;
+  }, [width, height]);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
+    pointerCacheRef.current.delete(e.pointerId);
+    if (pointerCacheRef.current.size < 2) {
+      lastPinchDistRef.current = null;
+      lastPinchMidRef.current = null;
+    }
+    try { (e.currentTarget as SVGSVGElement).releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+  }, []);
+
   const currentScale = width / viewBox.w;
 
   // Group entries by tier (exclude owner)
@@ -364,12 +454,21 @@ export function ConcentricCirclesCanvas({
         height="100%"
         viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className="select-none touch-none"
-        style={{ cursor: isDragging ? "grabbing" : "grab", display: "block" }}
+        className="select-none"
+        style={{
+          cursor: isDragging ? "grabbing" : "grab",
+          display: "block",
+          /* Allow two-finger pinch and pan; one-finger falls through to native scroll. */
+          touchAction: "manipulation",
+        }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={endDrag}
         onMouseLeave={endDrag}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
         role="img"
         aria-label="Dunbar social map -- concentric rings of contacts"
       >
