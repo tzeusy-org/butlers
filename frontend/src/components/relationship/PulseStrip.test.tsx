@@ -11,6 +11,10 @@ vi.mock("@/hooks/use-entities", () => ({
   useUpdateEntityDunbarTier: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
+// Lazily-resolved references — must be fetched after vi.mock hoisting.
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
+import * as useEntities from "@/hooks/use-entities";
+
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 function render(props: { entityId: string; dunbarTier: number | null; isPinned: boolean }): string {
@@ -50,5 +54,33 @@ describe("PulseStrip", () => {
     const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
     // ">None<" rather than "None" to distinguish from "None recorded" (last interaction)
     expect(html).toContain(">None<");
+  });
+
+  it("does NOT show None for open loops while gifts are still loading", () => {
+    // Regression: gifts loading, loans loaded → combined isLoading must suppress "None".
+    // Cast via unknown: mock stubs only need the fields the component reads.
+    vi.mocked(useEntities.useEntityGifts).mockReturnValueOnce(
+      { data: undefined, isLoading: true } as unknown as ReturnType<typeof useEntities.useEntityGifts>,
+    );
+    vi.mocked(useEntities.useEntityLoans).mockReturnValueOnce(
+      { data: [], isLoading: false } as unknown as ReturnType<typeof useEntities.useEntityLoans>,
+    );
+    const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
+    // The Open loops tile must show the loading placeholder, not "None"
+    expect(html).toContain("...");
+    expect(html).not.toContain(">None<");
+  });
+
+  it("does NOT show None for open loops while loans are still loading", () => {
+    // Regression: loans loading, gifts loaded → combined isLoading must suppress "None".
+    vi.mocked(useEntities.useEntityGifts).mockReturnValueOnce(
+      { data: [], isLoading: false } as unknown as ReturnType<typeof useEntities.useEntityGifts>,
+    );
+    vi.mocked(useEntities.useEntityLoans).mockReturnValueOnce(
+      { data: undefined, isLoading: true } as unknown as ReturnType<typeof useEntities.useEntityLoans>,
+    );
+    const html = render({ entityId: "e-1", dunbarTier: null, isPinned: false });
+    expect(html).toContain("...");
+    expect(html).not.toContain(">None<");
   });
 });

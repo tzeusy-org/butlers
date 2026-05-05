@@ -210,8 +210,8 @@ export interface PulseStripProps {
 export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) {
   const { data: timelineItems, isLoading: timelineLoading } =
     useEntityTimeline(entityId);
-  const { data: gifts } = useEntityGifts(entityId);
-  const { data: loans } = useEntityLoans(entityId);
+  const { data: gifts, isLoading: giftsLoading } = useEntityGifts(entityId);
+  const { data: loans, isLoading: loansLoading } = useEntityLoans(entityId);
 
   const lastInteraction = useMemo(() => {
     if (!timelineItems) return null;
@@ -246,7 +246,10 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
     return giftOpen + loanOpen;
   }, [gifts, loans]);
 
-  const isLoading = timelineLoading;
+  // All three queries must finish before we can trust the Open loops count.
+  // Using a combined flag prevents the tile from briefly showing "None" while
+  // gifts or loans are still in-flight.
+  const isLoading = timelineLoading || giftsLoading || loansLoading;
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
