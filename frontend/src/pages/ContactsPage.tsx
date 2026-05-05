@@ -118,16 +118,16 @@ export default function ContactsPage() {
             onClick={() => handleSyncFrom("telegram")}
             disabled={isSyncingTelegram}
             variant="outline"
-            aria-label="Sync From Telegram"
+            aria-label="Sync from Telegram"
           >
-            {isSyncingTelegram ? "Syncing..." : "Sync From Telegram"}
+            {isSyncingTelegram ? "Syncing..." : "Sync from Telegram"}
           </Button>
           <Button
             onClick={() => handleSyncFrom("google")}
             disabled={isSyncingGoogle}
-            aria-label="Sync From Google"
+            aria-label="Sync from Google"
           >
-            {isSyncingGoogle ? "Syncing..." : "Sync From Google"}
+            {isSyncingGoogle ? "Syncing..." : "Sync from Google"}
           </Button>
         </div>
       </div>

@@ -298,7 +298,7 @@ export function UnlinkedEntitiesSection() {
                           disabled={createMutation.isPending}
                           onClick={() => handleCreateNew(contact)}
                         >
-                          Create New
+                          Create new
                         </Button>
                         <Button
                           size="sm"

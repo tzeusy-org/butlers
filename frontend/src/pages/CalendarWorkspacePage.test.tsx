@@ -611,7 +611,7 @@ describe("CalendarWorkspacePage", () => {
       await flush();
     });
 
-    const dialog = findDialogByTitle("Create User Event");
+    const dialog = findDialogByTitle("Create user event");
     const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
     expect(titleInput).toBeDefined();
 
@@ -663,7 +663,7 @@ describe("CalendarWorkspacePage", () => {
       await flush();
     });
 
-    const dialog = findDialogByTitle("Edit User Event");
+    const dialog = findDialogByTitle("Edit user event");
     const titleInput = dialog?.querySelector("#event-title") as HTMLInputElement;
     await act(async () => {
       setInputValue(titleInput, "Morning review");
@@ -749,14 +749,14 @@ describe("CalendarWorkspacePage", () => {
     setButlerWorkspaceFixtures();
     renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
-    const createButton = findButton("Create Butler Event");
+    const createButton = findButton("Create butler event");
     expect(createButton).toBeDefined();
     await act(async () => {
       createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await flush();
     });
 
-    const dialog = findDialogByTitle("Create Butler Event");
+    const dialog = findDialogByTitle("Create butler event");
     const titleInput = dialog?.querySelector("#calendar-event-title") as HTMLInputElement;
     expect(titleInput).toBeDefined();
 
@@ -766,7 +766,7 @@ describe("CalendarWorkspacePage", () => {
     });
 
     const saveButton = Array.from(dialog?.querySelectorAll("button") ?? []).find(
-      (button) => button.textContent?.trim() === "Create Event",
+      (button) => button.textContent?.trim() === "Create event",
     ) as HTMLButtonElement;
     await act(async () => {
       saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -799,7 +799,7 @@ describe("CalendarWorkspacePage", () => {
       await flush();
     });
 
-    const dialog = findDialogByTitle("Edit Butler Event");
+    const dialog = findDialogByTitle("Edit butler event");
     const titleInput = dialog?.querySelector("#calendar-event-title") as HTMLInputElement;
     expect(titleInput).toBeDefined();
     await act(async () => {
@@ -808,7 +808,7 @@ describe("CalendarWorkspacePage", () => {
     });
 
     const saveButton = Array.from(dialog?.querySelectorAll("button") ?? []).find(
-      (button) => button.textContent?.trim() === "Save Changes",
+      (button) => button.textContent?.trim() === "Save changes",
     ) as HTMLButtonElement;
     await act(async () => {
       saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));

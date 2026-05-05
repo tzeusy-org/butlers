@@ -122,7 +122,7 @@ function SystemSecretsSection() {
               }}
               disabled={!activeTarget}
             >
-              Add Secret
+              Add secret
             </Button>
           </div>
         </div>
@@ -415,7 +415,7 @@ function UserSecretsSection() {
                 }}
                 disabled={!selectedId}
               >
-                Add Credential
+                Add credential
               </Button>
             </div>
           </CardHeader>

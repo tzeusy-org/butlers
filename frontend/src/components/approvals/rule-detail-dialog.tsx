@@ -122,7 +122,7 @@ export function RuleDetailDialog({
               onClick={handleRevoke}
               disabled={revokeMutation.isPending}
             >
-              Revoke Rule
+              Revoke rule
             </Button>
           )}
           <Button variant="outline" onClick={() => onOpenChange(false)}>

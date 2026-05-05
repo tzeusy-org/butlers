@@ -133,9 +133,9 @@ describe("ContactsPage", () => {
     });
   }
 
-  it('renders a "Sync From Google" button in the page header', () => {
+  it('renders a "Sync from Google" button in the page header', () => {
     renderPage();
-    expect(findButton(container, "Sync From Google")).toBeDefined();
+    expect(findButton(container, "Sync from Google")).toBeDefined();
   });
 
   it("triggers sync in incremental mode and refetches contacts on success", async () => {
@@ -143,7 +143,7 @@ describe("ContactsPage", () => {
     setContactsState({ refetch });
     renderPage();
 
-    const button = findButton(container, "Sync From Google");
+    const button = findButton(container, "Sync from Google");
     expect(button).toBeDefined();
 
     await act(async () => {
@@ -161,7 +161,7 @@ describe("ContactsPage", () => {
     vi.mocked(triggerContactsSync).mockReturnValue(new Promise(() => {}));
     renderPage();
 
-    const button = findButton(container, "Sync From Google");
+    const button = findButton(container, "Sync from Google");
     expect(button).toBeDefined();
 
     await act(async () => {
@@ -178,7 +178,7 @@ describe("ContactsPage", () => {
     vi.mocked(triggerContactsSync).mockRejectedValue(new Error("OAuth missing"));
     renderPage();
 
-    const button = findButton(container, "Sync From Google");
+    const button = findButton(container, "Sync from Google");
     expect(button).toBeDefined();
 
     await act(async () => {

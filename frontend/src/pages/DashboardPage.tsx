@@ -185,7 +185,7 @@ export default function DashboardPage() {
             </CardDescription>
             <CardAction>
               <Button variant="link" size="sm" asChild>
-                <Link to="/notifications">View all notifications</Link>
+                <Link to="/notifications">View all</Link>
               </Button>
             </CardAction>
           </CardHeader>

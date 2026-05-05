@@ -54,7 +54,7 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
           <div className="flex items-center gap-2">
             <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
             <CardTitle className="text-sm font-semibold text-blue-900 dark:text-blue-100">
-              Promote to Standing Rule
+              Promote to standing rule
             </CardTitle>
           </div>
           <Badge variant="outline" className="text-xs shrink-0">
@@ -85,7 +85,7 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
           disabled={isPending}
         >
           <CheckCircle className="h-3.5 w-3.5 mr-1.5" />
-          Confirm Rule
+          Confirm rule
         </Button>
         <Button
           size="sm"
@@ -138,7 +138,7 @@ function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggestio
           disabled={isPending}
         >
           <AlertTriangle className="h-3.5 w-3.5 mr-1.5" />
-          Revoke Rule
+          Revoke rule
         </Button>
         <Button
           size="sm"
@@ -147,7 +147,7 @@ function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggestio
           disabled={isPending}
         >
           <X className="h-3.5 w-3.5 mr-1.5" />
-          Keep Rule
+          Keep rule
         </Button>
       </CardFooter>
     </Card>

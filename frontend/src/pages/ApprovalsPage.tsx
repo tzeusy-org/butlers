@@ -273,7 +273,7 @@ export default function ApprovalsPage() {
                 </Button>
               )}
               <Button variant="outline" onClick={handleExpireStale}>
-                Expire Stale
+                Expire stale
               </Button>
             </div>
           </div>

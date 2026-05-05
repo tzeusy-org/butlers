@@ -154,7 +154,7 @@ function OverrideDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {existingOverride ? "Edit Override" : "Add Override"}
+            {existingOverride ? "Edit override" : "Add override"}
           </DialogTitle>
           <DialogDescription>
             Override the model catalog settings for this butler.
@@ -258,7 +258,7 @@ function OverrideFormFields({
           Cancel
         </Button>
         <Button type="submit" disabled={!isValid || isSubmitting}>
-          {isSubmitting ? "Saving..." : existingOverride ? "Update" : "Add Override"}
+          {isSubmitting ? "Saving..." : existingOverride ? "Update" : "Add override"}
         </Button>
       </DialogFooter>
     </form>
@@ -468,7 +468,7 @@ export default function ButlerModelOverridesTab({
             onClick={handleAddClick}
             disabled={catalogLoading || catalogEntries.length === 0}
           >
-            Add Override
+            Add override
           </Button>
         </CardHeader>
         <CardContent>

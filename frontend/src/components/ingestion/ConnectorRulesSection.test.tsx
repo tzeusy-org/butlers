@@ -141,7 +141,7 @@ describe("ConnectorRulesSection", () => {
     render();
     const btn = container.querySelector('[data-testid="add-rule-btn"]');
     expect(btn).not.toBeNull();
-    expect(btn!.textContent).toContain("Add Rule");
+    expect(btn!.textContent).toContain("Add rule");
   });
 
   it("renders rule rows in the table", () => {

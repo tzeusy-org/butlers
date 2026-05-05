@@ -261,7 +261,7 @@ export function ActionDetailDialog({
                 Close
               </Button>
               <Button onClick={handleRetry} disabled={retryMutation.isPending}>
-                Retry Dispatch
+                Retry dispatch
               </Button>
             </>
           ) : (

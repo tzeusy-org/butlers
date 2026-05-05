@@ -1334,7 +1334,7 @@ export default function CalendarWorkspacePage() {
               onClick={() => openButlerCreateDialog()}
               disabled={butlerMutation.isPending}
             >
-              Create Butler Event
+              Create butler event
             </Button>
           ) : null}
           <Badge variant="outline">{timezone}</Badge>
@@ -1356,7 +1356,7 @@ export default function CalendarWorkspacePage() {
             onClick={() => setSourcesDialogOpen(true)}
             aria-label="Configure sources"
           >
-            Configure Sources
+            Configure sources
             {disabledSources.size > 0 ? (
               <Badge variant="secondary" className="ml-1.5">
                 {disabledSources.size} hidden
@@ -1371,7 +1371,7 @@ export default function CalendarWorkspacePage() {
               disabled={!canCreateUserEvents || userEventMutation.isPending}
               aria-label="Create user event"
             >
-              Create Event
+              Create event
             </Button>
           ) : null}
         </div>
@@ -2019,7 +2019,7 @@ export default function CalendarWorkspacePage() {
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>
-              {userEventDialogMode === "create" ? "Create User Event" : "Edit User Event"}
+              {userEventDialogMode === "create" ? "Create user event" : "Edit user event"}
             </DialogTitle>
             <DialogDescription>
               {userEventDialogMode === "create"
@@ -2166,8 +2166,8 @@ export default function CalendarWorkspacePage() {
                   {userEventMutation.isPending
                     ? "Saving..."
                     : userEventDialogMode === "create"
-                      ? "Create Event"
-                      : "Update Event"}
+                      ? "Create event"
+                      : "Update event"}
                 </Button>
               </DialogFooter>
             </form>
@@ -2179,7 +2179,7 @@ export default function CalendarWorkspacePage() {
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              {butlerEventDialogMode === "create" ? "Create Butler Event" : "Edit Butler Event"}
+              {butlerEventDialogMode === "create" ? "Create butler event" : "Edit butler event"}
             </DialogTitle>
             <DialogDescription>
               Create or update schedule/reminder events in butler lanes, including recurring-until boundaries.
@@ -2437,8 +2437,8 @@ export default function CalendarWorkspacePage() {
                   ? "Creating..."
                   : "Saving..."
                 : butlerEventDialogMode === "create"
-                  ? "Create Event"
-                  : "Save Changes"}
+                  ? "Create event"
+                  : "Save changes"}
             </Button>
           </DialogFooter>
         </DialogContent>

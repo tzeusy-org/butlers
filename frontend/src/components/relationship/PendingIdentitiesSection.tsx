@@ -278,7 +278,7 @@ export function PendingIdentitiesSection() {
                           disabled={confirmMutation.isPending}
                           onClick={() => handleConfirm(contact.id)}
                         >
-                          Confirm as New
+                          Confirm as new
                         </Button>
                         <Button
                           size="sm"

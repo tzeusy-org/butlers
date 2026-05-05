@@ -47,7 +47,7 @@ export default function RequestCurriculumDialog({
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Request New Curriculum</DialogTitle>
+            <DialogTitle>Request curriculum</DialogTitle>
             <DialogDescription>
               Tell the butler what you want to learn. It will create a personalized
               curriculum with diagnostic assessment.

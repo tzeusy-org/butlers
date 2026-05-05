@@ -268,7 +268,7 @@ export function WhatsAppPairModal({
                 fetchQr();
               }}
             >
-              Try Again
+              Try again
             </Button>
           </div>
         );
