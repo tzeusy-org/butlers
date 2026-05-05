@@ -176,6 +176,15 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
 
   return (
     <div data-testid="session-stripe-chart">
+      {data?.truncated && (
+        <p
+          className="mb-1 text-xs text-muted-foreground"
+          data-testid="session-stripe-truncated-warning"
+        >
+          Showing the most recent {sessions.length.toLocaleString()} sessions out of{" "}
+          {data.meta.total.toLocaleString()} total. Use filters to narrow the window.
+        </p>
+      )}
       <ResponsiveContainer width="100%" height={200}>
         <BarChart data={rows} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
           <XAxis

@@ -160,7 +160,7 @@ def _row_to_detail(row, *, butler: str | None = None) -> SessionDetail:
 @router.get("", response_model=PaginatedResponse[SessionSummary])
 async def list_sessions(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    limit: int = Query(50, ge=1, le=1000, description="Max records to return"),
     butler: str | None = Query(None, description="Filter by butler name"),
     trigger_source: str | None = Query(None, description="Filter by trigger source"),
     success: bool | None = Query(None, description="Filter by success status"),
@@ -226,7 +226,7 @@ async def list_sessions(
 async def list_butler_sessions(
     name: str,
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    limit: int = Query(50, ge=1, le=200, description="Max records to return"),
+    limit: int = Query(50, ge=1, le=1000, description="Max records to return"),
     trigger_source: str | None = Query(None, description="Filter by trigger source"),
     success: bool | None = Query(None, description="Filter by success status"),
     from_date: datetime | None = Query(None, description="Sessions started after this time"),
