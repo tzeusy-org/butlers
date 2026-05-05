@@ -100,13 +100,13 @@ function HAConfigForm({ initialUrl = "", onCancel, isEdit = false }: HAConfigFor
       const msg = err.message;
       // Surface actionable messages from the backend
       if (msg.toLowerCase().includes("authentication failed") || msg.toLowerCase().includes("401") || msg.toLowerCase().includes("403")) {
-        return "Authentication failed — check that the long-lived access token is valid.";
+        return "Authentication failed. Check that the long-lived access token is valid.";
       }
       if (msg.toLowerCase().includes("timed out") || msg.toLowerCase().includes("timeout") || msg.toLowerCase().includes("unreachable") || msg.toLowerCase().includes("could not reach")) {
-        return "Could not reach Home Assistant — check the URL and that the server is accessible.";
+        return "Could not reach Home Assistant. Check the URL and that the server is accessible.";
       }
       if (msg.toLowerCase().includes("unexpected response")) {
-        return "Home Assistant returned an unexpected response — check the server status.";
+        return "Home Assistant returned an unexpected response. Check the server status.";
       }
       return msg;
     }

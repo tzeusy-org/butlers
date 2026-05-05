@@ -1771,7 +1771,7 @@ export default function CalendarWorkspacePage() {
                                 key={entry.entry_id}
                                 className="absolute left-0.5 right-0.5 rounded bg-accent/70 border border-accent px-1 py-0.5 overflow-hidden cursor-pointer hover:bg-accent transition-colors"
                                 style={{ top: topPx, height: heightPx, minHeight: 16 }}
-                                title={`${formatEntryWindow(entry)} — ${entry.title}`}
+                                title={`${formatEntryWindow(entry)}: ${entry.title}`}
                                 onClick={(evt) => {
                                   evt.stopPropagation();
                                   if (view === "user") openUserEditDialog(entry);

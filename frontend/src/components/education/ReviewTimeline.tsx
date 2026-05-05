@@ -101,7 +101,7 @@ export default function ReviewTimeline() {
     return (
       <Card>
         <CardContent className="flex h-48 items-center justify-center text-muted-foreground">
-          No reviews scheduled — keep learning and reviews will appear here.
+          No reviews scheduled. Keep learning and reviews will appear here.
         </CardContent>
       </Card>
     );

@@ -154,7 +154,7 @@ export default function MindMapGraph({ mindMapId, onNodeClick }: MindMapGraphPro
         </CardHeader>
         <CardContent>
           <div className="flex h-96 items-center justify-center text-muted-foreground">
-            This curriculum has no concepts yet — the butler is still building it
+            This curriculum has no concepts yet. The butler is still building it.
           </div>
         </CardContent>
       </Card>

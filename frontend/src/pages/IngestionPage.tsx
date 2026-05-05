@@ -47,7 +47,7 @@ export default function IngestionPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Ingestion</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Unified ingestion control surface — source visibility, routing policy, and historical replay.
+          Unified ingestion control surface: source visibility, routing policy, and historical replay.
         </p>
       </div>
 

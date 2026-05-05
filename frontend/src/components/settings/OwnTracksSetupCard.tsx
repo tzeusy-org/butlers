@@ -133,7 +133,7 @@ function TokenRevealPanel({ token, onDismiss }: { token: string; onDismiss: () =
   return (
     <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/30">
       <p className="mb-2 text-xs font-medium text-amber-800 dark:text-amber-200">
-        Copy this token now — it {"won't"} be shown again.
+        Copy this token now. It {"won't"} be shown again.
       </p>
       <div className="flex items-center gap-1 rounded-md border bg-background px-2 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-xs">{token}</span>

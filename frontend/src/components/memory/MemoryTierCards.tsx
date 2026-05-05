@@ -80,7 +80,7 @@ export default function MemoryTierCards() {
       <Card>
         <CardHeader>
           <CardTitle>Episodes</CardTitle>
-          <CardDescription>Eden tier — raw session memories</CardDescription>
+          <CardDescription>Eden tier: raw session memories</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           {statRow("Total", stats.total_episodes)}
@@ -101,7 +101,7 @@ export default function MemoryTierCards() {
       <Card>
         <CardHeader>
           <CardTitle>Facts</CardTitle>
-          <CardDescription>Mid-term tier — consolidated knowledge</CardDescription>
+          <CardDescription>Mid-term tier: consolidated knowledge</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           {statRow("Active", stats.active_facts)}
@@ -117,7 +117,7 @@ export default function MemoryTierCards() {
       <Card>
         <CardHeader>
           <CardTitle>Rules</CardTitle>
-          <CardDescription>Long-term tier — behavioral patterns</CardDescription>
+          <CardDescription>Long-term tier: behavioral patterns</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
           {statRow("Total", stats.total_rules)}

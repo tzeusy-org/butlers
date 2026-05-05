@@ -76,7 +76,7 @@ export default function EducationPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Education</h1>
           <p className="text-muted-foreground mt-1">
-            Adaptive learning dashboard — track mastery, review schedules, and curriculum progress.
+            Adaptive learning dashboard: track mastery, review schedules, and curriculum progress.
           </p>
         </div>
         <Button onClick={() => setRequestDialogOpen(true)}>

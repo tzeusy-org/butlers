@@ -879,8 +879,7 @@ function DeleteRuleDialog({
             {rule ? (
               <>
                 Priority {rule.priority}
-                {rule.name ? ` — ${rule.name}` : ""} —{" "}
-                {formatCondition(rule.rule_type, rule.condition)}
+                {rule.name ? `, ${rule.name}` : ""}: {formatCondition(rule.rule_type, rule.condition)}
               </>
             ) : (
               ""

@@ -281,7 +281,7 @@ export function SpotifySection() {
             <h3 className="leading-none font-semibold">Spotify</h3>
             <p className="text-muted-foreground text-sm mt-2">
               Connect your Spotify account to let butlers track your listening history and
-              sessions. Read-only — butlers will not control playback.
+              sessions. Read-only (butlers will not control playback).
             </p>
           </div>
           <Badge variant={stateBadgeVariant(displayState)}>
@@ -451,7 +451,7 @@ export function SpotifySetupCard() {
               <CardTitle>Spotify</CardTitle>
               <CardDescription className="mt-1">
                 Connect your Spotify account to let butlers track your listening history and
-                sessions. Read-only — butlers will not control playback.
+                sessions. Read-only (butlers will not control playback).
               </CardDescription>
             </div>
             <Badge variant={stateBadgeVariant(displayState)}>

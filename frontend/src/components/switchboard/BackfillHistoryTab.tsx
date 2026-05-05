@@ -186,7 +186,7 @@ function JobProgressRow({
                 disabled={isMutating || !online}
                 onClick={() => onResume(job.id)}
                 data-testid={`resume-btn-${job.id}`}
-                title={online ? "Resume job" : "Connector offline — cannot resume"}
+                title={online ? "Resume job" : "Connector offline, cannot resume"}
               >
                 <PlayCircle className="h-4 w-4" />
               </Button>
@@ -219,7 +219,7 @@ function JobProgressRow({
             <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-xs">
               <div>
                 <span className="text-muted-foreground">Date range:</span>{" "}
-                {job.date_from} — {job.date_to}
+                {job.date_from} to {job.date_to}
               </div>
               <div>
                 <span className="text-muted-foreground">Rate limit:</span>{" "}
@@ -372,7 +372,7 @@ function CreateJobDialog({ open, onOpenChange, connectors }: CreateJobDialogProp
                     key={`${c.connector_type}|${c.endpoint_identity}`}
                     value={`${c.connector_type}|${c.endpoint_identity}`}
                   >
-                    {c.connector_type} — {c.endpoint_identity}
+                    {c.connector_type}: {c.endpoint_identity}
                   </option>
                 ))}
               </select>
@@ -558,7 +558,7 @@ export function BackfillHistoryTab() {
         <div>
           <h2 className="text-lg font-semibold">Backfill History</h2>
           <p className="text-sm text-muted-foreground">
-            Historical replay jobs — start, track, pause, or cancel per-connector backfills.
+            Historical replay jobs: start, track, pause, or cancel per-connector backfills.
           </p>
         </div>
         <Button onClick={() => setCreateOpen(true)} data-testid="create-backfill-btn">

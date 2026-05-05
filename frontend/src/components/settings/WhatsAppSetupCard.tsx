@@ -168,7 +168,7 @@ export function WhatsAppSection() {
             <h3 className="leading-none font-semibold">WhatsApp</h3>
             <p className="text-muted-foreground text-sm mt-2">
               Connect your WhatsApp to give butlers awareness of your conversations.
-              Read-only — butlers will not send messages.
+              Read-only (butlers will not send messages).
             </p>
           </div>
           <Badge variant={stateBadgeVariant(displayState)}>
@@ -337,7 +337,7 @@ export function WhatsAppSetupCard() {
               <CardTitle>WhatsApp</CardTitle>
               <CardDescription className="mt-1">
                 Connect your WhatsApp to give butlers awareness of your conversations.
-                Read-only — butlers will not send messages.
+                Read-only (butlers will not send messages).
               </CardDescription>
             </div>
             <Badge variant={stateBadgeVariant(displayState)}>

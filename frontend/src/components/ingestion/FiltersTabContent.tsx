@@ -13,7 +13,7 @@ export function FiltersTabContent() {
       <CardHeader>
         <CardTitle>Filters</CardTitle>
         <CardDescription>
-          Deterministic ingestion policy — triage rules, thread affinity, and label filters.
+          Deterministic ingestion policy: triage rules, thread affinity, and label filters.
         </CardDescription>
       </CardHeader>
       <CardContent>

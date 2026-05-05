@@ -742,7 +742,7 @@ function CLIAuthAlertBanner() {
           {problematic.length === 1
             ? `${problematic[0].display_name} is not authenticated${
                 problematic[0].health_detail
-                  ? ` — ${problematic[0].health_detail}`
+                  ? `: ${problematic[0].health_detail}.`
                   : "."
               }`
             : `${problematic.length} CLI runtimes need re-authentication: ${problematic

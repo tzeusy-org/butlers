@@ -140,7 +140,7 @@ function ExplainButton({ episodeId }: ExplainButtonProps) {
       </Button>
       {isRateLimited && retryAfterSeconds !== null && (
         <p className="text-xs text-muted-foreground" data-testid="rate-limit-notice">
-          Rate limit active — retry in ~{Math.ceil(retryAfterSeconds / 3600)}h
+          Rate limit active, retry in ~{Math.ceil(retryAfterSeconds / 3600)}h
         </p>
       )}
       {explain.isSuccess && (

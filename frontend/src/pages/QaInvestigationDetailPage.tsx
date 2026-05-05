@@ -230,7 +230,7 @@ function TriggeringSessionsCard({ attempt }: { attempt: HealingAttempt }) {
       <CardHeader>
         <CardTitle>Triggering Sessions</CardTitle>
         <CardDescription>
-          Butler sessions whose failures produced this fingerprint — open one
+          Butler sessions whose failures produced this fingerprint. Open one
           to see the original traceback in context.
         </CardDescription>
       </CardHeader>

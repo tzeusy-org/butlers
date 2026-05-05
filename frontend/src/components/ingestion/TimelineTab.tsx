@@ -180,7 +180,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
                   <Link
                     key={s.id}
                     to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
-                    title={`${s.butler_name} — ${dur}${s.model ? ` (${s.model})` : ""}`}
+                    title={`${s.butler_name}: ${dur}${s.model ? ` (${s.model})` : ""}`}
                     className={`absolute top-0.5 bottom-0.5 rounded-sm ${color} opacity-80 hover:opacity-100 transition-opacity cursor-pointer`}
                     style={{ left: `${left}%`, width: `${width}%` }}
                   >
@@ -206,11 +206,11 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
 function triageExplanation(decision: string | null | undefined): string | null {
   switch (decision) {
     case "metadata_only":
-      return "Metadata-only ingestion — full content was not stored and no LLM session was spawned.";
+      return "Metadata-only ingestion: full content was not stored and no LLM session was spawned.";
     case "skip":
-      return "Skipped by ingestion policy — this event matched a filter rule.";
+      return "Skipped by ingestion policy: this event matched a filter rule.";
     case "low_priority_queue":
-      return "Queued as low-priority — session may be deferred.";
+      return "Queued as low-priority, session may be deferred.";
     default:
       return null;
   }

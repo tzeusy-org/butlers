@@ -1066,7 +1066,7 @@ export function ModelCatalogCard() {
                                   <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
                                 </TooltipTrigger>
                                 <TooltipContent side="right" className="max-w-64">
-                                  High-volume, high-noise traffic (e.g. discretion gates) —
+                                  High-volume, high-noise traffic (e.g. discretion gates):
                                   best served by local models to avoid exorbitant cloud costs.
                                 </TooltipContent>
                               </Tooltip>

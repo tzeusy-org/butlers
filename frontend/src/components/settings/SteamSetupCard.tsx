@@ -423,7 +423,7 @@ export function SteamSection() {
             <h3 className="leading-none font-semibold">Steam</h3>
             <p className="text-muted-foreground text-sm mt-2">
               Connect your Steam account to let butlers track your game library and playtime.
-              Read-only — butlers will not modify your account.
+              Read-only (butlers will not modify your account).
             </p>
           </div>
           {activeAccounts.length > 0 ? (

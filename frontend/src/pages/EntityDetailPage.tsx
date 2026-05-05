@@ -913,7 +913,7 @@ function WorkValue({
     <span>
       {employerNode}
       {roleText && (
-        <span className="text-muted-foreground"> — {roleText}</span>
+        <span className="text-muted-foreground">, {roleText}</span>
       )}
     </span>
   );
