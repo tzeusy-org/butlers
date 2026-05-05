@@ -21,7 +21,9 @@
 // ---------------------------------------------------------------------------
 
 import { createContext, useContext } from "react"
-import { DEFAULT_TZ } from "@/components/chronicles/tz-format"
+
+/** Default IANA timezone for the owner's configured zone. Matches the SGT constant in briefing.py. */
+export const DEFAULT_TZ = "Asia/Singapore"
 
 // ---------------------------------------------------------------------------
 // Context

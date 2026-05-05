@@ -3,8 +3,7 @@ import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { RouterProvider } from 'react-router'
 import { queryClient } from './lib/query-client'
 import { router } from './router.tsx'
-import { AppTimezoneProvider } from '@/components/ui/timezone-context'
-import { DEFAULT_TZ } from '@/components/chronicles/tz-format'
+import { AppTimezoneProvider, DEFAULT_TZ } from '@/components/ui/timezone-context'
 import { useGeneralSettings } from '@/hooks/use-general-settings'
 
 // ---------------------------------------------------------------------------
