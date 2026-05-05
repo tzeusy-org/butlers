@@ -17,7 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Page } from "@/components/ui/page";
+import { DetailPage } from "@/components/layout/DetailPage";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useButler } from "@/hooks/use-butlers";
@@ -408,118 +408,114 @@ export default function ButlerDetailPage() {
   );
 
   return (
-    <Page
-      archetype="detail"
-      title={name}
-      description={description}
+    <DetailPage
+      record={{ title: name, subtitle: description }}
       breadcrumbs={breadcrumbs}
       actions={<ChatPanel butlerName={name} />}
-    >
-      {/* Pulse: butler health / heartbeat strip */}
-      <ButlerHeartbeatTile />
+      pulse={<ButlerHeartbeatTile />}
+      primary={
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="sessions">Sessions</TabsTrigger>
+            <TabsTrigger value="config">Config</TabsTrigger>
+            <TabsTrigger value="skills">Skills</TabsTrigger>
+            <TabsTrigger value="schedules">Schedules</TabsTrigger>
+            <TabsTrigger value="trigger">Trigger</TabsTrigger>
+            <TabsTrigger value="mcp">MCP</TabsTrigger>
+            <TabsTrigger value="state">State</TabsTrigger>
+            <TabsTrigger value="crm">CRM</TabsTrigger>
+            <TabsTrigger value="memory">Memory</TabsTrigger>
+            <TabsTrigger value="models">Models</TabsTrigger>
+            {showHealthTab && <TabsTrigger value="health">Health</TabsTrigger>}
+            {isSwitchboard && (
+              <>
+                <TabsTrigger value="routing-log">Routing Log</TabsTrigger>
+                <TabsTrigger value="registry">Registry</TabsTrigger>
+              </>
+            )}
+          </TabsList>
 
-      {/* Primary: existing Tabs block — tabs remain primary content, not flattened */}
-      <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="sessions">Sessions</TabsTrigger>
-          <TabsTrigger value="config">Config</TabsTrigger>
-          <TabsTrigger value="skills">Skills</TabsTrigger>
-          <TabsTrigger value="schedules">Schedules</TabsTrigger>
-          <TabsTrigger value="trigger">Trigger</TabsTrigger>
-          <TabsTrigger value="mcp">MCP</TabsTrigger>
-          <TabsTrigger value="state">State</TabsTrigger>
-          <TabsTrigger value="crm">CRM</TabsTrigger>
-          <TabsTrigger value="memory">Memory</TabsTrigger>
-          <TabsTrigger value="models">Models</TabsTrigger>
-          {showHealthTab && <TabsTrigger value="health">Health</TabsTrigger>}
+          <TabsContent value="overview">
+            <ButlerOverviewTab butlerName={name} />
+          </TabsContent>
+
+          <TabsContent value="sessions">
+            <ButlerSessionsTab butlerName={name} />
+          </TabsContent>
+
+          <TabsContent value="config">
+            <ButlerConfigTab butlerName={name} />
+          </TabsContent>
+
+          <TabsContent value="skills">
+            <Suspense fallback={<TabFallback label="skills" />}>
+              <ButlerSkillsTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="schedules">
+            <Suspense fallback={<TabFallback label="schedules" />}>
+              <ButlerSchedulesTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="trigger">
+            <Suspense fallback={<TabFallback label="trigger" />}>
+              <ButlerTriggerTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="state">
+            <Suspense fallback={<TabFallback label="state" />}>
+              <ButlerStateTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="mcp">
+            <Suspense fallback={<TabFallback label="mcp" />}>
+              <ButlerMcpTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="crm">
+            <ButlerCrmTab butlerName={name} />
+          </TabsContent>
+
+          <TabsContent value="memory">
+            <Suspense fallback={<TabFallback label="memory" />}>
+              <ButlerMemoryTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          <TabsContent value="models">
+            <Suspense fallback={<TabFallback label="models" />}>
+              <ButlerModelOverridesTab butlerName={name} />
+            </Suspense>
+          </TabsContent>
+
+          {showHealthTab && (
+            <TabsContent value="health">
+              <ButlerHealthTab butlerName={name} />
+            </TabsContent>
+          )}
+
           {isSwitchboard && (
             <>
-              <TabsTrigger value="routing-log">Routing Log</TabsTrigger>
-              <TabsTrigger value="registry">Registry</TabsTrigger>
+              <TabsContent value="routing-log">
+                <Suspense fallback={<TabFallback label="routing log" />}>
+                  <ButlerRoutingLogTab />
+                </Suspense>
+              </TabsContent>
+              <TabsContent value="registry">
+                <Suspense fallback={<TabFallback label="registry" />}>
+                  <ButlerRegistryTab />
+                </Suspense>
+              </TabsContent>
             </>
           )}
-        </TabsList>
-
-        <TabsContent value="overview">
-          <ButlerOverviewTab butlerName={name} />
-        </TabsContent>
-
-        <TabsContent value="sessions">
-          <ButlerSessionsTab butlerName={name} />
-        </TabsContent>
-
-        <TabsContent value="config">
-          <ButlerConfigTab butlerName={name} />
-        </TabsContent>
-
-        <TabsContent value="skills">
-          <Suspense fallback={<TabFallback label="skills" />}>
-            <ButlerSkillsTab butlerName={name} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="schedules">
-          <Suspense fallback={<TabFallback label="schedules" />}>
-            <ButlerSchedulesTab butlerName={name} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="trigger">
-          <Suspense fallback={<TabFallback label="trigger" />}>
-            <ButlerTriggerTab butlerName={name} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="state">
-          <Suspense fallback={<TabFallback label="state" />}>
-            <ButlerStateTab butlerName={name} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="mcp">
-          <Suspense fallback={<TabFallback label="mcp" />}>
-            <ButlerMcpTab butlerName={name} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="crm">
-          <ButlerCrmTab butlerName={name} />
-        </TabsContent>
-
-        <TabsContent value="memory">
-          <Suspense fallback={<TabFallback label="memory" />}>
-            <ButlerMemoryTab butlerName={name} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="models">
-          <Suspense fallback={<TabFallback label="models" />}>
-            <ButlerModelOverridesTab butlerName={name} />
-          </Suspense>
-        </TabsContent>
-
-        {showHealthTab && (
-          <TabsContent value="health">
-            <ButlerHealthTab butlerName={name} />
-          </TabsContent>
-        )}
-
-        {isSwitchboard && (
-          <>
-            <TabsContent value="routing-log">
-              <Suspense fallback={<TabFallback label="routing log" />}>
-                <ButlerRoutingLogTab />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="registry">
-              <Suspense fallback={<TabFallback label="registry" />}>
-                <ButlerRegistryTab />
-              </Suspense>
-            </TabsContent>
-          </>
-        )}
-      </Tabs>
-    </Page>
+        </Tabs>
+      }
+    />
   );
 }

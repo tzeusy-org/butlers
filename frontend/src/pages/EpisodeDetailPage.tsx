@@ -9,7 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Page } from "@/components/ui/page";
+import { DetailPage } from "@/components/layout/DetailPage";
 import { useEpisode } from "@/hooks/use-memory";
 
 export default function EpisodeDetailPage() {
@@ -40,17 +40,14 @@ export default function EpisodeDetailPage() {
   );
 
   return (
-    <Page
-      archetype="detail"
-      title={title}
-      description={subtitle}
+    <DetailPage
+      record={{ title, subtitle, type: "episode" }}
       breadcrumbs={breadcrumbs}
       loading={isLoading}
       error={error ?? null}
-    >
-      {episode && (
-        <>
-          {/* Primary: episode body + status */}
+      pulse={null}
+      primary={
+        episode ? (
           <Card>
             <CardHeader>
               <div className="flex flex-wrap items-center gap-3">
@@ -131,8 +128,10 @@ export default function EpisodeDetailPage() {
               )}
             </CardContent>
           </Card>
-
-          {/* Supporting: provenance + timestamps */}
+        ) : null
+      }
+      supporting={
+        episode ? (
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Provenance</CardTitle>
@@ -151,8 +150,8 @@ export default function EpisodeDetailPage() {
               </div>
             </CardContent>
           </Card>
-        </>
-      )}
-    </Page>
+        ) : null
+      }
+    />
   );
 }

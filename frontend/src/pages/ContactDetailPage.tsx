@@ -3,7 +3,7 @@ import { useParams } from "react-router";
 
 import ContactDetailView from "@/components/relationship/ContactDetailView";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
-import { Page } from "@/components/ui/page";
+import { DetailPage } from "@/components/layout/DetailPage";
 import { useContact } from "@/hooks/use-contacts";
 
 // ---------------------------------------------------------------------------
@@ -58,29 +58,21 @@ export default function ContactDetailPage() {
   const subtitle = contact ? buildSubtitle(contact) : undefined;
 
   return (
-    <Page
-      archetype="detail"
-      title={contact?.full_name ?? contactId ?? "Contact"}
-      description={subtitle}
+    <DetailPage
+      record={{ title: contact?.full_name ?? contactId ?? "Contact", subtitle }}
+      breadcrumbs={breadcrumbs}
       loading={isLoading}
       error={error ?? null}
-      breadcrumbs={breadcrumbs}
-    >
-      {contact && (
-        <>
-          {/* Pulse strip — relationship closeness at-a-glance (entity-linked contacts only) */}
-          {contact.entity_id && (
-            <PulseStrip
-              entityId={contact.entity_id}
-              dunbarTier={null}
-              isPinned={false}
-            />
-          )}
-
-          {/* Primary: contact detail view (info, channels, entity link, add info form) */}
-          <ContactDetailView contact={contact} />
-        </>
-      )}
-    </Page>
+      pulse={
+        contact?.entity_id ? (
+          <PulseStrip
+            entityId={contact.entity_id}
+            dunbarTier={null}
+            isPinned={false}
+          />
+        ) : null
+      }
+      primary={contact ? <ContactDetailView contact={contact} /> : null}
+    />
   );
 }
