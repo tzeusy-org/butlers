@@ -83,7 +83,7 @@ function shortId(id: string): string {
 
 function EmptyState({ hasActiveFilters = false }: { hasActiveFilters?: boolean }) {
   const description = hasActiveFilters
-    ? "No notifications match the current filters. Clear filters to see all notifications."
+    ? "No notifications match the active filters."
     : "Notifications appear as butlers send messages via Telegram, email, and other channels.";
 
   return (

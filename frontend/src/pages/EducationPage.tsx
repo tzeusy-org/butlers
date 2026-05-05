@@ -52,12 +52,7 @@ export default function EducationPage() {
   if (mindMaps.length === 0) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold tracking-tight">Education</h1>
-          <Button onClick={() => setRequestDialogOpen(true)}>
-            Request curriculum
-          </Button>
-        </div>
+        <h1 className="text-2xl font-bold tracking-tight">Education</h1>
         <EmptyState
           title="No curriculums yet."
           description="Request one to start adaptive learning."
