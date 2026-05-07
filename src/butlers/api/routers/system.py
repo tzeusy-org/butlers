@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import importlib.metadata
 import logging
+import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from opentelemetry import trace
@@ -359,27 +361,108 @@ async def get_database_facts(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/backups", response_model=ApiResponse[BackupFacts])
-async def get_backup_facts() -> ApiResponse[BackupFacts]:
-    """Return backup recency and source reachability.
+def _read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
+    """Scan *backup_dir* for timestamped pg_dump files and return BackupFacts.
 
-    In v1, no backup strategy has been configured in this codebase (no
-    pg_dump cron, no Minio/S3 bucket is documented). The endpoint always
-    returns backup_source_reachable=false and null fields. A follow-up bead
-    should be filed to configure and document the backup strategy.
+    Backup files must match the pattern ``butlers_*.sql.gz`` (written by
+    ``deploy/backup/pg_dump.sh``).  Files are sorted by mtime descending so
+    the most-recent dump is always first.
 
-    Graceful degradation: always returns HTTP 200 with null fields when the
-    backup source is unreachable or unconfigured, never HTTP 503.
+    Returns a degraded (backup_source_reachable=False) payload when:
+    - the directory does not exist
+    - the directory is not readable (OSError)
+    No exception is propagated.
     """
-    system_backups_reads_total.inc()
-    return ApiResponse(
-        data=BackupFacts(
+    if not backup_dir.is_dir():
+        return BackupFacts(
             last_backup_at=None,
             last_backup_size_bytes=None,
             backup_source_reachable=False,
             backup_history=[],
         )
+
+    # Stat each file individually so a single racy disappearance can't abort
+    # the whole sort.  Collect (mtime, stat) pairs, skip files that vanish
+    # between the glob and the stat call, then sort the surviving pairs.
+    try:
+        candidates = list(backup_dir.glob("butlers_*.sql.gz"))
+    except OSError as exc:
+        logger.warning("Cannot read backup directory %s: %s", backup_dir, exc)
+        return BackupFacts(
+            last_backup_at=None,
+            last_backup_size_bytes=None,
+            backup_source_reachable=False,
+            backup_history=[],
+        )
+
+    stamped: list[tuple[float, os.stat_result]] = []
+    for p in candidates:
+        try:
+            st = p.stat()
+            stamped.append((st.st_mtime, st))
+        except OSError:
+            continue  # race: file removed between glob and stat
+
+    stamped.sort(key=lambda t: t[0], reverse=True)
+
+    history: list[BackupEvent] = []
+    for _mtime, stat in stamped:
+        mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+        history.append(
+            BackupEvent(
+                completed_at=mtime_dt.isoformat(),
+                size_bytes=stat.st_size,
+                status="success",
+            )
+        )
+
+    if not history:
+        # Directory exists and is readable, but no dumps have been written yet.
+        return BackupFacts(
+            last_backup_at=None,
+            last_backup_size_bytes=None,
+            backup_source_reachable=True,
+            backup_history=[],
+        )
+
+    latest = history[0]
+    return BackupFacts(
+        last_backup_at=latest.completed_at,
+        last_backup_size_bytes=latest.size_bytes,
+        backup_source_reachable=True,
+        backup_history=history,
     )
+
+
+@router.get("/backups", response_model=ApiResponse[BackupFacts])
+async def get_backup_facts() -> ApiResponse[BackupFacts]:
+    """Return backup recency and source reachability.
+
+    Reads filesystem pg_dump files from the directory configured by the
+    ``BUTLERS_BACKUP_DIR`` environment variable (written by
+    ``deploy/backup/pg_dump.sh`` via the ``backup-cron`` sidecar).
+
+    When ``BUTLERS_BACKUP_DIR`` is not set or the directory is absent, the
+    endpoint returns ``backup_source_reachable=false`` with null fields.
+    This is the expected state for unconfigured deployments — not an error.
+
+    Graceful degradation: always returns HTTP 200, never HTTP 503.
+    """
+    system_backups_reads_total.inc()
+
+    backup_dir_env = os.environ.get("BUTLERS_BACKUP_DIR", "").strip()
+    if not backup_dir_env:
+        return ApiResponse(
+            data=BackupFacts(
+                last_backup_at=None,
+                last_backup_size_bytes=None,
+                backup_source_reachable=False,
+                backup_history=[],
+            )
+        )
+
+    backup_dir = Path(backup_dir_env)
+    return ApiResponse(data=_read_backup_facts_from_dir(backup_dir))
 
 
 # ---------------------------------------------------------------------------
