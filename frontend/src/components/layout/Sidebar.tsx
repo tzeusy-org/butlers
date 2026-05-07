@@ -65,8 +65,8 @@ function navLinkClassName(
     collapsed ? 'justify-center' : 'gap-3',
     indented && !collapsed ? 'pl-9' : null,
     isActive
-      ? 'bg-accent text-accent-foreground'
-      : 'text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground',
+      ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+      : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
   ].filter(Boolean).join(' ')
 }
 
