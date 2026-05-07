@@ -340,8 +340,7 @@ graph LR
 - `frontend/src/App.css` is essentially empty (one orphan `.app`
   class, never used).
 - Dark-mode toggling is handled by a hand-rolled
-  `hooks/useDarkMode.ts`, not `next-themes` (despite `next-themes`
-  being a declared dependency; it is unused).
+  `hooks/useDarkMode.ts`.
 
 **Theme commitment (settled bu-iaw5h.1):** The project has committed to
 dark-primary. `useDarkMode` defaults to `'dark'` on a cold load with no
