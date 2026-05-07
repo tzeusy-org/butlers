@@ -269,11 +269,33 @@ the use case before being treated as binding.
 - Whether the breadcrumb autobuilder is worth keeping (it produces
   awkward output: "Qa / Investigations") or whether each page should
   own its breadcrumbs explicitly.
-- Whether dark mode is the *primary* design target rather than light.
-  Operators tend to leave dashboards open at night.
 - Whether a typographic scale (one or two custom families, defined
   sizes) is worth introducing, or whether the current system stack
   is part of the dashboard's "operator-tool" charm.
+
+---
+
+## Theme commitment
+
+> Status: **settled** (bu-iaw5h.1).
+
+**Physical scene:** I open this dashboard at 10pm from a dim room after
+reviewing my day, and again at 8am from a bright kitchen while coffee is
+brewing; the evening glance is more deliberate and more frequent than the
+morning check.
+
+**Decision: dark-primary with light fallback.**
+
+Dark is the designed-first mode. Every color token, chart palette, and contrast
+ratio is tuned against a dark background under dim ambient. Light mode is a
+supported fallback, available via the theme toggle, but it is not the primary
+design target. If a design decision requires a trade-off, the dark experience
+wins.
+
+This is not "dual-with-dark-default." That pattern keeps both modes at equal
+weight and treats the default as a preference setting. This pattern treats dark
+as the canonical surface. Light degrades gracefully but is not independently
+designed from first principles.
 
 ---
 
