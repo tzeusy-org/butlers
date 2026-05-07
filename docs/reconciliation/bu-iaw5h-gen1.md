@@ -3,7 +3,7 @@
 **Issue:** bu-iaw5h.5
 **Date:** 2026-05-07
 **Epic:** bu-iaw5h -- Frontend redesign F: theme commitment + chart palette rationalization
-**Status:** Coverage complete with two known follow-on gaps addressed by parallel workers (bu-yge9o, bu-h3k9n).
+**Status:** Coverage complete. Two scope extensions (bu-yge9o, bu-h3k9n) are tracked as separate beads and are being handled by parallel workers; they are not gaps in the epic's acceptance criteria.
 
 ---
 
@@ -67,7 +67,13 @@
 | 4. `npm run build` passes | PASS (per close reason) | 1150 vitest tests pass; `tsc --noEmit` passes |
 | 5. Toasts render with correct theme in both modes (manual smoke) | NOT VERIFIED IN BROWSER (see below) | Dev stack is running but headless environment prevents live verification |
 
-**Gap:** None.
+**Minor documentation drift (not a gap):** Two doc files retain a parenthetical phrase written before bu-iaw5h.3 landed. Both describe `useDarkMode` as the real implementation and mention `next-themes` only as an aside about the old declared-but-unused dependency:
+- `about/heart-and-soul/design-language.md` line 78: "Custom `useDarkMode` hook (not `next-themes`, despite it being a dependency)"
+- `about/lay-and-land/frontend.md` lines 343-344: "not `next-themes` (despite `next-themes` being a declared dependency; it is unused)"
+
+These parentheticals are now stale since the dependency was removed. The code is correct (zero `next-themes` imports, package.json clean). The doc phrases are harmless but misleading; they should be trimmed as a follow-up cleanup. This does not affect the AC verdict: the code-level AC is PASS.
+
+**Gap:** None at epic scope. Minor doc cleanup tracked as cosmetic follow-up.
 
 ---
 
@@ -113,6 +119,6 @@ The code path is correct and unambiguous.
 
 ## Summary
 
-All five epic acceptance criteria are covered by closed sibling beads. No new gap beads are required from this reconciliation. The two known follow-on items (bu-yge9o for token family muting, bu-h3k9n for light-mode a11y minimums) were correctly identified and tracked as separate beads before this reconciliation ran; they extend the work rather than repair it.
+Epic acceptance criteria 1-4 are covered by closed sibling beads (bu-iaw5h.1 through bu-iaw5h.4). AC 5 (gen-1 reconciliation closed clean) is covered by this report. No new gap beads are required from this reconciliation. The two known follow-on items (bu-yge9o for token family muting, bu-h3k9n for light-mode a11y minimums) were correctly identified and tracked as separate beads before this reconciliation ran; they extend the work rather than repair it.
 
 The epic scope is clean. The close reason for bu-iaw5h.5 should record: "Gen-1 reconciliation complete. AC 1-4 fully covered by sibling beads. Two follow-on scope extensions (token muting: bu-yge9o; a11y floor: bu-h3k9n) are tracked separately and do not block this epic's closure. No browser-visual confirmation due to headless environment; code path review substituted."
