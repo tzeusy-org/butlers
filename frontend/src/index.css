@@ -72,7 +72,7 @@
   --permanence-fleeting:  oklch(0.708 0 0);        /* neutral gray              — chroma 0 (achromatic) */
   --permanence-medium:    oklch(0.6 0.110 184.7);  /* teal-blue                 — chroma 0.118 → 0.110 */
   --permanence-strong:    oklch(0.646 0.120 41.1); /* warm orange               — chroma 0.222 → 0.120 */
-  --permanence-permanent: oklch(0.488 0.130 264.4);/* deep blue                 — chroma 0.243 → 0.130 */
+  --permanence-permanent: oklch(0.488 0.130 264.4); /* deep blue                 — chroma 0.243 → 0.130 */
 
   /* Categorical palette */
   --category-1: oklch(0.623 0.130 259.0);  /* blue   — chroma 0.214 → 0.130 */
@@ -365,9 +365,9 @@ body {
 
   /* Permanence — muted to match evening-glance dark-primary commitment */
   --permanence-fleeting:  oklch(0.556 0 0);                        /* achromatic — no change */
-  --permanence-medium:    oklch(0.696 0.120 162.5);                /* chroma 0.170 → 0.120 */
-  --permanence-strong:    oklch(0.769 0.120 70.1);                 /* chroma 0.188 → 0.120 */
-  --permanence-permanent: oklch(0.627 0.130 303.9);                /* chroma 0.265 → 0.130 */
+  --permanence-medium:    oklch(0.696 0.115 162.5);                /* teal   — chroma 0.170 → 0.115 */
+  --permanence-strong:    oklch(0.769 0.120 70.1);                 /* amber  — chroma 0.188 → 0.120 */
+  --permanence-permanent: oklch(0.627 0.130 303.9);                /* violet — chroma 0.265 → 0.130 */
 
   /* Categorical palette — muted to match evening-glance dark-primary commitment */
   --category-1: oklch(0.680 0.130 259.0);  /* blue   — chroma 0.195 → 0.130 */
