@@ -5,19 +5,24 @@ type Theme = 'light' | 'dark' | 'system'
 const hasWindow = typeof window !== 'undefined'
 
 function getSystemTheme(): 'light' | 'dark' {
-  if (!hasWindow) return 'light'
+  // SSR guard: no window means we cannot read prefers-color-scheme.
+  // Default to 'dark' to stay consistent with the dark-primary commitment
+  // (see about/heart-and-soul/design-language.md -- "Theme commitment").
+  if (!hasWindow) return 'dark'
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
 function getStoredTheme(): Theme {
-  if (!hasWindow) return 'system'
+  if (!hasWindow) return 'dark'
   try {
     const stored = window.localStorage.getItem('theme')
     if (stored === 'light' || stored === 'dark' || stored === 'system') return stored
   } catch {
     // localStorage may throw in private mode / sandboxed contexts.
   }
-  return 'system'
+  // Dark is the designed-first mode (see about/heart-and-soul/design-language.md --
+  // "Theme commitment"). System preference is not the primary default; dark is.
+  return 'dark'
 }
 
 export function useDarkMode() {
