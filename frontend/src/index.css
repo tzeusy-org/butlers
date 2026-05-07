@@ -351,7 +351,7 @@ body {
   --chart-5: oklch(0.660 0.140 16.4);   /* muted rose   — chroma 0.246 → 0.140 */
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.140 264.376);  /* chroma 0.243 → 0.140 */
+  --sidebar-primary: oklch(0.560 0.140 264.4);    /* aligned to chart-1 dark: L 0.488 → 0.560, hue 264.376 → 264.4 */
   --sidebar-primary-foreground: oklch(0.985 0 0);
   --sidebar-accent: oklch(0.269 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
