@@ -75,8 +75,7 @@ inconsistently applied**. Naming it makes it easier to reason about.
 - TanStack Query for data, React Router v7 for routing
 - `lucide-react` icons, `sonner` toasts, `recharts` charts, `@xyflow/react`
   graphs, `maplibre-gl` maps
-- Custom `useDarkMode` hook (not `next-themes`, despite it being a
-  dependency) controlling a `.dark` class on `<html>`
+- Custom `useDarkMode` hook controlling a `.dark` class on `<html>`
 
 ### Visual Tokens
 - **Color:** semantic tokens declared in oklch in `src/index.css`
