@@ -33,11 +33,11 @@
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
+  --chart-1: oklch(0.620 0.130 41.1);   /* warm orange — chroma 0.222 → 0.130 */
+  --chart-2: oklch(0.600 0.100 184.7);  /* teal        — chroma 0.118 → 0.100 */
+  --chart-3: oklch(0.440 0.080 227.4);  /* slate-blue  — L lifted 0.398 → 0.440, chroma 0.07 → 0.080 */
+  --chart-4: oklch(0.800 0.120 84.4);   /* soft yellow — chroma 0.189 → 0.120, L 0.828 → 0.800 */
+  --chart-5: oklch(0.700 0.120 70.1);   /* soft amber  — chroma 0.188 → 0.120, L 0.769 → 0.700 */
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -70,9 +70,9 @@
 
   /* Permanence */
   --permanence-fleeting:  oklch(0.708 0 0);        /* neutral gray              */
-  --permanence-medium:    oklch(0.6 0.118 184.7);  /* teal-blue  (≈ chart-2)    */
-  --permanence-strong:    oklch(0.646 0.222 41.1); /* warm orange (≈ chart-1)   */
-  --permanence-permanent: oklch(0.488 0.243 264.4);/* deep blue  (≈ dark chart-1)*/
+  --permanence-medium:    oklch(0.6 0.118 184.7);  /* teal-blue                 */
+  --permanence-strong:    oklch(0.646 0.222 41.1); /* warm orange               */
+  --permanence-permanent: oklch(0.488 0.243 264.4);/* deep blue                 */
 
   /* Categorical palette */
   --category-1: oklch(0.623 0.214 259.0);  /* blue   — #3b82f6 */
@@ -344,11 +344,11 @@ body {
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
+  --chart-1: oklch(0.560 0.140 264.4);  /* muted blue   — L 0.488 → 0.560, chroma 0.243 → 0.140 */
+  --chart-2: oklch(0.720 0.130 162.5);  /* muted teal   — chroma 0.170 → 0.130 */
+  --chart-3: oklch(0.760 0.130 70.1);   /* soft amber   — chroma 0.188 → 0.130 */
+  --chart-4: oklch(0.650 0.150 303.9);  /* muted violet — chroma 0.265 → 0.150 */
+  --chart-5: oklch(0.660 0.140 16.4);   /* muted rose   — chroma 0.246 → 0.140 */
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
