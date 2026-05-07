@@ -307,10 +307,11 @@ Light mode is a supported fallback, not the canonical surface. The minimums
 below are what "degrades gracefully" means in concrete, auditable terms. Each
 minimum is anchored to a WCAG 2.1 criterion or a stated product rationale.
 
-We promise **WCAG AA** for the light-mode fallback. We do not promise **AAA**
-in light mode. AAA contrast (7:1 normal, 4.5:1 large) is desirable but not
-required; if chasing it breaks the palette coherence established in dark mode,
-AA wins.
+We promise **WCAG AA contrast minimums** (color contrast and non-text contrast)
+for the light-mode fallback. We do not promise full AAA, nor do we promise
+every WCAG AA criterion beyond contrast. AAA contrast (7:1 normal, 4.5:1
+large) is desirable but not required; if chasing it breaks the palette
+coherence established in dark mode, AA wins.
 
 ### Body text and primary UI labels
 
@@ -319,15 +320,16 @@ AA wins.
 The token pair that must satisfy this is `--foreground` on `--background`.
 Current light values: `--foreground oklch(0.145 0 0)` on `--background
 oklch(1 0 0)` (white). Estimated contrast: approximately 15:1. This is well
-clear of the floor; do not lower `--foreground` L above 0.35 in light mode
+clear of the floor; do not raise `--foreground` L above 0.35 in light mode
 without re-verifying.
 
 **Muted text (`--muted-foreground`) is not body text.** It is a supplemental
 label tier (secondary stats, metadata, timestamps). Its light-mode value of
 `oklch(0.556 0 0)` yields approximately 3.7:1 on white, which satisfies WCAG
-AA for large text (18px regular or 14px bold) but not for normal-weight small
-text. This is an accepted trade-off, with the constraint that muted-foreground
-text must never be the primary semantic carrier for a piece of information.
+AA for large text (18pt regular / ~24px, or 14pt bold / ~19px) but not for
+normal-weight small text. This is an accepted trade-off, with the constraint
+that muted-foreground text must never be the primary semantic carrier for a
+piece of information.
 If a string is the only place where critical meaning appears, it must use
 `--foreground`, not `--muted-foreground`.
 
@@ -346,7 +348,8 @@ page background.
 ### Focus states
 
 **Minimum: 3:1 between the focus indicator and its adjacent color
-(WCAG 2.4.7 / 2.4.11, focus visible).**
+(WCAG 2.4.7 requires focus visible; the 3:1 ratio is defined in WCAG 2.4.11,
+a WCAG 2.2 criterion for Focus Appearance).**
 
 The light-mode focus token is `--ring: oklch(0.708 0 0)`. Its estimated
 contrast against white (1.0) is approximately 2.2:1, which does not meet the
@@ -398,8 +401,10 @@ same pairing rule: always accompany amber severity with a text label.
 
 **Minimum: adjacent chart series must differ by at least 0.15 L in OKLCH, or
 by hue angle separation exceeding 60 degrees, when rendered in light mode.
-This is not a WCAG criterion; it is a stated product floor anchored in
-practical legibility for deuteranopic and protanopic users.**
+Pairs that fail both criteria are permitted only when the chart includes a
+legend or direct data labels so that color is not the sole distinguishing
+signal. This is not a WCAG criterion; it is a stated product floor anchored
+in practical legibility for deuteranopic and protanopic users.**
 
 The light-mode chart palette (`--chart-1` through `--chart-5`) passes this
 floor on hue separation:
@@ -410,15 +415,15 @@ floor on hue separation:
 - `--chart-3` slate-blue (H=227): clearly distinct under all common
   deficiency types. Blue is largely preserved under both deuteranopia and
   protanopia.
-- `--chart-4` soft-yellow (H=84, L=0.800) vs `--chart-5` soft-amber (H=70,
-  L=0.700): hue separation is only 14 degrees. These two are the at-risk
-  pair. The L difference of 0.10 provides brightness differentiation, but
-  this is marginal. Rule: when `--chart-4` and `--chart-5` appear in the same
-  chart, the chart must include a legend or direct label; relying on color
-  alone to distinguish them is not allowed in light mode.
+- `--chart-4` soft-yellow (H=84, L=0.828) vs `--chart-5` soft-amber (H=70,
+  L=0.769): hue separation is only 14 degrees. These two are the at-risk
+  pair. The L difference of 0.06 falls below the 0.15 floor. Rule: when
+  `--chart-4` and `--chart-5` appear in the same chart, the chart must include
+  a legend or direct label; relying on color alone to distinguish them is not
+  allowed in light mode.
 - `--chart-1` orange (H=41) and `--chart-5` amber (H=70): 29 degrees apart.
-  Both become warm yellows under deuteranopia; the L difference of 0.08 is
-  insufficient on its own. Same rule: use labels or patterns when these two
+  Both become warm yellows under deuteranopia; the L difference of 0.12 also
+  falls below the 0.15 floor. Same rule: use labels or patterns when these two
   series co-appear.
 
 ### What is out of scope
