@@ -65,8 +65,8 @@ function navLinkClassName(
     collapsed ? 'justify-center' : 'gap-3',
     indented && !collapsed ? 'pl-9' : null,
     isActive
-      ? 'bg-accent text-accent-foreground'
-      : 'text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground',
+      ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+      : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
   ].filter(Boolean).join(' ')
 }
 
@@ -158,8 +158,8 @@ function NavGroup({
         className={[
           'flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
           hasActiveChild
-            ? 'text-accent-foreground'
-            : 'text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground',
+            ? 'text-sidebar-accent-foreground'
+            : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
         ].join(' ')}
         aria-expanded={expanded}
       >
@@ -396,7 +396,7 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClic
         <div className="border-t border-border p-2">
           <button
             onClick={onToggleCollapse}
-            className="flex w-full items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-accent-foreground"
+            className="flex w-full items-center justify-center rounded-md p-2 text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
             aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             <svg
