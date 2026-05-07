@@ -20,6 +20,7 @@
 # Output filename format: butlers_YYYY-MM-DDTHH-MM-SS.sql.gz
 
 set -eu
+set -o pipefail
 
 POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
@@ -34,10 +35,20 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H-%M-%S)"
 OUTFILE="${BACKUP_DIR}/butlers_${TIMESTAMP}.sql.gz"
 TMPFILE="${OUTFILE}.tmp"
 
+# Remove the temp file on exit so a failed dump never leaves a partial file
+# in the backup directory (the directory scanner ignores .tmp files, but this
+# keeps the directory clean even if something kills the process mid-run).
+cleanup() {
+  rm -f "${TMPFILE}"
+}
+trap cleanup EXIT
+
 echo "[backup] start: ${TIMESTAMP}, host=${POSTGRES_HOST}:${POSTGRES_PORT}, db=${POSTGRES_DB}"
 
 # pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.
+# pipefail ensures a pg_dump failure propagates through the pipe and the
+# cleanup trap removes the temp file before the mv would make it permanent.
 PGPASSWORD="${POSTGRES_PASSWORD:-}" pg_dump \
   --host="${POSTGRES_HOST}" \
   --port="${POSTGRES_PORT}" \
@@ -51,8 +62,9 @@ mv "${TMPFILE}" "${OUTFILE}"
 echo "[backup] written: ${OUTFILE} ($(du -h "${OUTFILE}" | cut -f1))"
 
 # Prune files older than BACKUP_RETAIN_DAYS days.
+# -exec echo before -delete so the filename is logged before removal.
 find "${BACKUP_DIR}" -maxdepth 1 -name "butlers_*.sql.gz" \
-  -mtime "+${BACKUP_RETAIN_DAYS}" -delete \
-  -exec echo "[backup] pruned: {}" \;
+  -mtime "+${BACKUP_RETAIN_DAYS}" \
+  -exec echo "[backup] pruned: {}" \; -delete
 
 echo "[backup] done"

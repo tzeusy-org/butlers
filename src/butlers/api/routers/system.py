@@ -381,12 +381,11 @@ def _read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             backup_history=[],
         )
 
+    # Stat each file individually so a single racy disappearance can't abort
+    # the whole sort.  Collect (mtime, stat) pairs, skip files that vanish
+    # between the glob and the stat call, then sort the surviving pairs.
     try:
-        dumps = sorted(
-            backup_dir.glob("butlers_*.sql.gz"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
+        candidates = list(backup_dir.glob("butlers_*.sql.gz"))
     except OSError as exc:
         logger.warning("Cannot read backup directory %s: %s", backup_dir, exc)
         return BackupFacts(
@@ -396,20 +395,26 @@ def _read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             backup_history=[],
         )
 
-    history: list[BackupEvent] = []
-    for dump in dumps:
+    stamped: list[tuple[float, os.stat_result]] = []
+    for p in candidates:
         try:
-            stat = dump.stat()
-            mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
-            history.append(
-                BackupEvent(
-                    completed_at=mtime_dt.isoformat(),
-                    size_bytes=stat.st_size,
-                    status="success",
-                )
-            )
+            st = p.stat()
+            stamped.append((st.st_mtime, st))
         except OSError:
             continue  # race: file removed between glob and stat
+
+    stamped.sort(key=lambda t: t[0], reverse=True)
+
+    history: list[BackupEvent] = []
+    for _mtime, stat in stamped:
+        mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+        history.append(
+            BackupEvent(
+                completed_at=mtime_dt.isoformat(),
+                size_bytes=stat.st_size,
+                status="success",
+            )
+        )
 
     if not history:
         # Directory exists and is readable, but no dumps have been written yet.
@@ -457,17 +462,6 @@ async def get_backup_facts() -> ApiResponse[BackupFacts]:
         )
 
     backup_dir = Path(backup_dir_env)
-    if not backup_dir.is_dir():
-        logger.info("BUTLERS_BACKUP_DIR=%s does not exist; reporting unreachable", backup_dir_env)
-        return ApiResponse(
-            data=BackupFacts(
-                last_backup_at=None,
-                last_backup_size_bytes=None,
-                backup_source_reachable=False,
-                backup_history=[],
-            )
-        )
-
     return ApiResponse(data=_read_backup_facts_from_dir(backup_dir))
 
 

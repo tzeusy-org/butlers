@@ -218,8 +218,8 @@ async def test_backups_reachable_with_files(tmp_path: Path, monkeypatch: pytest.
 # ---------------------------------------------------------------------------
 
 
-def test_read_backup_facts_dir_unreadable(tmp_path: Path):
-    """OSError reading the directory returns degraded facts, not an exception."""
+def test_read_backup_facts_dir_missing(tmp_path: Path):
+    """A non-existent directory returns degraded facts, not an exception."""
     missing = tmp_path / "missing"
     facts = _read_backup_facts_from_dir(missing)
     assert facts.backup_source_reachable is False

@@ -132,12 +132,15 @@ services:
   # Default retention: 14 days.  Override via BACKUP_RETAIN_DAYS env var.
   backup-cron:
     image: postgres:17-alpine
+    user: root
     entrypoint: ["sh", "-c"]
     command:
       - |
         # Install crond (already present in alpine) and write crontab.
+        # Run as root so crond can write its spool and redirect logs to
+        # /proc/1/fd/1 (which requires root on Alpine).
         CRON="${BACKUP_CRON:-0 2 * * *}"
-        echo "$${CRON} /backup/pg_dump.sh >> /proc/1/fd/1 2>&1" \
+        echo "$${CRON} sh /backup/pg_dump.sh >> /proc/1/fd/1 2>&1" \
           | crontab -
         echo "backup-cron: schedule='$${CRON}'"
         exec crond -f -d 8
