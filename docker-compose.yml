@@ -123,6 +123,39 @@ services:
 
   # ── Layer 1a: Dashboard + Frontend ────────────────────────────────────
 
+  # ── Backup cron sidecar ───────────────────────────────────────────────
+  # Runs deploy/backup/pg_dump.sh on a daily cron schedule, writing
+  # timestamped .sql.gz dumps to the butlers_backups volume.  The
+  # dashboard-api reads that same volume to populate the BackupTile.
+  #
+  # Default schedule: 02:00 UTC daily.  Override via BACKUP_CRON env var.
+  # Default retention: 14 days.  Override via BACKUP_RETAIN_DAYS env var.
+  backup-cron:
+    image: postgres:17-alpine
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        # Install crond (already present in alpine) and write crontab.
+        CRON="${BACKUP_CRON:-0 2 * * *}"
+        echo "$${CRON} /backup/pg_dump.sh >> /proc/1/fd/1 2>&1" \
+          | crontab -
+        echo "backup-cron: schedule='$${CRON}'"
+        exec crond -f -d 8
+    environment:
+      <<: *postgres-env
+      POSTGRES_DB: ${POSTGRES_DB:-butlers}
+      BACKUP_DIR: /backups
+      BACKUP_RETAIN_DAYS: ${BACKUP_RETAIN_DAYS:-14}
+      BACKUP_CRON: ${BACKUP_CRON:-0 2 * * *}
+    volumes:
+      - ./deploy/backup/pg_dump.sh:/backup/pg_dump.sh:ro
+      - butlers_backups:/backups
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    networks: [db]
+    restart: unless-stopped
+
   dashboard-api:
     image: butlers-app:latest
     ports:
@@ -131,6 +164,7 @@ services:
       - ./roster:/app/roster:ro
       - ./logs:/app/logs
       - wa_bridge_socket:/tmp/wa-bridge
+      - butlers_backups:/backups:ro
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
@@ -144,6 +178,7 @@ services:
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
+      BUTLERS_BACKUP_DIR: /backups
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -605,6 +640,7 @@ services:
       BUTLERS_DISABLE_FILE_LOGGING: "1"
       BUTLERS_HOST: butlers-up
       WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
+      BUTLERS_BACKUP_DIR: /backups
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro
@@ -612,6 +648,7 @@ services:
       - ./logs:/app/logs
       - uv_cache:/root/.cache/uv
       - wa_bridge_socket:/tmp/wa-bridge
+      - butlers_backups:/backups:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
       interval: 5s
@@ -635,6 +672,7 @@ volumes:
   runtime_opencode:
   runtime_gemini:
   wa_bridge_socket:
+  butlers_backups:
 
 # ── Networks ────────────────────────────────────────────────────────────
 

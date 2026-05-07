@@ -5,11 +5,17 @@ Keeps: instance shape, DB happy-path + 503, backups graceful-degrade,
 egress 403 gate + happy path + actor mapping + aggregation,
 heartbeat happy + null-heartbeat + schema_unreachable + 503.
 OTel span system.egress.read: emitted + actor_count attribute + per-request.
+
+Backup tests cover: BUTLERS_BACKUP_DIR unset (degraded), dir missing (degraded),
+dir empty (reachable, no history), dir with files (reachable, history populated).
 """
 
 from __future__ import annotations
 
+import os
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -24,6 +30,7 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.system import (
     _get_db_manager,
+    _read_backup_facts_from_dir,
     system_backups_reads_total,
     system_butlers_heartbeat_reads_total,
     system_database_reads_total,
@@ -132,7 +139,9 @@ async def test_database_503_on_query_failure():
 # ---------------------------------------------------------------------------
 
 
-async def test_backups_always_200_with_degraded_payload():
+async def test_backups_degraded_when_env_var_unset(monkeypatch: pytest.MonkeyPatch):
+    """No BUTLERS_BACKUP_DIR → backup_source_reachable=false, null fields."""
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     app = create_app()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -143,6 +152,114 @@ async def test_backups_always_200_with_degraded_payload():
     assert data["last_backup_at"] is None
     assert data["backup_source_reachable"] is False
     assert data["backup_history"] == []
+
+
+async def test_backups_degraded_when_dir_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """BUTLERS_BACKUP_DIR points to a non-existent path → degraded."""
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path / "nonexistent"))
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["backup_source_reachable"] is False
+    assert data["last_backup_at"] is None
+
+
+async def test_backups_reachable_empty_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """BUTLERS_BACKUP_DIR exists but contains no dumps → reachable, empty history."""
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["backup_source_reachable"] is True
+    assert data["last_backup_at"] is None
+    assert data["backup_history"] == []
+
+
+async def test_backups_reachable_with_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """BUTLERS_BACKUP_DIR contains dump files → reachable with populated history."""
+    # Create two fake dump files with distinct mtimes
+    older = tmp_path / "butlers_2026-05-01T01-00-00.sql.gz"
+    newer = tmp_path / "butlers_2026-05-07T02-00-00.sql.gz"
+    older.write_bytes(b"x" * 1024)
+    newer.write_bytes(b"x" * 2048)
+    # Ensure distinct mtimes by touching them
+    older_ts = time.time() - 100
+    newer_ts = time.time()
+    os.utime(older, (older_ts, older_ts))
+    os.utime(newer, (newer_ts, newer_ts))
+
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    app = create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["backup_source_reachable"] is True
+    assert data["last_backup_at"] is not None
+    assert data["last_backup_size_bytes"] == 2048
+    assert len(data["backup_history"]) == 2
+    # Most-recent file first
+    assert data["backup_history"][0]["size_bytes"] == 2048
+    assert data["backup_history"][1]["size_bytes"] == 1024
+
+
+# ---------------------------------------------------------------------------
+# _read_backup_facts_from_dir unit tests (no HTTP stack needed)
+# ---------------------------------------------------------------------------
+
+
+def test_read_backup_facts_dir_unreadable(tmp_path: Path):
+    """OSError reading the directory returns degraded facts, not an exception."""
+    missing = tmp_path / "missing"
+    facts = _read_backup_facts_from_dir(missing)
+    assert facts.backup_source_reachable is False
+    assert facts.last_backup_at is None
+    assert facts.backup_history == []
+
+
+def test_read_backup_facts_empty_dir(tmp_path: Path):
+    facts = _read_backup_facts_from_dir(tmp_path)
+    assert facts.backup_source_reachable is True
+    assert facts.last_backup_at is None
+    assert facts.backup_history == []
+
+
+def test_read_backup_facts_with_dumps(tmp_path: Path):
+    f1 = tmp_path / "butlers_2026-05-01T01-00-00.sql.gz"
+    f2 = tmp_path / "butlers_2026-05-07T02-00-00.sql.gz"
+    f1.write_bytes(b"a" * 512)
+    f2.write_bytes(b"b" * 1024)
+    ts_old = time.time() - 200
+    ts_new = time.time()
+    os.utime(f1, (ts_old, ts_old))
+    os.utime(f2, (ts_new, ts_new))
+
+    facts = _read_backup_facts_from_dir(tmp_path)
+    assert facts.backup_source_reachable is True
+    assert facts.last_backup_size_bytes == 1024
+    assert len(facts.backup_history) == 2
+    # history sorted newest-first
+    assert facts.backup_history[0].size_bytes == 1024
+    assert facts.backup_history[1].size_bytes == 512
+
+
+def test_read_backup_facts_ignores_non_matching_files(tmp_path: Path):
+    """Files that don't match butlers_*.sql.gz are not counted."""
+    (tmp_path / "other_dump.sql.gz").write_bytes(b"x" * 100)
+    (tmp_path / "butlers_latest.tar.gz").write_bytes(b"x" * 100)
+    facts = _read_backup_facts_from_dir(tmp_path)
+    assert facts.backup_source_reachable is True
+    assert facts.backup_history == []
 
 
 # ---------------------------------------------------------------------------
