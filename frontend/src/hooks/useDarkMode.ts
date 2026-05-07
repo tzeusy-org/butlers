@@ -5,7 +5,10 @@ type Theme = 'light' | 'dark' | 'system'
 const hasWindow = typeof window !== 'undefined'
 
 function getSystemTheme(): 'light' | 'dark' {
-  if (!hasWindow) return 'light'
+  // SSR guard: no window means we cannot read prefers-color-scheme.
+  // Default to 'dark' to stay consistent with the dark-primary commitment
+  // (see about/heart-and-soul/design-language.md -- "Theme commitment").
+  if (!hasWindow) return 'dark'
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
