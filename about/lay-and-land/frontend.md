@@ -340,7 +340,17 @@ graph LR
 - `frontend/src/App.css` is essentially empty (one orphan `.app`
   class, never used).
 - Dark-mode toggling is handled by a hand-rolled
-  `hooks/useDarkMode.ts`.
+  `hooks/useDarkMode.ts`, not `next-themes` (despite `next-themes`
+  being a declared dependency; it is unused).
+
+**Theme commitment (settled bu-iaw5h.1):** The project has committed to
+dark-primary. `useDarkMode` defaults to `'dark'` on a cold load with no
+localStorage entry. System `prefers-color-scheme` is not consulted as a
+default; the dashboard opens dark regardless of OS preference. Light is a
+supported fallback, selectable via the theme toggle, but it is not the
+primary design target. See
+[`about/heart-and-soul/design-language.md`](../heart-and-soul/design-language.md)
+under "Theme commitment" for the full rationale.
 
 ### Token leaks (specific evidence)
 - `pages/EntitiesPage.tsx:102-113`: six hex codes for entity tier
