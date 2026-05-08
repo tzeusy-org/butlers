@@ -854,3 +854,214 @@ Migration order (rough priority by blast radius and visitor frequency):
    with zero boilerplate; pages that differ from the default pass an explicit
    value. The prop has been added to `PageProps` as `skeletonSectionCount?:
    number` in the interface above.
+
+---
+
+## Type tokens
+
+> Status: **Draft** (font tokens declared, type scale documented; the
+> editorial archetype is the first consumer). Companion to
+> [`about/heart-and-soul/design-language.md`](../heart-and-soul/design-language.md)
+> §Type system, which owns the principles. This section owns the
+> token names, the scale, and the load path.
+
+### Family stack
+
+The dashboard uses three font families. Each family resolves through
+a CSS variable declared in `frontend/src/index.css` `:root`:
+
+| Token          | Family             | Fallback stack                                         |
+|----------------|--------------------|--------------------------------------------------------|
+| `--font-sans`  | Inter Tight        | `ui-sans-serif, system-ui, sans-serif`                 |
+| `--font-serif` | Source Serif 4     | `ui-serif, Georgia, serif`                             |
+| `--font-mono`  | JetBrains Mono     | `ui-monospace, SFMono-Regular, Menlo, monospace`       |
+
+The variables are declared but **not retroactively applied**. The
+existing `:root { font-family: system-ui, ... }` rule in `index.css`
+remains the body default; opt-in consumers (the editorial archetype,
+the Voice surface, mono-rendered numerals) reference `var(--font-sans)`,
+`var(--font-serif)`, or `var(--font-mono)` directly. Pages migrate as
+they adopt the editorial archetype, not in a sweep.
+
+### Scale
+
+The scale below is the topology side of the doctrine three-family
+split. Sizes are absolute pixels (not rem) so the editorial archetype
+holds its proportions independent of the browser-default 16px setting.
+
+| Role        | Family                  | Size  | Weight | Tracking | Leading | Notes |
+|-------------|-------------------------|-------|--------|----------|---------|-------|
+| Display     | sans (`--font-sans`)    | 44px  | 500    | -0.025em | 1.08    | Editorial archetype only (Non-negotiable rule 2). |
+| Title (H1)  | sans (`--font-sans`)    | 24px (`text-2xl`) | 700 (`font-bold`) | tight (`tracking-tight`) | 1.2 | Standard archetype default for non-editorial pages. |
+| Body        | sans (`--font-sans`)    | 14px  | 400    | normal   | 1.5     | |
+| Body small  | sans (`--font-sans`)    | 13px  | 400    | normal   | 1.5     | |
+| Voice       | serif (`--font-serif`)  | 16px  | 400    | normal   | 1.6     | LLM prose. Italic for empty states; roman for briefings. |
+| Eyebrow     | mono (`--font-mono`)    | 10px  | 400    | 0.14em   | 1.0     | Uppercase. Section header substitute. Color: `--muted-foreground`. |
+| Mono inline | mono (`--font-mono`)    | 11px  | 400    | normal   | 1.4     | Inline IDs, file paths, deltas. |
+
+### Numeral rendering
+
+Tabular numerals are exposed as a single utility class in
+`frontend/src/index.css`:
+
+```css
+.tnum { font-variant-numeric: tabular-nums; }
+```
+
+Apply `.tnum` to every numeric element: cost figures, count badges,
+delta values, KPI mega-numbers, mono-rendered timestamps, table
+columns containing numbers. The doctrine treats this as
+non-negotiable.
+
+### Font load path
+
+Fonts load via Google Fonts in `frontend/index.html`:
+
+```html
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=Source+Serif+4:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+```
+
+Weights loaded:
+
+- **Inter Tight**: 400 (body), 500 (Display, mega-numbers), 600, 700 (H1).
+- **Source Serif 4**: 400 roman (briefing prose), 400 italic (empty
+  states), 500 roman (occasional emphasis).
+- **JetBrains Mono**: 400 (eyebrows, inline mono, deltas), 500
+  (numeric weight where 400 looks thin).
+
+`display=swap` is intentional: the system font fallback paints
+immediately, the web font swaps in when ready. The dashboard never
+holds the page on font load.
+
+### See also
+
+- Doctrine: [`about/heart-and-soul/design-language.md`](../heart-and-soul/design-language.md)
+  §Type system, §Non-negotiable rule 2 (Display tier carve-out).
+- Consumers: the editorial archetype layout below.
+
+---
+
+## Editorial archetype layout
+
+> Status: **Draft** (the OpenSpec change `dashboard-overview-briefing`
+> is the first consumer; `frontend/src/components/overview/` is the
+> destination for the components that embody this layout). Companion
+> to [`about/heart-and-soul/design-language.md`](../heart-and-soul/design-language.md)
+> §Editorial archetype, which owns the principles. This section owns
+> the layout values, the row anatomies, the motion durations, and the
+> source files.
+
+### Page frame
+
+The editorial archetype renders inside `<Page archetype="editorial">`
+(once the archetype is added to the `<Page>` discriminant union; today
+the Overview is the only page that needs it). The frame:
+
+- `display: grid`, `grid-template-columns: 1.4fr 1fr`, `gap: 56px`.
+- `max-width: 1280px`, page padding `48px 56px` on the
+  outermost wrapper.
+- Left column carries the narrative: date eyebrow + briefing status
+  pill, Display headline, Voice paragraph, attention list, KPI strip.
+- Right column carries the index: eyebrow-titled lists (Butlers, Next).
+
+### Reading widths
+
+- **Display headline**: `max-width: 14ch`. The constraint forces the
+  dramatic line break that gives the page its shape.
+- **Voice paragraph**: `max-width: 50ch`. Readable measure for prose.
+- **Lists** span the full width of their column (no measure cap).
+
+### Row anatomies
+
+The attention list is a CSS grid of `mark / 1fr title+detail / meta`
+separated by hairline borders, no card chrome. Three row variants:
+
+| Row                  | Mark column         | Title + detail        | Meta column                | Vertical padding |
+|----------------------|---------------------|-----------------------|----------------------------|-----------------|
+| Attention            | 24px severity glyph | sans title + serif detail | auto action arrow      | 18px            |
+| Butler index         | 8px status dot      | sans butler name      | auto sessions + auto cost  | 10px            |
+| Next (scheduled)     | 50px mono time      | sans label            | auto kind tag              | 10px            |
+
+Empty state for the attention list: `Nothing waiting.` rendered in
+`var(--font-serif)` italic, color `--muted-foreground`, no period of
+explanation, no illustration.
+
+### KPI strip
+
+Four-column grid divided by hairline borders (`border-right` on each
+cell except the last; no fills, no card chrome). Each cell stacks:
+
+```
+mono eyebrow   (10px, --font-mono, --muted-foreground, uppercase, 0.14em letter-spacing)
+mega number    (32px, --font-sans, weight 500, tracking -0.03em, .tnum)
+mono delta     (10px, --font-mono, --muted-foreground)
+```
+
+Deltas line up vertically across columns because every numeric cell
+is tabular.
+
+### Status pill
+
+`9px` mono pill with three slots: status dot + label + ↻ icon. Three
+states for the briefing pill:
+
+| State            | Dot color  | Label               | Icon behaviour      |
+|------------------|-----------|----------------------|---------------------|
+| `composing…`     | amber     | `composing…`         | rotating (in-flight) |
+| `llm · cached 5m`| green     | `llm · cached 5m`    | static              |
+| `templated`      | dim       | `templated`          | static              |
+
+Click triggers refresh.
+
+### Motion budget
+
+The editorial archetype obeys the Motion contract above. The two
+motion events the briefing introduces:
+
+- **Voice paragraph cross-fade** on briefing refresh:
+  `transition-[opacity] duration-base ease-out-quart` (200ms).
+  Opacity-only, no transform. Old paragraph fades to 0, new
+  paragraph fades from 0.
+- **Status pill icon rotation** while loading:
+  `transition-[transform]` continuous (CSS `@keyframes spin` is fine),
+  `ease-out-quart`. Transform-only, never animates a layout
+  property.
+
+No staggered entries, no count-up animations, no scale-in.
+
+### Butler letter-mark
+
+The butler hue from `--category-1..8` resolves only onto the butler
+letter-mark. There is currently **no canonical
+`components/ui/ButlerMark.tsx` component**: the colored squircle
+with the butler initial is reimplemented inline by each consumer.
+The deterministic name → category-slot helper `butlerColorVar(name)`
+is duplicated across:
+
+- `frontend/src/components/dashboard/RecentMoments.tsx:53-60`
+- `frontend/src/components/dashboard/SessionStripeChart.tsx`
+- `frontend/src/components/relationship/ContactTable.tsx:77-78`
+- `frontend/src/components/costs/CostStripeChart.tsx`
+- `frontend/src/components/chronicles/lane-taxonomy.ts`
+
+Consolidating these into a single `<ButlerMark name="..." />`
+primitive (and the helper into `frontend/src/lib/butler-color.ts`) is
+a known follow-up; the editorial archetype consumers should be the
+first to migrate when the primitive lands.
+
+### Source files
+
+The editorial archetype components are expected to land under
+`frontend/src/components/overview/` per the
+`openspec/changes/dashboard-overview-briefing/` change. As of this
+section's authoring the directory is empty; the Overview page still
+renders via the older `DashboardPage` overview archetype.
+
+### See also
+
+- Doctrine: [`about/heart-and-soul/design-language.md`](../heart-and-soul/design-language.md)
+  §Editorial archetype, §Type system, §Voice and Copy.
+- Capability spec: `openspec/changes/dashboard-overview-briefing/specs/dashboard-briefing/spec.md`
+  for the briefing wire contract that the Voice surface renders.

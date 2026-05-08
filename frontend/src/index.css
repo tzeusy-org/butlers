@@ -175,6 +175,29 @@
   --calendar-grid-height: calc(var(--calendar-hour-height) * 24);
 
   /* ---------------------------------------------------------------------------
+   * Font family tokens
+   *
+   * Three families, one per voice. The split is meaningful: sans speaks in
+   * data, serif speaks in sentences, mono speaks in numerals. Generic stacks
+   * (Inter, Roboto, Arial, system-ui as primary) are not in the language.
+   *
+   * --font-sans   Inter Tight    UI: display, body, labels, table numbers.
+   *                              Inter Tight (not plain Inter) — compressed
+   *                              metrics carry the operator-tool register.
+   * --font-serif  Source Serif 4 Voice: LLM prose, briefing elaboration,
+   *                              empty-state lines.
+   * --font-mono   JetBrains Mono Numerals: timestamps, IDs, deltas, KPI
+   *                              mega-numbers, eyebrows, code, file paths.
+   *
+   * Loaded via Google Fonts in frontend/index.html. The :root font-family
+   * rule above remains the body default; opt-in consumers reference these
+   * variables directly. See about/lay-and-land/frontend.md § Type tokens.
+   * ---------------------------------------------------------------------------*/
+  --font-sans:  'Inter Tight', ui-sans-serif, system-ui, sans-serif;
+  --font-serif: 'Source Serif 4', ui-serif, Georgia, serif;
+  --font-mono:  'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ---------------------------------------------------------------------------
    * Motion tokens
    *
    * Duration tiers and the program-wide easing function for all state
@@ -448,4 +471,17 @@ body {
 
 @utility duration-slow {
   transition-duration: var(--duration-slow);
+}
+
+/* ---------------------------------------------------------------------------
+ * Numeral rendering
+ *
+ * Tabular numerals are non-negotiable for any number rendered in the
+ * dashboard: costs, counts, deltas, KPI mega-numbers, mono timestamps,
+ * badge digits. Apply .tnum to every numeric element so columns align
+ * without alignment hacks. See about/heart-and-soul/design-language.md
+ * § Type system.
+ * ---------------------------------------------------------------------------*/
+.tnum {
+  font-variant-numeric: tabular-nums;
 }

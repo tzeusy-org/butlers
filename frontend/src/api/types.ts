@@ -3593,3 +3593,38 @@ export interface ButlerHeartbeat {
 export interface HeartbeatFacts {
   butlers: ButlerHeartbeat[];
 }
+
+// ---------------------------------------------------------------------------
+// Dashboard briefing (GET /api/dashboard/briefing)
+//
+// See: openspec/changes/dashboard-overview-briefing/specs/dashboard-briefing/spec.md
+// and about/heart-and-soul/design-language.md (Editorial archetype).
+// ---------------------------------------------------------------------------
+
+/** Five state classes the briefing classifier produces. */
+export type BriefingStateClass =
+  | "urgent"
+  | "busy"
+  | "mild"
+  | "degraded-quiet"
+  | "quiet";
+
+/** Whether the elaboration paragraph came from the LLM or the templated fallback. */
+export type BriefingSource = "llm" | "fallback";
+
+/**
+ * Server-composed briefing object the Overview page renders verbatim.
+ *
+ * `greet` and `headline` are deterministic templates; `elaboration` is one to
+ * three sentences from Claude Haiku 4.5 with a templated fallback. `source`
+ * tells the status pill which path produced the elaboration. Cached per-owner
+ * for 5 minutes (the hook below mirrors that TTL).
+ */
+export interface Briefing {
+  greet: string;
+  headline: string;
+  elaboration: string;
+  source: BriefingSource;
+  state_class: BriefingStateClass;
+  generated_at: string;
+}

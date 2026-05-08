@@ -219,9 +219,17 @@ the use case before being treated as binding.
    `<Page>` shell that owns title, description, breadcrumbs, action
    bar, loading state, error state, and empty state. Pages compose
    sections inside it; they do not reinvent the chrome.
-   - **H1 size is `text-2xl font-bold tracking-tight`.** Settled per
-     the detail-page audit and adopted by `<Page>`. Pages currently
-     using `text-3xl` get demoted during their migration.
+   - **Standard H1 size is `text-2xl font-bold tracking-tight`.**
+     Settled per the detail-page audit and adopted by `<Page>`. Pages
+     currently using `text-3xl` get demoted during their migration.
+   - **Editorial archetype gets a Display tier.** The Overview opens
+     with a Display headline instead of the standard H1. The Display
+     tier is reserved for editorial pages where the system is speaking
+     in sentences (see [Editorial archetype](#editorial-archetype)).
+     It is not available to drilldown, workspace, feed, log, or graph
+     archetypes; those keep the `text-2xl` H1. Display tier sizing
+     lives in [`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md)
+     under the Type tokens section.
    - **Type ratio is 1.2** (product-register override of impeccable's
      shared `≥1.25` floor). Per `impeccable/reference/product.md`:
      "tighter scale ratio. 1.125–1.2 between steps is typical for
@@ -268,9 +276,10 @@ the use case before being treated as binding.
 - Whether the breadcrumb autobuilder is worth keeping (it produces
   awkward output: "Qa / Investigations") or whether each page should
   own its breadcrumbs explicitly.
-- Whether a typographic scale (one or two custom families, defined
-  sizes) is worth introducing, or whether the current system stack
-  is part of the dashboard's "operator-tool" charm.
+
+(The typographic-scale debate item from earlier drafts is resolved.
+See [Type system](#type-system) below for the settled three-family
+stack and scale.)
 
 ---
 
@@ -493,6 +502,34 @@ already know. Do not soften things that are just facts.
 | Nothing to show yet | "No sessions today." |
 | A dangerous operation | "This will delete the connector and all its history." |
 
+### Tense, person, and address
+
+These rules sharpen the register above. They are part of the settled
+voice doctrine, integrated from the editorial archetype work.
+
+- **Past tense for events, present tense for state.** No future tense
+  in interface copy: "is" or "did," not "will be" or "is going to."
+  The dashboard reports what happened and what is true now; it does
+  not promise.
+- **No first person.** "I," "we," "us," "our" do not appear in
+  rendered copy. The system is a third party. Write "Authentication
+  failed," not "I could not authenticate."
+- **Avoid "your" when "the" works.** "The calendar is paused," not
+  "Your calendar is paused." The owner already knows whose dashboard
+  this is. "Your" stays only when contrast matters ("Your timezone
+  is Asia/Singapore. The butler runs in UTC.").
+- **No hedging adverbs.** Strike: currently, presently, just, simply,
+  basically, actually, essentially. Write "Loaded 14 sessions," not
+  "Currently showing 14 sessions."
+- **No celebration.** No checkmarks, no green-check moments, no
+  "Nice work," no "All set." Quiet success is the success state.
+  When everything is fine the page says it once and stops.
+- **No filler.** "Welcome back" is filler. "Today, in numbers" is a
+  fact. Delete the filler, keep the fact.
+- **Numbers are exact.** "2 things need you," not "a few things." But
+  do not state precision the data does not have: "2.0" when the
+  source is integer is wrong, and so is "approximately 2."
+
 ### Capitalization
 
 Sentence case for everything except proper nouns and product names.
@@ -524,14 +561,21 @@ the copy does not need to amplify it.
 State the fact, then offer the next action. Avoid prose sentences
 that describe what the user could do if they were not there.
 
-Pattern: `{Noun} + verb phrase` as the title. One short sentence of
-context if needed. A single action button.
+**Page-level empty states** use `{Noun} + verb phrase` as the title,
+one short sentence of context if needed, and a single action button.
 
 | Bad | Good |
 |---|---|
 | "No butlers found. Butlers are long-running agents that act on your behalf. Add one to get started!" | Title: "No butlers active." Action: "Open setup guide" |
 | "Patrol cycles will dispatch investigations when novel issues are detected." | "No active investigations." |
 | `"Browse the knowledge graph — people, organizations, places, and more."` | "Knowledge graph is empty." |
+
+**Inline empty states inside a Voice surface** (the briefing column,
+the attention list when there is nothing to attend to, the Next list
+when nothing is upcoming) use a single serif italic sentence in muted
+color, no period of explanation, no action button. Example:
+*"Nothing waiting."* The Voice surface is the place the system
+literally speaks; one quiet line is the entire response.
 
 Empty states do not get exclamation marks. They do not use em-dashes.
 They do not editorialize.
@@ -675,6 +719,121 @@ After: `"Request curriculum"`
 Before: `"Patrol cycles will dispatch investigations when novel issues are detected."`
 
 After (EmptyState title): `"No active investigations."`
+
+---
+
+## Type system
+
+> Status: **settled** (resolves the typographic-scale debate from
+> Candidate Doctrine and the de-facto observation that there is "no
+> type scale documented").
+
+The dashboard adopts a three-family type system. The split is
+meaningful: sans is the system speaking in data, serif is the system
+speaking in sentences, mono is the system speaking in numerals. A page
+may use one, two, or all three families; never invent a fourth.
+
+**Family identity.** Inter Tight is the sans family. Inter *Tight* is
+the deliberate pick over plain Inter; the compressed metrics carry the
+operator-tool register. Source Serif 4 is the Voice family, used where
+the system literally speaks in sentences (briefings, empty-state lines,
+process glosses). JetBrains Mono is the numerals family: timestamps,
+IDs, deltas, KPI mega-numbers, eyebrows, code, file paths. Generic
+stacks (Inter, Roboto, Arial, Helvetica, system-ui as a primary face)
+are not in the language.
+
+**Tabular numerals are non-negotiable.** Every numeric value the
+dashboard renders uses tabular-nums: costs, counts, deltas, KPI
+mega-numbers, mono timestamps, badge digits. Lists of numbers must
+align without alignment hacks. Scannability of an operator tool is
+defeated when digits jitter as they update.
+
+**Display weight is 500, not 700.** Tight tracking does the work that
+weight would do; bold display reads as loud, which violates the calm
+contract.
+
+**Eyebrows title sections in lieu of a heading.** They establish
+rhythm without adding shouting weight. They are not subtitles, they
+are the section's name. An eyebrow above a list is the list's name; a
+heading above the same list would be louder than the list it
+introduces.
+
+Token names, the type scale, and the font load path are owned by
+[`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md).
+
+---
+
+## Editorial archetype
+
+> Status: **settled** (governs the Overview surface and any future
+> page that opens with a system-spoken briefing). Companion to the
+> Type system above and to the Voice and Copy section.
+
+The dashboard supports a small set of page archetypes (Non-negotiable
+rule 3). The **editorial archetype** is a two-column page whose left
+column is the system speaking in sentences and whose right column is
+a quiet index of facts. The two columns read as separate documents
+that share a page.
+
+### The Voice surface
+
+The Overview headline plus its serif elaboration is a distinct surface
+type called the **Voice**. Reserve it for places the system literally
+speaks in sentences: the Overview briefing, empty states ("Nothing
+waiting."), process glosses where the system explains its own shape.
+Voice is serif italic for empty states, serif roman for briefings. It
+is never decorative. If a serif paragraph feels like it would "fill"
+a quiet page, the page is not actually quiet enough; the serif
+paragraph is wrong.
+
+### The status pill
+
+Anywhere the system reports on its own process (cache age, last sync,
+model version, briefing source), use a status pill. The pill is
+always honest about what is rendering. The three states for the
+briefing pill are `composing…`, `llm · cached 5m`, and `templated`;
+the pill names what it is showing rather than pretending the source
+is invisible.
+
+### Attention list
+
+The attention list is the dashboard's register-aware list primitive:
+rule-separated rows, no card chrome. The mark column carries severity
+for read-rows and status for scan-rows; the meta column carries
+action for read-rows and metric for scan-rows. The list reaches
+Bloomberg-grade density at a fraction of Bloomberg's noise. Empty
+state for the attention list is the Voice register doing its job:
+`Nothing waiting.` in serif italic, no celebration, no illustration.
+
+### KPI strip
+
+The KPI strip replaces card chrome with tabular-nums plus hairline
+dividers. Numbers align across columns because every numeric cell is
+tabular. There are no background fills, no per-cell cards, and no
+mega-number that screams; the alignment is the design.
+
+### Butler hue scope
+
+> Status: non-negotiable.
+
+Each butler has one hue from the categorical palette. The hue appears
+**only on the butler letter-mark** (the colored squircle with the
+initial). It does not appear on backgrounds, borders, buttons,
+headers, or any other chrome. This rule is what keeps the dashboard
+from reading like a SaaS product. It augments the existing token
+rule (Non-negotiable 1): named hues only resolve onto the letter-mark.
+
+### Motion budget
+
+The editorial archetype obeys the existing motion contract (see
+[Motion](#motion)). The briefing introduces two motion events: a
+paragraph cross-fade on refresh and a status-pill icon rotation
+while loading. No staggered entries, no count-up animations, no
+scale-in. Calm is the feature.
+
+Layout values, row anatomies, motion durations, and the source files
+that embody these patterns are owned by
+[`about/lay-and-land/frontend.md`](../lay-and-land/frontend.md).
 
 ---
 

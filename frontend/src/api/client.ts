@@ -243,6 +243,7 @@ import type {
   BackupFacts,
   EgressCatalog,
   HeartbeatFacts,
+  Briefing,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3704,4 +3705,22 @@ export function getEgressCatalog(): Promise<ApiResponse<EgressCatalog>> {
 /** Fetch per-butler liveness registry snapshots and session facts. */
 export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
   return apiFetch<ApiResponse<HeartbeatFacts>>("/system/butlers/heartbeat");
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard briefing — GET /api/dashboard/briefing
+//
+// Server-composed briefing (greeting + classified headline + LLM elaboration).
+// See: openspec/changes/dashboard-overview-briefing/specs/dashboard-briefing/spec.md
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the dashboard briefing for the editorial Overview surface.
+ *
+ * The endpoint never raises to the caller: LLM failures fall through to a
+ * templated paragraph and `source` reflects which path produced the
+ * elaboration. The response is per-owner cached for 5 minutes server-side.
+ */
+export function getDashboardBriefing(): Promise<Briefing> {
+  return apiFetch<Briefing>("/dashboard/briefing");
 }
