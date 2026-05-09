@@ -66,6 +66,32 @@ export interface ButlerSummary {
   sessions_24h: number;
 }
 
+/**
+ * Container-boundary-safe process facts for the butler Overview tab.
+ * `pid` is intentionally absent.
+ */
+export interface ProcessFacts {
+  /** Docker service or container name derived from BUTLERS_HOST. Null when running locally. */
+  container_name: string | null;
+  /** Butler MCP port. */
+  port: number;
+  /** Seconds elapsed since the butler first registered in the switchboard. Null when unavailable. */
+  registered_duration_seconds: number | null;
+  /** Roster-relative config path, e.g. "roster/general/butler.toml". */
+  config_path: string;
+}
+
+/** Extended butler representation returned by GET /api/butlers/:name. */
+export interface ButlerDetail extends ButlerSummary {
+  db_name?: string | null;
+  db_schema?: string | null;
+  modules: { name: string; enabled: boolean; config?: Record<string, unknown> | null }[];
+  schedules: { name: string; cron: string; prompt?: string | null }[];
+  skills: string[];
+  /** Process facts card data for the Overview tab. Null when detail extension is unavailable. */
+  process_facts?: ProcessFacts | null;
+}
+
 /** Butler configuration files returned by GET /api/butlers/:name/config. */
 export interface ButlerConfigResponse {
   butler_toml: Record<string, unknown>;

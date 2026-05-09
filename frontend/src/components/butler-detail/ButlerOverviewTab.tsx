@@ -19,6 +19,7 @@ import { useButler } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useButlerNotifications } from "@/hooks/use-notifications";
+import type { ProcessFacts } from "@/api/types";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -112,6 +113,54 @@ function formatCurrency(amount: number): string {
   return `$${amount.toFixed(2)}`;
 }
 
+/** Format seconds into a human-readable liveness duration. */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
+}
+
+// ---------------------------------------------------------------------------
+// Process facts card
+// ---------------------------------------------------------------------------
+
+interface ProcessFactsCardProps {
+  processFacts: ProcessFacts | null | undefined;
+}
+
+function ProcessFactsCard({ processFacts }: ProcessFactsCardProps) {
+  const unavailable = "--";
+  return (
+    <Card aria-label="Process facts">
+      <CardHeader>
+        <CardTitle>Process Facts</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm font-mono">
+          <dt className="text-muted-foreground font-medium font-sans">Container</dt>
+          <dd>{processFacts?.container_name ?? unavailable}</dd>
+          <dt className="text-muted-foreground font-medium font-sans">Port</dt>
+          <dd>{processFacts?.port ?? unavailable}</dd>
+          <dt className="text-muted-foreground font-medium font-sans">Registered</dt>
+          <dd>
+            {processFacts?.registered_duration_seconds != null
+              ? formatDuration(processFacts.registered_duration_seconds)
+              : unavailable}
+          </dd>
+          <dt className="text-muted-foreground font-medium font-sans">Config</dt>
+          <dd>{processFacts?.config_path ?? unavailable}</dd>
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Loading skeleton
 // ---------------------------------------------------------------------------
@@ -128,6 +177,19 @@ function OverviewSkeleton() {
         <CardContent className="space-y-3">
           <Skeleton className="h-4 w-32" />
           <Skeleton className="h-4 w-24" />
+        </CardContent>
+      </Card>
+
+      {/* Process facts skeleton */}
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-36" />
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-4 w-32" />
+          <Skeleton className="h-4 w-56" />
         </CardContent>
       </Card>
 
@@ -255,6 +317,9 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
           </dl>
         </CardContent>
       </Card>
+
+      {/* Process Facts */}
+      <ProcessFactsCard processFacts={butler?.process_facts ?? null} />
 
       {/* Module Health */}
       <Card>

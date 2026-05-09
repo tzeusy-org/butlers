@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,6 +38,7 @@ from butlers.api.models import (
     MCPToolInfo,
     ModuleInfo,
     ModuleStatus,
+    ProcessFacts,
     ScheduleEntry,
     SkillInfo,
     TickResponse,
@@ -192,6 +194,78 @@ async def list_butlers(
 
 
 # ---------------------------------------------------------------------------
+# Process facts helpers
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_registered_duration(
+    db: DatabaseManager,
+    butler_name: str,
+) -> float | None:
+    """Return seconds elapsed since the butler first registered in the switchboard.
+
+    Queries ``switchboard.butler_registry.registered_at`` and returns the age
+    in seconds relative to now.  Returns ``None`` when the switchboard pool is
+    unavailable or the butler has no registry row.
+    """
+    try:
+        sw_pool = db.pool("switchboard")
+    except KeyError:
+        return None
+
+    try:
+        row = await asyncio.wait_for(
+            sw_pool.fetchrow(
+                "SELECT registered_at FROM butler_registry WHERE name = $1",
+                butler_name,
+            ),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+    except Exception:
+        logger.debug("Failed to fetch registered_at for butler %s", butler_name, exc_info=True)
+        return None
+
+    if row is None or row["registered_at"] is None:
+        return None
+
+    registered_at = row["registered_at"]
+    # Normalize to UTC-aware datetime
+    if hasattr(registered_at, "tzinfo") and registered_at.tzinfo is None:
+        registered_at = registered_at.replace(tzinfo=UTC)
+
+    elapsed = (datetime.now(UTC) - registered_at).total_seconds()
+    return max(elapsed, 0.0)
+
+
+def _build_process_facts(
+    connection_info: ButlerConnectionInfo,
+    roster_dir: Path,
+    registered_duration_seconds: float | None,
+) -> ProcessFacts:
+    """Assemble process facts from stable topology sources.
+
+    - ``container_name``: derived from the ``BUTLERS_HOST`` env var (the MCP
+      host the dashboard uses to reach butler daemons). Absent when unset or
+      resolves to ``localhost``.
+    - ``port``: from ``ButlerConnectionInfo.port``.
+    - ``registered_duration_seconds``: seconds since switchboard registration.
+    - ``config_path``: roster-relative path, e.g. ``roster/general/butler.toml``.
+    """
+    host = os.environ.get("BUTLERS_HOST", "localhost")
+    container_name: str | None = host if host and host != "localhost" else None
+
+    toml_path = roster_dir / connection_info.name / "butler.toml"
+    config_path = str(toml_path.relative_to(roster_dir.parent))
+
+    return ProcessFacts(
+        container_name=container_name,
+        port=connection_info.port,
+        registered_duration_seconds=registered_duration_seconds,
+        config_path=config_path,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Detail endpoint
 # ---------------------------------------------------------------------------
 
@@ -234,6 +308,8 @@ async def get_butler_detail(
     skills = _discover_skills(butler_dir)
     status = await _get_live_status(name, mcp_manager)
     sessions_map = await _fetch_sessions_24h(db, butler_names=[name])
+    registered_duration = await _fetch_registered_duration(db, name)
+    process_facts = _build_process_facts(connection_info, roster_dir, registered_duration)
 
     detail = ButlerDetail(
         name=config.name,
@@ -247,6 +323,7 @@ async def get_butler_detail(
         schedules=schedules,
         skills=skills,
         sessions_24h=sessions_map.get(name, 0),
+        process_facts=process_facts,
     )
 
     return ApiResponse[ButlerDetail](data=detail)
