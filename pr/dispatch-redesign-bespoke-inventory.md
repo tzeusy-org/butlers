@@ -5,8 +5,25 @@ Each section records a tab decision, justification, file:line citations, and an 
 
 Workers append to this file in delimited sections.
 Batch 1 (bu-dg5qc.1): chronicler, finance, general.
-Batch 2 (bu-dg5qc.2): TBD.
-Batch 3 (bu-dg5qc.3): TBD.
+Batch 2 (bu-dg5qc.2): health, home, lifestyle, messenger.
+Batch 3 (bu-dg5qc.3): qa, relationship, switchboard, travel.
+
+## Summary: Bespoke Tabs Across All Butlers
+
+| Butler | Bespoke tab(s) | Implemented? |
+|---|---|---|
+| chronicler | +Timelines | Stub (bu-dg5qc.4) |
+| education | +Reviews | Yes (PR #1505, bu-3cujw.1) |
+| finance | +Finances | Stub (bu-dg5qc.4) |
+| general | none (existing +Collections/+Entities sufficient) | — |
+| health | none (existing +Health sufficient) | — |
+| home | +Devices | Stub (bu-dg5qc.4) |
+| lifestyle | none (no API router) | — |
+| messenger | none (staffer; no domain content) | — |
+| qa | none (no API router) | — |
+| relationship | +Contacts | Stub (bu-dg5qc.4) |
+| switchboard | none (existing +Routing Log/+Registry sufficient) | — |
+| travel | +Trips | Stub (bu-dg5qc.4) |
 
 ---
 

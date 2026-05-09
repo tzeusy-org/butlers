@@ -114,6 +114,13 @@ const HEALTH_TABS = ["health"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
 const EDUCATION_TABS = ["reviews"] as const;
 
+// Bespoke tabs for domain butlers (stub UI — full implementation tracked separately).
+const CHRONICLER_TABS = ["timelines"] as const;
+const FINANCE_TABS = ["finances"] as const;
+const HOME_TABS = ["devices"] as const;
+const RELATIONSHIP_TABS = ["contacts"] as const;
+const TRAVEL_TABS = ["trips"] as const;
+
 type DetailMode = "operator" | "resident";
 
 /** localStorage key for persisting the detail page mode. */
@@ -125,7 +132,12 @@ type TabValue =
   | (typeof OPERATOR_EXTENSION_TABS)[number]
   | (typeof HEALTH_TABS)[number]
   | (typeof SWITCHBOARD_TABS)[number]
-  | (typeof EDUCATION_TABS)[number];
+  | (typeof EDUCATION_TABS)[number]
+  | (typeof CHRONICLER_TABS)[number]
+  | (typeof FINANCE_TABS)[number]
+  | (typeof HOME_TABS)[number]
+  | (typeof RELATIONSHIP_TABS)[number]
+  | (typeof TRAVEL_TABS)[number];
 
 /**
  * Returns the full set of valid tab values for the given butler and mode.
@@ -147,6 +159,21 @@ export function getAllTabs(butlerName: string, mode: DetailMode): readonly strin
   }
   if (butlerName === "education") {
     baseTabs.push(...EDUCATION_TABS);
+  }
+  if (butlerName === "chronicler") {
+    baseTabs.push(...CHRONICLER_TABS);
+  }
+  if (butlerName === "finance") {
+    baseTabs.push(...FINANCE_TABS);
+  }
+  if (butlerName === "home") {
+    baseTabs.push(...HOME_TABS);
+  }
+  if (butlerName === "relationship") {
+    baseTabs.push(...RELATIONSHIP_TABS);
+  }
+  if (butlerName === "travel") {
+    baseTabs.push(...TRAVEL_TABS);
   }
   return baseTabs;
 }
@@ -522,6 +549,11 @@ export default function ButlerDetailPage() {
 
   const showHealthTab = name === "health";
   const showReviewsTab = name === "education";
+  const showTimelinesTab = name === "chronicler";
+  const showFinancesTab = name === "finance";
+  const showDevicesTab = name === "home";
+  const showContactsTab = name === "relationship";
+  const showTripsTab = name === "travel";
 
   // Extract description from butler response (ButlerSummary.description is optional)
   const description = butlerResponse?.data?.description ?? undefined;
@@ -584,6 +616,11 @@ export default function ButlerDetailPage() {
               </>
             )}
             {showReviewsTab && <TabsTrigger value="reviews">Reviews</TabsTrigger>}
+            {showTimelinesTab && <TabsTrigger value="timelines">Timelines</TabsTrigger>}
+            {showFinancesTab && <TabsTrigger value="finances">Finances</TabsTrigger>}
+            {showDevicesTab && <TabsTrigger value="devices">Devices</TabsTrigger>}
+            {showContactsTab && <TabsTrigger value="contacts">Contacts</TabsTrigger>}
+            {showTripsTab && <TabsTrigger value="trips">Trips</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="overview">
@@ -711,6 +748,66 @@ export default function ButlerDetailPage() {
               <Suspense fallback={<TabFallback label="reviews" />}>
                 <ButlerEducationReviewsTab />
               </Suspense>
+            </TabsContent>
+          )}
+
+          {showTimelinesTab && (
+            <TabsContent value="timelines">
+              <Card>
+                <CardContent className="py-12">
+                  <p className="text-muted-foreground text-center text-sm">
+                    Timelines coming soon.
+                  </p>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {showFinancesTab && (
+            <TabsContent value="finances">
+              <Card>
+                <CardContent className="py-12">
+                  <p className="text-muted-foreground text-center text-sm">
+                    Finances coming soon.
+                  </p>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {showDevicesTab && (
+            <TabsContent value="devices">
+              <Card>
+                <CardContent className="py-12">
+                  <p className="text-muted-foreground text-center text-sm">
+                    Devices coming soon.
+                  </p>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {showContactsTab && (
+            <TabsContent value="contacts">
+              <Card>
+                <CardContent className="py-12">
+                  <p className="text-muted-foreground text-center text-sm">
+                    Contacts coming soon.
+                  </p>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {showTripsTab && (
+            <TabsContent value="trips">
+              <Card>
+                <CardContent className="py-12">
+                  <p className="text-muted-foreground text-center text-sm">
+                    Trips coming soon.
+                  </p>
+                </CardContent>
+              </Card>
             </TabsContent>
           )}
         </Tabs>
