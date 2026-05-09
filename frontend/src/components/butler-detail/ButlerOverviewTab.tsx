@@ -2,6 +2,7 @@ import { Link } from "react-router";
 
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationTableSkeleton } from "@/components/skeletons";
+import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,27 +31,6 @@ interface ButlerOverviewTabProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Map butler status string to a colored badge. */
-function statusBadge(status: string) {
-  switch (status) {
-    case "ok":
-      return (
-        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">Up</Badge>
-      );
-    case "error":
-    case "down":
-      return <Badge variant="destructive">Down</Badge>;
-    case "degraded":
-      return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600">
-          Degraded
-        </Badge>
-      );
-    default:
-      return <Badge variant="secondary">{status}</Badge>;
-  }
-}
 
 /** Map module health status to a colored badge. */
 function moduleHealthBadge(name: string, status: string) {
@@ -233,7 +213,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
         <CardHeader>
           <CardTitle className="flex items-center gap-3">
             {butler?.name ?? butlerName}
-            {butler && statusBadge(butler.status)}
+            {butler && <ButlerStatusBadge status={butler.status} />}
           </CardTitle>
           {butler?.description && (
             <CardDescription>

@@ -19,7 +19,7 @@ import { toast } from "sonner";
 
 import { triggerButler } from "@/api/index.ts";
 import { ChatPanel } from "@/components/chat/ChatPanel";
-import { Badge } from "@/components/ui/badge";
+import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
 import { Button } from "@/components/ui/button";
 import { useButler } from "@/hooks/use-butlers";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
@@ -30,47 +30,6 @@ import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 
 interface ButlerDetailActionsProps {
   butlerName: string;
-}
-
-// ---------------------------------------------------------------------------
-// Status pill
-// ---------------------------------------------------------------------------
-
-function StatusPill({ status }: { status: string }) {
-  switch (status) {
-    case "ok":
-      return (
-        <Badge
-          data-testid="butler-status-pill"
-          className="bg-emerald-600 text-white hover:bg-emerald-600/90"
-        >
-          Up
-        </Badge>
-      );
-    case "degraded":
-      return (
-        <Badge
-          data-testid="butler-status-pill"
-          variant="outline"
-          className="border-amber-500 text-amber-600"
-        >
-          Degraded
-        </Badge>
-      );
-    case "error":
-    case "down":
-      return (
-        <Badge data-testid="butler-status-pill" variant="destructive">
-          Down
-        </Badge>
-      );
-    default:
-      return (
-        <Badge data-testid="butler-status-pill" variant="secondary">
-          {status}
-        </Badge>
-      );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +76,7 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
 
   return (
     <div className="flex items-center gap-2" data-testid="butler-detail-actions">
-      <StatusPill status={status} />
+      <ButlerStatusBadge status={status} data-testid="butler-status-pill" />
 
       <Button
         variant="outline"
