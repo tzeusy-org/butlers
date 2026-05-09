@@ -63,30 +63,59 @@ const ButlerModelOverridesTab = lazy(
 // Tab configuration
 // ---------------------------------------------------------------------------
 
-const BASE_TABS = [
+// Gate B (bu-41p8z) resolved to B2: operator/resident mode toggle.
+// Operator mode: full 10 spec-mandated base tabs (dashboard-butler-management spec.md:55, 178-179).
+// Resident mode: narrow 7-tab Dispatch vocabulary (intended future default for new visitors).
+// Today operator is the active default; bu-8bayc.2 adds the toggle UI, localStorage persistence,
+// and will wire up resident as the default for first-time visitors.
+
+/** Full 10 spec-mandated base tabs — shown in operator mode. */
+export const BASE_TABS_OPERATOR = [
   "overview",
   "sessions",
   "config",
   "skills",
   "schedules",
-  "state",
   "trigger",
   "mcp",
+  "state",
   "crm",
   "memory",
-  "models",
 ] as const;
 
+/** Narrow 7-tab Dispatch vocabulary — shown in resident mode (future default). */
+export const BASE_TABS_RESIDENT = [
+  "overview",
+  "activity",
+  "logs",
+  "approvals",
+  "spend",
+  "config",
+  "memory",
+] as const;
+
+/**
+ * Non-spec extension tab: Models.
+ * Operator-only; not part of the 10 mandated base tabs.
+ * Does not appear in resident mode.
+ */
+export const OPERATOR_EXTENSION_TABS = ["models"] as const;
+
+// Butler-specific conditional tabs (health, switchboard routing).
+// Appended after the base tabs; visible regardless of mode.
 const HEALTH_TABS = ["health"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
 
 type TabValue =
-  | (typeof BASE_TABS)[number]
+  | (typeof BASE_TABS_OPERATOR)[number]
+  | (typeof BASE_TABS_RESIDENT)[number]
+  | (typeof OPERATOR_EXTENSION_TABS)[number]
   | (typeof HEALTH_TABS)[number]
   | (typeof SWITCHBOARD_TABS)[number];
 
 function getAllTabs(butlerName: string): readonly string[] {
-  const tabs: string[] = [...BASE_TABS];
+  // bu-8bayc.2 will thread the mode prop through here; for now operator is the default.
+  const tabs: string[] = [...BASE_TABS_OPERATOR, ...OPERATOR_EXTENSION_TABS];
   if (butlerName === "health") {
     tabs.push(...HEALTH_TABS);
   }
