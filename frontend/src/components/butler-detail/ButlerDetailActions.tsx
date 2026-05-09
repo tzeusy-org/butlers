@@ -33,9 +33,9 @@ type DetailMode = "operator" | "resident";
 interface ButlerDetailActionsProps {
   butlerName: string;
   /** Current operator/resident view mode. */
-  mode?: DetailMode;
+  mode: DetailMode;
   /** Callback to change the mode. */
-  onModeChange?: (mode: DetailMode) => void;
+  onModeChange: (mode: DetailMode) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ interface ButlerDetailActionsProps {
 
 export function ButlerDetailActions({
   butlerName,
-  mode = "resident",
+  mode,
   onModeChange,
 }: ButlerDetailActionsProps) {
   const { data: butlerResponse } = useButler(butlerName);
@@ -85,7 +85,7 @@ export function ButlerDetailActions({
   }
 
   function handleModeToggle() {
-    onModeChange?.(mode === "operator" ? "resident" : "operator");
+    onModeChange(mode === "operator" ? "resident" : "operator");
   }
 
   return (

@@ -480,8 +480,15 @@ export default function ButlerDetailPage() {
     (next: DetailMode) => {
       setModeState(next);
       persistMode(next);
+      // If the current tab is not valid in the target mode, reset to overview
+      // so the URL doesn't carry a stale tab param that would auto-promote
+      // mode back on the next page load.
+      const currentTab = searchParams.get("tab");
+      if (currentTab && !isValidTab(currentTab, name, next)) {
+        setSearchParams({}, { replace: true });
+      }
     },
-    [],
+    [name, searchParams, setSearchParams],
   );
 
   const activeTab: TabValue = isValidTab(tabParam, name, mode) ? tabParam : "overview";
