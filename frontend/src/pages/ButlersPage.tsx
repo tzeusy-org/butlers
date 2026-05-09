@@ -41,7 +41,14 @@ function statusPill(status: string) {
 // Eligibility chip
 // ---------------------------------------------------------------------------
 
-function eligibilityChip(state: string) {
+function eligibilityChip(state: string | null) {
+  if (state === null) {
+    return (
+      <Badge variant="outline" className="border-border text-muted-foreground text-xs">
+        Unavailable
+      </Badge>
+    );
+  }
   if (state === "active") {
     return (
       <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-xs">
@@ -76,9 +83,11 @@ function eligibilityChip(state: string) {
 function ButlerCard({
   butler,
   eligibilityState,
+  registryLoaded,
 }: {
   butler: ButlerSummary;
   eligibilityState?: string;
+  registryLoaded: boolean;
 }) {
   const detailPath = `/butlers/${encodeURIComponent(butler.name)}`;
   const [hover, setHover] = useState(false);
@@ -119,7 +128,9 @@ function ButlerCard({
 
       {/* Col 3: sessions count + open → link + eligibility chip */}
       <div className="flex flex-col items-end gap-2 min-w-[8rem] mt-1">
-        {eligibilityState ? eligibilityChip(eligibilityState) : null}
+        {registryLoaded
+          ? eligibilityChip(eligibilityState ?? null)
+          : null}
         <div className="flex items-baseline gap-3 font-mono text-[11px]">
           <span>
             <span className="font-medium tabular-nums">{butler.sessions_24h}</span>
@@ -144,9 +155,11 @@ function ButlerCard({
 function ButlerGroup({
   butlers,
   eligibilityMap,
+  registryLoaded,
 }: {
   butlers: ButlerSummary[];
   eligibilityMap: Map<string, string>;
+  registryLoaded: boolean;
 }) {
   return (
     <div className="divide-y divide-border/40">
@@ -155,6 +168,7 @@ function ButlerGroup({
           key={butler.name}
           butler={butler}
           eligibilityState={eligibilityMap.get(butler.name)}
+          registryLoaded={registryLoaded}
         />
       ))}
     </div>
@@ -168,6 +182,7 @@ function ButlerGroup({
 export default function ButlersPage() {
   const { data: response, isLoading, isError, error, refetch } = useButlers();
   const { data: registryResponse } = useRegistry();
+  const registryLoaded = registryResponse != null;
 
   const { butlers, staffers, onlineCount } = useMemo(() => {
     const allSorted = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
@@ -251,7 +266,7 @@ export default function ButlersPage() {
           {butlers.length > 0 && (
             <div className="space-y-2">
               <h2 className="text-lg font-semibold tracking-tight">Butlers</h2>
-              <ButlerGroup butlers={butlers} eligibilityMap={eligibilityMap} />
+              <ButlerGroup butlers={butlers} eligibilityMap={eligibilityMap} registryLoaded={registryLoaded} />
             </div>
           )}
 
@@ -261,7 +276,7 @@ export default function ButlersPage() {
               <p className="text-muted-foreground text-sm -mt-1">
                 Infrastructure services that support butler operations.
               </p>
-              <ButlerGroup butlers={staffers} eligibilityMap={eligibilityMap} />
+              <ButlerGroup butlers={staffers} eligibilityMap={eligibilityMap} registryLoaded={registryLoaded} />
             </div>
           )}
         </>
