@@ -37,7 +37,15 @@ def test_google_health_is_supported() -> None:
     state = find_source("google_health.measurements")
     assert state is not None
     assert state.chronicler_compatibility == Compatibility.SUPPORTED
-    assert state.read_surface == "health.facts (predicate=sleep_session)"
+    assert state.read_surface == "health.facts (predicate=sleep_session|workout_session)"
+
+
+@pytest.mark.parametrize("source_name", ["health.steps", "health.heart_rate"])
+def test_google_health_point_event_sources_are_supported(source_name: str) -> None:
+    state = find_source(source_name)
+    assert state is not None
+    assert state.chronicler_compatibility == Compatibility.SUPPORTED
+    assert state.read_surface is not None
 
 
 def test_session_process_logs_marked_not_time_bearing() -> None:

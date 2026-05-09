@@ -35,8 +35,8 @@ describe("ButlersPage", () => {
     setQueryState({
       data: {
         data: [
-          { name: "general", status: "ok", port: 40101, type: "butler" as const },
-          { name: "switchboard", status: "degraded", port: 40100, type: "butler" as const },
+          { name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 0 },
+          { name: "switchboard", status: "degraded", port: 40100, type: "butler" as const, sessions_24h: 0 },
         ],
         meta: {},
       },
@@ -76,7 +76,7 @@ describe("ButlersPage", () => {
   it("keeps cached butlers visible on refetch error", () => {
     setQueryState({
       data: {
-        data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const }],
+        data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 0 }],
         meta: {},
       },
       isError: true,

@@ -42,15 +42,32 @@ from typing import Any
 import asyncpg
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
-from butlers.chronicler.models import Episode, Precision, Privacy
-from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
+from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
+from butlers.chronicler.storage import (
+    get_carryover,
+    save_carryover,
+    upsert_episode,
+    upsert_point_event,
+)
 
 logger = logging.getLogger(__name__)
 
 SOURCE_NAME = "google_health.measurements"
+SOURCE_NAME_HEART_RATE = "health.heart_rate"
+SOURCE_NAME_STEPS = "health.steps"
 EPISODE_TYPE_SLEEP = "sleep_episode"
+EPISODE_TYPE_WORKOUT = "workout_episode"
+EVENT_TYPE_HEART_RATE = "heart_rate_summary"
+EVENT_TYPE_STEPS = "daily_steps"
 _FACTS_TABLE = "health.facts"
 _PREDICATE = "sleep_session"
+_WORKOUT_PREDICATE = "workout_session"
+_HEART_RATE_PREDICATES = (
+    "measurement_resting_hr",
+    "heart_rate_summary",
+    "measurement_heart_rate",
+)
+_STEPS_PREDICATES = ("measurement_steps", "daily_steps")
 DEFAULT_BATCH_LIMIT = 500
 
 # Maximum gap in minutes between the prior batch's open sleep episode start_at
@@ -375,10 +392,491 @@ def _derive_end_at(start_at: datetime, metadata: dict[str, Any]) -> datetime | N
     return None
 
 
+def _source_ref_for_fact(row: asyncpg.Record) -> str:
+    predicate = row["predicate"]
+    idempotency_key: str | None = row["idempotency_key"]
+    fact_id = str(row["id"])
+    if idempotency_key:
+        return f"{_FACTS_TABLE}:{predicate}:{idempotency_key}"
+    return f"{_FACTS_TABLE}:{predicate}:{fact_id}"
+
+
+def _first_number(metadata: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = metadata.get(key)
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, int | float):
+            return float(value)
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+async def _fetch_fact_rows(
+    pool: asyncpg.Pool,
+    *,
+    predicates: tuple[str, ...],
+    since: datetime | None,
+    batch_limit: int,
+) -> list[asyncpg.Record] | None:
+    """Fetch active health facts for one or more predicates.
+
+    Returns ``None`` when ``health.facts`` is unavailable so adapters can
+    degrade in the same way as the sleep projection.
+    """
+    try:
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_schema = 'health'
+                      AND table_name = 'facts'
+                )
+                """
+            )
+            if not exists:
+                return None
+
+            if since is None:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id, subject, predicate, content, metadata,
+                           valid_at, created_at, idempotency_key
+                    FROM {_FACTS_TABLE}
+                    WHERE predicate = ANY($1::text[])
+                      AND validity = 'active'
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT $2
+                    """,
+                    list(predicates),
+                    batch_limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id, subject, predicate, content, metadata,
+                           valid_at, created_at, idempotency_key
+                    FROM {_FACTS_TABLE}
+                    WHERE predicate = ANY($1::text[])
+                      AND validity = 'active'
+                      AND created_at > $2
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT $3
+                    """,
+                    list(predicates),
+                    since,
+                    batch_limit,
+                )
+    except asyncpg.PostgresError:
+        logger.exception("Failed reading %s (predicates=%s)", _FACTS_TABLE, predicates)
+        return None
+    return list(rows)
+
+
+class GoogleHealthWorkoutAdapter(ProjectionAdapter):
+    """Project ``health.facts`` workout-session rows into Chronicler.
+
+    One ``workout_session`` fact → one ``workout_episode`` in Chronicler.
+    The episode spans ``[valid_at, end_at)`` where ``end_at`` is derived
+    from ``metadata.end_time`` (preferred) or ``valid_at + duration_ms``
+    (fallback).
+
+    Source ref format::
+
+        health.facts:workout_session:{idempotency_key}
+
+    Falls back to the fact UUID when ``idempotency_key`` is absent.
+
+    Boundary precision is ``minute``. Privacy is ``normal`` for aggregate
+    workout facts, and escalates to ``sensitive`` when the fact carries
+    heart-rate fields.
+    """
+
+    def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
+        super().__init__(SOURCE_NAME)
+        self.batch_limit = batch_limit
+
+    async def project(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        chronicler_pool: asyncpg.Pool,
+        since: datetime | None,
+        since_id: int | None = None,
+    ) -> AdapterResult:
+        result = AdapterResult(source_name=self.source_name)
+
+        rows = await self._fetch_workout_facts(pool, since)
+        if rows is None:
+            result.skipped = True
+            result.skipped_reason = (
+                f"{_FACTS_TABLE} not found; Google Health workout evidence surface unavailable"
+            )
+            return result
+
+        latest_watermark = since
+        for row in rows:
+            episode = await self._project_row(chronicler_pool, row)
+            if episode is None:
+                continue
+            result.rows_projected += 1
+            result.episodes_closed += 1
+            candidate: datetime | None = row["created_at"]
+            if candidate is not None:
+                if latest_watermark is None or candidate > latest_watermark:
+                    latest_watermark = candidate
+        result.watermark = latest_watermark
+        return result
+
+    async def _fetch_workout_facts(
+        self,
+        pool: asyncpg.Pool,
+        since: datetime | None,
+    ) -> list[asyncpg.Record] | None:
+        """Fetch workout_session facts since the watermark.
+
+        Returns ``None`` if ``health.facts`` is missing — degrades gracefully.
+        """
+        try:
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'health' AND table_name = 'facts'
+                    )
+                    """
+                )
+                if not exists:
+                    return None
+
+                if since is None:
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT id, subject, predicate, content, metadata,
+                               valid_at, created_at, idempotency_key
+                        FROM {_FACTS_TABLE}
+                        WHERE predicate = $1
+                          AND validity = 'active'
+                        ORDER BY created_at ASC, id ASC
+                        LIMIT $2
+                        """,
+                        _WORKOUT_PREDICATE,
+                        self.batch_limit,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT id, subject, predicate, content, metadata,
+                               valid_at, created_at, idempotency_key
+                        FROM {_FACTS_TABLE}
+                        WHERE predicate = $1
+                          AND validity = 'active'
+                          AND created_at > $2
+                        ORDER BY created_at ASC, id ASC
+                        LIMIT $3
+                        """,
+                        _WORKOUT_PREDICATE,
+                        since,
+                        self.batch_limit,
+                    )
+        except asyncpg.PostgresError:
+            logger.exception("Failed reading %s (predicate=%s)", _FACTS_TABLE, _WORKOUT_PREDICATE)
+            return None
+        return list(rows)
+
+    async def _project_row(
+        self,
+        chronicler_pool: asyncpg.Pool,
+        row: asyncpg.Record,
+    ) -> Episode | None:
+        idempotency_key: str | None = row["idempotency_key"]
+        fact_id = str(row["id"])
+
+        if idempotency_key:
+            source_ref = f"{_FACTS_TABLE}:{_WORKOUT_PREDICATE}:{idempotency_key}"
+        else:
+            source_ref = f"{_FACTS_TABLE}:{_WORKOUT_PREDICATE}:{fact_id}"
+
+        start_at: datetime | None = row["valid_at"]
+        if start_at is None:
+            logger.warning(
+                "google_health workout adapter: fact %s has null valid_at; skipping",
+                fact_id,
+            )
+            return None
+
+        metadata: dict[str, Any] = dict(row["metadata"] or {})
+        end_at = _derive_end_at(start_at, metadata)
+
+        activity_type = str(metadata.get("activity_type") or "workout").strip() or "workout"
+        duration_ms = int(metadata.get("duration_ms") or 0)
+        if duration_ms:
+            mins = duration_ms // 60_000
+            title = f"{activity_type.title()} ({mins}m)"
+        else:
+            title = activity_type.title()
+
+        payload: dict[str, Any] = {
+            "fact_id": fact_id,
+            "idempotency_key": idempotency_key,
+            "activity_type": activity_type,
+            "duration_ms": duration_ms or None,
+        }
+        for field_name in (
+            "calories",
+            "distance_m",
+            "average_heart_rate",
+            "max_heart_rate",
+            "session_id",
+        ):
+            val = metadata.get(field_name)
+            if val is not None:
+                payload[field_name] = val
+        privacy = (
+            Privacy.SENSITIVE
+            if payload.get("average_heart_rate") is not None
+            or payload.get("max_heart_rate") is not None
+            else Privacy.NORMAL
+        )
+
+        async with chronicler_pool.acquire() as conn:
+            episode = await upsert_episode(
+                conn,
+                Episode(
+                    source_name=self.source_name,
+                    source_ref=source_ref,
+                    episode_type=EPISODE_TYPE_WORKOUT,
+                    start_at=start_at,
+                    end_at=end_at,
+                    precision=Precision.MINUTE,
+                    title=title,
+                    payload=payload,
+                    privacy=privacy,
+                ),
+            )
+        return episode
+
+
+class GoogleHealthStepsAdapter(ProjectionAdapter):
+    """Project Google Health step-count facts into Chronicler point events."""
+
+    def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
+        super().__init__(SOURCE_NAME_STEPS)
+        self.batch_limit = batch_limit
+
+    async def project(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        chronicler_pool: asyncpg.Pool,
+        since: datetime | None,
+        since_id: int | None = None,
+    ) -> AdapterResult:
+        result = AdapterResult(source_name=self.source_name)
+        rows = await _fetch_fact_rows(
+            pool,
+            predicates=_STEPS_PREDICATES,
+            since=since,
+            batch_limit=self.batch_limit,
+        )
+        if rows is None:
+            result.skipped = True
+            result.skipped_reason = (
+                f"{_FACTS_TABLE} not found; Google Health steps evidence surface unavailable"
+            )
+            return result
+
+        latest_watermark = since
+        for row in rows:
+            event = await self._project_row(chronicler_pool, row)
+            if event is None:
+                continue
+            result.rows_projected += 1
+            result.point_events += 1
+            candidate: datetime | None = row["created_at"]
+            if candidate is not None:
+                if latest_watermark is None or candidate > latest_watermark:
+                    latest_watermark = candidate
+        result.watermark = latest_watermark
+        return result
+
+    async def _project_row(
+        self,
+        chronicler_pool: asyncpg.Pool,
+        row: asyncpg.Record,
+    ) -> PointEvent | None:
+        occurred_at: datetime | None = row["valid_at"]
+        if occurred_at is None:
+            logger.warning(
+                "google_health steps adapter: fact %s has null valid_at; skipping",
+                row["id"],
+            )
+            return None
+
+        metadata: dict[str, Any] = dict(row["metadata"] or {})
+        steps = _first_number(metadata, "value", "steps", "count")
+        title = f"Steps: {int(steps):,}" if steps is not None else "Steps"
+        payload: dict[str, Any] = {
+            "fact_id": str(row["id"]),
+            "idempotency_key": row["idempotency_key"],
+            "predicate": row["predicate"],
+        }
+        if steps is not None:
+            payload["steps"] = int(steps)
+        for field_name in (
+            "distance_km",
+            "distance_m",
+            "floors",
+            "very_active_minutes",
+            "fairly_active_minutes",
+            "lightly_active_minutes",
+            "sedentary_minutes",
+        ):
+            val = metadata.get(field_name)
+            if val is not None:
+                payload[field_name] = val
+
+        async with chronicler_pool.acquire() as conn:
+            return await upsert_point_event(
+                conn,
+                PointEvent(
+                    source_name=self.source_name,
+                    source_ref=_source_ref_for_fact(row),
+                    event_type=EVENT_TYPE_STEPS,
+                    occurred_at=occurred_at,
+                    precision=Precision.DAY,
+                    title=title,
+                    payload=payload,
+                    privacy=Privacy.NORMAL,
+                ),
+            )
+
+
+class GoogleHealthHeartRateAdapter(ProjectionAdapter):
+    """Project Google Health heart-rate summary facts into point events."""
+
+    def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
+        super().__init__(SOURCE_NAME_HEART_RATE)
+        self.batch_limit = batch_limit
+
+    async def project(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        chronicler_pool: asyncpg.Pool,
+        since: datetime | None,
+        since_id: int | None = None,
+    ) -> AdapterResult:
+        result = AdapterResult(source_name=self.source_name)
+        rows = await _fetch_fact_rows(
+            pool,
+            predicates=_HEART_RATE_PREDICATES,
+            since=since,
+            batch_limit=self.batch_limit,
+        )
+        if rows is None:
+            result.skipped = True
+            result.skipped_reason = (
+                f"{_FACTS_TABLE} not found; Google Health heart-rate surface unavailable"
+            )
+            return result
+
+        latest_watermark = since
+        for row in rows:
+            event = await self._project_row(chronicler_pool, row)
+            if event is None:
+                continue
+            result.rows_projected += 1
+            result.point_events += 1
+            candidate: datetime | None = row["created_at"]
+            if candidate is not None:
+                if latest_watermark is None or candidate > latest_watermark:
+                    latest_watermark = candidate
+        result.watermark = latest_watermark
+        return result
+
+    async def _project_row(
+        self,
+        chronicler_pool: asyncpg.Pool,
+        row: asyncpg.Record,
+    ) -> PointEvent | None:
+        occurred_at: datetime | None = row["valid_at"]
+        if occurred_at is None:
+            logger.warning(
+                "google_health heart-rate adapter: fact %s has null valid_at; skipping",
+                row["id"],
+            )
+            return None
+
+        metadata: dict[str, Any] = dict(row["metadata"] or {})
+        bpm = _first_number(
+            metadata,
+            "value",
+            "bpm",
+            "avg_bpm",
+            "average_heart_rate",
+            "resting_hr",
+        )
+        predicate = row["predicate"]
+        if bpm is None:
+            title = "Heart rate"
+        elif predicate == "measurement_resting_hr":
+            title = f"Resting heart rate: {int(bpm)} bpm"
+        else:
+            title = f"Heart rate: {int(bpm)} bpm"
+
+        payload: dict[str, Any] = {
+            "fact_id": str(row["id"]),
+            "idempotency_key": row["idempotency_key"],
+            "predicate": predicate,
+        }
+        if bpm is not None:
+            payload["bpm"] = int(bpm)
+        for field_name in (
+            "heart_rate_zones",
+            "min_bpm",
+            "max_bpm",
+            "average_heart_rate",
+            "max_heart_rate",
+        ):
+            val = metadata.get(field_name)
+            if val is not None:
+                payload[field_name] = val
+
+        precision = Precision.MINUTE if predicate == "measurement_heart_rate" else Precision.DAY
+        async with chronicler_pool.acquire() as conn:
+            return await upsert_point_event(
+                conn,
+                PointEvent(
+                    source_name=self.source_name,
+                    source_ref=_source_ref_for_fact(row),
+                    event_type=EVENT_TYPE_HEART_RATE,
+                    occurred_at=occurred_at,
+                    precision=precision,
+                    title=title,
+                    payload=payload,
+                    privacy=Privacy.SENSITIVE,
+                ),
+            )
+
+
 __all__ = [
     "DEFAULT_BATCH_LIMIT",
+    "EVENT_TYPE_HEART_RATE",
+    "EVENT_TYPE_STEPS",
     "EPISODE_TYPE_SLEEP",
+    "EPISODE_TYPE_WORKOUT",
+    "GoogleHealthHeartRateAdapter",
     "GoogleHealthSleepAdapter",
+    "GoogleHealthStepsAdapter",
+    "GoogleHealthWorkoutAdapter",
     "SLEEP_STITCH_GAP_MINUTES",
     "SOURCE_NAME",
+    "SOURCE_NAME_HEART_RATE",
+    "SOURCE_NAME_STEPS",
 ]

@@ -185,13 +185,13 @@ function ArchetypeWrapper({
   }
   if (archetype === "editorial") {
     // The editorial archetype owns its own layout (two-column grid, max-width
-    // 1280px, padding 48px 56px). The <Page> wrapper does not add space-y-6
-    // here; DashboardPage composes the two-column region directly inside children.
+    // 1280px, responsive page padding). The <Page> wrapper does not add
+    // space-y-6 here; editorial pages compose the two-column region directly.
     return (
       <div
+        className="px-4 py-8 sm:px-8 lg:px-14 lg:py-12"
         style={{
           maxWidth: "1280px",
-          padding: "48px 56px",
         }}
       >
         {children}

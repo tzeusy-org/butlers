@@ -602,6 +602,56 @@ async def _run_chronicler_project_google_health_sleep_job(
     return await run_project_google_health_sleep(pool, job_args)
 
 
+async def _run_chronicler_project_google_health_workout_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's Google Health workout-episode projection job."""
+    from butlers.chronicler.jobs import run_project_google_health_workout
+
+    return await run_project_google_health_workout(pool, job_args)
+
+
+async def _run_chronicler_project_google_health_steps_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's Google Health steps point-event projection job."""
+    from butlers.chronicler.jobs import run_project_google_health_steps
+
+    return await run_project_google_health_steps(pool, job_args)
+
+
+async def _run_chronicler_project_google_health_heart_rate_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's Google Health heart-rate point-event projection job."""
+    from butlers.chronicler.jobs import run_project_google_health_heart_rate
+
+    return await run_project_google_health_heart_rate(pool, job_args)
+
+
+async def _run_chronicler_project_focus_inferred_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's inferred focus-block projection job."""
+    from butlers.chronicler.jobs import run_project_focus_inferred
+
+    return await run_project_focus_inferred(pool, job_args)
+
+
+async def _run_chronicler_project_reading_inferred_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's inferred reading-block projection job."""
+    from butlers.chronicler.jobs import run_project_reading_inferred
+
+    return await run_project_reading_inferred(pool, job_args)
+
+
 async def _run_chronicler_project_spotify_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -665,6 +715,17 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_google_health_sleep": (
                 _run_chronicler_project_google_health_sleep_job
             ),
+            "chronicler_project_google_health_workout": (
+                _run_chronicler_project_google_health_workout_job
+            ),
+            "chronicler_project_google_health_steps": (
+                _run_chronicler_project_google_health_steps_job
+            ),
+            "chronicler_project_google_health_heart_rate": (
+                _run_chronicler_project_google_health_heart_rate_job
+            ),
+            "chronicler_project_focus_inferred": _run_chronicler_project_focus_inferred_job,
+            "chronicler_project_reading_inferred": _run_chronicler_project_reading_inferred_job,
             "chronicler_project_spotify": _run_chronicler_project_spotify_job,
         },
         "home": {

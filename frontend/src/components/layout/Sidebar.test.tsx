@@ -128,7 +128,7 @@ describe("Sidebar", () => {
 
   it("includes navigation link to calendar workspace", () => {
     setButlersState({
-      data: { data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }], meta: {} },
+      data: { data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }], meta: {} },
     });
     render();
 
@@ -138,7 +138,7 @@ describe("Sidebar", () => {
 
   it("includes navigation link to Ingestion", () => {
     setButlersState({
-      data: { data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }], meta: {} },
+      data: { data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }], meta: {} },
     });
     render();
 
@@ -154,7 +154,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -191,7 +191,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
+          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -247,7 +247,7 @@ describe("Sidebar", () => {
       setButlersState({
         data: {
           data: [
-            { name: "relationship", status: "degraded", port: 40102, type: "butler" as const },
+            { name: "relationship", status: "degraded", port: 40102, type: "butler" as const, sessions_24h: 0 },
           ],
           meta: {},
         },
@@ -269,7 +269,7 @@ describe("Sidebar", () => {
       setButlersState({
         data: {
           data: [
-            { name: "relationship", status: "error", port: 40102, type: "butler" as const },
+            { name: "relationship", status: "error", port: 40102, type: "butler" as const, sessions_24h: 0 },
           ],
           meta: {},
         },
@@ -288,7 +288,7 @@ describe("Sidebar", () => {
       setButlersState({
         data: {
           data: [
-            { name: "relationship", status: "ok", port: 40102, type: "butler" as const },
+            { name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 },
           ],
           meta: {},
         },
@@ -312,7 +312,7 @@ describe("Sidebar", () => {
     it("shows green dot when all butlers are ok", () => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -326,7 +326,7 @@ describe("Sidebar", () => {
     it("shows amber dot when any butler is degraded", () => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "degraded", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "degraded", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -341,7 +341,7 @@ describe("Sidebar", () => {
     it("footer title attribute contains status summary", () => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "degraded", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "degraded", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -397,7 +397,7 @@ describe("Sidebar", () => {
     it("shows red dot when any butler has error status (success path)", () => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "error", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "error", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -420,7 +420,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -553,7 +553,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -631,7 +631,7 @@ describe("Sidebar", () => {
     it("hides Relationships group when relationship butler is absent", () => {
       setButlersState({
         data: {
-          data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const }],
+          data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -644,7 +644,7 @@ describe("Sidebar", () => {
     it("shows Relationships group when relationship butler is present", () => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -696,7 +696,7 @@ describe("Sidebar", () => {
     it("shows Chronicles link when chronicler butler is present", () => {
       setButlersState({
         data: {
-          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
+          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -709,7 +709,7 @@ describe("Sidebar", () => {
     it("hides Chronicles link when chronicler butler is absent", () => {
       setButlersState({
         data: {
-          data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const }],
+          data: [{ name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -721,7 +721,7 @@ describe("Sidebar", () => {
     it("uses disambiguation tooltip as aria-label on Chronicles link", () => {
       setButlersState({
         data: {
-          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
+          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -743,7 +743,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "qa", status: "ok", port: 40120, type: "butler" as const }],
+          data: [{ name: "qa", status: "ok", port: 40120, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });
@@ -782,7 +782,7 @@ describe("Sidebar", () => {
     beforeEach(() => {
       setButlersState({
         data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const, sessions_24h: 0 }],
           meta: {},
         },
       });

@@ -42,8 +42,13 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     ("steam.play_history", "play_episode"): "gaming",
     ("owntracks.points", "movement_episode"): "travel",
     ("google_health.measurements", "sleep_episode"): "sleep",
+    ("google_health.measurements", "workout_episode"): "other",
     ("health.meals", "eating_event"): "meal",
     ("home_assistant.history", "presence_episode"): "home",
+    # Inferred chronicler-derived sources (bu-i29ix). Both fold into 'tasks'
+    # to avoid a lane taxonomy reshape; payload.signal carries the kind.
+    ("chronicler.focus_inferred", "focus_block"): "tasks",
+    ("chronicler.reading_inferred", "reading_block"): "tasks",
 }
 
 # trigger_source values that represent user→butler conversations.

@@ -65,6 +65,12 @@ if _spec is not None and _spec.loader is not None:
     EpisodeExplainResponse = _models.EpisodeExplainResponse
     OpsSessionRow = _models.OpsSessionRow
     ProjectionHealthRow = _models.ProjectionHealthRow
+    ChroniclesAttentionItem = _models.ChroniclesAttentionItem
+    ChroniclesBriefing = _models.ChroniclesBriefing
+    ChroniclesKpi = _models.ChroniclesKpi
+    ChroniclesLaneHours = _models.ChroniclesLaneHours
+    ChroniclesRecentDay = _models.ChroniclesRecentDay
+    ChroniclesStreaks = _models.ChroniclesStreaks
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -2012,3 +2018,208 @@ async def refresh_day_close(
         cache_key=cache_key,
         cache_built_at=new_row["cache_built_at"],
     )
+
+
+# ── Editorial endpoints (bu-i29ix) ────────────────────────────────────────
+
+
+def _parse_date_param(date_param: str | None) -> date:
+    if date_param is None:
+        # Default: yesterday in UTC. The frontend always passes an explicit date
+        # picked from the owner's timezone, so this is just a defensive fallback.
+        return (datetime.now(UTC) - timedelta(days=1)).date()
+    try:
+        return date.fromisoformat(date_param)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"date must be a valid YYYY-MM-DD date; got {date_param!r}",
+        ) from exc
+
+
+def _resolve_owner_tz_default() -> str:
+    """Default timezone when the caller does not pass one.
+
+    The chronicler page-level invariant (dashboard-chronicles spec) bars
+    cross-schema reads from page-driven endpoints. The frontend already
+    fetches the owner timezone via the dashboard settings router and
+    passes it explicitly to chronicler endpoints, so this helper only
+    needs to provide a stable fallback when the caller omits ``tz``.
+    Default matches the SGT fallback used elsewhere in the chronicler
+    surface.
+    """
+    return "Asia/Singapore"
+
+
+def _attention_to_pydantic(items: list[Any]) -> list[ChroniclesAttentionItem]:
+    return [
+        ChroniclesAttentionItem(
+            kind=it.kind,
+            severity=it.severity,
+            title=it.title,
+            detail=it.detail,
+            action_href=it.action_href,
+        )
+        for it in items
+    ]
+
+
+def _kpi_to_pydantic(kpi: Any) -> ChroniclesKpi:
+    return ChroniclesKpi(
+        hours_by_top_lanes=[
+            ChroniclesLaneHours(lane=lh.lane, hours=lh.hours) for lh in kpi.hours_by_top_lanes
+        ],
+        longest_episode_minutes=kpi.longest_episode_minutes,
+        longest_episode_title=kpi.longest_episode_title,
+        longest_gap_minutes=kpi.longest_gap_minutes,
+        sleep_minutes=kpi.sleep_minutes,
+        streaks=ChroniclesStreaks(sleep=kpi.streaks.sleep, exercise=kpi.streaks.exercise),
+    )
+
+
+def _recent_days_to_pydantic(rows: list[Any]) -> list[ChroniclesRecentDay]:
+    return [
+        ChroniclesRecentDay(
+            date=r.date,
+            total_minutes=r.total_minutes,
+            top_lane=r.top_lane,
+            episode_count=r.episode_count,
+        )
+        for r in rows
+    ]
+
+
+async def _voice_paragraph_from_cache(pool: Any, target: date) -> tuple[str | None, str]:
+    """Return (paragraph, source) read from the day-close Tier-2 cache.
+
+    source is one of 'llm·cached', 'stale', or 'templated'. When the cache
+    is missing entirely, paragraph is None and the caller must produce a
+    templated fallback.
+    """
+    cache_key = f"day_close:{target.isoformat()}"
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT prose, cache_built_at, start_at, end_at
+            FROM tier2_cache
+            WHERE cache_key = $1
+              AND superseded_at IS NULL
+            """,
+            cache_key,
+        )
+    if row is None:
+        return None, "templated"
+    prose = row["prose"]
+    cache_built_at = row["cache_built_at"]
+    start_at = row["start_at"]
+    end_at = row["end_at"]
+    # Light staleness check: any episode tombstoned or updated within the
+    # cached window after cache_built_at means stale. This is a
+    # subset of the full check in get_day_close_cache; for the briefing we
+    # do not need the corrected_start_at expansion paths.
+    async with pool.acquire() as conn:
+        any_invalidator = await conn.fetchval(
+            """
+            SELECT 1 FROM episodes
+            WHERE (updated_at > $3 OR tombstone_at > $3)
+              AND start_at < $2
+              AND (end_at IS NULL OR end_at > $1)
+            LIMIT 1
+            """,
+            start_at,
+            end_at,
+            cache_built_at,
+        )
+    source = "stale" if any_invalidator else "llm·cached"
+    return prose, source
+
+
+@router.get("/briefing", response_model=ChroniclesBriefing)
+async def get_briefing(
+    date_param: str | None = Query(
+        None, alias="date", description="YYYY-MM-DD; defaults to yesterday in UTC"
+    ),
+    tz: str | None = Query(
+        None,
+        description="IANA timezone name. Defaults to Chronicler's stable fallback.",
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ChroniclesBriefing:
+    """Editorial briefing for a single day window.
+
+    NEVER initiates a new LLM call. ``voice_paragraph`` is sourced from the
+    existing day-close Tier-2 cache when fresh, marked stale when the cache
+    has been invalidated by post-cache changes, or computed from a
+    deterministic templated fallback when no cache row exists.
+    """
+    from butlers.chronicler.editorial import (
+        compose_briefing_payload,
+        templated_voice_paragraph,
+    )
+
+    target = _parse_date_param(date_param)
+    tz_name = tz or _resolve_owner_tz_default()
+
+    pool = _pool(db)
+    payload = await compose_briefing_payload(pool, target, tz_name)
+    cache_paragraph, voice_source = await _voice_paragraph_from_cache(pool, target)
+    if cache_paragraph is None:
+        voice_paragraph = templated_voice_paragraph(payload)
+    else:
+        voice_paragraph = cache_paragraph
+
+    return ChroniclesBriefing(
+        date=target.isoformat(),
+        state_class=payload.state_class,
+        headline=payload.headline,
+        voice_paragraph=voice_paragraph,
+        voice_source=voice_source,
+        kpi=_kpi_to_pydantic(payload.kpi),
+        attention_items=_attention_to_pydantic(payload.attention_items),
+        recent_days=_recent_days_to_pydantic(payload.recent_days),
+    )
+
+
+@router.get(
+    "/attention",
+    response_model=ApiResponse[list[ChroniclesAttentionItem]],
+)
+async def get_attention(
+    date_param: str | None = Query(
+        None, alias="date", description="YYYY-MM-DD; defaults to yesterday in UTC"
+    ),
+    tz: str | None = Query(None),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ChroniclesAttentionItem]]:
+    """Attention list for a single day window.
+
+    Same data the briefing embeds, exposed standalone for cheaper polling.
+    """
+    from butlers.chronicler.editorial import compose_briefing_payload
+
+    target = _parse_date_param(date_param)
+    tz_name = tz or _resolve_owner_tz_default()
+    pool = _pool(db)
+    payload = await compose_briefing_payload(pool, target, tz_name)
+    return ApiResponse(data=_attention_to_pydantic(payload.attention_items))
+
+
+@router.get("/kpi", response_model=ApiResponse[ChroniclesKpi])
+async def get_kpi(
+    date_param: str | None = Query(
+        None, alias="date", description="YYYY-MM-DD; defaults to yesterday in UTC"
+    ),
+    tz: str | None = Query(None),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ChroniclesKpi]:
+    """KPI snapshot for a single day window.
+
+    Same data the briefing embeds, exposed standalone for cheaper polling.
+    """
+    from butlers.chronicler.editorial import compose_briefing_payload
+
+    target = _parse_date_param(date_param)
+    tz_name = tz or _resolve_owner_tz_default()
+    pool = _pool(db)
+    payload = await compose_briefing_payload(pool, target, tz_name)
+    return ApiResponse(data=_kpi_to_pydantic(payload.kpi))

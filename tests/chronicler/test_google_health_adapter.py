@@ -23,10 +23,13 @@ import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.google_health import (
+    GoogleHealthHeartRateAdapter,
     GoogleHealthSleepAdapter,
+    GoogleHealthStepsAdapter,
+    GoogleHealthWorkoutAdapter,
     _derive_end_at,
 )
-from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
 
 # ---------------------------------------------------------------------------
 # Shared test constants
@@ -562,6 +565,182 @@ def test_derive_end_at_handles_z_suffix() -> None:
 
 
 def test_google_health_adapter_exported_from_package() -> None:
-    from butlers.chronicler.adapters import GoogleHealthSleepAdapter as _Cls
+    from butlers.chronicler.adapters import (
+        GoogleHealthHeartRateAdapter as _HeartRateCls,
+    )
+    from butlers.chronicler.adapters import (
+        GoogleHealthSleepAdapter as _SleepCls,
+    )
+    from butlers.chronicler.adapters import (
+        GoogleHealthStepsAdapter as _StepsCls,
+    )
+    from butlers.chronicler.adapters import (
+        GoogleHealthWorkoutAdapter as _WorkoutCls,
+    )
 
-    assert _Cls is GoogleHealthSleepAdapter
+    assert _SleepCls is GoogleHealthSleepAdapter
+    assert _WorkoutCls is GoogleHealthWorkoutAdapter
+    assert _StepsCls is GoogleHealthStepsAdapter
+    assert _HeartRateCls is GoogleHealthHeartRateAdapter
+
+
+@pytest.mark.asyncio
+async def test_workout_fact_projects_episode() -> None:
+    start = datetime(2026, 4, 25, 8, 0, tzinfo=UTC)
+    row = _make_row(
+        row_id="workout-001",
+        idempotency_key="google_health:workout:run-1",
+        valid_at=start,
+        metadata={
+            "activity_type": "run",
+            "duration_ms": 45 * 60_000,
+            "distance_m": 7200,
+            "calories": 410,
+        },
+    )
+    row["predicate"] = "workout_session"
+    row["content"] = "Run (45m)"
+
+    adapter = GoogleHealthWorkoutAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_episode",
+        side_effect=_fake_upsert,
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert result.episodes_closed == 1
+    episode = upserted[0]
+    assert episode.source_name == "google_health.measurements"
+    assert episode.source_ref == "health.facts:workout_session:google_health:workout:run-1"
+    assert episode.episode_type == "workout_episode"
+    assert episode.privacy == Privacy.NORMAL
+    assert episode.payload["activity_type"] == "run"
+    assert episode.payload["distance_m"] == 7200
+
+
+@pytest.mark.asyncio
+async def test_workout_fact_with_heart_rate_metadata_is_sensitive() -> None:
+    start = datetime(2026, 4, 25, 8, 0, tzinfo=UTC)
+    row = _make_row(
+        row_id="workout-hr-001",
+        idempotency_key="google_health:workout:run-hr-1",
+        valid_at=start,
+        metadata={
+            "activity_type": "run",
+            "duration_ms": 45 * 60_000,
+            "average_heart_rate": 151,
+            "max_heart_rate": 177,
+        },
+    )
+    row["predicate"] = "workout_session"
+    row["content"] = "Run (45m)"
+
+    adapter = GoogleHealthWorkoutAdapter()
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_episode",
+        side_effect=_fake_upsert,
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert upserted[0].privacy == Privacy.SENSITIVE
+    assert upserted[0].payload["average_heart_rate"] == 151
+
+
+@pytest.mark.asyncio
+async def test_steps_fact_projects_point_event() -> None:
+    row = _make_row(
+        row_id="steps-001",
+        idempotency_key="google_health:steps:2026-04-25",
+        valid_at=datetime(2026, 4, 25, 0, 0, tzinfo=UTC),
+        metadata={"value": 9342, "distance_km": 6.8, "floors": 12},
+    )
+    row["predicate"] = "measurement_steps"
+    row["content"] = "Steps: 9342"
+
+    adapter = GoogleHealthStepsAdapter()
+    upserted: list[PointEvent] = []
+
+    async def _fake_upsert(conn: object, event: PointEvent) -> PointEvent:
+        upserted.append(event)
+        return event
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_point_event",
+        side_effect=_fake_upsert,
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert result.point_events == 1
+    event = upserted[0]
+    assert event.source_name == "health.steps"
+    assert event.source_ref == "health.facts:measurement_steps:google_health:steps:2026-04-25"
+    assert event.event_type == "daily_steps"
+    assert event.precision == Precision.DAY
+    assert event.privacy == Privacy.NORMAL
+    assert event.payload["steps"] == 9342
+    assert event.payload["distance_km"] == 6.8
+
+
+@pytest.mark.asyncio
+async def test_heart_rate_fact_projects_sensitive_point_event() -> None:
+    row = _make_row(
+        row_id="hr-001",
+        idempotency_key="google_health:resting_hr:2026-04-25",
+        valid_at=datetime(2026, 4, 25, 0, 0, tzinfo=UTC),
+        metadata={
+            "value": 62,
+            "heart_rate_zones": {"fat_burn": 35, "cardio": 4},
+        },
+    )
+    row["predicate"] = "measurement_resting_hr"
+    row["content"] = "Resting HR: 62 bpm"
+
+    adapter = GoogleHealthHeartRateAdapter()
+    upserted: list[PointEvent] = []
+
+    async def _fake_upsert(conn: object, event: PointEvent) -> PointEvent:
+        upserted.append(event)
+        return event
+
+    pool = _pool_returning(row)
+    cp = _chronicler_pool()
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_point_event",
+        side_effect=_fake_upsert,
+    ):
+        result = await adapter.project(pool, chronicler_pool=cp, since=None)
+
+    assert result.rows_projected == 1
+    assert result.point_events == 1
+    event = upserted[0]
+    assert event.source_name == "health.heart_rate"
+    assert event.event_type == "heart_rate_summary"
+    assert event.precision == Precision.DAY
+    assert event.privacy == Privacy.SENSITIVE
+    assert event.payload["bpm"] == 62
+    assert event.payload["heart_rate_zones"] == {"fat_burn": 35, "cardio": 4}

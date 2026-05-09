@@ -64,6 +64,36 @@ dispatch_mode = "job"
 job_name = "chronicler_project_google_health_sleep"
 
 [[butler.schedule]]
+name = "chronicler_project_google_health_workout"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_google_health_workout"
+
+[[butler.schedule]]
+name = "chronicler_project_google_health_steps"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_google_health_steps"
+
+[[butler.schedule]]
+name = "chronicler_project_google_health_heart_rate"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_google_health_heart_rate"
+
+[[butler.schedule]]
+name = "chronicler_project_focus_inferred"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_focus_inferred"
+
+[[butler.schedule]]
+name = "chronicler_project_reading_inferred"
+cron = "*/30 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_reading_inferred"
+
+[[butler.schedule]]
 name = "chronicler_project_spotify"
 cron = "*/30 * * * *"
 dispatch_mode = "job"

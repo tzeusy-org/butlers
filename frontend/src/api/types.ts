@@ -3630,3 +3630,59 @@ export interface Briefing {
   state_class: BriefingStateClass;
   generated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Chronicles editorial briefing (bu-i29ix) -- distinct from the dashboard
+// briefing above. Backed by /api/chronicler/briefing|attention|kpi.
+// ---------------------------------------------------------------------------
+
+/** State classes the chronicles briefing classifier produces. */
+export type ChroniclesStateClass = "urgent" | "busy" | "mild" | "quiet";
+
+/** Source of the voice paragraph in the chronicles briefing. */
+export type ChroniclesVoiceSource = "llm·cached" | "templated" | "stale";
+
+export interface ChroniclesAttentionItem {
+  kind: "anomaly" | "source_health" | "open_correction" | string;
+  severity: "high" | "medium" | "low" | string;
+  title: string;
+  detail: string | null;
+  action_href: string | null;
+}
+
+export interface ChroniclesLaneHours {
+  lane: string;
+  hours: number;
+}
+
+export interface ChroniclesStreaks {
+  sleep: number;
+  exercise: number;
+}
+
+export interface ChroniclesKpi {
+  hours_by_top_lanes: ChroniclesLaneHours[];
+  longest_episode_minutes: number;
+  longest_episode_title: string | null;
+  longest_gap_minutes: number;
+  sleep_minutes: number;
+  streaks: ChroniclesStreaks;
+}
+
+export interface ChroniclesRecentDay {
+  date: string;
+  total_minutes: number;
+  top_lane: string | null;
+  episode_count: number;
+}
+
+export interface ChroniclesBriefing {
+  date: string;
+  state_class: ChroniclesStateClass;
+  headline: string;
+  voice_paragraph: string;
+  voice_source: ChroniclesVoiceSource;
+  kpi: ChroniclesKpi;
+  attention_items: ChroniclesAttentionItem[];
+  recent_days: ChroniclesRecentDay[];
+}

@@ -244,6 +244,9 @@ import type {
   EgressCatalog,
   HeartbeatFacts,
   Briefing,
+  ChroniclesBriefing,
+  ChroniclesAttentionItem,
+  ChroniclesKpi,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3723,4 +3726,40 @@ export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
  */
 export function getDashboardBriefing(): Promise<Briefing> {
   return apiFetch<Briefing>("/dashboard/briefing");
+}
+
+// ---------------------------------------------------------------------------
+// Chronicles editorial briefing (bu-i29ix)
+// GET /api/chronicler/briefing | /attention | /kpi
+// ---------------------------------------------------------------------------
+
+interface ChroniclesEditorialParams {
+  date?: string;
+  tz?: string;
+}
+
+function _chroniclesQs(params: ChroniclesEditorialParams | undefined): string {
+  const sp = new URLSearchParams();
+  if (params?.date) sp.set("date", params.date);
+  if (params?.tz) sp.set("tz", params.tz);
+  const qs = sp.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export function getChroniclesBriefing(
+  params?: ChroniclesEditorialParams,
+): Promise<ChroniclesBriefing> {
+  return apiFetch<ChroniclesBriefing>(`/chronicler/briefing${_chroniclesQs(params)}`);
+}
+
+export function getChroniclesAttention(
+  params?: ChroniclesEditorialParams,
+): Promise<{ data: ChroniclesAttentionItem[]; meta?: Record<string, unknown> }> {
+  return apiFetch(`/chronicler/attention${_chroniclesQs(params)}`);
+}
+
+export function getChroniclesKpi(
+  params?: ChroniclesEditorialParams,
+): Promise<{ data: ChroniclesKpi; meta?: Record<string, unknown> }> {
+  return apiFetch(`/chronicler/kpi${_chroniclesQs(params)}`);
 }

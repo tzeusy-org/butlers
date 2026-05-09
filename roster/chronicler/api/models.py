@@ -240,6 +240,85 @@ class OpsSessionRow(BaseModel):
     model: str | None = None
 
 
+# ── Editorial briefing / attention / KPI models (bu-i29ix) ─────────────────
+
+
+class ChroniclesAttentionItem(BaseModel):
+    """One entry in the Chronicles attention list.
+
+    The ``kind`` discriminates the source of the item: ``anomaly`` (sleep,
+    waking gap), ``source_health`` (adapter degradation), ``open_correction``
+    (unresolved overrides). Severity drives the mark-column glyph in the
+    editorial attention list primitive.
+    """
+
+    kind: str
+    """One of 'anomaly', 'source_health', 'open_correction'."""
+    severity: str
+    """One of 'high', 'medium', 'low'."""
+    title: str
+    detail: str | None = None
+    action_href: str | None = None
+
+
+class ChroniclesLaneHours(BaseModel):
+    """One entry in the KPI hours-by-lane list."""
+
+    lane: str
+    """One of the ten taxonomy categories."""
+    hours: float
+
+
+class ChroniclesStreaks(BaseModel):
+    """Small streak counters surfaced in the KPI strip."""
+
+    sleep: int = 0
+    """Consecutive days with a non-zero sleep_episode."""
+    exercise: int = 0
+    """Consecutive days with a non-zero workout_episode."""
+
+
+class ChroniclesKpi(BaseModel):
+    """KPI snapshot for a single day window."""
+
+    hours_by_top_lanes: list[ChroniclesLaneHours] = Field(default_factory=list)
+    """Top three lanes by total minutes, descending."""
+    longest_episode_minutes: int = 0
+    longest_episode_title: str | None = None
+    longest_gap_minutes: int = 0
+    """Longest gap between consecutive episodes during waking hours."""
+    sleep_minutes: int = 0
+    streaks: ChroniclesStreaks = Field(default_factory=ChroniclesStreaks)
+
+
+class ChroniclesRecentDay(BaseModel):
+    """One day in the recent-days index."""
+
+    date: str
+    """ISO calendar date (YYYY-MM-DD)."""
+    total_minutes: int
+    top_lane: str | None = None
+    episode_count: int
+
+
+class ChroniclesBriefing(BaseModel):
+    """Editorial briefing object for /api/chronicler/briefing."""
+
+    date: str
+    """ISO calendar date (YYYY-MM-DD)."""
+    state_class: str
+    """One of 'urgent', 'busy', 'mild', 'quiet'."""
+    headline: str
+    """Templated, sentence case, no exclamation, no em-dash."""
+    voice_paragraph: str
+    """Sourced from chronicler.tier2_cache when fresh; templated otherwise."""
+    voice_source: str
+    """One of 'llm·cached', 'templated', 'stale'."""
+    kpi: ChroniclesKpi = Field(default_factory=ChroniclesKpi)
+    attention_items: list[ChroniclesAttentionItem] = Field(default_factory=list)
+    recent_days: list[ChroniclesRecentDay] = Field(default_factory=list)
+
+
 __all__ = [
     "AggregateByDayRow",
     "CategoryBucket",
@@ -247,6 +326,12 @@ __all__ = [
     "ChroniclerEpisode",
     "ChroniclerOverride",
     "ChroniclerPointEvent",
+    "ChroniclesAttentionItem",
+    "ChroniclesBriefing",
+    "ChroniclesKpi",
+    "ChroniclesLaneHours",
+    "ChroniclesRecentDay",
+    "ChroniclesStreaks",
     "DayCloseRefreshRequest",
     "DayCloseRefreshResponse",
     "DayCloseFreshResponse",

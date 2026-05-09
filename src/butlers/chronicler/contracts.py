@@ -60,15 +60,41 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
-    # Google Health sleep-session projection — adapter landed in bu-yhs2c.
+    # Google Health sleep/workout projection — sleep landed in bu-yhs2c,
+    # workout promotion in bu-i29ix.
     SourceAdapterState(
         source_name="google_health.measurements",
         chronicler_compatibility=Compatibility.SUPPORTED,
-        read_surface="health.facts (predicate=sleep_session)",
+        read_surface="health.facts (predicate=sleep_session|workout_session)",
         boundary_semantics=(
             "one sleep_episode per sleep_session fact; "
+            "one workout_episode per workout_session fact; "
             "(valid_at, end_time or valid_at+duration_ms) bound the episode; "
-            "precision=minute (wearable device clock)"
+            "precision=minute (wearable device clock); "
+            "workouts carrying heart-rate metadata are privacy=sensitive"
+        ),
+        optional_schema=True,
+    ),
+    SourceAdapterState(
+        source_name="health.steps",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="health.facts (predicate=measurement_steps|daily_steps)",
+        boundary_semantics=(
+            "daily_steps point event per step-count fact; "
+            "valid_at is the day/window anchor; precision=day"
+        ),
+        optional_schema=True,
+    ),
+    SourceAdapterState(
+        source_name="health.heart_rate",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface=(
+            "health.facts "
+            "(predicate=measurement_resting_hr|heart_rate_summary|measurement_heart_rate)"
+        ),
+        boundary_semantics=(
+            "heart_rate_summary point event per heart-rate fact; "
+            "daily summaries use precision=day, manual point measurements use precision=minute"
         ),
         optional_schema=True,
     ),
@@ -112,6 +138,32 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         boundary_semantics=(
             "eating_event point events; one row per logged meal; "
             "eaten_at only (no end_at) — point events, not episodes"
+        ),
+        optional_schema=True,
+    ),
+    # Inferred chronicler-derived sources (bu-i29ix). Both read from
+    # chronicler's own episodes table to derive higher-level shapes
+    # (focus / reading), keeping inference deterministic and
+    # self-contained. They produce the focus_block and reading_block
+    # episode types that fold into the existing 'tasks' lane.
+    SourceAdapterState(
+        source_name="chronicler.focus_inferred",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="chronicler.episodes (own-schema)",
+        boundary_semantics=(
+            "focus_block episode per qualifying source episode; "
+            "reuses the source episode (start_at, end_at); "
+            "signal: long task session OR calendar-titled focus block"
+        ),
+        optional_schema=False,
+    ),
+    SourceAdapterState(
+        source_name="chronicler.reading_inferred",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="chronicler.episodes + health.facts (predicate=reading_session)",
+        boundary_semantics=(
+            "reading_block episode per qualifying calendar-titled or "
+            "fact-derived row; (start_at, end_at) per source"
         ),
         optional_schema=True,
     ),

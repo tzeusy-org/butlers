@@ -16,10 +16,17 @@ from __future__ import annotations
 
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
-from butlers.chronicler.adapters.google_health import GoogleHealthSleepAdapter
+from butlers.chronicler.adapters.focus import FocusInferredAdapter
+from butlers.chronicler.adapters.google_health import (
+    GoogleHealthHeartRateAdapter,
+    GoogleHealthSleepAdapter,
+    GoogleHealthStepsAdapter,
+    GoogleHealthWorkoutAdapter,
+)
 from butlers.chronicler.adapters.home_assistant import HomeAssistantHistoryAdapter
 from butlers.chronicler.adapters.meals import MealsAdapter
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
+from butlers.chronicler.adapters.reading import ReadingInferredAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.adapters.steam import SteamPlayAdapter
@@ -28,11 +35,16 @@ __all__ = [
     "AdapterResult",
     "CalendarCompletedAdapter",
     "CoreSessionsAdapter",
+    "FocusInferredAdapter",
+    "GoogleHealthHeartRateAdapter",
     "GoogleHealthSleepAdapter",
+    "GoogleHealthStepsAdapter",
+    "GoogleHealthWorkoutAdapter",
     "HomeAssistantHistoryAdapter",
     "MealsAdapter",
     "OwnTracksPointAdapter",
     "ProjectionAdapter",
+    "ReadingInferredAdapter",
     "SpotifySessionAdapter",
     "SteamPlayAdapter",
 ]
