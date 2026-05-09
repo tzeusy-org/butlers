@@ -313,8 +313,15 @@ async def spaced_repetition_record_response(
 async def spaced_repetition_pending_reviews(
     pool: asyncpg.Pool,
     mind_map_id: str,
+    *,
+    horizon_days: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Return nodes due for spaced-repetition review (next_review_at <= now).
+    """Return nodes due for spaced-repetition review.
+
+    By default (horizon_days=None) returns only overdue nodes
+    (next_review_at <= now). Pass horizon_days to also include upcoming
+    reviews within that many days from now, enabling timeline grouping
+    in the dashboard Reviews tab.
 
     Parameters
     ----------
@@ -322,6 +329,9 @@ async def spaced_repetition_pending_reviews(
         asyncpg connection pool.
     mind_map_id:
         UUID of the mind map to query.
+    horizon_days:
+        If set, include nodes with next_review_at <= now() + horizon_days.
+        If None (default), only return nodes where next_review_at <= now().
 
     Returns
     -------
@@ -329,18 +339,33 @@ async def spaced_repetition_pending_reviews(
         node_id, label, ease_factor, repetitions,
         next_review_at (ISO string), mastery_status
     """
-    rows = await pool.fetch(
-        """
-        SELECT id AS node_id, label, ease_factor, repetitions,
-               next_review_at, mastery_status
-        FROM education.mind_map_nodes
-        WHERE mind_map_id = $1
-          AND next_review_at IS NOT NULL
-          AND next_review_at <= now()
-        ORDER BY next_review_at ASC
-        """,
-        mind_map_id,
-    )
+    if horizon_days is not None:
+        rows = await pool.fetch(
+            """
+            SELECT id AS node_id, label, ease_factor, repetitions,
+                   next_review_at, mastery_status
+            FROM education.mind_map_nodes
+            WHERE mind_map_id = $1
+              AND next_review_at IS NOT NULL
+              AND next_review_at <= now() + ($2 || ' days')::interval
+            ORDER BY next_review_at ASC
+            """,
+            mind_map_id,
+            str(horizon_days),
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT id AS node_id, label, ease_factor, repetitions,
+                   next_review_at, mastery_status
+            FROM education.mind_map_nodes
+            WHERE mind_map_id = $1
+              AND next_review_at IS NOT NULL
+              AND next_review_at <= now()
+            ORDER BY next_review_at ASC
+            """,
+            mind_map_id,
+        )
 
     result = []
     for row in rows:
