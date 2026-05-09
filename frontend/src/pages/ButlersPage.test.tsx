@@ -18,6 +18,7 @@ import { useRegistry } from "@/hooks/use-general";
 function setRegistryState(entries: { name: string; eligibility_state: string }[]) {
   vi.mocked(useRegistry).mockReturnValue({
     data: { data: entries, meta: {} },
+    isSuccess: true,
   } as ReturnType<typeof useRegistry>);
 }
 
@@ -165,13 +166,25 @@ describe("ButlersPage", () => {
       expect(html).toContain("Active");
     });
 
-    it("omits eligibility chip when registry has no entry for the butler", () => {
+    it("shows Unavailable chip when registry loaded but has no entry for the butler", () => {
       setQueryState({ data: { data: [BUTLER], meta: {} } });
-      // registry returns entry for a different butler
+      // registry loaded (isSuccess: true) but has entry for a different butler only
       setRegistryState([{ name: "other", eligibility_state: "quarantined" }]);
       const html = renderPage();
-      // "Quarantined" chip should not appear
+      // "Quarantined" chip should not appear (for a different butler)
       expect(html).not.toContain("Quarantined");
+      // "Unavailable" chip must appear for the butler with no registry entry
+      expect(html).toContain("Unavailable");
+    });
+
+    it("omits eligibility chip while registry is still loading", () => {
+      setQueryState({ data: { data: [BUTLER], meta: {} } });
+      // registry not yet loaded: isSuccess is false (default mock has no isSuccess)
+      vi.mocked(useRegistry).mockReturnValue({ data: undefined } as ReturnType<typeof useRegistry>);
+      const html = renderPage();
+      // No eligibility chip at all while loading
+      expect(html).not.toContain("Unavailable");
+      expect(html).not.toContain("Active");
     });
   });
 
