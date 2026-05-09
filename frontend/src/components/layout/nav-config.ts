@@ -12,6 +12,13 @@ export interface NavFlatItem {
   butler?: string
   /** If set, a React key used to look up a live badge count from the badge registry. */
   badgeKey?: string
+  /**
+   * If set, controls badge color:
+   *   'red'   — reauth / critical counts
+   *   'amber' — approval / warning counts
+   * Defaults to primary (blue) if omitted.
+   */
+  badgeVariant?: 'red' | 'amber'
   /** If set, used as the tooltip text instead of the label (e.g. for items needing disambiguation). */
   tooltip?: string
 }
@@ -47,7 +54,7 @@ export const navSections: NavSection[] = [
       { path: '/butlers', label: 'Butlers' },
       { path: '/qa', label: 'QA', butler: 'qa', badgeKey: 'qa-known-issues' },
       { path: '/ingestion', label: 'Ingestion' },
-      { path: '/approvals', label: 'Approvals' },
+      { path: '/approvals', label: 'Approvals', badgeKey: 'approvals-pending', badgeVariant: 'amber' },
       { path: '/memory', label: 'Memory' },
       { path: '/entities', label: 'Entities' },
       { path: '/secrets', label: 'Secrets' },

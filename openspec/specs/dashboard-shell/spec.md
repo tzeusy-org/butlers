@@ -76,8 +76,8 @@ The shell SHALL implement a responsive sidebar + main content layout that fills 
 
 - **WHEN** the viewport width is at or above the `md` Tailwind breakpoint (768px)
 - **THEN** the desktop sidebar renders as a persistent `<aside>` element with a right border
-- **AND** the sidebar width is 256px (`w-64`) when expanded or 64px (`w-16`) when collapsed
-- **AND** width transitions animate over 200ms via `transition-[width]`
+- **AND** the sidebar width is fixed at 56px (`w-14`); it is not collapsible
+- **AND** the main content area has `ml-14` (56px left margin) to avoid underlapping the rail
 - **AND** the mobile drawer is not visible
 
 #### Scenario: Mobile layout (viewport < md breakpoint)
@@ -95,32 +95,82 @@ The shell SHALL implement a responsive sidebar + main content layout that fills 
 - **AND** the main content area below the header fills remaining vertical space with `overflow-y-auto` and 24px padding (`p-6`)
 - **AND** the header contains the `PageHeader` component alongside the mobile hamburger button (on small screens)
 
-### Requirement: Sidebar Navigation
+### Requirement: Sidebar Navigation (56px Icon Rail)
 
-The sidebar SHALL provide the primary navigation for the entire dashboard. It SHALL consist of a brand header, a scrollable navigation list, a footer with spend summary, and a collapse toggle.
+The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. It SHALL consist of a brand mark, icon-only navigation items with floating tooltips, butler status dots, live badge indicators, and a footer status summary.
 
-#### Scenario: Brand header
+#### Scenario: Rail geometry
 
-- **WHEN** the sidebar is expanded
-- **THEN** the brand text "Butlers" renders as a semibold `text-lg` element in the 56px-tall header area
-- **WHEN** the sidebar is collapsed
-- **THEN** the brand text fades out (`opacity-0 w-0 overflow-hidden`) and the single letter "B" renders instead
+- **WHEN** the desktop sidebar renders
+- **THEN** the `<aside>` element is exactly 56px wide (`w-14`), full viewport height, with a right border
+- **AND** the rail is not collapsible; there is no collapse toggle
+
+#### Scenario: Brand mark
+
+- **WHEN** the rail renders its brand area
+- **THEN** a 56px-tall brand row renders at the top of the rail with the letter "B" (or a wordmark if it fits) centered
+- **AND** no "Butlers" full text is shown on the desktop rail (icon-only)
 
 #### Scenario: Navigation sections and items configuration
 
 - **WHEN** the sidebar renders
 - **THEN** navigation items are organized into three labelled sections displayed in order:
-  1. **Main** — Overview (`/`, exact match), Butlers (`/butlers`), Sessions (`/sessions`), Ingestion (`/ingestion`), Approvals (`/approvals`), Memory (`/memory`), Secrets (`/secrets`), Settings (`/settings`)
+  1. **Main** — Overview (`/`, exact match), Butlers (`/butlers`), QA (`/qa`; butler-aware on `qa`; badge), Ingestion (`/ingestion`), Approvals (`/approvals`; badge), Memory (`/memory`), Entities (`/entities`), Secrets (`/secrets`), Settings (`/settings`; badge)
   2. **Dedicated Butlers** — Relationships group (Contacts `/contacts`, Groups `/groups`; butler-aware on `relationship`), Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`), Chronicles (`/chronicles`; butler-aware on `chronicler`)
-  3. **Telemetry** — Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Audit Log (`/audit-log`)
-- **AND** each section header is a clickable button containing an uppercase `text-[11px]` semibold label with `tracking-wider` and `text-muted-foreground/60` styling, plus a small chevron icon that rotates 90 degrees when expanded
-- **AND** clicking a section header toggles its expanded/collapsed state with `max-h` and `opacity` transitions over 200ms
-- **AND** Main and Dedicated Butlers sections default to expanded; Telemetry defaults to collapsed (`defaultExpanded: false`)
+  3. **Telemetry** — Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Sessions (`/sessions`), Audit Log (`/audit-log`), System (`/system`)
+- **AND** section headers are hidden on the desktop rail (icon-only mode); sections are separated by a thin horizontal `border-border` divider
 - **AND** a section auto-expands when any of its items (including group children) matches the current active route
-- **AND** when the sidebar is collapsed (icon-only mode), section headers are hidden and sections are visually separated by a thin horizontal `border-border` divider
 - **AND** sections with no visible items (all butler-filtered) are excluded from rendering
-- **AND** each item renders a first-letter icon placeholder (the first character of the label in a 24x24 rounded `bg-muted` container) and the label text
+- **AND** each item in the Main and Telemetry sections renders a first-letter glyph (the first character of the label in a 24x24 rounded container) as the icon
+- **AND** each item in the Dedicated Butlers section with a `butler` association renders a `ButlerMark` component (`tone="neutral"`) as the icon
 - **AND** the Chronicles entry's tooltip SHALL read "Retrospective lived-time reconstruction" so it is unambiguously distinct from the operational Timeline entry under Telemetry
+
+#### Scenario: Tooltip floating on hover or focus
+
+- **WHEN** the user hovers over or focuses a nav item in the rail
+- **THEN** a tooltip appears at `left: 56px` (anchored to the right edge of the rail) showing the item's label text
+- **AND** the tooltip uses the Radix `Tooltip` primitive with `delayDuration={0}` (instant show)
+- **AND** the tooltip dismisses when the cursor or focus leaves the item
+
+#### Scenario: Active-state visual rule
+
+- **WHEN** a nav item's route matches the current location
+- **THEN** the item renders a 2px left border bar (`border-l-2 border-sidebar-primary`)
+- **AND** the item background applies a subtle tint: 6% white in dark mode, 5% black in light mode
+- **AND** inactive items on hover apply `hover:bg-sidebar-accent/50`
+
+#### Scenario: Status dot on butler-associated items
+
+- **WHEN** a nav item has a `butler` association and the named butler has status `degraded`
+- **THEN** an amber 6px dot (`bg-amber-500`) renders at the top-right of the icon, with a ring matching the rail background (`ring-2 ring-background`)
+- **WHEN** the named butler has status `error`
+- **THEN** a red 6px dot (`bg-destructive`) renders at the top-right of the icon
+- **WHEN** the named butler has status `ok` or is not present
+- **THEN** no dot renders
+- **AND** status data is read from the `useButlers()` hook which polls every 30 seconds
+
+#### Scenario: Live badge indicators
+
+- **WHEN** a nav item has `badgeKey: 'qa-known-issues'` and the count is greater than 0
+- **THEN** a red circle badge (`bg-red-500 text-white`) renders at the top-right of the icon with the count (capped at "99+")
+- **WHEN** a nav item has `badgeKey: 'approvals-pending'` and the count is greater than 0
+- **THEN** an amber circle badge (`bg-amber-500 text-white`) renders at the top-right of the icon
+- **AND** badge and status dot do not overlap (badge takes precedence over status dot when both would render)
+
+#### Scenario: Group expand interaction (Relationships)
+
+- **WHEN** the user clicks the Relationships group glyph in the rail
+- **THEN** the group toggles expanded/collapsed
+- **AND** when expanded, indented child items (Contacts, Groups) appear immediately below the group header
+- **AND** a chevron at the bottom-right of the glyph area indicates current state (rotated when expanded)
+- **AND** the group auto-expands when any child route is active
+
+#### Scenario: Footer status summary
+
+- **WHEN** the rail renders its footer
+- **THEN** a small dot indicator reflects the worst butler status (red for any `error`, amber for any `degraded`, dim for all ok)
+- **AND** the full summary text (e.g., "1 degraded, 2 awaiting approvals") is available via the `title` attribute on the footer element
+- **AND** no visible text label renders in the footer (dot only)
 
 ### Requirement: Full Route Map
 
