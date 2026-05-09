@@ -8,6 +8,7 @@ import {
   getFinanceUpcomingBills,
 } from "@/api/index.ts";
 import type {
+  FinanceBillListParams,
   FinanceSpendingSummaryParams,
   FinanceSubscriptionListParams,
   FinanceTransactionListParams,
@@ -33,12 +34,7 @@ export function useFinanceSubscriptions(params?: FinanceSubscriptionListParams) 
 }
 
 /** List bills with optional filters. Refreshes every 60s. */
-export function useFinanceBills(params?: {
-  status?: string;
-  payee?: string;
-  offset?: number;
-  limit?: number;
-}) {
+export function useFinanceBills(params?: FinanceBillListParams) {
   return useQuery({
     queryKey: ["finance", "bills", params],
     queryFn: () => getFinanceBills(params),

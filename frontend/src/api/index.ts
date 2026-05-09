@@ -760,6 +760,7 @@ export {
 
 export type {
   FinanceBill,
+  FinanceBillListParams,
   FinanceSpendingGroup,
   FinanceSpendingSummary,
   FinanceSpendingSummaryParams,

@@ -771,7 +771,7 @@ export default function ButlerDetailPage() {
 
           {showFinancesTab && (
             <TabsContent value="finances">
-              <Suspense fallback={<Skeleton className="h-48 w-full" />}>
+              <Suspense fallback={<TabFallback label="finances" />}>
                 <ButlerFinanceFinancesTab />
               </Suspense>
             </TabsContent>

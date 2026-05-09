@@ -3728,8 +3728,7 @@ export interface FinanceTransaction {
   /** Numeric amount as string to preserve precision. */
   amount: string;
   currency: string;
-  /** "debit" | "credit" */
-  direction: string;
+  direction: "debit" | "credit";
   category: string;
   inferred_category: string | null;
   payment_method: string | null;
@@ -3750,8 +3749,7 @@ export interface FinanceSubscription {
   currency: string;
   frequency: string;
   next_renewal: string;
-  /** "active" | "paused" | "cancelled" */
-  status: string;
+  status: "active" | "paused" | "cancelled";
   auto_renew: boolean;
   payment_method: string | null;
   account_id: string | null;
@@ -3769,8 +3767,7 @@ export interface FinanceBill {
   currency: string;
   due_date: string;
   frequency: string;
-  /** "pending" | "paid" | "overdue" */
-  status: string;
+  status: "pending" | "paid" | "overdue";
   payment_method: string | null;
   account_id: string | null;
   source_message_id: string | null;
@@ -3800,8 +3797,7 @@ export interface FinanceSpendingSummary {
 
 export interface FinanceUpcomingBillItem {
   bill: FinanceBill;
-  /** "overdue" | "due_today" | "due_soon" | "upcoming" */
-  urgency: string;
+  urgency: "overdue" | "due_today" | "due_soon" | "upcoming";
   days_until_due: number;
 }
 
@@ -3812,6 +3808,13 @@ export interface FinanceUpcomingBillsResponse {
   count: number;
   days_ahead: number;
   include_overdue: boolean;
+}
+
+export interface FinanceBillListParams {
+  status?: string;
+  payee?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export interface FinanceTransactionListParams {

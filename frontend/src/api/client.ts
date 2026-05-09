@@ -253,6 +253,7 @@ import type {
   FinanceBill,
   FinanceSpendingSummary,
   FinanceUpcomingBillsResponse,
+  FinanceBillListParams,
   FinanceTransactionListParams,
   FinanceSubscriptionListParams,
   FinanceSpendingSummaryParams,
@@ -3838,7 +3839,7 @@ export function getFinanceSpendingSummary(
 
 /** List bills with optional status and payee filters. */
 export function getFinanceBills(
-  params?: { status?: string; payee?: string; offset?: number; limit?: number },
+  params?: FinanceBillListParams,
 ): Promise<PaginatedResponse<FinanceBill>> {
   const sp = new URLSearchParams();
   if (params?.status) sp.set("status", params.status);

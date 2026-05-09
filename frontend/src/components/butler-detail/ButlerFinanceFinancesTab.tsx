@@ -16,7 +16,9 @@
 
 import type { ReactNode } from "react";
 import { useMemo } from "react";
+import { formatInTimeZone } from "date-fns-tz";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -73,11 +75,15 @@ function formatAmount(amount: string, currency = "USD"): string {
   }).format(Math.abs(n));
 }
 
-/** Format an ISO datetime string as a short date (e.g. "May 10"). */
-function formatShortDate(dateStr: string): string {
+/** Format an ISO date or datetime string as a short date (e.g. "May 10").
+ *
+ * Date-only strings (YYYY-MM-DD) are parsed in the owner timezone so that
+ * due dates and renewal dates do not shift by a day for negative UTC offsets.
+ */
+function formatShortDate(dateStr: string, tz: string = OWNER_TZ_DEFAULT): string {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr.slice(0, 10);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return formatInTimeZone(d, tz, "MMM d");
 }
 
 /** Capitalise first letter of a category string. */
@@ -363,10 +369,11 @@ function CategorySpendChart({
   // Top 8 categories by amount descending
   const chartData = useMemo(
     () =>
-      groups
+      [...groups]
+        .sort((a, b) => parseFloat(b.amount) - parseFloat(a.amount))
         .slice(0, 8)
         .map((g) => ({
-          category: titleCase(g.key ?? "Other"),
+          category: titleCase(g.key),
           amount: parseFloat(g.amount) || 0,
         })),
     [groups],
@@ -425,17 +432,21 @@ function CategorySpendChart({
 // ---------------------------------------------------------------------------
 
 export default function ButlerFinanceFinancesTab() {
-  // Compute current-month date window
+  // Compute date windows in owner timezone so month and 30d boundaries align
+  // with the owner's locale rather than UTC.
   const today = new Date();
-  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
-    .toISOString()
-    .slice(0, 10);
-  const monthEnd = today.toISOString().slice(0, 10);
+  const tz = OWNER_TZ_DEFAULT;
+  const monthStart = formatInTimeZone(
+    new Date(today.getFullYear(), today.getMonth(), 1),
+    tz,
+    "yyyy-MM-dd",
+  );
+  const monthEnd = formatInTimeZone(today, tz, "yyyy-MM-dd");
 
   // Compute 30-day window for category chart
   const thirtyDaysAgo = new Date(today);
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().slice(0, 10);
+  const thirtyDaysAgoStr = formatInTimeZone(thirtyDaysAgo, tz, "yyyy-MM-dd");
 
   const { data: txResp, isLoading: txLoading } = useFinanceTransactions({ limit: 15 });
   const { data: subResp, isLoading: subLoading } = useFinanceSubscriptions();
