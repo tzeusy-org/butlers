@@ -108,7 +108,7 @@ export default function MealsPage() {
 
   const { data, isLoading } = useMeals(params);
 
-  const meals = data?.data ?? [];
+  const meals = useMemo(() => data?.data ?? [], [data]);
   const total = data?.meta?.total ?? 0;
   const hasMore = data?.meta?.has_more ?? false;
 

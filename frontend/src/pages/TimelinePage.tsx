@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 
 import type { TimelineEvent } from "@/api/types.ts";
 import UnifiedTimeline from "@/components/timeline/UnifiedTimeline.tsx";
@@ -47,10 +47,13 @@ export default function TimelinePage() {
   }, { refetchInterval: autoRefreshControl.refetchInterval });
 
   // Merge new data with accumulated events
-  const currentEvents =
-    cursor === undefined
-      ? response?.data ?? []
-      : [...allEvents, ...(response?.data ?? [])];
+  const currentEvents = useMemo(
+    () =>
+      cursor === undefined
+        ? response?.data ?? []
+        : [...allEvents, ...(response?.data ?? [])],
+    [cursor, response, allEvents],
+  );
 
   const currentHasMore = response?.meta?.has_more ?? hasMore;
 
