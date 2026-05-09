@@ -327,3 +327,176 @@ base tab. Neither warrants a dedicated bespoke panel.
 | Butler-specific data model | None — delivery outcomes are operational, not domain content |
 
 <!-- END bu-dg5qc.2 -->
+
+<!-- BEGIN bu-dg5qc.3 -->
+
+## qa
+
+**Tab decision:** No bespoke (no API router; staffer type, not user-facing)
+
+**Justification:**
+The QA butler is a `type = "staffer"` infrastructure agent with no `api/` directory in
+`roster/qa/`. It exposes no dashboard API endpoints at all. Its operational data
+(patrol records, findings, healing attempts) lives in `public.qa_patrols`,
+`public.qa_findings`, and `public.healing_attempts` — cross-butler public tables
+that would require a shared infra view, not a butler-scoped bespoke tab.
+
+The QA butler never renders UI for users. Its MANIFESTO explicitly states: "QA Staffer
+does not respond to user messages (staffer type)." A bespoke tab requires at least one
+backing endpoint to populate it; without an `api/router.py`, no tab is possible.
+
+A follow-up feature could add a `roster/qa/api/router.py` exposing patrol history and
+finding feeds (supporting a `+QA` bespoke tab analogous to `+Routing Log` for switchboard),
+but that is new API work outside this audit's scope.
+
+**Supporting endpoints:** None — no `api/router.py` exists for the QA butler.
+
+**Panel sketch:** N/A (no bespoke tab warranted at this time)
+
+---
+
+## relationship
+
+**Tab decision:** `Contacts` (bespoke tab warranted)
+
+**Justification:**
+The relationship butler owns a rich, domain-specific personal CRM data model — contacts,
+entities, groups, labels, important dates, interactions, gifts, loans, and Dunbar tier
+rankings — that cannot be surfaced through any base resident tab. The `CRM` base tab is
+the generic cross-butler CRM widget; the relationship butler warrants a dedicated bespoke
+tab because it IS the CRM system. A `Contacts` bespoke tab should expose the full contact
+roster, upcoming dates, Dunbar concentric circles visualization (already referenced in
+the endpoint docstring: "social map visualization in the entities page"), and the
+relationship health view.
+
+Key differentiators that justify a bespoke tab over the base `CRM` tab:
+1. Dunbar tier ranking with concentric circles visualization is explicitly designed for
+   a dedicated UI (`roster/relationship/api/router.py:2971`).
+2. Upcoming important dates (birthdays, anniversaries) are time-sensitive and deserve
+   a panel analogous to finance's "upcoming bills."
+3. The contact-entity link audit (unlinked contacts) is a relationship-specific
+   maintenance workflow with no base-tab equivalent.
+
+**Supporting endpoints:**
+
+| Endpoint | File:line | Role in the tab |
+|---|---|---|
+| `GET /api/relationship/contacts` | `roster/relationship/api/router.py:214` | Contact roster, paginated, filterable by label/name |
+| `GET /api/relationship/upcoming-dates` | `roster/relationship/api/router.py:1975` | KPI strip — upcoming birthdays/anniversaries |
+| `GET /api/relationship/dunbar/ranking` | `roster/relationship/api/router.py:2959` | Dunbar concentric circles visualization |
+| `GET /api/relationship/groups` | `roster/relationship/api/router.py:1861` | Group roster for sidebar/filter panel |
+| `GET /api/relationship/labels` | `roster/relationship/api/router.py:1960` | Label list for filter typeahead |
+| `GET /api/relationship/contacts/unlinked` | `roster/relationship/api/router.py:673` | Unlinked contacts maintenance panel |
+| `GET /api/relationship/entities/{entity_id}/interactions` | `roster/relationship/api/router.py:2428` | Per-entity interaction history |
+| `GET /api/relationship/entities/{entity_id}/timeline` | `roster/relationship/api/router.py:2575` | Per-entity chronological timeline |
+
+**Indicative panel composition (4-col grid):**
+
+- **KPI strip (full-width, 4 cols):** Total active contacts, upcoming dates in next 30 days
+  (count + nearest), highest-tier Dunbar contacts count, unlinked contacts requiring
+  attention. Backed by `GET /api/relationship/contacts` (total from pagination meta),
+  `GET /api/relationship/upcoming-dates?days=30`, and
+  `GET /api/relationship/contacts/unlinked`.
+- **Dunbar map (2 cols):** Concentric circles visualization — tier 5 / 15 / 50 / 150 /
+  500 rings, each ring populated with contact name chips. Color-coded by tier. Override
+  indicator for manually pinned tiers. Backed by `GET /api/relationship/dunbar/ranking`.
+- **Upcoming dates (1 col):** Compact list — contact name, date label (Birthday /
+  Anniversary), date, days-until countdown. Sorted ascending by days-until. Backed by
+  `GET /api/relationship/upcoming-dates?days=60`.
+- **Contact roster (3 cols):** Paginated table with avatar, name, label chips, last
+  interaction date. Row-click opens entity detail drawer. Filterable by label/group.
+  Backed by `GET /api/relationship/contacts`.
+- **Group summary (1 col):** List of groups with member count badge. Backed by
+  `GET /api/relationship/groups`.
+
+---
+
+## switchboard
+
+**Tab decision:** No bespoke beyond the two spec-mandated conditional tabs (`+Routing Log`, `+Registry`)
+
+**Justification:**
+The spec already mandates two additional tabs for switchboard at `spec.md:96-98`:
+
+> **WHEN** the butler name is `switchboard`
+> **THEN** two additional tabs are shown after the base tabs: "Routing Log" and "Registry"
+
+These two tabs are fully backed by purpose-built endpoints and cover the two primary
+operational concerns of a routing backbone:
+
+- **Routing Log** — backed by `GET /api/switchboard/routing-log` (`roster/switchboard/api/router.py:296`):
+  paginated routing history, filterable by source/target butler and time range.
+- **Registry** — backed by `GET /api/switchboard/registry` (`roster/switchboard/api/router.py:373`):
+  all registered butlers, eligibility state, quarantine status, liveness.
+
+The remaining switchboard endpoints (connectors, ingestion/overview, backfill, thread
+affinity, routing instructions, ingestion rules) are rich enough that they could support
+additional tabs in a future expansion, but they map well to sections within the existing
+base `Overview` tab panels and do not warrant standalone bespoke tabs at this time.
+The switchboard's two conditional tabs are necessary and sufficient per current spec.
+
+**Supporting endpoints (confirming the two spec tabs are fully grounded):**
+
+| Endpoint | File:line | Existing conditional tab |
+|---|---|---|
+| `GET /api/switchboard/routing-log` | `roster/switchboard/api/router.py:296` | Routing Log |
+| `GET /api/switchboard/registry` | `roster/switchboard/api/router.py:373` | Registry |
+| `GET /api/switchboard/connectors` | `roster/switchboard/api/router.py:822` | (Overview section, not a separate tab) |
+| `GET /api/switchboard/ingestion/overview` | `roster/switchboard/api/router.py:1417` | (Overview section, not a separate tab) |
+
+**Panel sketch for the existing Routing Log tab (for completeness):**
+
+- **KPI strip:** Total routes (24h), success rate %, average duration ms, error count.
+  Aggregated client-side from `GET /api/switchboard/routing-log`.
+- **Route feed (3 cols):** Paginated table — timestamp, source butler, target butler, tool
+  name, success/fail chip, duration. Filterable by source/target. Backed by
+  `GET /api/switchboard/routing-log`.
+- **Error detail (1 col):** Most recent routing failures with error excerpt. Backed by
+  `GET /api/switchboard/routing-log` filtered to `success=false`.
+
+---
+
+## travel
+
+**Tab decision:** `Trips` (bespoke tab warranted)
+
+**Justification:**
+The travel butler owns a hierarchical trip container model — trips, legs, accommodations,
+reservations, documents, and urgency-ranked pre-trip actions — that has no equivalent in
+any base resident tab. The `upcoming` endpoint is particularly distinctive: it surfaces
+time-sensitive pre-trip actions (missing boarding pass, unassigned seat, check-in pending)
+ranked by severity, which is a unique operational widget with no base-tab analogy.
+
+A `Trips` bespoke tab (named after the primary domain entity, matching the pattern of
+`Finances` for the finance butler) surfaces the trip portfolio as a paginated list with
+per-trip drill-down into legs, accommodations, reservations, and documents. The
+`upcoming` endpoint drives a pre-trip action panel that is the tab's most distinctive
+and highest-urgency content.
+
+**Supporting endpoints:**
+
+| Endpoint | File:line | Role in the tab |
+|---|---|---|
+| `GET /api/travel/upcoming` | `roster/travel/api/router.py:549` | KPI strip + pre-trip action panel |
+| `GET /api/travel/trips` | `roster/travel/api/router.py:154` | Trip roster, paginated, filterable by status/date |
+| `GET /api/travel/trips/{trip_id}` | `roster/travel/api/router.py:226` | Trip detail drawer — full timeline with legs, accommodations, reservations |
+| `GET /api/travel/trips/{trip_id}/legs` | `roster/travel/api/router.py:432` | Transport legs for trip detail |
+| `GET /api/travel/trips/{trip_id}/accommodations` | `roster/travel/api/router.py:463` | Accommodations for trip detail |
+| `GET /api/travel/trips/{trip_id}/documents` | `roster/travel/api/router.py:521` | Document pointers for trip detail |
+
+**Indicative panel composition (4-col grid):**
+
+- **KPI strip (full-width, 4 cols):** Next departure (trip name + days-until), active
+  trips count, planned trips count, open pre-trip action count with highest-severity
+  chip. Backed by `GET /api/travel/upcoming?within_days=90`.
+- **Pre-trip actions (1 col):** Urgency-ranked action list — severity chip (high/medium/
+  low), action type (missing boarding pass / unassigned seat / check-in pending), trip
+  name, message. Backed by `GET /api/travel/upcoming?include_pretrip_actions=true`.
+- **Trip roster (3 cols):** Paginated card list — trip name, destination, date range,
+  status chip (planned/active/completed/cancelled). Row-click expands to inline timeline
+  of legs and accommodations. Backed by `GET /api/travel/trips`.
+- **Trip detail drawer (overlay):** On row-click, load full trip summary — chronological
+  timeline of legs, accommodations, reservations, and documents with alert badges.
+  Backed by `GET /api/travel/trips/{trip_id}`.
+
+<!-- END bu-dg5qc.3 -->
