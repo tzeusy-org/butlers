@@ -391,12 +391,8 @@ export default function ButlerDetailPage() {
 
   const showHealthTab = name === "health";
 
-  // Extract description from butler response (the API may include fields beyond ButlerSummary)
-  const description = butlerResponse?.data
-    && "description" in butlerResponse.data
-    && typeof (butlerResponse.data as Record<string, unknown>).description === "string"
-    ? String((butlerResponse.data as Record<string, unknown>).description)
-    : undefined;
+  // Extract description from butler response (ButlerSummary.description is optional)
+  const description = butlerResponse?.data?.description ?? undefined;
 
   const breadcrumbs = useMemo(
     () => [
