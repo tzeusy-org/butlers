@@ -170,4 +170,68 @@ describe("ButlersPage", () => {
       expect(html).not.toContain("Quarantined");
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Real roster fixture — no mock data (bu-insd4.2)
+  // -------------------------------------------------------------------------
+
+  describe("real roster fixture", () => {
+    /** Canonical 12 butlers as returned by GET /api/butlers. */
+    const REAL_ROSTER = [
+      "chronicler",
+      "education",
+      "finance",
+      "general",
+      "health",
+      "home",
+      "lifestyle",
+      "messenger",
+      "qa",
+      "relationship",
+      "switchboard",
+      "travel",
+    ].map((name) => ({
+      name,
+      status: "ok" as const,
+      port: 40100,
+      type: "butler" as const,
+      sessions_24h: 0,
+    }));
+
+    it("renders all 12 canonical butlers by name", () => {
+      setQueryState({ data: { data: REAL_ROSTER, meta: {} } });
+      const html = renderPage();
+
+      for (const { name } of REAL_ROSTER) {
+        expect(html).toContain(name);
+      }
+    });
+
+    it("renders detail-page links for every canonical butler", () => {
+      setQueryState({ data: { data: REAL_ROSTER, meta: {} } });
+      const html = renderPage();
+
+      for (const { name } of REAL_ROSTER) {
+        expect(html).toContain(`href="/butlers/${name}"`);
+      }
+    });
+
+    it("renders an unfamiliar butler name without errors", () => {
+      // If the API returns a butler that the front-end has never seen, the list
+      // must still render. ButlerMark falls back to a hash-derived colour slot.
+      const withUnknown = [
+        ...REAL_ROSTER,
+        { name: "future-butler", status: "ok" as const, port: 40199, type: "butler" as const, sessions_24h: 0 },
+      ];
+      setQueryState({ data: { data: withUnknown, meta: {} } });
+      const html = renderPage();
+
+      expect(html).toContain("future-butler");
+      expect(html).toContain('href="/butlers/future-butler"');
+      // All canonical butlers must still appear alongside the unknown one
+      for (const { name } of REAL_ROSTER) {
+        expect(html).toContain(name);
+      }
+    });
+  });
 });
