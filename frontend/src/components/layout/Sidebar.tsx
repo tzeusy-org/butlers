@@ -221,12 +221,10 @@ function FlatNavLink({
 
 function NavGroup({
   item,
-  section,
   onNavClick,
   butlerStatusMap,
 }: {
   item: NavGroupItem
-  section: NavSection
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
 }) {
@@ -352,7 +350,6 @@ function NavSectionGroup({
             <NavGroup
               key={item.label}
               item={item}
-              section={section}
               onNavClick={onNavClick}
               butlerStatusMap={butlerStatusMap}
             />
@@ -570,12 +567,10 @@ function MobileFlatLink({
 
 function MobileNavGroup({
   item,
-  section,
   onNavClick,
   butlerStatusMap,
 }: {
   item: NavGroupItem
-  section: NavSection
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
 }) {
@@ -687,7 +682,6 @@ function MobileSidebar({
                   <MobileNavGroup
                     key={item.label}
                     item={item}
-                    section={section}
                     onNavClick={onNavClick}
                     butlerStatusMap={butlerStatusMap}
                   />
