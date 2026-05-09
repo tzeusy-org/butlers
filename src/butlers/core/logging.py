@@ -25,9 +25,12 @@ Log directory layout (when ``log_root`` is set)::
 
 from __future__ import annotations
 
+import gzip
 import logging
+import logging.handlers
 import os
 import re
+import shutil
 import sys
 import warnings
 from contextvars import ContextVar
@@ -203,8 +206,47 @@ def _build_processors(
     ]
 
 
-def _make_file_handler(path: Path, processors: list) -> logging.FileHandler:
-    """Create a JSON file handler at *path*."""
+# Weekly rotation on Monday 00:00 local time, keeping 4 weeks of history.
+# Override via BUTLERS_LOG_BACKUP_COUNT.
+_LOG_ROTATE_WHEN = "W0"
+_LOG_ROTATE_BACKUP_COUNT_DEFAULT = 4
+
+
+def _resolve_backup_count() -> int:
+    raw = os.environ.get("BUTLERS_LOG_BACKUP_COUNT", "").strip()
+    if not raw:
+        return _LOG_ROTATE_BACKUP_COUNT_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _LOG_ROTATE_BACKUP_COUNT_DEFAULT
+    return max(0, value)
+
+
+def _gzip_rotator(source: str, dest: str) -> None:
+    """Compress *source* to *dest* with gzip, then delete the source."""
+    try:
+        with open(source, "rb") as sf, gzip.open(dest, "wb") as df:
+            shutil.copyfileobj(sf, df)
+        os.remove(source)
+    except OSError as exc:
+        # Don't crash the logging pipeline if compression fails — keep the
+        # uncompressed rollover file so data isn't lost.
+        logger.warning("Log rotation gzip failed for %s -> %s: %s", source, dest, exc)
+
+
+def _gzip_namer(name: str) -> str:
+    return name + ".gz"
+
+
+def _make_file_handler(
+    path: Path, processors: list
+) -> logging.handlers.TimedRotatingFileHandler:
+    """Create a weekly-rotating JSON file handler at *path*.
+
+    Rotates on Monday 00:00 local time; rotated files are suffixed with the
+    rollover date and gzip-compressed (e.g. ``switchboard.log.2026-05-04.gz``).
+    """
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -212,7 +254,15 @@ def _make_file_handler(path: Path, processors: list) -> logging.FileHandler:
         ],
         foreign_pre_chain=processors,
     )
-    handler = logging.FileHandler(path)
+    handler = logging.handlers.TimedRotatingFileHandler(
+        path,
+        when=_LOG_ROTATE_WHEN,
+        backupCount=_resolve_backup_count(),
+        encoding="utf-8",
+        utc=False,
+    )
+    handler.rotator = _gzip_rotator
+    handler.namer = _gzip_namer
     handler.setFormatter(formatter)
     handler.setLevel(logging.DEBUG)
     return handler
