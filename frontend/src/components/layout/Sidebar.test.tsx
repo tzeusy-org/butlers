@@ -524,6 +524,30 @@ describe("Sidebar", () => {
       });
       expect(childrenContainer!.hasAttribute("inert")).toBe(false);
     });
+
+    it("Relationships group header renders first-letter glyph, not ButlerMark (rail)", () => {
+      render();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
+
+      // Should NOT contain a ButlerMark — identified by its title="relationship" attribute
+      // on the squircle span rendered by <ButlerMark name="relationship" />
+      const butlerMarkSpan = groupButton!.querySelector('[title="relationship"]');
+      expect(butlerMarkSpan).toBeNull();
+
+      // Should contain the first-letter glyph: a span with text "R"
+      const glyphSpan = Array.from(groupButton!.querySelectorAll("span")).find(
+        (s) => s.textContent === "R",
+      );
+      expect(glyphSpan).toBeTruthy();
+
+      // Should contain the chevron svg
+      const svg = groupButton!.querySelector("svg");
+      expect(svg).toBeTruthy();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -578,6 +602,29 @@ describe("Sidebar", () => {
 
       const groupsLink = container.querySelector('a[href="/groups"]');
       expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
+    });
+
+    it("Relationships group header renders first-letter glyph, not ButlerMark (mobile)", () => {
+      renderMobile();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.textContent?.includes("Relationships"),
+      );
+      expect(groupButton).toBeTruthy();
+
+      // Should NOT contain a ButlerMark — identified by its title="relationship" attribute
+      const butlerMarkSpan = groupButton!.querySelector('[title="relationship"]');
+      expect(butlerMarkSpan).toBeNull();
+
+      // Should contain the first-letter glyph: a span with text "R"
+      const glyphSpan = Array.from(groupButton!.querySelectorAll("span")).find(
+        (s) => s.textContent?.trim() === "R",
+      );
+      expect(glyphSpan).toBeTruthy();
+
+      // Should contain the chevron svg
+      const svg = groupButton!.querySelector("svg");
+      expect(svg).toBeTruthy();
     });
   });
 
