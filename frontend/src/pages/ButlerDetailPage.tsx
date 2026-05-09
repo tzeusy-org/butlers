@@ -65,9 +65,9 @@ const ButlerModelOverridesTab = lazy(
 
 // Gate B (bu-41p8z) resolved to B2: operator/resident mode toggle.
 // Operator mode: full 10 spec-mandated base tabs (dashboard-butler-management spec.md:55, 178-179).
-// Resident mode: narrow 7-tab Dispatch vocabulary (default for new visitors).
-// bu-8bayc.2 adds the toggle UI and localStorage persistence;
-// this file defines the constants and uses operator as the current default.
+// Resident mode: narrow 7-tab Dispatch vocabulary (intended future default for new visitors).
+// Today operator is the active default; bu-8bayc.2 adds the toggle UI, localStorage persistence,
+// and will wire up resident as the default for first-time visitors.
 
 /** Full 10 spec-mandated base tabs — shown in operator mode. */
 export const BASE_TABS_OPERATOR = [
@@ -97,12 +97,12 @@ export const BASE_TABS_RESIDENT = [
 /**
  * Non-spec extension tab: Models.
  * Operator-only; not part of the 10 mandated base tabs.
- * Does not appear in resident mode. Participates in deep-link auto-promotion.
+ * Does not appear in resident mode.
  */
 export const OPERATOR_EXTENSION_TABS = ["models"] as const;
 
-// Conditional tabs appended after the active mode's base tabs.
-// Visible in both resident and operator modes (butler-specific affordances).
+// Butler-specific conditional tabs (health, switchboard routing).
+// Appended after the base tabs; visible regardless of mode.
 const HEALTH_TABS = ["health"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
 
