@@ -12,7 +12,7 @@ import {
   getRuntimeConfig,
   patchRuntimeConfig,
 } from "@/api/index.ts";
-import type { RuntimeConfigPatch } from "@/api/index.ts";
+import type { ButlerDetail, RuntimeConfigPatch } from "@/api/index.ts";
 
 /** Fetch all butlers with live status. */
 export function useButlers() {

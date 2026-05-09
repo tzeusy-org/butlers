@@ -23,6 +23,7 @@ import type {
   AuditEntry,
   AuditLogParams,
   ButlerConfigResponse,
+  ButlerDetail,
   ButlerSkill,
   ButlerSummary,
   CalendarWorkspaceMetaResponse,
@@ -345,8 +346,8 @@ export function getButlers(): Promise<ApiResponse<ButlerSummary[]>> {
 }
 
 /** Fetch a single butler by name. */
-export function getButler(name: string): Promise<ApiResponse<ButlerSummary>> {
-  return apiFetch<ApiResponse<ButlerSummary>>(`/butlers/${encodeURIComponent(name)}`);
+export function getButler(name: string): Promise<ApiResponse<ButlerDetail>> {
+  return apiFetch<ApiResponse<ButlerDetail>>(`/butlers/${encodeURIComponent(name)}`);
 }
 
 /** Fetch configuration files for a specific butler. */

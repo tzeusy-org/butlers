@@ -124,6 +124,19 @@ class SkillInfo(BaseModel):
     content: str
 
 
+class ProcessFacts(BaseModel):
+    """Container-boundary-safe process facts for the butler Overview tab.
+
+    Derived from stable topology sources rather than per-process OS state.
+    ``pid`` is intentionally absent; it is not safe across container boundaries.
+    """
+
+    container_name: str | None = None
+    port: int
+    registered_duration_seconds: float | None = None
+    config_path: str
+
+
 class ButlerDetail(ButlerSummary):
     """Full butler detail with config, modules, skills, and schedule."""
 
@@ -133,6 +146,7 @@ class ButlerDetail(ButlerSummary):
     modules: list[ModuleInfo] = Field(default_factory=list)
     schedules: list[ScheduleEntry] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
+    process_facts: ProcessFacts | None = None
 
 
 class SessionSummary(BaseModel):
@@ -415,6 +429,7 @@ __all__ = [
     "NotificationSummary",
     "PaginatedResponse",
     "PaginationMeta",
+    "ProcessFacts",
     "RuleConstraintSuggestion",
     "Schedule",
     "ScheduleCost",
