@@ -56,6 +56,11 @@ const ButlerEducationReviewsTab = lazy(
   () => import("@/components/butler-detail/ButlerEducationReviewsTab.tsx"),
 );
 
+// Finance butler tabs (lazy)
+const ButlerFinanceFinancesTab = lazy(
+  () => import("@/components/butler-detail/ButlerFinanceFinancesTab.tsx"),
+);
+
 const ButlerRoutingLogTab = lazy(
   () => import("@/components/butler-detail/ButlerRoutingLogTab.tsx"),
 );
@@ -766,13 +771,9 @@ export default function ButlerDetailPage() {
 
           {showFinancesTab && (
             <TabsContent value="finances">
-              <Card>
-                <CardContent className="py-12">
-                  <p className="text-muted-foreground text-center text-sm">
-                    Finances coming soon.
-                  </p>
-                </CardContent>
-              </Card>
+              <Suspense fallback={<TabFallback label="finances" />}>
+                <ButlerFinanceFinancesTab />
+              </Suspense>
             </TabsContent>
           )}
 

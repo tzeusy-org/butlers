@@ -3723,3 +3723,131 @@ export interface ChroniclesBriefing {
   attention_items: ChroniclesAttentionItem[];
   recent_days: ChroniclesRecentDay[];
 }
+
+// ---------------------------------------------------------------------------
+// Finance butler types (GET /api/finance/*)
+// ---------------------------------------------------------------------------
+
+export interface FinanceTransaction {
+  id: string;
+  posted_at: string;
+  merchant: string;
+  normalized_merchant: string | null;
+  description: string | null;
+  /** Numeric amount as string to preserve precision. */
+  amount: string;
+  currency: string;
+  direction: "debit" | "credit";
+  category: string;
+  inferred_category: string | null;
+  payment_method: string | null;
+  account_id: string | null;
+  receipt_url: string | null;
+  external_ref: string | null;
+  source_message_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FinanceSubscription {
+  id: string;
+  service: string;
+  /** Numeric amount as string. */
+  amount: string;
+  currency: string;
+  frequency: string;
+  next_renewal: string;
+  status: "active" | "paused" | "cancelled";
+  auto_renew: boolean;
+  payment_method: string | null;
+  account_id: string | null;
+  source_message_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FinanceBill {
+  id: string;
+  payee: string;
+  /** Numeric amount as string. */
+  amount: string;
+  currency: string;
+  due_date: string;
+  frequency: string;
+  status: "pending" | "paid" | "overdue";
+  payment_method: string | null;
+  account_id: string | null;
+  source_message_id: string | null;
+  statement_period_start: string | null;
+  statement_period_end: string | null;
+  paid_at: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FinanceSpendingGroup {
+  key: string;
+  /** Numeric amount as string. */
+  amount: string;
+  count: number;
+}
+
+export interface FinanceSpendingSummary {
+  start_date: string;
+  end_date: string;
+  currency: string;
+  /** Numeric total as string. */
+  total_spend: string;
+  groups: FinanceSpendingGroup[];
+}
+
+export interface FinanceUpcomingBillItem {
+  bill: FinanceBill;
+  urgency: "overdue" | "due_today" | "due_soon" | "upcoming";
+  days_until_due: number;
+}
+
+export interface FinanceUpcomingBillsResponse {
+  items: FinanceUpcomingBillItem[];
+  /** Numeric total as string. */
+  total_amount: string;
+  count: number;
+  days_ahead: number;
+  include_overdue: boolean;
+}
+
+export interface FinanceBillListParams {
+  status?: string;
+  payee?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface FinanceTransactionListParams {
+  category?: string;
+  merchant?: string;
+  since?: string;
+  until?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface FinanceSubscriptionListParams {
+  status?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface FinanceSpendingSummaryParams {
+  start_date?: string;
+  end_date?: string;
+  group_by?: "category" | "merchant" | "week" | "month";
+}
+
+export interface FinanceUpcomingBillsParams {
+  days_ahead?: number;
+  include_overdue?: boolean;
+}

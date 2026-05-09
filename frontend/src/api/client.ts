@@ -249,6 +249,16 @@ import type {
   ChroniclesBriefing,
   ChroniclesAttentionItem,
   ChroniclesKpi,
+  FinanceTransaction,
+  FinanceSubscription,
+  FinanceBill,
+  FinanceSpendingSummary,
+  FinanceUpcomingBillsResponse,
+  FinanceBillListParams,
+  FinanceTransactionListParams,
+  FinanceSubscriptionListParams,
+  FinanceSpendingSummaryParams,
+  FinanceUpcomingBillsParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3769,4 +3779,81 @@ export function getChroniclesKpi(
   params?: ChroniclesEditorialParams,
 ): Promise<{ data: ChroniclesKpi; meta?: Record<string, unknown> }> {
   return apiFetch(`/chronicler/kpi${_chroniclesQs(params)}`);
+}
+
+// ---------------------------------------------------------------------------
+// Finance butler (GET /api/finance/*)
+// ---------------------------------------------------------------------------
+
+/** List transactions with optional filters. */
+export function getFinanceTransactions(
+  params?: FinanceTransactionListParams,
+): Promise<PaginatedResponse<FinanceTransaction>> {
+  const sp = new URLSearchParams();
+  if (params?.category) sp.set("category", params.category);
+  if (params?.merchant) sp.set("merchant", params.merchant);
+  if (params?.since) sp.set("since", params.since);
+  if (params?.until) sp.set("until", params.until);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<FinanceTransaction>>(
+    qs ? `/finance/transactions?${qs}` : "/finance/transactions",
+  );
+}
+
+/** List subscriptions with optional status filter. */
+export function getFinanceSubscriptions(
+  params?: FinanceSubscriptionListParams,
+): Promise<PaginatedResponse<FinanceSubscription>> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<FinanceSubscription>>(
+    qs ? `/finance/subscriptions?${qs}` : "/finance/subscriptions",
+  );
+}
+
+/** List upcoming bills with urgency classification. */
+export function getFinanceUpcomingBills(
+  params?: FinanceUpcomingBillsParams,
+): Promise<FinanceUpcomingBillsResponse> {
+  const sp = new URLSearchParams();
+  if (params?.days_ahead != null) sp.set("days_ahead", String(params.days_ahead));
+  if (params?.include_overdue != null) sp.set("include_overdue", String(params.include_overdue));
+  const qs = sp.toString();
+  return apiFetch<FinanceUpcomingBillsResponse>(
+    qs ? `/finance/upcoming-bills?${qs}` : "/finance/upcoming-bills",
+  );
+}
+
+/** Aggregate spending summary over a date range. */
+export function getFinanceSpendingSummary(
+  params?: FinanceSpendingSummaryParams,
+): Promise<FinanceSpendingSummary> {
+  const sp = new URLSearchParams();
+  if (params?.start_date) sp.set("start_date", params.start_date);
+  if (params?.end_date) sp.set("end_date", params.end_date);
+  if (params?.group_by) sp.set("group_by", params.group_by);
+  const qs = sp.toString();
+  return apiFetch<FinanceSpendingSummary>(
+    qs ? `/finance/spending-summary?${qs}` : "/finance/spending-summary",
+  );
+}
+
+/** List bills with optional status and payee filters. */
+export function getFinanceBills(
+  params?: FinanceBillListParams,
+): Promise<PaginatedResponse<FinanceBill>> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.payee) sp.set("payee", params.payee);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<FinanceBill>>(
+    qs ? `/finance/bills?${qs}` : "/finance/bills",
+  );
 }
