@@ -739,6 +739,124 @@ describe("ButlerDetailPage — Gate-B B2 deep-link auto-promotion", () => {
     );
     expect(modeSetCalls).toHaveLength(0);
   });
+
+  // ---------------------------------------------------------------------------
+  // Reverse promotion: operator → resident (bu-pv6x2)
+  // ---------------------------------------------------------------------------
+
+  it("auto-promotes operator → resident when URL has ?tab=activity (resident-only tab)", () => {
+    // Start with operator mode stored
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=activity"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    renderPage();
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "butlers.detail.mode",
+      "resident",
+    );
+  });
+
+  it("auto-promotes operator → resident when URL has ?tab=logs (resident-only tab)", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=logs"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    renderPage();
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "butlers.detail.mode",
+      "resident",
+    );
+  });
+
+  it("auto-promotes operator → resident when URL has ?tab=approvals (resident-only tab)", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=approvals"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    renderPage();
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "butlers.detail.mode",
+      "resident",
+    );
+  });
+
+  it("auto-promotes operator → resident when URL has ?tab=spend (resident-only tab)", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=spend"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    renderPage();
+    expect(localStorageMock.setItem).toHaveBeenCalledWith(
+      "butlers.detail.mode",
+      "resident",
+    );
+  });
+
+  it("renders resident-mode tabs after operator → resident auto-promotion", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=activity"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    const html = renderPage();
+    // After auto-promotion to resident, operator-only tabs must not be present
+    expect(html).not.toContain(">Sessions<");
+    expect(html).not.toContain(">Models<");
+    // Resident tabs are present
+    expect(html).toContain("Activity");
+  });
+
+  it("does NOT auto-promote when mode is already resident and URL has a resident-only tab", () => {
+    localStorageMock.getItem.mockReturnValue(null); // defaults to resident
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=activity"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    renderPage();
+    // setItem should not be called for mode (already resident)
+    const modeSetCalls = localStorageMock.setItem.mock.calls.filter(
+      (call) => call[0] === "butlers.detail.mode",
+    );
+    expect(modeSetCalls).toHaveLength(0);
+  });
+
+  it("does NOT auto-promote when URL has a shared tab (valid in both modes)", () => {
+    localStorageMock.getItem.mockImplementation((key: string) =>
+      key === "butlers.detail.mode" ? "operator" : null,
+    );
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=config"),
+      vi.fn(),
+    ]);
+    setButlerState(BASE_BUTLER);
+    renderPage();
+    // config is valid in both modes — no mode change should be persisted
+    const modeSetCalls = localStorageMock.setItem.mock.calls.filter(
+      (call) => call[0] === "butlers.detail.mode",
+    );
+    expect(modeSetCalls).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

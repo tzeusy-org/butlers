@@ -531,14 +531,21 @@ export default function ButlerDetailPage() {
   // ---------------------------------------------------------------------------
   const [mode, setModeState] = useState<DetailMode>(() => {
     const stored = readPersistedMode();
-    if (stored === "operator") return "operator";
-    // Auto-promote: if the URL tab is only valid in operator mode, elevate now.
+    // Auto-promote bidirectionally: if the URL tab is exclusive to a different mode, switch now.
+    // This runs synchronously in state initialisation so the correct tab list renders on the
+    // first pass (works in CSR and SSR contexts where effects don't run).
     if (tabParam) {
       const validForOperator = getAllTabs(name, "operator").includes(tabParam);
       const validForResident = getAllTabs(name, "resident").includes(tabParam);
-      if (validForOperator && !validForResident) {
+      if (validForOperator && !validForResident && stored !== "operator") {
+        // Forward promotion: resident → operator
         persistMode("operator");
         return "operator";
+      }
+      if (validForResident && !validForOperator && stored !== "resident") {
+        // Reverse promotion: operator → resident
+        persistMode("resident");
+        return "resident";
       }
     }
     return stored;
