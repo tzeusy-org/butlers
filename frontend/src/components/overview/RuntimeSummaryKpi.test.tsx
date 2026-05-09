@@ -116,17 +116,44 @@ describe("RuntimeSummaryKpi -- data values", () => {
     expect(html).toContain(">3<");
   });
 
-  it("renders healthy butler count (status === ok only)", () => {
+  it("renders healthy butler count (status ok or online)", () => {
     setLoadedData({
       butlers: [
         { name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 0 },
-        { name: "health", status: "degraded", port: 40102, type: "butler" as const, sessions_24h: 0 },
+        { name: "health", status: "online", port: 40102, type: "butler" as const, sessions_24h: 0 },
+        { name: "calendar", status: "degraded", port: 40103, type: "butler" as const, sessions_24h: 0 },
       ],
     });
     const html = renderComponent();
-    // total = 2, healthy = 1
+    // total = 3, healthy = 2 (ok + online)
+    expect(html).toContain(">3<");
     expect(html).toContain(">2<");
+  });
+
+  it("excludes staffer-type entries from butler KPIs", () => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: {
+        data: [
+          { name: "general", status: "ok", port: 40101, type: "butler", sessions_24h: 5 },
+          { name: "switchboard", status: "ok", port: 40100, type: "staffer", sessions_24h: 10 },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+    vi.mocked(useApprovalMetrics).mockReturnValue({
+      data: { data: { total_pending: 0 }, meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+    const html = renderComponent();
+    // total = 1 (staffer excluded), sessions = 5 (not 15)
     expect(html).toContain(">1<");
+    expect(html).toContain(">5<");
   });
 
   it("renders sum of sessions_24h across all butlers", () => {
@@ -153,7 +180,8 @@ describe("RuntimeSummaryKpi -- data values", () => {
 // ---------------------------------------------------------------------------
 
 describe("RuntimeSummaryKpi -- loading state", () => {
-  it("shows — for butlers cells while useButlers is loading", () => {
+  it("shows — for all cells while any data source is loading", () => {
+    // Butlers loading; approvals ready — all four cells should still show —
     vi.mocked(useButlers).mockReturnValue({
       data: undefined,
       isLoading: true,
@@ -168,26 +196,8 @@ describe("RuntimeSummaryKpi -- loading state", () => {
       error: null,
     } as AnyMock);
     const html = renderComponent();
-    // Three butler cells (total, healthy, sessions) should show —
-    expect(html.match(/—/g)?.length).toBeGreaterThanOrEqual(3);
-  });
-
-  it("shows — for approvals cell while useApprovalMetrics is loading", () => {
-    vi.mocked(useButlers).mockReturnValue({
-      data: { data: [], meta: {} },
-      isLoading: false,
-      isError: false,
-      error: null,
-      refetch: vi.fn(),
-    } as AnyMock);
-    vi.mocked(useApprovalMetrics).mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-      error: null,
-    } as AnyMock);
-    const html = renderComponent();
-    expect(html).toContain("—");
+    // All four cells should show —
+    expect(html.match(/—/g)?.length).toBe(4);
   });
 });
 
