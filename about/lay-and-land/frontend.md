@@ -1034,22 +1034,29 @@ No staggered entries, no count-up animations, no scale-in.
 ### Butler letter-mark
 
 The butler hue from `--category-1..8` resolves only onto the butler
-letter-mark. There is currently **no canonical
-`components/ui/ButlerMark.tsx` component**: the colored squircle
-with the butler initial is reimplemented inline by each consumer.
-The deterministic name → category-slot helper `butlerColorVar(name)`
-is duplicated across:
+letter-mark. The canonical component is
+`frontend/src/components/ui/ButlerMark.tsx`.
 
-- `frontend/src/components/dashboard/RecentMoments.tsx:53-60`
-- `frontend/src/components/dashboard/SessionStripeChart.tsx`
-- `frontend/src/components/relationship/ContactTable.tsx:77-78`
-- `frontend/src/components/costs/CostStripeChart.tsx`
-- `frontend/src/components/chronicles/lane-taxonomy.ts`
+`ButlerMark` exports:
+- `<ButlerMark name="..." tone="fill|neutral" />`: 16px squircle with
+  butler initial. `fill` = solid hue background + white initial (active
+  state). `neutral` = transparent background + hue initial + hairline
+  border (default).
+- `butlerHueVar(name)`: returns `var(--category-N)` for chart code
+  (recharts, stripe charts) that needs the raw CSS variable string.
+- `categoryHueVar(name)`: same hash algorithm, no roster-index lookup.
+  Use for non-butler entities (contact labels, tags) where positional
+  slot stability is not required.
+- `KNOWN_BUTLERS`: the canonical roster order that determines permanent
+  color slots for known butlers.
 
-Consolidating these into a single `<ButlerMark name="..." />`
-primitive (and the helper into `frontend/src/lib/butler-color.ts`) is
-a known follow-up; the editorial archetype consumers should be the
-first to migrate when the primitive lands.
+All consumers use this module:
+- `frontend/src/components/dashboard/RecentMoments.tsx`: uses `<ButlerMark tone="fill" />`
+- `frontend/src/components/dashboard/SessionStripeChart.tsx`: uses `butlerHueVar()`
+- `frontend/src/components/relationship/ContactTable.tsx`: uses `categoryHueVar()` for label badges
+- `frontend/src/components/relationship/ContactDetailView.tsx`: uses `categoryHueVar()` for label badges
+- `frontend/src/components/costs/CostStripeChart.tsx`: uses `butlerHueVar()`
+- `frontend/src/pages/GroupsPage.tsx`: uses `categoryHueVar()` for label badges
 
 ### Source files
 

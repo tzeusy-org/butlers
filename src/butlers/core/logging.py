@@ -239,9 +239,7 @@ def _gzip_namer(name: str) -> str:
     return name + ".gz"
 
 
-def _make_file_handler(
-    path: Path, processors: list
-) -> logging.handlers.TimedRotatingFileHandler:
+def _make_file_handler(path: Path, processors: list) -> logging.handlers.TimedRotatingFileHandler:
     """Create a weekly-rotating JSON file handler at *path*.
 
     Rotates on Monday 00:00 local time; rotated files are suffixed with the

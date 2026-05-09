@@ -15,6 +15,7 @@ import { Link } from "react-router"
 import { ArrowRightIcon } from "lucide-react"
 
 import type { SessionSummary } from "@/api/types"
+import { ButlerMark } from "@/components/ui/ButlerMark"
 import { EmptyState } from "@/components/ui/empty-state"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
@@ -28,40 +29,6 @@ import { cn } from "@/lib/utils"
 export interface RecentMomentsProps {
   /** Maximum number of moments to show. @default 7 */
   limit?: number
-}
-
-// ---------------------------------------------------------------------------
-// Butler glyph helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Categorical color slots (8) using the shared CSS token system.
- * Same slot count as ActivityFeed and SessionTable to keep color assignments
- * visually consistent across the dashboard (and correct under dark mode).
- */
-const GLYPH_COLOR_VARS = [
-  "var(--category-1)",
-  "var(--category-2)",
-  "var(--category-3)",
-  "var(--category-4)",
-  "var(--category-5)",
-  "var(--category-6)",
-  "var(--category-7)",
-  "var(--category-8)",
-] as const
-
-/** Deterministic slot for a butler name based on a simple djb2-style hash. */
-function butlerColorVar(name: string): string {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0
-  }
-  return GLYPH_COLOR_VARS[Math.abs(hash) % GLYPH_COLOR_VARS.length]
-}
-
-/** Single uppercase letter used as the visual glyph for a butler. */
-function butlerInitial(name: string): string {
-  return (name[0] ?? "?").toUpperCase()
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +99,6 @@ interface MomentRowProps {
 
 function MomentRow({ session }: MomentRowProps) {
   const butlerName = session.butler ?? "unknown"
-  const colorVar = butlerColorVar(butlerName)
 
   return (
     <div
@@ -149,15 +115,8 @@ function MomentRow({ session }: MomentRowProps) {
         className="w-24 shrink-0 text-xs text-muted-foreground tabular-nums"
       />
 
-      {/* Butler glyph — color via CSS token so dark-mode overrides apply */}
-      <span
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold leading-none text-white"
-        style={{ backgroundColor: colorVar }}
-        title={butlerName}
-        aria-label={butlerName}
-      >
-        {butlerInitial(butlerName)}
-      </span>
+      {/* Butler glyph — color via --category-N CSS token, dark-mode safe */}
+      <ButlerMark name={butlerName} tone="fill" />
 
       {/* Prompt summary */}
       <span

@@ -22,33 +22,7 @@ import {
 
 import { ChartSkeleton } from "@/components/skeletons"
 import type { DailyCost } from "@/api/types"
-
-// ---------------------------------------------------------------------------
-// Color tokens — matches SessionStripeChart
-// ---------------------------------------------------------------------------
-
-const CATEGORY_VARS = [
-  "var(--category-1)",
-  "var(--category-2)",
-  "var(--category-3)",
-  "var(--category-4)",
-  "var(--category-5)",
-  "var(--category-6)",
-  "var(--category-7)",
-  "var(--category-8)",
-] as const
-
-/** Deterministic butler-name to color. Uses the sorted name order for stability. */
-function butlerColor(name: string, orderedNames: string[]): string {
-  const idx = orderedNames.indexOf(name)
-  if (idx !== -1) return CATEGORY_VARS[idx % CATEGORY_VARS.length]
-  // Fallback: hash for unlisted butlers
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  return CATEGORY_VARS[Math.abs(hash) % CATEGORY_VARS.length]
-}
+import { butlerHueVar } from "@/components/ui/ButlerMark"
 
 // ---------------------------------------------------------------------------
 // Data helpers
@@ -249,7 +223,7 @@ export function CostStripeChart({
               fill={
                 name === "_total"
                   ? "hsl(var(--primary))"
-                  : butlerColor(name, orderedNames)
+                  : butlerHueVar(name)
               }
               isAnimationActive={false}
             />

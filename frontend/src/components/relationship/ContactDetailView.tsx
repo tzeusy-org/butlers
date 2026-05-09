@@ -8,6 +8,7 @@ import type {
   ContactInfoEntry,
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
+import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,15 +51,7 @@ interface ContactDetailViewProps {
 
 function labelStyle(label: { color: string | null; name: string }): string {
   if (label.color) return label.color;
-  const colors = [
-    "var(--category-1)", "var(--category-2)", "var(--category-3)", "var(--category-4)",
-    "var(--category-5)", "var(--category-6)", "var(--category-7)", "var(--category-8)",
-  ];
-  let hash = 0;
-  for (let i = 0; i < label.name.length; i++) {
-    hash = (hash * 31 + label.name.charCodeAt(i)) | 0;
-  }
-  return colors[Math.abs(hash) % colors.length];
+  return categoryHueVar(label.name);
 }
 
 /** Return inline background style for a role badge. */

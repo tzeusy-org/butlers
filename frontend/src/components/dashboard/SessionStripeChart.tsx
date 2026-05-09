@@ -20,6 +20,7 @@ import {
 
 import { ChartSkeleton } from "@/components/skeletons"
 import type { ButlerSummary } from "@/api/types"
+import { butlerHueVar } from "@/components/ui/ButlerMark"
 import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import {
   bucketUnit,
@@ -28,36 +29,6 @@ import {
   pivotSessionsIntoRows,
   useSessionStripeData,
 } from "./session-stripe-utils"
-
-// ---------------------------------------------------------------------------
-// Color tokens — maps butler index (0-based, mod 8) to CSS variable names
-// ---------------------------------------------------------------------------
-
-const CATEGORY_VARS = [
-  "var(--category-1)",
-  "var(--category-2)",
-  "var(--category-3)",
-  "var(--category-4)",
-  "var(--category-5)",
-  "var(--category-6)",
-  "var(--category-7)",
-  "var(--category-8)",
-] as const
-
-/** Deterministic butler-name to color token mapping.
- * Known butlers use their index in the roster; unlisted butlers use a
- * name hash so multiple unlisted butlers get distinct colors.
- */
-function butlerColor(name: string, allButlers: readonly ButlerSummary[]): string {
-  const idx = allButlers.findIndex((b) => b.name === name)
-  if (idx !== -1) return CATEGORY_VARS[idx % CATEGORY_VARS.length]
-  // Fallback: deterministic hash for unlisted butlers
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash)
-  }
-  return CATEGORY_VARS[Math.abs(hash) % CATEGORY_VARS.length]
-}
 
 // ---------------------------------------------------------------------------
 // Tooltip
@@ -209,7 +180,7 @@ export function SessionStripeChart({ windowHours = 24, butlers }: SessionStripeC
               key={name}
               dataKey={name}
               stackId="bucket"
-              fill={butlerColor(name, butlers)}
+              fill={butlerHueVar(name)}
               isAnimationActive={false}
             />
           ))}

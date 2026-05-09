@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
+import { categoryHueVar } from "@/components/ui/ButlerMark";
 import { Time } from "@/components/ui/time";
 import { useNavigate } from "react-router";
 import { ArchiveIcon, ArchiveRestoreIcon, EditIcon, GitMergeIcon, TrashIcon } from "lucide-react";
@@ -73,15 +74,7 @@ function labelStyle(label: Label): string {
   if (label.color) {
     return label.color;
   }
-  const colors = [
-    "var(--category-1)", "var(--category-2)", "var(--category-3)", "var(--category-4)",
-    "var(--category-5)", "var(--category-6)", "var(--category-7)", "var(--category-8)",
-  ];
-  let hash = 0;
-  for (let i = 0; i < label.name.length; i++) {
-    hash = (hash * 31 + label.name.charCodeAt(i)) | 0;
-  }
-  return colors[Math.abs(hash) % colors.length];
+  return categoryHueVar(label.name);
 }
 
 // ---------------------------------------------------------------------------
