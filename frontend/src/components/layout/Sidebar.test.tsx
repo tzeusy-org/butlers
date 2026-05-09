@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router";
 import Sidebar from "@/components/layout/Sidebar";
 import { useButlers } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
+import { useBadgeCounts } from "@/hooks/use-qa-badge";
 
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(),
@@ -689,6 +690,45 @@ describe("Sidebar", () => {
       expect(chroniclesLink?.getAttribute("aria-label")).toBe(
         "Retrospective lived-time reconstruction",
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // QA badge: red variant
+  // -------------------------------------------------------------------------
+
+  describe("QA badge variant", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "qa", status: "ok", port: 40120, type: "butler" as const }],
+          meta: {},
+        },
+      });
+    });
+
+    it("renders bg-red-500 on QA badge when count > 0 (rail mode)", () => {
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-known-issues": 3 });
+      render();
+
+      const redBadge = container.querySelector(".bg-red-500");
+      expect(redBadge).toBeTruthy();
+    });
+
+    it("renders bg-red-500 on QA badge when count > 0 (mobile expanded mode)", () => {
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-known-issues": 5 });
+      renderMobile();
+
+      const redBadge = container.querySelector(".bg-red-500");
+      expect(redBadge).toBeTruthy();
+    });
+
+    it("does not render a badge when qa-known-issues count is zero", () => {
+      vi.mocked(useBadgeCounts).mockReturnValue({ "qa-known-issues": 0 });
+      render();
+
+      const redBadge = container.querySelector(".bg-red-500");
+      expect(redBadge).toBeNull();
     });
   });
 
