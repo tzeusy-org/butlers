@@ -1,15 +1,23 @@
 /**
- * ButlerOverviewTab — identity card content tests.
+ * ButlerOverviewTab — identity card, heartbeat row, and module health card tests.
  *
- * Pins the six required elements of the identity card:
+ * Pins the required elements:
+ *   Identity card:
  *   1. Butler name
  *   2. Status badge
  *   3. Description (serif italic, when present)
  *   4. Port
  *   5. Eligibility state (with quarantine reason when quarantined)
  *   6. 24h eligibility timeline (EligibilityTimeline)
+ *   Heartbeat row (bu-8hbph.3):
+ *   7. Heartbeat row visible with freshness pill
+ *   8. Timestamp shown when heartbeat exists
+ *   9. "No heartbeat recorded" when no heartbeat
+ *   Module health card (bu-8hbph.3):
+ *   10. Per-module grid rendered when modules exist
+ *   11. "No modules registered" when empty
  *
- * Bead: bu-8hbph.1
+ * Beads: bu-8hbph.1, bu-8hbph.3
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -24,6 +32,7 @@ import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
 
 vi.mock("@/hooks/use-butlers", () => ({
   useButler: vi.fn(),
+  useButlerModules: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-general", () => ({
@@ -39,6 +48,10 @@ vi.mock("@/hooks/use-notifications", () => ({
   useButlerNotifications: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-system", () => ({
+  useButlerHeartbeats: vi.fn(),
+}));
+
 // Stub EligibilityTimeline to avoid additional hook chains in SSR tests
 vi.mock("@/components/butler-detail/EligibilityTimeline", () => ({
   default: ({ butlerName }: { butlerName: string }) => (
@@ -46,15 +59,21 @@ vi.mock("@/components/butler-detail/EligibilityTimeline", () => ({
   ),
 }));
 
+// Stub Time to avoid date formatting in SSR tests
+vi.mock("@/components/ui/time", () => ({
+  Time: ({ value }: { value: string }) => <span data-testid="time-value">{value}</span>,
+}));
+
 // Stub NotificationFeed to avoid dependency chain
 vi.mock("@/components/notifications/notification-feed", () => ({
   NotificationFeed: () => <div data-testid="notification-feed" />,
 }));
 
-import { useButler } from "@/hooks/use-butlers";
+import { useButler, useButlerModules } from "@/hooks/use-butlers";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useButlerNotifications } from "@/hooks/use-notifications";
+import { useButlerHeartbeats } from "@/hooks/use-system";
 
 // ---------------------------------------------------------------------------
 // Shared mock data
@@ -80,6 +99,34 @@ const REGISTRY_QUARANTINED = {
   eligibility_state: "quarantined",
   quarantine_reason: "Health check failed: timeout after 30s",
 };
+
+const HEARTBEAT_FRESH = {
+  name: "general",
+  last_heartbeat_at: "2026-05-10T12:00:00Z",
+  last_session_at: null,
+  active_session_count: 0,
+  heartbeat_age_seconds: 30,
+  error: null,
+};
+
+const HEARTBEAT_STALE = {
+  name: "general",
+  last_heartbeat_at: "2026-05-10T11:45:00Z",
+  last_session_at: null,
+  active_session_count: 0,
+  heartbeat_age_seconds: 900,
+  error: null,
+};
+
+const MODULES_OK = [
+  { name: "email", enabled: true, status: "connected", error: null },
+  { name: "calendar", enabled: true, status: "connected", error: null },
+];
+
+const MODULES_WITH_ERROR = [
+  { name: "email", enabled: true, status: "connected", error: null },
+  { name: "telegram", enabled: true, status: "error", error: "Connection refused" },
+];
 
 // ---------------------------------------------------------------------------
 // Setup helpers
@@ -114,6 +161,20 @@ function setupDefaultMocks() {
     data: { data: [], meta: {} },
     isLoading: false,
   } as ReturnType<typeof useButlerNotifications>);
+
+  vi.mocked(useButlerHeartbeats).mockReturnValue({
+    data: { data: { butlers: [HEARTBEAT_FRESH] }, meta: {} },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as ReturnType<typeof useButlerHeartbeats>);
+
+  vi.mocked(useButlerModules).mockReturnValue({
+    data: { data: MODULES_OK, meta: {} },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as ReturnType<typeof useButlerModules>);
 }
 
 function renderTab(butlerName = "general"): string {
@@ -293,5 +354,158 @@ describe("ButlerOverviewTab — identity card", () => {
     // The skeleton renders without crashing; content elements are absent
     expect(html).not.toContain("40101");
     expect(html).not.toContain("Your everyday assistant");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Heartbeat row (bu-8hbph.3)
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab — heartbeat row", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultMocks();
+  });
+
+  it("renders the Heartbeat label in the identity card", () => {
+    const html = renderTab();
+    expect(html).toContain("Heartbeat");
+  });
+
+  it("renders Fresh pill for a recently-heartbeating butler", () => {
+    const html = renderTab();
+    expect(html).toContain("Fresh");
+  });
+
+  it("renders Stale pill when heartbeat age exceeds 5 minutes", () => {
+    vi.mocked(useButlerHeartbeats).mockReturnValue({
+      data: { data: { butlers: [HEARTBEAT_STALE] }, meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useButlerHeartbeats>);
+
+    const html = renderTab();
+    expect(html).toContain("Stale");
+  });
+
+  it("renders Unknown pill when no heartbeat entry exists for this butler", () => {
+    vi.mocked(useButlerHeartbeats).mockReturnValue({
+      data: { data: { butlers: [] }, meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useButlerHeartbeats>);
+
+    const html = renderTab();
+    expect(html).toContain("Unknown");
+  });
+
+  it("renders timestamp when last_heartbeat_at is present", () => {
+    const html = renderTab();
+    // Stubbed Time renders the raw value
+    expect(html).toContain("2026-05-10T12:00:00Z");
+  });
+
+  it("renders 'No heartbeat recorded' when last_heartbeat_at is null", () => {
+    vi.mocked(useButlerHeartbeats).mockReturnValue({
+      data: {
+        data: {
+          butlers: [
+            {
+              ...HEARTBEAT_FRESH,
+              last_heartbeat_at: null,
+              heartbeat_age_seconds: null,
+            },
+          ],
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useButlerHeartbeats>);
+
+    const html = renderTab();
+    expect(html).toContain("No heartbeat recorded");
+  });
+
+  it("renders data-testid=heartbeat-row on the heartbeat dd element", () => {
+    const html = renderTab();
+    expect(html).toContain('data-testid="heartbeat-row"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Module health card (bu-8hbph.3)
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab — module health card", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultMocks();
+  });
+
+  it("renders Module Health card heading", () => {
+    const html = renderTab();
+    expect(html).toContain("Module Health");
+  });
+
+  it("renders module-health-grid when modules exist", () => {
+    const html = renderTab();
+    expect(html).toContain('data-testid="module-health-grid"');
+  });
+
+  it("renders a cell for each module", () => {
+    const html = renderTab();
+    expect(html).toContain("email");
+    expect(html).toContain("calendar");
+  });
+
+  it("renders the module status in each cell", () => {
+    const html = renderTab();
+    // Both modules have status "connected"
+    const count = (html.match(/connected/g) ?? []).length;
+    expect(count).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders error status for a failing module", () => {
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: { data: MODULES_WITH_ERROR, meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useButlerModules>);
+
+    const html = renderTab();
+    expect(html).toContain("telegram");
+    expect(html).toContain("error");
+  });
+
+  it("renders 'No modules registered' when module list is empty", () => {
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useButlerModules>);
+
+    const html = renderTab();
+    expect(html).toContain("No modules registered");
+    expect(html).not.toContain('data-testid="module-health-grid"');
+  });
+
+  it("renders skeleton cells when modules are loading", () => {
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useButlerModules>);
+
+    const html = renderTab();
+    // Skeleton renders without the grid testid
+    expect(html).not.toContain('data-testid="module-health-grid"');
+    expect(html).not.toContain("No modules registered");
   });
 });

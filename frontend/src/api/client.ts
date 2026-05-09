@@ -244,6 +244,7 @@ import type {
   BackupFacts,
   EgressCatalog,
   HeartbeatFacts,
+  ModuleStatus,
   Briefing,
   ChroniclesBriefing,
   ChroniclesAttentionItem,
@@ -355,6 +356,11 @@ export function getButlerConfig(name: string): Promise<ApiResponse<ButlerConfigR
   return apiFetch<ApiResponse<ButlerConfigResponse>>(
     `/butlers/${encodeURIComponent(name)}/config`,
   );
+}
+
+/** Fetch per-module health status for a specific butler. */
+export function getButlerModules(name: string): Promise<ApiResponse<ModuleStatus[]>> {
+  return apiFetch<ApiResponse<ModuleStatus[]>>(`/butlers/${encodeURIComponent(name)}/modules`);
 }
 
 /** Build a URLSearchParams from session query parameters. */
