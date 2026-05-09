@@ -37,6 +37,17 @@ function EmptyStateLine({ children }: { children: ReactNode }) {
   );
 }
 
+function ErrorLine({ children }: { children: ReactNode }) {
+  return (
+    <p
+      className="text-sm text-destructive"
+      data-testid="error-state-line"
+    >
+      {children}
+    </p>
+  );
+}
+
 function LoadingSkeleton({ rows = 4 }: { rows?: number }) {
   return (
     <div className="space-y-2" data-testid="loading-line">
@@ -160,11 +171,16 @@ function HealthBadge({ status }: { status: "healthy" | "offline" }) {
 interface DeviceInventoryProps {
   devices: HomeDeviceEntry[];
   isLoading: boolean;
+  isError?: boolean;
 }
 
-function DeviceInventory({ devices, isLoading }: DeviceInventoryProps) {
+function DeviceInventory({ devices, isLoading, isError }: DeviceInventoryProps) {
   if (isLoading && devices.length === 0) {
     return <LoadingSkeleton rows={5} />;
+  }
+
+  if (isError) {
+    return <ErrorLine>Failed to load device inventory.</ErrorLine>;
   }
 
   if (devices.length === 0) {
@@ -240,11 +256,16 @@ function MaintenanceStatusBadge({ status }: { status: HomeMaintenanceItem["statu
 interface MaintenanceQueueProps {
   items: HomeMaintenanceItem[];
   isLoading: boolean;
+  isError?: boolean;
 }
 
-function MaintenanceQueue({ items, isLoading }: MaintenanceQueueProps) {
+function MaintenanceQueue({ items, isLoading, isError }: MaintenanceQueueProps) {
   if (isLoading && items.length === 0) {
     return <LoadingSkeleton rows={4} />;
+  }
+
+  if (isError) {
+    return <ErrorLine>Failed to load maintenance queue.</ErrorLine>;
   }
 
   if (items.length === 0) {
@@ -283,11 +304,16 @@ interface EnergyChartProps {
   dataPoints: HomeEnergyDataPoint[];
   topConsumers: HomeTopConsumer[];
   isLoading: boolean;
+  isError?: boolean;
 }
 
-function EnergyChart({ dataPoints, topConsumers, isLoading }: EnergyChartProps) {
+function EnergyChart({ dataPoints, topConsumers, isLoading, isError }: EnergyChartProps) {
   if (isLoading && dataPoints.length === 0) {
     return <LoadingSkeleton rows={4} />;
+  }
+
+  if (isError) {
+    return <ErrorLine>Failed to load energy data.</ErrorLine>;
   }
 
   if (dataPoints.length === 0) {
@@ -369,11 +395,16 @@ function CommandResultBadge({ result }: { result: Record<string, unknown> | null
 interface CommandLogProps {
   entries: HomeCommandLogEntry[];
   isLoading: boolean;
+  isError?: boolean;
 }
 
-function CommandLog({ entries, isLoading }: CommandLogProps) {
+function CommandLog({ entries, isLoading, isError }: CommandLogProps) {
   if (isLoading && entries.length === 0) {
     return <LoadingSkeleton rows={5} />;
+  }
+
+  if (isError) {
+    return <ErrorLine>Failed to load command log.</ErrorLine>;
   }
 
   if (entries.length === 0) {
@@ -418,8 +449,8 @@ function CommandLog({ entries, isLoading }: CommandLogProps) {
 function formatRelativeTime(isoStr: string): string {
   try {
     const diffMs = Date.now() - new Date(isoStr).getTime();
-    const diffSec = Math.floor(diffMs / 1000);
-    if (diffSec < 60) return `${diffSec}s ago`;
+    const diffSec = Math.max(0, Math.floor(diffMs / 1000));
+    if (diffSec < 60) return diffSec <= 5 ? "just now" : `${diffSec}s ago`;
     const diffMin = Math.floor(diffSec / 60);
     if (diffMin < 60) return `${diffMin}m ago`;
     const diffHrs = Math.floor(diffMin / 60);
@@ -455,19 +486,19 @@ export default function ButlerHomeDevicesTab() {
   const { data: overdueItems, isLoading: overdueLoading } = useHomeMaintenance({ status: "overdue" });
 
   // Section 2: Full device inventory (page 1, first 50)
-  const { data: deviceInventory, isLoading: devicesLoading } = useHomeDevices({ page: 1, page_size: 50 });
+  const { data: deviceInventory, isLoading: devicesLoading, isError: devicesError } = useHomeDevices({ page: 1, page_size: 50 });
 
   // Section 3: All maintenance items (sorted by urgency server-side)
-  const { data: maintenanceItems, isLoading: maintenanceLoading } = useHomeMaintenance();
+  const { data: maintenanceItems, isLoading: maintenanceLoading, isError: maintenanceError } = useHomeMaintenance();
 
   // Section 4: Energy time-series (7d, day granularity)
-  const { data: energyData, isLoading: energyLoading } = useHomeEnergy({ period: "day" });
+  const { data: energyData, isLoading: energyLoading, isError: energyError } = useHomeEnergy({ period: "day" });
 
   // Section 4: Top consumers (7d)
-  const { data: topConsumers, isLoading: consumersLoading } = useHomeEnergyTopConsumers();
+  const { data: topConsumers, isLoading: consumersLoading, isError: consumersError } = useHomeEnergyTopConsumers();
 
   // Section 5: HA command log (last 20)
-  const { data: commandLogResp, isLoading: commandLogLoading } = useHomeCommandLog({ limit: 20 });
+  const { data: commandLogResp, isLoading: commandLogLoading, isError: commandLogError } = useHomeCommandLog({ limit: 20 });
 
   const kpiLoading = snapshotLoading || offlineLoading || overdueLoading;
 
@@ -497,7 +528,7 @@ export default function ButlerHomeDevicesTab() {
             <CardTitle className="text-sm font-medium">Device inventory</CardTitle>
           </CardHeader>
           <CardContent className="max-h-[480px] overflow-y-auto">
-            <DeviceInventory devices={devices} isLoading={devicesLoading} />
+            <DeviceInventory devices={devices} isLoading={devicesLoading} isError={devicesError} />
           </CardContent>
         </Card>
 
@@ -506,7 +537,7 @@ export default function ButlerHomeDevicesTab() {
             <CardTitle className="text-sm font-medium">Maintenance queue</CardTitle>
           </CardHeader>
           <CardContent className="max-h-[480px] overflow-y-auto">
-            <MaintenanceQueue items={maintenance} isLoading={maintenanceLoading} />
+            <MaintenanceQueue items={maintenance} isLoading={maintenanceLoading} isError={maintenanceError} />
           </CardContent>
         </Card>
       </div>
@@ -522,6 +553,7 @@ export default function ButlerHomeDevicesTab() {
               dataPoints={energy}
               topConsumers={consumers}
               isLoading={energyLoading || consumersLoading}
+              isError={energyError || consumersError}
             />
           </CardContent>
         </Card>
@@ -531,7 +563,7 @@ export default function ButlerHomeDevicesTab() {
             <CardTitle className="text-sm font-medium">HA command log</CardTitle>
           </CardHeader>
           <CardContent className="max-h-[400px] overflow-y-auto">
-            <CommandLog entries={commandEntries} isLoading={commandLogLoading} />
+            <CommandLog entries={commandEntries} isLoading={commandLogLoading} isError={commandLogError} />
           </CardContent>
         </Card>
       </div>

@@ -325,6 +325,44 @@ function setupLoading() {
   } as ReturnType<typeof useHomeCommandLog>);
 }
 
+function setupErrorState() {
+  vi.mocked(useHomeSnapshotStatus).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useHomeSnapshotStatus>);
+
+  vi.mocked(useHomeDevices).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useHomeDevices>);
+
+  vi.mocked(useHomeMaintenance).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useHomeMaintenance>);
+
+  vi.mocked(useHomeEnergy).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useHomeEnergy>);
+
+  vi.mocked(useHomeEnergyTopConsumers).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useHomeEnergyTopConsumers>);
+
+  vi.mocked(useHomeCommandLog).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+  } as ReturnType<typeof useHomeCommandLog>);
+}
+
 // ---------------------------------------------------------------------------
 // Tests: all 5 sections present
 // ---------------------------------------------------------------------------
@@ -585,6 +623,49 @@ describe("ButlerHomeDevicesTab — loading states", () => {
   });
 
   it("does not render command-log while loading", () => {
+    renderTab();
+    expect(screen.queryByTestId("command-log")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Error states
+// ---------------------------------------------------------------------------
+
+describe("ButlerHomeDevicesTab — error states", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupErrorState();
+  });
+  afterEach(() => cleanup());
+
+  it("shows error-state-line elements when queries fail", () => {
+    renderTab();
+    const errorLines = screen.getAllByTestId("error-state-line");
+    expect(errorLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not show empty-state-line elements when queries fail", () => {
+    renderTab();
+    expect(screen.queryByTestId("empty-state-line")).toBeNull();
+  });
+
+  it("does not render device-inventory-table when devices query fails", () => {
+    renderTab();
+    expect(screen.queryByTestId("device-inventory-table")).toBeNull();
+  });
+
+  it("does not render maintenance-queue when maintenance query fails", () => {
+    renderTab();
+    expect(screen.queryByTestId("maintenance-queue")).toBeNull();
+  });
+
+  it("does not render energy-bars when energy query fails", () => {
+    renderTab();
+    expect(screen.queryByTestId("energy-bars")).toBeNull();
+  });
+
+  it("does not render command-log when command-log query fails", () => {
     renderTab();
     expect(screen.queryByTestId("command-log")).toBeNull();
   });
