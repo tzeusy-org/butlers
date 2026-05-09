@@ -85,6 +85,8 @@ export function useApprovalMetrics() {
   return useQuery({
     queryKey: approvalKeys.metrics(),
     queryFn: () => getApprovalMetrics(),
+    refetchInterval: 30_000,
+    staleTime: 30_000,
   });
 }
 

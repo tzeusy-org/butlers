@@ -20,6 +20,7 @@ export function useButlers() {
     queryKey: ["butlers"],
     queryFn: () => getButlers(),
     refetchInterval: 30_000,
+    staleTime: 30_000,
   });
 }
 
