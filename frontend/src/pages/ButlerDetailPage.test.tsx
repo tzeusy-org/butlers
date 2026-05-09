@@ -123,6 +123,52 @@ describe("ButlerDetailPage — single-H1 contract", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ChatPanel — actions slot placement
+// ---------------------------------------------------------------------------
+//
+// spec: openspec/specs/dashboard-butler-management/spec.md §96-99
+// bead: bu-sfeuw.2
+//
+// ChatPanel MUST be rendered exactly once via the <Page> actions slot.
+// The static-markup assertions below pin single-mount placement in the heading
+// row. Any duplicate or shadow render would produce more than one
+// data-testid="chat-panel" occurrence.
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — ChatPanel actions slot", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setButlerState(BASE_BUTLER);
+  });
+
+  it("renders exactly one ChatPanel instance", () => {
+    const html = renderPage();
+    const occurrences = (html.match(/data-testid="chat-panel"/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it("ChatPanel receives the butler name as butlerName prop", () => {
+    const html = renderPage();
+    // The mock renders the butlerName as text content inside the stub element
+    expect(html).toContain(
+      '<div data-testid="chat-panel">general</div>',
+    );
+  });
+
+  it("ChatPanel appears in the heading region alongside the h1", () => {
+    const html = renderPage();
+    // The heading row is a flex container with the h1 and the shrink-0 actions div.
+    // Verify both the h1 and the chat-panel stub are present in the same document.
+    const h1Index = html.indexOf("<h1");
+    const chatPanelIndex = html.indexOf('data-testid="chat-panel"');
+    expect(h1Index).toBeGreaterThanOrEqual(0);
+    expect(chatPanelIndex).toBeGreaterThanOrEqual(0);
+    // actions slot renders after the heading opening tag in document order
+    expect(chatPanelIndex).toBeGreaterThan(h1Index);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Basic rendering
 // ---------------------------------------------------------------------------
 
