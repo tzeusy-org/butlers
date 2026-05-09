@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 
 interface ButlerStatusBadgeProps {
-  status: string;
+  status: "ok" | "degraded" | "error" | "down" | string;
   "data-testid"?: string;
 }
 
