@@ -3,21 +3,22 @@
  *
  * Pins the required elements:
  *   Identity card:
- *   1. Butler name
- *   2. Status badge
- *   3. Description (serif italic, when present)
- *   4. Port
- *   5. Eligibility state (with quarantine reason when quarantined)
- *   6. 24h eligibility timeline (EligibilityTimeline)
+ *   1. ButlerMark glyph (bu-1ryg6)
+ *   2. Butler name
+ *   3. Status badge
+ *   4. Description (serif italic, when present)
+ *   5. Port
+ *   6. Eligibility state (with quarantine reason when quarantined)
+ *   7. 24h eligibility timeline (EligibilityTimeline)
  *   Heartbeat row (bu-8hbph.3):
- *   7. Heartbeat row visible with freshness pill
- *   8. Timestamp shown when heartbeat exists
- *   9. "No heartbeat recorded" when no heartbeat
+ *   8. Heartbeat row visible with freshness pill
+ *   9. Timestamp shown when heartbeat exists
+ *   10. "No heartbeat recorded" when no heartbeat
  *   Module health card (bu-8hbph.3):
- *   10. Per-module grid rendered when modules exist
- *   11. "No modules registered" when empty
+ *   11. Per-module grid rendered when modules exist
+ *   12. "No modules registered" when empty
  *
- * Beads: bu-8hbph.1, bu-8hbph.3
+ * Beads: bu-8hbph.1, bu-8hbph.3, bu-1ryg6
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -208,7 +209,26 @@ describe("ButlerOverviewTab — identity card", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Element 1: Butler name
+  // Element 1: ButlerMark glyph (bu-1ryg6)
+  // -------------------------------------------------------------------------
+
+  it("renders the ButlerMark glyph in the identity card header", () => {
+    const html = renderTab();
+    // ButlerMark renders a <span> with aria-label set to the butler name
+    // and title set to the butler name. The initial "G" (from "general") should
+    // appear as content within the glyph element.
+    expect(html).toContain('aria-label="general"');
+    expect(html).toContain('title="general"');
+  });
+
+  it("renders ButlerMark with fill tone in the identity card header", () => {
+    const html = renderTab();
+    // fill tone renders with white text color (React serialises inline styles without spaces)
+    expect(html).toContain("color:white");
+  });
+
+  // -------------------------------------------------------------------------
+  // Element 2: Butler name
   // -------------------------------------------------------------------------
 
   it("renders the butler name in the identity card", () => {

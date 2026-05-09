@@ -4,6 +4,7 @@ import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
 import { Badge } from "@/components/ui/badge";
+import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -454,6 +455,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-3">
+            <ButlerMark name={butlerName} tone="fill" />
             {butler?.name ?? butlerName}
             {butler && <ButlerStatusBadge status={butler.status} />}
           </CardTitle>
