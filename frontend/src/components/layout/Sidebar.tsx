@@ -221,12 +221,10 @@ function FlatNavLink({
 
 function NavGroup({
   item,
-  section,
   onNavClick,
   butlerStatusMap,
 }: {
   item: NavGroupItem
-  section: NavSection
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
 }) {
@@ -240,7 +238,6 @@ function NavGroup({
   const expanded = hasActiveChild || userExpanded
 
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
-  const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
 
   return (
     <div>
@@ -258,15 +255,11 @@ function NavGroup({
                 : 'border-transparent hover:bg-sidebar-accent/50',
             ].join(' ')}
           >
-            {/* Glyph */}
+            {/* Glyph — group headers always use first-letter glyph, never ButlerMark */}
             <span className="relative flex size-6 shrink-0 items-center justify-center">
-              {useButlerMark ? (
-                <ButlerMark name={item.butler!} tone="neutral" />
-              ) : (
-                <span className="flex size-6 items-center justify-center rounded text-xs font-semibold text-muted-foreground">
-                  {item.label[0]}
-                </span>
-              )}
+              <span className="flex size-6 items-center justify-center rounded text-xs font-semibold text-muted-foreground">
+                {item.label[0]}
+              </span>
               <StatusDot status={butlerStatus} />
             </span>
             {/* Chevron at bottom-right */}
@@ -357,7 +350,6 @@ function NavSectionGroup({
             <NavGroup
               key={item.label}
               item={item}
-              section={section}
               onNavClick={onNavClick}
               butlerStatusMap={butlerStatusMap}
             />
@@ -575,12 +567,10 @@ function MobileFlatLink({
 
 function MobileNavGroup({
   item,
-  section,
   onNavClick,
   butlerStatusMap,
 }: {
   item: NavGroupItem
-  section: NavSection
   onNavClick?: () => void
   butlerStatusMap?: ButlerStatusMap
 }) {
@@ -591,7 +581,6 @@ function MobileNavGroup({
   const [userExpanded, setUserExpanded] = useState(false)
   const expanded = hasActiveChild || userExpanded
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
-  const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
 
   return (
     <div>
@@ -605,14 +594,11 @@ function MobileNavGroup({
             : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
         ].join(' ')}
       >
+        {/* Glyph — group headers always use first-letter glyph, never ButlerMark */}
         <span className="relative flex size-6 shrink-0 items-center justify-center">
-          {useButlerMark ? (
-            <ButlerMark name={item.butler!} tone="neutral" />
-          ) : (
-            <span className="flex size-6 items-center justify-center rounded bg-muted text-xs font-semibold">
-              {item.label[0]}
-            </span>
-          )}
+          <span className="flex size-6 items-center justify-center rounded bg-muted text-xs font-semibold">
+            {item.label[0]}
+          </span>
           <StatusDot status={butlerStatus} />
         </span>
         <span className="flex-1 text-left">{item.label}</span>
@@ -696,7 +682,6 @@ function MobileSidebar({
                   <MobileNavGroup
                     key={item.label}
                     item={item}
-                    section={section}
                     onNavClick={onNavClick}
                     butlerStatusMap={butlerStatusMap}
                   />
