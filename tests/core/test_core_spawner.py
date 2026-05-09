@@ -646,6 +646,58 @@ class TestSpawnerInvocation:
         assert result.success is True
         assert captured["timeout"] == 1800
 
+    async def test_adapter_timeout_error_is_not_masked_by_spawner_guard(
+        self, tmp_path: Path
+    ):
+        """Adapters own timeout cleanup and diagnostics; the spawner guard is only
+        a backstop for runtimes that do not return after their timeout."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        class AdapterManagedTimeout(RuntimeAdapter):
+            reset_calls = 0
+
+            @property
+            def binary_name(self) -> str:
+                return "adapter-managed-timeout"
+
+            async def invoke(
+                self,
+                prompt: str,
+                system_prompt: str,
+                mcp_servers: dict[str, Any],
+                env: dict[str, str],
+                max_turns: int = 20,
+                model: str | None = None,
+                runtime_args: list[str] | None = None,
+                cwd: Path | None = None,
+                timeout: int | None = None,
+            ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+                assert timeout is not None
+                await asyncio.sleep(timeout)
+                raise TimeoutError(f"adapter timed out after {timeout} seconds")
+
+            async def reset(self) -> None:
+                self.reset_calls += 1
+
+            def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
+                config_path = tmp_dir / "adapter_timeout_config.json"
+                config_path.write_text(json.dumps({"mcpServers": mcp_servers}))
+                return config_path
+
+            def parse_system_prompt_file(self, config_dir: Path) -> str:
+                return ""
+
+        adapter = AdapterManagedTimeout()
+        result = await Spawner(config=config, config_dir=config_dir, runtime=adapter).trigger(
+            "slow", "tick", timeout_override=1
+        )
+
+        assert result.success is False
+        assert result.error == "TimeoutError: adapter timed out after 1 seconds"
+        assert adapter.reset_calls == 1
+
     async def test_error_wrapping_and_reset_behavior(self, tmp_path: Path):
         """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset."""
         config_dir = tmp_path / "config"
