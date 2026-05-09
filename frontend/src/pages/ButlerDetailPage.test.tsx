@@ -3,7 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import ButlerDetailPage from "@/pages/ButlerDetailPage";
+import ButlerDetailPage, {
+  BASE_TABS_OPERATOR,
+  BASE_TABS_RESIDENT,
+  OPERATOR_EXTENSION_TABS,
+} from "@/pages/ButlerDetailPage";
 import { useButler } from "@/hooks/use-butlers";
 import type { ButlerSummary } from "@/api/types";
 
@@ -277,5 +281,111 @@ describe("ButlerDetailPage — Gate-A A2 actions slot", () => {
     const pillStart = html.indexOf('data-testid="butler-status-pill"');
     const pillRegion = html.slice(pillStart, pillStart + 200);
     expect(pillRegion).toContain("Up");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-B B2 tab vocabulary constants
+// ---------------------------------------------------------------------------
+//
+// spec: openspec/changes/redesign-detail-page-tab-vocabulary/design.md §Decisions 2-3, 6
+// bead: bu-8bayc.1
+//
+// BASE_TABS_OPERATOR and BASE_TABS_RESIDENT must be exported as named constants
+// with the exact Gate B B2 tab sets. OPERATOR_EXTENSION_TABS covers the
+// non-spec Models tab while the code still exposes it. bu-8bayc.2 will add the
+// mode toggle and localStorage persistence on top of these constants.
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — Gate-B B2 tab vocabulary constants", () => {
+  it("BASE_TABS_OPERATOR contains exactly the 10 spec-mandated base tabs", () => {
+    const expected = [
+      "overview",
+      "sessions",
+      "config",
+      "skills",
+      "schedules",
+      "trigger",
+      "mcp",
+      "state",
+      "crm",
+      "memory",
+    ];
+    expect([...BASE_TABS_OPERATOR]).toEqual(expected);
+  });
+
+  it("BASE_TABS_RESIDENT contains exactly the 7-tab Dispatch vocabulary", () => {
+    const expected = [
+      "overview",
+      "activity",
+      "logs",
+      "approvals",
+      "spend",
+      "config",
+      "memory",
+    ];
+    expect([...BASE_TABS_RESIDENT]).toEqual(expected);
+  });
+
+  it("OPERATOR_EXTENSION_TABS contains models (non-spec operator-only tab)", () => {
+    expect([...OPERATOR_EXTENSION_TABS]).toEqual(["models"]);
+  });
+
+  it("BASE_TABS_OPERATOR does not include models (models is an extension, not a base tab)", () => {
+    expect(BASE_TABS_OPERATOR).not.toContain("models");
+  });
+
+  it("BASE_TABS_RESIDENT does not include operator-only tabs", () => {
+    const operatorOnly = ["sessions", "skills", "schedules", "trigger", "mcp", "state", "crm", "models"];
+    for (const tab of operatorOnly) {
+      expect(BASE_TABS_RESIDENT).not.toContain(tab);
+    }
+  });
+
+  it("both modes share overview, config, and memory as common base tabs", () => {
+    const shared = ["overview", "config", "memory"];
+    for (const tab of shared) {
+      expect(BASE_TABS_OPERATOR).toContain(tab);
+      expect(BASE_TABS_RESIDENT).toContain(tab);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-B B2 default rendering (operator as current default until bu-8bayc.2)
+// ---------------------------------------------------------------------------
+//
+// The page currently renders operator mode tabs by default.
+// bu-8bayc.2 will add the mode toggle; until then operator tabs are always shown.
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — Gate-B B2 default rendering", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setButlerState(BASE_BUTLER);
+  });
+
+  it("renders all 10 operator base tab triggers by default", () => {
+    const html = renderPage();
+    const operatorLabels = [
+      "Overview",
+      "Sessions",
+      "Config",
+      "Skills",
+      "Schedules",
+      "Trigger",
+      "MCP",
+      "State",
+      "CRM",
+      "Memory",
+    ];
+    for (const label of operatorLabels) {
+      expect(html).toContain(label);
+    }
+  });
+
+  it("renders Models tab trigger (operator extension tab, currently exposed)", () => {
+    const html = renderPage();
+    expect(html).toContain("Models");
   });
 });
