@@ -145,6 +145,43 @@ git push                # Push to remote
 ### Core migration optional-schema guard contract
 - Core-chain migrations must tolerate fresh/core-only databases where specialist schema tables are absent; cross-schema `ALTER/UPDATE/GRANT` statements should guard with `to_regclass(...)` / information_schema checks instead of assuming `education.*`, `general.*`, etc. always exist.
 
+### Detail-page snapshot baseline (bu-sfeuw.1 / Gate-A)
+
+Ten `*DetailPage.tsx` components are baseline-snapshotted as of 2026-05-10 (branch
+`agent/bu-sfeuw.1`). Tests live in `frontend/src/pages/` alongside each page.
+
+**Shell architecture:**
+
+| Page | Shell | `<Page archetype="detail">` | Breadcrumbs owned by |
+|------|-------|-----------------------------|----------------------|
+| ButlerDetailPage | `<DetailPage>` | yes (via DetailPage) | `<Page>` HeadingBlock |
+| ContactDetailPage | `<DetailPage>` | yes (via DetailPage) | `<Page>` HeadingBlock |
+| ConnectorDetailPage | `<DetailPage>` | yes (via DetailPage) | `<Page>` HeadingBlock |
+| EntityDetailPage | `<DetailPage>` | yes (via DetailPage) | `<Page>` HeadingBlock |
+| EpisodeDetailPage | `<DetailPage>` | yes (via DetailPage) | `<Page>` HeadingBlock |
+| FactDetailPage | `<DetailPage>` | yes (via DetailPage) | `<Page>` HeadingBlock |
+| RuleDetailPage | `<DetailPage>` | yes (via DetailPage) | `<Page>` HeadingBlock |
+| SessionDetailPage | raw `<div>` | **no** | raw `<Breadcrumbs>` |
+| QaPatrolDetailPage | raw `<div>` | **no** | raw `<Breadcrumbs>` |
+| QaInvestigationDetailPage | raw `<div>` | **no** | raw `<Breadcrumbs>` |
+
+No page uses a Tier-2 hero (PulseStrip) unless the record has an associated entity
+(ContactDetailPage conditionally renders PulseStrip when `entity_id` is set).
+
+**Gate-A changes that invalidate snapshots:**
+
+- Migrating Session / QaPatrol / QaInvestigation from raw `<div>` to `<DetailPage>`:
+  invalidates single-H1 count (loading state goes from 0 to 0, loaded state remains 1),
+  adds `max-w-5xl` constraint, and changes breadcrumb ownership — updates needed in all
+  three `*DetailPage.test.tsx` files' "slot composition baseline" suites.
+- Adding a PulseStrip to Session / QaPatrol / QaInvestigation: invalidates the
+  "no Tier-2 hero" baseline assertions in those files.
+- Changing the `<Page>` HeadingBlock to suppress the `<h1>` during loading: all
+  "renders zero H1s in loading state" assertions across all 10 files would need updating.
+- Renaming H1 titles (e.g. "Patrol Detail" → something else): invalidates the
+  `H1 contains '...'` assertions in QaPatrolDetailPage.test.tsx and
+  QaInvestigationDetailPage.test.tsx.
+
 ### Runtime timeout propagation contract
 - `Spawner._run()` must forward the effective `session_timeout_s` into `runtime.invoke(timeout=...)`, not just wrap the call in outer `asyncio.wait_for(...)`; otherwise adapter-specific inner timeouts can drift from session records and produce misleading mixed timeout behavior (observed in QA self-healing Codex runs).
 
