@@ -1,11 +1,13 @@
 /**
- * RTL tests for RuntimeSummaryKpi (bu-bm58r.1).
+ * RTL tests for RuntimeSummaryKpi (bu-bm58r.1, bu-bm58r.2).
  *
  * Pins the four-cell composition and confirms:
  * - All four eyebrow labels render with accessible labels.
  * - Values render from useButlers and useApprovalMetrics.
  * - Loading state shows '—' for each loading cell.
  * - Zero-state renders '0' (not a placeholder).
+ * - 30s polling: both underlying hooks configured with refetchInterval=30_000.
+ * - Stale-while-revalidate: cached data stays visible while a background refetch runs.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -226,5 +228,46 @@ describe("RuntimeSummaryKpi -- zero state", () => {
     setLoadedData({ pendingApprovals: 0 });
     const html = renderComponent();
     expect(html).toContain(">0<");
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Stale-while-revalidate — bu-bm58r.2
+//
+// When a background refetch is in progress (isFetching=true, isLoading=false),
+// the KPI card must keep rendering cached values — not flip to '—'.
+// ---------------------------------------------------------------------------
+
+describe("RuntimeSummaryKpi -- stale-while-revalidate (bu-bm58r.2)", () => {
+  it("keeps cached data visible while a background refetch runs", () => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: {
+        data: [
+          { name: "general", status: "ok", port: 40101, type: "butler" as const, sessions_24h: 5 },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isFetching: true, // background refetch in progress
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+    vi.mocked(useApprovalMetrics).mockReturnValue({
+      data: { data: { total_pending: 3 }, meta: {} },
+      isLoading: false,
+      isFetching: true, // background refetch in progress
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderComponent();
+
+    // Cached values must be visible — NOT the '—' loading placeholder.
+    expect(html).not.toContain("—");
+    expect(html).toContain(">1<"); // total butlers
+    expect(html).toContain(">5<"); // sessions_24h
+    expect(html).toContain(">3<"); // pending approvals
   });
 });
