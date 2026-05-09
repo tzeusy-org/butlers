@@ -51,6 +51,11 @@ const ButlerMemoryTab = lazy(
   () => import("@/components/butler-detail/ButlerMemoryTab.tsx"),
 );
 
+// Travel butler tabs (lazy)
+const ButlerTravelTripsTab = lazy(
+  () => import("@/components/butler-detail/ButlerTravelTripsTab.tsx"),
+);
+
 // Education butler tabs (lazy)
 const ButlerEducationReviewsTab = lazy(
   () => import("@/components/butler-detail/ButlerEducationReviewsTab.tsx"),
@@ -803,13 +808,9 @@ export default function ButlerDetailPage() {
 
           {showTripsTab && (
             <TabsContent value="trips">
-              <Card>
-                <CardContent className="py-12">
-                  <p className="text-muted-foreground text-center text-sm">
-                    Trips coming soon.
-                  </p>
-                </CardContent>
-              </Card>
+              <Suspense fallback={<TabFallback label="trips" />}>
+                <ButlerTravelTripsTab />
+              </Suspense>
             </TabsContent>
           )}
         </Tabs>

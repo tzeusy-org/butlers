@@ -259,6 +259,10 @@ import type {
   FinanceSubscriptionListParams,
   FinanceSpendingSummaryParams,
   FinanceUpcomingBillsParams,
+  TravelTrip,
+  TravelTripSummary,
+  TravelUpcomingModel,
+  TravelTripsParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3856,4 +3860,34 @@ export function getFinanceBills(
   return apiFetch<PaginatedResponse<FinanceBill>>(
     qs ? `/finance/bills?${qs}` : "/finance/bills",
   );
+}
+
+// ---------------------------------------------------------------------------
+// Travel butler endpoints (bu-0eac9)
+// GET /api/travel/trips | /trips/{id} | /upcoming
+// ---------------------------------------------------------------------------
+
+/** List trips with optional status and date range filters, paginated. */
+export function getTravelTrips(
+  params?: TravelTripsParams,
+): Promise<PaginatedResponse<TravelTrip>> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.from_date) sp.set("from_date", params.from_date);
+  if (params?.to_date) sp.set("to_date", params.to_date);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<TravelTrip>>(qs ? `/travel/trips?${qs}` : "/travel/trips");
+}
+
+/** Fetch full trip summary (legs, accommodations, reservations, docs, timeline, alerts). */
+export function getTravelTripSummary(tripId: string): Promise<TravelTripSummary> {
+  return apiFetch<TravelTripSummary>(`/travel/trips/${encodeURIComponent(tripId)}`);
+}
+
+/** Fetch upcoming travel with urgency-ranked pre-trip action items. */
+export function getTravelUpcoming(withinDays?: number): Promise<TravelUpcomingModel> {
+  const qs = withinDays != null ? `?within_days=${withinDays}` : "";
+  return apiFetch<TravelUpcomingModel>(`/travel/upcoming${qs}`);
 }

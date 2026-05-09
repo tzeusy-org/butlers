@@ -3851,3 +3851,140 @@ export interface FinanceUpcomingBillsParams {
   days_ahead?: number;
   include_overdue?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Travel butler types (bu-0eac9)
+// ---------------------------------------------------------------------------
+
+/** A travel trip container. */
+export interface TravelTrip {
+  id: string;
+  name: string;
+  destination: string;
+  start_date: string;
+  end_date: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A transport leg (flight, train, bus, ferry) within a trip. */
+export interface TravelLeg {
+  id: string;
+  trip_id: string;
+  type: string;
+  carrier: string | null;
+  departure_airport_station: string | null;
+  departure_city: string | null;
+  departure_at: string;
+  arrival_airport_station: string | null;
+  arrival_city: string | null;
+  arrival_at: string;
+  confirmation_number: string | null;
+  pnr: string | null;
+  seat: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** An accommodation (hotel, airbnb, hostel) within a trip. */
+export interface TravelAccommodation {
+  id: string;
+  trip_id: string;
+  type: string;
+  name: string | null;
+  address: string | null;
+  check_in: string | null;
+  check_out: string | null;
+  confirmation_number: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A reservation (car rental, restaurant, activity, tour) within a trip. */
+export interface TravelReservation {
+  id: string;
+  trip_id: string;
+  type: string;
+  provider: string | null;
+  datetime: string | null;
+  confirmation_number: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A travel document (boarding pass, visa, insurance, receipt) attached to a trip. */
+export interface TravelDocument {
+  id: string;
+  trip_id: string;
+  type: string;
+  blob_ref: string | null;
+  expiry_date: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+/** A single entry in a trip's chronological timeline. */
+export interface TravelTimelineEntry {
+  entity_type: string;
+  entity_id: string;
+  sort_key: string | null;
+  summary: string;
+}
+
+/** An alert or pre-trip action item for a trip. */
+export interface TravelAlert {
+  type: string;
+  message: string;
+  severity: string;
+}
+
+/** Full trip summary with all linked entities and timeline. */
+export interface TravelTripSummary {
+  trip: TravelTrip;
+  legs: TravelLeg[];
+  accommodations: TravelAccommodation[];
+  reservations: TravelReservation[];
+  documents: TravelDocument[];
+  timeline: TravelTimelineEntry[];
+  alerts: TravelAlert[];
+}
+
+/** An upcoming trip with legs, accommodations, and days until departure. */
+export interface TravelUpcomingTrip {
+  trip: TravelTrip;
+  legs: TravelLeg[];
+  accommodations: TravelAccommodation[];
+  days_until_departure: number | null;
+}
+
+/** A pre-trip action item with urgency ranking across upcoming trips. */
+export interface TravelPreTripAction {
+  trip_id: string;
+  trip_name: string;
+  type: string;
+  message: string;
+  severity: string;
+  urgency_rank: number;
+}
+
+/** Upcoming travel overview with trips and urgency-ranked pre-trip actions. */
+export interface TravelUpcomingModel {
+  upcoming_trips: TravelUpcomingTrip[];
+  actions: TravelPreTripAction[];
+  window_start: string;
+  window_end: string;
+}
+
+/** Params for listing trips. */
+export interface TravelTripsParams {
+  status?: string;
+  from_date?: string;
+  to_date?: string;
+  offset?: number;
+  limit?: number;
+}
