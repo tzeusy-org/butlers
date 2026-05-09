@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import anyio
@@ -79,6 +80,7 @@ _STALE_CONNECTION_ERRORS = (anyio.ClosedResourceError, anyio.BrokenResourceError
 async def _probe_butler(
     mgr: MCPClientManager,
     info: ButlerConnectionInfo,
+    sessions_24h: int = 0,
 ) -> ButlerSummary:
     """Probe a single butler's MCP server and return a summary.
 
@@ -125,16 +127,66 @@ async def _probe_butler(
         port=info.port,
         type=info.type,
         description=info.description,
+        sessions_24h=sessions_24h,
     )
+
+
+async def _fetch_sessions_24h(
+    db: DatabaseManager,
+    butler_names: list[str] | None = None,
+) -> dict[str, int]:
+    """Return a mapping of butler_name -> session count for the last 24 hours.
+
+    Queries each butler's ``sessions`` table via fan_out and aggregates the
+    counts.  This call is best-effort: any DB or query failure returns an empty
+    mapping so the list endpoint stays available when the DB is unhealthy.
+
+    Butlers without a ``sessions`` table are handled gracefully: the query uses
+    ``to_regclass`` to skip the count when the table does not exist, which avoids
+    warning spam on every call.
+
+    Args:
+        db: The database manager.
+        butler_names: Subset of butler names to query.  Defaults to all registered
+            butlers if omitted.
+    """
+    since = datetime.now(UTC) - timedelta(hours=24)
+    query = (
+        "SELECT CASE WHEN to_regclass('sessions') IS NOT NULL"
+        " THEN (SELECT count(*) FROM sessions WHERE started_at >= $1)"
+        " ELSE 0 END"
+    )
+    try:
+        raw = await asyncio.wait_for(
+            db.fan_out(query, args=(since,), butler_names=butler_names),
+            timeout=_STATUS_TIMEOUT_S,
+        )
+    except Exception:
+        logger.warning("Failed to fetch 24h session counts", exc_info=True)
+        return {}
+    result: dict[str, int] = {}
+    for butler_name, rows in raw.items():
+        if rows:
+            try:
+                result[butler_name] = int(rows[0][0])
+            except (IndexError, TypeError, ValueError):
+                result[butler_name] = 0
+    return result
 
 
 @router.get("", response_model=ApiResponse[list[ButlerSummary]])
 async def list_butlers(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
+    db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ButlerSummary]]:
-    """Return all discovered butlers with live status."""
-    tasks = [_probe_butler(mgr, info) for info in configs]
+    """Return all discovered butlers with live status and 24h session counts."""
+    config_names = [info.name for info in configs]
+    sessions_by_butler = await _fetch_sessions_24h(db, butler_names=config_names)
+    tasks = [
+        _probe_butler(mgr, info, sessions_24h=sessions_by_butler.get(info.name, 0))
+        for info in configs
+    ]
     summaries = await asyncio.gather(*tasks)
     return ApiResponse[list[ButlerSummary]](data=list(summaries))
 
@@ -150,6 +202,7 @@ async def get_butler_detail(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
     roster_dir: Path = Depends(_get_roster_dir),
+    db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ButlerDetail]:
     """Return detailed information for a single butler.
 
@@ -180,6 +233,7 @@ async def get_butler_detail(
 
     skills = _discover_skills(butler_dir)
     status = await _get_live_status(name, mcp_manager)
+    sessions_map = await _fetch_sessions_24h(db, butler_names=[name])
 
     detail = ButlerDetail(
         name=config.name,
@@ -192,6 +246,7 @@ async def get_butler_detail(
         modules=modules,
         schedules=schedules,
         skills=skills,
+        sessions_24h=sessions_map.get(name, 0),
     )
 
     return ApiResponse[ButlerDetail](data=detail)

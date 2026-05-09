@@ -37,11 +37,24 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _mock_audit_db():
+def _mock_fan_out_rows(sessions_by_butler: dict[str, int]) -> dict:
+    """Build a fan_out return value with per-butler session count rows."""
+    result = {}
+    for name, count in sessions_by_butler.items():
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda i, c=count: c)
+        result[name] = [row]
+    return result
+
+
+def _mock_audit_db(sessions_24h: dict[str, int] | None = None):
     pool = AsyncMock()
     pool.execute = AsyncMock()
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
+    # fan_out is used by list_butlers to aggregate per-butler 24h session counts
+    fan_out_return = _mock_fan_out_rows(sessions_24h) if sessions_24h else {}
+    db.fan_out = AsyncMock(return_value=fan_out_return)
     return db
 
 
@@ -98,6 +111,34 @@ class TestButlerList:
         ) as client:
             resp_down = await client.get("/api/butlers")
         assert resp_down.status_code == 200
+
+    async def test_list_surfaces_sessions_24h_per_butler(self, app, roster_dir):
+        """sessions_24h is aggregated from DB fan_out and returned in each butler summary."""
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
+        db = _mock_audit_db(sessions_24h={"general": 7})
+        _wire(app, configs, make_mock_mcp_manager(online=True), db=db)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers")
+        assert resp.status_code == 200
+        butler_data = resp.json()["data"][0]
+        assert butler_data["name"] == "general"
+        assert butler_data["sessions_24h"] == 7
+
+    async def test_list_sessions_24h_defaults_to_zero_when_no_db_data(self, app, roster_dir):
+        """Butlers with no sessions in the DB fan_out get sessions_24h == 0."""
+        make_butler_dir(roster_dir, "general", 41101)
+        configs = [ButlerConnectionInfo("general", 41101)]
+        db = _mock_audit_db(sessions_24h={})  # fan_out returns nothing for "general"
+        _wire(app, configs, make_mock_mcp_manager(online=True), db=db)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers")
+        assert resp.status_code == 200
+        assert resp.json()["data"][0]["sessions_24h"] == 0
 
 
 # ---------------------------------------------------------------------------

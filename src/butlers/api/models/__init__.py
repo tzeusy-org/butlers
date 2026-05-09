@@ -114,6 +114,7 @@ class ButlerSummary(BaseModel):
     description: str | None = None
     modules: list[str] = Field(default_factory=list)
     schedule_count: int = 0
+    sessions_24h: int = 0
 
 
 class SkillInfo(BaseModel):

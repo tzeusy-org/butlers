@@ -69,12 +69,12 @@ export default function DashboardPage() {
   const byButler = costSummaryResponse?.data.by_butler ?? {};
   const pendingApprovals = approvalMetricsResponse?.data.total_pending ?? 0;
 
-  // Butler index rows: join butlers with cost data
+  // Butler index rows: join butlers with cost data and 24h session counts
   const butlerIndexEntries = butlers
     .filter((b) => b.type === "butler")
     .map((b) => ({
       name: b.name,
-      sessions: 0, // sessions per butler not available from current API without per-butler queries
+      sessions: b.sessions_24h ?? 0,
       costUsd: byButler[b.name] ?? 0,
     }));
 
