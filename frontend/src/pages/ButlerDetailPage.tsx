@@ -452,7 +452,7 @@ export default function ButlerDetailPage() {
   const { data: butlerResponse, isLoading: butlerLoading, error: butlerError } = useButler(name);
   const queryClient = useQueryClient();
   const handleRetry = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["butlers", name] });
+    void queryClient.invalidateQueries({ queryKey: ["butlers", name], exact: true });
   }, [queryClient, name]);
 
   const tabParam = searchParams.get("tab");
