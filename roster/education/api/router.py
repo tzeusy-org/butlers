@@ -417,16 +417,29 @@ async def get_cross_topic_analytics(
 )
 async def get_pending_reviews(
     mind_map_id: str,
+    horizon_days: int | None = Query(
+        default=None,
+        ge=0,
+        description=(
+            "Include reviews due within this many days from now. "
+            "Omit to return only overdue nodes (next_review_at <= now)."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> list[PendingReviewNodeResponse]:
-    """Return nodes due for spaced-repetition review (next_review_at <= now)."""
+    """Return nodes due (or upcoming) for spaced-repetition review.
+
+    With no horizon_days, returns only overdue nodes (next_review_at <= now).
+    With horizon_days set, also includes upcoming reviews within that window,
+    enabling timeline grouping (Overdue / Today / This Week / Later).
+    """
     pool = _pool(db)
 
     m = await mind_map_get(pool, mind_map_id)
     if m is None:
         raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
 
-    nodes = await spaced_repetition_pending_reviews(pool, mind_map_id)
+    nodes = await spaced_repetition_pending_reviews(pool, mind_map_id, horizon_days=horizon_days)
     return [
         PendingReviewNodeResponse(
             node_id=n["node_id"],

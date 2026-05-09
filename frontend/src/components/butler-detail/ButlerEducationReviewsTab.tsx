@@ -183,10 +183,11 @@ interface TimelineGroup {
   entries: ReviewEntry[];
 }
 
-function groupByTimePeriod(entries: ReviewEntry[]): TimelineGroup[] {
-  const now = new Date();
+function groupByTimePeriod(entries: ReviewEntry[], now: Date): TimelineGroup[] {
   const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-  const weekEnd = new Date(todayEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+  // weekEnd: strictly 7 days from now (not from end-of-today), so items are not
+  // misclassified by more than a few seconds near the boundary.
+  const weekEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
   const groups: TimelineGroup[] = [
     { label: "Overdue", testId: "reviews-overdue-section", borderClass: "border-l-4 border-l-red-500", entries: [] },
@@ -214,11 +215,13 @@ function groupByTimePeriod(entries: ReviewEntry[]): TimelineGroup[] {
 function ReviewTimelineSection({
   entries,
   isLoading,
+  now,
 }: {
   entries: ReviewEntry[];
   isLoading: boolean;
+  now: Date;
 }) {
-  const groups = groupByTimePeriod(entries);
+  const groups = groupByTimePeriod(entries, now);
   const hasAny = groups.some((g) => g.entries.length > 0);
 
   if (isLoading) {
@@ -269,11 +272,19 @@ function ReviewTimelineSection({
                       <Link
                         to="/education"
                         className="text-sm font-medium hover:underline"
-                        data-testid="due-now-item"
+                        data-testid="review-item"
                       >
                         {entry.label}
                       </Link>
                       <p className="text-xs text-muted-foreground">{entry.mind_map_title}</p>
+                      <p className="text-xs text-muted-foreground" data-testid="review-item-date">
+                        {new Date(entry.next_review_at).toLocaleString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <Badge variant="outline" className="text-xs font-mono">
@@ -393,8 +404,10 @@ function FrontierSection({
 export default function ButlerEducationReviewsTab() {
   const { pendingEntries, mastery, frontierEntries, isLoading } = useReviewsTabData();
 
+  // Capture now once — shared by overdueCount and timeline grouping to keep them consistent.
+  const now = new Date();
   const overdueCount = pendingEntries.filter(
-    (e) => new Date(e.next_review_at) < new Date(),
+    (e) => new Date(e.next_review_at) < now,
   ).length;
 
   return (
@@ -404,7 +417,7 @@ export default function ButlerEducationReviewsTab() {
         overdueCount={overdueCount}
         isLoading={isLoading}
       />
-      <ReviewTimelineSection entries={pendingEntries} isLoading={isLoading} />
+      <ReviewTimelineSection entries={pendingEntries} isLoading={isLoading} now={now} />
       <FrontierSection entries={frontierEntries} isLoading={isLoading} />
     </div>
   );

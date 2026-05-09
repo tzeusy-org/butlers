@@ -2230,13 +2230,21 @@ export function getEducationMindMapAnalytics(
   );
 }
 
-/** Get nodes pending spaced-repetition review. */
+/** Get nodes pending (and optionally upcoming) spaced-repetition review.
+ *
+ * Pass horizonDays to include reviews due within that many days from now,
+ * enabling the timeline grouping UI (Overdue / Today / This Week / Later).
+ * Omit to receive only overdue nodes (next_review_at <= now).
+ */
 export function getEducationPendingReviews(
   mindMapId: string,
+  horizonDays?: number,
 ): Promise<PendingReviewNode[]> {
-  return apiFetch<PendingReviewNode[]>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}/pending-reviews`,
-  );
+  const url =
+    horizonDays !== undefined
+      ? `/education/mind-maps/${encodeURIComponent(mindMapId)}/pending-reviews?horizon_days=${horizonDays}`
+      : `/education/mind-maps/${encodeURIComponent(mindMapId)}/pending-reviews`;
+  return apiFetch<PendingReviewNode[]>(url);
 }
 
 /** Get aggregate mastery summary for a mind map. */

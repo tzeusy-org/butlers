@@ -59,11 +59,16 @@ export function useMindMapAnalytics(mindMapId: string | null, trendDays?: number
   });
 }
 
-/** Get nodes pending spaced-repetition review. */
+/** Get nodes pending (and upcoming) spaced-repetition review.
+ *
+ * Requests a 14-day horizon so the dashboard timeline can group entries into
+ * Overdue / Today / This Week / Later buckets. The backend endpoint filters
+ * by next_review_at <= now() + 14 days.
+ */
 export function usePendingReviews(mindMapId: string | null) {
   return useQuery({
     queryKey: ["education", "pending-reviews", mindMapId],
-    queryFn: () => getEducationPendingReviews(mindMapId!),
+    queryFn: () => getEducationPendingReviews(mindMapId!, 14),
     enabled: !!mindMapId,
     refetchInterval: 15_000,
   });

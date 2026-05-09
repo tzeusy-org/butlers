@@ -66,6 +66,19 @@ const PENDING_REVIEWS = [
     mastery_status: "learning",
   },
   {
+    node_id: "node-mno",
+    label: "Type hints",
+    ease_factor: 2.3,
+    repetitions: 2,
+    // Due later today: end-of-today minus 30 minutes, ensuring it falls in Today bucket.
+    next_review_at: (() => {
+      const d = new Date();
+      d.setHours(23, 29, 59, 999);
+      return d.toISOString();
+    })(),
+    mastery_status: "learning",
+  },
+  {
     node_id: "node-ghi",
     label: "Lambda functions",
     ease_factor: 2.0,
@@ -294,6 +307,16 @@ describe("ButlerEducationReviewsTab — review timeline grouping", () => {
     expect(screen.getByText("Decorators")).toBeDefined();
   });
 
+  it("renders the Today section for items due later today with amber border", () => {
+    renderTab();
+    const todaySection = screen.getByTestId("reviews-today-section");
+    expect(todaySection).toBeDefined();
+    expect(screen.getByText("Type hints")).toBeDefined();
+    // Amber left border indicates Today bucket
+    const content = todaySection.querySelector("[class*='border-l-amber']");
+    expect(content).not.toBeNull();
+  });
+
   it("renders the This Week section for items due within 7 days", () => {
     renderTab();
     expect(screen.getByTestId("reviews-this-week-section")).toBeDefined();
@@ -323,7 +346,7 @@ describe("ButlerEducationReviewsTab — review timeline grouping", () => {
 
   it("review items link to /education", () => {
     renderTab();
-    const items = screen.getAllByTestId("due-now-item") as HTMLAnchorElement[];
+    const items = screen.getAllByTestId("review-item") as HTMLAnchorElement[];
     for (const item of items) {
       expect(item.getAttribute("href")).toBe("/education");
     }
