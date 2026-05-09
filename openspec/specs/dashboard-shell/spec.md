@@ -77,7 +77,7 @@ The shell SHALL implement a responsive sidebar + main content layout that fills 
 - **WHEN** the viewport width is at or above the `md` Tailwind breakpoint (768px)
 - **THEN** the desktop sidebar renders as a persistent `<aside>` element with a right border
 - **AND** the sidebar width is fixed at 56px (`w-14`); it is not collapsible
-- **AND** the main content area has `ml-14` (56px left margin) to avoid underlapping the rail
+- **AND** the main content area is `flex-1` (flex sibling of the aside; no margin offset needed)
 - **AND** the mobile drawer is not visible
 
 #### Scenario: Mobile layout (viewport < md breakpoint)
@@ -168,9 +168,12 @@ The sidebar SHALL be a fixed 56px-wide icon rail providing primary navigation. I
 #### Scenario: Footer status summary
 
 - **WHEN** the rail renders its footer
-- **THEN** a small dot indicator reflects the worst butler status (red for any `error`, amber for any `degraded`, dim for all ok)
+- **THEN** a small dot indicator reflects the worst butler status (red for any `error`, amber for any `degraded`, green for all ok)
 - **AND** the full summary text (e.g., "1 degraded, 2 awaiting approvals") is available via the `title` attribute on the footer element
 - **AND** no visible text label renders in the footer (dot only)
+- **WHEN** the butlers query is loading or has failed
+- **THEN** the dot renders neutral/dim (`bg-muted-foreground/40`) to avoid a misleading green state
+- **AND** the `title` attribute reads "Loading butlers" (loading) or "Butlers query failed" (error)
 
 ### Requirement: Full Route Map
 

@@ -47,8 +47,7 @@ graph TB
   not collapsible. No width transition.
 - Header: `h-14`, `border-b border-border`, `px-6`, contains hamburger
   (mobile) and `<PageHeader />`
-- Main: `flex-1 overflow-y-auto p-6`, `ml-14` on desktop (56px offset
-  for the fixed rail)
+- Main: `flex-1 overflow-y-auto p-6` (no left margin; rail and main are flex siblings, no underlap)
 
 This is the only persistent chrome. Pages do not own anything outside
 their `Outlet` rectangle.
