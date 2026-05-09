@@ -18,21 +18,23 @@
 
 import type { Story } from "@ladle/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
+import { useState } from "react";
 import { MemoryRouter } from "react-router";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-function makeQueryClient() {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
-  });
-}
-
-function StoryWrapper({ children }: { children: React.ReactNode }) {
+function StoryWrapper({ children }: { children: ReactNode }) {
+  const [client] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+      }),
+  );
   return (
-    <QueryClientProvider client={makeQueryClient()}>
+    <QueryClientProvider client={client}>
       <MemoryRouter>
         <div style={{ fontFamily: "sans-serif", padding: "1rem" }}>
           {children}

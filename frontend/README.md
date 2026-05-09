@@ -114,7 +114,7 @@ Stories are located in `src/pages/` and `src/components/`:
 ### Accessibility (axe-core)
 
 A11y baseline tests run as part of the normal test suite using
-[jest-axe](https://github.com/nickvdyck/vitest-axe) + `@testing-library/react`:
+[jest-axe](https://github.com/nickvdyck/jest-axe) + `@testing-library/react`:
 
 ```bash
 # Run all tests (includes a11y)
