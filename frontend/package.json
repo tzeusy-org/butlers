@@ -8,7 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "story": "ladle serve",
+    "story:build": "ladle build",
+    "story:test": "vitest run --reporter=verbose src/**/*.a11y.test.tsx"
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",
@@ -34,18 +37,25 @@
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
+    "@axe-core/react": "^4.11.3",
     "@eslint/js": "^9.39.1",
+    "@ladle/react": "^5.1.1",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-query-devtools": "^5.91.3",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/dagre": "^0.7.54",
+    "@types/jest-axe": "^3.5.9",
     "@types/node": "^24.10.1",
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^5.1.1",
+    "axe-core": "^4.11.4",
     "eslint": "^9.39.3",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "jest-axe": "^10.0.0",
     "jsdom": "^28.0.0",
     "shadcn": "^3.8.4",
     "tailwindcss": "^4.1.18",
