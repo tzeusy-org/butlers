@@ -216,7 +216,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
             {butler && <ButlerStatusBadge status={butler.status} />}
           </CardTitle>
           {butler?.description && (
-            <CardDescription>
+            <CardDescription className="italic font-[family-name:var(--font-serif,serif)]">
               {butler.description}
             </CardDescription>
           )}
