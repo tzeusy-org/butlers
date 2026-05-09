@@ -9,6 +9,18 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-general", () => ({
+  useRegistry: vi.fn(() => ({ data: undefined })),
+}));
+
+import { useRegistry } from "@/hooks/use-general";
+
+function setRegistryState(entries: { name: string; eligibility_state: string }[]) {
+  vi.mocked(useRegistry).mockReturnValue({
+    data: { data: entries, meta: {} },
+  } as ReturnType<typeof useRegistry>);
+}
+
 const setQueryState = setUseButlersState;
 
 function renderPage(): string {
@@ -22,6 +34,7 @@ function renderPage(): string {
 describe("ButlersPage", () => {
   beforeEach(() => {
     resetUseButlersMock();
+    vi.mocked(useRegistry).mockReturnValue({ data: undefined } as ReturnType<typeof useRegistry>);
   });
 
   it("renders loading skeleton via Page primitive", () => {
@@ -88,5 +101,73 @@ describe("ButlersPage", () => {
     expect(html).toContain("Showing last known butler status.");
     expect(html).toContain("general");
     expect(html).toContain("timed out");
+  });
+
+  // -------------------------------------------------------------------------
+  // Dispatch layout — 5 elements (bu-insd4.1)
+  // -------------------------------------------------------------------------
+
+  describe("Dispatch layout card elements", () => {
+    const BUTLER = {
+      name: "health",
+      status: "ok",
+      port: 40201,
+      type: "butler" as const,
+      description: "Tracks your wellness goals",
+      sessions_24h: 7,
+    };
+
+    it("renders ButlerMark glyph (initial letter via title attribute)", () => {
+      setQueryState({ data: { data: [BUTLER], meta: {} } });
+      const html = renderPage();
+      // ButlerMark renders title={name} — specific to the squircle element, not the link wrapper
+      expect(html).toContain('title="health"');
+    });
+
+    it("renders name and status pill", () => {
+      setQueryState({ data: { data: [BUTLER], meta: {} } });
+      const html = renderPage();
+      expect(html).toContain("health");
+      // Status pill shows "Up" for ok/online
+      expect(html).toContain("Up");
+    });
+
+    it("renders description text when present", () => {
+      setQueryState({ data: { data: [BUTLER], meta: {} } });
+      const html = renderPage();
+      expect(html).toContain("Tracks your wellness goals");
+    });
+
+    it("suppresses description paragraph when absent", () => {
+      const noDesc = { ...BUTLER, description: undefined };
+      setQueryState({ data: { data: [noDesc], meta: {} } });
+      const html = renderPage();
+      // Description text must not appear when description is absent
+      expect(html).not.toContain("Tracks your wellness goals");
+    });
+
+    it("renders sessions_24h count and open link", () => {
+      setQueryState({ data: { data: [BUTLER], meta: {} } });
+      const html = renderPage();
+      expect(html).toContain("7");
+      expect(html).toContain("sess");
+      expect(html).toContain("open →");
+    });
+
+    it("renders eligibility chip from useRegistry when present", () => {
+      setQueryState({ data: { data: [BUTLER], meta: {} } });
+      setRegistryState([{ name: "health", eligibility_state: "active" }]);
+      const html = renderPage();
+      expect(html).toContain("Active");
+    });
+
+    it("omits eligibility chip when registry has no entry for the butler", () => {
+      setQueryState({ data: { data: [BUTLER], meta: {} } });
+      // registry returns entry for a different butler
+      setRegistryState([{ name: "other", eligibility_state: "quarantined" }]);
+      const html = renderPage();
+      // "Quarantined" chip should not appear
+      expect(html).not.toContain("Quarantined");
+    });
   });
 });

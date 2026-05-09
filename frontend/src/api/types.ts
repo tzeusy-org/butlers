@@ -60,6 +60,8 @@ export interface ButlerSummary {
   port: number;
   /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
   type: "butler" | "staffer";
+  /** Short description from the butler's config. Absent when not configured. */
+  description?: string | null;
   /** Number of sessions started in the last 24 hours. Always present; 0 when none. */
   sessions_24h: number;
 }
