@@ -27,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { butlerHueVar } from "@/components/ui/ButlerMark";
 import {
   Table,
   TableBody,
@@ -105,28 +106,6 @@ function isExpandable(status: IngestionEventStatus): boolean {
 // Session flamegraph
 // ---------------------------------------------------------------------------
 
-/** Distinct hues for butler names — assigned in encounter order. */
-const BUTLER_COLORS = [
-  "bg-blue-500",
-  "bg-amber-500",
-  "bg-emerald-500",
-  "bg-violet-500",
-  "bg-rose-500",
-  "bg-cyan-500",
-  "bg-orange-500",
-  "bg-teal-500",
-];
-
-function butlerColorMap(sessions: IngestionEventSession[]): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const s of sessions) {
-    if (!map.has(s.butler_name)) {
-      map.set(s.butler_name, BUTLER_COLORS[map.size % BUTLER_COLORS.length]);
-    }
-  }
-  return map;
-}
-
 function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) {
   const withTimes = sessions.filter((s) => s.started_at);
   if (withTimes.length === 0) return null;
@@ -140,10 +119,8 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
   const maxTime = Math.max(...ends);
   const span = maxTime - minTime || 1;
 
-  const colors = butlerColorMap(sessions);
-
-  // Group sessions into swim lanes by butler
-  const butlers = [...colors.keys()];
+  // Collect distinct butler names in encounter order (for lane and legend ordering).
+  const butlers = [...new Set(sessions.map((s) => s.butler_name))];
 
   return (
     <div className="space-y-1.5">
@@ -151,7 +128,10 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
         {butlers.map((b) => (
           <span key={b} className="flex items-center gap-1">
-            <span className={`inline-block size-2.5 rounded-sm ${colors.get(b)}`} />
+            <span
+              className="inline-block size-2.5 rounded-sm"
+              style={{ backgroundColor: butlerHueVar(b) }}
+            />
             {b}
           </span>
         ))}
@@ -161,6 +141,7 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
       <div className="relative rounded-md border bg-muted/20 overflow-hidden">
         {butlers.map((butler) => {
           const laneSessions = withTimes.filter((s) => s.butler_name === butler);
+          const laneColor = butlerHueVar(butler);
           return (
             <div
               key={butler}
@@ -174,15 +155,18 @@ function SessionFlamegraph({ sessions }: { sessions: IngestionEventSession[] }) 
                 const left = ((sStart - minTime) / span) * 100;
                 const width = Math.max(((sEnd - sStart) / span) * 100, 1);
                 const dur = formatDuration(s.started_at, s.completed_at ?? new Date().toISOString());
-                const color = colors.get(s.butler_name) ?? BUTLER_COLORS[0];
 
                 return (
                   <Link
                     key={s.id}
                     to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
                     title={`${s.butler_name}: ${dur}${s.model ? ` (${s.model})` : ""}`}
-                    className={`absolute top-0.5 bottom-0.5 rounded-sm ${color} opacity-80 hover:opacity-100 transition-opacity cursor-pointer`}
-                    style={{ left: `${left}%`, width: `${width}%` }}
+                    className="absolute top-0.5 bottom-0.5 rounded-sm opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
+                    style={{
+                      left: `${left}%`,
+                      width: `${width}%`,
+                      backgroundColor: laneColor,
+                    }}
                   >
                     <span className="px-1 text-[10px] font-medium text-white truncate block leading-6">
                       {dur}
