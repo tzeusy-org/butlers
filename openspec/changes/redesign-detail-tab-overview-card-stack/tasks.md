@@ -61,5 +61,5 @@
 - [x] 6.2 Verify `pid` is absent by grep.
 - [x] 6.3 Verify no Tier 2 Hero block appears above the tabs, per
       `redesign-butler-detail-no-hero`.
-- [ ] 6.4 Run `/opsx:sync` or the project-approved OpenSpec sync flow after
-      owner review. (Pending — main spec not yet updated with seven-unit stack.)
+- [x] 6.4 Run `/opsx:sync` or the project-approved OpenSpec sync flow after
+      owner review. (Done — main spec updated with seven-unit stack.)
