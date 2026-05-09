@@ -51,6 +51,11 @@ const ButlerMemoryTab = lazy(
   () => import("@/components/butler-detail/ButlerMemoryTab.tsx"),
 );
 
+// Education butler tabs (lazy)
+const ButlerEducationReviewsTab = lazy(
+  () => import("@/components/butler-detail/ButlerEducationReviewsTab.tsx"),
+);
+
 const ButlerRoutingLogTab = lazy(
   () => import("@/components/butler-detail/ButlerRoutingLogTab.tsx"),
 );
@@ -103,10 +108,11 @@ export const BASE_TABS_RESIDENT = [
  */
 export const OPERATOR_EXTENSION_TABS = ["models"] as const;
 
-// Butler-specific conditional tabs (health, switchboard routing).
+// Butler-specific conditional tabs (health, switchboard routing, education reviews).
 // Appended after the base tabs; visible regardless of mode.
 const HEALTH_TABS = ["health"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
+const EDUCATION_TABS = ["reviews"] as const;
 
 type DetailMode = "operator" | "resident";
 
@@ -118,7 +124,8 @@ type TabValue =
   | (typeof BASE_TABS_RESIDENT)[number]
   | (typeof OPERATOR_EXTENSION_TABS)[number]
   | (typeof HEALTH_TABS)[number]
-  | (typeof SWITCHBOARD_TABS)[number];
+  | (typeof SWITCHBOARD_TABS)[number]
+  | (typeof EDUCATION_TABS)[number];
 
 /**
  * Returns the full set of valid tab values for the given butler and mode.
@@ -137,6 +144,9 @@ export function getAllTabs(butlerName: string, mode: DetailMode): readonly strin
   }
   if (butlerName === "switchboard") {
     baseTabs.push(...SWITCHBOARD_TABS);
+  }
+  if (butlerName === "education") {
+    baseTabs.push(...EDUCATION_TABS);
   }
   return baseTabs;
 }
@@ -511,6 +521,7 @@ export default function ButlerDetailPage() {
   }
 
   const showHealthTab = name === "health";
+  const showReviewsTab = name === "education";
 
   // Extract description from butler response (ButlerSummary.description is optional)
   const description = butlerResponse?.data?.description ?? undefined;
@@ -572,6 +583,7 @@ export default function ButlerDetailPage() {
                 <TabsTrigger value="registry">Registry</TabsTrigger>
               </>
             )}
+            {showReviewsTab && <TabsTrigger value="reviews">Reviews</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="overview">
@@ -692,6 +704,14 @@ export default function ButlerDetailPage() {
                 </Suspense>
               </TabsContent>
             </>
+          )}
+
+          {showReviewsTab && (
+            <TabsContent value="reviews">
+              <Suspense fallback={<TabFallback label="reviews" />}>
+                <ButlerEducationReviewsTab />
+              </Suspense>
+            </TabsContent>
           )}
         </Tabs>
       }
