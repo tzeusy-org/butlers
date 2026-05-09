@@ -76,6 +76,11 @@ const ButlerChroniclerTimelinesTab = lazy(
   () => import("@/components/butler-detail/ButlerChroniclerTimelinesTab.tsx"),
 );
 
+// Relationship butler tabs (lazy)
+const ButlerRelationshipContactsTab = lazy(
+  () => import("@/components/butler-detail/ButlerRelationshipContactsTab.tsx"),
+);
+
 // ---------------------------------------------------------------------------
 // Tab configuration
 // ---------------------------------------------------------------------------
@@ -791,13 +796,9 @@ export default function ButlerDetailPage() {
 
           {showContactsTab && (
             <TabsContent value="contacts">
-              <Card>
-                <CardContent className="py-12">
-                  <p className="text-muted-foreground text-center text-sm">
-                    Contacts coming soon.
-                  </p>
-                </CardContent>
-              </Card>
+              <Suspense fallback={<Skeleton className="h-64 w-full rounded-lg" />}>
+                <ButlerRelationshipContactsTab />
+              </Suspense>
             </TabsContent>
           )}
 
