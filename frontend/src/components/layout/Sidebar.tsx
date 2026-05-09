@@ -79,7 +79,7 @@ function railItemClassName(isActive: boolean): string {
   return [
     'relative flex items-center justify-center w-full h-10 transition-colors',
     isActive
-      ? 'border-l-2 border-sidebar-primary bg-sidebar-primary/[0.06] dark:bg-sidebar-primary/[0.06]'
+      ? 'border-l-2 border-sidebar-primary bg-sidebar-primary/[0.05] dark:bg-sidebar-primary/[0.06]'
       : 'border-l-2 border-transparent hover:bg-sidebar-accent/50',
   ].join(' ')
 }
@@ -94,7 +94,7 @@ function StatusDot({ status }: { status: string | undefined }) {
   const color = status === 'error' ? 'bg-destructive' : 'bg-amber-500'
   return (
     <span
-      className={`absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full ring-2 ring-background ${color}`}
+      className={`absolute right-1 top-1 h-1.5 w-1.5 rounded-full ring-2 ring-background ${color}`}
       aria-hidden="true"
     />
   )
@@ -154,7 +154,7 @@ function ItemGlyph({
       {useButlerMark ? (
         <ButlerMark name={item.butler!} tone="neutral" />
       ) : (
-        <span className="flex size-6 items-center justify-center rounded text-xs font-semibold text-muted-foreground">
+        <span className="flex size-4 items-center justify-center rounded text-xs font-semibold text-muted-foreground">
           {item.label[0]}
         </span>
       )}
@@ -248,16 +248,11 @@ function NavGroup({
             onClick={() => setUserExpanded((prev) => !prev)}
             aria-expanded={expanded}
             aria-label={item.label}
-            className={[
-              'relative flex w-full items-center justify-center h-10 border-l-2 transition-colors',
-              hasActiveChild
-                ? 'border-sidebar-primary bg-sidebar-primary/[0.06] dark:bg-sidebar-primary/[0.06]'
-                : 'border-transparent hover:bg-sidebar-accent/50',
-            ].join(' ')}
+            className={railItemClassName(hasActiveChild)}
           >
             {/* Glyph — group headers always use first-letter glyph, never ButlerMark */}
             <span className="relative flex size-6 shrink-0 items-center justify-center">
-              <span className="flex size-6 items-center justify-center rounded text-xs font-semibold text-muted-foreground">
+              <span className="flex size-4 items-center justify-center rounded text-xs font-semibold text-muted-foreground">
                 {item.label[0]}
               </span>
               <StatusDot status={butlerStatus} />
@@ -290,7 +285,7 @@ function NavGroup({
         inert={!expanded ? '' : undefined}
         aria-hidden={!expanded}
         className={`overflow-hidden transition-all duration-base ease-out-quart ${
-          expanded ? 'max-h-48 opacity-100' : 'max-h-0 opacity-0'
+          expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
         }`}
       >
         {item.children.map((child) => (
@@ -622,7 +617,7 @@ function MobileNavGroup({
         inert={!expanded ? '' : undefined}
         aria-hidden={!expanded}
         className={`overflow-hidden transition-all duration-base ease-out-quart ${
-          expanded ? 'max-h-48 opacity-100' : 'max-h-0 opacity-0'
+          expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
         }`}
       >
         {item.children.map((child) => (

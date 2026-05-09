@@ -239,8 +239,12 @@ describe("Sidebar", () => {
     // The Overview link should be in the DOM when on route "/"
     const overviewLink = container.querySelector('a[href="/"]');
     expect(overviewLink).toBeInstanceOf(HTMLAnchorElement);
-    // In MemoryRouter the active NavLink gets "active" appended to className by react-router
-    expect(overviewLink?.className).toContain("active");
+    // NavLink sets aria-current="page" on the active link — this is the stable
+    // identity token for active state (className function resolution is env-dependent).
+    expect(overviewLink?.getAttribute("aria-current")).toBe("page");
+    // An inactive link (sessions) must not have aria-current
+    const sessionsLink = container.querySelector('a[href="/sessions"]');
+    expect(sessionsLink?.getAttribute("aria-current")).toBeNull();
   });
 
   // -------------------------------------------------------------------------
