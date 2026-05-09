@@ -21,6 +21,18 @@ vi.mock("@/hooks/use-qa-badge", () => ({
   useBadgeCounts: vi.fn(() => ({})),
 }));
 
+// Radix Tooltip renders content in a portal — skip portal assertions in JSDOM
+vi.mock("radix-ui", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("radix-ui")>();
+  return {
+    ...actual,
+    Tooltip: {
+      ...actual.Tooltip,
+      Portal: ({ children }: { children: React.ReactNode }) => children,
+    },
+  };
+});
+
 type UseButlersResult = ReturnType<typeof useButlers>;
 
 function setButlersState(state: Partial<UseButlersResult>) {
@@ -69,68 +81,58 @@ describe("Sidebar", () => {
     });
   }
 
+  function renderMobile(initialPath = "/") {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Sidebar mobileExpanded />
+        </MemoryRouter>,
+      );
+    });
+  }
+
   // -------------------------------------------------------------------------
-  // Section headers (navigation category grouping)
+  // Rail geometry: brand mark
   // -------------------------------------------------------------------------
 
-  describe("section headers", () => {
+  describe("brand mark", () => {
     beforeEach(() => {
-      setButlersState({
-        data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
-          meta: {},
-        },
-      });
-    });
-
-    it("renders Main, Dedicated Butlers, and Telemetry section headers", () => {
-      render();
-
-      expect(container.textContent).toContain("Main");
-      expect(container.textContent).toContain("Dedicated Butlers");
-      expect(container.textContent).toContain("Telemetry");
-    });
-
-    it("hides Dedicated Butlers section when no butler items are visible", () => {
       setButlersState({
         data: { data: [], meta: {} },
       });
-      render();
-
-      // Health and Calendar don't have butler filters, so section still shows
-      expect(container.textContent).toContain("Dedicated Butlers");
     });
 
-    it("places Overview in Main and Timeline in Telemetry", () => {
+    it("renders brand mark with testid in icon rail", () => {
       render();
 
-      const headings = container.querySelectorAll("h3");
-      const mainHeading = Array.from(headings).find((h) => h.textContent === "Main");
-      const telemetryHeading = Array.from(headings).find((h) => h.textContent === "Telemetry");
-      expect(mainHeading).toBeTruthy();
-      expect(telemetryHeading).toBeTruthy();
+      const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
+      expect(brandDiv).toBeTruthy();
+      // Rail shows only "B" letter mark
+      expect(brandDiv?.textContent).toContain("B");
+    });
 
-      // Section container is the button's parent div
-      const mainSection = mainHeading!.closest("button")!.parentElement;
-      expect(mainSection?.querySelector('a[href="/"]')).toBeTruthy();
-      expect(mainSection?.querySelector('a[href="/timeline"]')).toBeNull();
+    it("renders Butlers label in mobile expanded mode", () => {
+      renderMobile();
 
-      // Telemetry starts collapsed — expand it first
-      const telemetryButton = telemetryHeading!.closest("button")!;
-      act(() => {
-        telemetryButton.click();
-      });
-
-      const telemetrySection = telemetryButton.parentElement;
-      expect(telemetrySection?.querySelector('a[href="/timeline"]')).toBeTruthy();
-      expect(telemetrySection?.querySelector('a[href="/traces"]')).toBeNull();
-      expect(telemetrySection?.querySelector('a[href="/"]')).toBeNull();
+      const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
+      expect(brandDiv).toBeTruthy();
+      expect(brandDiv?.textContent).toContain("Butlers");
     });
   });
 
   // -------------------------------------------------------------------------
-  // Existing flat nav items still work (no regression)
+  // Navigation links present in the rail
   // -------------------------------------------------------------------------
+
+  it("includes navigation link to Overview in icon rail", () => {
+    setButlersState({
+      data: { data: [], meta: {} },
+    });
+    render();
+
+    const overviewLink = container.querySelector('a[href="/"]');
+    expect(overviewLink).toBeInstanceOf(HTMLAnchorElement);
+  });
 
   it("includes navigation link to calendar workspace", () => {
     setButlersState({
@@ -140,7 +142,6 @@ describe("Sidebar", () => {
 
     const calendarLink = container.querySelector('a[href="/calendar"]');
     expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
-    expect(calendarLink?.textContent).toContain("Calendar");
   });
 
   it("includes navigation link to Ingestion", () => {
@@ -151,14 +152,13 @@ describe("Sidebar", () => {
 
     const ingestionLink = container.querySelector('a[href="/ingestion"]');
     expect(ingestionLink).toBeInstanceOf(HTMLAnchorElement);
-    expect(ingestionLink?.textContent).toContain("Ingestion");
   });
 
   // -------------------------------------------------------------------------
-  // Collapsible nav group support (butlers-x3ki.1)
+  // Mobile expanded mode renders labels alongside links
   // -------------------------------------------------------------------------
 
-  describe("collapsible nav groups", () => {
+  describe("mobile expanded mode", () => {
     beforeEach(() => {
       setButlersState({
         data: {
@@ -168,15 +168,216 @@ describe("Sidebar", () => {
       });
     });
 
-    it("renders Relationships group header instead of separate Contacts/Groups links", () => {
+    it("renders Main, Dedicated Butlers, and Telemetry section headers in mobile mode", () => {
+      renderMobile();
+
+      expect(container.textContent).toContain("Main");
+      expect(container.textContent).toContain("Dedicated Butlers");
+      expect(container.textContent).toContain("Telemetry");
+    });
+
+    it("renders nav labels in mobile expanded mode", () => {
+      renderMobile();
+
+      expect(container.textContent).toContain("Overview");
+      expect(container.textContent).toContain("Calendar");
+      expect(container.textContent).toContain("Relationships");
+    });
+
+    it("shows today's spend in mobile expanded footer", () => {
+      renderMobile();
+
+      expect(container.textContent).toContain("$26.27");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Tooltip: rail items have aria-label matching label
+  // -------------------------------------------------------------------------
+
+  describe("tooltip / aria-label on rail items", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
+          meta: {},
+        },
+      });
+    });
+
+    it("chronicle link has disambiguation tooltip as aria-label", () => {
       render();
 
-      // Group header text should be present
-      expect(container.textContent).toContain("Relationships");
+      const chroniclesLink = container.querySelector('a[href="/chronicles"]');
+      expect(chroniclesLink).toBeInstanceOf(HTMLAnchorElement);
+      expect(chroniclesLink?.getAttribute("aria-label")).toBe(
+        "Retrospective lived-time reconstruction",
+      );
+    });
 
-      // The group header is a button, not a NavLink
+    it("overview link has aria-label matching label", () => {
+      render();
+
+      const overviewLink = container.querySelector('a[href="/"]');
+      expect(overviewLink?.getAttribute("aria-label")).toBe("Overview");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Active state: active item renders with a data-active attribute or class
+  // React Router NavLink calls the className function; DOM reflects resolved value.
+  // We verify the link is present (active) and check the data-slot for the trigger.
+  // -------------------------------------------------------------------------
+
+  it("active item link is present when its route matches", () => {
+    setButlersState({
+      data: { data: [], meta: {} },
+    });
+    render("/");
+
+    // The Overview link should be in the DOM when on route "/"
+    const overviewLink = container.querySelector('a[href="/"]');
+    expect(overviewLink).toBeInstanceOf(HTMLAnchorElement);
+    // In MemoryRouter the active NavLink gets "active" appended to className by react-router
+    expect(overviewLink?.className).toContain("active");
+  });
+
+  // -------------------------------------------------------------------------
+  // Status dots on butler-associated items
+  // -------------------------------------------------------------------------
+
+  describe("status dots", () => {
+    it("renders a status dot on a degraded butler's nav item", () => {
+      setButlersState({
+        data: {
+          data: [
+            { name: "relationship", status: "degraded", port: 40102, type: "butler" as const },
+          ],
+          meta: {},
+        },
+      });
+      render();
+
+      // The Relationships group header should contain a dot span
       const groupButton = Array.from(container.querySelectorAll("button")).find(
-        (btn) => btn.textContent?.includes("Relationships"),
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
+
+      // A status dot span with amber color should be inside the group button
+      const dot = groupButton!.querySelector(".bg-amber-500");
+      expect(dot).toBeTruthy();
+    });
+
+    it("renders a status dot on an error butler's nav item", () => {
+      setButlersState({
+        data: {
+          data: [
+            { name: "relationship", status: "error", port: 40102, type: "butler" as const },
+          ],
+          meta: {},
+        },
+      });
+      render();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
+      const dot = groupButton!.querySelector(".bg-destructive");
+      expect(dot).toBeTruthy();
+    });
+
+    it("does not render a status dot when butler status is ok", () => {
+      setButlersState({
+        data: {
+          data: [
+            { name: "relationship", status: "ok", port: 40102, type: "butler" as const },
+          ],
+          meta: {},
+        },
+      });
+      render();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
+      expect(groupButton!.querySelector(".bg-amber-500")).toBeNull();
+      expect(groupButton!.querySelector(".bg-destructive")).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Footer summary dot
+  // -------------------------------------------------------------------------
+
+  describe("footer status dot", () => {
+    it("shows green dot when all butlers are ok", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      render();
+
+      // The footer should contain a green dot
+      const greenDot = container.querySelector(".bg-green-500");
+      expect(greenDot).toBeTruthy();
+    });
+
+    it("shows amber dot when any butler is degraded", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "degraded", port: 40102, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      render();
+
+      // Footer dot is distinct from the status dot on nav items
+      // At least one amber dot renders somewhere (footer or item)
+      const amberDots = container.querySelectorAll(".bg-amber-500");
+      expect(amberDots.length).toBeGreaterThan(0);
+    });
+
+    it("footer title attribute contains status summary", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "degraded", port: 40102, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      render();
+
+      const footerEl = Array.from(container.querySelectorAll("[title]")).find((el) => {
+        const title = el.getAttribute("title") ?? "";
+        return title.includes("degraded") || title.includes("ok") || title.includes("error");
+      });
+      expect(footerEl).toBeTruthy();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Collapsible nav groups in icon rail (Relationships)
+  // -------------------------------------------------------------------------
+
+  describe("collapsible nav groups (icon rail)", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          meta: {},
+        },
+      });
+    });
+
+    it("renders Relationships group header as a button with aria-label", () => {
+      render();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
       );
       expect(groupButton).toBeTruthy();
     });
@@ -185,27 +386,19 @@ describe("Sidebar", () => {
       render();
 
       const groupButton = Array.from(container.querySelectorAll("button")).find(
-        (btn) => btn.textContent?.includes("Relationships"),
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
       );
       expect(groupButton).toBeTruthy();
 
-      // Find the children container — it should be aria-hidden before click
-      const childrenContainer = groupButton!.parentElement?.querySelector(
-        '[aria-hidden]',
-      ) as HTMLElement | null;
-      expect(childrenContainer).toBeTruthy();
-      expect(childrenContainer!.getAttribute("aria-hidden")).toBe("true");
-
-      // Click to expand
+      // Before expanding: child links should not be accessible (inside inert container)
+      // After expanding: child links appear and are focusable
       act(() => {
         groupButton!.click();
       });
 
-      // Children container should now be visible (aria-hidden="false")
-      expect(childrenContainer!.getAttribute("aria-hidden")).toBe("false");
-      // Child links should be present inside
-      const contactsLink = childrenContainer!.querySelector('a[href="/contacts"]');
-      const groupsLink = childrenContainer!.querySelector('a[href="/groups"]');
+      // After expanding, contacts and groups links are present
+      const contactsLink = container.querySelector('a[href="/contacts"]');
+      const groupsLink = container.querySelector('a[href="/groups"]');
       expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
       expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
     });
@@ -213,30 +406,15 @@ describe("Sidebar", () => {
     it("auto-expands group when child route is active", () => {
       render("/contacts");
 
-      // The group should be auto-expanded because /contacts is active
       const contactsLink = container.querySelector('a[href="/contacts"]');
       expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
-      expect(contactsLink?.textContent).toContain("Contacts");
-    });
-
-    it("renders chevron icon on group header", () => {
-      render();
-
-      const groupButton = Array.from(container.querySelectorAll("button")).find(
-        (btn) => btn.textContent?.includes("Relationships"),
-      );
-      expect(groupButton).toBeTruthy();
-
-      // Should contain an SVG chevron
-      const svg = groupButton!.querySelector("svg");
-      expect(svg).toBeTruthy();
     });
 
     it("sets aria-expanded on group header button", () => {
       render();
 
       const groupButton = Array.from(container.querySelectorAll("button")).find(
-        (btn) => btn.textContent?.includes("Relationships"),
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
       );
       expect(groupButton).toBeTruthy();
       expect(groupButton!.getAttribute("aria-expanded")).toBe("false");
@@ -247,10 +425,106 @@ describe("Sidebar", () => {
 
       expect(groupButton!.getAttribute("aria-expanded")).toBe("true");
     });
+
+    it("renders chevron svg on group header button", () => {
+      render();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
+      const svg = groupButton!.querySelector("svg");
+      expect(svg).toBeTruthy();
+    });
+
+    it("collapsed children container has inert attribute then removes it on expand", () => {
+      render();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
+
+      // Find inert div that is a descendant of the NavGroup root
+      // The NavGroup root is an ancestor of the button that also contains the children div.
+      // Walk up from button looking for the first ancestor that has an inert child.
+      let ancestor: HTMLElement | null = groupButton!.parentElement;
+      let childrenContainer: HTMLElement | null = null;
+      while (ancestor && ancestor !== container) {
+        const inertChild = ancestor.querySelector("[inert]") as HTMLElement | null;
+        if (inertChild) {
+          childrenContainer = inertChild;
+          break;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      expect(childrenContainer).toBeTruthy();
+      expect(childrenContainer!.hasAttribute("inert")).toBe(true);
+
+      act(() => {
+        groupButton!.click();
+      });
+      expect(childrenContainer!.hasAttribute("inert")).toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------
-  // Butler-aware nav filtering (butlers-x3ki.2)
+  // Mobile group expand
+  // -------------------------------------------------------------------------
+
+  describe("collapsible nav groups (mobile expanded)", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
+          meta: {},
+        },
+      });
+    });
+
+    it("renders Relationships group header as a button in mobile mode", () => {
+      renderMobile();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.textContent?.includes("Relationships"),
+      );
+      expect(groupButton).toBeTruthy();
+    });
+
+    it("shows children when group is expanded via click in mobile mode", () => {
+      renderMobile();
+
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.textContent?.includes("Relationships"),
+      );
+      expect(groupButton).toBeTruthy();
+
+      // Before click: contacts link is inside an inert/aria-hidden container
+      // After click: contacts link becomes accessible
+      act(() => {
+        groupButton!.click();
+      });
+
+      const contactsLink = container.querySelector('a[href="/contacts"]');
+      expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
+    });
+
+    it("auto-expands group when navigating to /groups in mobile mode", () => {
+      act(() => {
+        root.render(
+          <MemoryRouter initialEntries={["/groups"]}>
+            <Sidebar mobileExpanded />
+          </MemoryRouter>,
+        );
+      });
+
+      const groupsLink = container.querySelector('a[href="/groups"]');
+      expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Butler-aware nav filtering
   // -------------------------------------------------------------------------
 
   describe("butler-aware filtering", () => {
@@ -263,8 +537,6 @@ describe("Sidebar", () => {
       });
       render();
 
-      expect(container.textContent).not.toContain("Relationships");
-      // Contacts and Groups should not appear
       expect(container.querySelector('a[href="/contacts"]')).toBeNull();
       expect(container.querySelector('a[href="/groups"]')).toBeNull();
     });
@@ -278,23 +550,30 @@ describe("Sidebar", () => {
       });
       render();
 
-      expect(container.textContent).toContain("Relationships");
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
     });
 
     it("shows all items while butlers are loading", () => {
       setButlersState({ isLoading: true });
       render();
 
-      // Relationships group should still be visible during loading
-      expect(container.textContent).toContain("Relationships");
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
     });
 
     it("shows all items when butlers query fails", () => {
       setButlersState({ isError: true, error: new Error("network error") });
       render();
 
-      // Relationships group should still be visible on error (graceful degradation)
-      expect(container.textContent).toContain("Relationships");
+      const groupButton = Array.from(container.querySelectorAll("button")).find(
+        (btn) => btn.getAttribute("aria-label") === "Relationships",
+      );
+      expect(groupButton).toBeTruthy();
     });
 
     it("flat items without butler field always render", () => {
@@ -303,15 +582,14 @@ describe("Sidebar", () => {
       });
       render();
 
-      // Core nav items like Overview, Sessions, etc. should always be present
-      expect(container.textContent).toContain("Overview");
-      expect(container.textContent).toContain("Sessions");
-      expect(container.textContent).toContain("Settings");
+      expect(container.querySelector('a[href="/"]')).toBeInstanceOf(HTMLAnchorElement);
+      expect(container.querySelector('a[href="/sessions"]')).toBeInstanceOf(HTMLAnchorElement);
+      expect(container.querySelector('a[href="/settings"]')).toBeInstanceOf(HTMLAnchorElement);
     });
   });
 
   // -------------------------------------------------------------------------
-  // Chronicles nav entry (bu-ig72b.13)
+  // Chronicles nav entry
   // -------------------------------------------------------------------------
 
   describe("Chronicles nav entry", () => {
@@ -326,7 +604,6 @@ describe("Sidebar", () => {
 
       const chroniclesLink = container.querySelector('a[href="/chronicles"]');
       expect(chroniclesLink).toBeInstanceOf(HTMLAnchorElement);
-      expect(chroniclesLink?.textContent).toContain("Chronicles");
     });
 
     it("hides Chronicles link when chronicler butler is absent", () => {
@@ -339,10 +616,9 @@ describe("Sidebar", () => {
       render();
 
       expect(container.querySelector('a[href="/chronicles"]')).toBeNull();
-      expect(container.textContent).not.toContain("Chronicles");
     });
 
-    it("places Chronicles in Dedicated Butlers section (not Telemetry)", () => {
+    it("uses disambiguation tooltip as aria-label on Chronicles link", () => {
       setButlersState({
         data: {
           data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
@@ -351,54 +627,16 @@ describe("Sidebar", () => {
       });
       render();
 
-      const headings = container.querySelectorAll("h3");
-      const dedicatedHeading = Array.from(headings).find(
-        (h) => h.textContent === "Dedicated Butlers",
-      );
-      const telemetryHeading = Array.from(headings).find(
-        (h) => h.textContent === "Telemetry",
-      );
-      expect(dedicatedHeading).toBeTruthy();
-      expect(telemetryHeading).toBeTruthy();
-
-      const dedicatedSection = dedicatedHeading!.closest("button")!.parentElement;
-      expect(dedicatedSection?.querySelector('a[href="/chronicles"]')).toBeTruthy();
-
-      // Telemetry starts collapsed — expand to check Chronicles is NOT there
-      const telemetryButton = telemetryHeading!.closest("button")!;
-      act(() => {
-        telemetryButton.click();
-      });
-      const telemetrySection = telemetryButton.parentElement;
-      expect(telemetrySection?.querySelector('a[href="/chronicles"]')).toBeNull();
-    });
-
-    it("uses disambiguation tooltip text on Chronicles link when sidebar is collapsed", () => {
-      setButlersState({
-        data: {
-          data: [{ name: "chronicler", status: "ok", port: 40110, type: "butler" as const }],
-          meta: {},
-        },
-      });
-      // Render with collapsed sidebar
-      act(() => {
-        root.render(
-          <MemoryRouter initialEntries={["/"]}>
-            <Sidebar collapsed={true} />
-          </MemoryRouter>,
-        );
-      });
-
       const chroniclesLink = container.querySelector('a[href="/chronicles"]');
       expect(chroniclesLink).toBeInstanceOf(HTMLAnchorElement);
-      expect(chroniclesLink?.getAttribute("title")).toBe(
+      expect(chroniclesLink?.getAttribute("aria-label")).toBe(
         "Retrospective lived-time reconstruction",
       );
     });
   });
 
   // -------------------------------------------------------------------------
-  // Relationships group wiring (butlers-x3ki.3)
+  // Relationships group wiring
   // -------------------------------------------------------------------------
 
   describe("Relationships group wiring", () => {
@@ -411,149 +649,18 @@ describe("Sidebar", () => {
       });
     });
 
-    it("does not render separate top-level Contacts link", () => {
-      render();
-
-      // There should not be a top-level (non-indented) Contacts link
-      // Instead, Contacts lives inside the Relationships group
-      const allLinks = container.querySelectorAll("a");
-      const topLevelContactsLinks = Array.from(allLinks).filter(
-        (link) =>
-          link.getAttribute("href") === "/contacts" &&
-          !link.closest('[aria-expanded], [aria-expanded] ~ *'),
-      );
-      // The link exists (inside the group), but the group header is the top-level element
-      const groupButton = Array.from(container.querySelectorAll("button")).find(
-        (btn) => btn.textContent?.includes("Relationships"),
-      );
-      expect(groupButton).toBeTruthy();
-      // Contacts is a child, not a standalone nav item
-      expect(topLevelContactsLinks.length).toBeLessThanOrEqual(1);
-    });
-
     it("auto-expands when navigating to /groups", () => {
       render("/groups");
 
       const groupsLink = container.querySelector('a[href="/groups"]');
       expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
-      expect(groupsLink?.textContent).toContain("Groups");
     });
 
     it("auto-expands when navigating to /contacts/:id", () => {
       render("/contacts/abc123");
 
-      // The /contacts/abc123 path should cause the group to auto-expand
-      // because it starts with /contacts
       const contactsLink = container.querySelector('a[href="/contacts"]');
       expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Accessibility: inert + brand dedup (bu-n7whz)
-  // -------------------------------------------------------------------------
-
-  describe("a11y — inert and brand dedup", () => {
-    beforeEach(() => {
-      setButlersState({
-        data: {
-          data: [{ name: "relationship", status: "ok", port: 40102, type: "butler" as const }],
-          meta: {},
-        },
-      });
-    });
-
-    it("brand: only one brand span is in the accessibility tree when expanded", () => {
-      render();
-
-      // Brand area identified by stable test hook
-      const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
-      expect(brandDiv).toBeTruthy();
-
-      const spans = Array.from(brandDiv!.querySelectorAll("span"));
-      // Both brand spans are always rendered
-      expect(spans.length).toBe(2);
-
-      // "Butlers" span must NOT be aria-hidden when expanded
-      const butlersSpan = spans.find((s) => s.textContent === "Butlers");
-      expect(butlersSpan).toBeTruthy();
-      expect(butlersSpan!.getAttribute("aria-hidden")).not.toBe("true");
-
-      // "B" span must be aria-hidden when expanded
-      const bSpan = spans.find((s) => s.textContent === "B");
-      expect(bSpan).toBeTruthy();
-      expect(bSpan!.getAttribute("aria-hidden")).toBe("true");
-    });
-
-    it("brand: only one brand span is in the accessibility tree when collapsed", () => {
-      act(() => {
-        root.render(
-          <MemoryRouter initialEntries={["/"]}>
-            <Sidebar collapsed={true} />
-          </MemoryRouter>,
-        );
-      });
-
-      const brandDiv = container.querySelector("[data-testid='sidebar-brand']");
-      expect(brandDiv).toBeTruthy();
-
-      const spans = Array.from(brandDiv!.querySelectorAll("span"));
-      expect(spans.length).toBe(2);
-
-      // "Butlers" span must be aria-hidden when collapsed
-      const butlersSpan = spans.find((s) => s.textContent === "Butlers");
-      expect(butlersSpan).toBeTruthy();
-      expect(butlersSpan!.getAttribute("aria-hidden")).toBe("true");
-
-      // "B" span must NOT be aria-hidden when collapsed
-      const bSpan = spans.find((s) => s.textContent === "B");
-      expect(bSpan).toBeTruthy();
-      expect(bSpan!.getAttribute("aria-hidden")).not.toBe("true");
-    });
-
-    it("NavGroup: collapsed children container has inert attribute", () => {
-      render();
-
-      const groupButton = Array.from(container.querySelectorAll("button")).find(
-        (btn) => btn.textContent?.includes("Relationships"),
-      );
-      expect(groupButton).toBeTruthy();
-
-      const childrenContainer = groupButton!.parentElement?.querySelector(
-        "[aria-hidden]",
-      ) as HTMLElement | null;
-      expect(childrenContainer).toBeTruthy();
-      // Should have inert attribute when collapsed
-      expect(childrenContainer!.hasAttribute("inert")).toBe(true);
-
-      // Expand: inert should be removed
-      act(() => {
-        groupButton!.click();
-      });
-      expect(childrenContainer!.hasAttribute("inert")).toBe(false);
-    });
-
-    it("NavSectionGroup: collapsed section items container has inert attribute", () => {
-      render();
-
-      const headings = container.querySelectorAll("h3");
-      const telemetryHeading = Array.from(headings).find(
-        (h) => h.textContent === "Telemetry",
-      );
-      expect(telemetryHeading).toBeTruthy();
-
-      const telemetryButton = telemetryHeading!.closest("button")!;
-      const sectionContainer = telemetryButton.parentElement;
-      // Telemetry starts collapsed — its items div should have inert
-      const itemsDiv = sectionContainer?.querySelector("[aria-hidden]") as HTMLElement | null;
-      expect(itemsDiv).toBeTruthy();
-      expect(itemsDiv!.hasAttribute("inert")).toBe(true);
-
-      // Expand: inert should be removed
-      act(() => {
-        telemetryButton.click();
-      });
-      expect(itemsDiv!.hasAttribute("inert")).toBe(false);
     });
   });
 });

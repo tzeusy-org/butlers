@@ -12,7 +12,6 @@ interface ShellProps {
 }
 
 export default function Shell({ header, children }: ShellProps) {
-  const [desktopCollapsed, setDesktopCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
 
   return (
@@ -21,22 +20,13 @@ export default function Shell({ header, children }: ShellProps) {
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="left" className="w-64 p-0 md:hidden" showCloseButton={false}>
           <SheetTitle className="sr-only">Navigation</SheetTitle>
-          <Sidebar onNavClick={() => setMobileOpen(false)} />
+          <Sidebar mobileExpanded onNavClick={() => setMobileOpen(false)} />
         </SheetContent>
       </Sheet>
 
-      {/* Desktop sidebar — width switches instantly (no transition) so no
-          layout property is animated. Brand text fades via transition-opacity
-          in Sidebar.tsx; nav labels use conditional rendering. */}
-      <aside
-        className={`hidden md:flex md:flex-col border-r border-border ${
-          desktopCollapsed ? 'md:w-16' : 'md:w-64'
-        }`}
-      >
-        <Sidebar
-          collapsed={desktopCollapsed}
-          onToggleCollapse={() => setDesktopCollapsed((prev) => !prev)}
-        />
+      {/* Desktop sidebar — fixed 56px icon rail, not collapsible */}
+      <aside className="hidden md:flex md:w-14 md:flex-col border-r border-border">
+        <Sidebar />
       </aside>
 
       {/* Main area */}

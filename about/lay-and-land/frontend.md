@@ -43,14 +43,87 @@ graph TB
 ### Shell layout (`components/layout/Shell.tsx`)
 - `flex h-screen overflow-hidden bg-background` outer
 - Mobile sidebar: Radix `Sheet` from the left, hidden ≥`md`
-- Desktop sidebar: `<aside>` with `md:w-64` (or `md:w-16` collapsed),
-  width transition 200ms
+- Desktop sidebar: `<aside>` fixed at **56px** (`md:w-14`), full height,
+  not collapsible. No width transition.
 - Header: `h-14`, `border-b border-border`, `px-6`, contains hamburger
   (mobile) and `<PageHeader />`
-- Main: `flex-1 overflow-y-auto p-6`
+- Main: `flex-1 overflow-y-auto p-6`, `ml-14` on desktop (56px offset
+  for the fixed rail)
 
 This is the only persistent chrome. Pages do not own anything outside
 their `Outlet` rectangle.
+
+### Sidebar geometry (56px icon rail)
+
+The sidebar is a **fixed 56px-wide icon rail** running the full viewport
+height. It is not collapsible; the rail is always 56px on desktop.
+
+**Per-section glyph rules:**
+- Main section items: first-letter fallback glyph (16px, centered in a
+  40px hit target). Icons may be added in a later pass; the rail spec does
+  not require lucide icons.
+- Telemetry section items: same first-letter approach as Main.
+- Dedicated Butlers section items: use `<ButlerMark name={...} tone="neutral">`
+  (the canonical component from `components/ui/ButlerMark.tsx`) as the
+  glyph for items with a `butler` association. Items without a butler field
+  use the first-letter fallback.
+- Relationships group: the group header glyph uses the first letter of
+  "Relationships". Children (Contacts, Groups) appear as indented 32px-tall
+  items below when the group is expanded.
+
+**Tooltip floating contract:**
+- On hover or `:focus-visible`, a tooltip floats at `left: 56px` (anchored
+  to the right edge of the rail) showing the item label.
+- Implemented via the Radix `Tooltip` primitive from `components/ui/tooltip.tsx`.
+- The tooltip `delayDuration` is 0 (instant show) matching the existing
+  Tooltip provider default.
+
+**Active-state visual rule:**
+- Active item: 2px left bar (`border-l-2 border-sidebar-primary`), plus
+  a 6% white tint background fill in dark mode / 5% black tint in light
+  mode (`bg-sidebar-primary/[0.06]` dark, `bg-sidebar-primary/[0.05]` light).
+- Inactive item hover: `hover:bg-sidebar-accent/50`.
+
+**Status dot:**
+- A 6px circle rendered at the top-right of the icon area (absolute
+  positioned, `top-1 right-1`).
+- Color: `bg-destructive` for `error` status; amber (`bg-amber-500`) for
+  `degraded` status.
+- Ring stroke matches the rail background (`ring-2 ring-background`) to
+  visually separate the dot from adjacent icons.
+- Shown **only** when butler status is `degraded` or `error`. No dot for
+  `ok` or any other status value.
+- The `useButlers()` hook provides butler status. The Sidebar maps butler
+  name to status to decide whether a dot is needed.
+
+**Live badges:**
+- Red circle badge (`bg-red-500 text-white`) for reauth count (Settings
+  item). Badge driven by `badgeKey: 'reauth-count'` in nav-config.
+- Amber circle badge (`bg-amber-500 text-white`) for pending approvals
+  count (Approvals item). Badge driven by `badgeKey: 'approvals-pending'`
+  in nav-config.
+- Badge renders at top-right of the icon, ~10px diameter, `text-[8px]`.
+- Color selection is driven by the `badgeVariant` field on `NavFlatItem`
+  (values: `'red'` | `'amber'`; default falls back to primary).
+
+**Group expand interaction (Relationships):**
+- Chevron rendered at the bottom-right of the glyph area.
+- Clicking the glyph toggles the group open/closed.
+- When open, children appear as indented items immediately below the
+  group header.
+- Auto-expands when any child route is active.
+
+**Footer summary:**
+- A small row at the bottom of the rail.
+- Renders a tiny dot (6px) whose color reflects the worst butler status
+  present (red for error, amber for degraded, green for all ok).
+- Full summary text ("1 degraded, 2 awaiting") is available via the HTML
+  `title` attribute on the footer element for tooltip-on-hover.
+
+**Mobile sheet behavior:**
+- Unchanged. Mobile sidebar is a Radix `Sheet` from the left at `w-64`,
+  closed on nav click. The mobile sheet renders a wider sidebar layout,
+  not the icon rail.
 
 ### PageHeader (`components/layout/PageHeader.tsx`)
 - Auto-generates breadcrumbs by splitting `location.pathname` on `/`
@@ -64,7 +137,7 @@ their `Outlet` rectangle.
   `size="sm"` `h-8 w-8 p-0`.
 
 ### Sidebar (`components/layout/Sidebar.tsx`)
-- Brand: "Butlers" (collapses to "B")
+- Fixed 56px icon rail (desktop). Not collapsible.
 - Three sections, declared in `nav-config.ts`:
   - **Main**: Overview, Butlers, QA (badge), Ingestion, Approvals,
     Memory, Entities, Secrets, Settings
@@ -74,12 +147,15 @@ their `Outlet` rectangle.
     Log (collapsed by default)
 - Items support a `butler` filter so absent butlers hide their nav
   entries (`useFilteredNavSections`).
-- Items support a `badgeKey` for live counts (`useBadgeCounts`); only
-  QA wires this in today.
-- Item glyphs are **the first letter of the label in a 24×24 muted
-  square**, not real icons. This was a deliberate "honest cheap"
-  choice; it is not currently using `lucide-react` for nav.
-- Footer: today's spend (live, via `useCostSummary("today")`).
+- Items support a `badgeKey` for live counts (`useBadgeCounts`); QA,
+  Approvals, and Settings wire badge keys.
+- Item glyphs: Dedicated Butlers items with a `butler` field use
+  `<ButlerMark>` (canonical component). All others use the first letter
+  of the label.
+- Tooltips float at `left: 56px` on hover/focus (Radix Tooltip).
+- Status dots on butler-section items when butler status is `degraded`
+  or `error`.
+- Footer: tiny status dot summary with `title` attr for full text.
 
 ---
 
