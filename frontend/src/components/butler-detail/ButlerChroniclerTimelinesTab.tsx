@@ -13,7 +13,7 @@
 // All data comes from existing hooks. No new HTTP routes are added.
 // ---------------------------------------------------------------------------
 
-import { useMemo } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 
 import type {
   ChroniclesKpi,
@@ -26,6 +26,7 @@ import type {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
 import {
@@ -208,9 +209,12 @@ interface EpisodeSpineProps {
   episodes: ChroniclerEpisode[];
   isLoading: boolean;
   tz: string;
+  hasMore: boolean;
+  isFetchingMore: boolean;
+  onLoadMore: () => void;
 }
 
-function EpisodeSpine({ episodes, isLoading, tz }: EpisodeSpineProps) {
+function EpisodeSpine({ episodes, isLoading, tz, hasMore, isFetchingMore, onLoadMore }: EpisodeSpineProps) {
   if (isLoading && episodes.length === 0) {
     return (
       <div className="space-y-3" data-testid="episode-spine-loading">
@@ -236,49 +240,64 @@ function EpisodeSpine({ episodes, isLoading, tz }: EpisodeSpineProps) {
   }
 
   return (
-    <ol
-      className="relative space-y-3 border-l border-border pl-4"
-      aria-label="Today's episode timeline"
-      data-testid="episode-spine"
-    >
-      {episodes.map((ep) => {
-        const taxonomy = LANE_TAXONOMY[ep.category as Category];
-        const dotColour = taxonomy?.colour ?? "bg-slate-400";
-        const label = taxonomy?.label ?? ep.category;
-        const isSensitive = ep.canonical_privacy === "sensitive" || ep.canonical_privacy === "restricted";
-        const title = isSensitive ? "···" : (ep.canonical_title ?? ep.title ?? ep.episode_type);
-        const startTime = fmtTime(ep.canonical_start_at, tz);
-        const endTime = ep.canonical_end_at ? fmtTime(ep.canonical_end_at, tz) : null;
+    <div>
+      <ol
+        className="relative space-y-3 border-l border-border pl-4"
+        aria-label="Today's episode timeline"
+        data-testid="episode-spine"
+      >
+        {episodes.map((ep) => {
+          const taxonomy = LANE_TAXONOMY[ep.category as Category];
+          const dotColour = taxonomy?.colour ?? "bg-slate-400";
+          const label = taxonomy?.label ?? ep.category;
+          const isSensitive = ep.canonical_privacy === "sensitive" || ep.canonical_privacy === "restricted";
+          const title = isSensitive ? "···" : (ep.canonical_title ?? ep.title ?? ep.episode_type);
+          const startTime = fmtTime(ep.canonical_start_at, tz);
+          const endTime = ep.canonical_end_at ? fmtTime(ep.canonical_end_at, tz) : null;
 
-        return (
-          <li
-            key={ep.id}
-            className="relative flex items-start gap-3"
-            data-testid="episode-spine-item"
-          >
-            {/* category dot */}
-            <span
-              className={`absolute -left-[1.125rem] mt-1.5 h-2.5 w-2.5 rounded-full border-2 border-background ${dotColour}`}
-              aria-hidden
-            />
-            <div className="min-w-0">
-              <p className="text-xs text-muted-foreground tabular-nums">
-                {startTime}
-                {endTime && ` – ${endTime}`}
-                <span className="ml-2 inline-block">{label}</span>
-                {isSensitive && (
-                  <span className="ml-1 text-xs text-muted-foreground/60">(private)</span>
+          return (
+            <li
+              key={ep.id}
+              className="relative flex items-start gap-3"
+              data-testid="episode-spine-item"
+            >
+              {/* category dot */}
+              <span
+                className={`absolute -left-[1.125rem] mt-1.5 h-2.5 w-2.5 rounded-full border-2 border-background ${dotColour}`}
+                aria-hidden
+              />
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground tabular-nums">
+                  {startTime}
+                  {endTime && ` – ${endTime}`}
+                  <span className="ml-2 inline-block">{label}</span>
+                  {isSensitive && (
+                    <span className="ml-1 text-xs text-muted-foreground/60">(private)</span>
+                  )}
+                </p>
+                <p className="text-sm truncate">{title}</p>
+                {!isSensitive && ep.source_name && (
+                  <p className="text-xs text-muted-foreground/70 truncate">{ep.source_name}</p>
                 )}
-              </p>
-              <p className="text-sm truncate">{title}</p>
-              {!isSensitive && ep.source_name && (
-                <p className="text-xs text-muted-foreground/70 truncate">{ep.source_name}</p>
-              )}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+      {hasMore && (
+        <div className="mt-4 flex justify-center" data-testid="load-more-container">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onLoadMore}
+            disabled={isFetchingMore}
+            data-testid="load-more-button"
+          >
+            {isFetchingMore ? "Loading…" : "Load more"}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -501,6 +520,8 @@ function DayClosePanel({ dayClose, isLoading, isError, tz }: DayClosePanelProps)
 // Main tab component
 // ---------------------------------------------------------------------------
 
+const PAGE_SIZE = 50;
+
 export default function ButlerChroniclerTimelinesTab() {
   const tz = useTimezone();
   const today = todayInTz(tz);
@@ -512,24 +533,80 @@ export default function ButlerChroniclerTimelinesTab() {
   const { data: kpiData, isLoading: kpiLoading } = useChroniclesKpi({ date: today, tz });
   const kpi = kpiData?.data;
 
-  // --- Section 2: Today's episodes (sorted by start time, limit 50 per fetch)
+  // --- Section 2: Today's episodes — paginated, accumulated across "Load more" clicks
+  // nextOffset tracks what offset to use for the next page fetch.
+  // allEpisodes accumulates all loaded episodes across pages.
+  const [nextOffset, setNextOffset] = useState(0);
+  const [allEpisodes, setAllEpisodes] = useState<ChroniclerEpisode[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+
+  // Stable base params (overlaps window). Offset/limit are added per-fetch.
+  const todayWindowRef = useRef({ overlaps_start: todayStart, overlaps_end: todayEnd });
+  // Reset pagination whenever the day window changes (timezone or date flip).
+  useEffect(() => {
+    if (
+      todayWindowRef.current.overlaps_start !== todayStart ||
+      todayWindowRef.current.overlaps_end !== todayEnd
+    ) {
+      todayWindowRef.current = { overlaps_start: todayStart, overlaps_end: todayEnd };
+      setNextOffset(0);
+      setAllEpisodes([]);
+      setHasMore(false);
+    }
+  }, [todayStart, todayEnd]);
+
   const todayEpisodesParams = useMemo(
-    () => ({ overlaps_start: todayStart, overlaps_end: todayEnd, limit: 50 }),
-    [todayStart, todayEnd],
+    () => ({
+      overlaps_start: todayStart,
+      overlaps_end: todayEnd,
+      limit: PAGE_SIZE,
+      offset: nextOffset,
+    }),
+    [todayStart, todayEnd, nextOffset],
   );
   const {
     data: episodesData,
     isLoading: episodesLoading,
+    isFetching: episodesFetching,
   } = useChroniclesEpisodes(todayEpisodesParams);
+
+  // Accumulate pages into allEpisodes.
+  const processedOffsetRef = useRef<number>(-1);
+  useEffect(() => {
+    if (!episodesData) return;
+    const { data: page, meta } = episodesData;
+    // Avoid double-processing the same response.
+    if (processedOffsetRef.current === meta.offset) return;
+    processedOffsetRef.current = meta.offset;
+
+    setAllEpisodes((prev) => {
+      if (meta.offset === 0) {
+        // First page (or reset): replace.
+        return page;
+      }
+      // Subsequent page: append, deduplicating by id.
+      const existingIds = new Set(prev.map((ep) => ep.id));
+      const fresh = page.filter((ep) => !existingIds.has(ep.id));
+      return [...prev, ...fresh];
+    });
+    setHasMore(meta.has_more);
+  }, [episodesData]);
+
   const episodes = useMemo(
     () =>
-      [...(episodesData?.data ?? [])].sort(
+      [...allEpisodes].sort(
         (a, b) =>
           new Date(a.canonical_start_at).getTime() -
           new Date(b.canonical_start_at).getTime(),
       ),
-    [episodesData],
+    [allEpisodes],
   );
+
+  const isFetchingMore = episodesFetching && nextOffset > 0;
+
+  function handleLoadMore() {
+    setNextOffset((prev) => prev + PAGE_SIZE);
+  }
 
   // --- Section 3: Source state
   const {
@@ -573,6 +650,9 @@ export default function ButlerChroniclerTimelinesTab() {
               episodes={episodes}
               isLoading={episodesLoading}
               tz={tz}
+              hasMore={hasMore}
+              isFetchingMore={isFetchingMore}
+              onLoadMore={handleLoadMore}
             />
           </CardContent>
         </Card>

@@ -10,12 +10,15 @@
  *  - KPI values render with data
  *  - Day-close stale marker renders when response.stale is true
  *  - Day-close prose renders when response.stale is false
+ *  - Pagination: "Load more" button shown when has_more=true, hidden when false
+ *  - Pagination: clicking "Load more" triggers fetch with offset=50
+ *  - Pagination: button shows "Loading…" while isFetching and offset > 0
  *
  * bead: bu-aeg7w
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
@@ -548,5 +551,87 @@ describe("ButlerChroniclerTimelinesTab — loading states", () => {
   it("does not render category-breakdown-list while loading", () => {
     renderTab();
     expect(screen.queryByTestId("category-breakdown-list")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: "Load more" pagination
+// ---------------------------------------------------------------------------
+
+describe("ButlerChroniclerTimelinesTab — episode timeline pagination", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+  afterEach(() => cleanup());
+
+  it("hides Load more button when has_more is false", () => {
+    // setupWithData returns has_more: false
+    renderTab();
+    expect(screen.queryByTestId("load-more-button")).toBeNull();
+  });
+
+  it("shows Load more button when has_more is true", () => {
+    vi.mocked(useChroniclesEpisodes).mockReturnValue({
+      data: { data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+    } as ReturnType<typeof useChroniclesEpisodes>);
+
+    renderTab();
+    expect(screen.getByTestId("load-more-button")).toBeDefined();
+    expect(screen.getByTestId("load-more-button").textContent).toBe("Load more");
+  });
+
+  it("clicking Load more triggers a new fetch with offset=50", () => {
+    vi.mocked(useChroniclesEpisodes).mockReturnValue({
+      data: { data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+    } as ReturnType<typeof useChroniclesEpisodes>);
+
+    renderTab();
+    const btn = screen.getByTestId("load-more-button");
+    fireEvent.click(btn);
+
+    // After clicking, useChroniclesEpisodes must have been called with offset: 50.
+    const calls = vi.mocked(useChroniclesEpisodes).mock.calls;
+    const offsetCalls = calls.filter((c) => c[0]?.offset === 50);
+    expect(offsetCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows Loading… text on Load more button while fetching next page", () => {
+    // To trigger isFetchingMore=true in the component, we need:
+    //   1. nextOffset > 0 (set by clicking "Load more")
+    //   2. isFetching=true from the hook
+    // Strategy: render page 0 (has_more=true), click the button, then observe that
+    // the hook is called with offset=50; stub subsequent calls as isFetching=true.
+    vi.mocked(useChroniclesEpisodes)
+      // First call: page 0 loaded successfully.
+      .mockReturnValueOnce({
+        data: { data: EPISODES, meta: { total: 100, offset: 0, limit: 50, has_more: true } },
+        isLoading: false,
+        isFetching: false,
+        isError: false,
+      } as ReturnType<typeof useChroniclesEpisodes>)
+      // Second call onward (after click → offset becomes 50): page is fetching.
+      .mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isFetching: true,
+        isError: false,
+      } as ReturnType<typeof useChroniclesEpisodes>);
+
+    renderTab();
+
+    // Click Load more — nextOffset advances to 50, causing a re-render with the second mock.
+    fireEvent.click(screen.getByTestId("load-more-button"));
+
+    // Button should now show "Loading…" and be disabled.
+    const btn = screen.getByTestId("load-more-button");
+    expect(btn.textContent).toBe("Loading…");
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
   });
 });
