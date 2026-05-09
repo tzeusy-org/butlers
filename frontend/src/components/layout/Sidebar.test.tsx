@@ -357,6 +357,63 @@ describe("Sidebar", () => {
       });
       expect(footerEl).toBeTruthy();
     });
+
+    it("shows neutral dot and loading title while butlers query is loading", () => {
+      setButlersState({ isLoading: true });
+      render();
+
+      // No green, amber, or red dot when state is unknown
+      expect(container.querySelector(".bg-green-500")).toBeNull();
+      expect(container.querySelector(".bg-amber-500")).toBeNull();
+      expect(container.querySelector(".bg-destructive")).toBeNull();
+
+      // Neutral dot is present
+      const neutralDot = container.querySelector(".bg-muted-foreground\\/40");
+      expect(neutralDot).toBeTruthy();
+
+      // Title reflects loading state
+      const footerEl = Array.from(container.querySelectorAll("[title]")).find(
+        (el) => el.getAttribute("title") === "Loading butlers",
+      );
+      expect(footerEl).toBeTruthy();
+    });
+
+    it("shows neutral dot and error title when butlers query fails", () => {
+      setButlersState({ isError: true, error: new Error("network error") });
+      render();
+
+      // No green, amber, or red dot when state is unknown
+      expect(container.querySelector(".bg-green-500")).toBeNull();
+      expect(container.querySelector(".bg-amber-500")).toBeNull();
+      expect(container.querySelector(".bg-destructive")).toBeNull();
+
+      // Neutral dot is present
+      const neutralDot = container.querySelector(".bg-muted-foreground\\/40");
+      expect(neutralDot).toBeTruthy();
+
+      // Title reflects error state
+      const footerEl = Array.from(container.querySelectorAll("[title]")).find(
+        (el) => el.getAttribute("title") === "Butlers query failed",
+      );
+      expect(footerEl).toBeTruthy();
+    });
+
+    it("shows red dot when any butler has error status (success path)", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "error", port: 40102, type: "butler" as const }],
+          meta: {},
+        },
+      });
+      render();
+
+      // Footer title shows error count
+      const footerEl = Array.from(container.querySelectorAll("[title]")).find((el) => {
+        const title = el.getAttribute("title") ?? "";
+        return title.includes("error");
+      });
+      expect(footerEl).toBeTruthy();
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -117,6 +117,11 @@ height. It is not collapsible; the rail is always 56px on desktop.
 - A small row at the bottom of the rail.
 - Renders a tiny dot (6px) whose color reflects the worst butler status
   present (red for error, amber for degraded, green for all ok).
+- While the butlers query is loading or has failed, the dot is neutral/dim
+  (`bg-muted-foreground/40`) rather than green, so the operator is not
+  misled into thinking all systems are healthy when reality is unknown.
+  The `title` attribute reads "Loading butlers" or "Butlers query failed"
+  in those states.
 - Full summary text ("1 degraded, 2 awaiting") is available via the HTML
   `title` attribute on the footer element for tooltip-on-hover.
 

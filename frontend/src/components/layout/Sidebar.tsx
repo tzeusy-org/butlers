@@ -42,11 +42,13 @@ interface ButlerStatusMap {
 function useFilteredNavSections(sections: NavSection[]): {
   sections: NavSection[]
   butlerStatusMap: ButlerStatusMap
+  isLoading: boolean
+  isError: boolean
 } {
   const { data: response, isLoading, isError } = useButlers()
 
   if (isLoading || isError || !response) {
-    return { sections, butlerStatusMap: {} }
+    return { sections, butlerStatusMap: {}, isLoading, isError }
   }
 
   const butlerNames = new Set(response.data.map((b) => b.name))
@@ -66,7 +68,7 @@ function useFilteredNavSections(sections: NavSection[]): {
     }))
     .filter((section) => section.items.length > 0)
 
-  return { sections: filtered, butlerStatusMap: statusMap }
+  return { sections: filtered, butlerStatusMap: statusMap, isLoading: false, isError: false }
 }
 
 // ---------------------------------------------------------------------------
@@ -379,9 +381,43 @@ function NavSectionGroup({
 // Sidebar footer — status dot summary
 // ---------------------------------------------------------------------------
 
-function SidebarFooter({ butlerStatusMap }: { butlerStatusMap: ButlerStatusMap }) {
+function SidebarFooter({
+  butlerStatusMap,
+  isLoading,
+  isError,
+}: {
+  butlerStatusMap: ButlerStatusMap
+  isLoading: boolean
+  isError: boolean
+}) {
   const { data: costResponse } = useCostSummary('today')
   const cost = costResponse?.data.total_cost_usd
+
+  if (isLoading) {
+    const titleText = 'Loading butlers'
+    return (
+      <div
+        className="flex items-center justify-center border-t border-border p-3"
+        title={titleText}
+        aria-label={titleText}
+      >
+        <span className="h-2 w-2 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+      </div>
+    )
+  }
+
+  if (isError) {
+    const titleText = 'Butlers query failed'
+    return (
+      <div
+        className="flex items-center justify-center border-t border-border p-3"
+        title={titleText}
+        aria-label={titleText}
+      >
+        <span className="h-2 w-2 rounded-full bg-muted-foreground/40" aria-hidden="true" />
+      </div>
+    )
+  }
 
   const statuses = Object.values(butlerStatusMap)
   const hasError = statuses.some((s) => s === 'error')
@@ -424,7 +460,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ mobileExpanded = false, onNavClick }: SidebarProps) {
-  const { sections: filteredSections, butlerStatusMap } = useFilteredNavSections(navSections)
+  const { sections: filteredSections, butlerStatusMap, isLoading, isError } = useFilteredNavSections(navSections)
   const badgeCounts = useBadgeCounts()
 
   // Mobile sheet variant: render with labels (not icon rail)
@@ -467,7 +503,7 @@ export default function Sidebar({ mobileExpanded = false, onNavClick }: SidebarP
         </nav>
 
         {/* Footer */}
-        <SidebarFooter butlerStatusMap={butlerStatusMap} />
+        <SidebarFooter butlerStatusMap={butlerStatusMap} isLoading={isLoading} isError={isError} />
       </div>
     </TooltipProvider>
   )
