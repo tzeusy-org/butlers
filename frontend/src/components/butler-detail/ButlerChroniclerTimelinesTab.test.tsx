@@ -14,10 +14,11 @@
  * bead: bu-aeg7w
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { AppTimezoneProvider } from "@/components/ui/timezone-context";
 import ButlerChroniclerTimelinesTab from "./ButlerChroniclerTimelinesTab";
 
 // ---------------------------------------------------------------------------
@@ -30,7 +31,7 @@ vi.mock("@/hooks/use-chronicles-kpi", () => ({
 
 vi.mock("@/hooks/use-chronicles", () => ({
   useChroniclesEpisodes: vi.fn(),
-  useChroniclesAggregates: vi.fn(),
+  useChroniclesByCategory: vi.fn(),
   useChroniclesSourceState: vi.fn(),
   useChroniclesDayClose: vi.fn(),
 }));
@@ -38,10 +39,27 @@ vi.mock("@/hooks/use-chronicles", () => ({
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
 import {
   useChroniclesEpisodes,
-  useChroniclesAggregates,
+  useChroniclesByCategory,
   useChroniclesSourceState,
   useChroniclesDayClose,
 } from "@/hooks/use-chronicles";
+
+// ---------------------------------------------------------------------------
+// Fixed clock — prevents midnight/timezone flakes
+// ---------------------------------------------------------------------------
+
+/** Fixed date used for all time-dependent fixtures. */
+const FIXED_NOW_ISO = "2026-05-10T08:00:00.000Z";
+const TODAY = "2026-05-10";
+
+beforeAll(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(FIXED_NOW_ISO));
+});
+
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 // ---------------------------------------------------------------------------
 // Fixture data
@@ -61,14 +79,6 @@ const KPI_DATA = {
     streaks: { sleep: 7, exercise: 3 },
   },
 };
-
-const TODAY = (() => {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-})();
 
 const EPISODES = [
   {
@@ -189,9 +199,11 @@ function makeQueryClient() {
 
 function renderTab() {
   return render(
-    <QueryClientProvider client={makeQueryClient()}>
-      <ButlerChroniclerTimelinesTab />
-    </QueryClientProvider>,
+    <AppTimezoneProvider timezone="Asia/Singapore">
+      <QueryClientProvider client={makeQueryClient()}>
+        <ButlerChroniclerTimelinesTab />
+      </QueryClientProvider>
+    </AppTimezoneProvider>,
   );
 }
 
@@ -218,18 +230,11 @@ function setupWithData() {
     isError: false,
   } as ReturnType<typeof useChroniclesSourceState>);
 
-  vi.mocked(useChroniclesAggregates).mockReturnValue({
-    byCategory: {
-      data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: CATEGORY_BUCKETS }, meta: {} },
-      isLoading: false,
-      isError: false,
-    },
-    byDay: {
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    },
-  } as ReturnType<typeof useChroniclesAggregates>);
+  vi.mocked(useChroniclesByCategory).mockReturnValue({
+    data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: CATEGORY_BUCKETS }, meta: {} },
+    isLoading: false,
+    isError: false,
+  } as ReturnType<typeof useChroniclesByCategory>);
 
   vi.mocked(useChroniclesDayClose).mockReturnValue({
     data: DAY_CLOSE_FRESH,
@@ -257,18 +262,11 @@ function setupEmpty() {
     isError: false,
   } as ReturnType<typeof useChroniclesSourceState>);
 
-  vi.mocked(useChroniclesAggregates).mockReturnValue({
-    byCategory: {
-      data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: [] }, meta: {} },
-      isLoading: false,
-      isError: false,
-    },
-    byDay: {
-      data: undefined,
-      isLoading: false,
-      isError: false,
-    },
-  } as ReturnType<typeof useChroniclesAggregates>);
+  vi.mocked(useChroniclesByCategory).mockReturnValue({
+    data: { data: { start_at: "", end_at: "", tz: "UTC", buckets: [] }, meta: {} },
+    isLoading: false,
+    isError: false,
+  } as ReturnType<typeof useChroniclesByCategory>);
 
   vi.mocked(useChroniclesDayClose).mockReturnValue({
     data: undefined,
@@ -296,18 +294,11 @@ function setupLoading() {
     isError: false,
   } as ReturnType<typeof useChroniclesSourceState>);
 
-  vi.mocked(useChroniclesAggregates).mockReturnValue({
-    byCategory: {
-      data: undefined,
-      isLoading: true,
-      isError: false,
-    },
-    byDay: {
-      data: undefined,
-      isLoading: true,
-      isError: false,
-    },
-  } as ReturnType<typeof useChroniclesAggregates>);
+  vi.mocked(useChroniclesByCategory).mockReturnValue({
+    data: undefined,
+    isLoading: true,
+    isError: false,
+  } as ReturnType<typeof useChroniclesByCategory>);
 
   vi.mocked(useChroniclesDayClose).mockReturnValue({
     data: undefined,

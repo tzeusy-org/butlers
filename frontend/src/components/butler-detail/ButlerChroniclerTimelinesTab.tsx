@@ -26,46 +26,52 @@ import type {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { useChroniclesKpi } from "@/hooks/use-chronicles-kpi";
 import {
   useChroniclesEpisodes,
-  useChroniclesAggregates,
+  useChroniclesByCategory,
   useChroniclesSourceState,
   useChroniclesDayClose,
 } from "@/hooks/use-chronicles";
 import { LANE_TAXONOMY } from "@/components/chronicles/lane-taxonomy";
 import type { Category } from "@/components/chronicles/lane-taxonomy";
 import { getBadgeState } from "@/components/chronicles/source-state-utils";
+import {
+  startOfDayInTz,
+  endOfDayInTz,
+  formatTimeInTz,
+  formatDateTimeInTz,
+  formatInTimeZone,
+} from "@/components/chronicles/tz-format";
 
 // ---------------------------------------------------------------------------
-// Date helpers — today's window in local timezone
+// Date helpers — today's window anchored to owner timezone
 // ---------------------------------------------------------------------------
 
-/** Returns today's YYYY-MM-DD string in local time. */
-function todayLocal(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+/** Returns today's YYYY-MM-DD string in the owner's timezone. */
+function todayInTz(tz: string): string {
+  return formatInTimeZone(new Date(), tz, "yyyy-MM-dd");
 }
 
-/** Returns the ISO start-of-day for a YYYY-MM-DD date in local timezone. */
-function dayStart(dateStr: string): string {
+/** Returns the ISO start-of-day for a YYYY-MM-DD date in the owner's timezone. */
+function dayStart(dateStr: string, tz: string): string {
   const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
+  return startOfDayInTz(new Date(y, m - 1, d), tz).toISOString();
 }
 
 /** Returns the ISO end-of-day (exclusive: next day start) for a YYYY-MM-DD date. */
-function dayEnd(dateStr: string): string {
+function dayEnd(dateStr: string, tz: string): string {
   const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d + 1, 0, 0, 0, 0).toISOString();
+  return endOfDayInTz(new Date(y, m - 1, d), tz).toISOString();
 }
 
-/** Returns the ISO start-of-day 7 days ago in local timezone. */
-function sevenDaysAgoStart(todayStr: string): string {
+/** Returns the ISO start-of-day 7 days ago in the owner's timezone. */
+function sevenDaysAgoStart(todayStr: string, tz: string): string {
   const [y, m, d] = todayStr.split("-").map(Number);
-  return new Date(y, m - 1, d - 6, 0, 0, 0, 0).toISOString();
+  // Shift back 6 days to get a 7-day window: day-6 through today inclusive
+  const sixDaysBack = new Date(y, m - 1, d - 6);
+  return startOfDayInTz(sixDaysBack, tz).toISOString();
 }
 
 /** Format seconds as "Xh Ym" or "Xm". */
@@ -82,10 +88,9 @@ function fmtMinutes(min: number): string {
   return fmtSeconds(min * 60);
 }
 
-/** Format a datetime string as HH:MM. */
-function fmtTime(isoStr: string): string {
-  const d = new Date(isoStr);
-  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+/** Format a datetime string as HH:MM in the owner's timezone. */
+function fmtTime(isoStr: string, tz: string): string {
+  return formatTimeInTz(isoStr, tz);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,9 +207,10 @@ function KpiStrip({ kpi, isLoading }: KpiStripProps) {
 interface EpisodeSpineProps {
   episodes: ChroniclerEpisode[];
   isLoading: boolean;
+  tz: string;
 }
 
-function EpisodeSpine({ episodes, isLoading }: EpisodeSpineProps) {
+function EpisodeSpine({ episodes, isLoading, tz }: EpisodeSpineProps) {
   if (isLoading && episodes.length === 0) {
     return (
       <div className="space-y-3" data-testid="episode-spine-loading">
@@ -241,8 +247,8 @@ function EpisodeSpine({ episodes, isLoading }: EpisodeSpineProps) {
         const label = taxonomy?.label ?? ep.category;
         const isSensitive = ep.canonical_privacy === "sensitive" || ep.canonical_privacy === "restricted";
         const title = isSensitive ? "···" : (ep.canonical_title ?? ep.title ?? ep.episode_type);
-        const startTime = fmtTime(ep.canonical_start_at);
-        const endTime = ep.canonical_end_at ? fmtTime(ep.canonical_end_at) : null;
+        const startTime = fmtTime(ep.canonical_start_at, tz);
+        const endTime = ep.canonical_end_at ? fmtTime(ep.canonical_end_at, tz) : null;
 
         return (
           <li
@@ -283,9 +289,10 @@ function EpisodeSpine({ episodes, isLoading }: EpisodeSpineProps) {
 interface SourceHealthWidgetProps {
   rows: ChroniclerSourceStateRow[];
   isLoading: boolean;
+  tz: string;
 }
 
-function SourceHealthWidget({ rows, isLoading }: SourceHealthWidgetProps) {
+function SourceHealthWidget({ rows, isLoading, tz }: SourceHealthWidgetProps) {
   if (isLoading && rows.length === 0) {
     return (
       <div className="space-y-2" data-testid="source-health-loading">
@@ -327,13 +334,7 @@ function SourceHealthWidget({ rows, isLoading }: SourceHealthWidgetProps) {
         if (state === "planned") badgeVariant = "outline";
 
         const lastRun = row.last_run_at
-          ? new Date(row.last_run_at).toLocaleString("en-US", {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            })
+          ? formatDateTimeInTz(row.last_run_at, tz)
           : null;
 
         return (
@@ -451,9 +452,10 @@ interface DayClosePanelProps {
   dayClose: ChroniclerDayCloseResponse | undefined;
   isLoading: boolean;
   isError: boolean;
+  tz: string;
 }
 
-function DayClosePanel({ dayClose, isLoading, isError }: DayClosePanelProps) {
+function DayClosePanel({ dayClose, isLoading, isError, tz }: DayClosePanelProps) {
   if (isLoading && !dayClose) {
     return (
       <div className="space-y-2" data-testid="day-close-loading">
@@ -479,7 +481,7 @@ function DayClosePanel({ dayClose, isLoading, isError }: DayClosePanelProps) {
           Summary is stale — data has changed since the last editorial run.
         </p>
         <p className="text-xs text-muted-foreground mt-1">
-          Built: {new Date(dayClose.cache_built_at).toLocaleString()}
+          Built: {formatDateTimeInTz(dayClose.cache_built_at, tz)}
         </p>
       </div>
     );
@@ -489,7 +491,7 @@ function DayClosePanel({ dayClose, isLoading, isError }: DayClosePanelProps) {
     <div data-testid="day-close-prose">
       <p className="text-sm leading-relaxed">{dayClose.prose}</p>
       <p className="text-xs text-muted-foreground mt-2">
-        Built: {new Date(dayClose.cache_built_at).toLocaleString()}
+        Built: {formatDateTimeInTz(dayClose.cache_built_at, tz)}
       </p>
     </div>
   );
@@ -500,16 +502,17 @@ function DayClosePanel({ dayClose, isLoading, isError }: DayClosePanelProps) {
 // ---------------------------------------------------------------------------
 
 export default function ButlerChroniclerTimelinesTab() {
-  const today = todayLocal();
-  const todayStart = dayStart(today);
-  const todayEnd = dayEnd(today);
-  const sevenDaysStart = sevenDaysAgoStart(today);
+  const tz = useTimezone();
+  const today = todayInTz(tz);
+  const todayStart = dayStart(today, tz);
+  const todayEnd = dayEnd(today, tz);
+  const sevenDaysStart = sevenDaysAgoStart(today, tz);
 
   // --- Section 1: KPI strip
-  const { data: kpiData, isLoading: kpiLoading } = useChroniclesKpi({ date: today });
+  const { data: kpiData, isLoading: kpiLoading } = useChroniclesKpi({ date: today, tz });
   const kpi = kpiData?.data;
 
-  // --- Section 2: Today's episodes (sorted by start time, no limit override)
+  // --- Section 2: Today's episodes (sorted by start time, limit 50 per fetch)
   const todayEpisodesParams = useMemo(
     () => ({ overlaps_start: todayStart, overlaps_end: todayEnd, limit: 50 }),
     [todayStart, todayEnd],
@@ -535,12 +538,12 @@ export default function ButlerChroniclerTimelinesTab() {
   } = useChroniclesSourceState();
   const sourceRows = sourceStateData?.data ?? [];
 
-  // --- Section 4: 7-day category breakdown
+  // --- Section 4: 7-day category breakdown (by-category only; by-day is not needed here)
   const sevenDayCategoryParams = useMemo(
     () => ({ start_at: sevenDaysStart, end_at: todayEnd }),
     [sevenDaysStart, todayEnd],
   );
-  const { byCategory } = useChroniclesAggregates(sevenDayCategoryParams, sevenDayCategoryParams);
+  const byCategory = useChroniclesByCategory(sevenDayCategoryParams);
   const categoryBuckets = byCategory.data?.data.buckets ?? [];
 
   // --- Section 5: Day-close prose (today's window)
@@ -569,6 +572,7 @@ export default function ButlerChroniclerTimelinesTab() {
             <EpisodeSpine
               episodes={episodes}
               isLoading={episodesLoading}
+              tz={tz}
             />
           </CardContent>
         </Card>
@@ -581,6 +585,7 @@ export default function ButlerChroniclerTimelinesTab() {
             <SourceHealthWidget
               rows={sourceRows}
               isLoading={sourceLoading}
+              tz={tz}
             />
           </CardContent>
         </Card>
@@ -609,6 +614,7 @@ export default function ButlerChroniclerTimelinesTab() {
               dayClose={dayClose}
               isLoading={dayCloseLoading}
               isError={dayCloseError}
+              tz={tz}
             />
           </CardContent>
         </Card>

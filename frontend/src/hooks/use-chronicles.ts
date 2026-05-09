@@ -91,6 +91,24 @@ export function useChroniclesEpisodes(
 }
 
 /**
+ * Fetch category aggregates only for a time window.
+ *
+ * Use this when you only need the by-category breakdown and do not need
+ * the by-day series. Avoids the extra /aggregate/by-day request.
+ */
+export function useChroniclesByCategory(
+  params: ChroniclerAggregateByCategoryParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.byCategory(params),
+    queryFn: () => getChroniclerAggregateByCategory(params),
+    refetchInterval: options?.refetchInterval ?? 30_000,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
  * Fetch category and day aggregates for a time window.
  *
  * Issues two queries in one hook:
