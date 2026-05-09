@@ -263,6 +263,12 @@ import type {
   TravelTripSummary,
   TravelUpcomingModel,
   TravelTripsParams,
+  HomeSnapshotStatus,
+  HomeDeviceInventoryResponse,
+  HomeMaintenanceItem,
+  HomeEnergyDataPoint,
+  HomeTopConsumer,
+  HomeCommandLogEntry,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -3898,4 +3904,77 @@ export function getTravelTripSummary(tripId: string): Promise<TravelTripSummary>
 export function getTravelUpcoming(withinDays?: number): Promise<TravelUpcomingModel> {
   const qs = withinDays != null ? `?within_days=${withinDays}` : "";
   return apiFetch<TravelUpcomingModel>(`/travel/upcoming${qs}`);
+}
+
+// ---------------------------------------------------------------------------
+// Home butler endpoints
+// ---------------------------------------------------------------------------
+
+export function getHomeSnapshotStatus(): Promise<HomeSnapshotStatus> {
+  return apiFetch<HomeSnapshotStatus>("/home/snapshot-status");
+}
+
+export function getHomeDevices(params?: {
+  domain?: string;
+  area?: string;
+  health?: "healthy" | "offline";
+  page?: number;
+  page_size?: number;
+}): Promise<HomeDeviceInventoryResponse> {
+  const sp = new URLSearchParams();
+  if (params?.domain) sp.set("domain", params.domain);
+  if (params?.area) sp.set("area", params.area);
+  if (params?.health) sp.set("health", params.health);
+  if (params?.page != null) sp.set("page", String(params.page));
+  if (params?.page_size != null) sp.set("page_size", String(params.page_size));
+  const qs = sp.toString();
+  return apiFetch<HomeDeviceInventoryResponse>(`/home/devices${qs ? `?${qs}` : ""}`);
+}
+
+export function getHomeMaintenance(params?: {
+  category?: string;
+  status?: "overdue" | "due" | "upcoming" | "ok";
+}): Promise<HomeMaintenanceItem[]> {
+  const sp = new URLSearchParams();
+  if (params?.category) sp.set("category", params.category);
+  if (params?.status) sp.set("status", params.status);
+  const qs = sp.toString();
+  return apiFetch<HomeMaintenanceItem[]>(`/home/maintenance${qs ? `?${qs}` : ""}`);
+}
+
+export function getHomeEnergy(params?: {
+  period?: "day" | "hour";
+  start?: string;
+  end?: string;
+}): Promise<HomeEnergyDataPoint[]> {
+  const sp = new URLSearchParams();
+  if (params?.period) sp.set("period", params.period);
+  if (params?.start) sp.set("start", params.start);
+  if (params?.end) sp.set("end", params.end);
+  const qs = sp.toString();
+  return apiFetch<HomeEnergyDataPoint[]>(`/home/energy${qs ? `?${qs}` : ""}`);
+}
+
+export function getHomeEnergyTopConsumers(params?: {
+  start?: string;
+  end?: string;
+}): Promise<HomeTopConsumer[]> {
+  const sp = new URLSearchParams();
+  if (params?.start) sp.set("start", params.start);
+  if (params?.end) sp.set("end", params.end);
+  const qs = sp.toString();
+  return apiFetch<HomeTopConsumer[]>(`/home/energy/top-consumers${qs ? `?${qs}` : ""}`);
+}
+
+export function getHomeCommandLog(params?: {
+  limit?: number;
+  domain?: string;
+}): Promise<{ data: HomeCommandLogEntry[]; meta?: Record<string, unknown> }> {
+  const sp = new URLSearchParams();
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.domain) sp.set("domain", params.domain);
+  const qs = sp.toString();
+  return apiFetch<{ data: HomeCommandLogEntry[]; meta?: Record<string, unknown> }>(
+    `/home/command-log${qs ? `?${qs}` : ""}`,
+  );
 }
