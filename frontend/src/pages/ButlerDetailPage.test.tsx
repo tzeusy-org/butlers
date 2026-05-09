@@ -57,6 +57,17 @@ vi.mock("@/components/chat/ChatPanel", () => ({
   ),
 }));
 
+// Mock triggerButler so force-run button does not fire real HTTP requests.
+// Spread real module exports so other symbols imported from @/api/index.ts
+// remain available and do not resolve to undefined in components under test.
+vi.mock("@/api/index.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+  return {
+    ...actual,
+    triggerButler: vi.fn(() => Promise.resolve({ success: true, session_id: null, output: "" })),
+  };
+});
+
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 type UseButlerResult = ReturnType<typeof useButler>;
@@ -195,5 +206,76 @@ describe("ButlerDetailPage — rendering", () => {
     const html = renderPage();
     expect(html).toContain("/butlers");
     expect(html).toContain("Butlers");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate-A A2 Hero contract — ButlerDetailActions in actions slot
+// ---------------------------------------------------------------------------
+//
+// spec: openspec/changes/redesign-butler-detail-no-hero/tasks.md §2.4
+// bead: bu-sfeuw.3
+//
+// The Page shell `actions` slot MUST contain: ChatPanel, status pill,
+// force-run button, and pause button. NO Tier-2 hero block must appear.
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — Gate-A A2 actions slot", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setButlerState(BASE_BUTLER);
+  });
+
+  it("renders the status pill in the actions slot", () => {
+    const html = renderPage();
+    expect(html).toContain('data-testid="butler-status-pill"');
+  });
+
+  it("renders the force-run button in the actions slot", () => {
+    const html = renderPage();
+    expect(html).toContain('data-testid="butler-force-run"');
+  });
+
+  it("renders the pause button in the actions slot", () => {
+    const html = renderPage();
+    expect(html).toContain('data-testid="butler-pause"');
+  });
+
+  it("status pill, force-run, and pause all appear after the h1 (actions slot order)", () => {
+    const html = renderPage();
+    const h1Index = html.indexOf("<h1");
+    const statusPillIndex = html.indexOf('data-testid="butler-status-pill"');
+    const forceRunIndex = html.indexOf('data-testid="butler-force-run"');
+    const pauseIndex = html.indexOf('data-testid="butler-pause"');
+
+    expect(h1Index).toBeGreaterThanOrEqual(0);
+    expect(statusPillIndex).toBeGreaterThan(h1Index);
+    expect(forceRunIndex).toBeGreaterThan(h1Index);
+    expect(pauseIndex).toBeGreaterThan(h1Index);
+  });
+
+  it("renders exactly one ButlerDetailActions wrapper", () => {
+    const html = renderPage();
+    const occurrences = (html.match(/data-testid="butler-detail-actions"/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it("does NOT render a Tier-2 hero block above the tabs", () => {
+    const html = renderPage();
+    // The only h1 is the Page title. A Tier-2 hero would introduce a second
+    // heading-level element (h2) with the butler identity above the tabs.
+    // There must be no 'hero' data-testid in the output.
+    expect(html).not.toContain('data-testid="hero"');
+    // The tabs block still renders
+    expect(html).toContain("Overview");
+    expect(html).toContain("Sessions");
+  });
+
+  it("status pill shows Up badge for ok status", () => {
+    const html = renderPage();
+    // BASE_BUTLER has status: "ok" → renders "Up" text inside the pill
+    const pillStart = html.indexOf('data-testid="butler-status-pill"');
+    const pillRegion = html.slice(pillStart, pillStart + 200);
+    expect(pillRegion).toContain("Up");
   });
 });

@@ -3,8 +3,8 @@ import { Link, useParams, useSearchParams } from "react-router";
 
 import type { SessionParams, SessionSummary } from "@/api/types";
 import ButlerConfigTab from "@/components/butler-detail/ButlerConfigTab";
+import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
-import { ChatPanel } from "@/components/chat/ChatPanel";
 import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { SessionTable } from "@/components/sessions/SessionTable";
@@ -411,7 +411,7 @@ export default function ButlerDetailPage() {
     <DetailPage
       record={{ title: name, subtitle: description }}
       breadcrumbs={breadcrumbs}
-      actions={<ChatPanel butlerName={name} />}
+      actions={<ButlerDetailActions butlerName={name} />}
       pulse={<ButlerHeartbeatTile />}
       primary={
         <Tabs value={activeTab} onValueChange={handleTabChange}>
