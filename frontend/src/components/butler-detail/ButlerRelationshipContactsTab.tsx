@@ -109,13 +109,14 @@ function KpiStrip({ contacts, upcomingDates, unlinked, isLoading }: KpiStripProp
 // Section 2: Dunbar Map
 // ---------------------------------------------------------------------------
 
-/** Dunbar tier ring sizes as the canonical Dunbar numbers */
+/** Dunbar tier ring sizes — tier values returned by the engine are the canonical layer sizes. */
 const DUNBAR_TIERS: { tier: number; label: string; colour: string }[] = [
-  { tier: 1, label: "Tier 1 (5)", colour: "bg-violet-500" },
-  { tier: 2, label: "Tier 2 (15)", colour: "bg-blue-500" },
-  { tier: 3, label: "Tier 3 (50)", colour: "bg-green-500" },
-  { tier: 4, label: "Tier 4 (150)", colour: "bg-yellow-500" },
-  { tier: 5, label: "Tier 5 (500)", colour: "bg-orange-400" },
+  { tier: 5, label: "Support 5", colour: "bg-violet-500" },
+  { tier: 15, label: "Sympathy 15", colour: "bg-blue-500" },
+  { tier: 50, label: "Friends 50", colour: "bg-green-500" },
+  { tier: 150, label: "Network 150", colour: "bg-yellow-500" },
+  { tier: 500, label: "Acquaintances 500", colour: "bg-orange-400" },
+  { tier: 1500, label: "Familiar 1500", colour: "bg-gray-400" },
 ];
 
 interface DunbarMapProps {
@@ -217,7 +218,7 @@ function UpcomingDatesPanel({ dates, isLoading }: UpcomingDatesPanelProps) {
   if (!dates || dates.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="empty-state-line">
-        No upcoming dates in the next 30 days.
+        No upcoming dates in the next 60 days.
       </p>
     );
   }
@@ -426,7 +427,7 @@ export default function ButlerRelationshipContactsTab() {
 
         <Card className="lg:col-span-1" data-testid="upcoming-dates-card">
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Upcoming dates · 30d</CardTitle>
+            <CardTitle className="text-sm font-medium">Upcoming dates · 60d</CardTitle>
           </CardHeader>
           <CardContent>
             <UpcomingDatesPanel dates={upcomingDates60} isLoading={upcomingLoading60} />

@@ -114,7 +114,7 @@ const DUNBAR_DATA = {
       contact_id: "c-1",
       entity_id: "e-1",
       canonical_name: "Alice Smith",
-      dunbar_tier: 1,
+      dunbar_tier: 5,
       dunbar_score: 95.0,
       dunbar_tier_override: false,
       avatar_url: null,
@@ -124,7 +124,7 @@ const DUNBAR_DATA = {
       contact_id: "c-2",
       entity_id: "e-2",
       canonical_name: "Bob Jones",
-      dunbar_tier: 2,
+      dunbar_tier: 15,
       dunbar_score: 70.0,
       dunbar_tier_override: true,
       avatar_url: null,
@@ -371,14 +371,14 @@ describe("ButlerRelationshipContactsTab — dunbar map", () => {
     expect(rows.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("renders Alice Smith in tier 1", () => {
+  it("renders Alice Smith in Support 5 tier", () => {
     renderTab();
     // Alice Smith appears in both dunbar map and contact roster
     const matches = screen.getAllByText("Alice Smith");
     expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders Bob Jones in tier 2", () => {
+  it("renders Bob Jones in Sympathy 15 tier", () => {
     renderTab();
     // Bob Jones appears in both dunbar map and contact roster
     const matches = screen.getAllByText("Bob Jones");
@@ -475,7 +475,7 @@ describe("ButlerRelationshipContactsTab — empty states", () => {
   it("shows empty state for upcoming dates when empty", () => {
     renderTab();
     expect(screen.queryByTestId("upcoming-dates-list")).toBeNull();
-    expect(screen.getByText("No upcoming dates in the next 30 days.")).toBeDefined();
+    expect(screen.getByText("No upcoming dates in the next 60 days.")).toBeDefined();
   });
 
   it("shows empty state for contacts when empty", () => {
