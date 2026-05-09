@@ -1,0 +1,142 @@
+/* ============================================================
+ * Dispatch — Design Tokens
+ * Paste into frontend/src/index.css (or import as a layer).
+ * Dark is canonical. Light is paper-warm, not stark white.
+ * ============================================================ */
+
+/* Fonts — pin via Google Fonts in index.html */
+:root {
+  --font-sans:  'Inter Tight', ui-sans-serif, system-ui, sans-serif;
+  --font-serif: 'Source Serif 4', ui-serif, Georgia, serif;
+  --font-mono:  'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ---- DARK (canonical) ---- */
+:root, html[data-theme="dark"] {
+  --bg:           oklch(0.145 0 0);
+  --bg-elev:      oklch(0.205 0 0);
+  --bg-deep:      oklch(0.115 0 0);    /* sidebar, sticky bars */
+  --fg:           oklch(0.985 0 0);
+  --mfg:          oklch(0.708 0 0);    /* eyebrows, secondary */
+  --dim:          oklch(0.55  0 0);    /* tertiary, deltas */
+
+  --border:        oklch(1 0 0 / 0.10);
+  --border-soft:   oklch(1 0 0 / 0.06);
+  --border-strong: oklch(1 0 0 / 0.18);
+
+  --red:    oklch(0.685 0.250 29.2);
+  --amber:  oklch(0.810 0.185 84.0);
+  --green:  oklch(0.790 0.195 148.2);
+  --blue:   oklch(0.680 0.195 259.0);
+
+  --category-1: oklch(0.78 0.16 259);  /* relationship */
+  --category-2: oklch(0.75 0.20 292);  /* memory */
+  --category-3: oklch(0.82 0.16 75);   /* calendar */
+  --category-4: oklch(0.78 0.13 184);  /* health */
+  --category-5: oklch(0.76 0.22 11);   /* household */
+  --category-6: oklch(0.75 0.20 278);  /* education */
+  --category-7: oklch(0.78 0.16 209);  /* qa */
+  --category-8: oklch(0.80 0.18 58);   /* chronicler */
+}
+
+/* ---- LIGHT (paper-warm) ---- */
+html[data-theme="light"] {
+  --bg:           oklch(0.985 0.003 85);
+  --bg-elev:      oklch(1 0 0);
+  --bg-deep:      oklch(0.965 0.005 85);
+  --fg:           oklch(0.18 0 0);
+  --mfg:          oklch(0.46 0 0);
+  --dim:          oklch(0.62 0 0);
+
+  --border:        oklch(0 0 0 / 0.10);
+  --border-soft:   oklch(0 0 0 / 0.05);
+  --border-strong: oklch(0 0 0 / 0.20);
+
+  --red:    oklch(0.527 0.235 29.2);
+  --amber:  oklch(0.66  0.145 75);
+  --green:  oklch(0.50  0.140 152);
+  --blue:   oklch(0.50  0.180 259);
+
+  --category-1: oklch(0.55 0.18 259);
+  --category-2: oklch(0.52 0.20 292);
+  --category-3: oklch(0.62 0.16 75);
+  --category-4: oklch(0.55 0.13 184);
+  --category-5: oklch(0.55 0.22 11);
+  --category-6: oklch(0.52 0.20 278);
+  --category-7: oklch(0.55 0.16 209);
+  --category-8: oklch(0.58 0.18 58);
+}
+
+/* ---- Typography role tokens ---- */
+:root {
+  --eyebrow-size:     10px;
+  --eyebrow-tracking: 0.14em;
+
+  --display-size:     44px;
+  --display-weight:   500;     /* never 700 */
+  --display-tracking: -0.025em;
+  --display-leading:  1.08;
+
+  --title-size:       24px;
+  --title-tracking:   -0.015em;
+
+  --body-size:        14px;
+  --body-leading:     1.5;
+
+  --voice-size:       16px;
+  --voice-leading:    1.6;
+
+  --mono-size:        11px;
+}
+
+/* ---- Layout ---- */
+:root {
+  --rail-width:    56px;
+  --page-max:      1280px;
+  --page-pad-x:    56px;
+  --page-pad-y:    48px;
+  --gutter:        56px;       /* between major columns */
+  --col-readable:  50ch;       /* voice paragraphs */
+  --col-headline:  14ch;       /* display headlines */
+
+  --rule:          1px solid var(--border);
+  --rule-soft:     1px solid var(--border-soft);
+}
+
+/* ---- Motion (almost none) ---- */
+:root {
+  --ease-out:      cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-instant:   0ms;
+  --dur-fast:      120ms;
+  --dur-base:      200ms;
+}
+
+/* ---- Utilities ---- */
+.tnum { font-variant-numeric: tabular-nums; }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--eyebrow-size);
+  letter-spacing: var(--eyebrow-tracking);
+  text-transform: uppercase;
+  color: var(--mfg);
+}
+
+.voice {
+  font-family: var(--font-serif);
+  font-size: var(--voice-size);
+  line-height: var(--voice-leading);
+  color: var(--mfg);
+  max-width: var(--col-readable);
+}
+
+.display {
+  font-family: var(--font-sans);
+  font-size: var(--display-size);
+  font-weight: var(--display-weight);
+  letter-spacing: var(--display-tracking);
+  line-height: var(--display-leading);
+  max-width: var(--col-headline);
+}
+
+.rule-list > * + * { border-top: var(--rule-soft); }
