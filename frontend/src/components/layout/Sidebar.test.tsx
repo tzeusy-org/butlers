@@ -225,9 +225,9 @@ describe("Sidebar", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Active state: active item renders with a data-active attribute or class
-  // React Router NavLink calls the className function; DOM reflects resolved value.
-  // We verify the link is present (active) and check the data-slot for the trigger.
+  // Active state: NavLink sets aria-current="page" on the active anchor.
+  // This is the stable identity token — className function resolution is
+  // env-dependent and must not be used as the assertion target.
   // -------------------------------------------------------------------------
 
   it("active item link is present when its route matches", () => {
@@ -239,8 +239,12 @@ describe("Sidebar", () => {
     // The Overview link should be in the DOM when on route "/"
     const overviewLink = container.querySelector('a[href="/"]');
     expect(overviewLink).toBeInstanceOf(HTMLAnchorElement);
-    // In MemoryRouter the active NavLink gets "active" appended to className by react-router
-    expect(overviewLink?.className).toContain("active");
+    // NavLink sets aria-current="page" on the active link — this is the stable
+    // identity token for active state (className function resolution is env-dependent).
+    expect(overviewLink?.getAttribute("aria-current")).toBe("page");
+    // An inactive link (sessions) must not have aria-current
+    const sessionsLink = container.querySelector('a[href="/sessions"]');
+    expect(sessionsLink?.getAttribute("aria-current")).toBeNull();
   });
 
   // -------------------------------------------------------------------------
