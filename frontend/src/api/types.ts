@@ -60,8 +60,8 @@ export interface ButlerSummary {
   port: number;
   /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
   type: "butler" | "staffer";
-  /** Number of sessions started in the last 24 hours. Defaults to 0. */
-  sessions_24h?: number;
+  /** Number of sessions started in the last 24 hours. Always present; 0 when none. */
+  sessions_24h: number;
 }
 
 /** Butler configuration files returned by GET /api/butlers/:name/config. */
