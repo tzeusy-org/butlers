@@ -26,6 +26,15 @@ The author is responsible for:
 - stating what verification actually ran
 - filing follow-up work in beads instead of leaving informal TODO debt
 
+## Spec discipline
+
+UI mockups that propose a tab list, hero block, or panel set not already
+present in `openspec/specs/dashboard-*` require a cited existing capability
+or a paired spec change before implementation begins. A mockup is not enough
+to create dashboard surface area: if the spec does not already name the tab,
+hero, or panel, the author must either point to the capability contract it
+renders or land the OpenSpec delta first.
+
 ## Reviewer Obligations
 
 The reviewer is responsible for:
