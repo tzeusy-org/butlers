@@ -22,6 +22,8 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { MemoryRouter } from "react-router";
 
+import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -60,56 +62,6 @@ interface ShellProps {
   pauseDisabled?: boolean;
 }
 
-function StatusPill({ status }: { status: string }) {
-  switch (status) {
-    case "ok":
-      return (
-        <span
-          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-emerald-600 text-white"
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label="Butler status: Up"
-        >
-          Up
-        </span>
-      );
-    case "degraded":
-      return (
-        <span
-          className="inline-flex items-center rounded-full border border-amber-500 px-2.5 py-0.5 text-xs font-medium text-amber-600"
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label="Butler status: Degraded"
-        >
-          Degraded
-        </span>
-      );
-    case "error":
-    case "down":
-      return (
-        <span
-          className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white"
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label="Butler status: Down"
-        >
-          Down
-        </span>
-      );
-    default:
-      return (
-        <span
-          className="inline-flex items-center rounded-full bg-gray-200 px-2.5 py-0.5 text-xs font-medium text-gray-700"
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label={`Butler status: ${status}`}
-        >
-          {status}
-        </span>
-      );
-  }
-}
-
 function ControlledActionsShell({
   status,
   loading = false,
@@ -121,7 +73,11 @@ function ControlledActionsShell({
       className="flex items-center gap-2"
       data-testid="butler-detail-actions"
     >
-      <StatusPill status={loading ? "unknown" : status} />
+      <ButlerStatusBadge
+        status={loading ? "unknown" : status}
+        data-testid="butler-status-pill"
+        role="status"
+      />
 
       <button
         type="button"

@@ -24,6 +24,8 @@ import { render, cleanup } from "@testing-library/react";
 import { axe, toHaveNoViolations } from "jest-axe";
 import { expect as vitestExpect } from "vitest";
 
+import { ButlerStatusBadge } from "@/components/butler-detail/ButlerStatusBadge";
+
 // Register the jest-axe matcher with vitest's expect.
 vitestExpect.extend(toHaveNoViolations);
 
@@ -33,58 +35,9 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Shared stub components — mirror the story DOM structure exactly.
+// Shared shell component — mirrors the story DOM structure with the real
+// ButlerStatusBadge component instead of a local stub.
 // ---------------------------------------------------------------------------
-
-function StatusPill({ status }: { status: string }) {
-  switch (status) {
-    case "ok":
-      return (
-        <span
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label="Butler status: Up"
-          style={{ display: "inline-flex", backgroundColor: "#059669", color: "#fff", padding: "2px 8px", borderRadius: "9999px", fontSize: "0.75rem" }}
-        >
-          Up
-        </span>
-      );
-    case "degraded":
-      return (
-        <span
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label="Butler status: Degraded"
-          style={{ display: "inline-flex", border: "1px solid #f59e0b", color: "#d97706", padding: "2px 8px", borderRadius: "9999px", fontSize: "0.75rem" }}
-        >
-          Degraded
-        </span>
-      );
-    case "error":
-    case "down":
-      return (
-        <span
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label="Butler status: Down"
-          style={{ display: "inline-flex", backgroundColor: "#dc2626", color: "#fff", padding: "2px 8px", borderRadius: "9999px", fontSize: "0.75rem" }}
-        >
-          Down
-        </span>
-      );
-    default:
-      return (
-        <span
-          data-testid="butler-status-pill"
-          role="status"
-          aria-label={`Butler status: ${status}`}
-          style={{ display: "inline-flex", backgroundColor: "#e5e7eb", color: "#374151", padding: "2px 8px", borderRadius: "9999px", fontSize: "0.75rem" }}
-        >
-          {status}
-        </span>
-      );
-  }
-}
 
 interface ShellProps {
   status: string;
@@ -101,7 +54,11 @@ function ActionsShell({
 }: ShellProps) {
   return (
     <div data-testid="butler-detail-actions" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-      <StatusPill status={loading ? "unknown" : status} />
+      <ButlerStatusBadge
+        status={loading ? "unknown" : status}
+        data-testid="butler-status-pill"
+        role="status"
+      />
 
       <button
         type="button"
