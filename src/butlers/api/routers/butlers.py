@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import anyio
@@ -79,6 +80,7 @@ _STALE_CONNECTION_ERRORS = (anyio.ClosedResourceError, anyio.BrokenResourceError
 async def _probe_butler(
     mgr: MCPClientManager,
     info: ButlerConnectionInfo,
+    sessions_24h: int = 0,
 ) -> ButlerSummary:
     """Probe a single butler's MCP server and return a summary.
 
@@ -125,16 +127,44 @@ async def _probe_butler(
         port=info.port,
         type=info.type,
         description=info.description,
+        sessions_24h=sessions_24h,
     )
+
+
+async def _fetch_sessions_24h(db: DatabaseManager) -> dict[str, int]:
+    """Return a mapping of butler_name -> session count for the last 24 hours.
+
+    Queries each butler's ``sessions`` table via fan_out and aggregates the
+    counts.  Butlers whose DB is unavailable or whose table does not exist
+    are silently skipped (count = 0).
+    """
+    since = datetime.now(UTC) - timedelta(hours=24)
+    raw = await db.fan_out(
+        "SELECT count(*) FROM sessions WHERE started_at >= $1",
+        args=(since,),
+    )
+    result: dict[str, int] = {}
+    for butler_name, rows in raw.items():
+        if rows:
+            try:
+                result[butler_name] = int(rows[0][0])
+            except (IndexError, TypeError, ValueError):
+                result[butler_name] = 0
+    return result
 
 
 @router.get("", response_model=ApiResponse[list[ButlerSummary]])
 async def list_butlers(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
+    db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ButlerSummary]]:
-    """Return all discovered butlers with live status."""
-    tasks = [_probe_butler(mgr, info) for info in configs]
+    """Return all discovered butlers with live status and 24h session counts."""
+    sessions_by_butler = await _fetch_sessions_24h(db)
+    tasks = [
+        _probe_butler(mgr, info, sessions_24h=sessions_by_butler.get(info.name, 0))
+        for info in configs
+    ]
     summaries = await asyncio.gather(*tasks)
     return ApiResponse[list[ButlerSummary]](data=list(summaries))
 
