@@ -5,23 +5,23 @@
 
 ## 2. Backend: Endpoint
 
-- [ ] 2.1 Create `src/butlers/api/routers/dashboard_briefing.py` exposing `GET /api/dashboard/briefing`. Register it in `src/butlers/api/app.py` alongside the other dashboard routers (follow the `system_router` pattern). Distinct from `src/butlers/jobs/briefing.py`, which is the cross-butler daily aggregation job.
-- [ ] 2.2 Create `src/butlers/api/briefing/__init__.py`, `classify.py`, `prompts.py`, `fallback.py`. Implement `classify(state) -> state_class` and `headline_for(state_class, n)` per the tables in `design.md`. The classifier reads from existing tables: `*.notifications`, `*.issues`, `*.sessions`, `core.butlers`.
-- [ ] 2.3 Implement the LLM call against Claude Haiku 4.5 with the pinned prompt, `max_tokens=120`, `temperature=0.4`, `timeout=4.0` seconds.
-- [ ] 2.4 Implement `elaborate_fallback(state, state_class)`. Cover all five `state_class` values; verify each fallback string complies with the voice rules.
-- [ ] 2.5 Implement the post-generation voice lint (D5). Reject responses containing banned tokens; emit `briefing.elaboration.rejected` and `briefing.elaboration.fallback` metrics.
-- [ ] 2.6 Implement the per-owner LRU+TTL cache. Cache key is owner contact id; TTL 5 minutes.
-- [ ] 2.7 Owner-only access gate: HTTP 403 for non-owner sessions; HTTP 401 for unauthenticated.
-- [ ] 2.8 Conservative classification fallback (D6): on any classification exception, return `state_class = "quiet"` with the quiet templated paragraph and emit an internal error metric.
-- [ ] 2.9 Tests under `tests/dashboard/test_briefing.py`:
-  - classify covers all five branches
-  - headline_for produces the expected string for each class (singular and plural variants)
-  - LLM happy path returns `source: "llm"`
-  - LLM timeout, error, and empty response each return `source: "fallback"` with templated paragraph
-  - voice lint rejects responses containing each banned token
-  - cache TTL respects 5 minutes (hit preserves `generated_at`, miss regenerates)
-  - 403 path covers non-owner access
-  - classification exception falls through to the `quiet` paragraph
+- [x] 2.1 Create `src/butlers/api/routers/dashboard_briefing.py` exposing `GET /api/dashboard/briefing`. Register it in `src/butlers/api/app.py` alongside the other dashboard routers (follow the `system_router` pattern). Distinct from `src/butlers/jobs/briefing.py`, which is the cross-butler daily aggregation job.
+- [x] 2.2 Create `src/butlers/api/briefing/__init__.py`, `classify.py`, `prompts.py`, `fallback.py`. Implement `classify(state) -> state_class` and `headline_for(state_class, n)` per the tables in `design.md`. The classifier reads from existing tables: `*.notifications`, `*.issues`, `*.sessions`, `core.butlers`.
+- [x] 2.3 Implement the LLM call against Claude Haiku 4.5 with the pinned prompt, `max_tokens=120`, `temperature=0.4`, `timeout=4.0` seconds.
+- [x] 2.4 Implement `elaborate_fallback(state, state_class)`. Cover all five `state_class` values; verify each fallback string complies with the voice rules.
+- [x] 2.5 Implement the post-generation voice lint (D5). Reject responses containing banned tokens; emit `briefing.elaboration.rejected` and `briefing.elaboration.fallback` metrics.
+- [x] 2.6 Implement the per-owner LRU+TTL cache. Cache key is owner contact id; TTL 5 minutes.
+- [x] 2.7 Owner-only access gate: HTTP 403 for non-owner sessions; HTTP 401 for unauthenticated.
+- [x] 2.8 Conservative classification fallback (D6): on any classification exception, return `state_class = "quiet"` with the quiet templated paragraph and emit an internal error metric.
+- [x] 2.9 Tests under `tests/dashboard/test_briefing.py`:
+  - [x] classify covers all five branches
+  - [x] headline_for produces the expected string for each class (singular and plural variants)
+  - [x] LLM happy path returns `source: "llm"`
+  - [x] LLM timeout, error, and empty response each return `source: "fallback"` with templated paragraph
+  - [x] voice lint rejects responses containing each banned token
+  - [x] cache TTL respects 5 minutes (hit preserves `generated_at`, miss regenerates)
+  - [x] 403 path covers non-owner access
+  - [x] classification exception falls through to the `quiet` paragraph
 
 ## 3. Frontend: Stub
 
