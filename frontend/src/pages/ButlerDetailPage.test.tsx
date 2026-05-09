@@ -151,11 +151,12 @@ describe("ButlerDetailPage — single-H1 contract", () => {
     expect(h1Matches).toHaveLength(1);
   });
 
-  it("h1 contains the butler name", () => {
+  it("h1 contains the titleized butler name", () => {
     const html = renderPage();
     const h1Match = html.match(/<h1[^>]*>(.*?)<\/h1>/s);
     expect(h1Match).not.toBeNull();
-    expect(h1Match![1]).toContain("general");
+    // Title must be titleized (first letter capitalized), not raw lowercase.
+    expect(h1Match![1]).toContain("General");
   });
 
   it("tabs block remains inside the primary content — no second h1", () => {

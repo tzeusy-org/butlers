@@ -23,6 +23,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useButler } from "@/hooks/use-butlers";
 import { useButlerSessions } from "@/hooks/use-sessions";
 import { useUpcomingDates } from "@/hooks/use-contacts";
+import { titleize } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Lazy-loaded tabs
@@ -520,7 +521,7 @@ export default function ButlerDetailPage() {
 
   return (
     <DetailPage
-      record={{ title: name, subtitle: description }}
+      record={{ title: titleize(name), subtitle: description }}
       breadcrumbs={breadcrumbs}
       actions={<ButlerDetailActions butlerName={name} mode={mode} onModeChange={setMode} />}
       pulse={<ButlerHeartbeatTile />}
